@@ -1,0 +1,39 @@
+---
+id: MSP38
+name: Shift down too late
+family: MSP
+common_co_labels: [MSP49]
+causes_to_check: []
+---
+
+## Definition
+Driver downshifts after the corner is already mid-rotation — the
+right gear arrives late, leaving the car in too-tall a gear at
+the apex and exit.
+
+## Physics
+Reaching the apex in a gear that's too tall puts the engine below
+its torque peak when the driver wants to apply throttle. The
+result is sluggish exit acceleration — the engine has to build
+back to its sweet spot under load. Late downshifts also waste the
+brake zone for the downshift action itself.
+
+## Telemetry signature
+- Downshift timestamp after the apex or partway through the exit.
+- Engine RPM at apex below expert's apex RPM for that corner.
+- Acceleration trace plateaus on early exit (engine bogged).
+- Peak throttle (MSP19) may be low — driver short-shifts because
+  the engine isn't responding.
+
+## Engineer interpretation
+Get into the right gear before the corner. Downshifts belong in
+the brake phase, not in the rotation. Plan the gear for the apex
+and arrive in it.
+
+## Remedies
+- Bundle all downshifts into the brake zone — finish them before
+  turn-in.
+- If you're hesitating to downshift because the engine sounds
+  uncomfortable, trust the rev-match.
+- Check your corner-by-corner gear plan once per session — late
+  downshifts are usually planning errors, not reaction errors.

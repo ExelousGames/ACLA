@@ -133,3 +133,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /.claude
 /acla_ai_service/app/storage/telemetry_lance_store
 /acla_ai_service/app/storage/pipelines
+/acla_ai_service/app/pipelines/scripts/debug_output

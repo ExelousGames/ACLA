@@ -1,0 +1,42 @@
+---
+id: MSP47
+name: Understeering at exit
+family: MSP
+common_co_labels: [MSP16, MSP43, MSP19, MSP15]
+causes_to_check: [MSP15, MSP19]
+---
+
+## Definition
+Front tyres scrub wide on corner exit — the car runs further out than
+the driver steered for. You feel it as the wheel going light and the
+car refusing to tighten the line.
+
+## Physics
+Front lateral grip is exceeded at exit, usually because the driver
+asks for too much throttle too early. Forward weight transfer off the
+front under acceleration reduces front normal force; the front tyres
+were already near their grip limit holding the line, so they let go
+first. Result: line opens, you use more track, and exit speed suffers.
+
+## Telemetry signature
+- Steering angle has to keep growing (or be held longer) to hold the
+  line.
+- Trajectory drifts wide of the expert's exit reference.
+- Throttle came in earlier than expert's throttle-on point.
+- Front slip exceeds rear slip at exit on the trajectory-balance
+  chart.
+
+## Engineer interpretation
+You're on the throttle before the car has finished the corner. The
+front asks for grip in two directions — turning and accepting power —
+and runs out. The fix is patience: wait until the steering is unwinding
+before you start feeding throttle. The car will tell you when it's
+ready; if the wheel is still loaded, the throttle isn't.
+
+## Remedies
+- Delay throttle-on by half a beat — wait for the steering to start
+  unwinding before opening the throttle.
+- Smaller throttle ramp; build to 100% rather than jumping there.
+- Tighter line at apex gives the front more room at exit.
+- If the front stays light all the way through exit, ask the engineer
+  about front grip / aero balance.

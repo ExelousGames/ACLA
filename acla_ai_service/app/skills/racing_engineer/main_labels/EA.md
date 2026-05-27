@@ -17,7 +17,7 @@ closing.
 ## How to read EA in a session
 EA is the goal. A high proportion of EA segments across a session
 means the driver is consistent and on pace. A driver with 80% EA and
-20% MS is a faster driver to coach than one with 50% EA and 50%
+20% MSP is a faster driver to coach than one with 50% EA and 50%
 mixed — focus on the few mistakes rather than rebuilding fundamentals.
 
 ## Engineer interpretation

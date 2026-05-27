@@ -3,8 +3,8 @@
 
 Generates Markdown-with-frontmatter `.md` files for the labels in
 ``app/domain/labels.py:LABEL_MAPPING`` that don't have a file yet,
-using the 6 hand-authored anchor labels (MS1, MS22, MS44, MS47, MS17,
-MS9) as worked examples for the LLM.
+using the 6 hand-authored anchor labels (MSP1, MSP22, MSP44, MSP47,
+MSP17, MSP9) as worked examples for the LLM.
 
 The script talks to the **local llama-server** by default — the same
 endpoint the racing engineer runtime uses
@@ -15,11 +15,11 @@ claude`` / ``--backend openai`` and the corresponding env vars
 
 Usage::
 
-    # Generate every missing MS*/RM* sub-label label .md file.
+    # Generate every missing MSP*/MSR*/RM* sub-label label .md file.
     python -m scripts.synthesize_racing_engineer_corpus
 
     # Generate only specific labels (useful for re-running on failures).
-    python -m scripts.synthesize_racing_engineer_corpus --only MS2 MS3 RM1
+    python -m scripts.synthesize_racing_engineer_corpus --only MSP2 MSP3 RM1
 
     # Overwrite existing files.
     python -m scripts.synthesize_racing_engineer_corpus --force
@@ -51,11 +51,11 @@ _CORPUS_DIR = _PROJECT_ROOT / "app" / "skills" / "racing_engineer"
 _LABELS_DIR = _CORPUS_DIR / "labels"
 
 # Labels to generate (sub-labels only — main_labels are hand-authored).
-_TARGET_FAMILIES = ("MS", "RM")
+_TARGET_FAMILIES = ("MSP", "MSR", "RM")
 
 # Anchor examples that set the tone. The script reads these from disk
 # at runtime so any hand-edits propagate to future syntheses.
-_ANCHORS = ["MS1", "MS22", "MS44", "MS47", "MS17", "MS9"]
+_ANCHORS = ["MSP1", "MSP22", "MSP44", "MSP47", "MSP17", "MSP9"]
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ this format:
 ---
 id: <LABEL_ID>
 name: <human-readable name>
-family: <MS|RM|EA|...>
+family: <MSP|MSR|RM|EA|...>
 common_co_labels: [<other label ids>]
 causes_to_check: [<other label ids>]
 ---
@@ -172,7 +172,7 @@ Rules:
 - Match the tone of the worked examples below precisely. They are the
   benchmark — same length, same plain-spoken engineer voice, same
   level of physics detail.
-- Never refer to the label by its code (e.g. "MS44") in the prose;
+- Never refer to the label by its code (e.g. "MSP44") in the prose;
   use the natural name.
 - Use telemetry channels from the worked examples where applicable
   (`Physics_brake`, `Physics_gas`, `expert_optimal_brake`,
@@ -228,7 +228,7 @@ def _targets(only: Optional[Iterable[str]] = None) -> List[str]:
         if not any(label_id.startswith(f) for f in _TARGET_FAMILIES):
             continue
         if not label_id[len(label_id.rstrip("0123456789")):].isdigit():
-            # Skip family-bare entries like "MS" itself — those live in main_labels/.
+            # Skip family-bare entries like "MSP" itself — those live in main_labels/.
             continue
         if label_id in _ANCHORS:
             continue
@@ -252,7 +252,7 @@ async def main() -> int:
     )
     parser.add_argument(
         "--only", nargs="*", default=None,
-        help="Only synthesize the listed label ids (e.g. --only MS2 MS3).",
+        help="Only synthesize the listed label ids (e.g. --only MSP2 MSP3).",
     )
     parser.add_argument(
         "--force", action="store_true",
@@ -268,7 +268,7 @@ async def main() -> int:
     generate = _BACKENDS[args.backend]
     anchors_block = _load_anchor_examples()
     if not anchors_block:
-        print("[fatal] no anchor examples found — author MS1/MS22/MS44/MS47/MS17/MS9 first.")
+        print("[fatal] no anchor examples found — author MSP1/MSP22/MSP44/MSP47/MSP17/MSP9 first.")
         return 2
 
     targets = _targets(args.only)

@@ -1,7 +1,7 @@
 from typing import List, Any
 from app.domain.labels import LABEL_MAPPING
 MAIN_EVENT_LABELS = [
-    "1", "2", "EA", "4", "RM", "MS"
+    "1", "2", "EA", "4", "RM", "MSP", "MSR", "O", "OD"
 ]
 
 TRACK_LOCATION_LABELS = [
@@ -27,8 +27,11 @@ PROMPT_TEMPLATES = {
     "RM": [
         "The driver is trying to recover on the {track_locations_str} track at the {track_sections_str} section. The key features are: {sublabels_str}. Construct a descriptive sentence using this information."
     ],
-    "MS": [
-        "The driver made a mistake at the {track_sections_str} section. The key features are: {sublabels_str}. Construct just a descriptive sentence using this information."
+    "MSP": [
+        "The driver made a practice mistake at the {track_sections_str} section. The key features are: {sublabels_str}. Construct just a descriptive sentence using this information."
+    ],
+    "MSR": [
+        "The driver made a racing mistake interacting with another car at the {track_sections_str} section. The key features are: {sublabels_str}. Construct just a descriptive sentence using this information."
     ],
     "default": [
         "The system detected the following event(s): {main_events_str} on the {track_locations_str} track at the {track_sections_str} section. The key features are: {sublabels_str}. Construct a descriptive sentence using this information."

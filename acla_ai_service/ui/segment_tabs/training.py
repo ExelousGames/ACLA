@@ -35,7 +35,6 @@ def render_training(active_view: str, annotation_key: Optional[str]) -> None:
 
     cfg = PipelineConfig()
     default_ann_key = annotation_key or cfg.annotation_cache_key
-    default_proc_key = cfg.processed_session_data_cache_key
 
     if active_view == "classifier":
         st.header("🏋️ Segment classifier (LSTM)")
@@ -59,7 +58,7 @@ def render_training(active_view: str, annotation_key: Optional[str]) -> None:
             "transformer",
             title="2️⃣ Transformer guidance",
             description="Trains on EA/RM-labelled segments from the annotation dataset.",
-            render_start_form=lambda: _transformer_form(default_ann_key, default_proc_key),
+            render_start_form=lambda: _transformer_form(default_ann_key),
         )
         return
 
@@ -120,19 +119,13 @@ def _classifier_form() -> None:
             st.rerun()
 
 
-def _transformer_form(default_ann_key: str, default_proc_key: str) -> None:
+def _transformer_form(default_ann_key: str) -> None:
     with st.form("transformer_form"):
         ann_key = st.text_input("Annotation key", value=default_ann_key)
-        proc_key = st.text_input("Processed-session key", value=default_proc_key)
-        max_seg = st.number_input(
-            "Max segment length", min_value=1, max_value=512, value=20,
-        )
         if st.form_submit_button("🚀 Start", use_container_width=True):
             cmd = [
                 sys.executable, "-u", str(_SCRIPTS / "train_transformer_guidance.py"),
                 "--annotation-key", ann_key,
-                "--processed-key", proc_key,
-                "--max-segment-length", str(int(max_seg)),
             ]
             spawn("transformer", cmd)
             st.rerun()

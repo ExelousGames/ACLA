@@ -836,7 +836,6 @@ class ExpertActionTrainer:
 async def prepare_and_train_coach_transformer_model(
     data_cache: Any,
     segments_cache_key: str,
-    segment_length_hint: Optional[int] = 50,
     *,
     use_lance_dataloader: bool = False,
 ) -> Dict[str, Any]:
@@ -845,7 +844,6 @@ async def prepare_and_train_coach_transformer_model(
     Args:
         data_cache: Cache service that provides telemetry segments via ``get_cached_data_chunks``.
         segments_cache_key: Cache key that identifies the prepared telemetry segments.
-        segment_length_hint: Optional hint for typical segment length, used to size positional encoding.
         use_lance_dataloader: When True, drive training from the Lance-native dataset
             (:class:`LanceTelemetryActionDataset`) which reads columnar telemetry
             straight from the Phase-2 typed Lance store. Default ``False`` keeps the
@@ -876,7 +874,6 @@ async def prepare_and_train_coach_transformer_model(
             dataset = LanceTelemetryActionDataset(
                 store=data_cache,
                 segments_cache_key=segments_cache_key,
-                segment_length_hint=segment_length_hint,
                 batch_size=32,
                 min_sequence_length=3,
             )
@@ -884,7 +881,6 @@ async def prepare_and_train_coach_transformer_model(
             dataset = TelemetryActionDataset(
                 data_cache=data_cache,
                 segments_cache_key=segments_cache_key,
-                segment_length_hint=segment_length_hint,
                 batch_size=32,
                 min_sequence_length=3,
             )
@@ -918,12 +914,14 @@ async def prepare_and_train_coach_transformer_model(
                 f"median={median_display} | max={length_stats.get('max')}"
             )
 
-        max_candidates = [10]
-        if length_stats.get('max') is not None:
-            max_candidates.append(int(length_stats['max']))
-        if segment_length_hint:
-            max_candidates.append(int(segment_length_hint))
-        max_sequence_length = max(max_candidates)
+        observed_max = length_stats.get('max')
+        if observed_max is None:
+            raise RuntimeError(
+                "Dataset has no segments with valid length statistics; "
+                "cannot derive sequence_length for the transformer."
+            )
+        max_sequence_length = int(observed_max)
+        print(f"[INFO] Sequence length (from observed dataset max): {max_sequence_length}")
 
         model = ExpertActionTransformer(
             total_features_count=input_features_count,

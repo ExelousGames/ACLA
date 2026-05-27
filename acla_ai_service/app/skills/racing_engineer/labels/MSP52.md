@@ -1,0 +1,42 @@
+---
+id: MSP52
+name: Off track in the straight
+family: MSP
+common_co_labels: []
+causes_to_check: []
+---
+
+## Definition
+The car leaves the track surface while travelling in a relatively
+straight line — usually on a fast straight or between two
+chicanes where lateral inputs should be minimal.
+
+## Physics
+Off-track on a straight is unusual and points to one of a few
+specific causes: a mistake on the previous corner exit that
+carried over (the car was already pointing wrong), a kerb hit
+that destabilised the car, mechanical failure, or an avoidance
+move for another car. None of these are coaching opportunities in
+the normal sense — they're context.
+
+## Telemetry signature
+- Lateral track position outside the track edge during a low-
+  steering segment.
+- Steering input minimal but lateral G non-zero (the car was
+  drifting).
+- Often follows an MSP46 (exit oversteer) or MSP51 (off at exit)
+  that didn't fully resolve before the straight.
+
+## Engineer interpretation
+Look at the corner that fed into this straight. If the car was
+already misbehaving on exit, that's where the coaching applies.
+If it was an avoidance move or a kerb-strike, no analysis — the
+driver knows what happened.
+
+## Remedies
+- Trace back: what was the state of the car at the start of the
+  straight?
+- If it's a recurring issue, the previous corner exit needs work
+  (likely MSP46 / MSP47).
+- If it was a kerb strike, look at the entry / exit kerb usage —
+  some kerbs aren't meant to be driven over flat.

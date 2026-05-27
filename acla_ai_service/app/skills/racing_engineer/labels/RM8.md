@@ -10,13 +10,13 @@ causes_to_check: []
 A corrective change in driving — the driver is consciously
 applying throttle earlier on exit than on the previous lap. The
 classifier sees the change as a recovery action, often after a
-previous segment was flagged with late throttle (MS21).
+previous segment was flagged with late throttle (MSP21).
 
 ## Physics
 Earlier throttle-on extends the acceleration phase out of the
 corner, gaining time onto the next straight. The change has to
 be paired with a line that can accept the earlier power — too
-early on the wrong line gives MS20 / MS46.
+early on the wrong line gives MSP20 / MSP46.
 
 ## Telemetry signature
 - Throttle-onset position earlier than the previous lap at the
@@ -33,5 +33,5 @@ don't undo the whole correction.
 
 ## Remedies
 - Lock in the new throttle-on point — make it the reference.
-- Watch for over-correction (oversteer on exit, MS46).
+- Watch for over-correction (oversteer on exit, MSP46).
 - If the line accepts even earlier throttle, push it further.

@@ -10,8 +10,8 @@ Layout::
     app/skills/racing_engineer/
       __init__.py           (this module — loader)
       README.md             (format spec for human authors)
-      labels/<ID>.md        (one per sub-label, e.g. MS44.md)
-      main_labels/<ID>.md   (one per parent label, e.g. MS.md)
+      labels/<ID>.md        (one per sub-label, e.g. MSP44.md)
+      main_labels/<ID>.md   (one per parent label, e.g. MSP.md)
       features/<NAME>.md    (one per telemetry channel, e.g. push_limit.md)
 
 Core categories (``labels`` / ``main_labels`` / ``features`` / ``behaviors``)
@@ -186,7 +186,7 @@ def _load_category(name: str) -> Dict[str, dict]:
 
 
 def label(label_id: str) -> Optional[dict]:
-    """Return the concept doc for one action label by id (e.g. ``"MS44"``).
+    """Return the concept doc for one action label by id (e.g. ``"MSP44"``).
 
     Looks first in ``labels/`` (sub-labels), then in ``main_labels/``
     (parent families). Returns ``None`` if no file exists yet — callers

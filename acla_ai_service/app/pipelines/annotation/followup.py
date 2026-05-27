@@ -165,6 +165,18 @@ class _ToolSurface:
         att = locate_circuit_section(self.df, s, e)
         return json.dumps({"range": [s, e], "data": att.content}, default=str)
 
+    def find_nearest_opponent(self, start: int, end: int) -> str:
+        from app.agents.tools import find_nearest_opponent
+        s, e = self._clamp(start, end)
+        att = find_nearest_opponent(self.df, s, e)
+        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+
+    def query_opponent_trajectory(self, start: int, end: int, slot: int, n_samples: int) -> str:
+        from app.agents.tools import query_opponent_trajectory
+        s, e = self._clamp(start, end)
+        att = query_opponent_trajectory(self.df, s, e, slot=int(slot), n_samples=int(n_samples))
+        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+
 
 def _build_tool_set(surface: _ToolSurface):
     from claude_agent_sdk import tool, create_sdk_mcp_server
@@ -244,13 +256,44 @@ def _build_tool_set(surface: _ToolSurface):
         text = surface.locate_circuit_section(int(args["start"]), int(args["end"]))
         return {"content": [{"type": "text", "text": text}]}
 
+    @tool(
+        "find_nearest_opponent",
+        "Rank opponent car slots by minimum 2D distance to the player "
+        "across the iloc window. Empty slots filtered. Returns per-slot "
+        "min/entry/exit distance, signed longitudinal gap (+ ⇒ opp "
+        "ahead), lateral offset, side-by-side iloc count, and "
+        "pass-event flags. Use to confirm whether an Overtaking (O) "
+        "proposal had an actual close opponent.",
+        {"start": int, "end": int},
+    )
+    async def find_nearest_opponent(args):
+        text = surface.find_nearest_opponent(int(args["start"]), int(args["end"]))
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
+        "query_opponent_trajectory",
+        "Sample one opponent slot's relative trajectory at "
+        "`n_samples` evenly-spaced ilocs: per-iloc 2D distance, signed "
+        "longitudinal gap (+ ⇒ opp ahead), signed lateral offset "
+        "(+ ⇒ opp on player's left).",
+        {"start": int, "end": int, "slot": int, "n_samples": int},
+    )
+    async def query_opponent_trajectory(args):
+        text = surface.query_opponent_trajectory(
+            int(args["start"]), int(args["end"]),
+            int(args["slot"]), int(args.get("n_samples", 5)),
+        )
+        return {"content": [{"type": "text", "text": text}]}
+
     tools_list = [
         list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
         compute_expert_phases, locate_circuit_section,
+        find_nearest_opponent, query_opponent_trajectory,
     ]
     tool_names = [f"mcp__followup__{t}" for t in [
         "list_graphs", "get_graph_guidance", "render_graph", "peek_graph",
         "query_telemetry", "compute_expert_phases", "locate_circuit_section",
+        "find_nearest_opponent", "query_opponent_trajectory",
     ]]
 
     server = create_sdk_mcp_server(
@@ -359,6 +402,7 @@ def _build_system_prompt(
         "### How to answer\n"
         "- Ground every claim in telemetry evidence. Cite ilocs and values. "
         "Use `render_graph` / `query_telemetry` / `compute_expert_phases` "
+        "/ `find_nearest_opponent` / `query_opponent_trajectory` "
         "to re-inspect when the question demands fresh evidence.\n"
         "- When asked 'why didn't label X fit?', quote the relevant text "
         "from the label's description / guideline above, then say which "

@@ -17,7 +17,7 @@ Normalised 0..1.
   driver's onset (`Physics_brake`) compared to this tells you whether
   the driver braked early, late, or on time.
 - **Peak height** — where the expert hit max pressure. Driver peaks
-  above this usually indicate MS22 (peak too high).
+  above this usually indicate MSP22 (peak too high).
 - **Trail-off slope** — the expert's brake release shape. A long
   gradual ramp is trail-braking; a sharp drop is straight-line
   braking before a chicane.
@@ -31,7 +31,7 @@ Normalised 0..1.
 
 ## Engineer interpretation
 The single most useful expert channel for diagnosing entry mistakes.
-Most MS labels in the entry phase trace back to a difference here.
+Most MSP labels in the entry phase trace back to a difference here.
 When suggesting a brake-point change, anchor the suggestion to the
 expert's actual reference — "the expert is on the brake at the 150
 board" is concrete; "brake earlier" is not.

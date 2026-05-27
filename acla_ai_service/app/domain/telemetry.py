@@ -10,6 +10,8 @@ import numpy as np
 import json
 import ast
 
+MAX_CARS = 60
+
 def _safe_float(value):
     """Convert value to float, handling NaN and infinity"""
     try:
@@ -701,13 +703,22 @@ class TelemetryFeatures:
             "Graphics_is_valid_lap",
             "Static_car_model",
             "Static_track",
-            "Opponent_1_pos_x", "Opponent_1_pos_y", "Opponent_1_pos_z", "Opponent_1_distance", "Opponent_1_car_id",
-            "Opponent_2_pos_x", "Opponent_2_pos_y", "Opponent_2_pos_z", "Opponent_2_distance", "Opponent_2_car_id",
-            "Opponent_3_pos_x", "Opponent_3_pos_y", "Opponent_3_pos_z", "Opponent_3_distance", "Opponent_3_car_id",
-            "Opponent_4_pos_x", "Opponent_4_pos_y", "Opponent_4_pos_z", "Opponent_4_distance", "Opponent_4_car_id",
-            "Opponent_5_pos_x", "Opponent_5_pos_y", "Opponent_5_pos_z", "Opponent_5_distance", "Opponent_5_car_id",
+            *cls.get_car_coordinate_features(),
         ]
-        
+
+    @classmethod
+    def get_car_coordinate_features(cls) -> List[str]:
+        """Fixed-width flattened columns for every car's coordinates.
+
+        Graphics_car_coordinates is a variable-length list<struct{x,y,z}>;
+        training needs a constant column count, so we project it into
+        MAX_CARS × {pos_x, pos_y, pos_z} slots (empty slots default to 0.0)."""
+        return [
+            f"Car_{slot + 1}_pos_{axis}"
+            for slot in range(MAX_CARS)
+            for axis in ("x", "y", "z")
+        ]
+
     @classmethod
     def get_features_not_for_averaging(cls) -> List[str]:
         """
@@ -722,13 +733,8 @@ class TelemetryFeatures:
             "Graphics_is_valid_lap",
             "Static_car_model",
             "Static_track",
-            "Opponent_1_car_id",
-            "Opponent_2_car_id",
-            "Opponent_3_car_id",
-            "Opponent_4_car_id",
-            "Opponent_5_car_id"
         ]
-        
+
     @classmethod
     def get_features_for_model_type(cls, model_type: str) -> List[str]:
         """
@@ -829,7 +835,7 @@ class FeatureProcessor:
             processed_df.columns = [str(col) for col in processed_df.columns]
         
         # Handle complex nested structures from AC Competizione telemetry
-        self._handle_complex_fields(processed_df)
+        processed_df = self._handle_complex_fields(processed_df)
 
         # Handle missing values
         pd.set_option('future.no_silent_downcasting', True)
@@ -917,149 +923,103 @@ class FeatureProcessor:
 
         return lap_structs
 
-    def _handle_complex_fields(self, df: pd.DataFrame) -> None:
-        """Handle complex nested fields from AC Competizione telemetry
-        player car coordinates is extracted from array of car coordinates, and named as Graphics_player_pos_x, Graphics_player_pos_y, Graphics_player_pos_z"""
-        
-        # Handle Graphics_car_coordinates array - extract player car position and opponents
-        if 'Graphics_car_coordinates' in df.columns:
-            try:
-                # Extract first car coordinates (player car) if it's a list
-                for idx in df.index:
-                    car_coords_raw = df.loc[idx, 'Graphics_car_coordinates']
-                    player_car_id = df.loc[idx, 'Graphics_player_car_id']
-                    
-                    # Get car IDs if available
-                    car_ids = []
-                    if 'Graphics_car_id' in df.columns:
-                        car_ids_raw = df.loc[idx, 'Graphics_car_id']
-                        # Use helper to parse car IDs (handles lists and strings)
-                        parsed_ids = _parse_car_coordinates(car_ids_raw)
-                        if isinstance(parsed_ids, list):
-                            car_ids = parsed_ids
+    def _handle_complex_fields(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Flatten Graphics_car_coordinates and clean other complex fields.
 
-                    # Parse car coordinates using the helper function
-                    car_coords = _parse_car_coordinates(car_coords_raw)
-                    
-                    if car_coords is not None and isinstance(car_coords, list) and len(car_coords) > 0:
-                        # Ensure player_car_id is valid
+        Returns a new DataFrame with Graphics_player_pos_{x,y,z} and
+        Car_{1..MAX_CARS}_pos_{x,y,z} columns appended (empty slots = 0.0)
+        and the raw Graphics_car_coordinates column removed. Also handles
+        Graphics_car_id (→ active-car count), time-string fields, and
+        boolean field coercion.
+
+        All ~183 car-coordinate columns are built as numpy arrays and
+        added via a single pd.concat to avoid the PerformanceWarning that
+        per-cell df.loc writes trigger ("DataFrame is highly fragmented")."""
+
+        # Flatten Graphics_car_coordinates into fixed-width Car_{1..MAX_CARS}_pos_{x,y,z}
+        # columns + Graphics_player_pos_{x,y,z}. Build as numpy arrays and concat once.
+        if 'Graphics_car_coordinates' in df.columns:
+            n = len(df)
+            if n == 0:
+                df = df.drop(columns=['Graphics_car_coordinates'])
+            else:
+                try:
+                    player_x = np.zeros(n, dtype=float)
+                    player_y = np.zeros(n, dtype=float)
+                    player_z = np.zeros(n, dtype=float)
+                    car_x = np.zeros((n, MAX_CARS), dtype=float)
+                    car_y = np.zeros((n, MAX_CARS), dtype=float)
+                    car_z = np.zeros((n, MAX_CARS), dtype=float)
+
+                    car_coords_col = df['Graphics_car_coordinates'].tolist()
+                    player_id_col = (
+                        df['Graphics_player_car_id'].tolist()
+                        if 'Graphics_player_car_id' in df.columns else [0] * n
+                    )
+                    car_id_col = (
+                        df['Graphics_car_id'].tolist()
+                        if 'Graphics_car_id' in df.columns else [None] * n
+                    )
+
+                    for row_idx in range(n):
+                        car_coords = _parse_car_coordinates(car_coords_col[row_idx])
+                        if not isinstance(car_coords, list):
+                            print(f"[DEBUG] Could not parse car_coords for row {row_idx}: {type(car_coords_col[row_idx])} - {car_coords_col[row_idx]} -> {car_coords}")
+                            continue
+
+                        car_ids = []
+                        if car_id_col[row_idx] is not None:
+                            parsed_ids = _parse_car_coordinates(car_id_col[row_idx])
+                            if isinstance(parsed_ids, list):
+                                car_ids = parsed_ids
+
                         try:
-                            player_car_id = int(player_car_id) if player_car_id is not None else 0
+                            player_car_id = int(player_id_col[row_idx]) if player_id_col[row_idx] is not None else 0
                         except (ValueError, TypeError):
                             player_car_id = 0
-                        
-                        # Correctly identify player index in the coordinates list
-                        player_index = -1
-                        
-                        # Helper logic: car_coordinates list usually aligns with car_id list
-                        # 1. Try to find player_car_id in the car_ids list
-                        if len(car_ids) > 0:
-                            try:
-                                if player_car_id in car_ids:
-                                    player_index = car_ids.index(player_car_id)
-                            except ValueError:
-                                pass
-                                
-                        # 2. Fallback: use player_car_id as index directly if not found in list or list empty
-                        if player_index == -1:
-                            if 0 <= player_car_id < len(car_coords):
-                                player_index = player_car_id
-                        
-                        player_pos = {'x': 0.0, 'y': 0.0, 'z': 0.0}
-                        
-                        if 0 <= player_index < len(car_coords):
-                            player_coord = car_coords[player_index]
-                            if isinstance(player_coord, dict):
-                                player_pos['x'] = _safe_float(player_coord.get('x', 0))
-                                player_pos['y'] = _safe_float(player_coord.get('y', 0))
-                                player_pos['z'] = _safe_float(player_coord.get('z', 0))
-                                
-                                df.loc[idx, 'Graphics_player_pos_x'] = player_pos['x']
-                                df.loc[idx, 'Graphics_player_pos_y'] = player_pos['y']
-                                df.loc[idx, 'Graphics_player_pos_z'] = player_pos['z']
-                        else:
-                            # print(f"[DEBUG] Invalid player_index {player_index} (ID: {player_car_id})")
-                            # Set default values
-                            df.loc[idx, 'Graphics_player_pos_x'] = 0.0
-                            df.loc[idx, 'Graphics_player_pos_y'] = 0.0
-                            df.loc[idx, 'Graphics_player_pos_z'] = 0.0
-                        
-                        # Calculate distances to other cars
-                        opponents = []
-                        for i, coord in enumerate(car_coords):
-                            if i == player_index:
-                                continue
-                            
-                            if isinstance(coord, dict):
-                                cx = _safe_float(coord.get('x', 0))
-                                cy = _safe_float(coord.get('y', 0))
-                                cz = _safe_float(coord.get('z', 0))
-                                
-                                dist = math.sqrt(
-                                    (cx - player_pos['x'])**2 + 
-                                    (cy - player_pos['y'])**2 + 
-                                    (cz - player_pos['z'])**2
-                                )
-                                
-                                # Get car ID if available
-                                c_id = 0
-                                if i < len(car_ids):
-                                    c_id = car_ids[i]
-                                
-                                opponents.append({
-                                    'dist': dist,
-                                    'x': cx,
-                                    'y': cy,
-                                    'z': cz,
-                                    'id': c_id
-                                })
-                        
-                        # Sort by distance
-                        opponents.sort(key=lambda x: x['dist'])
-                        
-                        # Take top 5
-                        for i in range(5):
-                            prefix = f"Opponent_{i+1}"
-                            if i < len(opponents):
-                                opp = opponents[i]
-                                df.loc[idx, f"{prefix}_pos_x"] = opp['x']
-                                df.loc[idx, f"{prefix}_pos_y"] = opp['y']
-                                df.loc[idx, f"{prefix}_pos_z"] = opp['z']
-                                df.loc[idx, f"{prefix}_distance"] = opp['dist']
-                                df.loc[idx, f"{prefix}_car_id"] = opp['id']
-                            else:
-                                # Fill with "very large" values
-                                df.loc[idx, f"{prefix}_pos_x"] = 100000.0
-                                df.loc[idx, f"{prefix}_pos_y"] = 100000.0
-                                df.loc[idx, f"{prefix}_pos_z"] = 100000.0
-                                df.loc[idx, f"{prefix}_distance"] = 100000.0
-                                df.loc[idx, f"{prefix}_car_id"] = -1
 
-                    else:
-                        print(f"[DEBUG] Could not parse car_coords for row {idx}: {type(car_coords_raw)} - {car_coords_raw} -> {car_coords}")
-                        # Set default values
-                        df.loc[idx, 'Graphics_player_pos_x'] = 0.0
-                        df.loc[idx, 'Graphics_player_pos_y'] = 0.0
-                        df.loc[idx, 'Graphics_player_pos_z'] = 0.0
-                        
-                        # Fill opponents with default values
-                        for i in range(5):
-                            prefix = f"Opponent_{i+1}"
-                            df.loc[idx, f"{prefix}_pos_x"] = 100000.0
-                            df.loc[idx, f"{prefix}_pos_y"] = 100000.0
-                            df.loc[idx, f"{prefix}_pos_z"] = 100000.0
-                            df.loc[idx, f"{prefix}_distance"] = 100000.0
-                            df.loc[idx, f"{prefix}_car_id"] = -1
-                        
-                # Remove the complex column after extraction
-                df.drop('Graphics_car_coordinates', axis=1, inplace=True)
-                
-            except Exception as e:
-                print(f"[DEBUG] Error processing Graphics_car_coordinates: {str(e)}")
-                # If there's an error, just drop the problematic column
-                if 'Graphics_car_coordinates' in df.columns:
-                    df.drop('Graphics_car_coordinates', axis=1, inplace=True)
-        
+                        player_index = -1
+                        if car_coords:
+                            if car_ids and player_car_id in car_ids:
+                                try:
+                                    player_index = car_ids.index(player_car_id)
+                                except ValueError:
+                                    pass
+                            if player_index == -1 and 0 <= player_car_id < len(car_coords):
+                                player_index = player_car_id
+
+                        if 0 <= player_index < len(car_coords) and isinstance(car_coords[player_index], dict):
+                            pc = car_coords[player_index]
+                            player_x[row_idx] = _safe_float(pc.get('x', 0))
+                            player_y[row_idx] = _safe_float(pc.get('y', 0))
+                            player_z[row_idx] = _safe_float(pc.get('z', 0))
+
+                        for slot in range(min(MAX_CARS, len(car_coords))):
+                            coord = car_coords[slot]
+                            if isinstance(coord, dict):
+                                car_x[row_idx, slot] = _safe_float(coord.get('x', 0))
+                                car_y[row_idx, slot] = _safe_float(coord.get('y', 0))
+                                car_z[row_idx, slot] = _safe_float(coord.get('z', 0))
+
+                    new_cols = {
+                        'Graphics_player_pos_x': player_x,
+                        'Graphics_player_pos_y': player_y,
+                        'Graphics_player_pos_z': player_z,
+                    }
+                    for slot in range(MAX_CARS):
+                        new_cols[f"Car_{slot + 1}_pos_x"] = car_x[:, slot]
+                        new_cols[f"Car_{slot + 1}_pos_y"] = car_y[:, slot]
+                        new_cols[f"Car_{slot + 1}_pos_z"] = car_z[:, slot]
+
+                    new_df = pd.DataFrame(new_cols, index=df.index)
+                    cols_to_drop = ['Graphics_car_coordinates'] + [c for c in new_cols if c in df.columns]
+                    df = pd.concat([df.drop(columns=cols_to_drop), new_df], axis=1)
+
+                except Exception as e:
+                    print(f"[DEBUG] Error processing Graphics_car_coordinates: {str(e)}")
+                    if 'Graphics_car_coordinates' in df.columns:
+                        df = df.drop(columns=['Graphics_car_coordinates'])
+
         # Handle Graphics_car_id array - convert to count of active cars
         if 'Graphics_car_id' in df.columns:
             try:
@@ -1115,7 +1075,9 @@ class FeatureProcessor:
                     df[field] = df[field].astype(bool).astype(int)
                 except Exception as e:
                     print(f"[DEBUG] Error converting boolean field {field}: {str(e)}")
-    
+
+        return df
+
     def _parse_time_string(self, time_str: str) -> float:
         """Parse time string to numeric milliseconds"""
         try:

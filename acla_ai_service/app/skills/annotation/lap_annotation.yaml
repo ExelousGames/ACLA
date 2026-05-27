@@ -1,13 +1,13 @@
 _skill:
   name: lap_annotation
   description: >
-    Per-label telemetry characteristics for the 8 candidate parent labels
-    (EA, MS, RM, PS, O, MD + circuit) that the lap-to-segment excerpter
+    Per-label telemetry characteristics for the 10 candidate parent labels
+    (EA, MSP, MSR, RM, PS, O, OD, MD + circuit) that the lap-to-segment excerpter
     can attach to one circuit section. Each label declares its telemetry
     signature (trajectory_offset, time_difference_to_expert slope, brake
     overlap, etc.) and the global_rules block prescribes the per-section
     detection procedure. Source of truth for "does this section qualify
-    as MS / RM / EA / ... at all?"
+    as MSP / RM / EA / ... at all?"
   when_to_use:
     - Lap excerpter assigning one parent label per circuit section.
     - Building the system prompt for the lap-flow planner/synthesizer.
@@ -20,9 +20,9 @@ _skill:
 #
 # Annotation-flow split — read this before editing:
 #   - The main-label `characteristics` blocks here serve the **lap-to-
-#     segment flow** — "does this whole section qualify as MS at all?".
-#   - Sub-label discovery (drilling into an already-labelled MS section
-#     to pick MS1 / MS17 / ...) is the **detailed flow**'s job; its
+#     segment flow** — "does this whole section qualify as MSP at all?".
+#   - Sub-label discovery (drilling into an already-labelled MSP section
+#     to pick MSP1 / MSP17 / ...) is the **detailed flow**'s job; its
 #     guidance lives in `sub_label_catalog.yaml` under each main-label
 #     entry's `annotation_guideline` field. Do NOT duplicate that here.
 #
@@ -68,12 +68,13 @@ labels:
         - `time_difference_to_expert` slope is ≈ 0 (gap neither grows nor
           shrinks) — confirm with `compute_slope`.
         - Speed delta at sampled ilocs is small.
-      Mutually exclusive with MS and RM.
+      Mutually exclusive with MSP and RM.
 
-  MS:
-    name: "Mistake"
+  MSP:
+    name: "Mistake (Practice)"
     characteristics: >
-      Player loses time or stability inside the section.
+      Technical driving error causing time loss or instability, NOT
+      caused by interaction with a close opponent.
         - `time_difference_to_expert` rises continuously (gap grows) — confirm
           with `compute_slope` (positive) and `find_extremum` (max - min > 0).
         - 'time_difference_to_expert' slope rises at the end of the corner exit, this
@@ -81,9 +82,28 @@ labels:
         - `trajectory_offset` exceeds the expert envelope: a spike outward
           (ran wide) or inward (cut tight) that does NOT recover within the
           section.
-      Mutually exclusive with EA and RM. The detailed-annotation flow refines
-      MS sub-ranges later — attach MS at the section level when the section
-      is dominated by the error.
+        - `find_nearest_opponent(start, end)` returns NO close primary
+          candidate, OR the candidate's outcome flags do NOT explain
+          the time loss. A close opponent + adverse outcome ⇒ MSR.
+      Mutually exclusive with EA, RM, MSR. The detailed-annotation flow
+      refines MSP sub-ranges later — attach MSP at the section level
+      when the section is dominated by a technical error.
+
+  MSR:
+    name: "Mistake (Racing)"
+    characteristics: >
+      Time / position loss caused by an interaction with a close
+      opponent inside the section.
+        - Call `find_nearest_opponent(start, end)`. Require a primary
+          candidate with `min_distance_m` small OR
+          `side_by_side_iloc_count > 0`.
+        - Adverse interaction outcome: `passed_by_player: false`
+          (failed attempt — MSR1) OR `got_passed_by_opponent: true`
+          (defense broken — MSR2).
+        - `time_difference_to_expert` typically grows across the
+          interaction window.
+      Mutually exclusive with EA, RM, MSP. No close opponent ⇒ MSP,
+      not MSR.
 
   RM:
     name: "Recovery & Merge"
@@ -92,9 +112,9 @@ labels:
         - `time_difference_to_expert` slope is negative across the range
           (gap shrinks, never grows) — confirm with `compute_slope`.
         - `trajectory_offset` trends back toward zero from a non-zero start.
-      Often appears in the section immediately following an MS. Do NOT attach
+      Often appears in the section immediately following an MSP. Do NOT attach
       when the player started at offset ≈ 0 — that's EA, not RM. Mutually
-      exclusive with EA and MS.
+      exclusive with EA and MSP.
 
   PS:
     name: "Pit Stop"
@@ -106,19 +126,44 @@ labels:
           ⇒ merging out ⇒ RM, not PS).
       Picking which named catalog section to attach is a sub-label
       decision — see `sub_label_catalog`. Compatible with the circuit
-      label only; do NOT combine with EA / MS / RM / O.
+      label only; do NOT combine with EA / MSP / MSR / RM / O / OD.
 
   O:
-    name: "Overtaking"
+    name: "Successful Overtake"
     characteristics: >
-      Player passes or is being passed inside the section.
-        - Late-brake signature on `brake` not present on the expert line.
-        - Line deviation that is NOT explained by MS / RM (player chose an
-          inside or outside line to pass).
-        - Speed differential vs. a nearby car when that data is available.
-      Rare without multi-car telemetry. Attach only when the signature is
-      unambiguous; otherwise leave O off and let the detailed flow handle
-      sub-events.
+      Player gained a position on a specific opponent inside the
+      section. Multi-car positional data (`Car_{1..60}_pos_{x,y,z}`)
+      is the gate.
+        - Call `find_nearest_opponent(start, end)`. Require a primary
+          candidate with `passed_by_player: true` — signed longitudinal
+          gap flips from positive (opp ahead at entry) to negative
+          (opp behind at exit). Empty `candidates` OR no
+          `passed_by_player` flag set ⇒ do NOT attach O.
+        - Player-trace evidence to ALSO hold: late-brake signature
+          past the expert reference, sustained outside / inside line
+          deviation NOT explained by MSP / RM, or speed > expert on
+          equal-or-less throttle (draft).
+      A close opponent + failed attack is MSR at the section level —
+      sub-labelled `MSR1` in the detailed flow. A successful defense
+      is OD, not O.
+
+  OD:
+    name: "Successful Defense"
+    characteristics: >
+      Player held position against a real, close opponent inside the
+      section.
+        - Call `find_nearest_opponent(start, end)`. Require a primary
+          candidate with `got_passed_by_opponent: false` AND a close
+          engagement (`side_by_side_iloc_count > 0` OR
+          `min_distance_m` ≤ ~10 m). No close candidate ⇒ not OD.
+        - Player-trace evidence to ALSO hold: brake initiation
+          earlier than expert and/or trajectory tighter than expert
+          (inside cover), or a throttle lift on a straight with no
+          brake onset (defensive lift). Time delta need not be flat
+          — it may grow briefly during the defense as long as the
+          position holds.
+      A defense that failed (opponent got past) is MSR at the section
+      level — sub-labelled `MSR2` in the detailed flow.
 
   MD:
     name: "Missing data"
@@ -151,10 +196,10 @@ global_rules: >
 
   2. **Render the two diagnostic graphs.** One `render_graph` each over the
      section's iloc range:
-       - `trajectory_offset` — discriminates EA vs. MS vs. RM vs. PS.
+       - `trajectory_offset` — discriminates EA vs. MSP vs. RM vs. PS.
        - `time_difference_to_expert` — confirms gap direction (flat ⇒ EA,
-         rising ⇒ MS, falling ⇒ RM).
-     These two cover EA / MS / RM / PS detection. Add a third only when a
+         rising ⇒ MSP, falling ⇒ RM).
+     These two cover EA / MSP / RM / PS detection. Add a third only when a
      specific candidate (O / MD) needs it.
 
   3. **Score each candidate label against its `characteristics` block.**
@@ -164,9 +209,23 @@ global_rules: >
        - `find_extremum` on `trajectory_offset` → peak deviation from zero.
        - `find_first_match` on `Physics_brake` / `Physics_gas` → onset ilocs
          when O needs late-brake evidence.
-     A section may attach at most ONE of {EA, MS, RM} (mutually exclusive)
-     plus optionally PS / O / MD. Attaching none of {EA, MS, RM} is valid
-     when telemetry is too noisy to commit.
+     For O / OD / MSR candidates also call
+     `find_nearest_opponent(start, end)`:
+       - O requires `passed_by_player: true` on the primary candidate.
+       - OD requires `got_passed_by_opponent: false` AND a close
+         engagement (`side_by_side_iloc_count > 0` OR `min_distance_m`
+         ≤ ~10 m).
+       - MSR requires a close primary candidate AND an adverse outcome
+         (`passed_by_player: false` for MSR1, or
+         `got_passed_by_opponent: true` for MSR2).
+     No close candidate ⇒ rule out all three (O / OD / MSR); if the
+     section is still off-line / slow it falls to MSP.
+     A section may attach at most ONE of {EA, MSP, MSR, RM} (mutually
+     exclusive) plus optionally PS / O / OD / MD. O / OD / MSR are
+     opponent-aware labels and only one of them can apply (the same
+     range cannot be both a successful overtake and a defense, etc.).
+     Attaching none of {EA, MSP, MSR, RM} is valid when telemetry is
+     too noisy to commit.
 
   4. **Refine the boundary for parent-label fit.** The characteristics
      blocks assert their signature across the WHOLE range. If the picked
@@ -191,7 +250,10 @@ global_rules: >
   Hard rules:
     - One proposal per agent run; the UI loops one section per click.
     - Never invent label IDs — only IDs from the eligible list are accepted.
-    - EA + MS, EA + RM, MS + RM are all contradictions — pick at most one.
-    - PS is incompatible with EA / MS / RM / O.
+    - EA + MSP, EA + MSR, EA + RM, MSP + MSR, MSP + RM, MSR + RM are
+      all contradictions — pick at most one from {EA, MSP, MSR, RM}.
+    - O + OD, O + MSR, OD + MSR are all contradictions — pick at most
+      one opponent-aware label per range.
+    - PS is incompatible with EA / MSP / RM / O / OD.
     - Empty `label_ids` `[]` is the valid "drop this section" signal.
     - Final iloc range must remain inside the lap and ≥ 3 ilocs.

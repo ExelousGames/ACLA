@@ -25,8 +25,6 @@ async def main() -> int:
         description="Run all three trainings sequentially.",
     )
     parser.add_argument("--annotation-key", default=cfg.annotation_cache_key)
-    parser.add_argument("--processed-key", default=cfg.processed_session_data_cache_key)
-    parser.add_argument("--max-segment-length", type=int, default=20)
     parser.add_argument("--chat-dataset", type=Path, required=True,
                         help="LLM chat-format JSONL path.")
     parser.add_argument("--llm-model", default=DEFAULT_MODEL)
@@ -44,8 +42,6 @@ async def main() -> int:
     service = Full_dataset_TelemetryMLService(logger=logger, pipeline_config=cfg)
     transformer_result = await service.run_transformer_guidance_training(
         annotation_cache_key=args.annotation_key,
-        processed_sessions_cache_key=args.processed_key,
-        max_segment_length=args.max_segment_length,
     )
     if not transformer_result.get("success"):
         print(f"[ERROR] Transformer training failed: {transformer_result.get('error')}")

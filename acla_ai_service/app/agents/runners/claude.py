@@ -18,6 +18,8 @@ Box stays flow-free by exposing generic capability tools:
     query_telemetry             deterministic math on the df
     compute_expert_phases       per-arc entry/apex/exit ilocs
     locate_circuit_section      named-section match for an iloc window
+    find_nearest_opponent       multi-car positional context (top opponents)
+    query_opponent_trajectory   per-iloc relative trajectory for one slot
     get_circuit_id              canonical circuit id from Static_track
     revise_range                shrink/extend the working iloc range
     submit_result               capture the final structured answer + summary
@@ -160,6 +162,15 @@ def _build_system_prompt(request: AgentRequest) -> str:
         "ilocs derived from expert telemetry.\n"
         "- `locate_circuit_section(start, end)` — named-section match "
         "ranked by normalised-position overlap.\n"
+        "- `find_nearest_opponent(start, end)` — opponent context "
+        "summary: ranks the up-to-60 other car slots by minimum 2D "
+        "distance to the player, returning per-slot entry/min/exit "
+        "distance, signed longitudinal gap, lateral offset, and "
+        "pass-event flags. Required for any Overtaking (O) label call.\n"
+        "- `query_opponent_trajectory(start, end, slot, n_samples)` — "
+        "per-iloc relative-position samples for a specific opponent "
+        "slot returned by `find_nearest_opponent`. Use to confirm how "
+        "the gap evolved (smooth close vs. step change vs. lateral cross).\n"
         "- `get_circuit_id()` — canonical circuit id from `Static_track`. "
         "Call once at session start to scope downstream tool calls.\n"
         "- `revise_range(new_start, new_end)` — change the iloc window "
@@ -176,8 +187,9 @@ def _build_system_prompt(request: AgentRequest) -> str:
         "\n"
         "### Working range\n"
         f"Initial range: [{request.parent_start}, {request.parent_end}].\n"
-        "Iloc arguments to `render_graph`, `compute_expert_phases`, and "
-        "`locate_circuit_section` must lie inside this range unless "
+        "Iloc arguments to `render_graph`, `compute_expert_phases`, "
+        "`locate_circuit_section`, `find_nearest_opponent`, and "
+        "`query_opponent_trajectory` must lie inside this range unless "
         "`revise_range` has moved it. `peek_graph` and `query_telemetry` "
         "may use any range inside the full lap for context, but the "
         "submission stays anchored to the working section.\n"
@@ -370,6 +382,18 @@ class _ToolSurface:
         att = locate_circuit_section(self.df, s, e)
         return json.dumps({"range": [s, e], "data": att.content}, default=str)
 
+    def find_nearest_opponent(self, start: int, end: int) -> str:
+        from app.agents.tools import find_nearest_opponent
+        s, e = self._clamp_to_window(start, end)
+        att = find_nearest_opponent(self.df, s, e)
+        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+
+    def query_opponent_trajectory(self, start: int, end: int, slot: int, n_samples: int) -> str:
+        from app.agents.tools import query_opponent_trajectory
+        s, e = self._clamp_to_window(start, end)
+        att = query_opponent_trajectory(self.df, s, e, slot=int(slot), n_samples=int(n_samples))
+        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+
     def revise_range(self, new_start: int, new_end: int) -> str:
         s, e = int(new_start), int(new_end)
         # Caller defines the legal envelope through the planner prompt;
@@ -549,6 +573,56 @@ def _build_tool_set(surface: _ToolSurface):
         return {"content": [{"type": "text", "text": text}]}
 
     @tool(
+        "find_nearest_opponent",
+        "Rank the up-to-60 opponent car slots by minimum 2D distance to "
+        "the player across the iloc window, using "
+        "`Car_{1..60}_pos_{x,y}` vs `Graphics_player_pos_{x,y}`. Empty "
+        "slots (x=y=0.0) are filtered. Returns `candidates` with "
+        "per-slot min/entry/exit distance, signed longitudinal gap "
+        "(+ ⇒ opponent ahead in player heading) at entry and exit, "
+        "minimum lateral offset, side-by-side iloc count, and "
+        "`passed_by_player` / `got_passed_by_opponent` flags. Call once "
+        "when scoring an Overtaking (O) candidate — the first candidate "
+        "is the relevant opponent; an empty list with "
+        "`data_available: true` means no car is close enough and "
+        "O should be ruled out.",
+        {"start": int, "end": int},
+    )
+    async def find_nearest_opponent(args):
+        text = surface.find_nearest_opponent(int(args["start"]), int(args["end"]))
+        surface._emit_tool_event(
+            "find_nearest_opponent",
+            {"start": args.get("start"), "end": args.get("end")}, text,
+        )
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
+        "query_opponent_trajectory",
+        "Sample one opponent slot's relative trajectory at "
+        "`n_samples` evenly-spaced ilocs across the window: per-iloc 2D "
+        "distance, signed longitudinal gap (+ ⇒ opp ahead), signed "
+        "lateral offset (+ ⇒ opp on player's left of heading). Use "
+        "after `find_nearest_opponent` to confirm HOW the gap evolved "
+        "— smooth close (slipstream), step change at apex "
+        "(switchback), lateral cross (line change during a pass).",
+        {"start": int, "end": int, "slot": int, "n_samples": int},
+    )
+    async def query_opponent_trajectory(args):
+        text = surface.query_opponent_trajectory(
+            int(args["start"]), int(args["end"]),
+            int(args["slot"]), int(args.get("n_samples", 5)),
+        )
+        surface._emit_tool_event(
+            "query_opponent_trajectory",
+            {
+                "start": args.get("start"), "end": args.get("end"),
+                "slot": args.get("slot"), "n_samples": args.get("n_samples"),
+            },
+            text,
+        )
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
         "revise_range",
         "Shrink or extend the working iloc range before submitting. Only call "
         "when the user message authorises boundary revision. After calling, "
@@ -589,6 +663,7 @@ def _build_tool_set(surface: _ToolSurface):
     tools_list = [
         list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
         compute_expert_phases, locate_circuit_section,
+        find_nearest_opponent, query_opponent_trajectory,
         get_circuit_id,
         revise_range, submit_result,
     ]
@@ -600,6 +675,8 @@ def _build_tool_set(surface: _ToolSurface):
         "mcp__agent__query_telemetry",
         "mcp__agent__compute_expert_phases",
         "mcp__agent__locate_circuit_section",
+        "mcp__agent__find_nearest_opponent",
+        "mcp__agent__query_opponent_trajectory",
         "mcp__agent__get_circuit_id",
         "mcp__agent__revise_range",
         "mcp__agent__submit_result",

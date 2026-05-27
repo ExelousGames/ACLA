@@ -405,8 +405,6 @@ class Full_dataset_TelemetryMLService:
     async def run_transformer_guidance_training(
         self,
         annotation_cache_key: str,
-        processed_sessions_cache_key: str,
-        max_segment_length: int = 20,
         *,
         shuffle_dataset: bool = True,
     ) -> Dict[str, Any]:
@@ -455,7 +453,6 @@ class Full_dataset_TelemetryMLService:
             transformer_training = await prepare_and_train_coach_transformer_model(
                 data_cache=self.telemetry_store,
                 segments_cache_key=segments_cache_key,
-                segment_length_hint=max_segment_length,
             )
 
             if not transformer_training.get("success"):

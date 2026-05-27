@@ -82,14 +82,8 @@ class StreamingSegmentDataset(IterableDataset):
                 df = pd.DataFrame(ann.telemetry_data)
 
                 # Fast path if columns match
-                current_cols = df.columns.tolist()
-                if current_cols != self.expected_features:
-                     # Add missing
-                     for f in self.expected_features:
-                         if f not in df.columns:
-                             df[f] = 0
-                     # Drop extra and reorder
-                     df = df[self.expected_features]
+                if df.columns.tolist() != self.expected_features:
+                     df = df.reindex(columns=self.expected_features, fill_value=0)
 
                 # Ensure numeric
                 df = df.apply(pd.to_numeric, errors='coerce').fillna(0)

@@ -23,11 +23,13 @@ What this module deliberately leaves out
 ----------------------------------------
 
 * ``_handle_complex_fields`` — extracts ``Graphics_player_pos_*`` and
-  ``Opponent_*_*`` features from the nested ``Graphics_car_coordinates``
-  list<struct>. Today it's a Python ``for idx in df.index`` loop with
-  per-row ``df.loc[idx, ...]`` writes — a vectorisation candidate in its
-  own right, but the rewrite is substantial enough to deserve a separate
-  PR with its own parity test against the existing extractor.
+  flattens the nested ``Graphics_car_coordinates`` list<struct> into
+  fixed ``Car_{1..MAX_CARS}_pos_{x,y,z}`` columns (empty slots → 0.0)
+  so training sees a constant column count. Today it's a Python
+  ``for idx in df.index`` loop with per-row ``df.loc[idx, ...]`` writes
+  — a vectorisation candidate in its own right, but the rewrite is
+  substantial enough to deserve a separate PR with its own parity test
+  against the existing extractor.
 
 * ``strip_dataframe_by_time_gap`` — keeps a running ``last_selected``
   pointer in a Python for-loop; cleanly vectorising the gap-detection

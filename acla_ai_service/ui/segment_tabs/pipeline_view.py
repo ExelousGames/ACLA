@@ -43,6 +43,7 @@ from app.pipelines.manifest.models import (
     TrainingNode,
 )
 from app.pipelines.manifest.registry import save as save_pipeline, slugify
+from app.pipelines.manifest.segment_refresh import refresh_node_segments
 from app.infra.config.pipeline import PipelineConfig
 
 
@@ -436,7 +437,7 @@ def _render_annotation_card(
         )
 
         # ── Action buttons ───────────────────────────────────────────────
-        btn_cols = st.columns([1, 1, 0.4])
+        btn_cols = st.columns([1, 1, 1, 0.4])
 
         effective = pipeline.effective_input_key(node)
         open_disabled = not effective
@@ -464,6 +465,42 @@ def _render_annotation_card(
                     _fork_for_annotation(pipeline, node, store)
                     st.rerun()
         with btn_cols[1]:
+            if node.mode == MODE_COPY:
+                out_key = pipeline.effective_output_key(node)
+                has_input_data = (
+                    bool(node.input_key) and store.has_cached_data(node.input_key)
+                )
+                has_output_data = bool(out_key) and store.has_cached_data(out_key)
+                refresh_disabled = not (has_input_data and has_output_data)
+                if st.button(
+                    "Refresh segments",
+                    key=f"refresh_segs_{node.id}",
+                    use_container_width=True,
+                    disabled=refresh_disabled,
+                    help=(
+                        "Re-slice telemetry_data on every saved segment "
+                        "from the current input. Run after 'Update from "
+                        "source' to propagate new columns into segments "
+                        "that were annotated against the old input."
+                    ),
+                ):
+                    try:
+                        summary = refresh_node_segments(store, node)
+                    except ValueError as exc:
+                        st.error(f"Refresh failed: {exc}")
+                    else:
+                        st.toast(
+                            f"Refreshed {summary.segments_refreshed} segment(s) "
+                            f"across {summary.chunks_written} chunk(s).",
+                            icon="✅",
+                        )
+                        if summary.missing_input_sessions:
+                            st.warning(
+                                "No input session for: "
+                                + ", ".join(summary.missing_input_sessions)
+                            )
+                    st.rerun()
+        with btn_cols[2]:
             if st.button(f"Open", key=f"open_ann_{node.id}",
                          type="primary",
                          use_container_width=True, disabled=open_disabled):
@@ -471,7 +508,7 @@ def _render_annotation_card(
                        annotation_key=pipeline.effective_output_key(node),
                        session_key=effective,
                        node_id=node.id)
-        with btn_cols[2]:
+        with btn_cols[3]:
             if st.button("🗑", key=f"del_ann_{node.id}",
                          use_container_width=True,
                          help="Delete this annotation node"):

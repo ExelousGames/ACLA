@@ -21,7 +21,7 @@ Input record (one JSONL line, written by the refactored annotation UI)::
       "unit_id": "<parent_seg_id or lone_seg_id>",
       "kind": "parent_with_children" | "isolated",
       "parent_label_ids": ["EA", "brands_hatch", "druids"],
-      "children_label_ids": [["MS1", "MS9"], ["RM7"]],
+      "children_label_ids": [["MSP1", "MSP9"], ["RM7"]],
       "completion_critique": "...",
       "completion_guide": "...",
       "timestamp": 1234567890.0

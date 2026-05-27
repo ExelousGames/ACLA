@@ -1,0 +1,38 @@
+---
+id: MSP36
+name: Shift up too late
+family: MSP
+common_co_labels: [MSP48]
+causes_to_check: []
+---
+
+## Definition
+Driver upshifts past the engine's optimal RPM — usually bouncing
+off the limiter for a moment before changing gear, or shifting
+after the engine has plateaued past peak power.
+
+## Physics
+Past peak power the engine produces less acceleration per RPM than
+it would in the next gear. Bouncing off the limiter is the worst
+case — the rev cutter actively interrupts power delivery while
+you're trying to accelerate. Even a brief hit costs time.
+
+## Telemetry signature
+- Upshift timestamp later than expert.
+- Engine RPM at shift sits at or near the limiter.
+- Acceleration trace plateaus or notches at the rev cut before the
+  shift.
+- Time delta vs expert grows through the shift point.
+
+## Engineer interpretation
+Catch the light. The shift point is engineered into the car — the
+shift light comes on at the optimal moment for the next gear's
+acceleration. If you're past it, you're past it; just react
+faster. Hitting the limiter is a worse time penalty than shifting
+slightly early.
+
+## Remedies
+- Use the shift-light or rev-counter target.
+- Practice the timing in a quiet section of the track first.
+- If the issue is reaction time, the eyes-on-light habit usually
+  needs a few laps to bed in.

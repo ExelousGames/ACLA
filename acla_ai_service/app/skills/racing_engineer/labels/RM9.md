@@ -10,7 +10,7 @@ causes_to_check: []
 A corrective change — the driver delays throttle-on on exit
 relative to the previous lap. The classifier flags it when the
 late throttle pattern is recovery from an over-aggressive exit
-(MS20) that produced an off or a slide.
+(MSP20) that produced an off or a slide.
 
 ## Physics
 A later throttle-on settles the car before power applies. Costs

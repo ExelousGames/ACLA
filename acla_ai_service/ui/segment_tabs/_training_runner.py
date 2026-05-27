@@ -56,6 +56,21 @@ def pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    # PID exists, but a zombie (process exited, parent hasn't reaped) is not
+    # actually running. Reap it if we're the parent so it disappears next time.
+    try:
+        with open(f"/proc/{pid}/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("State:"):
+                    if "Z" in line.split(":", 1)[1]:
+                        try:
+                            os.waitpid(pid, os.WNOHANG)
+                        except (ChildProcessError, OSError):
+                            pass
+                        return False
+                    break
+    except (FileNotFoundError, OSError):
+        return False
     return True
 
 

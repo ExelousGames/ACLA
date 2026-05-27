@@ -395,6 +395,310 @@ def compute_expert_phases(
     )
 
 
+def _player_heading(seg_player_x: np.ndarray, seg_player_y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-iloc unit heading vector for the player.
+
+    Smooths the player x/y trace with a centred 5-sample window (or
+    smaller on short ranges) and takes the gradient. Sign convention:
+    ``heading = (hx, hy)``; the left-perpendicular is ``(-hy, hx)``.
+    """
+    n_rows = len(seg_player_x)
+    window = min(5, n_rows)
+    if window % 2 == 0:
+        window = max(1, window - 1)
+    sx = _moving_average(seg_player_x, window)
+    sy = _moving_average(seg_player_y, window)
+    dx = np.gradient(sx)
+    dy = np.gradient(sy)
+    norm = np.sqrt(dx * dx + dy * dy)
+    norm_safe = np.where(norm > 1e-6, norm, 1e-6)
+    return dx / norm_safe, dy / norm_safe
+
+
+def find_nearest_opponent(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    max_candidates: int = 3,
+    side_by_side_max_distance_m: float = 8.0,
+    min_active_fraction: float = 0.3,
+):
+    """Tool — identify the most relevant opponent(s) inside an iloc range.
+
+    Reads ``Graphics_player_pos_{x,y}`` and ``Car_{1..MAX_CARS}_pos_{x,y}``
+    over ``[start_index, end_index)``. Empty opponent slots (where both
+    x and y are exactly ``0.0`` — the flattening default in
+    ``telemetry.py``) are skipped per row. For each slot with active
+    data, computes per-iloc 2D distance, signed longitudinal gap along
+    the player's instantaneous heading (positive ⇒ opponent ahead of
+    player in direction of travel), and lateral offset magnitude
+    (perpendicular distance from the player's heading).
+
+    Slots whose active-iloc fraction is below ``min_active_fraction``
+    are dropped. Remaining slots are ranked by minimum 2D distance; the
+    top ``max_candidates`` are returned as ``candidates``. The first
+    candidate is the "primary opponent" — the agent should consult its
+    row when picking an O sub-label (late-brake attack, switchback,
+    slipstream gain, defensive lift, …).
+
+    Produces an ``opponent_context`` attachment::
+
+        {
+            "range": [start_index, end_index],
+            "data_available": bool,
+            "n_active_slots": int,
+            "candidates": [
+                {
+                    "slot": int,                       # 1..MAX_CARS
+                    "min_distance_m": float,
+                    "min_distance_iloc": int,
+                    "entry_distance_m": float,
+                    "exit_distance_m": float,
+                    "entry_signed_long_gap_m": float,  # + ⇒ opp ahead at start
+                    "exit_signed_long_gap_m": float,   # + ⇒ opp ahead at end
+                    "min_lateral_offset_m": float,
+                    "min_lateral_offset_iloc": int,
+                    "side_by_side_iloc_count": int,
+                    "active_iloc_fraction": float,
+                    "passed_by_player": bool,          # entry +, exit −
+                    "got_passed_by_opponent": bool,    # entry −, exit +
+                },
+                ...
+            ],
+        }
+
+    Empty ``candidates`` with ``data_available: False`` means the
+    required position columns are absent. Empty ``candidates`` with
+    ``data_available: True`` means no opponent was close enough / active
+    enough in the range — strong evidence against an Overtaking label.
+    """
+    from app.agents.evaluators import PipelineAttachment
+    from app.domain.telemetry import MAX_CARS
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="opponent_context",
+            kind="structured",
+            label="Opponent Context (nearest cars in range)",
+            content=_round_floats(content),
+        )
+
+    s, e = int(start_index), int(end_index)
+    base_payload: Dict[str, Any] = {
+        "range": [s, e],
+        "data_available": False,
+        "n_active_slots": 0,
+        "candidates": [],
+    }
+
+    if "Graphics_player_pos_x" not in df.columns or "Graphics_player_pos_y" not in df.columns:
+        base_payload["message"] = (
+            "Player position columns (Graphics_player_pos_x/y) missing — "
+            "cannot compute opponent context."
+        )
+        return _attach(base_payload)
+
+    seg = df.iloc[s:e]
+    n_rows = len(seg)
+    if n_rows < 2:
+        base_payload["message"] = "Range too short for opponent context (need ≥ 2 rows)."
+        return _attach(base_payload)
+
+    player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+    player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+    if not (np.isfinite(player_x).any() and np.isfinite(player_y).any()):
+        base_payload["message"] = "Player position trace is all NaN/inf."
+        return _attach(base_payload)
+
+    hx, hy = _player_heading(player_x, player_y)
+
+    candidates_raw: List[Dict[str, Any]] = []
+    n_active_slots = 0
+
+    for slot in range(1, MAX_CARS + 1):
+        col_x = f"Car_{slot}_pos_x"
+        col_y = f"Car_{slot}_pos_y"
+        if col_x not in df.columns or col_y not in df.columns:
+            continue
+        ox = seg[col_x].to_numpy(dtype=float)
+        oy = seg[col_y].to_numpy(dtype=float)
+        active_mask = ((ox != 0.0) | (oy != 0.0)) & np.isfinite(ox) & np.isfinite(oy)
+        active_count = int(active_mask.sum())
+        if active_count == 0:
+            continue
+        n_active_slots += 1
+        active_fraction = active_count / n_rows
+        if active_fraction < min_active_fraction:
+            continue
+
+        vx = np.where(active_mask, ox - player_x, np.nan)
+        vy = np.where(active_mask, oy - player_y, np.nan)
+        distance = np.sqrt(vx * vx + vy * vy)
+        signed_long = vx * hx + vy * hy
+        lateral_abs = np.abs(vx * (-hy) + vy * hx)
+
+        finite_dist = np.isfinite(distance)
+        if not finite_dist.any():
+            continue
+
+        min_d_local = int(np.nanargmin(distance))
+        min_lat_local = int(np.nanargmin(lateral_abs))
+
+        active_ilocs = np.where(active_mask)[0]
+        entry_idx = int(active_ilocs[0])
+        exit_idx = int(active_ilocs[-1])
+        entry_long = float(signed_long[entry_idx])
+        exit_long = float(signed_long[exit_idx])
+
+        side_by_side = int(
+            ((distance <= side_by_side_max_distance_m) & finite_dist).sum()
+        )
+
+        candidates_raw.append({
+            "slot": int(slot),
+            "min_distance_m": float(distance[min_d_local]),
+            "min_distance_iloc": s + min_d_local,
+            "entry_distance_m": float(distance[entry_idx]),
+            "exit_distance_m": float(distance[exit_idx]),
+            "entry_signed_long_gap_m": entry_long,
+            "exit_signed_long_gap_m": exit_long,
+            "min_lateral_offset_m": float(lateral_abs[min_lat_local]),
+            "min_lateral_offset_iloc": s + min_lat_local,
+            "side_by_side_iloc_count": side_by_side,
+            "active_iloc_fraction": float(active_fraction),
+            "passed_by_player": bool(entry_long > 0 and exit_long < 0),
+            "got_passed_by_opponent": bool(entry_long < 0 and exit_long > 0),
+        })
+
+    candidates_raw.sort(key=lambda c: c["min_distance_m"])
+    candidates = candidates_raw[:max_candidates]
+
+    return _attach({
+        "range": [s, e],
+        "data_available": True,
+        "n_active_slots": n_active_slots,
+        "candidates": candidates,
+    })
+
+
+def query_opponent_trajectory(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    slot: int,
+    n_samples: int = 5,
+):
+    """Tool — sample one opponent's relative trajectory at N evenly-spaced ilocs.
+
+    For opponent ``slot`` (``1..MAX_CARS``), reads
+    ``Car_{slot}_pos_{x,y}`` + ``Graphics_player_pos_{x,y}`` over
+    ``[start_index, end_index)`` and returns ``n_samples`` evenly-spaced
+    snapshots of:
+
+      * ``distance_m``           — 2D Euclidean distance
+      * ``signed_long_gap_m``    — projection along player heading
+                                    (+ ⇒ opp ahead)
+      * ``lateral_offset_m``     — signed perpendicular projection
+                                    (+ ⇒ opp on player's left of heading,
+                                    − ⇒ right)
+
+    Use after ``find_nearest_opponent`` has named a candidate slot, to
+    inspect HOW the relationship evolved through the range — e.g. gap
+    closing steadily on a straight (slipstream), a step-change at apex
+    (switchback rotation), or lateral offset crossing zero
+    (line-cross during a pass).
+
+    Produces an ``opponent_trajectory`` attachment::
+
+        {
+            "range": [start_index, end_index],
+            "slot": int,
+            "data_available": bool,
+            "samples": [
+                {
+                    "iloc": int,
+                    "distance_m": float | None,
+                    "signed_long_gap_m": float | None,
+                    "lateral_offset_m": float | None,
+                    "note": str | None,
+                },
+                ...
+            ],
+        }
+    """
+    from app.agents.evaluators import PipelineAttachment
+
+    slot_int = int(slot)
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="opponent_trajectory",
+            kind="structured",
+            label=f"Opponent Trajectory (slot {slot_int})",
+            content=_round_floats(content),
+        )
+
+    s, e = int(start_index), int(end_index)
+    n_samples = max(2, int(n_samples))
+    base: Dict[str, Any] = {
+        "range": [s, e],
+        "slot": slot_int,
+        "data_available": False,
+        "samples": [],
+    }
+
+    col_x = f"Car_{slot_int}_pos_x"
+    col_y = f"Car_{slot_int}_pos_y"
+    required = (col_x, col_y, "Graphics_player_pos_x", "Graphics_player_pos_y")
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        base["message"] = f"required columns missing: {missing}"
+        return _attach(base)
+
+    seg = df.iloc[s:e]
+    n_rows = len(seg)
+    if n_rows < 2:
+        base["message"] = "range too short (need ≥ 2 rows)"
+        return _attach(base)
+
+    player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+    player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+    ox = seg[col_x].to_numpy(dtype=float)
+    oy = seg[col_y].to_numpy(dtype=float)
+    hx, hy = _player_heading(player_x, player_y)
+
+    if n_samples >= n_rows:
+        sample_locals = list(range(n_rows))
+    else:
+        sample_locals = [int(v) for v in np.linspace(0, n_rows - 1, n_samples, dtype=int)]
+
+    samples: List[Dict[str, Any]] = []
+    for local in sample_locals:
+        opp_x = ox[local]
+        opp_y = oy[local]
+        is_empty = (opp_x == 0.0) and (opp_y == 0.0)
+        if is_empty or not np.isfinite(opp_x) or not np.isfinite(opp_y):
+            samples.append({
+                "iloc": s + local,
+                "distance_m": None,
+                "signed_long_gap_m": None,
+                "lateral_offset_m": None,
+                "note": "opponent slot empty at this iloc",
+            })
+            continue
+        vx = opp_x - player_x[local]
+        vy = opp_y - player_y[local]
+        samples.append({
+            "iloc": s + local,
+            "distance_m": float(np.sqrt(vx * vx + vy * vy)),
+            "signed_long_gap_m": float(vx * hx[local] + vy * hy[local]),
+            "lateral_offset_m": float(vx * (-hy[local]) + vy * hx[local]),
+        })
+
+    return _attach({
+        "range": [s, e],
+        "slot": slot_int,
+        "data_available": True,
+        "samples": samples,
+    })
+
+
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
 
 
@@ -804,6 +1108,41 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "feeds the per-section annotation agent."
         ),
         "callable": split_lap_by_circuit_sections,
+    },
+    {
+        "id": "find_nearest_opponent",
+        "label": "Nearest opponent(s) in range (multi-car positional context)",
+        "description": (
+            "Scans `Car_{1..60}_pos_{x,y}` against `Graphics_player_pos_"
+            "{x,y}` over the iloc range, filters empty slots (x=y=0.0), "
+            "and ranks the active opponents by minimum 2D distance to "
+            "the player. Produces an 'opponent_context' attachment whose "
+            "`candidates` list carries per-slot summary: minimum / entry "
+            "/ exit distance, signed longitudinal gap at entry & exit "
+            "(+ ⇒ opponent ahead in player heading), minimum lateral "
+            "offset, side-by-side iloc count, and `passed_by_player` / "
+            "`got_passed_by_opponent` flags (signed-gap sign flips). The "
+            "first candidate is the primary opponent for picking O "
+            "sub-labels. Empty `candidates` with `data_available: true` "
+            "is positive evidence AGAINST the Overtaking label — no car "
+            "was close enough to interact with."
+        ),
+        "callable": find_nearest_opponent,
+    },
+    {
+        "id": "query_opponent_trajectory",
+        "label": "Per-iloc trajectory samples for one opponent slot",
+        "description": (
+            "Given a specific opponent slot (1..60) returned by "
+            "`find_nearest_opponent`, samples `n_samples` evenly-spaced "
+            "ilocs across the range and returns each iloc's 2D distance, "
+            "signed longitudinal gap (+ ⇒ opp ahead), and signed lateral "
+            "offset (+ ⇒ opp on player's left of heading). Use to see "
+            "HOW the relationship evolved: gap closing smoothly on a "
+            "straight (slipstream), step change at apex (switchback), or "
+            "lateral offset crossing zero (line-cross during a pass)."
+        ),
+        "callable": query_opponent_trajectory,
     },
 ]
 

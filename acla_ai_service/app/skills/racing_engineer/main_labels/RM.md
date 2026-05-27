@@ -12,21 +12,21 @@ describe the specific recovery: off-track, pit exit, brake-earlier
 correction, etc.
 
 ## When this applies
-After an MS segment that pushed the driver off-line, the next segment
+After an MSP segment that pushed the driver off-line, the next segment
 (or two) is typically RM while the car returns to its reference. It
 also applies after pit exits, off-track excursions, and after avoiding
 incidents.
 
 ## How to read RM in a session
 RM segments are normal and not bad on their own — every session has
-some. The interesting question is what *led* to the RM. An MS → RM
+some. The interesting question is what *led* to the RM. An MSP → RM
 pair is a story: the driver made a mistake and dealt with it. A clean
 session keeps RM rare and short.
 
 ## Engineer interpretation
 Don't coach on the RM directly — coach on what caused the need for
 recovery. The driver knows they went off; what they need is a fix for
-the upstream MS so the next attempt doesn't need RM at all. The
+the upstream MSP so the next attempt doesn't need RM at all. The
 exception: long RM segments where the driver lost more time on the
 recovery than on the original mistake — then suggest a faster
 recovery technique (later brake, smaller correction, etc.).

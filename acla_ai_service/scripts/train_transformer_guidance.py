@@ -23,8 +23,6 @@ async def main() -> int:
         description="Train the transformer guidance model on annotated segments.",
     )
     parser.add_argument("--annotation-key", default=cfg.annotation_cache_key)
-    parser.add_argument("--processed-key", default=cfg.processed_session_data_cache_key)
-    parser.add_argument("--max-segment-length", type=int, default=20)
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -35,13 +33,10 @@ async def main() -> int:
     service = Full_dataset_TelemetryMLService(logger=logger, pipeline_config=cfg)
     print(
         f"[INFO] Starting transformer guidance training: "
-        f"annotation_key={args.annotation_key} processed_key={args.processed_key} "
-        f"max_segment_length={args.max_segment_length}"
+        f"annotation_key={args.annotation_key}"
     )
     result = await service.run_transformer_guidance_training(
         annotation_cache_key=args.annotation_key,
-        processed_sessions_cache_key=args.processed_key,
-        max_segment_length=args.max_segment_length,
     )
 
     if not result.get("success"):

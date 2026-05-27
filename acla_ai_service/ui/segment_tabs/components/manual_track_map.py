@@ -3,6 +3,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
+from app.domain.telemetry import MAX_CARS
+
 def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
     # --- Track Map Visualization ---
     show_track_map = st.checkbox("Show Track Map & Positions", value=True, key="manual_track_map_visible")
@@ -11,8 +13,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
         # Check if we have position data
         has_player_pos = "Graphics_player_pos_x" in df.columns and "Graphics_player_pos_y" in df.columns
         has_player_pos_z = "Graphics_player_pos_z" in df.columns
-        
-        has_opponent_pos = any(f"Opponent_{i}_pos_x" in df.columns for i in range(1, 6))
+
+        has_opponent_pos = any(f"Car_{i}_pos_x" in df.columns for i in range(1, MAX_CARS + 1))
         
         has_expert_pos = "expert_optimal_player_pos_x" in df.columns and "expert_optimal_player_pos_y" in df.columns
         has_expert_pos_z = "expert_optimal_player_pos_z" in df.columns
@@ -20,13 +22,15 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
         if has_player_pos or has_opponent_pos or has_expert_pos:
             # View controls
             st.caption("Axis Settings")
-            col_ctrl1, col_ctrl2, col_ctrl3 = st.columns(3)
+            col_ctrl1, col_ctrl2, col_ctrl3, col_ctrl4 = st.columns(4)
             with col_ctrl1:
                 invert_x = st.checkbox("Invert X", value=False, key="manual_invert_x")
             with col_ctrl2:
                 invert_y = st.checkbox("Invert Y", value=False, key="manual_invert_y")
             with col_ctrl3:
                 invert_z = st.checkbox("Invert Z", value=False, key="manual_invert_z")
+            with col_ctrl4:
+                only_closest = st.checkbox("Only 5 closest cars", value=False, key="manual_only_closest")
             
             # Create windowed dataframe for trajectory plotting using Global Range
             start_idx = min(viz_start_idx, len(df) - 1)
@@ -100,22 +104,57 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     e_start["z"] = start_row["expert_optimal_player_pos_z"]
                 map_data.append(e_start)
             
+            # Identify the player's own slot so we don't draw ourselves as an opponent
+            player_slot = None
+            if has_player_pos:
+                p_x = current_row["Graphics_player_pos_x"]
+                p_y = current_row["Graphics_player_pos_y"]
+                for i in range(1, MAX_CARS + 1):
+                    cx_col = f"Car_{i}_pos_x"
+                    cy_col = f"Car_{i}_pos_y"
+                    if cx_col in df.columns and cy_col in df.columns:
+                        if current_row[cx_col] == p_x and current_row[cy_col] == p_y:
+                            player_slot = i
+                            break
+
+            # Optionally restrict to the 5 cars closest to the player at the end index
+            allowed_slots = None
+            if only_closest and has_player_pos:
+                candidates = []
+                for i in range(1, MAX_CARS + 1):
+                    if i == player_slot:
+                        continue
+                    cx_col = f"Car_{i}_pos_x"
+                    cy_col = f"Car_{i}_pos_y"
+                    if cx_col not in df.columns or cy_col not in df.columns:
+                        continue
+                    vx = current_row[cx_col]
+                    vy = current_row[cy_col]
+                    if vx == 0 and vy == 0:
+                        continue
+                    dist2 = (vx - p_x) ** 2 + (vy - p_y) ** 2
+                    candidates.append((dist2, i))
+                candidates.sort()
+                allowed_slots = {i for _, i in candidates[:5]}
+
             # Add Opponent Positions
-            for i in range(1, 6):
-                opp_x_col = f"Opponent_{i}_pos_x"
-                opp_y_col = f"Opponent_{i}_pos_y"
-                opp_z_col = f"Opponent_{i}_pos_z"
-                opp_id_col = f"Opponent_{i}_car_id"
-                
+            for i in range(1, MAX_CARS + 1):
+                if i == player_slot:
+                    continue
+                if allowed_slots is not None and i not in allowed_slots:
+                    continue
+                opp_x_col = f"Car_{i}_pos_x"
+                opp_y_col = f"Car_{i}_pos_y"
+                opp_z_col = f"Car_{i}_pos_z"
+
                 if opp_x_col in df.columns and opp_y_col in df.columns:
                     # Filter out inactive opponents (usually 0,0 coordinates)
                     if current_row[opp_x_col] != 0 or current_row[opp_y_col] != 0:
-                        opp_id = current_row[opp_id_col] if opp_id_col in df.columns else f"Opponent {i}"
                         o_data = {
                             "x": current_row[opp_x_col],
                             "y": current_row[opp_y_col],
                             "Type": "Opponent",
-                            "ID": str(opp_id),
+                            "ID": f"Car {i}",
                             "Marker": "End",
                             "Index": selected_time_idx
                         }
@@ -227,22 +266,26 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         ))
                 
                 # Opponents
-                for i in range(1, 6):
-                    opp_x_col = f"Opponent_{i}_pos_x"
-                    opp_y_col = f"Opponent_{i}_pos_y"
-                    opp_z_col = f"Opponent_{i}_pos_z"
-                    
+                for i in range(1, MAX_CARS + 1):
+                    if i == player_slot:
+                        continue
+                    if allowed_slots is not None and i not in allowed_slots:
+                        continue
+                    opp_x_col = f"Car_{i}_pos_x"
+                    opp_y_col = f"Car_{i}_pos_y"
+                    opp_z_col = f"Car_{i}_pos_z"
+
                     if opp_x_col in df.columns and opp_y_col in df.columns:
                         # Filter out inactive (0,0) points for cleaner trajectories
                         opp_df = map_plot_df[(map_plot_df[opp_x_col] != 0) | (map_plot_df[opp_y_col] != 0)]
                         if not opp_df.empty:
                             if use_3d and opp_z_col in df.columns:
                                 fig_map.add_trace(go.Scatter3d(
-                                    x=opp_df[opp_x_col], 
+                                    x=opp_df[opp_x_col],
                                     y=opp_df[opp_y_col],
                                     z=opp_df[opp_z_col],
                                     mode="lines",
-                                    name=f"Opponent {i} Trajectory",
+                                    name=f"Car {i} Trajectory",
                                     customdata=opp_df.index,
                                     hovertemplate='x: %{x}<br>y: %{y}<br>z: %{z}<br>Index: %{customdata}<extra></extra>',
                                     line=dict(color="red", width=2),
@@ -251,10 +294,10 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                                 ))
                             else:
                                 fig_map.add_trace(go.Scatter(
-                                    x=opp_df[opp_x_col], 
+                                    x=opp_df[opp_x_col],
                                     y=opp_df[opp_y_col],
                                     mode="lines",
-                                    name=f"Opponent {i} Trajectory",
+                                    name=f"Car {i} Trajectory",
                                     customdata=opp_df.index,
                                     hovertemplate='x: %{x}<br>y: %{y}<br>Index: %{customdata}<extra></extra>',
                                     line=dict(color="red", width=1, dash="dot"),

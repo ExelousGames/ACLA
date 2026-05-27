@@ -23,7 +23,7 @@ closes.
 - `speed_difference` exceeds +20 km/h sustained.
 - Full or near-full throttle while the gap closes.
 - Recovery segment longer than RM6 (small-gap counterpart).
-- Often follows RM1 (off-track) or MS50/MS51 (off-track during
+- Often follows RM1 (off-track) or MSP50/MSP51 (off-track during
   corner).
 
 ## Engineer interpretation

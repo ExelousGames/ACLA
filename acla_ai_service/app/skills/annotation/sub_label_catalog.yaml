@@ -55,10 +55,10 @@ _skill:
 #     ("How to identify the sublabels for ...") is for the **detailed
 #     annotation flow** — given a section already labelled as that main
 #     label, how to drill in and pick the matching sub-labels.
-#   - The **lap-to-segment flow**'s "does this section qualify as MS at
+#   - The **lap-to-segment flow**'s "does this section qualify as MSP at
 #     all?" guidance lives in `main_label_skill.yaml` under each main
 #     label's `characteristics` block. Do NOT duplicate that here.
-#   - Sub-label entries (parent: MS / RM / ...) carry per-label
+#   - Sub-label entries (parent: MSP / RM / ...) carry per-label
 #     `description` strings used by both flows.
 # =============================================================================
 
@@ -69,35 +69,76 @@ labels:
   # =========================================================================
 
   "O":
-    name: "Overtaking"
+    name: "Successful Overtake"
     type: main
     description: >
-      "Act of overtaking" as visible on a single car's telemetry — late
-      braking past the expert reference point, sustained off-line entries
-      to set up a pass or defend a position, switchback rotation, or
-      throttle/speed deltas on a straight (slipstream gain, defensive
-      lift). Opponent telemetry is NOT consulted — the signature must be
-      readable from this car alone.
+      Player gained a position on a specific opponent inside the
+      section. Required gate: the primary opponent returned by
+      `find_nearest_opponent` must show `passed_by_player: true` —
+      signed longitudinal gap goes from **positive at entry** (opp
+      ahead in player's heading) to **negative at exit** (opp behind).
+      A close opponent with an attempted but uncompleted pass is
+      `MSR1` (failed overtake attempt), not O. Defensive holds are
+      OD; failed defenses are `MSR2`.
     annotation_guideline: >
-      How to identify the sublabels for Overtaking:
-      Drill into the section's brake / throttle / trajectory_offset /
-      speed traces vs the expert. Sub-labels split by intent and where
-      the signature appears:
-        - Brake-zone attack / defense (O1 / O2): brake initiation onset
-          shifted relative to expert at corner entry.
-        - Sustained off-line through entry-to-apex (O2 inside / O3
-          outside): trajectory offset held to one side without the
-          continuously growing time gap of MS.
-        - Switchback (O4): offset crosses outside-at-entry to
-          inside-at-exit, with earlier brake AND earlier throttle on
-          exit than the expert.
-        - Straight-line (O5 / O6): on a straight, speed delta vs
-          throttle delta relative to expert — speed up on equal-or-less
-          throttle (draft) vs throttle dip with no brake (defensive
-          lift).
+      How to identify the sublabels for Successful Overtake:
+      Step 1 — Confirm the pass. Call `find_nearest_opponent(start,
+      end)`. The primary candidate MUST have
+      `passed_by_player: true`. If no candidate has that flag, do NOT
+      propose any O sub-label — the section is either OD (held
+      against a close opponent), `MSR1` (close opponent + failed
+      attack, `passed_by_player: false`), `MSR2` (close opponent +
+      `got_passed_by_opponent: true`), or no-O. Quote `slot`, `entry_signed_long_gap_m`,
+      `exit_signed_long_gap_m`, `min_distance_m`,
+      `min_lateral_offset_m`, and `side_by_side_iloc_count` in reasoning.
+      Step 2 — Pick the technique sub-label by where the pass
+      happened and how the player's own trace diverges from the
+      expert:
+        - O1 (late-brake attack at corner entry): player's brake
+          initiation later than expert + tightening trajectory.
+        - O3 (outside-line sweep through a corner): trajectory wider
+          than expert through entry-to-apex.
+        - O4 (switchback): offset crosses outside-at-entry to
+          inside-at-exit, earlier throttle on exit.
+        - O5 (slipstream on a straight): speed > expert with throttle
+          ≤ expert; gap closed smoothly. Confirm with
+          `query_opponent_trajectory(start, end, slot, n_samples)`.
     parent: null
-    children: ["O1", "O2", "O3", "O4", "O5", "O6"]
-    exclusive_with: ["MD", "PS"]
+    children: ["O1", "O3", "O4", "O5"]
+    exclusive_with: ["OD", "MD", "PS"]
+
+  "OD":
+    name: "Successful Defense"
+    type: main
+    description: >
+      Player held position against a real, close opponent inside the
+      section. Required gate: the primary opponent returned by
+      `find_nearest_opponent` must be close
+      (`side_by_side_iloc_count > 0` or `min_distance_m` ≤ ~10 m) AND
+      `got_passed_by_opponent: false`. No close opponent ⇒ this is
+      not OD (a slow trace alone is MSP / EA). A player who DID lose
+      the position is `MSR2` (defense broken), not OD.
+    annotation_guideline: >
+      How to identify the sublabels for Successful Defense:
+      Step 1 — Confirm the defense. Call `find_nearest_opponent(start,
+      end)`. Require a primary candidate with
+      `got_passed_by_opponent: false` AND a close engagement
+      (`side_by_side_iloc_count > 0` OR `min_distance_m` ≤ ~10 m). If
+      no close candidate, the section is not OD. Quote the same
+      attachment fields as for O in reasoning.
+      Step 2 — Pick the technique sub-label by where the defense
+      happened:
+        - OD1 (inside cover at corner entry): player's brake
+          initiation earlier than expert and/or trajectory tighter
+          than expert through entry-to-apex; opponent close on the
+          outside / behind.
+        - OD2 (defensive lift on a straight): player's throttle drops
+          below expert with no matching brake; opponent close behind,
+          gap shrinks during the lift without flipping past the
+          player. Confirm with `query_opponent_trajectory`.
+    parent: null
+    children: ["OD1", "OD2"]
+    exclusive_with: ["O", "MD", "PS"]
 
   "MD":
     name: "Missing data"
@@ -112,7 +153,7 @@ labels:
       the sensor data drops to zero or becomes inconsistent unexpectedly.
     parent: null
     children: []
-    exclusive_with: ["O", "EA", "PS", "RM", "MS"]
+    exclusive_with: ["O", "OD", "EA", "PS", "RM", "MSP", "MSR"]
 
   EA:
     name: "Expert Adherence"
@@ -130,7 +171,7 @@ labels:
       closely.  Nothing needs to be labeled right now.
     parent: null
     children: []
-    exclusive_with: ["MS", "RM", "PS"]
+    exclusive_with: ["MSP", "MSR", "RM", "PS"]
 
   "PS":
     name: "Pit Stop"
@@ -170,17 +211,20 @@ labels:
     children: ["RM1", "RM2", "RM5", "RM6", "RM7", "RM8", "RM9", "RM10", "RM11"]
     exclusive_with: ["EA", "PS"]
 
-  MS:
-    name: "Mistake"
+  MSP:
+    name: "Mistake (Practice)"
     type: main
     description: >
-      Driver error causing time loss or vehicle instability. Time delta shows **gap grows** and 
-      the trajectory offset shows a clear deviation from the expert's line (offset **wider than 
-      expert** or **tighter than expert**).
+      Technical driving error causing time loss or vehicle instability,
+      NOT caused by interaction with a close opponent. Time delta
+      shows **gap grows** and the trajectory offset shows a clear
+      deviation from the expert's line (offset **wider than expert**
+      or **tighter than expert**). When `find_nearest_opponent`
+      returns a close primary opponent AND the time loss is tied to
+      that interaction, the section is MSR (racing mistake), not MSP.
     annotation_guideline: >
-      How to identify sublabels for Mistake:
-      The driver has committed a driving error resulting in time loss
-      or instability.
+      How to identify sublabels for Practice Mistake:
+      The driver has committed a technical driving error.
       Step 1: Analyze the 'Time Difference to Expert' graph; a mistake
       normally causes this time gap to increase continuously without
       decreasing shortly after.
@@ -197,58 +241,92 @@ labels:
       'trajectory_offset' graph and include the 'compute_expert_phases'
       tool on the same step (it produces a 'phase_indices' attachment
       contains the phase indices for entry/apex/exit).
+      Step 6: Before committing, call `find_nearest_opponent(start,
+      end)` — if a close primary opponent is present, the section is
+      likely MSR, not MSP.
     parent: null
     children:
-      - "MS1"
-      - "MS2"
-      - "MS3"
-      - "MS4"
-      - "MS5"
-      - "MS6"
-      - "MS7"
-      - "MS8"
-      - "MS9"
-      - "MS10"
-      - "MS11"
-      - "MS13"
-      - "MS14"
-      - "MS15"
-      - "MS16"
-      - "MS17"
-      - "MS18"
-      - "MS19"
-      - "MS20"
-      - "MS21"
-      - "MS22"
-      - "MS23"
-      - "MS24"
-      - "MS25"
-      - "MS26"
-      - "MS27"
-      - "MS28"
-      - "MS29"
-      - "MS30"
-      - "MS31"
-      - "MS32"
-      - "MS33"
-      - "MS34"
-      - "MS35"
-      - "MS36"
-      - "MS37"
-      - "MS38"
-      - "MS41"
-      - "MS42"
-      - "MS43"
-      - "MS44"
-      - "MS45"
-      - "MS46"
-      - "MS47"
-      - "MS48"
-      - "MS49"
-      - "MS50"
-      - "MS51"
-      - "MS52"
-    exclusive_with: ["EA", "PS"]
+      - "MSP1"
+      - "MSP2"
+      - "MSP3"
+      - "MSP4"
+      - "MSP5"
+      - "MSP6"
+      - "MSP7"
+      - "MSP8"
+      - "MSP9"
+      - "MSP10"
+      - "MSP11"
+      - "MSP13"
+      - "MSP14"
+      - "MSP15"
+      - "MSP16"
+      - "MSP17"
+      - "MSP18"
+      - "MSP19"
+      - "MSP20"
+      - "MSP21"
+      - "MSP22"
+      - "MSP23"
+      - "MSP24"
+      - "MSP25"
+      - "MSP26"
+      - "MSP27"
+      - "MSP28"
+      - "MSP29"
+      - "MSP30"
+      - "MSP31"
+      - "MSP32"
+      - "MSP33"
+      - "MSP34"
+      - "MSP35"
+      - "MSP36"
+      - "MSP37"
+      - "MSP38"
+      - "MSP41"
+      - "MSP42"
+      - "MSP43"
+      - "MSP44"
+      - "MSP45"
+      - "MSP46"
+      - "MSP47"
+      - "MSP48"
+      - "MSP49"
+      - "MSP50"
+      - "MSP51"
+      - "MSP52"
+    exclusive_with: ["EA", "PS", "MSR"]
+
+  MSR:
+    name: "Mistake (Racing)"
+    type: main
+    description: >
+      Time / position loss caused by an interaction with a close
+      opponent. Required gate: `find_nearest_opponent` returns a
+      primary candidate that is close (`min_distance_m` small OR
+      `side_by_side_iloc_count > 0`) AND the interaction outcome is
+      adverse (failed pass attempt OR got passed). If no close
+      opponent is present, the section is MSP (technical practice
+      mistake) — not MSR.
+    annotation_guideline: >
+      How to identify sublabels for Racing Mistake:
+      Step 1 — Confirm a close opponent. Call
+      `find_nearest_opponent(start, end)`. Require a primary candidate
+      with `min_distance_m` small OR `side_by_side_iloc_count > 0`.
+      If no close candidate, the section is not MSR — re-score as
+      MSP (or EA / RM as appropriate).
+      Step 2 — Pick the sub-label by outcome flag:
+        - MSR1 (failed overtake attempt): `passed_by_player: false`
+          AND `got_passed_by_opponent: false` — the attack didn't
+          stick and the opponent didn't pass either.
+        - MSR2 (defense broken): `got_passed_by_opponent: true` —
+          signed longitudinal gap flips negative → positive.
+      Step 3 — Cross-check the player trace. MSR1 typically pairs with
+      a late-brake / off-line attempt that didn't complete; MSR2
+      pairs with an attempted cover / lift that didn't hold.
+    parent: null
+    children: ["MSR1", "MSR2"]
+    exclusive_with: ["EA", "PS", "MSP"]
 
   brands_hatch:
     name: "Brands Hatch"
@@ -437,7 +515,7 @@ labels:
   # MISTAKE SUB-LABELS — Braking
   # =========================================================================
 
-  MS1:
+  MSP1:
     name: "Initiate brake too late"
     type: sub
     description: >
@@ -447,43 +525,43 @@ labels:
       trajectory offset across the **entry-to-apex** span as they
       brake later, with the **entry trajectory bulges outside** the
       expert's line.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS5"]
+    exclusive_with: ["MSP5"]
 
-  MS5:
+  MSP5:
     name: "Initiate brake too early"
     type: sub
     description: >
       The player's brake **initiation onset is earlier than** the
       expert's at corner entry, alongside the time **gap grows**
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS1"]
+    exclusive_with: ["MSP1"]
 
-  MS13:
+  MSP13:
     name: "Highest brake pressure too low"
     type: sub
     description: >
       The player's **peak brake pressure is lower than** the expert's
       across the braking phase. Player often **moving toward positive 
       (widening)** in the trajectory offset.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS22"]
+    exclusive_with: ["MSP22"]
 
-  MS22:
+  MSP22:
     name: "Highest brake pressure too high"
     type: sub
     description: >
       The player's **peak brake pressure is higher than** the expert's
       across the braking phase. Player often **moving toward positive 
       (widening)** in the trajectory offset.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS13"]
+    exclusive_with: ["MSP13"]
 
-  MS14:
+  MSP14:
     name: "Brake applied too quickly"
     type: sub
     description: >
@@ -493,11 +571,11 @@ labels:
       trajectory offset.  An **oversteer** section (as a **primary
       slide** or **standalone event**) may co-occur on the slip
       balance.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS24"]
+    exclusive_with: ["MSP24"]
 
-  MS24:
+  MSP24:
     name: "Brake applied too slowly"
     type: sub
     description: >
@@ -505,11 +583,11 @@ labels:
       expert's — the rise from zero to peak spans more indices.
       Player often **moving toward positive (widening)** in the 
       trajectory offset.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS14"]
+    exclusive_with: ["MSP14"]
 
-  MS17:
+  MSP17:
     name: "Release brake too quickly"
     type: sub
     description: >
@@ -519,70 +597,70 @@ labels:
       positive (widening)** in the trajectory offset across the exit
       phase as they release earlier, with the **exit trajectory bulges
       outside** the expert's line.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS18"]
+    exclusive_with: ["MSP18"]
 
-  MS18:
+  MSP18:
     name: "Release brake too slowly"
     type: sub
     description: >
       The player's **brake release** is more gradual than the
       expert's — the drop from peak to zero spans more indices,
       consistent with **trail braking**.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS17"]
+    exclusive_with: ["MSP17"]
 
-  MS27:
+  MSP27:
     name: "Initiate brake release too late"
     type: sub
     description: >
       The player's brake has later **release onset** than the expert's
       around **Reach apex**.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS28"]
+    exclusive_with: ["MSP28"]
 
-  MS28:
+  MSP28:
     name: "Initiate brake release too early"
     type: sub
     description: >
       The player's brake has earlier **release onset** than the expert's
       during **Reach apex**.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS27"]
+    exclusive_with: ["MSP27"]
 
-  MS31:
+  MSP31:
     name: "Highest brake length too short"
     type: sub
     description: >
       The player's interval between **brake initiation** end and
       **release onset** spans fewer indices than the expert's —
       **peak brake pressure** is held for a shorter span.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS32"]
+    exclusive_with: ["MSP32"]
 
-  MS32:
+  MSP32:
     name: "Highest brake length too long"
     type: sub
     description: >
       The player's interval between **brake initiation** end and
       **release onset** spans more indices than the expert's —
       **peak brake pressure** is held for a longer span.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS31"]
+    exclusive_with: ["MSP31"]
 
-  MS34:
+  MSP34:
     name: "Throttle and brake applied at the same time for too long"
     type: sub
     description: >
       The player **applies throttle and brake simultaneously** across
       a span where the expert shows no overlap.
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
@@ -590,7 +668,7 @@ labels:
   # MISTAKE SUB-LABELS — Throttle
   # =========================================================================
 
-  MS15:
+  MSP15:
     name: "Throttle applied too quickly"
     type: sub
     description: >
@@ -599,32 +677,32 @@ labels:
       co-occurring with **oversteer** or **understeer** in the slip
       balance, and a **modulation dip** shortly after in the same
       **throttle application**.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS25"]
+    exclusive_with: ["MSP25"]
 
-  MS25:
+  MSP25:
     name: "Throttle applied too slowly"
     type: sub
     description: >
       The player's **throttle application** is more gradual than the
       expert's — the rise from zero to peak spans more indices, often
       co-occurring with **gap grows** in the time delta.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS15"]
+    exclusive_with: ["MSP15"]
 
-  MS19:
+  MSP19:
     name: "Highest throttle pressure too low"
     type: sub
     description: >
       The player's **peak throttle** is lower than the expert's across
       the **throttle application** phase for more than 3 indices.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS26"]
+    exclusive_with: ["MSP26"]
 
-  MS26:
+  MSP26:
     name: "Highest throttle pressure too high"
     type: sub
     description: >
@@ -633,65 +711,65 @@ labels:
       with **oversteer** or **understeer** in the slip balance, and a
       **modulation dip** shortly after in the same **throttle
       application**.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS19"]
+    exclusive_with: ["MSP19"]
 
-  MS20:
+  MSP20:
     name: "Initiate throttle too early"
     type: sub
     description: >
       The player's throttle **application onset** is earlier than the
       expert's at corner exit.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS21"]
+    exclusive_with: ["MSP21"]
 
-  MS21:
+  MSP21:
     name: "Initiate throttle too late"
     type: sub
     description: >
       The player's throttle **application onset** is later than the
       expert's at corner exit.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS20"]
+    exclusive_with: ["MSP20"]
 
-  MS23:
+  MSP23:
     name: "Release throttle too quickly"
     type: sub
     description: >
       The player's **throttle release** is more abrupt than the
       expert's — the drop from peak to zero spans fewer indices.
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
-  MS29:
+  MSP29:
     name: "Initiate throttle release too late"
     type: sub
     description: >
       The player's throttle **release onset** is later than the
       expert's approaching corner entry.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS30"]
+    exclusive_with: ["MSP30"]
 
-  MS30:
+  MSP30:
     name: "Initiate throttle release too early"
     type: sub
     description: >
       The player's throttle **release onset** is earlier than the
       expert's approaching corner entry.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS29"]
+    exclusive_with: ["MSP29"]
 
   # =========================================================================
   # MISTAKE SUB-LABELS — Turn-in / Apex / Exit timing
   # =========================================================================
 
-  MS2:
+  MSP2:
     name: "Initiate the turn too late"
     type: sub
     description: >
@@ -699,11 +777,11 @@ labels:
       index, and the player's **entry trajectory bulges outside** the
       expert's line (offset is **wider than expert**) between entry
       and apex.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS6"]
+    exclusive_with: ["MSP6"]
 
-  MS6:
+  MSP6:
     name: "Initiate the turn too early"
     type: sub
     description: >
@@ -711,113 +789,113 @@ labels:
       entry index, and the player's **entry trajectory cuts inside**
       the expert's line (offset is **tighter than expert**) between
       entry and apex.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS2"]
+    exclusive_with: ["MSP2"]
 
-  MS3:
+  MSP3:
     name: "Too late compared to expert Apex"
     type: sub
     description: >
       The player **reaches apex later than** the expert's apex index.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS7"]
+    exclusive_with: ["MSP7"]
 
-  MS7:
+  MSP7:
     name: "Too early compared to expert Apex"
     type: sub
     description: >
       The player **reaches apex earlier than** the expert's apex index.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS3"]
+    exclusive_with: ["MSP3"]
 
-  MS4:
+  MSP4:
     name: "Time to exit too early"
     type: sub
     description: >
       The player **times the exit earlier than** the expert's exit
       index — begins unwinding the line upstream of the expert.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS8"]
+    exclusive_with: ["MSP8"]
 
-  MS8:
+  MSP8:
     name: "Time to exit too late"
     type: sub
     description: >
       The player **times the exit later than** the expert's exit
       index — begins unwinding the line downstream of the expert.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS4"]
+    exclusive_with: ["MSP4"]
 
   # =========================================================================
   # MISTAKE SUB-LABELS — Trajectory
   # =========================================================================
 
-  MS9:
+  MSP9:
     name: "Entry trajectory too tight"
     type: sub
     description: >
       The player's **entry trajectory cuts inside** the expert's line
       (offset is **tighter than expert**) between entry and apex.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS33"]
+    exclusive_with: ["MSP33"]
 
-  MS33:
+  MSP33:
     name: "Entry trajectory too wide"
     type: sub
     description: >
       The player's **entry trajectory bulges outside** the expert's
       line (offset is **wider than expert**) between entry and apex.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS9"]
+    exclusive_with: ["MSP9"]
 
-  MS10:
+  MSP10:
     name: "Apex too wide"
     type: sub
     description: >
       The player's apex is **closer to outside** than the expert's at
       the expert's apex index, with offset **wider than expert**.
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
-  MS11:
+  MSP11:
     name: "Exit trajectory too narrow"
     type: sub
     description: >
       The player's **exit trajectory cuts inside** the expert's line
       (offset is **tighter than expert**) between apex and exit.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS16"]
+    exclusive_with: ["MSP16"]
 
-  MS16:
+  MSP16:
     name: "Exit trajectory too wide"
     type: sub
     description: >
       The player's **exit trajectory bulges outside** the expert's
       line (offset is **wider than expert**) between apex and exit.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS11"]
+    exclusive_with: ["MSP11"]
 
-  MS41:
+  MSP41:
     name: "Cutting the line"
     type: sub
     description: >
       The player's trajectory **cuts inside** the expert's line across
       the corner (offset is **tighter than expert** at multiple phases).
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
-  MS50:
+  MSP50:
     name: "Off track at entry"
     type: sub
     description: >
@@ -826,11 +904,11 @@ labels:
       **moving toward positive (widening)** across the
       **approach-to-entry** span, often co-occurring with an
       **over-limit spike** in grip utilisation.
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
-  MS51:
+  MSP51:
     name: "Off track at exit"
     type: sub
     description: >
@@ -839,18 +917,18 @@ labels:
       **moving toward positive (widening)** across the **apex-to-exit**
       or **post-exit** span, often co-occurring with an **over-limit
       spike** in grip utilisation.
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
-  MS52:
+  MSP52:
     name: "Off track in the straight"
     type: sub
     description: >
       Player goes off track on a straight section — the trajectory
       offset peaks far **wider than expert** across a span where both
       lines should run straight, with no corner phase present.
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
@@ -858,7 +936,7 @@ labels:
   # MISTAKE SUB-LABELS — Grip / Vehicle dynamics
   # =========================================================================
 
-  MS42:
+  MSP42:
     name: "Inefficient grip utilization at entry"
     type: sub
     description: >
@@ -868,11 +946,11 @@ labels:
       appears across the index range where braking is active and
       speed is decreasing (the entry phase, cross-referenced with the
       trajectory or speed trace).
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
-  MS43:
+  MSP43:
     name: "Inefficient grip utilization at exit"
     type: sub
     description: >
@@ -882,126 +960,178 @@ labels:
       appears across the index range where throttle is being applied
       and speed is increasing (the exit phase, cross-referenced with
       the trajectory or speed trace).
-    parent: MS
+    parent: MSP
     children: []
     exclusive_with: []
 
-  MS44:
+  MSP44:
     name: "Oversteering at entry"
     type: sub
     description: >
       The player's slip balance shows **oversteer** (as the **primary
       slide** or a **standalone event** with peak above +0.02 rad)
       across an index range that overlaps the corner-entry phase.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS45"]
+    exclusive_with: ["MSP45"]
 
-  MS45:
+  MSP45:
     name: "Understeering at entry"
     type: sub
     description: >
       The player's slip balance shows **understeer** (as the **primary
       slide** or a **standalone event** with trough below −0.02 rad)
       across an index range that overlaps the corner-entry phase.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS44"]
+    exclusive_with: ["MSP44"]
 
-  MS46:
+  MSP46:
     name: "Oversteering at exit"
     type: sub
     description: >
       The player's slip balance shows **oversteer** (as the **primary
       slide** or a **standalone event** with peak above +0.02 rad)
       across an index range that overlaps the corner-exit phase.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS47"]
+    exclusive_with: ["MSP47"]
 
-  MS47:
+  MSP47:
     name: "Understeering at exit"
     type: sub
     description: >
       The player's slip balance shows **understeer** (as the **primary
       slide** or a **standalone event** with trough below −0.02 rad)
       across an index range that overlaps the corner-exit phase.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS46"]
+    exclusive_with: ["MSP46"]
 
   # =========================================================================
   # MISTAKE SUB-LABELS — Gear / Shifting
   # =========================================================================
 
-  MS35:
+  MSP35:
     name: "Shift up too early"
     type: sub
     description: >
       The player's **upshift** occurs at an earlier index than the
       expert's matching upshift.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS36"]
+    exclusive_with: ["MSP36"]
 
-  MS36:
+  MSP36:
     name: "Shift up too late"
     type: sub
     description: >
       The player's **upshift** occurs at a later index than the
       expert's matching upshift.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS35"]
+    exclusive_with: ["MSP35"]
 
-  MS37:
+  MSP37:
     name: "Shift down too early"
     type: sub
     description: >
       The player's **downshift** occurs at an earlier index than the
       expert's matching downshift.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS38"]
+    exclusive_with: ["MSP38"]
 
-  MS38:
+  MSP38:
     name: "Shift down too late"
     type: sub
     description: >
       The player's **downshift** occurs at a later index than the
       expert's matching downshift.
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS37"]
+    exclusive_with: ["MSP37"]
 
-  MS48:
+  MSP48:
     name: "Gear too low when accelerating"
     type: sub
     description: >
       The player **holds gear** at a lower number than the expert
       across an index range where the speed trace is rising (player
       is in a **lower gear than** the expert during acceleration).
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS49"]
+    exclusive_with: ["MSP49"]
 
-  MS49:
+  MSP49:
     name: "Gear too high when accelerating"
     type: sub
     description: >
       The player **holds gear** at a higher number than the expert
       across an index range where the speed trace is rising (player
       is in a **higher gear than** the expert during acceleration).
-    parent: MS
+    parent: MSP
     children: []
-    exclusive_with: ["MS48"]
+    exclusive_with: ["MSP48"]
 
   # =========================================================================
-  # OVERTAKING SUB-LABELS
+  # RACING-MISTAKE SUB-LABELS (parent: MSR)
   #
-  # Single-car signatures — readable from this car's telemetry vs the
-  # expert reference. No opponent telemetry is consulted; the signature
-  # is the "act of overtaking" as observed on the lap.
+  # These sub-labels capture pass-engagement failures: the player
+  # interacted with a close opponent and the interaction itself caused
+  # the time loss / position loss. Gate on the same
+  # `find_nearest_opponent` attachment used by O / OD, but flipped — a
+  # candidate is present AND the outcome went the wrong way.
+  # =========================================================================
+
+  MSR1:
+    name: "Failed overtake attempt"
+    type: sub
+    description: >
+      Player engaged a close opponent with attacking moves (late
+      brake, off-line entry, or sustained outside / inside sweep) but
+      did NOT complete the pass and lost time doing so. Gate on
+      `find_nearest_opponent`: a close primary candidate is present
+      (`min_distance_m` small OR `side_by_side_iloc_count > 0`) AND
+      `passed_by_player: false` AND
+      `got_passed_by_opponent: false` (the opponent didn't pass the
+      player either — the attempt simply failed). Player-trace
+      evidence: `time_difference_to_expert` grows across the
+      attempt, typical of an optimistic brake / line that didn't
+      stick. Distinguished from O by the missing pass flag, and from
+      MSP by the close opponent being the cause.
+    parent: MSR
+    children: []
+    exclusive_with: ["MSR2"]
+
+  MSR2:
+    name: "Defense broken (got passed)"
+    type: sub
+    description: >
+      Player attempted to hold position but the primary opponent got
+      through. Gate on `find_nearest_opponent`: a close primary
+      candidate (`min_distance_m` small OR
+      `side_by_side_iloc_count > 0`) AND
+      `got_passed_by_opponent: true` — signed longitudinal gap flips
+      from negative (opp behind at entry) to positive (opp ahead at
+      exit). Player-trace evidence: typically an inside-cover or lift
+      that didn't hold; `time_difference_to_expert` usually grows
+      across the section. Distinguished from OD by the failed-defense
+      flag.
+    parent: MSR
+    children: []
+    exclusive_with: ["MSR1"]
+
+  # =========================================================================
+  # SUCCESSFUL OVERTAKE SUB-LABELS (parent: O)
+  #
+  # Each sub-label rests on TWO legs of evidence:
+  #   (a) `passed_by_player: true` on the primary opponent returned by
+  #       `find_nearest_opponent` (signed-gap sign flips + → −), AND
+  #   (b) the player's own trace vs the expert reference (brake /
+  #       throttle / trajectory_offset / speed) explains the move.
+  # If (a) is missing the section is NOT an O — see MSR1 (failed
+  # overtake attempt, close opponent + no pass flag).
   # =========================================================================
 
   O1:
@@ -1013,24 +1143,13 @@ labels:
       across the braking phase — a deliberate over-commit to pull
       alongside before the apex. Trajectory often **moving toward
       negative (tightening)** into the apex as the player aims for the
-      inside.
+      inside. Opponent cue (gate): primary opponent
+      `entry_signed_long_gap_m > 0` (ahead at entry) AND
+      `passed_by_player: true` (behind by exit), with
+      `side_by_side_iloc_count > 0` through the braking-to-apex window.
     parent: O
     children: []
-    exclusive_with: ["O2", "O4"]
-
-  O2:
-    name: "Defensive early-brake / inside cover"
-    type: sub
-    description: >
-      Player's brake **initiation onset is earlier than** the expert's
-      AND/OR trajectory offset held **tighter than expert** across
-      entry-to-apex by a sustained margin — closing the inside line.
-      Distinguished from MS by the **absence of a continuously growing
-      time gap** — the inside line is a tactical choice, not a slow
-      mistake.
-    parent: O
-    children: []
-    exclusive_with: ["O1", "O3"]
+    exclusive_with: ["O4"]
 
   O3:
     name: "Outside-line sweep"
@@ -1039,10 +1158,15 @@ labels:
       Trajectory offset **wider than expert** across entry-to-apex by a
       sustained margin, **without a continuously growing time delta** —
       going around the outside on purpose. Often paired with an earlier
-      throttle pickup on exit as the wider arc allows it.
+      throttle pickup on exit as the wider arc allows it. Opponent cue
+      (gate): `passed_by_player: true` with the primary opponent
+      **alongside on the inside** through the braking-to-apex window —
+      `side_by_side_iloc_count > 0` and `query_opponent_trajectory`
+      lateral-offset samples show the opponent on the opposite side of
+      the player's heading from the player's offset.
     parent: O
     children: []
-    exclusive_with: ["O2"]
+    exclusive_with: ["O4"]
 
   O4:
     name: "Switchback"
@@ -1053,10 +1177,15 @@ labels:
       offset crosses from **wider than expert** at entry to **tighter
       than expert** at exit, and throttle **application onset is
       earlier than** the expert's around the corner exit. Time delta
-      typically shows **gap shrinks** late in the section.
+      typically shows **gap shrinks** late in the section. Opponent
+      cue (gate): primary opponent was **ahead into the corner**
+      (`entry_signed_long_gap_m > 0`) and **behind by exit**
+      (`exit_signed_long_gap_m < 0`), i.e. `passed_by_player: true`,
+      with `query_opponent_trajectory` lateral-offset samples crossing
+      zero around apex (line cross).
     parent: O
     children: []
-    exclusive_with: ["O1"]
+    exclusive_with: ["O1", "O3"]
 
   O5:
     name: "Slipstream gain on straight"
@@ -1065,12 +1194,51 @@ labels:
       On a straight section: speed delta shows **player faster than
       expert** while the player's throttle stays **at or below** the
       expert's level — the speed gain is from draft, not extra input.
-      Time delta shows **gap shrinks** across the straight.
+      Time delta shows **gap shrinks** across the straight. Opponent
+      cue (gate): primary opponent **directly ahead in draft range** —
+      `entry_signed_long_gap_m` positive and small (typically < ~30 m),
+      `min_lateral_offset_m` small (in-line, not side-by-side yet),
+      `passed_by_player: true`, and `query_opponent_trajectory` shows
+      the signed longitudinal gap **shrinking monotonically** across
+      the straight.
     parent: O
     children: []
-    exclusive_with: ["O6"]
+    exclusive_with: []
 
-  O6:
+  # =========================================================================
+  # SUCCESSFUL DEFENSE SUB-LABELS (parent: OD)
+  #
+  # Each sub-label requires:
+  #   (a) a close primary opponent (`side_by_side_iloc_count > 0` OR
+  #       `min_distance_m` ≤ ~10 m) AND
+  #   (b) `got_passed_by_opponent: false` (the defense held) AND
+  #   (c) the player's own trace explains the defensive choice (brake
+  #       earlier, hold inside, lift on straight, …).
+  # If (a) is missing the section is not OD. If (b) flips true the
+  # defense failed — see MSR2 (defense broken).
+  # =========================================================================
+
+  OD1:
+    name: "Inside cover (early-brake defense)"
+    type: sub
+    description: >
+      Player's brake **initiation onset is earlier than** the expert's
+      AND/OR trajectory offset held **tighter than expert** across
+      entry-to-apex by a sustained margin — closing the inside line.
+      Distinguished from MSP by the **absence of a continuously growing
+      time gap** — the inside line is a tactical choice, not a slow
+      mistake. Opponent cue (gate): primary opponent
+      **close-trailing or alongside on the outside** —
+      `side_by_side_iloc_count > 0`, small `min_distance_m`,
+      `got_passed_by_opponent: false`, and the
+      `query_opponent_trajectory` samples show the opponent's signed
+      longitudinal gap staying negative (or briefly crossing then
+      returning behind by exit).
+    parent: OD
+    children: []
+    exclusive_with: []
+
+  OD2:
     name: "Defensive lift on straight"
     type: sub
     description: >
@@ -1078,10 +1246,16 @@ labels:
       with NO matching brake onset (outside any braking zone), causing
       a brief speed dip not explained by track geometry — a lift to
       manage position or check the mirrors. Time delta typically shows
-      **gap grows** briefly during the lift.
-    parent: O
+      **gap grows** briefly during the lift. Opponent cue (gate):
+      primary opponent **close behind** —
+      `entry_signed_long_gap_m < 0`, small `min_distance_m`,
+      `got_passed_by_opponent: false`, and
+      `query_opponent_trajectory` shows the gap closing during the
+      lift (signed-gap magnitude shrinks) without flipping past the
+      player.
+    parent: OD
     children: []
-    exclusive_with: ["O5"]
+    exclusive_with: []
 
   # =========================================================================
   # SEGMENT TYPE LABELS

@@ -33,4 +33,4 @@ different reference point.
 - Continue normal lap technique; don't reach for extra speed.
 - The gap closes inside one or two corners on its own.
 - If the gap is opening (not closing), look for an ongoing issue
-  — tyre fade, fuel weight, or an unnoticed earlier MS.
+  — tyre fade, fuel weight, or an unnoticed earlier MSP.

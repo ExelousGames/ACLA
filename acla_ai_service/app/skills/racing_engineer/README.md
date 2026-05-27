@@ -13,8 +13,8 @@ index. Drop a `.md` file in the right subfolder, restart, done.
 ## Layout
 
 ```
-labels/<ID>.md          one per sub-label (MS44.md, RM7.md, …)
-main_labels/<ID>.md     one per parent family (MS.md, RM.md, EA.md, …)
+labels/<ID>.md          one per sub-label (MSP44.md, RM7.md, …)
+main_labels/<ID>.md     one per parent family (MSP.md, MSR.md, RM.md, EA.md, …)
 features/<NAME>.md      one per telemetry channel (push_limit.md, …)
 ```
 
@@ -34,14 +34,14 @@ The `explain_label` tool returns the slim subset:
 sub-label with at least these. The other sections are optional but
 make the corpus genuinely useful for analysis.
 
-### Worked example (`labels/MS44.md`)
+### Worked example (`labels/MSP44.md`)
 
 ```markdown
 ---
-id: MS44
+id: MSP44
 name: Oversteering at entry
-common_co_labels: [MS17, MS22, MS3]
-causes_to_check: [MS14, MS22, MS9]
+common_co_labels: [MSP17, MSP22, MSP3]
+causes_to_check: [MSP14, MSP22, MSP9]
 ---
 
 ## Definition
@@ -89,11 +89,11 @@ headings so tools can look them up by name.
 
 | Key | Type | Required | Notes |
 |---|---|---|---|
-| `id` | string | yes | Match the classifier's label id (e.g. `MS44`). |
+| `id` | string | yes | Match the classifier's label id (e.g. `MSP44`). |
 | `name` | string | yes | Human-readable label name. Mirrors `LABEL_MAPPING[id]`. |
 | `common_co_labels` | list of ids | no | Labels that frequently co-occur with this one. |
 | `causes_to_check` | list of ids | no | Labels worth checking as possible root causes. |
-| `family` | string | no | Parent family (e.g. `MS`). The loader doesn't enforce; use it if the LLM needs grouping later. |
+| `family` | string | no | Parent family (e.g. `MSP`). The loader doesn't enforce; use it if the LLM needs grouping later. |
 
 You can add any other frontmatter fields — the loader passes them
 through unchanged. Future tools can pick them up; existing tools ignore
@@ -101,8 +101,8 @@ unknown fields.
 
 ## Main labels (`main_labels/`)
 
-One file per parent family: `MS.md`, `RM.md`, `EA.md`, `O.md`, `PS.md`,
-`MD.md` plus per-track ones (`silverstone.md`, `brands_hatch.md`) as
+One file per parent family: `MSP.md`, `MSR.md`, `RM.md`, `EA.md`, `O.md`,
+`OD.md`, `PS.md`, `MD.md` plus per-track ones (`silverstone.md`, `brands_hatch.md`) as
 those get written. These document the *family* — what counts as a
 "mistake," what "expert adherence" means, when "recovery & merge"
 applies. They absorb the role the long-unused `MAIN_LABEL_GUIDELINES`
@@ -129,8 +129,8 @@ Recommended sections:
 
 ## Authoring workflow
 
-1. Hand-author the 6 anchor entries (MS1, MS22, MS44, MS47, MS17, MS9
-   plus all 6 main labels). These set the tone.
+1. Hand-author the 6 anchor entries (MSP1, MSP22, MSP44, MSP47, MSP17,
+   MSP9 plus all main labels). These set the tone.
 2. Run [scripts/synthesize_racing_engineer_corpus.py](../../../scripts/synthesize_racing_engineer_corpus.py)
    to draft the rest from anchor examples + label display names. Output
    is treated as a starting point — review before merging.
@@ -145,6 +145,6 @@ Recommended sections:
 - VLM annotation skills — those live in [../annotation/](../annotation/)
   and are queried via a completely separate registry. The two surfaces
   don't share code paths.
-- Raw label code names (`"MS44"`) in prose. Always use the natural name
+- Raw label code names (`"MSP44"`) in prose. Always use the natural name
   (`"oversteering at entry"`) — the driver hears the prose, never the
   code.

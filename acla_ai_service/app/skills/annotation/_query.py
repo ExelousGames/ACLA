@@ -9,8 +9,8 @@ Path syntax
 -----------
 Dotted paths into the document tree::
 
-    sub_label_catalog.labels.MS1
-    sub_label_catalog.labels.MS1.description
+    sub_label_catalog.labels.MSP1
+    sub_label_catalog.labels.MSP1.description
     lap_annotation.global_rules
     graph_analysis.cross_graph_guidelines.brake_and_speed
 
@@ -25,15 +25,15 @@ Filter syntax
 -------------
 ``find(collection_path, **filters)`` filters a collection (a dict whose
 values are documents) by Mongo-style predicates. ``id`` is always added
-to each document from its key, so ``find(..., id="MS1")`` works.
+to each document from its key, so ``find(..., id="MSP1")`` works.
 
 Plain values are exact-match (``$eq``)::
 
-    find("sub_label_catalog.labels", type="sub", parent="MS")
+    find("sub_label_catalog.labels", type="sub", parent="MSP")
 
 Operator dicts get the full vocabulary::
 
-    find("sub_label_catalog.labels", id={"$in": ["MS1", "MS2"]})
+    find("sub_label_catalog.labels", id={"$in": ["MSP1", "MSP2"]})
     find("sub_label_catalog.labels", description={"$regex": "trail brake"})
     find("sub_label_catalog.labels", parent={"$ne": None})
     find("sub_label_catalog.labels", annotation_guideline={"$exists": True})

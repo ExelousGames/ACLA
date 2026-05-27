@@ -19,7 +19,7 @@ that point; negative means faster.
   EA segments look like.
 - **Sustained positive (slower) that grows** — a mistake is unfolding;
   the driver is losing time and not closing the gap. This is the
-  primary trigger for an MS segment.
+  primary trigger for an MSP segment.
 - **Sustained positive that closes back to zero** — momentary
   oscillation, not a mistake; the driver recovered.
 - **Sustained negative (faster)** — driver carried more speed than
