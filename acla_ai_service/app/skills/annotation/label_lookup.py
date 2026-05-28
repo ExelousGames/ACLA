@@ -1,12 +1,12 @@
-"""Domain helper: merge sub_label_catalog yaml enrichment with the canonical
-LABEL_MAPPING + LABEL_CATEGORIES from segment_models.
+"""Domain helper: merge sub_label_annotation json enrichment with the
+canonical LABEL_MAPPING + LABEL_CATEGORIES from segment_models.
 
-The skill folder under ``app/skills/sub_label_catalog/`` is pure yaml — it
-carries the prose enrichment per label (description, annotation_guideline,
-exclusive_with, normalized_position_range, ...). The classification
-(``type``, ``parent``) is owned by ``segment_models.LABEL_CATEGORIES``.
-This module composes the two so the annotation / agent code keeps the
-same query shape it had when ``sub_label_catalog/data.py`` did the merge.
+``app/skills/annotation/sub_label_annotation.json`` carries the prose
+enrichment per label (description, annotation_guideline, exclusive_with,
+normalized_position_range, ...). The classification (``type``, ``parent``)
+is owned by ``segment_models.LABEL_CATEGORIES``. This module composes the
+two so the annotation / agent code can query enriched label docs through
+a single ``get_label`` / ``find_labels`` surface.
 
 Two verbs, mirroring the skill registry:
 
@@ -75,9 +75,9 @@ def _classify() -> Dict[str, Dict[str, Optional[str]]]:
 
 def _build_doc(lid: str, name: str, classified: Dict[str, Dict[str, Optional[str]]]) -> Dict[str, Any]:
     info = classified.get(lid) or {"type": "unknown", "parent": None, "category": None}
-    yaml_entry = skills.get(f"sub_label_catalog.labels.{lid}") or {}
+    skill_entry = skills.get(f"sub_label_annotation.labels.{lid}") or {}
     enrichment = {
-        k: v for k, v in yaml_entry.items()
+        k: v for k, v in skill_entry.items()
         if k not in _CANONICAL_FIELDS
     }
     if "normalized_position_range" in enrichment:

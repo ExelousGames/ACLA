@@ -1,11 +1,3 @@
----
-id: RM9
-name: Accelerate later at exit
-family: RM
-common_co_labels: [RM7]
-causes_to_check: []
----
-
 ## Definition
 A corrective change — the driver delays throttle-on on exit
 relative to the previous lap. The classifier flags it when the

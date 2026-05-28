@@ -1,11 +1,3 @@
----
-id: MSP48
-name: Gear Too low when accelerating
-family: MSP
-common_co_labels: [MSP35, MSP36, MSP46]
-causes_to_check: [MSP35]
----
-
 ## Definition
 On corner exit, the driver is in a lower gear than the expert —
 engine RPM is above its torque peak and pulling toward the

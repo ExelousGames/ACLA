@@ -1,11 +1,3 @@
----
-id: MSP43
-name: Inefficient grip utilization at exit
-family: MSP
-common_co_labels: [MSP19, MSP25, MSP16]
-causes_to_check: [MSP19, MSP25]
----
-
 ## Definition
 Tyres on exit are under-used — the driver isn't asking for the
 longitudinal grip available. `driver_push_to_limit` stays below 1

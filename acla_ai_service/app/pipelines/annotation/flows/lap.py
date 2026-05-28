@@ -19,7 +19,7 @@ import json as _json
 
 from app.domain.labels import LABEL_MAPPING
 from app.skills.annotation import skills
-from app.skills.annotation.label_catalog import find_labels, get_label
+from app.skills.annotation.label_lookup import find_labels, get_label
 from app.agents import (
     AgentRequest,
     AgentResponse,

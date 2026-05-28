@@ -129,12 +129,9 @@ Recommended sections:
 
 ## Authoring workflow
 
-1. Hand-author the 6 anchor entries (MSP1, MSP22, MSP44, MSP47, MSP17,
-   MSP9 plus all main labels). These set the tone.
-2. Run [scripts/synthesize_racing_engineer_corpus.py](../../../scripts/synthesize_racing_engineer_corpus.py)
-   to draft the rest from anchor examples + label display names. Output
-   is treated as a starting point — review before merging.
-3. After dropping/editing files, the registry picks them up on next
+1. Hand-author each entry — the racing-engineer corpus is data-only and
+   meant to be human-written. Match the tone of existing files.
+2. After dropping/editing files, the registry picks them up on next
    process start. In a long-running process call
    `racing_engineer.reload()`.
 

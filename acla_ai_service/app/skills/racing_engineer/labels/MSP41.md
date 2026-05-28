@@ -1,11 +1,3 @@
----
-id: MSP41
-name: Cutting the line
-family: MSP
-common_co_labels: [MSP50, MSP51]
-causes_to_check: []
----
-
 ## Definition
 Driver takes a shortcut inside the official racing surface —
 inside-kerb cuts that go beyond what the track-limits rules

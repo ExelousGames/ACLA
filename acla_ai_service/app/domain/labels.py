@@ -89,8 +89,14 @@ LABEL_MAPPING: Dict[str, str] = {
     "MSP51": "Off track at exit",
     "MSP52": "Off track in the straight",
     ################### Detailed Racing-Mistake Labels (for label MSR) — interaction-failure with a close opponent ###################
-    "MSR1": "Failed overtake attempt",
-    "MSR2": "Defense broken (got passed)",
+    "MSR1": "Failed overtake attempt (type unclear)",
+    "MSR2": "Defense broken (type unclear)",
+    "MSR3": "Failed late-brake attack at entry",
+    "MSR4": "Failed outside-line sweep",
+    "MSR5": "Failed switchback",
+    "MSR6": "Failed slipstream gain on straight",
+    "MSR7": "Inside cover broken (early-brake defense)",
+    "MSR8": "Defensive lift broken on straight",
               ################### Corner name ###################
     "brands_hatch":"Brands Hatch",
     "brands_hatch1":"Brabham Straight",
@@ -153,7 +159,7 @@ MAIN_LABEL_GUIDELINES: Dict[str, str] = {
     "PS": "Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Look for significant speed reduction and distinct trajectory deviation into the pit area.",
     "RM": "Recovery & Merge: The driver is recovering from mistake such as slower speed. identify if driver is recovery from low speed, off-track, or merge back to expert line.",
     "MSP": "Practice Mistake: A technical driving error (timing, line, brake/throttle modulation, gear, off-track, …) NOT caused by interaction with another car. \n   - Step 1: Analyze the 'Time Difference to Expert' graph; a mistake normally causes this time gap to increase continuously without decreasing shortly after.\n   - Step 2: Examine the differences in 'throttle' and 'brake' between the player and the expert to find out why the player is slower.\n   - Step 3: Examine the 'push_limit' graph to find understeer or oversteer, which could lead to lower speed.\n   - Step 4: Check the 'Trajectory' map for mistakes caused by deviations from the optimal line.\n   - Step 5: Find the MSP sub-label that describes the *root cause*.",
-    "MSR": "Racing Mistake: Time / position loss caused by an interaction with a close opponent. Requires a close primary opponent on `find_nearest_opponent` AND a bad interaction outcome. Sub-labels: MSR1 (failed overtake attempt — close opp + no pass + time loss), MSR2 (defense broken — close opp + `got_passed_by_opponent: true`). If no close opponent is present, it's MSP, not MSR.",
+    "MSR": "Racing Mistake: Time / position loss caused by an interaction with a close opponent. Requires a close primary opponent on `find_nearest_opponent` AND a bad interaction outcome. Failed overtakes mirror the O subtypes (use MSR3 for a failed O1 late-brake attack, MSR4 for a failed O3 outside-line sweep, MSR5 for a failed O4 switchback, MSR6 for a failed O5 slipstream gain). Broken defenses mirror OD (MSR7 for a broken OD1 inside cover, MSR8 for a broken OD2 defensive lift). Use the generic MSR1 / MSR2 only when the attempt type cannot be identified from telemetry. If no close opponent is present, it's MSP, not MSR.",
     "brands_hatch": "Circuit Feature (Brands Hatch):Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Brands Hatch circuit. Also, identify the shape of the segment using labels ST1-6 ",
     "silverstone": "Circuit Feature (Silverstone): Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Silverstone circuit. Also, identify the shape of the segment using labels ST1-6.",
     "Segment Type": "Segment Type: if the segment contains a corner, label the shape as in the corner. if the segment is on the straight, label as on the straight. if the segment is approaching a corner but not yet in it, label as approach to corner. if the segment is exiting a corner, label as exit corner. if the segment is between corners and hasnt be name yet, label as between corners."
@@ -175,7 +181,7 @@ LABEL_CATEGORIES: Dict[str, List[str]] = {
     "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16","brands_hatch17","brands_hatch18","brands_hatch19"],
     "silverstone":["silverstone1","silverstone2","silverstone3","silverstone4","silverstone5","silverstone6","silverstone7","silverstone8","silverstone9","silverstone10","silverstone11","silverstone12","silverstone13","silverstone14","silverstone15","silverstone16","silverstone17","silverstone18","silverstone20","silverstone21","silverstone19"],
     "MSP":["MSP1","MSP2","MSP3","MSP4","MSP5","MSP6","MSP7","MSP8","MSP9","MSP10","MSP11","MSP13","MSP14","MSP15","MSP16","MSP17","MSP18","MSP19","MSP20","MSP21","MSP22","MSP23","MSP24","MSP25","MSP26","MSP27","MSP28","MSP29","MSP30","MSP31","MSP32","MSP33","MSP34","MSP35","MSP36","MSP37","MSP38","MSP41","MSP42","MSP43","MSP44","MSP45","MSP46","MSP47","MSP48","MSP49","MSP50","MSP51","MSP52"],
-    "MSR":["MSR1","MSR2"],
+    "MSR":["MSR1","MSR2","MSR3","MSR4","MSR5","MSR6","MSR7","MSR8"],
     "Segment Type": ["ST1", "ST2", "ST3", "ST4", "ST5", "ST6"]
 }
 

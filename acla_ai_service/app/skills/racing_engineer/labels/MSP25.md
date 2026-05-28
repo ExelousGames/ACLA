@@ -1,11 +1,3 @@
----
-id: MSP25
-name: Throttle applied too slowly
-family: MSP
-common_co_labels: [MSP21, MSP19, MSP11]
-causes_to_check: [MSP21]
----
-
 ## Definition
 Throttle ramp-up at corner exit is more gradual than the expert's
 — the driver feathers in rather than committing as the car

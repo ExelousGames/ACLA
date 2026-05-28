@@ -1,9 +1,3 @@
----
-id: MSR
-name: Mistake (Racing)
-family: MSR
----
-
 ## Definition
 Time or position loss caused by an *interaction* with a close opponent —
 not by a technical execution error on an empty piece of track. Sub-labels

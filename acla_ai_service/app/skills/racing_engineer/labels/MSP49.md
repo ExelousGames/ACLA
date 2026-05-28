@@ -1,11 +1,3 @@
----
-id: MSP49
-name: Gear Too high when accelerating
-family: MSP
-common_co_labels: [MSP38, MSP19]
-causes_to_check: [MSP38]
----
-
 ## Definition
 On corner exit, the driver is in a higher gear than the expert —
 engine RPM is below its torque peak and the car bogs as the

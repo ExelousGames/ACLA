@@ -1,11 +1,3 @@
----
-id: MSP34
-name: Throttle and brake applied at the same time for too long
-family: MSP
-common_co_labels: [MSP29, MSP18]
-causes_to_check: []
----
-
 ## Definition
 Both pedals are active simultaneously for longer than expert —
 either left-foot braking that overlaps unintentionally, or a

@@ -1,9 +1,3 @@
----
-id: PS
-name: Pit Stop
-family: PS
----
-
 ## Definition
 The driver is entering the pit lane, stationary at the box, or exiting
 the pit lane. Segment characteristics are dominated by pit-lane rules

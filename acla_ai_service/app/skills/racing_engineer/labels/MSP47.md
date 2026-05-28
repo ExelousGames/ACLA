@@ -1,11 +1,3 @@
----
-id: MSP47
-name: Understeering at exit
-family: MSP
-common_co_labels: [MSP16, MSP43, MSP19, MSP15]
-causes_to_check: [MSP15, MSP19]
----
-
 ## Definition
 Front tyres scrub wide on corner exit — the car runs further out than
 the driver steered for. You feel it as the wheel going light and the

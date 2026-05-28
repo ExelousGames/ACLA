@@ -1,11 +1,3 @@
----
-id: RM6
-name: Recover from small speed gap under 20
-family: RM
-common_co_labels: [RM7]
-causes_to_check: []
----
-
 ## Definition
 The car is recovering from a moderate speed deficit (less than
 20 km/h) — typically following a minor mistake or an

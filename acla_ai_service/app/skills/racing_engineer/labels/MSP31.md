@@ -1,11 +1,3 @@
----
-id: MSP31
-name: Highest Brake length too short
-family: MSP
-common_co_labels: [MSP28, MSP17, MSP13]
-causes_to_check: [MSP13, MSP28]
----
-
 ## Definition
 The duration spent at peak brake is shorter than the expert's —
 the brake plateau is too brief, often because the driver releases

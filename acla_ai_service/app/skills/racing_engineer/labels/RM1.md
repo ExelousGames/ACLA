@@ -1,11 +1,3 @@
----
-id: RM1
-name: Recover from off-track
-family: RM
-common_co_labels: [RM7, RM6, RM5]
-causes_to_check: []
----
-
 ## Definition
 The car returns to the track surface after going off — onto
 gravel, grass, run-off, or beyond the kerb. The recovery segment

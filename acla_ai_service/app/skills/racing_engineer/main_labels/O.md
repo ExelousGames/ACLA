@@ -1,9 +1,3 @@
----
-id: O
-name: Overtaking
-family: O
----
-
 ## Definition
 The driver is attempting a pass on another car. Different rules apply:
 the optimal line may not be the racing line, brake points typically

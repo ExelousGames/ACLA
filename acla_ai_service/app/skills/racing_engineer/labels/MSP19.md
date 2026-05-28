@@ -1,11 +1,3 @@
----
-id: MSP19
-name: Highest throttle pressure too low
-family: MSP
-common_co_labels: [MSP21, MSP25, MSP11]
-causes_to_check: [MSP21]
----
-
 ## Definition
 Peak throttle on exit doesn't reach what the expert reached. The
 driver lifts or modulates when the car can take full throttle.

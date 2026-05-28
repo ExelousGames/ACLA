@@ -1,11 +1,3 @@
----
-id: MSP35
-name: Shift up too early
-family: MSP
-common_co_labels: [MSP19, MSP48]
-causes_to_check: []
----
-
 ## Definition
 Driver upshifts before the engine reaches the optimal RPM for the
 power curve — the gear change happens too low in the rev range

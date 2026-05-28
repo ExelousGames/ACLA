@@ -1,11 +1,3 @@
----
-id: MSP16
-name: Exit trajectory too wide
-family: MSP
-common_co_labels: [MSP47, MSP10, MSP3, MSP43, MSP15]
-causes_to_check: [MSP47, MSP10, MSP20]
----
-
 ## Definition
 Exit line drifts wider than the expert reference — the car uses
 more track than it should on the way out, sometimes running onto

@@ -1,11 +1,3 @@
----
-id: RM5
-name: Recover from speed gap over 20
-family: RM
-common_co_labels: [RM7, RM1]
-causes_to_check: []
----
-
 ## Definition
 The car is recovering from a speed deficit greater than 20 km/h
 relative to the expert reference at the same track position —

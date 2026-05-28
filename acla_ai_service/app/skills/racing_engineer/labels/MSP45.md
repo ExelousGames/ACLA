@@ -1,11 +1,3 @@
----
-id: MSP45
-name: Understeering at entry
-family: MSP
-common_co_labels: [MSP9, MSP28, MSP14, MSP22]
-causes_to_check: [MSP28, MSP14]
----
-
 ## Definition
 Front tyres lose grip at corner entry — the car refuses to turn
 as much as the driver steers for. The driver winds on extra lock

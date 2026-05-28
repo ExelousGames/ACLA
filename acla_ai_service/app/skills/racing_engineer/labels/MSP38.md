@@ -1,11 +1,3 @@
----
-id: MSP38
-name: Shift down too late
-family: MSP
-common_co_labels: [MSP49]
-causes_to_check: []
----
-
 ## Definition
 Driver downshifts after the corner is already mid-rotation — the
 right gear arrives late, leaving the car in too-tall a gear at

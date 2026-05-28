@@ -1,11 +1,3 @@
----
-id: MSP8
-name: Time to exit too late
-family: MSP
-common_co_labels: [MSP21, MSP19, MSP3, MSP11]
-causes_to_check: [MSP3]
----
-
 ## Definition
 Driver holds the steering and waits to unwind well past the
 expert's exit-start point. The car finishes the corner late —

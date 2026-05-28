@@ -2,11 +2,11 @@
 
 Layout::
 
-    app/skill_manager/                 (this package — code)
+    app/skills/annotation/             (this package — code + json data)
       __init__.py, _registry.py, _query.py, _embedder.py
-      skills/<name>.yaml               (data — drop a yaml in, restart)
+      <name>.json                      (data — drop a json in, restart)
 
-Skills are single yaml files; no Python escape hatches. Filtering,
+Skills are single JSON files; no Python escape hatches. Filtering,
 formatting, or merging skill data with non-skill state is done on the
 caller side.
 

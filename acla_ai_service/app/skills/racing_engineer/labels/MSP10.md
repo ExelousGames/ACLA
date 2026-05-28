@@ -1,11 +1,3 @@
----
-id: MSP10
-name: Apex too wide
-family: MSP
-common_co_labels: [MSP9, MSP3, MSP11, MSP16, MSP47]
-causes_to_check: [MSP9, MSP2]
----
-
 ## Definition
 At the apex, the car sits wider than the expert reference — it
 doesn't tuck to the inside kerb (or whatever the expert's apex

@@ -1,11 +1,3 @@
----
-id: MSP30
-name: Initiate throttle release too early
-family: MSP
-common_co_labels: [MSP23, MSP5]
-causes_to_check: []
----
-
 ## Definition
 Throttle lift begins before the expert's release point — the
 driver eases off ahead of schedule, coasting into the brake zone

@@ -1,11 +1,3 @@
----
-id: RM7
-name: Merge back to expert line
-family: RM
-common_co_labels: [RM1, RM5, RM6, RM2]
-causes_to_check: []
----
-
 ## Definition
 The car is converging back onto the expert reference line after
 deviation — could be from an off (RM1), a pit exit (RM2), or

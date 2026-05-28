@@ -1,12 +1,12 @@
-"""SkillRegistry — document-store interface over a folder of skill yamls.
+"""SkillRegistry — document-store interface over a folder of skill JSON files.
 
 Layout::
 
-    app/skills/                        (this package — orchestrator code + yaml data)
+    app/skills/                        (this package — orchestrator code + json data)
       __init__.py, _registry.py, _query.py, _embedder.py    (code)
-      <name>.yaml                      (skill definitions — drop a yaml in, restart)
+      <name>.json                      (skill definitions — drop a json in, restart)
 
-A skill is a single yaml file. No Python escape hatches — filtering,
+A skill is a single JSON file. No Python escape hatches — filtering,
 formatting, or merging with non-skill state belong to the caller.
 
 The registry exposes four verbs, uniform across every skill:
@@ -17,7 +17,7 @@ The registry exposes four verbs, uniform across every skill:
   * ``search(query, top_k)``    — embedding similarity over discovery headers
 
 Discovery headers are indexed as cached embeddings for ``search``;
-only headers whose YAML hash changed are re-embedded on startup.
+only headers whose JSON hash changed are re-embedded on startup.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-import yaml
 
 from app.skills.annotation._query import (
     _split_path,
@@ -43,7 +42,7 @@ from app.skills.annotation._query import (
 LOGGER = logging.getLogger(__name__)
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
-# Annotation yamls live under app/skills/annotation/<name>.yaml. The racing-
+# Annotation skills live under app/skills/annotation/<name>.json. The racing-
 # engineer corpus lives in the sibling app/skills/racing_engineer/ subpackage
 # and is loaded by its own module — see app/skills/__init__.py.
 _SKILLS_ROOT = _PACKAGE_ROOT
@@ -78,7 +77,7 @@ class SkillSpec:
 class Skill:
     spec: SkillSpec
     raw_body: Dict[str, Any]
-    yaml_path: Path
+    source_path: Path
 
     @property
     def name(self) -> str:
@@ -111,19 +110,19 @@ class SkillRegistry:
     # ------------------------------------------------------------------
 
     def _load_skills(self) -> None:
-        for yaml_path in sorted(self._root.glob("*.yaml")):
-            if yaml_path.name.startswith("_") or yaml_path.name.startswith("."):
+        for json_path in sorted(self._root.glob("*.json")):
+            if json_path.name.startswith("_") or json_path.name.startswith("."):
                 continue
-            with open(yaml_path, "r", encoding="utf-8") as fh:
-                raw = yaml.safe_load(fh) or {}
+            with open(json_path, "r", encoding="utf-8") as fh:
+                raw = json.load(fh) or {}
             header = raw.pop("_skill", None)
             if not header:
                 LOGGER.warning(
-                    "Skill at %s has no '_skill:' header — skipping.", yaml_path,
+                    "Skill at %s has no '_skill' header — skipping.", json_path,
                 )
                 continue
             spec = SkillSpec(
-                name=str(header.get("name", yaml_path.stem)),
+                name=str(header.get("name", json_path.stem)),
                 description=str(header.get("description", "")).strip(),
                 when_to_use=list(header.get("when_to_use") or []),
                 tags=list(header.get("tags") or []),
@@ -132,7 +131,7 @@ class SkillRegistry:
             self._skills[spec.name] = Skill(
                 spec=spec,
                 raw_body=raw,
-                yaml_path=yaml_path,
+                source_path=json_path,
             )
         LOGGER.info("SkillRegistry loaded %d skill(s): %s",
                     len(self._skills), sorted(self._skills.keys()))
@@ -145,8 +144,8 @@ class SkillRegistry:
         current_manifest: Dict[str, str] = {}
         discovery_texts: Dict[str, str] = {}
         for name, skill in self._skills.items():
-            yaml_bytes = skill.yaml_path.read_bytes()
-            current_manifest[name] = hashlib.sha256(yaml_bytes).hexdigest()
+            source_bytes = skill.source_path.read_bytes()
+            current_manifest[name] = hashlib.sha256(source_bytes).hexdigest()
             discovery_texts[name] = skill.spec.discovery_text()
 
         cached_embeddings: Dict[str, np.ndarray] = {}
@@ -237,13 +236,13 @@ class SkillRegistry:
     # ------------------------------------------------------------------
 
     def get(self, path: str, default: Any = None) -> Any:
-        """Path lookup. ``skills.get("sub_label_catalog.labels.MS1.description")``."""
+        """Path lookup. ``skills.get("sub_label_annotation.labels.MS1.description")``."""
         return self._resolve(path, default)
 
     def find(self, collection_path: str, **filters: Any) -> List[Dict[str, Any]]:
         """Filter a collection by Mongo-style predicates.
 
-        ``skills.find("sub_label_catalog.labels", type="sub", parent="MS")``
+        ``skills.find("sub_label_annotation.labels", type="sub", parent="MS")``
         """
         coll = self._resolve(collection_path)
         return _filter(coll, filters)

@@ -1,9 +1,3 @@
----
-id: MD
-name: Missing Data
-family: MD
----
-
 ## Definition
 The segment contains gaps, corrupted samples, or impossible values in
 the telemetry stream. The classifier can't say anything reliable about

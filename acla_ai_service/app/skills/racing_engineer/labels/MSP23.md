@@ -1,11 +1,3 @@
----
-id: MSP23
-name: Release throttle too quickly
-family: MSP
-common_co_labels: [MSP30, MSP44, MSP46]
-causes_to_check: []
----
-
 ## Definition
 The driver lifts off the throttle faster than the expert — a sharp
 back-off rather than a smooth roll-off. Destabilises the rear and

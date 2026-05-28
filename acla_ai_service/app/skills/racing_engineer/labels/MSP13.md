@@ -1,11 +1,3 @@
----
-id: MSP13
-name: Highest Brake pressure too low
-family: MSP
-common_co_labels: [MSP5, MSP32, MSP24]
-causes_to_check: []
----
-
 ## Definition
 Peak brake pressure falls noticeably below the expert's peak — the
 driver under-presses the pedal for the corner. Often pairs with an

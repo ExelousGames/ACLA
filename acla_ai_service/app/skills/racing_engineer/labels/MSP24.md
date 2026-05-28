@@ -1,11 +1,3 @@
----
-id: MSP24
-name: Brake applied too slowly
-family: MSP
-common_co_labels: [MSP5, MSP13, MSP32]
-causes_to_check: [MSP5]
----
-
 ## Definition
 Brake-pressure ramp-up is more gradual than the expert's — the
 driver builds pressure slowly when the car is asking for a decisive

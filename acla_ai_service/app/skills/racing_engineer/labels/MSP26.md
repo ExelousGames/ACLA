@@ -1,11 +1,3 @@
----
-id: MSP26
-name: Highest throttle pressure too high
-family: MSP
-common_co_labels: [MSP15, MSP46, MSP47]
-causes_to_check: [MSP15]
----
-
 ## Definition
 Peak throttle on exit overshoots what the expert applied — usually
 hitting 100% where the expert modulated, or going to full sooner

@@ -1,9 +1,3 @@
----
-id: EA
-name: Expert Adherence
-family: EA
----
-
 ## Definition
 The driver is matching the expert reference closely — line, brake
 points, throttle application, apex speed are all within tolerance.

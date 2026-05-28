@@ -1,11 +1,3 @@
----
-id: MSP29
-name: Initiate throttle release too late
-family: MSP
-common_co_labels: [MSP34, MSP5]
-causes_to_check: []
----
-
 ## Definition
 Throttle lift begins after the expert's throttle-release point —
 the driver is still on the gas when they should already be

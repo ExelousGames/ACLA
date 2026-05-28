@@ -1,11 +1,3 @@
----
-id: MSP5
-name: Initiate brake too early
-family: MSP
-common_co_labels: [MSP32, MSP24, MSP13]
-causes_to_check: []
----
-
 ## Definition
 Brake application begins before the expert's reference point. Costs
 time on the preceding straight — you're slowing down when you could

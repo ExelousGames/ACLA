@@ -1,11 +1,3 @@
----
-id: MSP36
-name: Shift up too late
-family: MSP
-common_co_labels: [MSP48]
-causes_to_check: []
----
-
 ## Definition
 Driver upshifts past the engine's optimal RPM — usually bouncing
 off the limiter for a moment before changing gear, or shifting

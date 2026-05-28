@@ -1,11 +1,3 @@
----
-id: MSP15
-name: Throttle applied too quickly
-family: MSP
-common_co_labels: [MSP26, MSP46, MSP47, MSP43]
-causes_to_check: [MSP20]
----
-
 ## Definition
 Throttle ramp-up rate at corner exit is steeper than the expert's
 — the pedal is buried rather than rolled. Often causes wheelspin

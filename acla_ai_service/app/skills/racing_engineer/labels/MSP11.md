@@ -1,11 +1,3 @@
----
-id: MSP11
-name: Exit trajectory too narrow
-family: MSP
-common_co_labels: [MSP7, MSP6, MSP21]
-causes_to_check: [MSP7, MSP21]
----
-
 ## Definition
 Exit line stays tighter than the expert reference — the driver
 doesn't use the available track on exit, hugging the inside instead

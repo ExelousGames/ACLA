@@ -1,11 +1,3 @@
----
-id: MSP4
-name: Time to exit too early
-family: MSP
-common_co_labels: [MSP7, MSP11, MSP20, MSP46]
-causes_to_check: [MSP7, MSP20]
----
-
 ## Definition
 Driver starts unwinding the steering and opening the throttle
 earlier than expert — exits the corner before the apex has been

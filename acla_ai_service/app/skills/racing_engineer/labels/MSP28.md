@@ -1,11 +1,3 @@
----
-id: MSP28
-name: Initiate brake release too early
-family: MSP
-common_co_labels: [MSP17, MSP31, MSP13]
-causes_to_check: [MSP13]
----
-
 ## Definition
 Driver begins releasing brake pressure before the expert does —
 the trail-off starts ahead of schedule.

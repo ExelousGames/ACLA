@@ -1,11 +1,3 @@
----
-id: MSP20
-name: Initiate throttle too early
-family: MSP
-common_co_labels: [MSP47, MSP16, MSP43, MSP15]
-causes_to_check: []
----
-
 ## Definition
 Throttle application begins before the expert's throttle-on point
 — the driver opens the gas while the car is still loaded with

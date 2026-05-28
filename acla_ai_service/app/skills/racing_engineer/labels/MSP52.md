@@ -1,11 +1,3 @@
----
-id: MSP52
-name: Off track in the straight
-family: MSP
-common_co_labels: []
-causes_to_check: []
----
-
 ## Definition
 The car leaves the track surface while travelling in a relatively
 straight line — usually on a fast straight or between two

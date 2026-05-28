@@ -1,11 +1,3 @@
----
-id: MSP7
-name: Too early compared to expert Apex
-family: MSP
-common_co_labels: [MSP6, MSP4, MSP11, MSP16]
-causes_to_check: [MSP6]
----
-
 ## Definition
 The car reaches the apex earlier in the corner than the expert
 reference — closer to the entry, further from the exit. The

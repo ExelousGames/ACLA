@@ -1,11 +1,3 @@
----
-id: MSP32
-name: Highest Brake length too long
-family: MSP
-common_co_labels: [MSP27, MSP18, MSP13, MSP5]
-causes_to_check: [MSP5, MSP13]
----
-
 ## Definition
 Duration spent at peak brake is longer than the expert's. The
 driver lingers on the pedal at full pressure past the point where

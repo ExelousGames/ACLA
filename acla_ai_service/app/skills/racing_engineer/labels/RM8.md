@@ -1,11 +1,3 @@
----
-id: RM8
-name: Accelerate earlier at exit
-family: RM
-common_co_labels: [RM7, RM6]
-causes_to_check: []
----
-
 ## Definition
 A corrective change in driving — the driver is consciously
 applying throttle earlier on exit than on the previous lap. The

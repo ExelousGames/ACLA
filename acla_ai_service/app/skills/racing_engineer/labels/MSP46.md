@@ -1,11 +1,3 @@
----
-id: MSP46
-name: Oversteering at exit
-family: MSP
-common_co_labels: [MSP15, MSP26, MSP20]
-causes_to_check: [MSP15, MSP26, MSP20]
----
-
 ## Definition
 Rear loses grip on corner exit — power oversteer in RWD cars, or
 lift-off oversteer in any car if the throttle came off mid-exit.

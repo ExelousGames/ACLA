@@ -1,11 +1,3 @@
----
-id: MSP42
-name: Inefficient grip utilization at entry
-family: MSP
-common_co_labels: [MSP13, MSP24, MSP9]
-causes_to_check: []
----
-
 ## Definition
 At corner entry, the tyres are operating below their available
 grip envelope — the driver isn't asking them for the lateral or

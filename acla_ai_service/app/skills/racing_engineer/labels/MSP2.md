@@ -1,11 +1,3 @@
----
-id: MSP2
-name: Initiate the turn too late
-family: MSP
-common_co_labels: [MSP3, MSP10, MSP16, MSP9]
-causes_to_check: [MSP1, MSP22]
----
-
 ## Definition
 Steering input starts after the expert's turn-in point. The car is
 still going straight when it should be rotating — and the corner

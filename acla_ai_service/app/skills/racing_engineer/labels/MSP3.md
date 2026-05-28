@@ -1,11 +1,3 @@
----
-id: MSP3
-name: Too late compared to expert Apex
-family: MSP
-common_co_labels: [MSP2, MSP9, MSP10, MSP16]
-causes_to_check: [MSP2, MSP9, MSP1]
----
-
 ## Definition
 The car reaches the apex later in the corner than the expert
 reference — further along the geometry, deeper into the turn. A

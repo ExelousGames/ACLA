@@ -1,11 +1,3 @@
----
-id: MSP44
-name: Oversteering at entry
-family: MSP
-common_co_labels: [MSP17, MSP22, MSP3, MSP9]
-causes_to_check: [MSP14, MSP22, MSP17]
----
-
 ## Definition
 Rear of the car steps out before the apex, requiring countersteer or
 a mid-entry lift to keep the line. The car is rotating more than the

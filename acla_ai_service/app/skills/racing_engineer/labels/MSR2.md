@@ -1,17 +1,11 @@
----
-id: MSR2
-name: Defense broken (got passed)
-family: MSR
-common_co_labels: [MSP1, MSP22, MSP9, MSP16]
-causes_to_check: []
----
-
 ## Definition
-Player attempted to hold position against a close primary opponent
-and the opponent got through — the signed longitudinal gap flipped
-from negative (opponent behind at section entry) to positive (opponent
-ahead at section exit). The defensive line or the cover-brake didn't
-hold.
+Fallback label for a broken defense whose specific defense-type
+signature cannot be read from the player's trace. Player attempted to
+hold position against a close primary opponent and the opponent got
+through — signed longitudinal gap flipped negative → positive. Prefer
+a specific subtype when the trace identifies the defense — MSR7
+(broken inside cover) or MSR8 (broken defensive lift) — and only fall
+back to MSR2 when neither matches.
 
 ## Physics
 A defensive line is also a compromised line. Covering the inside

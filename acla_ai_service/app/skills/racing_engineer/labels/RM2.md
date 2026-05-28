@@ -1,11 +1,3 @@
----
-id: RM2
-name: Exit pit lane
-family: RM
-common_co_labels: [RM7, RM6]
-causes_to_check: []
----
-
 ## Definition
 The car is exiting the pit lane and rejoining the racing surface
 — typically at pit-exit speed, accelerating up to track speed

@@ -1,11 +1,3 @@
----
-id: MSP21
-name: Initiate throttle too late
-family: MSP
-common_co_labels: [MSP19, MSP25, MSP8, MSP11]
-causes_to_check: [MSP8]
----
-
 ## Definition
 Throttle application begins after the expert's throttle-on point.
 The car is unwound and ready for power, but the driver is still

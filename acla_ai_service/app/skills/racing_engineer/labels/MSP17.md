@@ -1,11 +1,3 @@
----
-id: MSP17
-name: Release brake too quickly
-family: MSP
-common_co_labels: [MSP22, MSP44, MSP3, MSP10]
-causes_to_check: [MSP22, MSP1]
----
-
 ## Definition
 Brake pressure falls from peak to zero too fast — the trail-off ramp
 is steeper than the expert's. The car loses the front-end load needed

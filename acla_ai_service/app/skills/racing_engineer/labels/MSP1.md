@@ -1,11 +1,3 @@
----
-id: MSP1
-name: Initiate brake too late
-family: MSP
-common_co_labels: [MSP22, MSP14, MSP44, MSP3, MSP10]
-causes_to_check: []
----
-
 ## Definition
 Brake application begins after the expert's reference point for the
 same corner. Triggers a cascade — almost every other entry mistake

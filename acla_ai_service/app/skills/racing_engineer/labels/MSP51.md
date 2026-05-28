@@ -1,11 +1,3 @@
----
-id: MSP51
-name: Off track at exit
-family: MSP
-common_co_labels: [MSP16, MSP47, MSP46]
-causes_to_check: [MSP47, MSP46, MSP16]
----
-
 ## Definition
 The car runs off the track on the corner exit — beyond the white
 line at the exit kerb. Causes a track-limits violation and

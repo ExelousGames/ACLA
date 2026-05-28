@@ -1,9 +1,3 @@
----
-id: RM
-name: Recovery & Merge
-family: RM
----
-
 ## Definition
 The driver is recovering from a prior mistake or off-track and
 merging back onto the expert line — the segment isn't a mistake in

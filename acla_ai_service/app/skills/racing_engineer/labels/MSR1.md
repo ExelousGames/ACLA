@@ -1,16 +1,12 @@
----
-id: MSR1
-name: Failed overtake attempt
-family: MSR
-common_co_labels: [MSP1, MSP44, MSP10, MSP16]
-causes_to_check: []
----
-
 ## Definition
-Player engaged a close opponent with an attacking move — a late brake,
-an off-line entry, or a sustained outside / inside sweep — but did not
-complete the pass and lost time relative to the expert in the process.
-The opponent didn't pass back either; the attempt simply didn't stick.
+Fallback label for a failed overtake attempt whose specific
+attempt-type signature cannot be read from the player's trace. Player
+engaged a close opponent and did not complete the pass; the opponent
+didn't pass back either; the attempt simply didn't stick. Prefer a
+specific subtype when the trace identifies the attempt — MSR3 (failed
+late-brake), MSR4 (failed outside sweep), MSR5 (failed switchback),
+MSR6 (failed slipstream) — and only fall back to MSR1 when none of
+those match.
 
 ## Physics
 An attacking line is almost always a compromised line. Late-braking

@@ -1,11 +1,3 @@
----
-id: MSP50
-name: Off track at entry
-family: MSP
-common_co_labels: [MSP9, MSP33, MSP45]
-causes_to_check: [MSP44, MSP22, MSP33]
----
-
 ## Definition
 The car runs off the track surface during the corner entry —
 either onto the kerb's outer paint, the run-off, or beyond the

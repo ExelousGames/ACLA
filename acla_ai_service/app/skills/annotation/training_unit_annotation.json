@@ -1,0 +1,40 @@
+{
+  "_skill": {
+    "name": "training_unit_annotation",
+    "description": "Per-mode writing rules for the racing-engineer LLM training rows. Defines the critique (post-lap, retrospective) and guide (pre-lap, prescriptive) completions that get drafted per training unit, plus the system-prompt template the trainer uses. Consumed by the Streamlit LLM-pipeline tab (claude_sdk drafter + human review) and by `dataset_builder` when fanning units into chat rows.\n",
+    "when_to_use": [
+      "Drafting training-unit completions in the Streamlit LLM-pipeline tab.",
+      "Briefing a human reviewer on what critique vs guide should sound like.",
+      "Building the system prompt for `dataset_builder` Step-2 chat rows."
+    ],
+    "tags": [
+      "training_data",
+      "completions",
+      "critique",
+      "guide"
+    ]
+  },
+  "system_prompt_template": "{mode} user, {labels_text}",
+  "modes": {
+    "critique": {
+      "voice": "retrospective, post-lap engineer",
+      "audience": "the driver, second person",
+      "style": "- 1–3 sentences, ≤ 60 words total. - State what happened in the section, then why it cost time. - Reference at least one concrete label (e.g. \"the MS in T3\", \"the\n  offset spike on entry\") so the model learns to ground its answer\n  in the structured context.\n- No fix advice — that's `guide`'s job. Stay descriptive.\n",
+      "avoid": [
+        "vague filler (\"nice lap\", \"keep working on it\")",
+        "inventing telemetry numbers the labels don't imply",
+        "prescriptive language (\"you should\", \"try to\") — belongs to guide"
+      ]
+    },
+    "guide": {
+      "voice": "prescriptive, pre-lap or live coach",
+      "audience": "the driver, second person, imperative mood",
+      "style": "- 1–3 sentences, ≤ 60 words total. - One actionable instruction per child label (parent label sets\n  the section context). If the unit is isolated, give one\n  instruction for the whole unit.\n- Anchor each instruction to the label (e.g. \"On the MS in T3,\n  release the brake later before turn-in\").\n- Present tense, imperative. No reflection on past laps.\n",
+      "avoid": [
+        "critique language (\"you lost time because…\") — belongs to critique",
+        "generic coaching that ignores the labels"
+      ]
+    }
+  },
+  "claude_prompt_template": "You are drafting a {mode}-mode completion for a racing-engineer LLM\ntraining dataset. The student model will later be prompted with:\n\n    System:  {mode} user, {labels_text}\n    User:    <runtime context>\n\nand is expected to produce a response in the {mode} voice. Your job is\nto write that response now, using ONLY the labels as context.\n\nRules for {mode} mode:\n{mode_style}\n\nAvoid:\n{mode_avoid}\n\nOutput ONLY the completion text. No preamble, no quotes, no markdown,\nno labels echoed back. Keep it under 60 words.\n"
+}

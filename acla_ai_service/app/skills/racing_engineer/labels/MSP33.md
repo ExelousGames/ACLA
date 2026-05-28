@@ -1,11 +1,3 @@
----
-id: MSP33
-name: Entry trajectory too wide
-family: MSP
-common_co_labels: [MSP7, MSP6, MSP16]
-causes_to_check: []
----
-
 ## Definition
 The car enters the corner from a wider lateral position than the
 expert reference — sitting outside the expert line at turn-in.

@@ -1,0 +1,1557 @@
+{
+  "_skill": {
+    "name": "sub_label_annotation",
+    "description": "Rich metadata for every annotation label (main, sub, segment_type, circuit, circuit_section). Per-label description, hierarchy (parent/children), exclusive_with constraints, annotation_guideline, and normalized_position_range for circuit sections. Descriptions contain inline VLM predicates so embedding-similarity over observation text shortlists the matching labels.\n",
+    "when_to_use": [
+      "Drilling into a parent-labelled section to pick sub-labels (detailed flow).",
+      "Embedding-similarity shortlist of candidate labels from VLM observations.",
+      "Validating label hierarchy (parent presence, mutual exclusion).",
+      "Looking up a circuit_section by normalized lap position."
+    ],
+    "tags": [
+      "labels",
+      "taxonomy",
+      "hierarchy",
+      "telemetry",
+      "circuit_sections",
+      "embedding"
+    ]
+  },
+  "labels": {
+    "O": {
+      "name": "Successful Overtake",
+      "type": "main",
+      "description": "Player gained a position on a specific opponent inside the section. Required gate: the primary opponent returned by `find_nearest_opponent` must show `passed_by_player: true` — signed longitudinal gap goes from **positive at entry** (opp ahead in player's heading) to **negative at exit** (opp behind). A close opponent with an attempted but uncompleted pass is `MSR1` (failed overtake attempt), not O. Defensive holds are OD; failed defenses are `MSR2`.\n",
+      "annotation_guideline": "How to identify the sublabels for Successful Overtake: Step 1 — Confirm the pass. Call `find_nearest_opponent(start, end)`. The primary candidate MUST have `passed_by_player: true`. If no candidate has that flag, do NOT propose any O sub-label — the section is either OD (held against a close opponent), `MSR1` (close opponent + failed attack, `passed_by_player: false`), `MSR2` (close opponent + `got_passed_by_opponent: true`), or no-O. Quote `slot`, `entry_signed_long_gap_m`, `exit_signed_long_gap_m`, `min_distance_m`, `min_lateral_offset_m`, and `side_by_side_iloc_count` in reasoning. Step 2 — Pick the technique sub-label by where the pass happened and how the player's own trace diverges from the expert:\n  - O1 (late-brake attack at corner entry): player's brake\n    initiation later than expert + tightening trajectory.\n  - O3 (outside-line sweep through a corner): trajectory wider\n    than expert through entry-to-apex.\n  - O4 (switchback): offset crosses outside-at-entry to\n    inside-at-exit, earlier throttle on exit.\n  - O5 (slipstream on a straight): speed > expert with throttle\n    ≤ expert; gap closed smoothly. Confirm with\n    `query_opponent_trajectory(start, end, slot, n_samples)`.\n",
+      "parent": null,
+      "children": [
+        "O1",
+        "O3",
+        "O4",
+        "O5"
+      ],
+      "exclusive_with": [
+        "OD",
+        "MD",
+        "PS"
+      ]
+    },
+    "OD": {
+      "name": "Successful Defense",
+      "type": "main",
+      "description": "Player held position against a real, close opponent inside the section. Required gate: the primary opponent returned by `find_nearest_opponent` must be close (`side_by_side_iloc_count > 0` or `min_distance_m` ≤ ~10 m) AND `got_passed_by_opponent: false`. No close opponent ⇒ this is not OD (a slow trace alone is MSP / EA). A player who DID lose the position is `MSR2` (defense broken), not OD.\n",
+      "annotation_guideline": "How to identify the sublabels for Successful Defense: Step 1 — Confirm the defense. Call `find_nearest_opponent(start, end)`. Require a primary candidate with `got_passed_by_opponent: false` AND a close engagement (`side_by_side_iloc_count > 0` OR `min_distance_m` ≤ ~10 m). If no close candidate, the section is not OD. Quote the same attachment fields as for O in reasoning. Step 2 — Pick the technique sub-label by where the defense happened:\n  - OD1 (inside cover at corner entry): player's brake\n    initiation earlier than expert and/or trajectory tighter\n    than expert through entry-to-apex; opponent close on the\n    outside / behind.\n  - OD2 (defensive lift on a straight): player's throttle drops\n    below expert with no matching brake; opponent close behind,\n    gap shrinks during the lift without flipping past the\n    player. Confirm with `query_opponent_trajectory`.\n",
+      "parent": null,
+      "children": [
+        "OD1",
+        "OD2"
+      ],
+      "exclusive_with": [
+        "O",
+        "MD",
+        "PS"
+      ]
+    },
+    "MD": {
+      "name": "Missing data",
+      "type": "main",
+      "description": "Segment contains gaps, dropouts, or corrupted telemetry — sensor data drops to zero, flat-lines in an otherwise dynamic signal, or shows physically impossible values.\n",
+      "annotation_guideline": "How to identify the Missing Data label: This segment contains gaps or corrupted telemetry.  Identify if the sensor data drops to zero or becomes inconsistent unexpectedly.\n",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "O",
+        "OD",
+        "EA",
+        "PS",
+        "RM",
+        "MSP",
+        "MSR"
+      ]
+    },
+    "EA": {
+      "name": "Expert Adherence",
+      "type": "main",
+      "description": "Driver closely follows the expert's line and speed profile.  Look for **overall gap holds stable** in the time delta and **speed match** in the speed delta.  The player's **entry trajectory** and **exit trajectory** track the expert through entry, apex, and exit, with the trajectory offset **aligned** (within ±0.5 m of zero) across every beat.\n",
+      "annotation_guideline": "How to identify the sublabels for Expert Adherence: The driver is following the optimal racing line and speed profile closely.  Nothing needs to be labeled right now.\n",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "MSP",
+        "MSR",
+        "RM",
+        "PS"
+      ]
+    },
+    "PS": {
+      "name": "Pit Stop",
+      "type": "main",
+      "description": "Driver entering, in, or exiting the pit lane.  Look for dramatic speed reduction, trajectory deviation into the pit lane, and constant low speed under pit limiter.\n",
+      "annotation_guideline": "How to identify the sublabels for Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Look for significant speed reduction and distinct trajectory deviation into the pit area.\n",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "O",
+        "MD"
+      ]
+    },
+    "RM": {
+      "name": "Recovery & Merge",
+      "type": "main",
+      "description": "Driver recovering from an incident and merging back to the racing line. Time delta shows **gap shrinks** and the trajectory offset  shows **recovery**.\n",
+      "annotation_guideline": "How to identify sublabels for Recovery & Merge: The driver is recovering from a mistake. Step 1: Analyze the 'Time Difference to Expert' graph; a recovery normally causes this time gap to decrease continuously without increasing. Step 2: Examine the 'trajectory_offset' graph to identify recovery — look for the offset trending back toward zero from either side. Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating back toward the expert's speed profile. Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment contains the indices for entry/apex/exit).\n",
+      "parent": null,
+      "children": [
+        "RM1",
+        "RM2",
+        "RM5",
+        "RM6",
+        "RM7",
+        "RM8",
+        "RM9",
+        "RM10",
+        "RM11"
+      ],
+      "exclusive_with": [
+        "EA",
+        "PS"
+      ]
+    },
+    "MSP": {
+      "name": "Mistake (Practice)",
+      "type": "main",
+      "description": "Technical driving error causing time loss or vehicle instability, NOT caused by interaction with a close opponent. Time delta shows **gap grows** and the trajectory offset shows a clear deviation from the expert's line (offset **wider than expert** or **tighter than expert**). When `find_nearest_opponent` returns a close primary opponent AND the time loss is tied to that interaction, the section is MSR (racing mistake), not MSP.\n",
+      "annotation_guideline": "How to identify sublabels for Practice Mistake: The driver has committed a technical driving error. Step 1: Analyze the 'Time Difference to Expert' graph; a mistake normally causes this time gap to increase continuously without decreasing shortly after. Step 2: Examine the differences in 'throttle' between the player and the expert to identify when the driver applied too much or too little throttle, or got on/off the throttle at the wrong time. Step 3: Examine the differences in 'brake' between the player and the expert to identify if the driver braked too hard or too softly, or got on/off the brake at the wrong time. Step 4: Examine the 'trajectory_balance' graph to find understeer (blue / front-slip dominant) or oversteer (red / rear-slip dominant), which could lead to lower speed. Step 5: For entry/apex/exit shape questions, request the 'trajectory_offset' graph and include the 'compute_expert_phases' tool on the same step (it produces a 'phase_indices' attachment contains the phase indices for entry/apex/exit). Step 6: Before committing, call `find_nearest_opponent(start, end)` — if a close primary opponent is present, the section is likely MSR, not MSP.\n",
+      "parent": null,
+      "children": [
+        "MSP1",
+        "MSP2",
+        "MSP3",
+        "MSP4",
+        "MSP5",
+        "MSP6",
+        "MSP7",
+        "MSP8",
+        "MSP9",
+        "MSP10",
+        "MSP11",
+        "MSP13",
+        "MSP14",
+        "MSP15",
+        "MSP16",
+        "MSP17",
+        "MSP18",
+        "MSP19",
+        "MSP20",
+        "MSP21",
+        "MSP22",
+        "MSP23",
+        "MSP24",
+        "MSP25",
+        "MSP26",
+        "MSP27",
+        "MSP28",
+        "MSP29",
+        "MSP30",
+        "MSP31",
+        "MSP32",
+        "MSP33",
+        "MSP34",
+        "MSP35",
+        "MSP36",
+        "MSP37",
+        "MSP38",
+        "MSP41",
+        "MSP42",
+        "MSP43",
+        "MSP44",
+        "MSP45",
+        "MSP46",
+        "MSP47",
+        "MSP48",
+        "MSP49",
+        "MSP50",
+        "MSP51",
+        "MSP52"
+      ],
+      "exclusive_with": [
+        "EA",
+        "PS",
+        "MSR"
+      ]
+    },
+    "MSR": {
+      "name": "Mistake (Racing)",
+      "type": "main",
+      "description": "Time / position loss caused by an interaction with a close opponent. Required gate: `find_nearest_opponent` returns a primary candidate that is close (`min_distance_m` small OR `side_by_side_iloc_count > 0`) AND the interaction outcome is adverse (failed pass attempt OR got passed). If no close opponent is present, the section is MSP (technical practice mistake) — not MSR.\n",
+      "annotation_guideline": "How to identify sublabels for Racing Mistake: Step 1 — Confirm a close opponent. Call `find_nearest_opponent(start, end)`. Require a primary candidate with `min_distance_m` small OR `side_by_side_iloc_count > 0`. If no close candidate, the section is not MSR — re-score as MSP (or EA / RM as appropriate). Step 2 — Pick the outcome family by the opponent flags:\n  - Failed overtake attempt: `passed_by_player: false` AND\n    `got_passed_by_opponent: false` — the attack didn't stick\n    and the opponent didn't pass either.\n  - Defense broken: `got_passed_by_opponent: true` — signed\n    longitudinal gap flips negative → positive.\nStep 3 — Pick the specific subtype by the player's trace. The MSR subtypes mirror the O / OD subtypes (same telemetry shape, opposite outcome). Prefer a specific subtype over the generic fallback when the trace lets you identify the attempt type:\n  - MSR3 (failed O1 late-brake attack at entry): brake\n    **initiation onset later than** expert + entry trajectory\n    tightening, but no pass.\n  - MSR4 (failed O3 outside-line sweep): trajectory **wider\n    than expert** through entry-to-apex, but no pass.\n  - MSR5 (failed O4 switchback): offset crosses outside-at-entry\n    to inside-at-exit (or the reverse intent), but no pass.\n  - MSR6 (failed O5 slipstream gain): on a straight, speed >\n    expert with throttle ≤ expert, gap closes but doesn't flip.\n  - MSR7 (broken OD1 inside cover): brake earlier than expert\n    and/or trajectory tighter, but opponent got through.\n  - MSR8 (broken OD2 defensive lift): throttle drops below\n    expert on a straight, but opponent got through.\n  - MSR1 / MSR2: only when the attempt-type signature cannot\n    be identified from the trace.\n",
+      "parent": null,
+      "children": [
+        "MSR1",
+        "MSR2",
+        "MSR3",
+        "MSR4",
+        "MSR5",
+        "MSR6",
+        "MSR7",
+        "MSR8"
+      ],
+      "exclusive_with": [
+        "EA",
+        "PS",
+        "MSP"
+      ]
+    },
+    "brands_hatch": {
+      "name": "Brands Hatch",
+      "type": "circuit",
+      "description": "Segment on the Brands Hatch circuit.",
+      "annotation_guideline": "Call `locate_circuit_section(start, end)` to identify which named Brands Hatch section the segment overlaps — never guess from trajectory shape.  Use its `best_match` (and any `top_matches` with high `overlap_fraction`) as the circuit_section label. Also identify the shape of the segment using labels ST1–ST6.\n",
+      "parent": null,
+      "children": [
+        "brands_hatch1",
+        "brands_hatch2",
+        "brands_hatch3",
+        "brands_hatch4",
+        "brands_hatch5",
+        "brands_hatch6",
+        "brands_hatch7",
+        "brands_hatch9",
+        "brands_hatch10",
+        "brands_hatch11",
+        "brands_hatch12",
+        "brands_hatch13",
+        "brands_hatch14",
+        "brands_hatch15",
+        "brands_hatch16",
+        "brands_hatch17",
+        "brands_hatch18",
+        "brands_hatch19"
+      ],
+      "exclusive_with": [
+        "silverstone"
+      ]
+    },
+    "silverstone": {
+      "name": "Silverstone",
+      "type": "circuit",
+      "description": "Segment on the Silverstone circuit.",
+      "annotation_guideline": "Call `locate_circuit_section(start, end)` to identify which named Silverstone section the segment overlaps — never guess from trajectory shape.  Use its `best_match` (and any `top_matches` with high `overlap_fraction`) as the circuit_section label. Also identify the shape of the segment using labels ST1–ST6.\n",
+      "parent": null,
+      "children": [
+        "silverstone1",
+        "silverstone2",
+        "silverstone3",
+        "silverstone4",
+        "silverstone5",
+        "silverstone6",
+        "silverstone7",
+        "silverstone8",
+        "silverstone9",
+        "silverstone10",
+        "silverstone11",
+        "silverstone12",
+        "silverstone13",
+        "silverstone14",
+        "silverstone15",
+        "silverstone16",
+        "silverstone17",
+        "silverstone18",
+        "silverstone19",
+        "silverstone20",
+        "silverstone21"
+      ],
+      "exclusive_with": [
+        "brands_hatch"
+      ]
+    },
+    "RM1": {
+      "name": "Recover from off-track",
+      "type": "sub",
+      "description": "Driver returning to track after an off-track excursion — the trajectory offset peaks far **wider than expert** earlier in the segment (a prior **moving toward positive (widening)** beat), then shows **recovery** (offset trending back toward zero) while the time delta shows **gap shrinks** and the speed delta shows **player faster than** expert as the driver rejoins.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": [
+        "RM2"
+      ]
+    },
+    "RM2": {
+      "name": "Exit pit lane",
+      "type": "sub",
+      "description": "Driver re-joining the track after a pit stop — the speed trace rises from pit-limiter speed (an **acceleration onset** well below normal corner-exit speed) and the trajectory offset shows **recovery** back toward zero as the line rejoins the racing line.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": [
+        "RM1"
+      ]
+    },
+    "RM5": {
+      "name": "Recover from speed gap over 20",
+      "type": "sub",
+      "description": "Player more than 20 km/h slower than the expert with the gap closing — the speed delta shows **expert faster than player** with a **large gap section** (|Δ| > 20 km/h) that trends toward zero across the segment, alongside **gap shrinks** in the time delta.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": [
+        "RM6"
+      ]
+    },
+    "RM6": {
+      "name": "Recover from small speed gap under 20",
+      "type": "sub",
+      "description": "Player less than 20 km/h slower than the expert with the gap closing — the speed delta shows **expert faster than player** without any **large gap section** (|Δ| stays ≤ 20 km/h), alongside **gap shrinks** in the time delta.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": [
+        "RM5"
+      ]
+    },
+    "RM7": {
+      "name": "Merge back to expert line",
+      "type": "sub",
+      "description": "Player trajectory converging toward the expert line — the trajectory offset shows **recovery** (trending back toward zero from either side), typically across the **post-exit** span of a corner phase.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": []
+    },
+    "RM8": {
+      "name": "Accelerate earlier at exit",
+      "type": "sub",
+      "description": "During recovery, the player's throttle **application onset is earlier than** the expert's around **at expert's exit (idx N, phase k)**, with a matching earlier **acceleration onset** on the speed trace, alongside **gap shrinks** in the time delta.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": [
+        "RM9"
+      ]
+    },
+    "RM9": {
+      "name": "Accelerate later at exit",
+      "type": "sub",
+      "description": "During recovery, the player's throttle **application onset is later than** the expert's around **at expert's exit (idx N, phase k)**, with a matching later **acceleration onset** on the speed trace, alongside **gap shrinks** in the time delta.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": [
+        "RM8"
+      ]
+    },
+    "RM10": {
+      "name": "Brake earlier at entry",
+      "type": "sub",
+      "description": "During recovery, the player's brake **initiation onset is earlier than** the expert's around **at expert's entry (idx N, phase k)**, with a matching earlier **deceleration onset** on the speed trace, alongside **gap shrinks** in the time delta.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": [
+        "RM11"
+      ]
+    },
+    "RM11": {
+      "name": "Brake later at entry",
+      "type": "sub",
+      "description": "During recovery, the player's brake **initiation onset is later than** the expert's around **at expert's entry (idx N, phase k)**, with a matching later **deceleration onset** on the speed trace, alongside **gap shrinks** in the time delta.\n",
+      "parent": "RM",
+      "children": [],
+      "exclusive_with": [
+        "RM10"
+      ]
+    },
+    "MSP1": {
+      "name": "Initiate brake too late",
+      "type": "sub",
+      "description": "The player's brake **initiation onset is later than** the expert's at corner entry, alongside the time **gap grows**. Player often **moving toward positive (widening)** in the trajectory offset across the **entry-to-apex** span as they brake later, with the **entry trajectory bulges outside** the expert's line.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP5"
+      ]
+    },
+    "MSP5": {
+      "name": "Initiate brake too early",
+      "type": "sub",
+      "description": "The player's brake **initiation onset is earlier than** the expert's at corner entry, alongside the time **gap grows**\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP1"
+      ]
+    },
+    "MSP13": {
+      "name": "Highest brake pressure too low",
+      "type": "sub",
+      "description": "The player's **peak brake pressure is lower than** the expert's across the braking phase. Player often **moving toward positive  (widening)** in the trajectory offset.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP22"
+      ]
+    },
+    "MSP22": {
+      "name": "Highest brake pressure too high",
+      "type": "sub",
+      "description": "The player's **peak brake pressure is higher than** the expert's across the braking phase. Player often **moving toward positive  (widening)** in the trajectory offset.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP13"
+      ]
+    },
+    "MSP14": {
+      "name": "Brake applied too quickly",
+      "type": "sub",
+      "description": "The player's **brake initiation is more abrupt than** the expert's — the rise from zero to peak spans fewer indices. Player often **moving toward positive (widening)** in the trajectory offset.  An **oversteer** section (as a **primary slide** or **standalone event**) may co-occur on the slip balance.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP24"
+      ]
+    },
+    "MSP24": {
+      "name": "Brake applied too slowly",
+      "type": "sub",
+      "description": "The player's **brake initiation is more gradual than** the expert's — the rise from zero to peak spans more indices. Player often **moving toward positive (widening)** in the  trajectory offset.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP14"
+      ]
+    },
+    "MSP17": {
+      "name": "Release brake too quickly",
+      "type": "sub",
+      "description": "The player's **brake release** is an **abrupt drop** to zero — the drop from peak to zero spans fewer indices than the expert's (a non-trail-braking release).  Player often **moving toward positive (widening)** in the trajectory offset across the exit phase as they release earlier, with the **exit trajectory bulges outside** the expert's line.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP18"
+      ]
+    },
+    "MSP18": {
+      "name": "Release brake too slowly",
+      "type": "sub",
+      "description": "The player's **brake release** is more gradual than the expert's — the drop from peak to zero spans more indices, consistent with **trail braking**.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP17"
+      ]
+    },
+    "MSP27": {
+      "name": "Initiate brake release too late",
+      "type": "sub",
+      "description": "The player's brake has later **release onset** than the expert's around **Reach apex**.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP28"
+      ]
+    },
+    "MSP28": {
+      "name": "Initiate brake release too early",
+      "type": "sub",
+      "description": "The player's brake has earlier **release onset** than the expert's during **Reach apex**.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP27"
+      ]
+    },
+    "MSP31": {
+      "name": "Highest brake length too short",
+      "type": "sub",
+      "description": "The player's interval between **brake initiation** end and **release onset** spans fewer indices than the expert's — **peak brake pressure** is held for a shorter span.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP32"
+      ]
+    },
+    "MSP32": {
+      "name": "Highest brake length too long",
+      "type": "sub",
+      "description": "The player's interval between **brake initiation** end and **release onset** spans more indices than the expert's — **peak brake pressure** is held for a longer span.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP31"
+      ]
+    },
+    "MSP34": {
+      "name": "Throttle and brake applied at the same time for too long",
+      "type": "sub",
+      "description": "The player **applies throttle and brake simultaneously** across a span where the expert shows no overlap.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP15": {
+      "name": "Throttle applied too quickly",
+      "type": "sub",
+      "description": "The player's **throttle application** is more abrupt than the expert's — the rise from zero to peak spans fewer indices, often co-occurring with **oversteer** or **understeer** in the slip balance, and a **modulation dip** shortly after in the same **throttle application**.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP25"
+      ]
+    },
+    "MSP25": {
+      "name": "Throttle applied too slowly",
+      "type": "sub",
+      "description": "The player's **throttle application** is more gradual than the expert's — the rise from zero to peak spans more indices, often co-occurring with **gap grows** in the time delta.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP15"
+      ]
+    },
+    "MSP19": {
+      "name": "Highest throttle pressure too low",
+      "type": "sub",
+      "description": "The player's **peak throttle** is lower than the expert's across the **throttle application** phase for more than 3 indices.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP26"
+      ]
+    },
+    "MSP26": {
+      "name": "Highest throttle pressure too high",
+      "type": "sub",
+      "description": "The player's **peak throttle** is higher than the expert's across the **throttle application** phase, often co-occurring with **oversteer** or **understeer** in the slip balance, and a **modulation dip** shortly after in the same **throttle application**.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP19"
+      ]
+    },
+    "MSP20": {
+      "name": "Initiate throttle too early",
+      "type": "sub",
+      "description": "The player's throttle **application onset** is earlier than the expert's at corner exit.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP21"
+      ]
+    },
+    "MSP21": {
+      "name": "Initiate throttle too late",
+      "type": "sub",
+      "description": "The player's throttle **application onset** is later than the expert's at corner exit.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP20"
+      ]
+    },
+    "MSP23": {
+      "name": "Release throttle too quickly",
+      "type": "sub",
+      "description": "The player's **throttle release** is more abrupt than the expert's — the drop from peak to zero spans fewer indices.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP29": {
+      "name": "Initiate throttle release too late",
+      "type": "sub",
+      "description": "The player's throttle **release onset** is later than the expert's approaching corner entry.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP30"
+      ]
+    },
+    "MSP30": {
+      "name": "Initiate throttle release too early",
+      "type": "sub",
+      "description": "The player's throttle **release onset** is earlier than the expert's approaching corner entry.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP29"
+      ]
+    },
+    "MSP2": {
+      "name": "Initiate the turn too late",
+      "type": "sub",
+      "description": "The player **initiates the turn later than** the expert's entry index, and the player's **entry trajectory bulges outside** the expert's line (offset is **wider than expert**) between entry and apex.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP6"
+      ]
+    },
+    "MSP6": {
+      "name": "Initiate the turn too early",
+      "type": "sub",
+      "description": "The player **initiates the turn earlier than** the expert's entry index, and the player's **entry trajectory cuts inside** the expert's line (offset is **tighter than expert**) between entry and apex.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP2"
+      ]
+    },
+    "MSP3": {
+      "name": "Too late compared to expert Apex",
+      "type": "sub",
+      "description": "The player **reaches apex later than** the expert's apex index.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP7"
+      ]
+    },
+    "MSP7": {
+      "name": "Too early compared to expert Apex",
+      "type": "sub",
+      "description": "The player **reaches apex earlier than** the expert's apex index.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP3"
+      ]
+    },
+    "MSP4": {
+      "name": "Time to exit too early",
+      "type": "sub",
+      "description": "The player **times the exit earlier than** the expert's exit index — begins unwinding the line upstream of the expert.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP8"
+      ]
+    },
+    "MSP8": {
+      "name": "Time to exit too late",
+      "type": "sub",
+      "description": "The player **times the exit later than** the expert's exit index — begins unwinding the line downstream of the expert.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP4"
+      ]
+    },
+    "MSP9": {
+      "name": "Entry trajectory too tight",
+      "type": "sub",
+      "description": "The player's **entry trajectory cuts inside** the expert's line (offset is **tighter than expert**) between entry and apex.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP33"
+      ]
+    },
+    "MSP33": {
+      "name": "Entry trajectory too wide",
+      "type": "sub",
+      "description": "The player's **entry trajectory bulges outside** the expert's line (offset is **wider than expert**) between entry and apex.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP9"
+      ]
+    },
+    "MSP10": {
+      "name": "Apex too wide",
+      "type": "sub",
+      "description": "The player's apex is **closer to outside** than the expert's at the expert's apex index, with offset **wider than expert**.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP11": {
+      "name": "Exit trajectory too narrow",
+      "type": "sub",
+      "description": "The player's **exit trajectory cuts inside** the expert's line (offset is **tighter than expert**) between apex and exit.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP16"
+      ]
+    },
+    "MSP16": {
+      "name": "Exit trajectory too wide",
+      "type": "sub",
+      "description": "The player's **exit trajectory bulges outside** the expert's line (offset is **wider than expert**) between apex and exit.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP11"
+      ]
+    },
+    "MSP41": {
+      "name": "Cutting the line",
+      "type": "sub",
+      "description": "The player's trajectory **cuts inside** the expert's line across the corner (offset is **tighter than expert** at multiple phases).\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP50": {
+      "name": "Off track at entry",
+      "type": "sub",
+      "description": "Player goes off track at corner entry — the trajectory offset peaks far **wider than expert** at corner entry with the offset **moving toward positive (widening)** across the **approach-to-entry** span, often co-occurring with an **over-limit spike** in grip utilisation.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP51": {
+      "name": "Off track at exit",
+      "type": "sub",
+      "description": "Player goes off track at corner exit — the trajectory offset peaks far **wider than expert** at corner exit with the offset **moving toward positive (widening)** across the **apex-to-exit** or **post-exit** span, often co-occurring with an **over-limit spike** in grip utilisation.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP52": {
+      "name": "Off track in the straight",
+      "type": "sub",
+      "description": "Player goes off track on a straight section — the trajectory offset peaks far **wider than expert** across a span where both lines should run straight, with no corner phase present.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP42": {
+      "name": "Inefficient grip utilization at entry",
+      "type": "sub",
+      "description": "Grip utilisation at corner entry deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears across the index range where braking is active and speed is decreasing (the entry phase, cross-referenced with the trajectory or speed trace).\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP43": {
+      "name": "Inefficient grip utilization at exit",
+      "type": "sub",
+      "description": "Grip utilisation at corner exit deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears across the index range where throttle is being applied and speed is increasing (the exit phase, cross-referenced with the trajectory or speed trace).\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": []
+    },
+    "MSP44": {
+      "name": "Oversteering at entry",
+      "type": "sub",
+      "description": "The player's slip balance shows **oversteer** (as the **primary slide** or a **standalone event** with peak above +0.02 rad) across an index range that overlaps the corner-entry phase.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP45"
+      ]
+    },
+    "MSP45": {
+      "name": "Understeering at entry",
+      "type": "sub",
+      "description": "The player's slip balance shows **understeer** (as the **primary slide** or a **standalone event** with trough below −0.02 rad) across an index range that overlaps the corner-entry phase.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP44"
+      ]
+    },
+    "MSP46": {
+      "name": "Oversteering at exit",
+      "type": "sub",
+      "description": "The player's slip balance shows **oversteer** (as the **primary slide** or a **standalone event** with peak above +0.02 rad) across an index range that overlaps the corner-exit phase.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP47"
+      ]
+    },
+    "MSP47": {
+      "name": "Understeering at exit",
+      "type": "sub",
+      "description": "The player's slip balance shows **understeer** (as the **primary slide** or a **standalone event** with trough below −0.02 rad) across an index range that overlaps the corner-exit phase.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP46"
+      ]
+    },
+    "MSP35": {
+      "name": "Shift up too early",
+      "type": "sub",
+      "description": "The player's **upshift** occurs at an earlier index than the expert's matching upshift.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP36"
+      ]
+    },
+    "MSP36": {
+      "name": "Shift up too late",
+      "type": "sub",
+      "description": "The player's **upshift** occurs at a later index than the expert's matching upshift.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP35"
+      ]
+    },
+    "MSP37": {
+      "name": "Shift down too early",
+      "type": "sub",
+      "description": "The player's **downshift** occurs at an earlier index than the expert's matching downshift.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP38"
+      ]
+    },
+    "MSP38": {
+      "name": "Shift down too late",
+      "type": "sub",
+      "description": "The player's **downshift** occurs at a later index than the expert's matching downshift.\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP37"
+      ]
+    },
+    "MSP48": {
+      "name": "Gear too low when accelerating",
+      "type": "sub",
+      "description": "The player **holds gear** at a lower number than the expert across an index range where the speed trace is rising (player is in a **lower gear than** the expert during acceleration).\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP49"
+      ]
+    },
+    "MSP49": {
+      "name": "Gear too high when accelerating",
+      "type": "sub",
+      "description": "The player **holds gear** at a higher number than the expert across an index range where the speed trace is rising (player is in a **higher gear than** the expert during acceleration).\n",
+      "parent": "MSP",
+      "children": [],
+      "exclusive_with": [
+        "MSP48"
+      ]
+    },
+    "MSR1": {
+      "name": "Failed overtake attempt (type unclear)",
+      "type": "sub",
+      "description": "Fallback for a failed overtake attempt whose attempt-type signature cannot be read from the player's trace. Gate on `find_nearest_opponent`: a close primary candidate is present (`min_distance_m` small OR `side_by_side_iloc_count > 0`) AND `passed_by_player: false` AND `got_passed_by_opponent: false` (the opponent didn't pass the player either — the attempt simply failed). `time_difference_to_expert` grows across the attempt. Prefer a specific subtype (MSR3 / MSR4 / MSR5 / MSR6) when the trace lets you identify which O-style attempt was tried; use MSR1 only when none of those match. Distinguished from O by the missing pass flag, and from MSP by the close opponent being the cause.\n",
+      "parent": "MSR",
+      "children": [],
+      "exclusive_with": [
+        "MSR2",
+        "MSR3",
+        "MSR4",
+        "MSR5",
+        "MSR6",
+        "MSR7",
+        "MSR8"
+      ]
+    },
+    "MSR2": {
+      "name": "Defense broken (type unclear)",
+      "type": "sub",
+      "description": "Fallback for a broken defense whose defense-type signature cannot be read from the player's trace. Gate on `find_nearest_opponent`: a close primary candidate (`min_distance_m` small OR `side_by_side_iloc_count > 0`) AND `got_passed_by_opponent: true` — signed longitudinal gap flips from negative (opp behind at entry) to positive (opp ahead at exit). `time_difference_to_expert` usually grows across the section. Prefer a specific subtype (MSR7 / MSR8) when the trace lets you identify which OD-style defense was tried; use MSR2 only when neither matches. Distinguished from OD by the failed-defense flag.\n",
+      "parent": "MSR",
+      "children": [],
+      "exclusive_with": [
+        "MSR1",
+        "MSR3",
+        "MSR4",
+        "MSR5",
+        "MSR6",
+        "MSR7",
+        "MSR8"
+      ]
+    },
+    "MSR3": {
+      "name": "Failed late-brake attack at entry",
+      "type": "sub",
+      "description": "Failure-mirror of O1. Player's brake **initiation onset is later than** the expert's at corner entry with **peak brake pressure higher than** the expert — a deliberate over-commit to pull alongside before the apex — but the pass did NOT stick. Often paired with **moving toward negative (tightening)** in the trajectory offset into the apex, an MSP-style entry overshoot (e.g. **entry trajectory bulges outside**), or a grip **over-limit spike** as the late brake exceeded grip. Gate on `find_nearest_opponent`: close primary candidate (`min_distance_m` small OR `side_by_side_iloc_count > 0`) AND `passed_by_player: false` AND `got_passed_by_opponent: false`. `time_difference_to_expert` grows across the attempt. Distinguished from O1 by the missing pass flag; distinguished from MSR1 by the identifiable late-brake signature.\n",
+      "parent": "MSR",
+      "children": [],
+      "exclusive_with": [
+        "MSR1",
+        "MSR2",
+        "MSR5",
+        "MSR7",
+        "MSR8"
+      ]
+    },
+    "MSR4": {
+      "name": "Failed outside-line sweep",
+      "type": "sub",
+      "description": "Failure-mirror of O3. Trajectory offset **wider than expert** across entry-to-apex by a sustained margin — going around the outside — but the pass did NOT complete. Player's wider arc cost the time the move would have saved; `time_difference_to_expert` grows across the section. Gate on `find_nearest_opponent`: close primary candidate (`side_by_side_iloc_count > 0` typical) AND `passed_by_player: false` AND `got_passed_by_opponent: false`. `query_opponent_trajectory` shows the opponent on the inside throughout the braking-to-apex window. Distinguished from O3 by the missing pass flag; from MSR1 by the identifiable outside-line signature; from MSP33 (entry too wide) by the close opponent being the cause.\n",
+      "parent": "MSR",
+      "children": [],
+      "exclusive_with": [
+        "MSR1",
+        "MSR2",
+        "MSR5",
+        "MSR7",
+        "MSR8"
+      ]
+    },
+    "MSR5": {
+      "name": "Failed switchback",
+      "type": "sub",
+      "description": "Failure-mirror of O4. Player attempted a concede-entry / reclaim-exit switchback — brake **initiation onset earlier than** expert, trajectory crossing from **wider than expert** at entry to **tighter than expert** at exit (or the reverse intent), and earlier throttle pickup on exit — but the pass did NOT complete by section end. Gate on `find_nearest_opponent`: close primary candidate AND `passed_by_player: false` AND `got_passed_by_opponent: false`; `query_opponent_trajectory` shows the opponent's lateral-offset crossing started but the signed longitudinal gap never flipped. `time_difference_to_expert` grows across the section. Distinguished from O4 by the missing pass flag; from MSR1 by the identifiable cross-line signature.\n",
+      "parent": "MSR",
+      "children": [],
+      "exclusive_with": [
+        "MSR1",
+        "MSR2",
+        "MSR3",
+        "MSR4",
+        "MSR7",
+        "MSR8"
+      ]
+    },
+    "MSR6": {
+      "name": "Failed slipstream gain on straight",
+      "type": "sub",
+      "description": "Failure-mirror of O5. On a straight section: speed delta shows **player faster than expert** while throttle stays **at or below** expert — the player was in the tow — but the pass did NOT complete (gap closed but did not flip). Gate on `find_nearest_opponent`: close primary candidate AND `passed_by_player: false` AND `got_passed_by_opponent: false`; `query_opponent_trajectory` shows the signed longitudinal gap shrinking but not crossing zero. Typically the straight ran out, the player pulled out too late, or peeled into a side-by- side at the brake zone that didn't stick. Distinguished from O5 by the missing pass flag; from MSR1 by the identifiable slipstream-closure signature.\n",
+      "parent": "MSR",
+      "children": [],
+      "exclusive_with": [
+        "MSR1",
+        "MSR2",
+        "MSR7",
+        "MSR8"
+      ]
+    },
+    "MSR7": {
+      "name": "Inside cover broken (early-brake defense)",
+      "type": "sub",
+      "description": "Failure-mirror of OD1. Player's brake **initiation onset is earlier than** expert AND/OR trajectory offset held **tighter than expert** across entry-to-apex — closing the inside line — but the primary opponent got through anyway. Often paired with a wide exit (offset **moving toward positive (widening)** post-apex) as the tight defensive entry forced a compromised exit. Gate on `find_nearest_opponent`: close primary candidate AND `got_passed_by_opponent: true` — signed longitudinal gap flips negative → positive. `time_difference_to_expert` grows across the section. Distinguished from OD1 by the failed-defense flag; from MSR2 by the identifiable inside-cover signature.\n",
+      "parent": "MSR",
+      "children": [],
+      "exclusive_with": [
+        "MSR1",
+        "MSR2",
+        "MSR3",
+        "MSR4",
+        "MSR5",
+        "MSR6"
+      ]
+    },
+    "MSR8": {
+      "name": "Defensive lift broken on straight",
+      "type": "sub",
+      "description": "Failure-mirror of OD2. On a straight: player's throttle drops **below expert** with NO matching brake (outside any braking zone) — an attempted defensive lift / feint — but the opponent's gap kept closing and they got through. Gate on `find_nearest_opponent`: close primary candidate AND `got_passed_by_opponent: true`; `query_opponent_trajectory` shows the signed longitudinal gap crossing zero across the straight. `time_difference_to_expert` grows. Distinguished from OD2 by the failed-defense flag; from MSR2 by the identifiable lift signature; from MSP25 (throttle too slow) by the close opponent being the cause.\n",
+      "parent": "MSR",
+      "children": [],
+      "exclusive_with": [
+        "MSR1",
+        "MSR2",
+        "MSR3",
+        "MSR4",
+        "MSR5",
+        "MSR6"
+      ]
+    },
+    "O1": {
+      "name": "Late-brake attack at entry",
+      "type": "sub",
+      "description": "Player's brake **initiation onset is later than** the expert's at corner entry, with **peak brake pressure higher than** the expert across the braking phase — a deliberate over-commit to pull alongside before the apex. Trajectory often **moving toward negative (tightening)** into the apex as the player aims for the inside. Opponent cue (gate): primary opponent `entry_signed_long_gap_m > 0` (ahead at entry) AND `passed_by_player: true` (behind by exit), with `side_by_side_iloc_count > 0` through the braking-to-apex window.\n",
+      "parent": "O",
+      "children": [],
+      "exclusive_with": [
+        "O4"
+      ]
+    },
+    "O3": {
+      "name": "Outside-line sweep",
+      "type": "sub",
+      "description": "Trajectory offset **wider than expert** across entry-to-apex by a sustained margin, **without a continuously growing time delta** — going around the outside on purpose. Often paired with an earlier throttle pickup on exit as the wider arc allows it. Opponent cue (gate): `passed_by_player: true` with the primary opponent **alongside on the inside** through the braking-to-apex window — `side_by_side_iloc_count > 0` and `query_opponent_trajectory` lateral-offset samples show the opponent on the opposite side of the player's heading from the player's offset.\n",
+      "parent": "O",
+      "children": [],
+      "exclusive_with": [
+        "O4"
+      ]
+    },
+    "O4": {
+      "name": "Switchback",
+      "type": "sub",
+      "description": "Player concedes the entry and recovers it on exit — brake **initiation onset is earlier than** the expert's, the trajectory offset crosses from **wider than expert** at entry to **tighter than expert** at exit, and throttle **application onset is earlier than** the expert's around the corner exit. Time delta typically shows **gap shrinks** late in the section. Opponent cue (gate): primary opponent was **ahead into the corner** (`entry_signed_long_gap_m > 0`) and **behind by exit** (`exit_signed_long_gap_m < 0`), i.e. `passed_by_player: true`, with `query_opponent_trajectory` lateral-offset samples crossing zero around apex (line cross).\n",
+      "parent": "O",
+      "children": [],
+      "exclusive_with": [
+        "O1",
+        "O3"
+      ]
+    },
+    "O5": {
+      "name": "Slipstream gain on straight",
+      "type": "sub",
+      "description": "On a straight section: speed delta shows **player faster than expert** while the player's throttle stays **at or below** the expert's level — the speed gain is from draft, not extra input. Time delta shows **gap shrinks** across the straight. Opponent cue (gate): primary opponent **directly ahead in draft range** — `entry_signed_long_gap_m` positive and small (typically < ~30 m), `min_lateral_offset_m` small (in-line, not side-by-side yet), `passed_by_player: true`, and `query_opponent_trajectory` shows the signed longitudinal gap **shrinking monotonically** across the straight.\n",
+      "parent": "O",
+      "children": [],
+      "exclusive_with": []
+    },
+    "OD1": {
+      "name": "Inside cover (early-brake defense)",
+      "type": "sub",
+      "description": "Player's brake **initiation onset is earlier than** the expert's AND/OR trajectory offset held **tighter than expert** across entry-to-apex by a sustained margin — closing the inside line. Distinguished from MSP by the **absence of a continuously growing time gap** — the inside line is a tactical choice, not a slow mistake. Opponent cue (gate): primary opponent **close-trailing or alongside on the outside** — `side_by_side_iloc_count > 0`, small `min_distance_m`, `got_passed_by_opponent: false`, and the `query_opponent_trajectory` samples show the opponent's signed longitudinal gap staying negative (or briefly crossing then returning behind by exit).\n",
+      "parent": "OD",
+      "children": [],
+      "exclusive_with": []
+    },
+    "OD2": {
+      "name": "Defensive lift on straight",
+      "type": "sub",
+      "description": "On a straight section: player's throttle drops **below expert** with NO matching brake onset (outside any braking zone), causing a brief speed dip not explained by track geometry — a lift to manage position or check the mirrors. Time delta typically shows **gap grows** briefly during the lift. Opponent cue (gate): primary opponent **close behind** — `entry_signed_long_gap_m < 0`, small `min_distance_m`, `got_passed_by_opponent: false`, and `query_opponent_trajectory` shows the gap closing during the lift (signed-gap magnitude shrinks) without flipping past the player.\n",
+      "parent": "OD",
+      "children": [],
+      "exclusive_with": []
+    },
+    "ST1": {
+      "name": "In the corner",
+      "type": "segment_type",
+      "description": "Full segment covers entire corner — driver turning throughout (single curve, hairpin, continuous arc).",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST2",
+        "ST3",
+        "ST4",
+        "ST5",
+        "ST6"
+      ]
+    },
+    "ST2": {
+      "name": "On the straight",
+      "type": "segment_type",
+      "description": "Full segment on a straight section — minimal steering, full throttle, minimal curvature.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST1",
+        "ST3",
+        "ST4",
+        "ST5",
+        "ST6"
+      ]
+    },
+    "ST3": {
+      "name": "Approach to corner",
+      "type": "segment_type",
+      "description": "Full segment only covering the braking zone before a corner — starts straight and begins curving.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST1",
+        "ST2",
+        "ST4",
+        "ST5",
+        "ST6"
+      ]
+    },
+    "ST4": {
+      "name": "Exit corner leading to straight",
+      "type": "segment_type",
+      "description": "Full segment only covering corner exit leading onto a straight — starts curved, steering decreasing, throttle increasing.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST1",
+        "ST2",
+        "ST3",
+        "ST5",
+        "ST6"
+      ]
+    },
+    "ST5": {
+      "name": "Between consecutive corners",
+      "type": "segment_type",
+      "description": "Short transition between two corners — brief connection, not a full straight.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST1",
+        "ST2",
+        "ST3",
+        "ST4",
+        "ST6"
+      ]
+    },
+    "ST6": {
+      "name": "Consecutive corners with no straight in between",
+      "type": "segment_type",
+      "description": "Multiple corners with no intervening straight (S-shape, chicane, esses).",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST1",
+        "ST2",
+        "ST3",
+        "ST4",
+        "ST5"
+      ]
+    },
+    "brands_hatch1": {
+      "name": "Brabham Straight",
+      "type": "circuit_section",
+      "description": "Main straight at Brands Hatch. ",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.94,
+        1
+      ]
+    },
+    "brands_hatch2": {
+      "name": "Paddock Hill Bend",
+      "type": "circuit_section",
+      "description": "Downhill right-hander after Brabham Straight.  One of the most iconic corners in motorsport.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        1,
+        0.09
+      ]
+    },
+    "brands_hatch3": {
+      "name": "Druids",
+      "type": "circuit_section",
+      "description": "Tight hairpin at the top of the hill.  Very slow, sharp left turn.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.11,
+        0.18
+      ]
+    },
+    "brands_hatch4": {
+      "name": "Graham Hill Bend",
+      "type": "circuit_section",
+      "description": "Long sweeping right-hand bend descending from Druids.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.19,
+        0.25
+      ]
+    },
+    "brands_hatch5": {
+      "name": "Cooper Straight",
+      "type": "circuit_section",
+      "description": "Short straight between Graham Hill Bend and Surtees.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.25,
+        0.28
+      ]
+    },
+    "brands_hatch6": {
+      "name": "Surtees",
+      "type": "circuit_section",
+      "description": "Fast right-hand kink.  Often taken flat-out in faster cars.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.28,
+        0.35
+      ]
+    },
+    "brands_hatch7": {
+      "name": "Pilgrim's Drop",
+      "type": "circuit_section",
+      "description": "Downhill section after Surtees, leading to Hawthorns.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.35,
+        0.47
+      ]
+    },
+    "brands_hatch9": {
+      "name": "Hawthorns",
+      "type": "circuit_section",
+      "description": "Fast left-hand corner through the trees section of the circuit.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.47,
+        0.55
+      ]
+    },
+    "brands_hatch10": {
+      "name": "Derek Minter Straight",
+      "type": "circuit_section",
+      "description": "Straight section between Hawthorns and Westfield.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.55,
+        0.56
+      ]
+    },
+    "brands_hatch11": {
+      "name": "Westfield Bend",
+      "type": "circuit_section",
+      "description": "Medium-speed left-hand corner.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.56,
+        0.63
+      ]
+    },
+    "brands_hatch12": {
+      "name": "Dingle Dell",
+      "type": "circuit_section",
+      "description": "Dip and slight right.  Part of the downhill back section.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.63,
+        0.67
+      ]
+    },
+    "brands_hatch13": {
+      "name": "Sheene Curve",
+      "type": "circuit_section",
+      "description": "Fast right-hand curve named after Barry Sheene.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.67,
+        0.72
+      ]
+    },
+    "brands_hatch14": {
+      "name": "Stirlings",
+      "type": "circuit_section",
+      "description": "Technical section with direction changes.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.72,
+        0.79
+      ]
+    },
+    "brands_hatch15": {
+      "name": "Clearways",
+      "type": "circuit_section",
+      "description": "Long right-hand curve leading back to the main straight.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.79,
+        0.84
+      ]
+    },
+    "brands_hatch16": {
+      "name": "Clark Curve",
+      "type": "circuit_section",
+      "description": "Final curve before the main straight.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.84,
+        0.94
+      ]
+    },
+    "brands_hatch17": {
+      "name": "Pit",
+      "type": "circuit_section",
+      "description": "Pit lane section at Brands Hatch. Shares its `normalized_position_range` with the adjacent Brabham Straight (brands_hatch1), so `locate_circuit_section` returns both with `is_ambiguous: true`. Disambiguate by `distance_to_expert_line`: persistently large (≥ ~5 m) and NOT trending toward zero ⇒ pit (player diverted off the racing line); offset small or trending toward zero ⇒ the player is on the main straight (or merging back from the pit exit, which is brands_hatch1).",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.94,
+        1
+      ]
+    },
+    "brands_hatch18": {
+      "name": "Graham Hill",
+      "type": "circuit_section",
+      "description": "Graham Hill section (alternate naming for the area around Graham Hill Bend).",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.09,
+        0.11
+      ]
+    },
+    "brands_hatch19": {
+      "name": "Hailwoods Hill",
+      "type": "circuit_section",
+      "description": "Uphill section of the circuit named after Mike Hailwood.",
+      "parent": "brands_hatch",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        0.18,
+        0.19
+      ]
+    },
+    "silverstone1": {
+      "name": "Woodcote",
+      "type": "circuit_section",
+      "description": "Fast right-hand corner leading onto the pit straight.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone2": {
+      "name": "Copse",
+      "type": "circuit_section",
+      "description": "Fast right-hand corner.  One of the fastest corners on the calendar.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone3": {
+      "name": "Maggotts",
+      "type": "circuit_section",
+      "description": "First part of the fast Maggotts-Becketts-Chapel complex.  Left-hand turn.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone4": {
+      "name": "Becketts",
+      "type": "circuit_section",
+      "description": "Second part of the Maggotts-Becketts complex.  Fast right-hand flick.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone5": {
+      "name": "Chapel",
+      "type": "circuit_section",
+      "description": "Final left-hand part of the Maggotts-Becketts-Chapel complex.  Opens onto Hangar Straight.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone6": {
+      "name": "Hangar Straight",
+      "type": "circuit_section",
+      "description": "Long straight between Chapel and Stowe — one of the fastest sections.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone7": {
+      "name": "Stowe",
+      "type": "circuit_section",
+      "description": "Fast right-hand corner at the end of Hangar Straight.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone8": {
+      "name": "Vale",
+      "type": "circuit_section",
+      "description": "Slow chicane complex after Stowe.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone9": {
+      "name": "Club",
+      "type": "circuit_section",
+      "description": "Right-hand corner leading onto Hamilton Straight.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone10": {
+      "name": "Hamilton Straight",
+      "type": "circuit_section",
+      "description": "Straight section between Club and Abbey.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone11": {
+      "name": "Abbey",
+      "type": "circuit_section",
+      "description": "Fast right-hand corner — first corner of the Arena section.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone12": {
+      "name": "Farm Curve",
+      "type": "circuit_section",
+      "description": "Sweeping right-hand curve connecting Abbey to Village.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone13": {
+      "name": "Village",
+      "type": "circuit_section",
+      "description": "Tight left-hand corner in the Arena section.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone14": {
+      "name": "The Loop",
+      "type": "circuit_section",
+      "description": "Right-hand hairpin after Village.  One of the slowest points on the circuit.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone15": {
+      "name": "Aintree",
+      "type": "circuit_section",
+      "description": "Left-right complex after The Loop.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone16": {
+      "name": "Wellington Straight",
+      "type": "circuit_section",
+      "description": "Medium-length straight between Aintree and Brooklands.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone17": {
+      "name": "Brooklands",
+      "type": "circuit_section",
+      "description": "Right-hand corner before Luffield.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone18": {
+      "name": "Luffield",
+      "type": "circuit_section",
+      "description": "Long left-hand corner leading onto the pit straight.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone19": {
+      "name": "Pit",
+      "type": "circuit_section",
+      "description": "Pit lane section at Silverstone. When its `normalized_position_range` is filled in, expect it to share that range with the adjacent main straight (silverstone16), so `locate_circuit_section` returns both with `is_ambiguous: true`. Disambiguate by `distance_to_expert_line`: persistently large (≥ ~5 m) and NOT trending toward zero ⇒ pit; offset small or trending toward zero ⇒ the main straight (or merging back from the pit exit, which is silverstone16).",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone20": {
+      "name": "Vale first 90 shape turn",
+      "type": "circuit_section",
+      "description": "First part of the Vale chicane — a ~90-degree turn.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    },
+    "silverstone21": {
+      "name": "Vale second over 90 rounded turn",
+      "type": "circuit_section",
+      "description": "Second part of the Vale chicane — a rounded turn of more than 90 degrees.",
+      "parent": "silverstone",
+      "children": [],
+      "exclusive_with": [],
+      "normalized_position_range": [
+        null,
+        null
+      ]
+    }
+  },
+  "category_guidelines": {
+    "Segment Type": "If the segment contains a corner, label the shape as 'In the corner' (ST1).  If the segment is on the straight, label as 'On the straight' (ST2).  If the segment is approaching a corner but not yet in it, label as 'Approach to corner' (ST3).  If the segment is exiting a corner, label as 'Exit corner leading to straight' (ST4).  If the segment is between corners and hasn't been named yet, label as 'Between consecutive corners' (ST5).  If the segment covers consecutive corners with no straight in between, label as 'Consecutive corners with no straight in between' (ST6).\n"
+  }
+}

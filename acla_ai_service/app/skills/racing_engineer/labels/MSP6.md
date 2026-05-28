@@ -1,11 +1,3 @@
----
-id: MSP6
-name: Initiate the turn too early
-family: MSP
-common_co_labels: [MSP7, MSP16, MSP47, MSP11]
-causes_to_check: [MSP5]
----
-
 ## Definition
 Steering input begins before the expert's turn-in point. The car
 starts rotating too soon — apex comes early, and the exit runs out

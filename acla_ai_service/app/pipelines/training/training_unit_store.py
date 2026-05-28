@@ -222,7 +222,7 @@ def _claude_prompt(mode: str, labels_text: str) -> str:
     if not template:
         raise RuntimeError(
             "training_unit_annotation skill is missing — drop "
-            "app/skills/training_unit_annotation.yaml in place and restart."
+            "app/skills/annotation/training_unit_annotation.json in place and restart."
         )
     mode_style = skills.get(f"training_unit_annotation.modes.{mode}.style") or ""
     mode_avoid_raw = skills.get(f"training_unit_annotation.modes.{mode}.avoid") or []

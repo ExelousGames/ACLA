@@ -1,9 +1,3 @@
----
-id: MSP
-name: Mistake (Practice)
-family: MSP
----
-
 ## Definition
 A driving error that costs time relative to the expert reference for
 the same segment of track. Sub-labels (MSP1, MSP9, MSP22, …) describe

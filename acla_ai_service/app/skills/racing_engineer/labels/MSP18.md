@@ -1,11 +1,3 @@
----
-id: MSP18
-name: Release brake too slowly
-family: MSP
-common_co_labels: [MSP32, MSP27]
-causes_to_check: [MSP32]
----
-
 ## Definition
 Brake pressure falls from peak to zero more gradually than the
 expert's trail-off — the driver lingers on the pedal too long

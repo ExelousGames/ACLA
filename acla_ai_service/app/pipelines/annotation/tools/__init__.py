@@ -49,7 +49,7 @@ def list_eligible_labels(
         }
     """
     from app.agents.evaluators import PipelineAttachment
-    from app.skills.annotation.label_catalog import find_labels, get_label
+    from app.skills.annotation.label_lookup import find_labels, get_label
 
     def _attach(groups: List[Dict[str, Any]]) -> "PipelineAttachment":
         return PipelineAttachment(

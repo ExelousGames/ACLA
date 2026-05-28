@@ -1,11 +1,3 @@
----
-id: MSP9
-name: Entry trajectory too tight
-family: MSP
-common_co_labels: [MSP2, MSP33, MSP3, MSP10, MSP44]
-causes_to_check: [MSP44, MSP2]
----
-
 ## Definition
 Driver turns in tighter than the optimal entry line — the car arrives
 inside the expert's trajectory at the entry phase. Usually pairs with

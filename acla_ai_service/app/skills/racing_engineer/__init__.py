@@ -60,32 +60,32 @@ _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
 
 
 def _parse_md(path: Path) -> dict:
-    """Parse one Markdown-with-frontmatter file into a flat dict.
+    """Parse one Markdown file into a flat dict.
 
-    - Frontmatter (between ``---`` lines) is parsed as YAML.
+    - Optional frontmatter (between ``---`` lines at the top) is parsed
+      as YAML and merged into the output.
     - Section headings (``## Heading``) are split out into keys
       (lowercased, spaces → underscores) whose values are the section
       bodies.
     - If a name appears in both frontmatter AND as a section heading,
       frontmatter wins. (Authors should pick one home per field.)
-    - Files without frontmatter still load — the whole body lands at
-      key ``"body"`` and ``"id"`` defaults to the filename stem.
+    - ``id`` defaults to the filename stem when frontmatter doesn't set it.
     """
     text = path.read_text(encoding="utf-8")
     match = _FRONTMATTER_RE.match(text)
     if match is None:
-        return {"id": path.stem, "body": text.strip()}
-
-    try:
-        front = yaml.safe_load(match.group(1)) or {}
-    except yaml.YAMLError as exc:
-        LOGGER.warning("racing_engineer: bad YAML frontmatter in %s: %s", path, exc)
-        front = {}
-    if not isinstance(front, dict):
-        LOGGER.warning("racing_engineer: frontmatter in %s is not a mapping", path)
-        front = {}
-
-    body = match.group(2).strip()
+        front: dict = {}
+        body = text.strip()
+    else:
+        try:
+            front = yaml.safe_load(match.group(1)) or {}
+        except yaml.YAMLError as exc:
+            LOGGER.warning("racing_engineer: bad YAML frontmatter in %s: %s", path, exc)
+            front = {}
+        if not isinstance(front, dict):
+            LOGGER.warning("racing_engineer: frontmatter in %s is not a mapping", path)
+            front = {}
+        body = match.group(2).strip()
 
     sections: Dict[str, object] = {}
     current_key: Optional[str] = None

@@ -1,11 +1,3 @@
----
-id: MSP22
-name: Highest Brake pressure too high
-family: MSP
-common_co_labels: [MSP1, MSP14, MSP44, MSP17, MSP9]
-causes_to_check: [MSP1, MSP14]
----
-
 ## Definition
 Peak brake pressure exceeds the expert's peak for the same corner —
 usually well above 90% of max — when the corner doesn't need it.

@@ -1,11 +1,3 @@
----
-id: MSP37
-name: Shift down too early
-family: MSP
-common_co_labels: [MSP49]
-causes_to_check: []
----
-
 ## Definition
 Driver downshifts before the brake phase has scrubbed enough speed
 — the new (lower) gear puts the engine above redline or close to

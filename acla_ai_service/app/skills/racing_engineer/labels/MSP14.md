@@ -1,11 +1,3 @@
----
-id: MSP14
-name: Brake applied too quickly
-family: MSP
-common_co_labels: [MSP22, MSP44, MSP17]
-causes_to_check: [MSP1]
----
-
 ## Definition
 The rate at which brake pressure ramps up is steeper than the
 expert's — the pedal is stamped rather than rolled. Front load

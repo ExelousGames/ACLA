@@ -1,11 +1,3 @@
----
-id: MSP27
-name: Initiate brake release too late
-family: MSP
-common_co_labels: [MSP18, MSP32, MSP3]
-causes_to_check: [MSP18]
----
-
 ## Definition
 Driver holds full brake (or near-peak brake) past the expert's
 release-start point. The trail-off phase starts too deep in the
