@@ -1,5 +1,4 @@
 ---
-id: driver_push_to_limit
 name: Driver push to limit (slip envelope)
 units: 0..1+
 ---
@@ -7,8 +6,8 @@ units: 0..1+
 ## What it measures
 A scalar that aggregates tyre slip across all four corners and
 expresses how close the driver is to the tyre grip limit. Built from
-slip angle + slip ratio weighted against the configured front/rear
-slip limits (see `SlipEnvelopeConfig` in `app/domain/tire_grip_features.py`).
+slip angle and slip ratio weighted against the configured front/rear
+slip limits.
 
 ## Units
 - 0 = no slip (tyres well within their grip budget).
@@ -27,9 +26,9 @@ slip limits (see `SlipEnvelopeConfig` in `app/domain/tire_grip_features.py`).
   on the table. There's lap time available.
 
 ## Common pairings
-- Per-axle slip channels — `driver_push_to_limit` is the summary; the
+- Per-axle slip channels — this push value is the summary; the
   per-axle channels tell you *where* the grip went.
-- `Physics_gas` / `Physics_brake` — high push values during heavy
+- Driver throttle and brake traces — high push values during heavy
   brake or throttle are normal; high push values mid-corner with
   steady inputs mean the driver is asking the tyres for more than
   they have.

@@ -2,22 +2,22 @@
 
 Layout::
 
-    app/skills/                        (this package — orchestrator code + json data)
-      __init__.py, _registry.py, _query.py, _embedder.py    (code)
+    app/skills/annotation/             (this package — code + json data)
+      __init__.py, _registry.py, _query.py, _embedder.py
       <name>.json                      (skill definitions — drop a json in, restart)
-
-A skill is a single JSON file. No Python escape hatches — filtering,
-formatting, or merging with non-skill state belong to the caller.
 
 The registry exposes four verbs, uniform across every skill:
 
   * ``get(path)``               — dotted-path lookup into any skill's document tree
   * ``find(path, **filters)``   — Mongo-style filter over a collection at *path*
   * ``iter(path)``              — yield every document in a collection
-  * ``search(query, top_k)``    — embedding similarity over discovery headers
+  * ``search(query, top_k)``    — hybrid (vector + BM25) discovery search
 
-Discovery headers are indexed as cached embeddings for ``search``;
-only headers whose JSON hash changed are re-embedded on startup.
+``search`` is backed by LlamaIndex: a ``VectorStoreIndex`` over the
+skill discovery headers paired with a ``BM25Retriever``, fused by
+``QueryFusionRetriever`` in ``relative_score`` mode. Cache lives under
+``<repo>/acla_ai_service/.cache/skills_llama/``; rebuilt when any
+source JSON or the embedding model changes.
 """
 
 from __future__ import annotations
@@ -30,8 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import numpy as np
-
+from app.infra.config import settings
 from app.skills.annotation._query import (
     _split_path,
     find as _filter,
@@ -42,14 +41,9 @@ from app.skills.annotation._query import (
 LOGGER = logging.getLogger(__name__)
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
-# Annotation skills live under app/skills/annotation/<name>.json. The racing-
-# engineer corpus lives in the sibling app/skills/racing_engineer/ subpackage
-# and is loaded by its own module — see app/skills/__init__.py.
 _SKILLS_ROOT = _PACKAGE_ROOT
-# Cache lives at <project root>/.cache/skills — three levels up from
-# app/skills/annotation/_registry.py.
-_CACHE_DIR = _PACKAGE_ROOT.parent.parent.parent / ".cache" / "skills"
-_EMBEDDINGS_FILE = _CACHE_DIR / "embeddings.npz"
+_CACHE_DIR = _PACKAGE_ROOT.parent.parent.parent / ".cache" / "skills_llama"
+_PERSIST_DIR = _CACHE_DIR / "storage"
 _MANIFEST_FILE = _CACHE_DIR / "manifest.json"
 
 
@@ -100,8 +94,7 @@ class SkillRegistry:
     def __init__(self, root: Optional[Path] = None) -> None:
         self._root: Path = root or _SKILLS_ROOT
         self._skills: Dict[str, Skill] = {}
-        self._names: List[str] = []
-        self._embeddings: Optional[np.ndarray] = None
+        self._retriever = None  # llama_index QueryFusionRetriever
         self._load_skills()
         self._build_or_load_index()
 
@@ -137,60 +130,73 @@ class SkillRegistry:
                     len(self._skills), sorted(self._skills.keys()))
 
     # ------------------------------------------------------------------
-    # Embedding index for search()
+    # Hybrid index for search()
     # ------------------------------------------------------------------
 
+    def _manifest(self) -> Dict[str, str]:
+        m: Dict[str, str] = {"__model__": settings.annotation_skill_embedding_model}
+        for name, skill in sorted(self._skills.items()):
+            m[name] = hashlib.sha256(skill.source_path.read_bytes()).hexdigest()
+        return m
+
     def _build_or_load_index(self) -> None:
-        current_manifest: Dict[str, str] = {}
-        discovery_texts: Dict[str, str] = {}
-        for name, skill in self._skills.items():
-            source_bytes = skill.source_path.read_bytes()
-            current_manifest[name] = hashlib.sha256(source_bytes).hexdigest()
-            discovery_texts[name] = skill.spec.discovery_text()
+        if not self._skills:
+            self._retriever = None
+            return
 
-        cached_embeddings: Dict[str, np.ndarray] = {}
-        cached_manifest: Dict[str, str] = {}
-        if _EMBEDDINGS_FILE.exists() and _MANIFEST_FILE.exists():
+        from llama_index.core import StorageContext, VectorStoreIndex, load_index_from_storage
+        from llama_index.core.retrievers import QueryFusionRetriever, VectorIndexRetriever
+        from llama_index.core.schema import TextNode
+        from llama_index.retrievers.bm25 import BM25Retriever
+
+        from app.skills.annotation._embedder import get_llama_embedding
+
+        embed_model = get_llama_embedding()
+        current = self._manifest()
+        index = None
+
+        if _PERSIST_DIR.exists() and _MANIFEST_FILE.exists():
             try:
-                cached_manifest = json.loads(_MANIFEST_FILE.read_text())
-                arrs = np.load(_EMBEDDINGS_FILE)
-                for n in cached_manifest:
-                    if n in arrs.files:
-                        cached_embeddings[n] = arrs[n]
+                cached = json.loads(_MANIFEST_FILE.read_text())
             except Exception as exc:
-                LOGGER.warning("Skill index cache unreadable (%s) — rebuilding.", exc)
-                cached_embeddings, cached_manifest = {}, {}
+                LOGGER.warning("Skill index manifest unreadable (%s) — rebuilding.", exc)
+                cached = None
+            if cached == current:
+                try:
+                    storage = StorageContext.from_defaults(persist_dir=str(_PERSIST_DIR))
+                    index = load_index_from_storage(storage, embed_model=embed_model)
+                    LOGGER.info("Skill hybrid index loaded from cache.")
+                except Exception as exc:
+                    LOGGER.warning("Skill index reload failed (%s) — rebuilding.", exc)
+                    index = None
 
-        embeddings_map: Dict[str, np.ndarray] = {}
-        to_embed: List[str] = []
-        for name, h in current_manifest.items():
-            if cached_manifest.get(name) == h and name in cached_embeddings:
-                embeddings_map[name] = cached_embeddings[name]
-            else:
-                to_embed.append(name)
+        if index is None:
+            nodes = [
+                TextNode(
+                    text=skill.spec.discovery_text(),
+                    metadata={"skill_name": skill.name},
+                    excluded_embed_metadata_keys=["skill_name"],
+                    excluded_llm_metadata_keys=["skill_name"],
+                )
+                for skill in self._skills.values()
+            ]
+            index = VectorStoreIndex(nodes=nodes, embed_model=embed_model)
+            _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            index.storage_context.persist(persist_dir=str(_PERSIST_DIR))
+            _MANIFEST_FILE.write_text(json.dumps(current, indent=2, sort_keys=True))
+            LOGGER.info("Skill hybrid index built (%d skill(s)).", len(self._skills))
 
-        if to_embed:
-            from app.skills.annotation._embedder import embed
-            texts = [discovery_texts[n] for n in to_embed]
-            vecs = embed(texts)
-            if vecs.ndim == 1:
-                vecs = vecs[np.newaxis, :]
-            for n, v in zip(to_embed, vecs):
-                embeddings_map[n] = v
-            LOGGER.info(
-                "Embedded %d skill header(s); reused %d from cache.",
-                len(to_embed), len(current_manifest) - len(to_embed),
-            )
-
-        _CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        np.savez(_EMBEDDINGS_FILE, **embeddings_map)
-        _MANIFEST_FILE.write_text(json.dumps(current_manifest, indent=2, sort_keys=True))
-
-        self._names = sorted(embeddings_map.keys())
-        if self._names:
-            self._embeddings = np.stack([embeddings_map[n] for n in self._names])
-        else:
-            self._embeddings = None
+        nodes = list(index.docstore.docs.values())
+        pool = max(int(settings.hybrid_candidate_pool), len(self._skills))
+        vec_retriever = VectorIndexRetriever(index=index, similarity_top_k=pool)
+        bm25_retriever = BM25Retriever.from_defaults(nodes=nodes, similarity_top_k=pool)
+        self._retriever = QueryFusionRetriever(
+            [vec_retriever, bm25_retriever],
+            similarity_top_k=pool,
+            mode=settings.hybrid_fusion_mode,
+            num_queries=1,
+            use_async=False,
+        )
 
     # ------------------------------------------------------------------
     # Skill access (lower level)
@@ -240,10 +246,7 @@ class SkillRegistry:
         return self._resolve(path, default)
 
     def find(self, collection_path: str, **filters: Any) -> List[Dict[str, Any]]:
-        """Filter a collection by Mongo-style predicates.
-
-        ``skills.find("sub_label_annotation.labels", type="sub", parent="MS")``
-        """
+        """Filter a collection by Mongo-style predicates."""
         coll = self._resolve(collection_path)
         return _filter(coll, filters)
 
@@ -257,18 +260,23 @@ class SkillRegistry:
         top_k: int = 5,
         min_score: float = 0.0,
     ) -> List[SkillMatch]:
-        """Embedding-similarity search over discovery headers."""
-        if self._embeddings is None or not self._names:
+        """Hybrid (vector + BM25) search over skill discovery headers."""
+        if self._retriever is None or not self._skills:
             return []
-        from app.skills.annotation._embedder import embed
-        q = embed(query)
-        scores = self._embeddings @ q
-        order = np.argsort(-scores)[: max(0, top_k)]
-        return [
-            SkillMatch(self._skills[self._names[i]], float(scores[i]))
-            for i in order
-            if scores[i] >= min_score
-        ]
+        nodes = self._retriever.retrieve(query)
+        out: List[SkillMatch] = []
+        for n in nodes:
+            score = float(n.score) if n.score is not None else 0.0
+            if score < min_score:
+                continue
+            name = n.node.metadata.get("skill_name")
+            skill = self._skills.get(name) if name else None
+            if skill is None:
+                continue
+            out.append(SkillMatch(skill, score))
+            if len(out) >= max(0, top_k):
+                break
+        return out
 
 
 # ---------------------------------------------------------------------------

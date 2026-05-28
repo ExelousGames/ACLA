@@ -13,13 +13,19 @@ index. Drop a `.md` file in the right subfolder, restart, done.
 ## Layout
 
 ```
-labels/<ID>.md          one per sub-label (MSP44.md, RM7.md, …)
-main_labels/<ID>.md     one per parent family (MSP.md, MSR.md, RM.md, EA.md, …)
-features/<NAME>.md      one per telemetry channel (push_limit.md, …)
+labels/<slugged_name>.md       one per sub-label (oversteering_at_entry.md, merge_back_to_expert_line.md, …)
+main_labels/<slugged_name>.md  one per parent family (mistake_practice.md, recovery_merge.md, …)
+features/<NAME>.md             one per telemetry channel (driver_push_to_limit.md, …)
 ```
 
-The filename stem is the canonical id. Use the same id the classifier
-emits (`LABEL_MAPPING` keys in `app/domain/labels.py`).
+The filename stem is the **slugged human name** — lowercase, non-alphanumeric
+replaced with `_`. Internal label ids (`MSP44`, `RM7`, …) live in
+`LABEL_MAPPING` in `app/domain/labels.py` and never appear in filenames,
+prose, or anywhere the LLM can see. Convert id → name via
+`LABEL_MAPPING[id]` upstream; the corpus is addressed by name only.
+
+When renaming a label in `LABEL_MAPPING`, also rename its file here so the
+slug still matches.
 
 ## File format
 
@@ -34,16 +40,14 @@ The `explain_label` tool returns the slim subset:
 sub-label with at least these. The other sections are optional but
 make the corpus genuinely useful for analysis.
 
-### Worked example (`labels/MSP44.md`)
+### Worked example (`labels/oversteering_at_entry.md`)
+
+Frontmatter is optional. The filename stem is the human name (slugged);
+add frontmatter only when you want to record extra metadata (graph hints
+like co-labels / causes, etc.) — these are internal-only and never
+surfaced to the LLM. Internal ids never go in the frontmatter.
 
 ```markdown
----
-id: MSP44
-name: Oversteering at entry
-common_co_labels: [MSP17, MSP22, MSP3]
-causes_to_check: [MSP14, MSP22, MSP9]
----
-
 ## Definition
 Rear of the car steps out before the apex, requiring countersteer or a
 mid-entry lift to keep the line.
@@ -85,28 +89,29 @@ headings so tools can look them up by name.
 | `## Engineer interpretation` | The voice of a real race engineer talking to a driver. 2–4 sentences. This is what the LLM mostly leans on for the "engineer voice." |
 | `## Remedies` | Bullet list of concrete next-time actions the driver can take. |
 
-## Frontmatter fields
+## Frontmatter fields (optional)
 
-| Key | Type | Required | Notes |
-|---|---|---|---|
-| `id` | string | yes | Match the classifier's label id (e.g. `MSP44`). |
-| `name` | string | yes | Human-readable label name. Mirrors `LABEL_MAPPING[id]`. |
-| `common_co_labels` | list of ids | no | Labels that frequently co-occur with this one. |
-| `causes_to_check` | list of ids | no | Labels worth checking as possible root causes. |
-| `family` | string | no | Parent family (e.g. `MSP`). The loader doesn't enforce; use it if the LLM needs grouping later. |
+| Key | Type | Notes |
+|---|---|---|
+| `name` | string | Override the filename-derived human name. Rarely needed — usually the slugged filename already matches `LABEL_MAPPING[id]`. |
+| `common_co_labels` | list | Internal graph hint. Not LLM-visible. |
+| `causes_to_check` | list | Internal graph hint. Not LLM-visible. |
 
-You can add any other frontmatter fields — the loader passes them
-through unchanged. Future tools can pick them up; existing tools ignore
-unknown fields.
+Frontmatter is optional. The loader passes unknown fields through
+unchanged — future tools can pick them up. **Never put `id:` in
+frontmatter**: ids are classifier-internal and must not be addressable
+from the corpus side.
 
 ## Main labels (`main_labels/`)
 
-One file per parent family: `MSP.md`, `MSR.md`, `RM.md`, `EA.md`, `O.md`,
-`OD.md`, `PS.md`, `MD.md` plus per-track ones (`silverstone.md`, `brands_hatch.md`) as
-those get written. These document the *family* — what counts as a
-"mistake," what "expert adherence" means, when "recovery & merge"
-applies. They absorb the role the long-unused `MAIN_LABEL_GUIDELINES`
-dict in `app/domain/labels.py` was reaching for.
+One file per parent family — currently `mistake_practice.md`,
+`mistake_racing.md`, `recovery_merge.md`, `expert_adherence.md`,
+`successful_overtake.md`, `pit_stop.md`, `missing_data.md`. Per-track
+parent files (`silverstone.md`, `brands_hatch.md`) can be added the
+same way. These document the *family* — what counts as a "mistake,"
+what "expert adherence" means, when "recovery & merge" applies. They
+absorb the role the long-unused `MAIN_LABEL_GUIDELINES` dict in
+`app/domain/labels.py` was reaching for.
 
 Same section conventions, but `Remedies` typically isn't applicable
 (too generic at the family level).

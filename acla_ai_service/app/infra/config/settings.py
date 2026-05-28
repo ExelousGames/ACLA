@@ -93,8 +93,6 @@ class Settings(BaseSettings):
     # 335M params / 1024-dim / ~1.3GB. Strong MTEB recall on prose, runs
     # comfortably on GPU. Swap down to bge-base-en-v1.5 (~400MB, 768-dim)
     # if RAM is tight, or up to a 7B-class embedder for marginal gains.
-    # Kept separate from the annotation pipeline's MiniLM so the two skills
-    # can evolve their models independently.
     racing_kb_embedding_model: str = "BAAI/bge-large-en-v1.5"
     # bge-en-v1.5 was trained with this query-side instruction; documents go
     # in unprefixed. Empty string disables the prefix (use for non-bge models).
@@ -105,6 +103,19 @@ class Settings(BaseSettings):
     # 2000 chars ≈ 500 tokens for English prose — well under bge-base's
     # 512-token max.
     racing_kb_max_chunk_chars: int = 2000
+
+    # Annotation skill registry (hybrid index over discovery headers).
+    # Same bge-large default as the racing KB — the index is tiny (one
+    # vector per skill) so the heavier model is paid for once at startup.
+    annotation_skill_embedding_model: str = "BAAI/bge-large-en-v1.5"
+    annotation_skill_query_prefix: str = "Represent this sentence for searching relevant passages: "
+    # Hybrid retrieval — vector and BM25 sub-retrievers per registry,
+    # combined by QueryFusionRetriever in `relative_score` mode (the
+    # user-selected fusion strategy).
+    hybrid_fusion_mode: str = "relative_score"
+    # How many candidates each sub-retriever pulls before fusion. Wider
+    # than the final top_k so the fusion has overlap to work with.
+    hybrid_candidate_pool: int = 20
 
     # Hugging Face Configuration
     hf_token: Optional[str] = None

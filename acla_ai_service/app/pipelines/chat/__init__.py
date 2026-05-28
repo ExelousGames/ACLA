@@ -197,24 +197,28 @@ class AIService:
         return {"labels": names, "_label_ids": label_ids}
 
     async def _explain_label_impl(self, label_id: str) -> Dict[str, Any]:
-        """Phase 1 stub. Phase 2 populates this against the racing-engineer
-        Markdown corpus at ``app/skills/racing_engineer/labels/<ID>.md``.
+        """Fetch the racing-engineer concept doc for one action label.
 
-        Accepts either a raw id ("MS44") or a natural name ("Oversteering at
-        entry") — looks the natural name up in ``LABEL_NAME_TO_ID`` first.
+        Accepts either a raw id ("MSP44") — typically classifier output —
+        or a natural name ("Oversteering at entry"). Internally resolves to
+        the canonical human name via ``LABEL_MAPPING`` and looks up the
+        slugged file under ``app/skills/racing_engineer/labels/``. Ids are
+        never used to address files.
         """
         from app.domain.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
 
         if not label_id:
             return {"error": "label_id is required"}
 
-        # Normalise: prefer raw id; fall back to name → id lookup.
-        normalised = label_id if label_id in LABEL_MAPPING else LABEL_NAME_TO_ID.get(label_id, label_id)
-        name = LABEL_MAPPING.get(normalised, label_id)
+        # Normalise: input may be a raw id (classifier output) or a name.
+        # Convert to the canonical human name via LABEL_MAPPING; the corpus
+        # is keyed by that name (filename stem), never by id.
+        normalised_id = label_id if label_id in LABEL_MAPPING else LABEL_NAME_TO_ID.get(label_id, label_id)
+        name = LABEL_MAPPING.get(normalised_id, label_id)
 
         try:
             from app.skills.racing_engineer import label as _label_lookup
-            entry = _label_lookup(normalised)
+            entry = _label_lookup(name)
         except Exception:
             entry = None
 
@@ -226,7 +230,6 @@ class AIService:
                     "ships in Phase 2. Rely on your base-model knowledge of "
                     f"'{name}' for now."
                 ),
-                "_label_id": normalised,
             }
 
         return {
@@ -234,7 +237,6 @@ class AIService:
             "definition": entry.get("definition", ""),
             "engineer_interpretation": entry.get("engineer_interpretation", ""),
             "remedies": entry.get("remedies", []),
-            "_label_id": normalised,
         }
 
     async def _get_track_knowledge_impl(

@@ -8,14 +8,17 @@ per main-label family, or per telemetry feature.
 Layout::
 
     app/skills/racing_engineer/
-      __init__.py           (this module — loader)
-      README.md             (format spec for human authors)
-      labels/<ID>.md        (one per sub-label, e.g. MSP44.md)
-      main_labels/<ID>.md   (one per parent label, e.g. MSP.md)
-      features/<NAME>.md    (one per telemetry channel, e.g. push_limit.md)
+      __init__.py                  (this module — loader)
+      README.md                    (format spec for human authors)
+      labels/<slugged_name>.md     (one per sub-label, e.g. oversteering_at_entry.md)
+      main_labels/<slugged_name>.md (one per parent label, e.g. mistake_practice.md)
+      features/<NAME>.md           (one per telemetry channel, e.g. driver_push_to_limit.md)
 
-Core categories (``labels`` / ``main_labels`` / ``features`` / ``behaviors``)
-use direct keyed lookups via ``label(id)`` / ``feature(name)`` etc.
+Every file is addressed by its human name (slugged), never by an internal
+label id. Core categories use direct keyed lookups via ``label(name)`` /
+``feature(name)`` etc. Internal ids (``MSP44``, ``RM7``, …) live in
+``LABEL_MAPPING`` in ``app/domain/labels.py``; convert id → name via
+``LABEL_MAPPING[id]`` upstream before reaching this module.
 
 Two newer surfaces sit alongside that:
 
@@ -23,12 +26,16 @@ Two newer surfaces sit alongside that:
     The ``## <corner>`` sections become per-corner entries the LLM can
     address by name. See ``tracks/README.md`` for the file format.
 
-  * ``search(query, top_k)`` — RAG retrieval over ``knowledge/*.md`` via the
-    embedding index in :mod:`._registry`. Use for prose corpora (driver
-    transcripts, race reports, theory) where the right doc isn't obvious.
+  * ``search(query, top_k)`` — RAG retrieval over every ``.md`` in the
+    racing-engineer corpus (``labels/``, ``main_labels/``, ``features/``,
+    ``behaviors/``, ``tracks/``, ``knowledge/``) via the embedding index
+    in :mod:`._registry`. Use when the right doc isn't obvious — works
+    for prose (``knowledge/``) and for structured per-label / per-track
+    docs alike.
 
-The two surfaces are intentional siblings: keyed when the answer lives in
-exactly one file, retrieval when the answer is scattered.
+The two surfaces are intentional siblings: keyed when internal code
+already has an id (classifier output), retrieval when the LLM is
+working from a free-text question.
 
 A loaded entry is a flat ``dict`` mixing frontmatter fields and parsed
 section bodies. Section headings (``## Some Heading``) become keys with
@@ -51,12 +58,23 @@ LOGGER = logging.getLogger(__name__)
 
 _DIR = Path(__file__).resolve().parent
 
-# category name → {entry id → loaded dict}. Populated lazily on first read.
+# category name → {entry stem → loaded dict}. Populated lazily on first read.
+# The stem is the slugged human name (labels/oversteering_at_entry.md →
+# "oversteering_at_entry"). Internal label ids (MSP44, RM7, …) live only in
+# app/domain/labels.py; they are never used to address files here.
 _CACHE: Dict[str, Dict[str, dict]] = {}
 _CACHE_LOCK = threading.Lock()
 
 # Matches a file with YAML frontmatter delimited by --- lines, then a body.
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n?(.*)$", re.DOTALL)
+
+
+def _slug(name: str) -> str:
+    """Slug a human name to match a filename stem: lowercase, non-alnum → _."""
+    s = (name or "").lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s)
+    s = re.sub(r"_+", "_", s)
+    return s.strip("_")
 
 
 def _parse_md(path: Path) -> dict:
@@ -185,19 +203,29 @@ def _load_category(name: str) -> Dict[str, dict]:
         return out
 
 
-def label(label_id: str) -> Optional[dict]:
-    """Return the concept doc for one action label by id (e.g. ``"MSP44"``).
+def label(name: str) -> Optional[dict]:
+    """Return the concept doc for one action label by *human name*.
+
+    Pass the readable name (e.g. ``"Oversteering at entry"`` or
+    ``"oversteering_at_entry"``) — the lookup slugs the input and
+    matches the file stem (``labels/oversteering_at_entry.md``).
 
     Looks first in ``labels/`` (sub-labels), then in ``main_labels/``
     (parent families). Returns ``None`` if no file exists yet — callers
     should fall back gracefully (the ``explain_label`` tool already does).
+
+    Internal label ids (``"MSP44"``) are not accepted here; resolve
+    them upstream via ``LABEL_MAPPING`` before calling.
     """
-    if not label_id:
+    if not name:
         return None
-    entry = _load_category("labels").get(label_id)
+    stem = _slug(name)
+    if not stem:
+        return None
+    entry = _load_category("labels").get(stem)
     if entry is not None:
         return entry
-    return _load_category("main_labels").get(label_id)
+    return _load_category("main_labels").get(stem)
 
 
 def feature(name: str) -> Optional[dict]:
@@ -290,11 +318,15 @@ def track(track_id: str, corner: Optional[str] = None) -> Optional[dict]:
 
 
 def search(query: str, top_k: Optional[int] = None) -> List[dict]:
-    """RAG search over ``knowledge/*.md``.
+    """RAG search over every ``.md`` in the racing-engineer corpus.
 
-    Thin wrapper over :func:`._registry.get_registry().search` that
-    returns JSON-friendly dicts (so it drops straight into a tool
-    response without further conversion).
+    Walks ``labels/``, ``main_labels/``, ``features/``, ``behaviors/``,
+    ``tracks/``, and ``knowledge/`` — so a free-text question can find
+    any doc the engineer might want, not just the prose in ``knowledge/``.
+
+    Returns JSON-friendly dicts with only LLM-safe fields: ``kind``,
+    ``name``, ``section``, ``text``, ``score``. Internal routing keys
+    (file paths, ids, families) are never surfaced.
     """
     if not query or not query.strip():
         return []
@@ -302,7 +334,8 @@ def search(query: str, top_k: Optional[int] = None) -> List[dict]:
     hits = get_registry().search(query.strip(), top_k=top_k)
     return [
         {
-            "source": h.source,
+            "kind": h.kind,
+            "name": h.name,
             "section": h.section,
             "text": h.text,
             "score": round(h.score, 4),
