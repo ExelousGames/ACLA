@@ -42,7 +42,7 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
             key="lap_claude_max_iter",
         )
 
-        from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
+        from app.claude.backend import CLAUDE_VLM_MODELS
         model_options = list(CLAUDE_VLM_MODELS.keys())
         claude_model = st.selectbox(
             "Claude model", options=model_options,
@@ -71,7 +71,7 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
             key="lap_claude_run", type="primary",
         ):
             try:
-                from app.pipelines.annotation import (
+                from app.local_annotation_agent.workflow import (
                     AnnotationPipelineConfig,
                     run_annotation,
                 )

@@ -10,7 +10,7 @@ from .shared import (
     LABEL_MAPPING, LABEL_NAME_TO_ID,
     LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
 )
-from app.agents import ClaudeUsageExhausted
+from app.local_annotation_agent import ClaudeUsageExhausted
 
 _USAGE_EXHAUSTED_WARNING = (
     "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
@@ -205,7 +205,7 @@ def _render_local_vlm_config():
     from the current widget values — deferring the import so the run path
     surfaces a clean error if the LangGraph deps are missing.
     """
-    from app.agents.backends.local_vlm import QWEN25_VL_MODELS
+    from app.local_annotation_agent.backend import QWEN25_VL_MODELS
 
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -282,7 +282,7 @@ def _render_local_vlm_config():
         )
 
     def build_config():
-        from app.pipelines.annotation import AnnotationPipelineConfig
+        from app.local_annotation_agent.workflow import AnnotationPipelineConfig
         return AnnotationPipelineConfig(
             max_iterations=int(max_iterations),
             max_new_tokens=int(max_new_tokens),
@@ -300,7 +300,7 @@ def _render_local_vlm_config():
 
 def _render_claude_config():
     """Render Claude settings (mirrors detailed_agent_annotation_claude)."""
-    from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
+    from app.claude.backend import CLAUDE_VLM_MODELS
 
     max_iterations = st.number_input(
         "Tool-call budget (×10)",
@@ -326,7 +326,7 @@ def _render_claude_config():
     )
 
     def build_config():
-        from app.pipelines.annotation import AnnotationPipelineConfig
+        from app.local_annotation_agent.workflow import AnnotationPipelineConfig
         return AnnotationPipelineConfig(
             max_iterations=int(max_iterations),
             backend="claude",
@@ -478,7 +478,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
     # Resolve pipeline entrypoint (one unified entry handles both backends).
     try:
-        from app.pipelines.annotation import run_annotation
+        from app.local_annotation_agent.workflow import run_annotation
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
@@ -670,7 +670,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         help="Caps the agent loop at this many tool calls × 10 per section.",
         key="batch_lap_claude_max_iter",
     )
-    from app.agents.backends.claude_sdk import CLAUDE_VLM_MODELS
+    from app.claude.backend import CLAUDE_VLM_MODELS
     claude_model = st.selectbox(
         "Claude model", options=list(CLAUDE_VLM_MODELS.keys()),
         format_func=lambda x: CLAUDE_VLM_MODELS[x]["label"],
@@ -731,7 +731,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         return
 
     try:
-        from app.pipelines.annotation import (
+        from app.local_annotation_agent.workflow import (
             AnnotationPipelineConfig, run_annotation,
         )
     except ImportError as e:

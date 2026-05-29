@@ -1,89 +1,122 @@
 [importlinter]
 root_package = app
 
-# Hexagonal layering: imports flow downward only.
+# Component layout (imports flow downward only):
 #
-#   api  ──►  pipelines  ──►  agents  ──►  ml/llm/voice/integrations  ──►  storage
-#                                              │
-#                                              ▼
-#                          domain / features / skills / infra  (pure leaves)
+#   startup ─► api ─► (racing_engineer | pipelines | local_annotation_agent | claude_annotation_agent)
+#                          │
+#                          ▼
+#        shared | claude | llama | local_llm | cloud_llm | voice | ml | integrations
+#                          │
+#                          ▼
+#                       storage
+#                          │
+#                          ▼
+#   domain | features | infra | internal_knowledge_base | external_knowledge_base  (leaves)
 #
-# Contracts target the boundaries that REGRESSION would damage. Same-band
-# imports (e.g. one pipeline calling another) are allowed deliberately.
-# See acla-ai-service-architecture.drawio Page 4 for the source-of-truth diagram.
+# Same-band imports are allowed deliberately (e.g. the annotation workflow dispatches to the
+# Claude annotation agent). Contracts target boundaries that REGRESSION would damage.
 
-# ─── Leaves: must not depend on anything else in the app ──────────────────────
+# ─── Leaves ───────────────────────────────────────────────────────────────────
 
 [importlinter:contract:domain-is-leaf]
-name = app/domain is a leaf (no upward dependencies)
+name = app/domain is a leaf
 type = forbidden
 source_modules =
     app.domain
 forbidden_modules =
-    app.agents
     app.api
-    app.integrations
-    app.llm
-    app.main
-    app.ml
+    app.startup
+    app.racing_engineer
     app.pipelines
-    app.storage
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.shared
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
     app.voice
+    app.ml
+    app.integrations
+    app.storage
     app.features
+    app.internal_knowledge_base
+    app.external_knowledge_base
 
 [importlinter:contract:features-is-leaf]
-name = app/features is a leaf (stateless math, no upward dependencies)
+name = app/features is a leaf (stateless math)
 type = forbidden
 source_modules =
     app.features
 forbidden_modules =
-    app.agents
     app.api
-    app.integrations
-    app.llm
-    app.main
-    app.ml
+    app.startup
+    app.racing_engineer
     app.pipelines
-    app.storage
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.shared
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
     app.voice
-
-[importlinter:contract:skills-may-only-touch-domain]
-name = app/skills only reaches into app.domain (for label lookups)
-type = forbidden
-source_modules =
-    app.skills
-forbidden_modules =
-    app.agents
-    app.api
-    app.integrations
-    app.llm
-    app.main
     app.ml
-    app.pipelines
+    app.integrations
     app.storage
-    app.voice
-    app.features
 
 [importlinter:contract:infra-is-leaf]
-name = app/infra (config + observability) imports nothing from app
+name = app/infra (config) imports nothing from app
 type = forbidden
 source_modules =
     app.infra
 forbidden_modules =
-    app.agents
     app.api
+    app.startup
+    app.racing_engineer
+    app.pipelines
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.shared
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
+    app.voice
+    app.ml
+    app.integrations
+    app.storage
     app.domain
     app.features
-    app.integrations
-    app.llm
-    app.main
-    app.ml
-    app.pipelines
-    app.skills
-    app.storage
-    app.voice
+    app.internal_knowledge_base
+    app.external_knowledge_base
 
-# ─── Storage: bottom of the stack, no upward edges ────────────────────────────
+[importlinter:contract:knowledge-bases-only-touch-domain]
+name = knowledge bases only reach down to domain/infra
+type = forbidden
+source_modules =
+    app.internal_knowledge_base
+    app.external_knowledge_base
+forbidden_modules =
+    app.api
+    app.startup
+    app.racing_engineer
+    app.pipelines
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.shared
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
+    app.voice
+    app.ml
+    app.integrations
+    app.storage
+    app.features
+
+# ─── Storage: bottom of the stack ─────────────────────────────────────────────
 
 [importlinter:contract:storage-no-upward]
 name = app/storage does not import from any band above
@@ -91,78 +124,72 @@ type = forbidden
 source_modules =
     app.storage
 forbidden_modules =
-    app.agents
     app.api
-    app.integrations
-    app.llm
-    app.main
-    app.ml
+    app.startup
+    app.racing_engineer
     app.pipelines
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.shared
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
     app.voice
-
-# ─── Outbound adapters: don't reach into orchestration or API ─────────────────
-
-[importlinter:contract:llm-no-pipeline-or-api]
-name = app/llm never imports pipelines, agents, or api
-type = forbidden
-source_modules =
-    app.llm
-forbidden_modules =
-    app.agents
-    app.api
-    app.main
-    app.pipelines
-
-[importlinter:contract:voice-no-pipeline-or-api]
-name = app/voice never imports pipelines or api (voice is an outbound adapter)
-type = forbidden
-source_modules =
-    app.voice
-forbidden_modules =
-    app.api
-    app.main
-    app.pipelines
-
-[importlinter:contract:integrations-no-pipeline-or-api]
-name = app/integrations never imports pipelines or api
-type = forbidden
-source_modules =
-    app.integrations
-forbidden_modules =
-    app.agents
-    app.api
-    app.main
-    app.pipelines
-
-[importlinter:contract:ml-no-pipeline-or-api]
-name = app/ml never imports pipelines, agents, or api (model code is pure)
-type = forbidden
-source_modules =
     app.ml
-forbidden_modules =
-    app.agents
-    app.api
-    app.main
-    app.pipelines
+    app.integrations
 
-# ─── Agent box: domain-free; never reaches into pipelines or api ──────────────
+# ─── Outbound adapters / capabilities: never reach up into orchestration or api ─
 
-[importlinter:contract:agents-stays-pure]
-name = agent capability box never reaches into pipelines, api, or main
+[importlinter:contract:adapters-no-upward]
+name = LLM/voice/ml/integrations adapters never import orchestration, api, or startup
 type = forbidden
 source_modules =
-    app.agents
+    app.llama
+    app.local_llm
+    app.cloud_llm
+    app.claude
+    app.voice
+    app.ml
+    app.integrations
+    app.shared
 forbidden_modules =
     app.api
-    app.main
+    app.startup
     app.pipelines
+    app.racing_engineer
+    app.local_annotation_agent
+    app.claude_annotation_agent
 
-# ─── API: thin inbound adapter; never reaches into main/__init__ recursively ──
+# ─── Annotation agents: never reach into api or startup ────────────────────────
+
+[importlinter:contract:annotation-agents-stay-pure]
+name = annotation agents never reach into api or startup
+type = forbidden
+source_modules =
+    app.local_annotation_agent
+    app.claude_annotation_agent
+forbidden_modules =
+    app.api
+    app.startup
+
+# ─── Racing engineer (front-facing chatbot): not reached from below ───────────
+
+[importlinter:contract:racing-engineer-no-api-startup]
+name = racing_engineer never imports api or startup
+type = forbidden
+source_modules =
+    app.racing_engineer
+forbidden_modules =
+    app.api
+    app.startup
+
+# ─── API: thin inbound adapter ────────────────────────────────────────────────
 
 [importlinter:contract:api-stays-thin]
-name = app/api never imports main (api is reached FROM main, not the reverse)
+name = app/api never imports startup (api is reached FROM startup, not the reverse)
 type = forbidden
 source_modules =
     app.api
 forbidden_modules =
-    app.main
+    app.startup

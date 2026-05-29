@@ -219,7 +219,7 @@ async def voice_stream(
     # Construct the tool executor here, in the inbound-adapter band, so
     # app/voice/ never imports from app/pipelines/ (see .importlinter
     # contract voice-no-pipeline-or-api).
-    from app.pipelines.chat import AIService
+    from app.racing_engineer import AIService
     ai_service = AIService()
     tool_executor = ai_service._execute_function
 

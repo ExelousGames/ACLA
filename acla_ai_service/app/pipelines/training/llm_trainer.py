@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from app.llm.local_llm import LocalLLMConfig
-from app.pipelines.chat.orchestrator import TelemetryLLMOrchestrator
+from app.local_llm.local_llm import LocalLLMConfig
+from app.local_llm.orchestrator import TelemetryLLMOrchestrator
 
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-32B-Instruct"

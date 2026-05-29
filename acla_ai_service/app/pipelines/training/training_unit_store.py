@@ -40,7 +40,7 @@ from app.pipelines.training.dataset_builder import (
     build_dataset,
     render_labels_text,
 )
-from app.skills.internal.annotation import skills
+from app.internal_knowledge_base import skills
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +250,7 @@ def draft_unit(
 
     Raises if either call returns empty text — VLM no-fallback policy.
     """
-    from app.agents.backends.claude_sdk import (
+    from app.claude.backend import (
         CLAUDE_VLM_MODELS,
         get_or_start_claude_backend,
     )

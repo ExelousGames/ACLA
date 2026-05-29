@@ -72,7 +72,7 @@ from app.infra.config.pipeline import PipelineConfig
 # pipelines.chat.orchestrator is a sibling module — loading it requires
 # the package's __init__ to finish. (Pre-refactor these lived in
 # different packages so the cycle didn't exist.)
-from app.llm.local_llm import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
+from app.local_llm.local_llm import LocalTelemetryLLM, LocalLLMConfig, GenerationRequest
 
 # Suppress sklearn warnings
 warnings.filterwarnings('ignore', category=UserWarning)
@@ -133,7 +133,7 @@ class Full_dataset_TelemetryMLService:
         )
         
         # LLM configuration
-        from app.llm.local_llm import ModelConfig, TrainingConfig
+        from app.local_llm.local_llm import ModelConfig, TrainingConfig
         
         self.llm_config = LocalLLMConfig(
             model=ModelConfig(
@@ -157,7 +157,7 @@ class Full_dataset_TelemetryMLService:
         self.llm_dataset_directory.mkdir(parents=True, exist_ok=True)
 
         # Deferred to break the chat ↔ training import cycle (see top of file).
-        from app.pipelines.chat.orchestrator import TelemetryLLMOrchestrator
+        from app.local_llm.orchestrator import TelemetryLLMOrchestrator
         self.llm_orchestrator = TelemetryLLMOrchestrator(
             llm_config=self.llm_config,
             adapter_directory=self.llm_adapter_directory,

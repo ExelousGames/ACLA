@@ -5,7 +5,7 @@ Two routes:
   - ``POST /annotation/run``         (blocking) — added in Step 13
   - ``POST /annotation/run/stream``  (SSE)      — added in PR #5
 
-Both replace the in-process ``from app.pipelines.annotation import
+Both replace the in-process ``from app.local_annotation_agent.workflow import
 run_annotation`` import that the Streamlit researcher UI uses today.
 The streaming variant surfaces the agent's progress / VLM-token /
 step-event callbacks live so callers can render incremental output.
@@ -27,7 +27,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.pipelines.annotation import (
+from app.local_annotation_agent.workflow import (
     AnnotationPipelineConfig,
     AnnotationResult,
     LapAnnotationResult,
