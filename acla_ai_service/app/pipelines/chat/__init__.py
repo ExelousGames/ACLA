@@ -202,7 +202,7 @@ class AIService:
         Accepts either a raw id ("MSP44") — typically classifier output —
         or a natural name ("Oversteering at entry"). Internally resolves to
         the canonical human name via ``LABEL_MAPPING`` and looks up the
-        slugged file under ``app/skills/racing_engineer/labels/``. Ids are
+        slugged file under ``app/skills/external/racing_engineer/labels/``. Ids are
         never used to address files.
         """
         from app.domain.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
@@ -217,7 +217,7 @@ class AIService:
         name = LABEL_MAPPING.get(normalised_id, label_id)
 
         try:
-            from app.skills.racing_engineer import label as _label_lookup
+            from app.skills.external.racing_engineer import label as _label_lookup
             entry = _label_lookup(name)
         except Exception:
             entry = None
@@ -251,13 +251,13 @@ class AIService:
         if not track:
             return {"error": "track is required"}
         try:
-            from app.skills.racing_engineer import track as _track_lookup
+            from app.skills.external.racing_engineer import track as _track_lookup
             entry = _track_lookup(track, corner=corner)
         except Exception as exc:
             return {"error": f"track lookup failed: {exc}"}
         if entry is None:
             try:
-                from app.skills.racing_engineer import _load_category
+                from app.skills.external.racing_engineer import _load_category
                 available = sorted(_load_category("tracks").keys())
             except Exception:
                 available = []
@@ -282,7 +282,7 @@ class AIService:
             except (TypeError, ValueError):
                 k = None
         try:
-            from app.skills.racing_engineer import search as _kb_search
+            from app.skills.external.racing_engineer import search as _kb_search
             hits = await asyncio.to_thread(_kb_search, query, k)
         except Exception as exc:
             LOGGER.exception("search_racing_knowledge failed")

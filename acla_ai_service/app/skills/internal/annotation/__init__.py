@@ -2,35 +2,30 @@
 
 Layout::
 
-    app/skills/annotation/             (this package — code + json data)
-      __init__.py, _registry.py, _query.py, _embedder.py
+    app/skills/internal/annotation/             (this package — code + json data)
+      __init__.py, _registry.py, _query.py, _embedder.py, label_search.py
       <name>.json                      (data — drop a json in, restart)
 
 Skills are single JSON files; no Python escape hatches. Filtering,
 formatting, or merging skill data with non-skill state is done on the
 caller side.
 
-All callers use the ``skills`` singleton with four verbs:
+The ``skills`` singleton is a read-only document store with three verbs:
 
   * ``skills.get(path)``               — dotted-path lookup
   * ``skills.find(path, **filters)``   — Mongo-style filter over a collection
   * ``skills.iter(path)``              — yield every document in a collection
-  * ``skills.search(query, top_k)``    — embedding similarity over discovery headers
 
-Sub-agents that need to embed text directly (e.g. label_verifier
-scoring observations against label descriptions) import ``embed`` /
-``cosine_sim`` from :mod:`app.skill_manager._embedder` — same model
-singleton as the registry's discovery index.
+Semantic retrieval over the label catalog lives separately in
+:mod:`app.skills.internal.annotation.label_search` (``search_labels``).
 """
 
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from app.skills.annotation._embedder import cosine_sim, embed
-from app.skills.annotation._registry import (
+from app.skills.internal.annotation._registry import (
     Skill,
-    SkillMatch,
     SkillRegistry,
     SkillSpec,
     get_registry,
@@ -38,13 +33,12 @@ from app.skills.annotation._registry import (
 
 
 class _SkillsProxy:
-    """Lazy proxy — defers registry construction (and embedding-model load)
-    until the first attribute access."""
+    """Lazy proxy — defers registry construction until first attribute access."""
 
     def __repr__(self) -> str:
         return f"<skills proxy: {get_registry().names()}>"
 
-    # The five verbs
+    # The three verbs
 
     def get(self, path: str, default: Any = None) -> Any:
         return get_registry().get(path, default)
@@ -54,14 +48,6 @@ class _SkillsProxy:
 
     def iter(self, collection_path: str) -> List[Dict[str, Any]]:
         return get_registry().iter(collection_path)
-
-    def search(
-        self,
-        query: str,
-        top_k: int = 5,
-        min_score: float = 0.0,
-    ) -> List[SkillMatch]:
-        return get_registry().search(query, top_k=top_k, min_score=min_score)
 
     # Introspection
 
@@ -77,11 +63,8 @@ skills = _SkillsProxy()
 
 __all__ = [
     "Skill",
-    "SkillMatch",
     "SkillRegistry",
     "SkillSpec",
-    "cosine_sim",
-    "embed",
     "get_registry",
     "skills",
 ]

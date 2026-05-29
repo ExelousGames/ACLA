@@ -6,121 +6,75 @@ expert-phase detection, circuit-section locator) stay in
 ``agent/tools/`` because they are agent capabilities, not annotation
 concerns.
 
-Importing this module is enough; ``list_eligible_labels`` is consumed
-directly by the annotation flows (detailed/lap) — there is no pipeline-
-tool registration because no sub-agent invokes label listing as a
-planned step.
+``search_labels_handler`` is the Claude-side surface for the one hybrid
+label retriever (``app.skills.internal.annotation.label_search.search_labels``) —
+the agent discovers candidate labels by querying it, not from any
+enumerated catalog.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import json
+from typing import Any, Dict
 
 
-def list_eligible_labels(
-    parent_id: Optional[str] = None,
-    circuit_id: Optional[str] = None,
-):
-    """Return the eligible label IDs the annotation agent may attach.
+def _shape_for_llm(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Trim a label doc to the fields the agent needs to pick it."""
+    row: Dict[str, Any] = {
+        "id": doc["id"],
+        "name": doc.get("name", doc["id"]),
+        "type": doc.get("type"),
+        "score": round(float(doc.get("score", 0.0)), 4),
+    }
+    if doc.get("parent"):
+        row["parent"] = doc["parent"]
+    desc = (doc.get("description") or "").strip()
+    if desc:
+        row["description"] = desc
+    ex_with = doc.get("exclusive_with") or []
+    if ex_with:
+        row["exclusive_with"] = list(ex_with)
+    return row
 
-    Two-mode tool:
 
-    - ``parent_id=None`` (default) — returns the top tiers: circuit
-      (gated by ``circuit_id`` when supplied), circuit_sections belonging
-      to that circuit, segment types (ST1-ST6), and the main labels
-      (EA / MSP / MSR / RM / PS / O / OD / MD).
-    - ``parent_id="MSP"`` (or any main label) — returns the sub-labels
-      whose ``parent`` matches, each with its ``description`` so the
-      agent can decide whether the section's telemetry matches the
-      sub-label's signature.
+def search_labels_handler(_surface, args: Dict[str, Any]) -> str:
+    """Claude MCP handler — hybrid-search the label catalog.
 
-    Returned attachment ``eligible_labels`` has shape::
-
-        {
-            "parent_id": <str | None>,
-            "circuit_id": <str | None>,
-            "groups": [
-                {"tier": "circuit" | "circuit_section" | "segment_type"
-                         | "main" | "sub",
-                 "entries": [{"id", "name", "description?", "range?",
-                              "parent?", "exclusive_with?"}, ...]},
-                ...
-            ],
-        }
+    Params: ``query`` (required, plain-language telemetry description),
+    optional ``types`` (a tier: ``"main"`` / ``"segment_type"`` /
+    ``"sub"``) and ``parent_id`` (a main-label id to scope sub-labels).
+    Returns the best-matching label docs, best-first.
     """
-    from app.agents.evaluators import PipelineAttachment
-    from app.skills.annotation.label_lookup import find_labels, get_label
+    from app.skills.internal.annotation.label_search import search
 
-    def _attach(groups: List[Dict[str, Any]]) -> "PipelineAttachment":
-        return PipelineAttachment(
-            name="eligible_labels",
-            kind="structured",
-            label="Eligible Labels",
-            content={
-                "parent_id": parent_id,
-                "circuit_id": circuit_id,
-                "groups": groups,
-            },
-        )
+    query = str(args.get("query") or "").strip()
+    if not query:
+        return json.dumps({"error": "query is required"})
+    filters: Dict[str, Any] = {}
+    if str(args.get("types") or "").strip():
+        filters["type"] = str(args["types"]).strip()
+    if str(args.get("parent_id") or "").strip():
+        filters["parent"] = str(args["parent_id"]).strip()
 
-    if parent_id:
-        sub_entries: List[Dict[str, Any]] = []
-        for entry in find_labels(parent=parent_id):
-            row: Dict[str, Any] = {
-                "id": entry["id"],
-                "name": entry["name"],
-                "parent": entry.get("parent"),
-            }
-            desc = (entry.get("description") or "").strip()
-            if desc:
-                row["description"] = desc
-            ex_with = entry.get("exclusive_with") or []
-            if ex_with:
-                row["exclusive_with"] = list(ex_with)
-            sub_entries.append(row)
-        return _attach([
-            {"tier": "sub", "entries": sub_entries},
-        ])
+    results = search(query, filters=filters)
+    return json.dumps([_shape_for_llm(d) for d in results], default=str)
 
-    groups: List[Dict[str, Any]] = []
 
-    if circuit_id:
-        circuit_entry = get_label(circuit_id)
-        circuit_rows: List[Dict[str, Any]] = []
-        if circuit_entry is not None:
-            circuit_rows.append({
-                "id": circuit_entry["id"],
-                "name": circuit_entry["name"],
-            })
-        groups.append({"tier": "circuit", "entries": circuit_rows})
-
-        section_rows: List[Dict[str, Any]] = []
-        for entry in find_labels(type="circuit_section", parent=circuit_id):
-            row: Dict[str, Any] = {"id": entry["id"], "name": entry["name"]}
-            rng = entry.get("normalized_position_range")
-            if rng is not None:
-                row["normalized_position_range"] = [
-                    float(rng[0]), float(rng[1]),
-                ]
-            section_rows.append(row)
-        groups.append({"tier": "circuit_section", "entries": section_rows})
-
-    st_rows: List[Dict[str, Any]] = []
-    for entry in find_labels(type="segment_type"):
-        row: Dict[str, Any] = {"id": entry["id"], "name": entry["name"]}
-        desc = (entry.get("description") or "").strip()
-        if desc:
-            row["description"] = desc
-        st_rows.append(row)
-    groups.append({"tier": "segment_type", "entries": st_rows})
-
-    main_rows: List[Dict[str, Any]] = []
-    for entry in find_labels(type="main"):
-        row = {"id": entry["id"], "name": entry["name"]}
-        ex_with = entry.get("exclusive_with") or []
-        if ex_with:
-            row["exclusive_with"] = list(ex_with)
-        main_rows.append(row)
-    groups.append({"tier": "main", "entries": main_rows})
-
-    return _attach(groups)
+CLAUDE_SEARCH_LABELS_TOOL: Dict[str, Any] = {
+    "name": "search_labels",
+    "description": (
+        "Hybrid-search the annotation label catalog for the candidates "
+        "matching your observations. `query` is a plain-language "
+        "description of the telemetry you saw. Optional `types` scopes to "
+        "one tier (\"main\", \"segment_type\", or \"sub\"); optional "
+        "`parent_id` (a main-label id, e.g. \"MSP\") scopes to that "
+        "label's sub-labels. Returns the best-matching labels with their "
+        "descriptions, best-first. Re-query with different wording to "
+        "broaden. This is the only way to discover labels — there is no "
+        "full catalog listing. Circuit + circuit_section labels are not "
+        "searchable here; pick them via the `get_circuit_id` / "
+        "`locate_circuit_section` tools instead."
+    ),
+    "params_schema": {"query": str, "types": str, "parent_id": str},
+    "handler": search_labels_handler,
+}

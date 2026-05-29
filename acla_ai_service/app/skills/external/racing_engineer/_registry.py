@@ -1,6 +1,6 @@
 """Racing-engineer knowledge-base RAG index.
 
-Walks every ``.md`` under ``app/skills/racing_engineer/`` (recursively
+Walks every ``.md`` under ``app/skills/external/racing_engineer/`` (recursively
 across ``labels/``, ``main_labels/``, ``features/``, ``behaviors/``,
 ``tracks/``, ``knowledge/``), chunks each file by ``## Heading`` (or by
 blank-line paragraphs if a file has no headings), and serves hybrid
@@ -22,7 +22,7 @@ swapping the model triggers a full re-index on next start.
 
 Public surface is a single function::
 
-    from app.skills.racing_engineer._registry import get_registry
+    from app.skills.external.racing_engineer._registry import get_registry
     hits = get_registry().search("wet setup at Spa", top_k=5)
     # hits: List[KnowledgeHit]
 """
@@ -46,7 +46,8 @@ LOGGER = logging.getLogger(__name__)
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent
 _CORPUS_ROOT = _PACKAGE_ROOT
-_CACHE_DIR = _PACKAGE_ROOT.parent.parent.parent / ".cache" / "racing_knowledge_llama"
+# app/skills/external/racing_engineer/ → repo root (acla_ai_service) is 4 parents up.
+_CACHE_DIR = _PACKAGE_ROOT.parents[3] / ".cache" / "racing_knowledge_llama"
 _PERSIST_DIR = _CACHE_DIR / "storage"
 _MANIFEST_FILE = _CACHE_DIR / "manifest.json"
 
@@ -239,7 +240,7 @@ class KnowledgeRegistry:
         from llama_index.core.schema import TextNode
         from llama_index.retrievers.bm25 import BM25Retriever
 
-        from app.skills.racing_engineer._embedder import get_llama_embedding
+        from app.skills.external.racing_engineer._embedder import get_llama_embedding
 
         embed_model = get_llama_embedding()
         current = self._manifest(chunks)

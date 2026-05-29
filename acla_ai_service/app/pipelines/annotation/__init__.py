@@ -284,6 +284,9 @@ def _run_lap(
         session_id=session_id,
     )
     response = run_agent(request)
+    # The LLM picks the circuit + circuit_section labels itself (via the
+    # get_circuit_id / locate_circuit_section tools), so result.label_ids
+    # already carries them — no deterministic post-merge here.
     return lap_flow.parse(
         response,
         backend=backend,

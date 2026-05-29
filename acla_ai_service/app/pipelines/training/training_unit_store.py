@@ -40,7 +40,7 @@ from app.pipelines.training.dataset_builder import (
     build_dataset,
     render_labels_text,
 )
-from app.skills.annotation import skills
+from app.skills.internal.annotation import skills
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +222,7 @@ def _claude_prompt(mode: str, labels_text: str) -> str:
     if not template:
         raise RuntimeError(
             "training_unit_annotation skill is missing — drop "
-            "app/skills/annotation/training_unit_annotation.json in place and restart."
+            "app/skills/internal/annotation/training_unit_annotation.json in place and restart."
         )
     mode_style = skills.get(f"training_unit_annotation.modes.{mode}.style") or ""
     mode_avoid_raw = skills.get(f"training_unit_annotation.modes.{mode}.avoid") or []

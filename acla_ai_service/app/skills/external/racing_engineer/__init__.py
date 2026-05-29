@@ -7,7 +7,7 @@ per main-label family, or per telemetry feature.
 
 Layout::
 
-    app/skills/racing_engineer/
+    app/skills/external/racing_engineer/
       __init__.py                  (this module — loader)
       README.md                    (format spec for human authors)
       labels/<slugged_name>.md     (one per sub-label, e.g. oversteering_at_entry.md)
@@ -170,7 +170,7 @@ def _shape_section(lines: List[str]) -> object:
 
 
 def _load_category(name: str) -> Dict[str, dict]:
-    """Lazy-load every .md under app/skills/racing_engineer/<name>/.
+    """Lazy-load every .md under app/skills/external/racing_engineer/<name>/.
 
     Thread-safe. Missing directories return an empty dict (no error) so
     Phase 2 can ship category-by-category without empty folders being
@@ -185,7 +185,7 @@ def _load_category(name: str) -> Dict[str, dict]:
         if category_dir.is_dir():
             for path in sorted(category_dir.glob("*.md")):
                 # Skip authoring docs: files starting with "_" / "." (mirrors
-                # the convention in app/skills/annotation/_registry.py) and
+                # the convention in app/skills/internal/annotation/_registry.py) and
                 # any plain README.md, which is always documentation about
                 # the folder's format, never indexable data.
                 if path.name.startswith("_") or path.name.startswith("."):
@@ -330,7 +330,7 @@ def search(query: str, top_k: Optional[int] = None) -> List[dict]:
     """
     if not query or not query.strip():
         return []
-    from app.skills.racing_engineer._registry import get_registry
+    from app.skills.external.racing_engineer._registry import get_registry
     hits = get_registry().search(query.strip(), top_k=top_k)
     return [
         {
@@ -355,7 +355,7 @@ def reload() -> None:
     with _CACHE_LOCK:
         _CACHE.clear()
     try:
-        from app.skills.racing_engineer._registry import reload as _kb_reload
+        from app.skills.external.racing_engineer._registry import reload as _kb_reload
         _kb_reload()
     except Exception:
         LOGGER.exception("racing_engineer: failed to reset KB registry")

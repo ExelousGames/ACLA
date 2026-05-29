@@ -15,11 +15,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import json as _json
-
 from app.domain.labels import LABEL_MAPPING
-from app.skills.annotation import skills
-from app.skills.annotation.label_lookup import find_labels, get_label
+from app.skills.internal.annotation import skills
 from app.agents import (
     AgentRequest,
     AgentResponse,
@@ -31,21 +28,20 @@ from app.pipelines.annotation.results import (
     LapAnnotationResult,
     parse_json_response,
 )
-from app.pipelines.annotation.tools import list_eligible_labels
+from app.pipelines.annotation.tools import CLAUDE_SEARCH_LABELS_TOOL
 
 
 # ---------------------------------------------------------------------------
 # lap_annotation skill — prompt rendering
 # ---------------------------------------------------------------------------
 
-_LAP_CIRCUIT_LABELS = {"brands_hatch", "silverstone"}
 
-
-def lap_annotation_prompt(circuit_id: Optional[str] = None) -> str:
+def lap_annotation_prompt() -> str:
     """Per-label `characteristics` block for the lap-flow planner / synthesizer.
 
-    When ``circuit_id`` is given, the other circuit's parent label is
-    excluded; ``None`` keeps both circuit entries.
+    The skill carries only main-label characteristics; circuit and
+    circuit_section labels are attached upstream by the splitter and
+    never appear here.
     """
     labels = skills.iter("lap_annotation.labels")
     global_rules = skills.get("lap_annotation.global_rules", "")
@@ -61,8 +57,6 @@ def lap_annotation_prompt(circuit_id: Optional[str] = None) -> str:
 
     for entry in labels:
         lid = entry["id"]
-        if lid in _LAP_CIRCUIT_LABELS and circuit_id is not None and lid != circuit_id:
-            continue
         name = entry.get("name", lid)
         applies_when = str(entry.get("applies_when", "")).strip()
         characteristics = str(entry.get("characteristics", "")).strip()
@@ -102,62 +96,7 @@ def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
     return out
 
 
-def _list_eligible_labels_handler(_surface, args):
-    """Claude MCP handler — exposes the annotation label catalog."""
-    parent_id = str(args.get("parent_id") or "").strip() or None
-    circuit_id = str(args.get("circuit_id") or "").strip() or None
-    att = list_eligible_labels(parent_id=parent_id, circuit_id=circuit_id)
-    return _json.dumps(att.content, default=str)
-
-
-_CLAUDE_EXTRA_TOOLS_LAP = [
-    {
-        "name": "list_eligible_labels",
-        "description": (
-            "Return the eligible label IDs the agent may attach. Called "
-            "with no `parent_id` to learn the top tiers (circuit, "
-            "circuit_sections, segment types, main labels). Called with a "
-            "main label as `parent_id` (e.g. \"MS\") to learn that main "
-            "label's sub-labels with their descriptions. Pass `circuit_id` "
-            "to scope the circuit and circuit_section listings; otherwise "
-            "circuits are not emitted."
-        ),
-        "params_schema": {"parent_id": str, "circuit_id": str},
-        "handler": _list_eligible_labels_handler,
-    },
-]
-
 LOGGER = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Eligible label rendering — shared by local + claude prompts
-# ---------------------------------------------------------------------------
-
-
-def _eligible_lap_labels_lines(circuit_id: str) -> List[str]:
-    """Eligible label IDs rendered as prompt bullets — **local flow only**.
-
-    The Claude flow exposes the same data through the agent-callable
-    `list_eligible_labels` tool (see ``agent/tools/__init__.py``); this
-    helper exists because the local synthesizer is a single-shot VLM call
-    that needs the list inlined in its prompt.
-    """
-    lines: List[str] = []
-    circuit_entry = get_label(circuit_id)
-    if circuit_entry is not None:
-        lines.append(f"  - `{circuit_entry['id']}` ({circuit_entry['name']})")
-    for entry in find_labels(type="circuit_section", parent=circuit_id):
-        rng = entry.get("normalized_position_range")
-        rng_str = (
-            f"[{rng[0]:.3f}, {rng[1]:.3f}]" if rng is not None else "[null, null]"
-        )
-        lines.append(f"  - `{entry['id']}` ({entry['name']}) — range {rng_str}")
-    for entry in find_labels(type="segment_type"):
-        lines.append(f"  - `{entry['id']}` ({entry['name']})")
-    for entry in find_labels(type="main"):
-        lines.append(f"  - `{entry['id']}` ({entry['name']})")
-    return lines
 
 
 # ---------------------------------------------------------------------------
@@ -180,18 +119,7 @@ def _local_planner_prompt(
         PIPELINE_TOOL_DEFINITIONS,
     )
 
-    section_entry = get_label(section_id) if section_id else None
-    section_name = section_entry["name"] if section_entry else section_id
-    section_desc = (
-        (section_entry.get("description") or "").strip() if section_entry else ""
-    )
-    section_rng = (
-        section_entry.get("normalized_position_range") if section_entry else None
-    )
-    section_rng_str = (
-        f"[{section_rng[0]:.3f}, {section_rng[1]:.3f}]"
-        if section_rng is not None else "[null, null]"
-    )
+    section_name = LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
 
     graph_catalogue = ", ".join(
         f"`{gdef['id']}` ({gdef['title']})"
@@ -202,7 +130,7 @@ def _local_planner_prompt(
         for t in PIPELINE_TOOL_DEFINITIONS
     ]
 
-    lap_skill_block = lap_annotation_prompt(circuit_id=circuit_id)
+    lap_skill_block = lap_annotation_prompt()
 
     existing_block = ""
     if existing_section_annotations:
@@ -233,9 +161,9 @@ def _local_planner_prompt(
         f"- Lap range: [{lap_start}, {lap_end}] (length {lap_end - lap_start})",
         "",
         "#### Section under review",
-        f"- section_id: `{section_id}` ({section_name})",
-        f"- description: {section_desc}",
-        f"- normalized_position_range: {section_rng_str}",
+        f"- circuit_section: `{section_id}` ({section_name}) "
+        "— located by the splitter; the synthesizer emits it (with the "
+        "circuit) as a label.",
         f"- rough iloc boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})",
         existing_block,
@@ -304,11 +232,10 @@ def _local_synth_prompts(
     circuit_id: str,
     verified_labels: List[str],
 ) -> Tuple[str, str]:
-    lap_skill_block = lap_annotation_prompt(circuit_id=circuit_id)
-    eligible_lines = _eligible_lap_labels_lines(circuit_id)
+    lap_skill_block = lap_annotation_prompt()
     verified_inline = (
         ", ".join(verified_labels) if verified_labels
-        else "(none — fall back to the eligible list)"
+        else "(none — emit an empty label_ids array)"
     )
 
     intro = "\n".join([
@@ -317,29 +244,28 @@ def _local_synth_prompts(
         "captured the evidence below; pick the parent labels by matching "
         "the section's telemetry against each candidate label's "
         "`characteristics` block in the skill. Revising the boundary is "
-        "an escape hatch only — invoke it when `locate_circuit_section` "
-        "shows the rough range straddles two catalog sections.",
+        "an escape hatch only — invoke it when one main-label signature "
+        "does not hold across the rough range.",
         "",
         "#### Section under review",
-        f"- section_id: `{section_id}`",
+        f"- circuit_section id: `{section_id}` "
+        "(located by the splitter; include it in label_ids)",
+        f"- circuit id: `{circuit_id}` "
+        "(from Static_track; include it in label_ids)",
         f"- rough iloc boundary: [{section_start}, {section_end}]",
         f"- lap range: [{lap_start}, {lap_end}]",
-        f"- circuit: {circuit_id}",
         "",
         lap_skill_block,
     ])
 
     outro = "\n".join([
-        "#### Eligible label IDs",
-        "Only IDs from this list will be accepted. Always include the "
-        "circuit and the section. An ST1-ST6 pick is OPTIONAL — include "
-        "one only when the trajectory shape is unambiguous. Main labels "
-        "(EA / MS / RM / PS / O / MD) follow the skill's `characteristics` "
-        "blocks; at most ONE of {EA, MS, RM} may be attached. "
-        f"The verified shortlist from label_verifier is: {verified_inline}. "
-        "Treat verified IDs as the primary candidates; fall back to the "
-        "eligible list when the verified set misses a required parent.",
-        *eligible_lines,
+        "#### Candidate label IDs",
+        f"The shortlist retrieved for this section is: {verified_inline}. "
+        "Pick the parent label(s) from this shortlist by matching the "
+        "section's telemetry against each candidate's `characteristics` "
+        "block in the skill. An ST1-ST6 pick is OPTIONAL — include one only "
+        "when the trajectory shape is unambiguous. At most ONE of "
+        "{EA, MSP, MSR, RM} may be attached.",
         "",
         "#### Output format",
         "Respond with ONE JSON object only — no surrounding prose. Schema:",
@@ -355,8 +281,9 @@ def _local_synth_prompts(
         "Hard rules:",
         f"- revised_range must satisfy {lap_start} <= start < end <= "
         f"{lap_end} and end - start >= 3.",
-        "- Every label_id must come from the eligible list above.",
-        "- The circuit label is required unless label_ids is empty.",
+        "- Every main / ST / sub label_id must come from the shortlist "
+        "above; additionally include the circuit id and circuit_section "
+        "id listed under 'Section under review'.",
         "- An empty label_ids array is the valid 'drop this section' signal.",
     ])
 
@@ -376,7 +303,7 @@ def _claude_task_prompt(
     section_end: int,
     existing_section_annotations: List[dict],
 ) -> str:
-    lap_skill_block = lap_annotation_prompt(circuit_id=None)
+    lap_skill_block = lap_annotation_prompt()
 
     existing_block = ""
     if existing_section_annotations:
@@ -394,9 +321,11 @@ def _claude_task_prompt(
 
     return (
         "Annotate ONE circuit section of a lap. The deterministic "
-        "splitter handed you a rough iloc boundary; your job is to pick "
-        "the labels by matching the section's telemetry against each "
-        "candidate label's `characteristics` block in the skill.\n"
+        "splitter handed you a rough iloc boundary; your job is to label "
+        "which circuit + named circuit_section this is AND to pick the "
+        "main label (+ optional ST1–ST6, + optional sub-label) by "
+        "matching the section's telemetry against each candidate label's "
+        "`characteristics` block in the skill.\n"
         "\n"
         "### Lap context\n"
         f"- Lap range: [{lap_start}, {lap_end}] "
@@ -409,38 +338,35 @@ def _claude_task_prompt(
         "\n"
         "### How to work\n"
         "Follow the numbered procedure in the skill's `global_rules` block "
-        "above. Use the tools to discover the lap's context — neither the "
-        "circuit nor the eligible label set is pre-loaded into this prompt:\n"
+        "above. Labels are not pre-loaded into this prompt — you discover "
+        "every candidate by querying `search_labels` with a plain-language "
+        "description of what you observed:\n"
         "\n"
-        "1. **Resolve the circuit.** Call `get_circuit_id()` once. Keep "
-        "the returned `circuit_id` (e.g. `brands_hatch`) for subsequent "
-        "tool calls.\n"
-        "2. **Resolve the named circuit_section.** Call "
-        "`locate_circuit_section(start, end)` on the rough boundary. When "
-        "`is_ambiguous` is false, attach `best_match.label_id`. When it's "
-        "true, two or more sections share the position range (pit lane vs. "
-        "main straight is the canonical case) — enumerate `top_matches` "
+        "1. **Identify the circuit + circuit_section.** Call "
+        "`get_circuit_id` for the circuit id and `locate_circuit_section` "
+        "for the named section that the iloc window overlaps. Include both "
+        "returned ids in `label_ids`. When `locate_circuit_section` reports "
+        "`is_ambiguous` (e.g. pit lane vs. the adjacent straight share a "
+        "normalized position range), do NOT guess — read its `top_matches` "
         "and disambiguate with a second signal (pit-limiter speed, "
-        "persistent ~lane-width lateral offset, brake/throttle pattern) "
-        "before picking the `circuit_section_id`. Reach for `peek_graph` "
-        "or out-of-range `query_telemetry` when the disambiguating signal "
-        "lives just before or after the section.\n"
-        "3. **Learn the top-tier eligible labels.** Call "
-        "`list_eligible_labels(circuit_id=<from step 1>)` once. The "
-        "returned `groups` enumerate every circuit / circuit_section / "
-        "segment_type / main label you may attach. Only IDs from this "
-        "response are accepted.\n"
-        "4. **Pick ONE parent main label** (EA / MS / RM / PS / O / MD), "
-        "or none when telemetry is too noisy to commit. At most one of "
-        "{EA, MS, RM} may be attached.\n"
-        "5. **Maybe pick ONE segment type** (ST1-ST6) when the trajectory "
-        "shape is unambiguous; skip it otherwise.\n"
-        "6. **Check for a sub-label fit.** When a main label was picked in "
-        "step 4, call `list_eligible_labels(parent_id=<main>)` and read "
-        "each sub-label's `description`. Attach a sub-label ONLY when its "
-        "description matches the **entire** section's telemetry — "
-        "partial-fit cases stay in the detailed-annotation flow.\n"
-        "7. **Submit.** Call `submit_result` with the chosen IDs.\n"
+        "persistent lateral offset, brake pattern); drop the section id "
+        "only if you still cannot commit.\n"
+        "2. **Pick ONE parent main label.** After inspecting the telemetry, "
+        "call `search_labels(query=<what you observed>, types=\"main\")` and "
+        "pick the best-matching main label (EA / MSP / MSR / RM / PS / O / "
+        "OD / MD), or none when telemetry is too noisy to commit. At most "
+        "one of {EA, MSP, MSR, RM} may be attached.\n"
+        "3. **Maybe pick ONE segment type.** Call `search_labels(query="
+        "<trajectory shape>, types=\"segment_type\")` and attach one ST1-ST6 "
+        "only when the shape is unambiguous; skip it otherwise.\n"
+        "4. **Check for a sub-label fit.** When a main label was picked, "
+        "call `search_labels(query=<what you observed>, parent_id=<main>)` "
+        "and read each returned sub-label's `description`. Attach a "
+        "sub-label ONLY when its description matches the **entire** "
+        "section's telemetry — partial-fit cases stay in the "
+        "detailed-annotation flow. Re-query with different wording to "
+        "broaden.\n"
+        "5. **Submit.** Call `submit_result` with the chosen IDs.\n"
         "\n"
         "Call `revise_range` when one main-label signature does not hold "
         "uniformly across the rough range — shrink to the ilocs where ONE "
@@ -457,17 +383,19 @@ def _claude_task_prompt(
         '  "reasoning": "<1-3 sentences citing ilocs / values>"\n'
         "}\n"
         "```\n"
-        "Always include the circuit + circuit_section IDs (from steps 1-2) "
-        "in `label_ids`. An empty `label_ids` array is a valid 'drop this "
-        "section' signal. The runner reports back the final iloc range "
-        "(your initial range or whatever `revise_range` set last).\n"
+        "`label_ids` carries the circuit id, the circuit_section id, and "
+        "your main / ST / sub picks together. An empty `label_ids` array "
+        "is a valid 'drop this section' signal. The runner reports back "
+        "the final iloc range (your initial range or whatever "
+        "`revise_range` set last).\n"
         "\n"
         "### Hard rules\n"
         f"- Final range must satisfy {lap_start} <= start < end <= {lap_end} and be ≥ 3 ilocs.\n"
-        "- Do not invent label IDs — every ID must come from a "
-        "`list_eligible_labels` response.\n"
+        "- Do not invent label IDs — circuit / circuit_section ids come "
+        "from `get_circuit_id` / `locate_circuit_section`, every other id "
+        "from a `search_labels` response.\n"
         "- One proposal per session — do NOT annotate downstream sections.\n"
-        "- Budget tool calls: a typical section needs 5-8 calls total."
+        "- Budget tool calls: a typical section needs 7-10 calls total."
     )
 
 
@@ -495,8 +423,7 @@ def build_request(
     config = config or BackendConfig()
     callbacks = callbacks or NoopCallbacks()
 
-    section_entry = get_label(section_id) if section_id else None
-    section_name = section_entry["name"] if section_entry else section_id
+    section_name = LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
 
     parent_segment = Attachment(
         name="init.parent_segment",
@@ -563,7 +490,7 @@ def build_request(
         synth_prompt = lambda _state: ("", "")
         extra_state = {
             "root_agent": "annotation_root",
-            "claude_extra_tools": _CLAUDE_EXTRA_TOOLS_LAP,
+            "claude_extra_tools": [CLAUDE_SEARCH_LABELS_TOOL],
         }
 
     return AgentRequest(
@@ -597,6 +524,10 @@ def parse(
     label_ids + reasoning. ``backend="claude"`` reads the submit payload
     ({label_ids, reasoning}) and the revised range from
     ``response.attachments["claude.revised_range"]``.
+
+    Returns only what the LLM committed to — including the circuit and
+    circuit_section ids the LLM picked via ``get_circuit_id`` /
+    ``locate_circuit_section``.
     """
     if backend == "claude":
         return _parse_claude(response, lap_start, lap_end, section_id,

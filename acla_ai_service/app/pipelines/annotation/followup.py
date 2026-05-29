@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from app.domain.labels import LABEL_MAPPING
-from app.skills.annotation.label_lookup import find_labels, get_label
+from app.skills.internal.annotation.label_search import get_doc
 from app.agents.tools import graph_analysis_prompt
 
 LOGGER = logging.getLogger(__name__)
@@ -285,15 +285,28 @@ def _build_tool_set(surface: _ToolSurface):
         )
         return {"content": [{"type": "text", "text": text}]}
 
+    from app.pipelines.annotation.tools import (
+        CLAUDE_SEARCH_LABELS_TOOL,
+        search_labels_handler,
+    )
+
+    @tool(
+        CLAUDE_SEARCH_LABELS_TOOL["name"],
+        CLAUDE_SEARCH_LABELS_TOOL["description"],
+        CLAUDE_SEARCH_LABELS_TOOL["params_schema"],
+    )
+    async def search_labels(args):
+        return {"content": [{"type": "text", "text": search_labels_handler(surface, args)}]}
+
     tools_list = [
         list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
         compute_expert_phases, locate_circuit_section,
-        find_nearest_opponent, query_opponent_trajectory,
+        find_nearest_opponent, query_opponent_trajectory, search_labels,
     ]
     tool_names = [f"mcp__followup__{t}" for t in [
         "list_graphs", "get_graph_guidance", "render_graph", "peek_graph",
         "query_telemetry", "compute_expert_phases", "locate_circuit_section",
-        "find_nearest_opponent", "query_opponent_trajectory",
+        "find_nearest_opponent", "query_opponent_trajectory", "search_labels",
     ]]
 
     server = create_sdk_mcp_server(
@@ -337,7 +350,7 @@ def _build_system_prompt(
 ) -> str:
     parent_label_blocks: List[str] = []
     for pid in parent_main_labels:
-        entry = get_label(pid)
+        entry = get_doc(pid)
         if entry is None:
             parent_label_blocks.append(f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})")
             continue
@@ -347,20 +360,6 @@ def _build_system_prompt(
         parent_label_blocks.append(
             f"  - `{entry['id']}` ({entry['name']}): {desc}{guideline}"
         )
-
-    sub_label_blocks: List[str] = []
-    seen: set = set()
-    for pid in parent_main_labels:
-        for entry in find_labels(parent=pid):
-            if entry["id"] in seen:
-                continue
-            seen.add(entry["id"])
-            desc = entry.get("description") or "(no description)"
-            guideline_text = entry.get("annotation_guideline")
-            guideline = f"\n    guideline: {guideline_text}" if guideline_text else ""
-            sub_label_blocks.append(
-                f"  - `{entry['id']}` ({entry['name']}): {desc}{guideline}"
-            )
 
     existing_block = ""
     if existing_children:
@@ -394,9 +393,6 @@ def _build_system_prompt(
         + "\n"
         f"{existing_block}"
         "\n"
-        "### Candidate labels referenced by the prior pass\n"
-        + ("\n".join(sub_label_blocks) or "  (none)")
-        + "\n\n"
         f"### Prior session output\n{proposals_block}"
         "\n"
         "### How to answer\n"
@@ -404,9 +400,12 @@ def _build_system_prompt(
         "Use `render_graph` / `query_telemetry` / `compute_expert_phases` "
         "/ `find_nearest_opponent` / `query_opponent_trajectory` "
         "to re-inspect when the question demands fresh evidence.\n"
-        "- When asked 'why didn't label X fit?', quote the relevant text "
-        "from the label's description / guideline above, then say which "
-        "predicate failed against the data.\n"
+        "- Look labels up with `search_labels` (describe the behaviour, or "
+        "pass the label's name/parent) to pull its description + guideline "
+        "from the skill — don't rely on memory.\n"
+        "- When asked 'why didn't label X fit?', `search_labels` for X, "
+        "quote the relevant text from its description / guideline, then say "
+        "which predicate failed against the data.\n"
         "- If the prior proposal was wrong, say so directly.\n"
         "- When the user is debugging the skill text, suggest concrete "
         "edits — the specific wording that was ambiguous or missing.\n"

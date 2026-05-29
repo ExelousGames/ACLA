@@ -20,7 +20,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.domain.labels import LABEL_MAPPING
-from app.skills.annotation.label_lookup import find_labels, get_label
+from app.skills.internal.annotation.label_search import get_doc
 from app.agents import (
     AgentRequest,
     AgentResponse,
@@ -32,6 +32,7 @@ from app.pipelines.annotation.results import (
     AnnotationResult,
     parse_json_response,
 )
+from app.pipelines.annotation.tools import CLAUDE_SEARCH_LABELS_TOOL
 
 
 def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
@@ -93,7 +94,7 @@ def _local_planner_prompt(
     label_descriptions: List[str] = []
     annotation_guidelines: List[str] = []
     for label_id in parent_main_labels:
-        label_def = get_label(label_id)
+        label_def = get_doc(label_id)
         if not label_def:
             continue
         desc = label_def.get("description")
@@ -293,13 +294,11 @@ def _claude_task_prompt(
 ) -> str:
     """User-message prompt the Claude runner sends as the session start."""
 
-    # Eligible label IDs the agent may submit. Parent labels + their
-    # sub-labels + every segment type.
-    eligible: List[str] = []
-    seen: set = set()
+    # The given parent main label(s) are context, not a discovery target.
+    # Candidate sub-labels + segment types are discovered via `search_labels`.
     parent_label_blocks: List[str] = []
     for pid in parent_main_labels:
-        entry = get_label(pid)
+        entry = get_doc(pid)
         if entry is None:
             parent_label_blocks.append(
                 f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})"
@@ -310,29 +309,6 @@ def _claude_task_prompt(
         guideline = f"\n      guideline: {guideline_text}" if guideline_text else ""
         parent_label_blocks.append(
             f"  - `{entry['id']}` ({entry['name']}): {desc}{guideline}"
-        )
-
-    sub_label_blocks: List[str] = []
-    for pid in parent_main_labels:
-        for entry in find_labels(parent=pid):
-            if entry["id"] in seen:
-                continue
-            seen.add(entry["id"])
-            eligible.append(entry["id"])
-            desc = entry.get("description") or "(no description)"
-            guideline_text = entry.get("annotation_guideline")
-            guideline = f"\n    guideline: {guideline_text}" if guideline_text else ""
-            sub_label_blocks.append(
-                f"  - `{entry['id']}` ({entry['name']}): {desc}{guideline}"
-            )
-    for entry in find_labels(type="segment_type"):
-        if entry["id"] in seen:
-            continue
-        seen.add(entry["id"])
-        eligible.append(entry["id"])
-        desc = entry.get("description") or "(no description)"
-        sub_label_blocks.append(
-            f"  - `{entry['id']}` ({entry['name']}): {desc}"
         )
 
     existing_block = ""
@@ -360,11 +336,6 @@ def _claude_task_prompt(
         + "\n"
         f"{existing_block}"
         "\n"
-        "### Candidate labels you may propose\n"
-        "Only label_ids from this list are accepted. Match each label's "
-        "description before proposing it.\n"
-        + ("\n".join(sub_label_blocks) or "  (no candidates — investigate but expect no submissions)")
-        + "\n\n"
         "### How to work\n"
         "1. Start from each parent label's guideline — it tells you which "
         "telemetry signals matter. Pick 3-5 graphs to inspect.\n"
@@ -374,7 +345,14 @@ def _claude_task_prompt(
         "ilocs / values.\n"
         "4. `compute_expert_phases` once if you reason about corner phases.\n"
         "5. `locate_circuit_section` if you need to pick a named-section label.\n"
-        "6. Submit via `submit_result(payload_json, summary)` when "
+        "6. **Discover candidate labels with `search_labels`.** Describe what "
+        "you observed in plain language and query — `search_labels(query, "
+        f"parent_id=\"{parent_main_labels[0] if parent_main_labels else '<main>'}\")` "
+        "for this parent's sub-labels, `search_labels(query, "
+        "types=\"segment_type\")` for the segment shape. Re-query with "
+        "different wording to broaden. Only IDs returned by `search_labels` "
+        "are accepted; there is no full catalog listing.\n"
+        "7. Submit via `submit_result(payload_json, summary)` when "
         "evidence is sufficient.\n"
         "\n"
         "### Submit payload shape\n"
@@ -383,7 +361,7 @@ def _claude_task_prompt(
         "{\n"
         '  "proposals": [\n'
         '    {\n'
-        '      "label_id": "<one of the eligible IDs above>",\n'
+        '      "label_id": "<a label_id returned by search_labels>",\n'
         f'      "start_index": <int in [{parent_start}, {parent_end}]>,\n'
         f'      "end_index": <int in [{parent_start}, {parent_end}]>,\n'
         '      "reasoning": "<cite ilocs and values>"\n'
@@ -394,7 +372,7 @@ def _claude_task_prompt(
         "\n"
         "### Hard rules\n"
         f"- Every proposed range must satisfy {parent_start} <= start_index < end_index <= {parent_end}.\n"
-        "- Do not invent label IDs.\n"
+        "- Only propose label_ids returned by `search_labels`.\n"
         "- Do not propose ranges that exactly match an already-discovered sub-segment.\n"
         "- After `submit_result` returns `ok: true`, stop calling tools."
     )
@@ -476,9 +454,11 @@ def build_request(
         # contract holds.
         synth_prompt = lambda _state: ("", "")
 
-    extra_state = {
+    extra_state: Dict[str, Any] = {
         "root_agent": "annotation_root",
     }
+    if backend == "claude":
+        extra_state["claude_extra_tools"] = [CLAUDE_SEARCH_LABELS_TOOL]
 
     return AgentRequest(
         backend=backend,  # type: ignore[arg-type]

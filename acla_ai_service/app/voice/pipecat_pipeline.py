@@ -912,7 +912,7 @@ async def build_voice_pipeline_task(
     #
     # Append behavior specs loaded from the skills corpus so the instructions
     # live in editable .md files, not in Python code.
-    from app.skills.racing_engineer import behavior as _skill_behavior
+    from app.skills.external.racing_engineer import behavior as _skill_behavior
     system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
     for _behavior_name in ("emotion", "transcript_resilience"):
         _skill = _skill_behavior(_behavior_name)

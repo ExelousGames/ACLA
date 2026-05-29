@@ -1,14 +1,17 @@
-"""label_verifier sub-agent — embedding-similarity label filter.
+"""label_verifier sub-agent — hybrid-retrieval label shortlist.
 
 Sits alongside ``describe_graphs`` and ``zoom`` as a peer capability the
 agent box exposes. Two surfaces share the same core computation:
 
   * ``compute_verified_labels(parent_main_labels, evidence_text)`` —
-    pure function the local runner's synth phase calls when the VLM
-    invokes the ``verify_labels`` tool.
+    pure function the local runner's synth phase calls.
   * ``LabelVerifier`` Agent — registered with the framework so the
-    LangGraph planner can still delegate a step to it when a flow
-    prefers the deterministic-plan path over a VLM tool call.
+    LangGraph planner can delegate a plan step to it.
+
+The shortlist comes from the one hybrid retriever in
+:mod:`app.skills.internal.annotation.label_search`; this agent just queries it
+with the describe_graphs observations and scopes the result to the
+eligible tiers.
 
 Consumes  init.parent_segment, step_solver.*.observations
 Produces  verified_labels
@@ -19,9 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Tuple
 
-from app.domain.labels import LABEL_MAPPING
-from app.skills.annotation import embed
-from app.skills.annotation.label_lookup import find_labels, get_label
+from app.skills.internal.annotation.label_search import get_doc, search
 from app.agents.framework import Agent, AgentState
 from app.agents.evaluators import (
     AttachmentPool,
@@ -32,37 +33,15 @@ LOGGER = logging.getLogger(__name__)
 
 LABEL_VERIFIER_AGENT_NAME = "label_verifier"
 
-
-_SIMILARITY_THRESHOLD = 0.25
-_MIN_FILTER_LABELS = 2
-_MAX_FILTER_LABELS = 8
+_MAX_VERIFIED = 8
 
 
-def _shortlist_candidate_ids(parent_main_labels: List[str]) -> List[str]:
-    """Return the deduplicated candidate label IDs the filter scores."""
-    candidate_ids: List[str] = []
-    for pid in parent_main_labels:
-        for entry in find_labels(parent=pid):
-            candidate_ids.append(entry["id"])
-    for entry in find_labels(type="segment_type"):
-        candidate_ids.append(entry["id"])
-
-    seen: set = set()
-    shortlisted: List[str] = []
-    for lid in candidate_ids:
-        if lid not in seen:
-            seen.add(lid)
-            shortlisted.append(lid)
-    return shortlisted
-
-
-def _entry_to_payload(lid: str, similarity: Any) -> Dict[str, Any]:
-    entry = get_label(lid)
+def _payload(doc: Dict[str, Any], score: float) -> Dict[str, Any]:
     return {
-        "label_id": lid,
-        "name": entry["name"] if entry else LABEL_MAPPING.get(lid, lid),
-        "description": entry.get("description", "") if entry else "",
-        "similarity": similarity,
+        "label_id": doc["id"],
+        "name": doc.get("name", doc["id"]),
+        "description": doc.get("description", ""),
+        "similarity": score,
     }
 
 
@@ -70,49 +49,45 @@ def compute_verified_labels(
     parent_main_labels: List[str],
     evidence_text: str,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Score the parent's candidate labels against the evidence prose.
+    """Shortlist eligible labels by hybrid similarity to the evidence prose.
 
-    Returns ``(verified, all_scored)`` — verified is the filtered
-    shortlist (above threshold or top-N), all_scored carries every
-    candidate's similarity for diagnostics.
+    Returns ``(verified, all_scored)`` — verified is the top-N shortlist,
+    all_scored carries every retrieved candidate for diagnostics.
+
+    The eligible tiers depend on the flow, read off the given parents:
+
+    - a real ``type == "main"`` parent (detailed flow) ⇒ that parent's
+      sub-labels + segment types,
+    - no main parent (lap flow — the main label is still being
+      discovered) ⇒ the main labels + segment types.
     """
-    import numpy as np
-
-    shortlisted = _shortlist_candidate_ids(parent_main_labels)
-    if not shortlisted:
+    query = (evidence_text or "").strip()
+    if not query:
         return [], []
 
-    query_text = (evidence_text or "").strip()
-    if not query_text:
-        fallback = shortlisted[:_MAX_FILTER_LABELS]
-        return [_entry_to_payload(lid, None) for lid in fallback], []
-
-    label_texts: List[str] = []
-    for lid in shortlisted:
-        entry = get_label(lid)
-        if entry:
-            desc = entry.get("description", "")
-            text = f"{entry['name']}: {desc}" if desc else entry["name"]
-            label_texts.append(text)
-        else:
-            label_texts.append(LABEL_MAPPING.get(lid, lid))
-
-    query_emb: np.ndarray = embed(query_text)
-    label_embs: np.ndarray = embed(label_texts)
-
-    scored: List[Tuple[str, float]] = [
-        (lid, float(query_emb @ label_embs[i]))
-        for i, lid in enumerate(shortlisted)
+    main_parents = [
+        p for p in parent_main_labels if (get_doc(p) or {}).get("type") == "main"
     ]
-    scored.sort(key=lambda x: x[1], reverse=True)
 
-    above = [(lid, sim) for lid, sim in scored if sim >= _SIMILARITY_THRESHOLD]
-    if len(above) < _MIN_FILTER_LABELS:
-        above = scored[:_MIN_FILTER_LABELS]
-    filtered = above[:_MAX_FILTER_LABELS]
+    merged: Dict[str, Tuple[Dict[str, Any], float]] = {}
 
-    verified = [_entry_to_payload(lid, sim) for lid, sim in filtered]
-    all_scored = [_entry_to_payload(lid, sim) for lid, sim in scored]
+    def _absorb(docs: List[Dict[str, Any]]) -> None:
+        for d in docs:
+            lid = d["id"]
+            score = float(d.get("score", 0.0))
+            if lid not in merged or score > merged[lid][1]:
+                merged[lid] = (d, score)
+
+    _absorb(search(query, filters={"type": "segment_type"}, top_k=_MAX_VERIFIED))
+    if main_parents:
+        for pid in main_parents:
+            _absorb(search(query, filters={"parent": pid}, top_k=_MAX_VERIFIED))
+    else:
+        _absorb(search(query, filters={"type": "main"}, top_k=_MAX_VERIFIED))
+
+    scored = sorted(merged.values(), key=lambda x: x[1], reverse=True)
+    all_scored = [_payload(d, s) for d, s in scored]
+    verified = [_payload(d, s) for d, s in scored[:_MAX_VERIFIED]]
     return verified, all_scored
 
 
@@ -162,25 +137,11 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
 
     verified, all_scored = compute_verified_labels(parent_main_labels, evidence)
 
-    if not _shortlist_candidate_ids(parent_main_labels):
-        LOGGER.info("Label similarity filter: no candidate labels.")
-        messages.append({
-            "role": "label_verifier",
-            "content": "No candidate labels available for parent categories.",
-        })
-        att = _emit_verified([])
-        return {
-            "attachment_pool": {att.name: att},
-            "messages": messages,
-        }
-
     if not evidence:
-        LOGGER.warning("Label similarity filter: no evidence text; passing top candidates.")
+        LOGGER.warning("Label retrieval: no evidence text; empty shortlist.")
         messages.append({
             "role": "label_verifier",
-            "content": (
-                f"No evidence text; passed top {len(verified)} candidates unchanged."
-            ),
+            "content": "No evidence text available; emitted an empty shortlist.",
         })
     else:
         passed_log = "\n".join(
@@ -194,15 +155,15 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
             if p["label_id"] not in verified_ids
         )
         LOGGER.info(
-            "Label similarity filter: %d/%d passed (threshold=%.2f)",
-            len(verified), len(all_scored), _SIMILARITY_THRESHOLD,
+            "Label retrieval: %d/%d candidates shortlisted.",
+            len(verified), len(all_scored),
         )
         messages.append({
             "role": "label_verifier",
             "content": (
-                f"Embedding filter: {len(verified)}/{len(all_scored)} labels passed "
-                f"(threshold={_SIMILARITY_THRESHOLD}):\n{passed_log}"
-                + (f"\n\nRejected:\n{rejected_log}" if rejected_log else "")
+                f"Hybrid retrieval: {len(verified)}/{len(all_scored)} labels shortlisted:\n"
+                f"{passed_log}"
+                + (f"\n\nNot shortlisted:\n{rejected_log}" if rejected_log else "")
             ),
         })
 
@@ -214,7 +175,7 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
 
 
 class LabelVerifier(Agent):
-    """Deterministic step solver: embedding-similarity filter."""
+    """Deterministic step solver: hybrid-retrieval label shortlist."""
 
     name = LABEL_VERIFIER_AGENT_NAME
     consumes = ["init.parent_segment", "step_solver.*.observations"]

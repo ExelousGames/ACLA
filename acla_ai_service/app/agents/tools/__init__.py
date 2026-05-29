@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from app.skills.annotation import skills
+from app.skills.internal.annotation import skills
 
 LOGGER = logging.getLogger(__name__)
 
@@ -755,7 +755,7 @@ def split_lap_by_circuit_sections(
     crossed in/out at the boundary.
     """
     from app.agents.evaluators import PipelineAttachment
-    from app.skills.annotation.label_lookup import find_labels
+    from app.skills.internal.annotation.label_lookup import find_labels
 
     s, e = int(start_index), int(end_index)
 
@@ -919,7 +919,7 @@ def locate_circuit_section(
     brake pattern, etc.).
     """
     from app.agents.evaluators import PipelineAttachment
-    from app.skills.annotation.label_lookup import find_labels
+    from app.skills.internal.annotation.label_lookup import find_labels
 
     s, e = int(start_index), int(end_index)
 
@@ -999,8 +999,6 @@ def locate_circuit_section(
 
 STATIC_TRACK_COLUMN = "Static_track"
 
-_KNOWN_CIRCUIT_IDS = {"brands_hatch", "silverstone"}
-
 
 def _canonicalise_track_name(raw: Any) -> Optional[str]:
     """Normalise a Static_track value to a catalog circuit id."""
@@ -1022,6 +1020,7 @@ def get_circuit_id(df: pd.DataFrame):
 
         {
             "circuit_id": <str | None>,
+            "circuit_name": <str | None>,   # display name from CIRCUIT_NAMES
             "raw_track_name": <str | None>,
             "known": <bool>,    # True when canonical id matches a catalog circuit
         }
@@ -1032,6 +1031,7 @@ def get_circuit_id(df: pd.DataFrame):
     unknown circuit slips through.
     """
     from app.agents.evaluators import PipelineAttachment
+    from app.domain.circuits import CIRCUIT_NAMES
 
     def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
         return PipelineAttachment(
@@ -1044,6 +1044,7 @@ def get_circuit_id(df: pd.DataFrame):
     if STATIC_TRACK_COLUMN not in df.columns or df.empty:
         return _attach({
             "circuit_id": None,
+            "circuit_name": None,
             "raw_track_name": None,
             "known": False,
             "error": f"column '{STATIC_TRACK_COLUMN}' missing or dataframe empty",
@@ -1053,8 +1054,9 @@ def get_circuit_id(df: pd.DataFrame):
     canon = _canonicalise_track_name(raw)
     return _attach({
         "circuit_id": canon,
+        "circuit_name": CIRCUIT_NAMES.get(canon) if canon else None,
         "raw_track_name": None if raw is None else str(raw),
-        "known": canon in _KNOWN_CIRCUIT_IDS if canon else False,
+        "known": canon in CIRCUIT_NAMES if canon else False,
     })
 
 
