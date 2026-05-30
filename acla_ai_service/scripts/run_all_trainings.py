@@ -17,6 +17,7 @@ from app.infra.config.pipeline import PipelineConfig
 from app.ml.segment_classifier.service import segment_classifier
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.pipelines.training.llm_trainer import DEFAULT_MODEL, run_llm_training
+from app.pipelines.training.pipeline import run_transformer_guidance_training
 
 
 async def main() -> int:
@@ -40,8 +41,11 @@ async def main() -> int:
 
     print("\n=== [2/3] Transformer guidance ===")
     service = Full_dataset_TelemetryMLService(logger=logger, pipeline_config=cfg)
-    transformer_result = await service.run_transformer_guidance_training(
-        annotation_cache_key=args.annotation_key,
+    transformer_result = await run_transformer_guidance_training(
+        args.annotation_key,
+        telemetry_store=service.telemetry_store,
+        cache_config=service.cache_config,
+        backend_service=service.backend_service,
     )
     if not transformer_result.get("success"):
         print(f"[ERROR] Transformer training failed: {transformer_result.get('error')}")

@@ -1,11 +1,7 @@
 """Shared runner for fine-tuning the telemetry LLM from a chat-format JSONL.
 
-Used by:
-- `scripts/train_telemetry_llm.py` (CLI)
-- `ui/segment_tabs/llm_pipeline.py` (Streamlit, via a subprocess that re-invokes
-  the CLI and tails its log)
-
-Progress is communicated with plain ``print()`` so the subprocess log captures it.
+Used by `scripts/train_telemetry_llm.py` (CLI). Progress is communicated with
+plain ``print()`` so the subprocess log captures it.
 """
 
 from __future__ import annotations

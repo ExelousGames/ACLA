@@ -15,6 +15,7 @@ faulthandler.enable()
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
+from app.pipelines.training.pipeline import prepare_training_data
 from app.infra.config.pipeline import PipelineConfig
 
 logger = logging.getLogger("run_full_pipeline")
@@ -101,7 +102,13 @@ async def main():
             log_message(" Step 1: Prepare Training Data")
             log_message("="*50)
 
-            result = await service.prepare_training_data(top_laps_count=1)
+            result = await prepare_training_data(
+                telemetry_store=service.telemetry_store,
+                cache_config=service.cache_config,
+                backend_service=service.backend_service,
+                imitate_expert_feature_names=service._imitate_expert_feature_names,
+                top_laps_count=1,
+            )
             if not result.get("success"):
                 log_message(f"Error in prepare_training_data: {result.get('error')}", level=logging.ERROR)
                 return

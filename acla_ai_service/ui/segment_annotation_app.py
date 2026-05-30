@@ -54,7 +54,6 @@ from segment_tabs.batch import (
     render_batch_bulk_label, render_batch_rule_based, render_batch_classifier,
     render_batch_subseg, render_batch_lap,
 )
-from segment_tabs.llm_pipeline import render_llm_pipeline
 from segment_tabs.training import render_training
 from segment_tabs.pipeline_view import render_pipeline_view
 from segment_tabs.pipeline_sidebar import render_pipeline_sidebar
@@ -73,16 +72,10 @@ _SESSION_GATED_ROUTES = {
     "batch_subseg":       render_batch_subseg,
     "batch_lap":          render_batch_lap,
 }
-# Routes that only need the annotation_key.
-_ANNOTATION_ONLY_ROUTES = {
-    "llm": render_llm_pipeline,
-}
 # Training routes — all three share the single training tab.
-_TRAINING_ROUTES = {"classifier", "transformer", "llm_training"}
+_TRAINING_ROUTES = {"classifier", "transformer"}
 
-_ALL_ROUTES = (
-    set(_SESSION_GATED_ROUTES) | set(_ANNOTATION_ONLY_ROUTES) | _TRAINING_ROUTES
-)
+_ALL_ROUTES = set(_SESSION_GATED_ROUTES) | _TRAINING_ROUTES
 
 
 def _go_back_to_pipeline() -> None:
@@ -179,11 +172,6 @@ def main() -> None:
         return
 
     st.info(f"Active annotation dataset: **{annotation_key}**")
-
-    # ── Annotation-key-only tabs (no session data needed) ───────────────
-    if active_view in _ANNOTATION_ONLY_ROUTES:
-        _ANNOTATION_ONLY_ROUTES[active_view](annotation_key)
-        return
 
     # ── Session-data-gated tabs ─────────────────────────────────────────
     if not session_key:

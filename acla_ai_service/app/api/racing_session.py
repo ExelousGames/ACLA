@@ -8,6 +8,7 @@ from httpx import request
 from pydantic import BaseModel
 import asyncio
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
+from app.racing_engineer.expert_actions import predict_expert_actions
 
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
@@ -68,7 +69,8 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
         # Validate guidance_type parameter
         try:
             # Call the telemetryMLService to get expert guidance
-            result = await telemetryMLService.predict_expert_actions(
+            result = await predict_expert_actions(
+                telemetryMLService,
                 telemetry_dict=request.current_telemetry,
                 user_request=request.human_request,
             )

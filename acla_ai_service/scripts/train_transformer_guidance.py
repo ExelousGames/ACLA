@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin CLI around `Full_dataset_TelemetryMLService.run_transformer_guidance_training(...)`.
+"""Thin CLI around `training.pipeline.run_transformer_guidance_training(...)`.
 
 Same entry point the UI Training tab invokes as a subprocess.
 """
@@ -15,6 +15,7 @@ sys.path.append(str(project_root))
 
 from app.infra.config.pipeline import PipelineConfig
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
+from app.pipelines.training.pipeline import run_transformer_guidance_training
 
 
 async def main() -> int:
@@ -35,8 +36,11 @@ async def main() -> int:
         f"[INFO] Starting transformer guidance training: "
         f"annotation_key={args.annotation_key}"
     )
-    result = await service.run_transformer_guidance_training(
-        annotation_cache_key=args.annotation_key,
+    result = await run_transformer_guidance_training(
+        args.annotation_key,
+        telemetry_store=service.telemetry_store,
+        cache_config=service.cache_config,
+        backend_service=service.backend_service,
     )
 
     if not result.get("success"):

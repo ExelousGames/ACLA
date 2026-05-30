@@ -1,33 +1,40 @@
-"""Pure imitation-learning model code.
+"""Fastest-lap registry for expert imitation.
 
-Two classes:
-  - ``TrackExpertModel``: per-track interpolation model. Buffers
-    expert telemetry frames, then on ``fit_model()`` builds a
-    1-D interpolation table keyed on ``normalized_position`` for
-    every available expert target feature (speed, throttle, brake,
-    positions, velocities, gear, time).
-  - ``ExpertPositionLearner``: multi-track manager owning a dict
-    of TrackExpertModel keyed by track name; orchestrates the
-    add-data / fit / predict cycle across tracks.
+Replaces the previous interpolation-based expert model. We store the single
+fastest lap per ``(track, car, avg_grip_int)`` combination and answer
+position-based queries by 1-D interpolating that one lap's telemetry against
+``normalized_position``.
 
 Pure leaves: imports only ``numpy``, ``pandas``, and ``app.domain``.
-No I/O, no orchestration. ``ExpertImitateLearningService`` (which
-owns checkpoint serialisation + the broader training flow) lives in
-``app.ml.imitation.service`` and imports these back.
-
-Extracted from app/ml/imitation/service.py in refactor/hexagonal-v4
-(Page 5 of acla-ai-service-architecture.drawio).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
-from app.domain.expert_features import ExpertFeatureCatalog, ExpertModelTrainingConfig
+from app.domain.expert_features import ExpertFeatureCatalog
+
+
+# EXPERT_OPTIMAL_* expert-feature name -> raw telemetry column it sources from.
+_EXPERT_TARGET_FROM_TELEMETRY: Dict[str, str] = {
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_STEERING.value: "Physics_steer_angle",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_THROTTLE.value: "Physics_gas",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_BRAKE.value: "Physics_brake",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value: "Physics_gear",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_X.value: "Graphics_player_pos_x",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_Y.value: "Graphics_player_pos_y",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_PLAYER_POS_Z.value: "Graphics_player_pos_z",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_VELOCITY_X.value: "Physics_velocity_x",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_VELOCITY_Y.value: "Physics_velocity_y",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_VELOCITY_Z.value: "Physics_velocity_z",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_SPEED.value: "Physics_speed_kmh",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_TIME.value: "Graphics_current_time",
+    ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_TRACK_POSITION.value: "Graphics_normalized_car_position",
+}
 
 
 def _format_debug_message(message: str, debug_data: Optional[Dict[str, Any]] = None) -> str:
@@ -37,394 +44,208 @@ def _format_debug_message(message: str, debug_data: Optional[Dict[str, Any]] = N
     return f"{message} | {kv_pairs}"
 
 
-class TrackExpertModel:
-    """
-    Encapsulates the expert model for a single track.
-    Manages training, prediction, and state for position and action models.
-    """
-    def __init__(self, track_name: str, *, debug: bool = False, debug_logger: Optional[Callable[..., None]] = None, logger: Optional[logging.Logger] = None):
-        self.track_name = track_name
-        self.models: Dict[str, Any] = {}
-        self.performance_metrics: Dict[str, Any] = {}
-        self.target_groups: Dict[str, List[str]] = {}
-        self.target_features: List[str] = []
-        self.feature_cols = ['normalized_position']
-        
-        # Buffers for incremental data loading
-        self.input_buffer: List[pd.DataFrame] = []
-        self.target_buffer: List[pd.DataFrame] = []
-        self.debug_enabled = debug
-        self._debug_logger = debug_logger
-        self.logger = logger or logging.getLogger(f"{__name__}.TrackExpertModel")
-        self.config = ExpertModelTrainingConfig()
-
-    def _debug(self, message: str, **debug_data: Any) -> None:
-        if not self.debug_enabled:
-            return
-        if self._debug_logger:
-            self._debug_logger(message, **debug_data)
-        else:
-            self.logger.debug(_format_debug_message(message, debug_data))
-
-    def add_training_data(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
-        """
-        Buffer training data. Actual training happens in fit_model().
-        """
-        self.input_buffer.append(input_features)
-        self.target_buffer.append(target_features)
-        
-        # Update target features list if not set
-        if not self.target_features:
-            self.target_features = list(target_features.columns)
-
-    def fit_model(self):
-        """
-        Train models using all buffered data.
-        """
-        if not self.input_buffer:
-            self.logger.warning("No data to train for track %s", self.track_name)
-            return
-
-        num_laps = len(self.input_buffer)
-        self.logger.info(
-            "Training models for track %s with %d chunks",
-            self.track_name,
-            num_laps,
-        )
-        
-        # Combine all data
-        input_features = pd.concat(self.input_buffer, ignore_index=True)
-        target_features = pd.concat(self.target_buffer, ignore_index=True)
-
-        # Clear buffers to free memory
-        self.input_buffer = []
-        self.target_buffer = []
-        
-        EO = ExpertFeatureCatalog.ExpertOptimalFeature
-        
-        # Identify targets groups
-        spline_targets = []
-        
-        # Collect all available targets for spline interpolation
-        all_possible_targets = [
-            EO.EXPERT_OPTIMAL_PLAYER_POS_X.value, EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value, 
-            EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value,
-            EO.EXPERT_OPTIMAL_STEERING.value, EO.EXPERT_OPTIMAL_THROTTLE.value, 
-            EO.EXPERT_OPTIMAL_BRAKE.value, EO.EXPERT_OPTIMAL_SPEED.value,
-            EO.EXPERT_OPTIMAL_VELOCITY_X.value, EO.EXPERT_OPTIMAL_VELOCITY_Y.value, 
-            EO.EXPERT_OPTIMAL_VELOCITY_Z.value, EO.EXPERT_OPTIMAL_TRACK_POSITION.value,
-            EO.EXPERT_OPTIMAL_GEAR.value, EO.EXPERT_OPTIMAL_TIME.value
-        ]
-        
-        for t in all_possible_targets:
-            if t in target_features.columns:
-                spline_targets.append(t)
-        
-        self.target_groups = {
-            'decision_tree': spline_targets
-        }
-        self.spline_targets = spline_targets
-        # Clear legacy groups
-        self.position_targets = []
-        self.nn_targets = []
-
-        # Prepare data: Sort by normalized_position and average duplicates
-        # We need 'normalized_position' from input_features
-        
-        train_df = pd.DataFrame()
-        train_df['x'] = input_features['normalized_position']
-        
-        # Add all targets to train_df for grouping
-        for t in self.spline_targets:
-            train_df[t] = target_features[t]
-            
-        # Group by x and mean to handle duplicates and ensure unique x for interpolation
-        train_df_grouped = train_df.groupby('x', as_index=False).mean()
-
-        # --- 1. Train Interpolation Model (and Decision Tree as fallback) ---
-        if self.spline_targets:
-            
-            X_train = train_df_grouped['x'].values
-            Y_train = train_df_grouped[self.spline_targets].values
-            
-            # Store data for interpolation
-            self.models['interpolation_data'] = {
-                'x': X_train,
-                'y': Y_train,
-                'targets': self.spline_targets
-            }
-            
-            for t in self.spline_targets:
-                 self.performance_metrics[t] = {
-                    'r2': 1.0,
-                    'type': 'interpolation'
-                 }
-
-    def train(self, input_features: pd.DataFrame, target_features: pd.DataFrame):
-        """
-        Legacy method for compatibility. Buffers data.
-        """
-        self.add_training_data(input_features, target_features)
-
-    def predict(self, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
-        """
-        Predict expert actions at given normalized track position(s).
-        """
-        # Handle single position vs multiple positions
-        single_position = isinstance(normalized_positions, (int, float))
-        if single_position:
-            pos_val = float(normalized_positions)
-            x_query = np.array([pos_val])
-        else:
-            x_query = np.array(normalized_positions)
-        
-        predictions = {}
-        
-        # 1. Interpolation Prediction (Preferred)
-        if 'interpolation_data' in self.models:
-            data = self.models['interpolation_data']
-            x_ref = data['x']
-            y_ref = data['y']
-            targets = data['targets']
-            
-            for i, target in enumerate(targets):
-                # Use interpolation
-                pred_values = np.interp(x_query, x_ref, y_ref[:, i])
-                
-                # Handle categorical targets
-                if target == ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value:
-                    pred_values = np.round(pred_values)
-                
-                predictions[target] = pred_values
-        
-        if self.debug_enabled:
-            input_count = len(x_query)
-            debug_payload: Dict[str, Any] = {
-                'track': self.track_name,
-                'input_count': input_count,
-                'single_position': single_position
-            }
-            if input_count:
-                debug_payload['min_query'] = float(np.min(x_query))
-                debug_payload['max_query'] = float(np.max(x_query))
-
-        # Format results
-        if single_position:
-            # Return single dictionary
-            result = {}
-            for model_name, pred_array in predictions.items():
-                result[model_name] = float(pred_array[0])
-            return result
-        else:
-            # Return list of dictionaries
-            results = []
-            for i in range(len(x_query)):
-                result = {}
-                for model_name, pred_array in predictions.items():
-                    result[model_name] = float(pred_array[i])
-                results.append(result)
-            return results
-
-    def get_serializable_components(self) -> Dict[str, Any]:
-        """Returns components that need to be serialized"""
-        return {
-            'models': self.models,
-            'performance_metrics': self.performance_metrics,
-            'input_features': self.feature_cols,
-            'target_features': self.target_features,
-            'target_groups': self.target_groups,
-            'spline_targets': getattr(self, 'spline_targets', [])
-        }
-
-    def load_from_components(self, components: Dict[str, Any]):
-        """Loads model state from deserialized components"""
-        self.models = components.get('models', {})
-        self.performance_metrics = components.get('performance_metrics', {})
-        self.target_features = components.get('target_features', [])
-        self.target_groups = components.get('target_groups', {})
-        self.spline_targets = components.get('spline_targets', [])
+def _compute_avg_grip_int(values: np.ndarray) -> int:
+    """Average grip status across a lap and clamp to int in [0, 6]."""
+    if values is None or len(values) == 0:
+        return 2
+    arr = np.asarray(values, dtype=float)
+    mean = float(np.nanmean(arr)) if arr.size else float("nan")
+    if np.isnan(mean):
+        return 2
+    return max(0, min(6, int(round(mean))))
 
 
-class ExpertPositionLearner:
-    """Learn expert actions based on normalized track position from multiple expert laps, per track."""
-    
-    def __init__(self, *, debug: bool = False, debug_logger: Optional[Callable[..., None]] = None, logger: Optional[logging.Logger] = None):
-        self.track_models: Dict[str, TrackExpertModel] = {} # Dictionary to store models per track
-        self.debug_enabled = debug
-        self._debug_logger = debug_logger
-        self.logger = logger or logging.getLogger(f"{__name__}.ExpertPositionLearner")
+class FastestLapEntry:
+    """One stored fastest lap with sorted/deduped x and y for np.interp lookup."""
 
-    def _debug(self, message: str, **debug_data: Any) -> None:
-        if not self.debug_enabled:
-            return
-        if self._debug_logger:
-            self._debug_logger(message, **debug_data)
-        else:
-            self.logger.debug(_format_debug_message(message, debug_data))
-    
-    def extract_features(self, df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
-        """
-        Extract features for expert learning
-        
-        Args:
-            df: Telemetry DataFrame
-            
-        Returns:
-            Dictionary with input features (normalized position, track) and target features (expert actions/states)
-        """
-        input_features = pd.DataFrame()
-        target_features = pd.DataFrame()
-        
-        # Input feature: normalized track position (primary input)
-        if 'Graphics_normalized_car_position' in df.columns:
-            input_features['normalized_position'] = df['Graphics_normalized_car_position']
-        else:
-            raise ValueError("Graphics_normalized_car_position not found - this is required for position-based learning")
+    def __init__(
+        self,
+        *,
+        track: str,
+        car: str,
+        avg_grip_int: int,
+        x: np.ndarray,
+        y: np.ndarray,
+        target_features: List[str],
+    ):
+        self.track = track
+        self.car = car
+        self.avg_grip_int = avg_grip_int
+        self.x = np.asarray(x, dtype=float)
+        self.y = np.asarray(y, dtype=float)
+        self.target_features = list(target_features)
 
-        # Input feature: track name
-        if 'Static_track' in df.columns:
-            input_features['track'] = df['Static_track']
-        else:
-            raise ValueError("Static_track not found - this is required for multi-track learning")
-        
-        # Target features: Expert actions and states
-        EO = ExpertFeatureCatalog.ExpertOptimalFeature
-        
-        # Actions
-        if 'Physics_steer_angle' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_STEERING.value] = df['Physics_steer_angle']
-        if 'Physics_gas' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_THROTTLE.value] = df['Physics_gas']
-        if 'Physics_brake' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_BRAKE.value] = df['Physics_brake']
-        if 'Physics_gear' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_GEAR.value] = df['Physics_gear']
-        
-        # Positions
-        if 'Graphics_player_pos_x' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_X.value] = df['Graphics_player_pos_x']
-        if 'Graphics_player_pos_y' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Y.value] = df['Graphics_player_pos_y']
-        if 'Graphics_player_pos_z' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_PLAYER_POS_Z.value] = df['Graphics_player_pos_z']
-            
-        # Velocities
-        if 'Physics_velocity_x' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_VELOCITY_X.value] = df['Physics_velocity_x']
-        if 'Physics_velocity_y' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_VELOCITY_Y.value] = df['Physics_velocity_y']
-        if 'Physics_velocity_z' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_VELOCITY_Z.value] = df['Physics_velocity_z']
-        # Speed (derived)
-        if 'Physics_speed_kmh' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_SPEED.value] = df['Physics_speed_kmh']
-
-        # Time (lap time at position)
-        if 'Graphics_current_time' in df.columns:
-             target_features[EO.EXPERT_OPTIMAL_TIME.value] = df['Graphics_current_time']
-
-        # Track position (for consistency)
-        if 'Graphics_normalized_car_position' in df.columns:
-            target_features[EO.EXPERT_OPTIMAL_TRACK_POSITION.value] = df['Graphics_normalized_car_position']
-        
-        # Clean data
-        input_features = input_features.fillna(0)
-        target_features = target_features.fillna(0)
-        
-        return {
-            'input_features': input_features,
-            'target_features': target_features
-        }
-    
-    def learn_expert_position_mapping(self, expert_laps: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
-        """
-        Accumulate expert actions from normalized track position using multiple expert laps, per track.
-        Actual training happens when finalize_models() is called.
-        
-        Args:
-            expert_laps: List of expert driver telemetry laps (each lap is a list of records)
-            
-        Returns:
-            Dictionary with status (models are not trained yet)
-        """
-        self.logger.info(
-            "Accumulating expert position data from %d expert laps",
-            len(expert_laps),
-        )
-        
-        all_input_features = []
-        all_target_features = []
-        
-        for i, lap_data in enumerate(expert_laps):
-            if not lap_data:
-                continue
-                
-            lap_df = pd.DataFrame(lap_data)
-            
-            # Extract position-based features for this lap
-            feature_data = self.extract_features(lap_df)
-            all_input_features.append(feature_data['input_features'])
-            all_target_features.append(feature_data['target_features'])
-            
-        if not all_input_features:
-             raise ValueError("No valid features extracted from laps")
-
-        input_features = pd.concat(all_input_features, ignore_index=True)
-        target_features = pd.concat(all_target_features, ignore_index=True)
-
-        # Get track name (assume single track as per requirement)
-        if 'track' not in input_features.columns or input_features['track'].empty:
-             raise ValueError("Track information missing in input features")
-             
-        track = input_features['track'].iloc[0]
-        
-        # Get or create track model
-        if track not in self.track_models:
-            self.track_models[track] = TrackExpertModel(
-                track,
-                debug=self.debug_enabled,
-                debug_logger=self._debug,
-                logger=self.logger,
+    @classmethod
+    def from_lap_records(
+        cls,
+        records: List[Dict[str, Any]],
+        *,
+        track: str,
+        car: str,
+        avg_grip_int: int,
+    ) -> "FastestLapEntry":
+        lap_df = pd.DataFrame(records)
+        if "Graphics_normalized_car_position" not in lap_df.columns:
+            raise ValueError(
+                "Graphics_normalized_car_position required to build FastestLapEntry"
             )
-        
-        track_model = self.track_models[track]
-        
-        # Add data to buffer
-        track_model.add_training_data(input_features, target_features)
-        
-        return {
-            'status': 'buffered',
-            'track': track,
-            'samples': len(input_features)
-        }
-    
-    def finalize_models(self):
-        """
-        Train all buffered models.
-        """
-        self.logger.info(
-            "Finalizing training for %d tracks",
-            len(self.track_models),
+
+        available_targets = [
+            (expert_name, raw_col)
+            for expert_name, raw_col in _EXPERT_TARGET_FROM_TELEMETRY.items()
+            if raw_col in lap_df.columns
+        ]
+
+        df = pd.DataFrame(
+            {"x": pd.to_numeric(lap_df["Graphics_normalized_car_position"], errors="coerce")}
         )
-        for track, model in self.track_models.items():
-            model.fit_model()
+        for expert_name, raw_col in available_targets:
+            df[expert_name] = pd.to_numeric(lap_df[raw_col], errors="coerce")
 
-    
-    def predict_expert_actions_at_position(self, track_name: str, normalized_positions: Union[float, List[float], np.ndarray]) -> Union[Dict[str, float], List[Dict[str, float]]]:
-        """
-        Predict expert actions at given normalized track position(s) for a specific track.
-        """
-        if not self.track_models:
-            raise ValueError("No track models trained. Call learn_expert_position_mapping() first.")
-        
-        if track_name not in self.track_models:
-            raise ValueError(f"No model trained for track: {track_name}")
-            
-        predictions = self.track_models[track_name].predict(normalized_positions)
+        df = df.dropna(subset=["x"]).fillna(0.0)
+        df = df.groupby("x", as_index=False).mean().sort_values("x")
 
-        return predictions
+        target_features = [expert_name for expert_name, _ in available_targets]
+        y = df[target_features].to_numpy(dtype=float) if target_features else np.zeros((len(df), 0))
+
+        return cls(
+            track=track,
+            car=car,
+            avg_grip_int=avg_grip_int,
+            x=df["x"].to_numpy(dtype=float),
+            y=y,
+            target_features=target_features,
+        )
+
+    def predict(
+        self, normalized_positions: Union[float, List[float], np.ndarray]
+    ) -> Union[Dict[str, float], List[Dict[str, float]]]:
+        single = isinstance(normalized_positions, (int, float))
+        if single:
+            x_query = np.array([float(normalized_positions)], dtype=float)
+        else:
+            x_query = np.asarray(normalized_positions, dtype=float)
+
+        gear_value = ExpertFeatureCatalog.ExpertOptimalFeature.EXPERT_OPTIMAL_GEAR.value
+        per_target: Dict[str, np.ndarray] = {}
+        for i, target in enumerate(self.target_features):
+            pred = np.interp(x_query, self.x, self.y[:, i])
+            if target == gear_value:
+                pred = np.round(pred)
+            per_target[target] = pred
+
+        if single:
+            return {k: float(v[0]) for k, v in per_target.items()}
+        return [
+            {k: float(v[i]) for k, v in per_target.items()}
+            for i in range(len(x_query))
+        ]
+
+    def to_components(self) -> Dict[str, Any]:
+        return {
+            "track": self.track,
+            "car": self.car,
+            "avg_grip_int": int(self.avg_grip_int),
+            "x": self.x,
+            "y": self.y,
+            "target_features": list(self.target_features),
+        }
+
+    @classmethod
+    def from_components(cls, components: Dict[str, Any]) -> "FastestLapEntry":
+        return cls(
+            track=components["track"],
+            car=components["car"],
+            avg_grip_int=int(components["avg_grip_int"]),
+            x=np.asarray(components["x"], dtype=float),
+            y=np.asarray(components["y"], dtype=float),
+            target_features=list(components.get("target_features", [])),
+        )
+
+
+class FastestLapStore:
+    """Registry of fastest laps keyed by (track, car, avg_grip_int)."""
+
+    def __init__(
+        self,
+        *,
+        debug: bool = False,
+        debug_logger: Optional[Callable[..., None]] = None,
+        logger: Optional[logging.Logger] = None,
+    ):
+        self.entries: Dict[Tuple[str, str, int], FastestLapEntry] = {}
+        self.debug_enabled = debug
+        self._debug_logger = debug_logger
+        self.logger = logger or logging.getLogger(f"{__name__}.FastestLapStore")
+
+    def _debug(self, message: str, **debug_data: Any) -> None:
+        if not self.debug_enabled:
+            return
+        if self._debug_logger:
+            self._debug_logger(message, **debug_data)
+        else:
+            self.logger.debug(_format_debug_message(message, debug_data))
+
+    def record_lap(self, records: List[Dict[str, Any]]) -> Optional[Tuple[str, str, int]]:
+        """Store one lap; key derived from its records.
+
+        Caller is expected to pass laps already selected as fastest per bucket
+        (cleaning.py guarantees this); we overwrite any existing entry.
+        """
+        if not records:
+            return None
+
+        track = records[0].get("Static_track", "unknown_track")
+        car = records[0].get("Static_car_model", "unknown_car")
+        grip_values = [
+            r.get("Graphics_track_grip_status")
+            for r in records
+            if r.get("Graphics_track_grip_status") is not None
+        ]
+        avg_grip_int = _compute_avg_grip_int(np.asarray(grip_values, dtype=float))
+
+        entry = FastestLapEntry.from_lap_records(
+            records, track=track, car=car, avg_grip_int=avg_grip_int
+        )
+        key = (track, car, avg_grip_int)
+        self.entries[key] = entry
+        self._debug(
+            "stored fastest lap",
+            track=track,
+            car=car,
+            avg_grip_int=avg_grip_int,
+            samples=len(entry.x),
+        )
+        return key
+
+    def record_laps(self, lap_records_list: List[List[Dict[str, Any]]]) -> List[Tuple[str, str, int]]:
+        keys: List[Tuple[str, str, int]] = []
+        for lap_records in lap_records_list:
+            key = self.record_lap(lap_records)
+            if key is not None:
+                keys.append(key)
+        return keys
+
+    def has(self, track: str, car: str, avg_grip_int: int) -> bool:
+        return (track, car, avg_grip_int) in self.entries
+
+    def predict(
+        self,
+        track: str,
+        car: str,
+        avg_grip_int: int,
+        normalized_positions: Union[float, List[float], np.ndarray],
+    ) -> Union[Dict[str, float], List[Dict[str, float]]]:
+        key = (track, car, int(avg_grip_int))
+        entry = self.entries.get(key)
+        if entry is None:
+            raise KeyError(f"No fastest lap stored for {key}")
+        return entry.predict(normalized_positions)
+
 
 __all__ = [
-    "TrackExpertModel",
-    "ExpertPositionLearner",
+    "FastestLapEntry",
+    "FastestLapStore",
+    "_compute_avg_grip_int",
+    "_format_debug_message",
 ]

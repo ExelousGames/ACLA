@@ -45,6 +45,7 @@ parent_dir = current_dir.parent
 sys.path.insert(0, str(parent_dir))
 
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
+from app.pipelines.training.pipeline import run_transformer_guidance_training
 
 # Configuration
 DEFAULT_TRACK = 'brands_hatch'
@@ -151,10 +152,12 @@ async def main(args: argparse.Namespace):
             print("   • Fine-tuning guidance LLM on predicted plans")
             print("-" * 40)
 
-            result = await ml_service.run_transformer_guidance_training(
-                track_name=track_name,
+            result = await run_transformer_guidance_training(
+                track_name,
+                telemetry_store=ml_service.telemetry_store,
+                cache_config=ml_service.cache_config,
+                backend_service=ml_service.backend_service,
                 shuffle_dataset=not args.no_shuffle,
-                cleanup_dataset_file=not args.keep_dataset,
             )
 
             execution_time = time.time() - start_time
