@@ -25,6 +25,7 @@ from app.domain.expert_features import ExpertFeatureCatalog
 from app.ml.imitation.model import (
     FastestLapEntry,
     FastestLapStore,
+    NoExpertLapError,
     _compute_avg_grip_int,
     _format_debug_message,
 )
@@ -192,13 +193,13 @@ class ExpertImitateLearningService:
             raise ValueError("Graphics_normalized_car_position required for expert state extraction")
 
         track, car, avg_grip_int = _bucket_key_from_dataframe(processed_df)
-        try:
-            batch_predictions = self.fastest_lap_store.predict(
-                track, car, avg_grip_int,
-                processed_df['Graphics_normalized_car_position'].values,
-            )
-        except KeyError as e:
-            raise ValueError(str(e)) from e
+        # NoExpertLapError (no stored lap for this track+car at any grip) is
+        # left to propagate so the caller can skip the session; the nearest-grip
+        # fallback in the store already handles plain grip-bucket misses.
+        batch_predictions = self.fastest_lap_store.predict(
+            track, car, avg_grip_int,
+            processed_df['Graphics_normalized_car_position'].values,
+        )
 
         if not isinstance(batch_predictions, list):
             batch_predictions = [batch_predictions]

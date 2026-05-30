@@ -37,6 +37,18 @@ _EXPERT_TARGET_FROM_TELEMETRY: Dict[str, str] = {
 }
 
 
+class NoExpertLapError(KeyError):
+    """No fastest lap stored for a (track, car) at any grip bucket."""
+
+    def __init__(self, track: str, car: str, avg_grip_int: int):
+        self.track = track
+        self.car = car
+        self.avg_grip_int = int(avg_grip_int)
+        super().__init__(
+            f"No fastest lap stored for {(track, car, int(avg_grip_int))}"
+        )
+
+
 def _format_debug_message(message: str, debug_data: Optional[Dict[str, Any]] = None) -> str:
     if not debug_data:
         return message
@@ -239,13 +251,30 @@ class FastestLapStore:
         key = (track, car, int(avg_grip_int))
         entry = self.entries.get(key)
         if entry is None:
-            raise KeyError(f"No fastest lap stored for {key}")
+            # Session chunks are arbitrary row slices, so their averaged grip
+            # rarely matches a stored fastest lap's grip exactly. Fall back to
+            # the closest available grip bucket for the same (track, car).
+            candidates = [
+                (k, e) for k, e in self.entries.items()
+                if k[0] == track and k[1] == car
+            ]
+            if not candidates:
+                raise NoExpertLapError(track, car, avg_grip_int)
+            fallback_key, entry = min(
+                candidates, key=lambda ke: abs(ke[0][2] - int(avg_grip_int))
+            )
+            self._debug(
+                "grip bucket miss; using nearest grip",
+                requested=key,
+                fallback=fallback_key,
+            )
         return entry.predict(normalized_positions)
 
 
 __all__ = [
     "FastestLapEntry",
     "FastestLapStore",
+    "NoExpertLapError",
     "_compute_avg_grip_int",
     "_format_debug_message",
 ]

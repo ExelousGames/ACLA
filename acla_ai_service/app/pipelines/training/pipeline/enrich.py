@@ -15,6 +15,7 @@ import pandas as pd
 from app.domain.segment import PredictedSegment
 from app.features.tire_grip import TireGripAnalysisService
 from app.integrations.backend.client import backend_service as default_backend_service
+from app.ml.imitation.model import NoExpertLapError
 from app.ml.imitation.service import ExpertImitateLearningService
 from app.ml.segment_classifier.service import segment_classifier
 from app.pipelines.inference.visualizer import (
@@ -36,6 +37,12 @@ async def enrich_sessions_with_context(
     chunk_imitation_features = []
     try:
         chunk_imitation_features = imitation_learning.extract_expert_state_for_telemetry(chunk_data)
+    except NoExpertLapError as e:
+        print(
+            f"[WARN] No expert lap for ({e.track}, {e.car}); "
+            f"skipping session ({len(chunk_data)} records)"
+        )
+        return []
     except Exception as e:
         raise RuntimeError(f"Failed to extract imitation features: {str(e)}")
 
@@ -232,6 +239,11 @@ async def enriched_contextual_data(
         enriched_chunk_data = await enrich_sessions_with_context(
             chunk_data, imitation_learning, tire_service
         )
+
+        if not enriched_chunk_data:
+            print(f"[INFO] Chunk {processed_chunks} skipped (no expert reference); not cached")
+            del chunk_data
+            continue
 
         async def enriched_chunk_generator():
             yield (enriched_chunk_data, chunk_id)
