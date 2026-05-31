@@ -33,7 +33,7 @@ _ensure_app_module_on_path()
 
 try:
     from app.storage import get_shared_telemetry_store
-    from app.infra.config.pipeline import PipelineConfig
+    from app.pipelines.training.config import TrainingPipelineConfig
     import app.domain.labels
     import app.domain.segment
     # Force reload to pick up model changes (e.g. new fields)

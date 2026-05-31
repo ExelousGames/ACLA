@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.integrations.backend.client import backend_service as default_backend_service
+from app.pipelines.training.config import TrainingPipelineConfig
 from app.pipelines.training.pipeline.cleaning import print_section_divider
 from app.pipelines.training.transformer_trainer import (
     prepare_and_train_coach_transformer_model,
@@ -20,10 +21,15 @@ async def run_transformer_guidance_training(
     annotation_cache_key: str,
     *,
     telemetry_store,
-    cache_config,
+    config: Optional[TrainingPipelineConfig] = None,
+    cache_config: Optional[TrainingPipelineConfig] = None,
     backend_service=None,
     shuffle_dataset: bool = True,
 ) -> Dict[str, Any]:
+    pipeline_config = config or cache_config
+    if pipeline_config is None:
+        raise ValueError("run_transformer_guidance_training requires a TrainingPipelineConfig")
+
     backend = backend_service or default_backend_service
 
     transformer_training: Optional[Dict[str, Any]] = None
@@ -56,7 +62,7 @@ async def run_transformer_guidance_training(
         if not filtered_segments:
             raise RuntimeError(f"No segments found with EA or RM labels in {annotation_cache_key}")
 
-        segments_cache_key = cache_config.training_segments_cache_key
+        segments_cache_key = pipeline_config.training_segments_cache_key
 
         await telemetry_store.cache_chunks_streaming(segments_cache_key, [filtered_segments])
         print(f"[INFO] Cached filtered segments to {segments_cache_key}")

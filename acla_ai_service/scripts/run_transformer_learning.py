@@ -155,7 +155,7 @@ async def main(args: argparse.Namespace):
             result = await run_transformer_guidance_training(
                 track_name,
                 telemetry_store=ml_service.telemetry_store,
-                cache_config=ml_service.cache_config,
+                config=ml_service.pipeline_config,
                 backend_service=ml_service.backend_service,
                 shuffle_dataset=not args.no_shuffle,
             )

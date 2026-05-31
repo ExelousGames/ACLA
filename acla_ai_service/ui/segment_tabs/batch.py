@@ -618,9 +618,11 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
     Picks a lap range, rough-splits it via ``split_lap_by_circuit_sections``,
     then runs the Claude `flow="lap"` pipeline on every section in order.
-    Each result is auto-saved as a new ``AnnotatedSegment``. When the agent
-    revises a boundary, the downstream tail is re-split from the new end
-    so the next iteration sees the shifted partition.
+    When opponent data is present, the splitter emits only close overtake
+    offence / defense engagement windows. Each result is auto-saved as a new
+    ``AnnotatedSegment``. When the agent revises a boundary, the downstream
+    tail is re-split from the new end so the next iteration sees the shifted
+    partition.
     """
     from .components._lap_agent_shared import (
         track_name_to_circuit_id, run_split, rebuild_remaining_segments,
@@ -628,8 +630,10 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     st.header("Batch Lap-to-Segment Excerpter (☁️ Claude)")
     st.write(
         "Pick a lap range; the deterministic splitter partitions it into "
-        "per-`circuit_section` sub-ranges, then Claude annotates **every** "
-        "section automatically and auto-saves each result as a new segment."
+        "per-`circuit_section` sub-ranges. If opponent data is present, it "
+        "emits only close overtake offence / defense engagement windows. "
+        "Claude annotates **every** section automatically and auto-saves each "
+        "result as a new segment."
     )
 
     track_name = (
@@ -749,10 +753,17 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
     segments = run_split(df, int(lap_start), int(lap_end), circuit_id)
     if not segments:
-        st.info(
-            "The splitter produced zero sections — the circuit's "
-            "`normalized_position_range` values may not cover the picked range."
-        )
+        split_meta = st.session_state.get("lap_agent_split_meta", {}) or {}
+        if split_meta.get("opponent_session"):
+            st.info(
+                "Opponent data is present, but no close overtake offence / "
+                "defense engagement window was found in the picked range."
+            )
+        else:
+            st.info(
+                "The splitter produced zero sections — the circuit's "
+                "`normalized_position_range` values may not cover the picked range."
+            )
         return
 
     log(f"Starting batch lap excerpter: {len(segments)} section(s), "
@@ -794,6 +805,8 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
                 section_start=sec_start,
                 section_end=sec_end,
                 circuit_id=circuit_id,
+                section_split_basis=seg.get("split_basis"),
+                opponent_interaction=seg.get("opponent_interaction"),
                 existing_section_annotations=existing,
             )
         except ClaudeUsageExhausted as e:

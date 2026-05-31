@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.pipelines.training.pipeline import prepare_training_data
-from app.infra.config.pipeline import PipelineConfig
+from app.pipelines.training.config import TrainingPipelineConfig
 
 logger = logging.getLogger("run_full_pipeline")
 
@@ -84,7 +84,7 @@ async def main():
     logger.info("Starting pipeline from step: %s", start_step)
     log_message("Initializing services...")
     
-    pipeline_config = PipelineConfig()
+    pipeline_config = TrainingPipelineConfig()
 
     # Pass pipeline_config to service so they share the same cache keys
     service = Full_dataset_TelemetryMLService(logger=logger, pipeline_config=pipeline_config)
@@ -104,7 +104,7 @@ async def main():
 
             result = await prepare_training_data(
                 telemetry_store=service.telemetry_store,
-                cache_config=service.cache_config,
+                config=service.pipeline_config,
                 backend_service=service.backend_service,
                 imitate_expert_feature_names=service._imitate_expert_feature_names,
                 top_laps_count=1,

@@ -47,7 +47,7 @@ from app.storage.lance import get_shared_lance_store
 PIPELINE_ID = "migrated_2026_05_21"
 TELEMETRY_SOURCE = "racing_sessions_enriched_"
 LEGACY_ANNOTATION_KEY = "manual_segment_annotations_FirstBatchOfSegmentAnnotation"
-ANNOTATION_PREFIX = LEGACY_ANNOTATION_KEY  # mirrors PipelineConfig._annotation_prefix
+ANNOTATION_PREFIX = LEGACY_ANNOTATION_KEY  # mirrors TrainingPipelineConfig._annotation_prefix
 
 
 def _out_key(node_id: str) -> str:

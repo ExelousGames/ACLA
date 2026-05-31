@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import streamlit as st
 
-from app.infra.config.pipeline import PipelineConfig
+from app.pipelines.training.config import TrainingPipelineConfig
 from app.pipelines.manifest.models import Pipeline
 from app.pipelines.manifest.registry import (
     create_pipeline,
@@ -36,7 +36,7 @@ def set_active_pipeline_id(pid: Optional[str]) -> None:
         st.session_state[_ACTIVE_KEY] = pid
 
 
-def render_pipeline_sidebar(store: Any, cfg: PipelineConfig) -> Optional[Pipeline]:
+def render_pipeline_sidebar(store: Any, cfg: TrainingPipelineConfig) -> Optional[Pipeline]:
     """Render the sidebar and return the active Pipeline (or None)."""
     st.header("Pipelines")
 

@@ -13,7 +13,7 @@ from typing import Optional
 
 import streamlit as st
 
-from app.infra.config.pipeline import PipelineConfig
+from app.pipelines.training.config import TrainingPipelineConfig
 
 from segment_tabs._training_runner import render_card, spawn
 
@@ -25,7 +25,7 @@ _SCRIPTS = _AI_SERVICE_DIR / "scripts"
 def render_training(active_view: str, annotation_key: Optional[str]) -> None:
     routed_node = st.session_state.pop("pipeline_training_node", None)
 
-    cfg = PipelineConfig()
+    cfg = TrainingPipelineConfig()
     default_ann_key = annotation_key or cfg.annotation_cache_key
 
     if active_view == "classifier":

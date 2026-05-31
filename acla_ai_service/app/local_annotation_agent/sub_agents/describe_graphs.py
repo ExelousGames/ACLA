@@ -84,7 +84,12 @@ def _call_llm(prompt: str) -> str:
 # Pipeline-tool IDs describe_graphs offers to its planner VLM. Split-lap
 # belongs to a different flow (the lap excerpter) and is intentionally
 # omitted here.
-_VLM_PIPELINE_TOOL_IDS = ("compute_expert_phases", "locate_circuit_section")
+_VLM_PIPELINE_TOOL_IDS = (
+    "compute_expert_phases",
+    "locate_circuit_section",
+    "find_nearest_opponent",
+    "classify_opponent_interaction",
+)
 
 
 def _build_pipeline_tool_schemas(parent_start: int, parent_end: int) -> List[Dict[str, Any]]:

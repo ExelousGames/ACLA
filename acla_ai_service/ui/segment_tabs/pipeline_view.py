@@ -43,8 +43,9 @@ from app.pipelines.manifest.models import (
     TrainingNode,
 )
 from app.pipelines.manifest.registry import save as save_pipeline, slugify
+from app.pipelines.manifest.label_migration import migrate_dataset_labels
 from app.pipelines.manifest.segment_refresh import refresh_node_segments
-from app.infra.config.pipeline import PipelineConfig
+from app.pipelines.training.config import TrainingPipelineConfig
 
 
 MODE_LABELS = {
@@ -353,9 +354,86 @@ def _output_status(store: Any, output_key: str) -> tuple[str, int, str]:
         return ("⚠️ unknown", 0, "")
 
 
+def _has_cached_data(store: Any, key: Optional[str]) -> bool:
+    if not key:
+        return False
+    try:
+        return store.has_cached_data(key)
+    except Exception:
+        return False
+
+
+def _render_maintenance_dropdown(
+    pipeline: Pipeline,
+    node: AnnotationNode,
+    store: Any,
+    *,
+    refresh_disabled: bool,
+    migrate_disabled: bool,
+) -> None:
+    with st.popover("Maintenance", use_container_width=True):
+        st.caption("Dataset maintenance")
+
+        if st.button(
+            "Refresh segments",
+            key=f"refresh_segs_{node.id}",
+            use_container_width=True,
+            disabled=refresh_disabled,
+            help=(
+                "Re-slice telemetry_data on every saved segment from the "
+                "current input. Run after 'Update from source' to propagate "
+                "new columns into segments that were annotated against the "
+                "old input."
+            ),
+        ):
+            try:
+                summary = refresh_node_segments(store, node)
+            except ValueError as exc:
+                st.error(f"Refresh failed: {exc}")
+            else:
+                st.toast(
+                    f"Refreshed {summary.segments_refreshed} segment(s) "
+                    f"across {summary.chunks_written} chunk(s).",
+                    icon="✅",
+                )
+                if summary.missing_input_sessions:
+                    st.warning(
+                        "No input session for: "
+                        + ", ".join(summary.missing_input_sessions)
+                    )
+            st.rerun()
+
+        if st.button(
+            "Migrate legacy labels",
+            key=f"migrate_labels_{node.id}",
+            use_container_width=True,
+            disabled=migrate_disabled,
+            help=(
+                "Replace old annotation labels in this node's output "
+                "dataset, including integer labels, MS→MSP/MSR, and "
+                "defensive O sub-labels→OD."
+            ),
+        ):
+            dataset_key = pipeline.effective_output_key(node)
+            try:
+                summary = migrate_dataset_labels(store, dataset_key or "")
+            except ValueError as exc:
+                st.error(f"Migration failed: {exc}")
+            else:
+                if summary.labels_replaced:
+                    st.toast(
+                        f"Migrated {summary.labels_replaced} label(s) "
+                        f"across {summary.segments_updated} segment(s).",
+                        icon="✅",
+                    )
+                else:
+                    st.info("No legacy labels found in this output dataset.")
+            st.rerun()
+
+
 # ── Annotation card ──────────────────────────────────────────────────────────
 def _render_annotation_card(
-    pipeline: Pipeline, node: AnnotationNode, store: Any, cfg: PipelineConfig,
+    pipeline: Pipeline, node: AnnotationNode, store: Any, cfg: TrainingPipelineConfig,
 ) -> None:
     ann_specs = node_kinds.list_by_category("annotation")
     kind_choices = [s.kind for s in ann_specs]
@@ -465,41 +543,19 @@ def _render_annotation_card(
                     _fork_for_annotation(pipeline, node, store)
                     st.rerun()
         with btn_cols[1]:
-            if node.mode == MODE_COPY:
-                out_key = pipeline.effective_output_key(node)
-                has_input_data = (
-                    bool(node.input_key) and store.has_cached_data(node.input_key)
-                )
-                has_output_data = bool(out_key) and store.has_cached_data(out_key)
-                refresh_disabled = not (has_input_data and has_output_data)
-                if st.button(
-                    "Refresh segments",
-                    key=f"refresh_segs_{node.id}",
-                    use_container_width=True,
-                    disabled=refresh_disabled,
-                    help=(
-                        "Re-slice telemetry_data on every saved segment "
-                        "from the current input. Run after 'Update from "
-                        "source' to propagate new columns into segments "
-                        "that were annotated against the old input."
-                    ),
-                ):
-                    try:
-                        summary = refresh_node_segments(store, node)
-                    except ValueError as exc:
-                        st.error(f"Refresh failed: {exc}")
-                    else:
-                        st.toast(
-                            f"Refreshed {summary.segments_refreshed} segment(s) "
-                            f"across {summary.chunks_written} chunk(s).",
-                            icon="✅",
-                        )
-                        if summary.missing_input_sessions:
-                            st.warning(
-                                "No input session for: "
-                                + ", ".join(summary.missing_input_sessions)
-                            )
-                    st.rerun()
+            out_key = pipeline.effective_output_key(node)
+            has_input_data = _has_cached_data(store, node.input_key)
+            has_output_data = _has_cached_data(store, out_key)
+            refresh_disabled = not (
+                node.mode == MODE_COPY and has_input_data and has_output_data
+            )
+            _render_maintenance_dropdown(
+                pipeline,
+                node,
+                store,
+                refresh_disabled=refresh_disabled,
+                migrate_disabled=not has_output_data,
+            )
         with btn_cols[2]:
             if st.button(f"Open", key=f"open_ann_{node.id}",
                          type="primary",
@@ -518,7 +574,7 @@ def _render_annotation_card(
 
 
 # ── Add-annotation form (inline expander at the bottom of the column) ────────
-def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: PipelineConfig) -> None:
+def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipelineConfig) -> None:
     with st.expander("➕ Add annotation component", expanded=False):
         ann_specs = node_kinds.list_by_category("annotation")
         kind_choices = [s.kind for s in ann_specs]
@@ -707,7 +763,7 @@ def render_pipeline_view(pipeline: Pipeline, store: Any) -> None:
         f"{len(pipeline.trainings)} training nodes"
     )
 
-    cfg = PipelineConfig()
+    cfg = TrainingPipelineConfig()
 
     col_ann, col_out, col_tr = st.columns([1.5, 1.2, 1.2])
 

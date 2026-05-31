@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from app.domain.telemetry import MAX_CARS
+from .opponent_interaction import render_opponent_interaction_panel
 
 def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
     # --- Track Map Visualization ---
@@ -46,6 +47,9 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                  selected_time_idx = safe_end_idx - 1
             current_row = df.iloc[selected_time_idx]
             start_row = df.iloc[start_idx]
+            render_opponent_interaction_panel(
+                df, start_idx, safe_end_idx, key_prefix="manual"
+            )
             map_data = []
             
             # Add Player Position

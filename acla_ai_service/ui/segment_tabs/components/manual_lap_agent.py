@@ -22,9 +22,10 @@ def render_manual_lap_agent(df, session_id, selected_annotation_key):
     st.subheader("Lap-to-Segment Excerpter (AI Agent)")
     st.caption(
         "Pick a lap range; the deterministic `split_lap_by_circuit_sections` "
-        "tool rough-splits it into per-`circuit_section` sub-ranges. The "
-        "agent then annotates **one section per click**, shrinking / "
-        "extending the boundary when a rule fires."
+        "tool rough-splits solo laps into per-`circuit_section` sub-ranges. "
+        "When opponent data is present, it emits only close overtake offence / "
+        "defense engagement windows. The agent then annotates **one section "
+        "per click**, shrinking / extending the boundary when a rule fires."
     )
 
     track_name = (

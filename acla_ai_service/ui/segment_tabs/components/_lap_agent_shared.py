@@ -2,8 +2,9 @@
 
 Owns:
   - Session-state keys for the rough-split array + staged proposal.
-  - ``run_split`` — calls the deterministic splitter and stores the array.
-  - ``rebuild_remaining_segments`` — after a revise_segment_range result,
+  - ``run_split`` — calls the interaction-aware deterministic splitter and
+    stores the array.
+  - ``rebuild_remaining_segments`` — after a revise_range result,
     re-runs the splitter from the new boundary onward (used by both
     backends).
   - ``render_lap_panel`` — picks the lap range, runs the split, shows the
@@ -40,6 +41,7 @@ KEY_LAP_CIRCUIT = "lap_agent_circuit_id"         # circuit id detected from Stat
 KEY_LAP_CURSOR = "lap_agent_cursor"              # index of the "next" section in segments
 KEY_LAP_STAGED = "lap_agent_staged_result"       # LapAnnotationResult-ish dict awaiting review
 KEY_LAP_LIVE = "lap_agent_live_output"           # last live-output snapshot for re-render
+KEY_LAP_SPLIT_META = "lap_agent_split_meta"      # last split_lap_sections content
 
 
 # ---------------------------------------------------------------------------
@@ -59,11 +61,21 @@ def track_name_to_circuit_id(track_name: Optional[str]) -> Optional[str]:
 # Splitter
 # ---------------------------------------------------------------------------
 
-def run_split(df, start: int, end: int, circuit_id: Optional[str]) -> List[Dict[str, Any]]:
+def run_split(
+    df,
+    start: int,
+    end: int,
+    circuit_id: Optional[str],
+) -> List[Dict[str, Any]]:
     """Run the deterministic splitter and return the segments list."""
     from app.shared.annotation_agent_tools import split_lap_by_circuit_sections
-    att = split_lap_by_circuit_sections(df, int(start), int(end), circuit_id=circuit_id)
+    att = split_lap_by_circuit_sections(
+        df, int(start), int(end), circuit_id=circuit_id,
+        include_interaction_windows=True,
+        interactions_only_when_opponents=True,
+    )
     content = att.content or {}
+    st.session_state[KEY_LAP_SPLIT_META] = content
     return list(content.get("segments") or [])
 
 
@@ -73,7 +85,7 @@ def rebuild_remaining_segments(
 ) -> List[Dict[str, Any]]:
     """Re-run the splitter from ``revised_end`` to ``lap_end``.
 
-    Used after an agent calls ``revise_segment_range`` — the head of the
+    Used after an agent calls ``revise_range`` — the head of the
     array gets replaced with the agent-decided range, and everything
     downstream is rebuilt from the new boundary so neighbouring sections
     pick up the shift.
@@ -183,6 +195,8 @@ def execute_lap_agent_run(
                 section_start=section_start,
                 section_end=section_end,
                 circuit_id=circuit_id,
+                section_split_basis=head_segment.get("split_basis"),
+                opponent_interaction=head_segment.get("opponent_interaction"),
                 existing_section_annotations=existing,
                 progress_callback=live.on_progress,
                 vlm_stream_callback=live.on_text_chunk,
@@ -261,7 +275,8 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
     st.caption(
         f"Detected circuit: `{circuit_id}` — the splitter partitions the "
         "picked range automatically using each section's "
-        "`normalized_position_range`."
+        "`normalized_position_range`. If opponent data is present, it emits "
+        "only close overtake offence / defense engagement windows."
     )
 
     default_start = 0
@@ -327,29 +342,53 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
 
     segments: List[Dict[str, Any]] = st.session_state.get(KEY_LAP_SEGMENTS, [])
     if not segments:
-        st.info(
-            "The splitter produced zero sections — typically because the "
-            "circuit's `normalized_position_range` values in the label "
-            "catalog are not yet measured for the picked range."
-        )
+        split_meta = st.session_state.get(KEY_LAP_SPLIT_META, {}) or {}
+        if split_meta.get("opponent_session"):
+            st.info(
+                "Opponent data is present, but no close overtake offence / "
+                "defense engagement window was found in the picked range."
+            )
+        else:
+            detail = split_meta.get("error") or split_meta.get("warning")
+            st.info(
+                "No active opponent telemetry was detected, so this range is "
+                "being treated as practice / solo section mode.\n\n"
+                "The splitter produced zero sections — typically because the "
+                "circuit's `normalized_position_range` values in the label "
+                "catalog are not yet measured for the picked range."
+                + (f"\n\nSplitter detail: {detail}" if detail else "")
+            )
         return None
 
     cursor = int(st.session_state.get(KEY_LAP_CURSOR, 0))
+    split_meta = st.session_state.get(KEY_LAP_SPLIT_META, {}) or {}
+    detected_mode = (
+        "racing / opponent interaction"
+        if split_meta.get("opponent_session") else
+        "practice / solo section"
+    )
+    st.caption(
+        f"Detected mode: **{detected_mode}** "
+        f"(`split_mode={split_meta.get('split_mode', 'circuit_sections')}`)."
+    )
 
     st.markdown(f"##### Rough split — {len(segments)} section(s)")
     st.caption(
-        "Auto-split from `split_lap_by_circuit_sections`. The cursor advances "
-        "after each saved annotation; the tail re-splits using the saved "
-        "end as the new boundary."
+        "Auto-split from `split_lap_by_circuit_sections`. Opponent sessions "
+        "show only close overtake offence / defense windows. The cursor "
+        "advances after each saved annotation; the tail re-splits using the "
+        "saved end as the new boundary."
     )
     rows = []
     for i, seg in enumerate(segments):
         marker = "▶" if i == cursor else "  "
+        basis = seg.get("split_basis") or "circuit_section"
+        basis_note = " · interaction" if "interaction" in basis else ""
         rows.append(
             f"{marker} `#{i}` `{seg['circuit_section_id']}` "
             f"({seg.get('circuit_section_name', '')}) — "
             f"[{seg['start_index']}, {seg['end_index']}] "
-            f"(coverage {seg.get('coverage_fraction', 0):.0%})"
+            f"(coverage {seg.get('coverage_fraction', 0):.0%}{basis_note})"
         )
     st.code("\n".join(rows), language="text")
 

@@ -1,10 +1,12 @@
 """
 Lap-section excerpter flow.
 
-The caller has rough-split a lap into per-circuit-section iloc ranges via
-the deterministic ``split_lap_by_circuit_sections`` tool. One run of this
-flow annotates ONE section: the agent inspects telemetry, optionally
-shrinks/extends the boundary, and submits a single label proposal.
+The caller has rough-split a lap via the deterministic
+``split_lap_by_circuit_sections`` tool. Solo sessions produce
+circuit-section ranges; opponent sessions produce only close overtake
+offence / defence engagement ranges. One run of this flow annotates ONE
+range: the agent inspects telemetry, optionally shrinks/extends the
+boundary, and submits a single label proposal.
 
     build_request(backend, df, lap_start, lap_end, section_id, ...)
     parse(response, backend, ...) -> LapAnnotationResult
@@ -99,6 +101,37 @@ def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
 LOGGER = logging.getLogger(__name__)
 
 
+def _interaction_focus_block(
+    section_split_basis: Optional[str],
+    opponent_interaction: Optional[dict],
+) -> str:
+    """Prompt block for opponent-only work units."""
+    is_interaction = bool(opponent_interaction) or (
+        "interaction" in str(section_split_basis or "")
+    )
+    if not is_interaction:
+        return ""
+    windows = []
+    if isinstance(opponent_interaction, dict):
+        windows = list(opponent_interaction.get("windows") or [])
+    manual = any(isinstance(w, dict) and w.get("manual") for w in windows)
+    origin = (
+        "was manually selected as a racing interaction range"
+        if manual else
+        "exists because a close opponent engagement was detected"
+    )
+    return (
+        "\n#### Opponent-session focus\n"
+        f"This rough range {origin}. For this work unit, do ONLY overtake "
+        "offence / defense "
+        "annotation: pick O for a successful attacking pass, OD for a held "
+        "defense, or MSR for a failed attack / broken defense. If the "
+        "opponent evidence does not support one of those outcomes, submit "
+        "`label_ids: []` rather than labeling normal practice-driving "
+        "telemetry such as EA / MSP / RM / PS / MD.\n"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Local-backend planner + synth prompts
 # ---------------------------------------------------------------------------
@@ -112,6 +145,8 @@ def _local_planner_prompt(
     section_start: int,
     section_end: int,
     circuit_id: str,
+    section_split_basis: Optional[str],
+    opponent_interaction: Optional[dict],
     existing_section_annotations: List[dict],
 ) -> str:
     from app.shared.annotation_agent_tools import (
@@ -131,6 +166,9 @@ def _local_planner_prompt(
     ]
 
     lap_skill_block = lap_annotation_prompt()
+    interaction_focus = _interaction_focus_block(
+        section_split_basis, opponent_interaction,
+    )
 
     existing_block = ""
     if existing_section_annotations:
@@ -150,8 +188,10 @@ def _local_planner_prompt(
 
     parts = [
         "You are a racing telemetry analyst planning the analysis for "
-        "ONE circuit section of a lap. The deterministic splitter handed "
-        "you a rough iloc boundary; the synthesizer downstream will pick "
+        "ONE circuit-section-anchored range of a lap. The deterministic "
+        "splitter handed you a rough iloc boundary; close opponent "
+        "engagements may expand that range beyond the pure corner boundary "
+        "so O / OD / MSR evidence is not clipped. The synthesizer downstream will pick "
         "the parent labels by matching telemetry against each candidate "
         "label's `characteristics` block in the skill. Your job here is "
         "to plan the steps that gather that evidence.",
@@ -160,13 +200,20 @@ def _local_planner_prompt(
         f"- Circuit: {circuit_id}",
         f"- Lap range: [{lap_start}, {lap_end}] (length {lap_end - lap_start})",
         "",
-        "#### Section under review",
-        f"- circuit_section: `{section_id}` ({section_name}) "
-        "— located by the splitter; the synthesizer emits it (with the "
-        "circuit) as a label.",
+        "#### Range under review",
+        (
+            "- racing interaction window: circuit_section is not preselected; "
+            "use `locate_circuit_section` only as context."
+            if "interaction" in str(section_split_basis or "")
+            else f"- circuit_section: `{section_id}` ({section_name}) "
+            "— located by the splitter; the synthesizer emits it (with the "
+            "circuit) as a label."
+        ),
         f"- rough iloc boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})",
+        f"- split basis: {section_split_basis or 'circuit_section'}",
         existing_block,
+        interaction_focus,
         "",
         lap_skill_block,
         "",
@@ -186,9 +233,15 @@ def _local_planner_prompt(
         "",
         "#### Task",
         "Plan describe_graphs steps gathering evidence to:",
-        "  1. score each main label (EA / MS / RM / PS / O / MD) against "
+        "  1. score each main label (EA / MSP / MSR / RM / PS / O / OD / MD) against "
         "its `characteristics` block in the skill, and",
-        "  2. optionally identify the trajectory shape if an ST1-ST6 pick "
+        "  2. for O / OD / MSR, gather full-range opponent context with "
+        "`classify_opponent_interaction` as the mathematical label gate, "
+        "including confidence-aware `label_gates` so low / weak results "
+        "trigger range refinement or extra opponent-path evidence; "
+        "use `find_nearest_opponent` / `query_opponent_trajectory` when "
+        "the primary slot's detailed path decides the technique, and",
+        "  3. optionally identify the trajectory shape if an ST1-ST6 pick "
         "would be unambiguous.",
         "Keep the plan tight — typically 1-3 describe_graphs steps plus a "
         "label_verifier. `trajectory_offset` + `time_difference_to_expert` "
@@ -230,9 +283,14 @@ def _local_synth_prompts(
     section_start: int,
     section_end: int,
     circuit_id: str,
+    section_split_basis: Optional[str],
+    opponent_interaction: Optional[dict],
     verified_labels: List[str],
 ) -> Tuple[str, str]:
     lap_skill_block = lap_annotation_prompt()
+    interaction_focus = _interaction_focus_block(
+        section_split_basis, opponent_interaction,
+    )
     verified_inline = (
         ", ".join(verified_labels) if verified_labels
         else "(none — emit an empty label_ids array)"
@@ -240,20 +298,30 @@ def _local_synth_prompts(
 
     intro = "\n".join([
         "You are a racing telemetry analyst producing the final "
-        "annotation for ONE circuit section. The describe_graphs steps "
+        "annotation for ONE lap range. The describe_graphs steps "
         "captured the evidence below; pick the parent labels by matching "
         "the section's telemetry against each candidate label's "
-        "`characteristics` block in the skill. Revising the boundary is "
-        "an escape hatch only — invoke it when one main-label signature "
-        "does not hold across the rough range.",
+        "`characteristics` block in the skill. The rough range may already "
+        "be expanded around a close opponent engagement; for O / OD / MSR, "
+        "treat that full interaction window as the evidence unit. Revising "
+        "the boundary is an escape hatch only — invoke it when one main-label "
+        "signature does not hold across the rough range.",
         "",
-        "#### Section under review",
-        f"- circuit_section id: `{section_id}` "
-        "(located by the splitter; include it in label_ids)",
+        "#### Range under review",
+        (
+            "- circuit_section id: not preselected for this interaction "
+            "window; call `locate_circuit_section` if a named section label "
+            "is needed."
+            if "interaction" in str(section_split_basis or "")
+            else f"- circuit_section id: `{section_id}` "
+            "(located by the splitter; include it in label_ids)"
+        ),
         f"- circuit id: `{circuit_id}` "
         "(from Static_track; include it in label_ids)",
         f"- rough iloc boundary: [{section_start}, {section_end}]",
+        f"- split basis: {section_split_basis or 'circuit_section'}",
         f"- lap range: [{lap_start}, {lap_end}]",
+        interaction_focus,
         "",
         lap_skill_block,
     ])
@@ -282,8 +350,9 @@ def _local_synth_prompts(
         f"- revised_range must satisfy {lap_start} <= start < end <= "
         f"{lap_end} and end - start >= 3.",
         "- Every main / ST / sub label_id must come from the shortlist "
-        "above; additionally include the circuit id and circuit_section "
-        "id listed under 'Section under review'.",
+        "above; additionally include the circuit id. Include a "
+        "circuit_section id only when it was listed under 'Range under "
+        "review' or returned by `locate_circuit_section`.",
         "- An empty label_ids array is the valid 'drop this section' signal.",
     ])
 
@@ -301,9 +370,14 @@ def _claude_task_prompt(
     lap_end: int,
     section_start: int,
     section_end: int,
+    section_split_basis: Optional[str],
+    opponent_interaction: Optional[dict],
     existing_section_annotations: List[dict],
 ) -> str:
     lap_skill_block = lap_annotation_prompt()
+    interaction_focus = _interaction_focus_block(
+        section_split_basis, opponent_interaction,
+    )
 
     existing_block = ""
     if existing_section_annotations:
@@ -320,9 +394,11 @@ def _claude_task_prompt(
         )
 
     return (
-        "Annotate ONE circuit section of a lap. The deterministic "
-        "splitter handed you a rough iloc boundary; your job is to label "
-        "which circuit + named circuit_section this is AND to pick the "
+        "Annotate ONE lap range. The deterministic splitter handed you a "
+        "rough iloc boundary; if this is an opponent interaction window, "
+        "the boundary is event-shaped and circuit sections are context only. "
+        "Your job is to label which circuit this is, identify a named "
+        "circuit_section only when the range clearly belongs to one, and pick the "
         "main label (+ optional ST1–ST6, + optional sub-label) by "
         "matching the section's telemetry against each candidate label's "
         "`characteristics` block in the skill.\n"
@@ -332,7 +408,9 @@ def _claude_task_prompt(
         f"(length {lap_end - lap_start})\n"
         f"- Rough section boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})\n"
+        f"- Split basis: {section_split_basis or 'circuit_section'}\n"
         f"{existing_block}"
+        f"{interaction_focus}"
         "\n"
         f"{lap_skill_block}"
         "\n"
@@ -342,10 +420,11 @@ def _claude_task_prompt(
         "every candidate by querying `search_labels` with a plain-language "
         "description of what you observed:\n"
         "\n"
-        "1. **Identify the circuit + circuit_section.** Call "
+        "1. **Identify the circuit + optional circuit_section.** Call "
         "`get_circuit_id` for the circuit id and `locate_circuit_section` "
-        "for the named section that the iloc window overlaps. Include both "
-        "returned ids in `label_ids`. When `locate_circuit_section` reports "
+        "for the named section that the iloc window overlaps. Include the "
+        "circuit id in `label_ids`; include the returned circuit_section id "
+        "only when it is not ambiguous. When `locate_circuit_section` reports "
         "`is_ambiguous` (e.g. pit lane vs. the adjacent straight share a "
         "normalized position range), do NOT guess — read its `top_matches` "
         "and disambiguate with a second signal (pit-limiter speed, "
@@ -368,6 +447,15 @@ def _claude_task_prompt(
         "broaden.\n"
         "5. **Submit.** Call `submit_result` with the chosen IDs.\n"
         "\n"
+        "For O / OD / MSR, always call `classify_opponent_interaction` over "
+        "the full current range first and treat its `outcome` / `gates` / "
+        "`label_gates` as the mathematical eligibility check: O requires "
+        "`pass_completed`, OD requires `held_defense`, and MSR requires "
+        "`failed_attack` or `broken_defense`; the matching label gate "
+        "should be true before labeling. Use `find_nearest_opponent` and "
+        "`query_opponent_trajectory` for the primary slot when the detailed "
+        "entry-to-exit path decides the technique.\n"
+        "\n"
         "Call `revise_range` when one main-label signature does not hold "
         "uniformly across the rough range — shrink to the ilocs where ONE "
         "characteristic block fits cleanly, or extend outward (within the "
@@ -383,8 +471,8 @@ def _claude_task_prompt(
         '  "reasoning": "<1-3 sentences citing ilocs / values>"\n'
         "}\n"
         "```\n"
-        "`label_ids` carries the circuit id, the circuit_section id, and "
-        "your main / ST / sub picks together. An empty `label_ids` array "
+        "`label_ids` carries the circuit id, optional circuit_section id, "
+        "and your main / ST / sub picks together. An empty `label_ids` array "
         "is a valid 'drop this section' signal. The runner reports back "
         "the final iloc range (your initial range or whatever "
         "`revise_range` set last).\n"
@@ -414,6 +502,8 @@ def build_request(
     section_start: int,
     section_end: int,
     circuit_id: str,
+    section_split_basis: Optional[str] = None,
+    opponent_interaction: Optional[dict] = None,
     existing_section_annotations: Optional[List[dict]] = None,
     config: Optional[BackendConfig] = None,
     callbacks: Optional[AgentCallbacks] = None,
@@ -433,6 +523,8 @@ def build_request(
         content={
             "parent_start": int(section_start),
             "parent_end": int(section_end),
+            "split_basis": section_split_basis or "circuit_section",
+            "opponent_interaction": opponent_interaction,
             "main_labels": [circuit_id] if circuit_id else [],
             "existing_children": [
                 {
@@ -460,6 +552,8 @@ def build_request(
             section_start=section_start,
             section_end=section_end,
             circuit_id=circuit_id,
+            section_split_basis=section_split_basis,
+            opponent_interaction=opponent_interaction,
             existing_section_annotations=existing_section_annotations,
         )
         synth_prompt: Callable[[Dict[str, Any]], Tuple[str, str]] = (
@@ -470,6 +564,8 @@ def build_request(
                 section_start=section_start,
                 section_end=section_end,
                 circuit_id=circuit_id,
+                section_split_basis=section_split_basis,
+                opponent_interaction=opponent_interaction,
                 verified_labels=_verified_label_ids_from_state(s),
             )
         )
@@ -485,6 +581,8 @@ def build_request(
             lap_end=lap_end,
             section_start=section_start,
             section_end=section_end,
+            section_split_basis=section_split_basis,
+            opponent_interaction=opponent_interaction,
             existing_section_annotations=existing_section_annotations,
         )
         synth_prompt = lambda _state: ("", "")

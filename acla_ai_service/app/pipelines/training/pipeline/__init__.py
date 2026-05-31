@@ -11,9 +11,10 @@ the entry point used by ``scripts/run_full_pipeline.py``.
 ``run_transformer_guidance_training`` is re-exported here for convenience.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.integrations.backend.client import backend_service as default_backend_service
+from app.pipelines.training.config import TrainingPipelineConfig
 from app.pipelines.training.pipeline.cleaning import (
     print_section_divider,
     process_lap_sessions_efficiently,
@@ -45,25 +46,30 @@ __all__ = [
 async def prepare_training_data(
     *,
     telemetry_store,
-    cache_config,
+    config: Optional[TrainingPipelineConfig] = None,
+    cache_config: Optional[TrainingPipelineConfig] = None,
     backend_service=None,
     imitate_expert_feature_names: List[str],
     top_laps_count: int = 5,
 ) -> Dict[str, Any]:
     """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
 
+    pipeline_config = config or cache_config
+    if pipeline_config is None:
+        raise ValueError("prepare_training_data requires a TrainingPipelineConfig")
+
     backend = backend_service or default_backend_service
 
     print_section_divider("STREAMING TELEMETRY DATA FROM BACKEND DIRECTLY TO CACHE")
 
-    dataset_cache_key = cache_config.session_data_cache_key
-    processed_sessions_cache_key = cache_config.processed_session_data_cache_key
-    enriched_sessions_cache_key = cache_config.enriched_sessions_cache_key
-    segments_cache_key = cache_config.segments_cache_key
+    dataset_cache_key = pipeline_config.session_data_cache_key
+    processed_sessions_cache_key = pipeline_config.processed_session_data_cache_key
+    enriched_sessions_cache_key = pipeline_config.enriched_sessions_cache_key
+    segments_cache_key = pipeline_config.segments_cache_key
     try:
         sessions_metadata = await backend.get_all_racing_sessions_streaming(
             cache_key=dataset_cache_key,
-            cleanup_cache=cache_config.session_cleanup,
+            cleanup_cache=pipeline_config.session_cleanup,
         )
     except Exception as streaming_error:
         raise RuntimeError(f"Backend streaming failed: {streaming_error}") from streaming_error
@@ -73,10 +79,10 @@ async def prepare_training_data(
 
     print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
 
-    top_laps_cache_key = cache_config.top_laps_cache_key
+    top_laps_cache_key = pipeline_config.top_laps_cache_key
     top_laps_available = False
 
-    if cache_config.top_laps_cleanup:
+    if pipeline_config.top_laps_cleanup:
         if telemetry_store.has_cached_data(top_laps_cache_key):
             print(f"[INFO] Cleaning up existing top laps cache: {top_laps_cache_key}")
             telemetry_store.clear_cache(top_laps_cache_key)
@@ -86,14 +92,14 @@ async def prepare_training_data(
         print(f"[INFO] Using existing top laps from cache: {top_laps_cache_key}")
 
     if not top_laps_available:
-        if cache_config.processed_session_cleanup and telemetry_store.has_cached_data(processed_sessions_cache_key):
+        if pipeline_config.processed_session_cleanup and telemetry_store.has_cached_data(processed_sessions_cache_key):
             print(f"[INFO] Cleaning up existing processed sessions cache: {processed_sessions_cache_key}")
             telemetry_store.clear_cache(processed_sessions_cache_key)
 
         await process_lap_sessions_efficiently(
             session_data_cache_key=dataset_cache_key,
             telemetry_store=telemetry_store,
-            cache_config=cache_config,
+            cache_config=pipeline_config,
             imitate_expert_feature_names=imitate_expert_feature_names,
             telemetry_time_gap_ms=500,
             processed_sessions_cache_key=processed_sessions_cache_key,
@@ -104,7 +110,7 @@ async def prepare_training_data(
     max_segment_length = 20
 
     try:
-        if cache_config.segment_cleanup:
+        if pipeline_config.segment_cleanup:
             if telemetry_store.has_cached_data(enriched_sessions_cache_key):
                 print(f"[INFO] Cleaning up existing enriched sessions cache: {enriched_sessions_cache_key}")
                 telemetry_store.clear_cache(enriched_sessions_cache_key)
@@ -116,7 +122,7 @@ async def prepare_training_data(
         enriched_sessions_cache_key = await enriched_contextual_data(
             processed_sessions_cache_key,
             telemetry_store=telemetry_store,
-            cache_config=cache_config,
+            cache_config=pipeline_config,
             backend_service=backend,
         )
 

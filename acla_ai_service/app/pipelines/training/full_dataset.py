@@ -48,7 +48,7 @@ from app.storage.cache import model_cache_service
 
 # Import hybrid data cache service
 from app.storage import get_shared_telemetry_store
-from app.infra.config.pipeline import PipelineConfig
+from app.pipelines.training.config import TrainingPipelineConfig
 
 # TelemetryLLMOrchestrator imported lazily inside __init__ to break the
 # pipelines.chat ↔ pipelines.training circle: pipelines.chat.__init__
@@ -66,7 +66,7 @@ class Full_dataset_TelemetryMLService:
     Machine Learning Service for AC Competizione Telemetry Analysis
     """ 
     
-    def __init__(self, models_directory: Optional[str] = None, logger: Optional[logging.Logger] = None, pipeline_config: Optional[PipelineConfig] = None):
+    def __init__(self, models_directory: Optional[str] = None, logger: Optional[logging.Logger] = None, pipeline_config: Optional[TrainingPipelineConfig] = None):
         """
         Initialize the ML service
         
@@ -74,7 +74,7 @@ class Full_dataset_TelemetryMLService:
             models_directory: Directory to save/load trained models.
                             If None, defaults to 'models' in the project root.
             logger: Optional logger instance
-            pipeline_config: Optional PipelineConfig instance to share cache keys across components.
+            pipeline_config: Optional TrainingPipelineConfig instance to share cache keys across components.
                            If None, creates a new instance with default (empty) pipeline_id.
         """
         # Resolve to an absolute path so downstream tooling operates on a single location
@@ -127,8 +127,9 @@ class Full_dataset_TelemetryMLService:
             dataset_directory=self.llm_dataset_directory,
         )
 
-        # Centralize cache key usage for coordinated cleanup
-        self.cache_config = pipeline_config if pipeline_config is not None else PipelineConfig()
+        # Centralize cache key usage for coordinated cleanup.
+        self.pipeline_config = pipeline_config if pipeline_config is not None else TrainingPipelineConfig()
+        self.cache_config = self.pipeline_config
 
         # Reusable service instances
         self._expert_service = ExpertImitateLearningService(logger=self.logger)

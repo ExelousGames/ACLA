@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 
 from app.domain.telemetry import MAX_CARS
+from .opponent_interaction import render_opponent_interaction_panel
 
 def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
     st.subheader("Track Map & Positions")
@@ -74,6 +75,9 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
 
         current_row = df.iloc[selected_time_idx]
         start_row = df.iloc[start_idx]
+        render_opponent_interaction_panel(
+            df, start_idx, safe_end_idx, key_prefix="detailed"
+        )
         map_data = []
         
         # Helper for Max Curvature Calculation
@@ -362,9 +366,8 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
 
             # Expert
             if has_expert_pos and not only_player:
-                show_gas_brake_exp = traj_color_mode == "Gas/Brake"
-                expert_ctx_color = (context_plot_df["expert_optimal_throttle"] - context_plot_df["expert_optimal_brake"]) if show_gas_brake_exp and "expert_optimal_throttle" in context_plot_df.columns and "expert_optimal_brake" in context_plot_df.columns else "blue"
-                expert_seg_color = (map_plot_df["expert_optimal_throttle"] - map_plot_df["expert_optimal_brake"]) if show_gas_brake_exp and "expert_optimal_throttle" in map_plot_df.columns and "expert_optimal_brake" in map_plot_df.columns else "blue"
+                expert_ctx_color = "blue"
+                expert_seg_color = "blue"
 
                 # Context
                 if not context_plot_df.empty:
@@ -377,7 +380,7 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                             hovertemplate="Index: %{customdata}<br>x: %{x}<br>y: %{y}<br>z: %{z}<extra></extra>",
                             mode="lines",
                             name="Expert (Context)",
-                            line=dict(color=expert_ctx_color, colorscale="RdYlGn", cmin=-1, cmax=1, width=3),
+                            line=dict(color=expert_ctx_color, width=3),
                             opacity=0.3,
                             showlegend=True
                         ))
@@ -392,7 +395,7 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         hovertemplate="Index: %{customdata}<br>x: %{x}<br>y: %{y}<br>z: %{z}<extra></extra>",
                         mode="lines",
                         name="Expert Trajectory",
-                        line=dict(color=expert_seg_color, colorscale="RdYlGn", cmin=-1, cmax=1, width=5),
+                        line=dict(color=expert_seg_color, width=5),
                         opacity=1.0,
                         showlegend=True
                     ))
@@ -452,4 +455,3 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
             st.info("No active cars found at this timestamp.")
     else:
         st.info("Position data (Graphics_player_pos_x/y) not available in this dataset.")
-

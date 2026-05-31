@@ -19,6 +19,7 @@ Box stays flow-free by exposing generic capability tools:
     compute_expert_phases       per-arc entry/apex/exit ilocs
     locate_circuit_section      named-section match for an iloc window
     find_nearest_opponent       multi-car positional context (top opponents)
+    classify_opponent_interaction deterministic O / OD / MSR outcome gate
     query_opponent_trajectory   per-iloc relative trajectory for one slot
     get_circuit_id              canonical circuit id from Static_track
     revise_range                shrink/extend the working iloc range
@@ -166,7 +167,19 @@ def _build_system_prompt(request: AgentRequest) -> str:
         "summary: ranks the up-to-60 other car slots by minimum 2D "
         "distance to the player, returning per-slot entry/min/exit "
         "distance, signed longitudinal gap, lateral offset, and "
-        "pass-event flags. Required for any Overtaking (O) label call.\n"
+        "pass-event flags. Use as supporting context for O / OD / MSR.\n"
+        "- `classify_opponent_interaction(start, end)` — deterministic "
+        "math gate for O / OD / MSR. It projects cars onto the expert "
+        "trajectory for signed longitudinal/lateral gaps when expert "
+        "positions exist, falling back to player heading otherwise. "
+        "Returns role, outcome "
+        "(`pass_completed`, `held_defense`, `failed_attack`, "
+        "`broken_defense`, etc.), recommended label, numeric confidence, "
+        "confidence_level, primary slot, raw outcome gates, "
+        "confidence-aware label_gates, and per-slot evidence. Use this "
+        "before choosing any O / OD / MSR label; low or weak confidence "
+        "means refine the range or inspect the opponent trajectory before "
+        "committing.\n"
         "- `query_opponent_trajectory(start, end, slot, n_samples)` — "
         "per-iloc relative-position samples for a specific opponent "
         "slot returned by `find_nearest_opponent`. Use to confirm how "
@@ -188,8 +201,9 @@ def _build_system_prompt(request: AgentRequest) -> str:
         "### Working range\n"
         f"Initial range: [{request.parent_start}, {request.parent_end}].\n"
         "Iloc arguments to `render_graph`, `compute_expert_phases`, "
-        "`locate_circuit_section`, `find_nearest_opponent`, and "
-        "`query_opponent_trajectory` must lie inside this range unless "
+        "`locate_circuit_section`, `find_nearest_opponent`, "
+        "`classify_opponent_interaction`, and `query_opponent_trajectory` "
+        "must lie inside this range unless "
         "`revise_range` has moved it. `peek_graph` and `query_telemetry` "
         "may use any range inside the full lap for context, but the "
         "submission stays anchored to the working section.\n"
@@ -388,6 +402,12 @@ class _ToolSurface:
         att = find_nearest_opponent(self.df, s, e)
         return json.dumps({"range": [s, e], "data": att.content}, default=str)
 
+    def classify_opponent_interaction(self, start: int, end: int) -> str:
+        from app.shared.annotation_agent_tools import classify_opponent_interaction
+        s, e = self._clamp_to_window(start, end)
+        att = classify_opponent_interaction(self.df, s, e)
+        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+
     def query_opponent_trajectory(self, start: int, end: int, slot: int, n_samples: int) -> str:
         from app.shared.annotation_agent_tools import query_opponent_trajectory
         s, e = self._clamp_to_window(start, end)
@@ -581,17 +601,39 @@ def _build_tool_set(surface: _ToolSurface):
         "per-slot min/entry/exit distance, signed longitudinal gap "
         "(+ ⇒ opponent ahead in player heading) at entry and exit, "
         "minimum lateral offset, side-by-side iloc count, and "
-        "`passed_by_player` / `got_passed_by_opponent` flags. Call once "
-        "when scoring an Overtaking (O) candidate — the first candidate "
-        "is the relevant opponent; an empty list with "
-        "`data_available: true` means no car is close enough and "
-        "O should be ruled out.",
+        "`passed_by_player` / `got_passed_by_opponent` flags. Use after "
+        "`classify_opponent_interaction` when you need supporting "
+        "primary-slot details for O / OD / MSR reasoning; an empty list "
+        "with `data_available: true` means no car is close enough.",
         {"start": int, "end": int},
     )
     async def find_nearest_opponent(args):
         text = surface.find_nearest_opponent(int(args["start"]), int(args["end"]))
         surface._emit_tool_event(
             "find_nearest_opponent",
+            {"start": args.get("start"), "end": args.get("end")}, text,
+        )
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
+        "classify_opponent_interaction",
+        "Deterministically classify the opponent-relative position pattern "
+        "over the iloc window. Uses expert-trajectory projection for "
+        "signed longitudinal/lateral gaps when available, with player-heading "
+        "fallback. Returns `role`, `outcome` "
+        "(`pass_completed`, `held_defense`, `failed_attack`, "
+        "`broken_defense`, etc.), `recommended_label` (O / OD / MSR / null), "
+        "numeric confidence, confidence_level, primary opponent slot, "
+        "raw outcome gates, confidence-aware label_gates, and per-slot "
+        "evidence. Use as the mathematical source of truth before choosing "
+        "any O / OD / MSR label; low or weak confidence needs range "
+        "refinement or extra opponent-path evidence.",
+        {"start": int, "end": int},
+    )
+    async def classify_opponent_interaction(args):
+        text = surface.classify_opponent_interaction(int(args["start"]), int(args["end"]))
+        surface._emit_tool_event(
+            "classify_opponent_interaction",
             {"start": args.get("start"), "end": args.get("end")}, text,
         )
         return {"content": [{"type": "text", "text": text}]}
@@ -663,7 +705,7 @@ def _build_tool_set(surface: _ToolSurface):
     tools_list = [
         list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
         compute_expert_phases, locate_circuit_section,
-        find_nearest_opponent, query_opponent_trajectory,
+        find_nearest_opponent, classify_opponent_interaction, query_opponent_trajectory,
         get_circuit_id,
         revise_range, submit_result,
     ]
@@ -676,6 +718,7 @@ def _build_tool_set(surface: _ToolSurface):
         "mcp__agent__compute_expert_phases",
         "mcp__agent__locate_circuit_section",
         "mcp__agent__find_nearest_opponent",
+        "mcp__agent__classify_opponent_interaction",
         "mcp__agent__query_opponent_trajectory",
         "mcp__agent__get_circuit_id",
         "mcp__agent__revise_range",

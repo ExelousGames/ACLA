@@ -335,8 +335,8 @@ class SegmentClassifierService:
 
     async def train_model(self, epochs=10, batch_size=32, learning_rate=0.001, val_split=0.1):
         """Train the LSTM Classifier using streaming data with train/val split."""
-        from app.infra.config.pipeline import PipelineConfig
-        cache_key = PipelineConfig().annotation_cache_key
+        from app.pipelines.training.config import TrainingPipelineConfig
+        cache_key = TrainingPipelineConfig().annotation_cache_key
         
         train_key = f"{cache_key}_train"
         val_key = f"{cache_key}_val"
@@ -909,8 +909,8 @@ class SegmentClassifierService:
             chunk_segments.append(segment.to_dict())
             
         # Cache segments
-        from app.infra.config.pipeline import PipelineConfig
-        cache_key = PipelineConfig().segments_cache_key
+        from app.pipelines.training.config import TrainingPipelineConfig
+        cache_key = TrainingPipelineConfig().segments_cache_key
         
         if chunk_segments:
              async def segments_generator():

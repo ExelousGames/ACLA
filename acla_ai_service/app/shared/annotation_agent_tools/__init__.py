@@ -244,7 +244,8 @@ def _smoothed_expert_kinematics(
     ddx = np.gradient(dx)
     ddy = np.gradient(dy)
     denom = (dx * dx + dy * dy) ** 1.5
-    kappa = np.where(denom > 1e-9, (dx * ddy - dy * ddx) / denom, 0.0)
+    kappa = np.zeros_like(denom, dtype=float)
+    np.divide(dx * ddy - dy * ddx, denom, out=kappa, where=denom > 1e-9)
     kappa = _moving_average(kappa, window)
 
     return x_s, y_s, dx, dy, kappa, window
@@ -415,6 +416,146 @@ def _player_heading(seg_player_x: np.ndarray, seg_player_y: np.ndarray) -> Tuple
     return dx / norm_safe, dy / norm_safe
 
 
+def _cumulative_path_distance(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Cumulative arclength along a 2D polyline."""
+    if x.size == 0:
+        return np.array([], dtype=float)
+    dx = np.diff(x)
+    dy = np.diff(y)
+    seg_len = np.sqrt(dx * dx + dy * dy)
+    return np.concatenate(([0.0], np.cumsum(seg_len)))
+
+
+def _project_points_to_reference_path(
+    point_x: np.ndarray,
+    point_y: np.ndarray,
+    ref_x: np.ndarray,
+    ref_y: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project points onto a reference polyline and return ``(s, d, idx)``.
+
+    ``s`` is arclength progress along the reference path. ``d`` is signed
+    lateral offset using the local tangent's left-normal. This is a small
+    Frenet-like projection over the current telemetry window; it avoids the
+    corner fragility of comparing cars only in the player's instantaneous
+    heading frame.
+    """
+    n_points = int(point_x.size)
+    s_out = np.full(n_points, np.nan, dtype=float)
+    d_out = np.full(n_points, np.nan, dtype=float)
+    idx_out = np.full(n_points, -1, dtype=int)
+    if n_points == 0 or ref_x.size < 2:
+        return s_out, d_out, idx_out
+
+    ref_s = _cumulative_path_distance(ref_x, ref_y)
+    for i in range(n_points):
+        px = float(point_x[i])
+        py = float(point_y[i])
+        if not (np.isfinite(px) and np.isfinite(py)):
+            continue
+
+        vx = ref_x[1:] - ref_x[:-1]
+        vy = ref_y[1:] - ref_y[:-1]
+        wx = px - ref_x[:-1]
+        wy = py - ref_y[:-1]
+        seg_len2 = vx * vx + vy * vy
+        t = np.divide(
+            wx * vx + wy * vy,
+            seg_len2,
+            out=np.zeros_like(seg_len2),
+            where=seg_len2 > 1e-9,
+        )
+        t = np.clip(t, 0.0, 1.0)
+        proj_x = ref_x[:-1] + t * vx
+        proj_y = ref_y[:-1] + t * vy
+        dist2 = (px - proj_x) ** 2 + (py - proj_y) ** 2
+        seg_idx = int(np.nanargmin(dist2))
+        seg_len = float(np.sqrt(max(seg_len2[seg_idx], 0.0)))
+        s_out[i] = float(ref_s[seg_idx] + t[seg_idx] * seg_len)
+        cross = vx[seg_idx] * (py - proj_y[seg_idx]) - vy[seg_idx] * (px - proj_x[seg_idx])
+        sign = 1.0 if cross >= 0.0 else -1.0
+        d_out[i] = sign * float(np.sqrt(dist2[seg_idx]))
+        idx_out[i] = seg_idx
+
+    return s_out, d_out, idx_out
+
+
+def _relative_position_frame(
+    seg: pd.DataFrame,
+    player_x: np.ndarray,
+    player_y: np.ndarray,
+    opponent_x: np.ndarray,
+    opponent_y: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+    """Return opponent-player long/lateral gaps plus player s/d.
+
+    Prefer expert-path projection when expert position columns are available.
+    Fallback uses the player's instantaneous heading, preserving behaviour for
+    datasets without expert traces.
+    """
+    has_expert = (
+        "expert_optimal_player_pos_x" in seg.columns
+        and "expert_optimal_player_pos_y" in seg.columns
+    )
+    if has_expert:
+        kin = _smoothed_expert_kinematics(seg)
+        if kin is not None:
+            ref_x, ref_y, _dx, _dy, _kappa, _w = kin
+            player_s, player_d, _ = _project_points_to_reference_path(
+                player_x, player_y, ref_x, ref_y,
+            )
+            opponent_s, opponent_d, _ = _project_points_to_reference_path(
+                opponent_x, opponent_y, ref_x, ref_y,
+            )
+            long_gap = opponent_s - player_s
+            lateral_gap = opponent_d - player_d
+            return long_gap, lateral_gap, player_s, player_d, "expert_path_projection"
+
+    hx, hy = _player_heading(player_x, player_y)
+    vx = opponent_x - player_x
+    vy = opponent_y - player_y
+    long_gap = vx * hx + vy * hy
+    lateral_gap = vx * (-hy) + vy * hx
+    player_s = _cumulative_path_distance(player_x, player_y)
+    player_d = np.zeros_like(player_s)
+    return long_gap, lateral_gap, player_s, player_d, "player_heading_projection"
+
+
+def _active_opponent_mask(
+    seg: pd.DataFrame,
+    slot: int,
+    opponent_x: np.ndarray,
+    opponent_y: np.ndarray,
+    player_x: np.ndarray,
+    player_y: np.ndarray,
+    *,
+    same_car_tolerance_m: float = 0.25,
+) -> np.ndarray:
+    """Active mask for a true opponent slot, excluding the player's own slot.
+
+    ``Car_{1..MAX_CARS}`` is a flattening of the raw car-coordinate array, not
+    an opponents-only table. The player's car usually remains in one of those
+    slots, while ``Graphics_player_pos_*`` stores the same coordinates again.
+    If we do not filter that slot, zero-distance self samples look like a
+    close opponent interaction.
+    """
+    active = (
+        ((opponent_x != 0.0) | (opponent_y != 0.0))
+        & np.isfinite(opponent_x)
+        & np.isfinite(opponent_y)
+    )
+    if not active.any() or player_x.size != opponent_x.size:
+        return active
+
+    distance_to_player = np.sqrt((opponent_x - player_x) ** 2 + (opponent_y - player_y) ** 2)
+    finite_distance = active & np.isfinite(distance_to_player)
+    if finite_distance.any():
+        same_car_fraction = float((distance_to_player[finite_distance] <= same_car_tolerance_m).mean())
+        if same_car_fraction >= 0.95:
+            return np.zeros_like(active, dtype=bool)
+    return active
+
+
 def find_nearest_opponent(
     df: pd.DataFrame, start_index: int, end_index: int,
     max_candidates: int = 3,
@@ -423,21 +564,21 @@ def find_nearest_opponent(
 ):
     """Tool — identify the most relevant opponent(s) inside an iloc range.
 
-    Reads ``Graphics_player_pos_{x,y}`` and ``Car_{1..MAX_CARS}_pos_{x,y}``
-    over ``[start_index, end_index)``. Empty opponent slots (where both
-    x and y are exactly ``0.0`` — the flattening default in
-    ``telemetry.py``) are skipped per row. For each slot with active
-    data, computes per-iloc 2D distance, signed longitudinal gap along
-    the player's instantaneous heading (positive ⇒ opponent ahead of
-    player in direction of travel), and lateral offset magnitude
-    (perpendicular distance from the player's heading).
+    Reads ``Graphics_player_pos_{x,y}``, ``expert_optimal_player_pos_{x,y}``
+    when available, and ``Car_{1..MAX_CARS}_pos_{x,y}`` over
+    ``[start_index, end_index)``. Empty opponent slots (where both x and y
+    are exactly ``0.0`` — the flattening default in ``telemetry.py``) are
+    skipped per row. For each slot with active data, computes per-iloc 2D
+    distance, signed longitudinal gap, and lateral offset. The signed gap
+    prefers projection onto the expert path (positive ⇒ opponent further
+    along the expert trace); without expert positions it falls back to the
+    player's instantaneous heading frame.
 
     Slots whose active-iloc fraction is below ``min_active_fraction``
     are dropped. Remaining slots are ranked by minimum 2D distance; the
-    top ``max_candidates`` are returned as ``candidates``. The first
-    candidate is the "primary opponent" — the agent should consult its
-    row when picking an O sub-label (late-brake attack, switchback,
-    slipstream gain, defensive lift, …).
+    top ``max_candidates`` are returned as ``candidates``. This is a
+    supporting-detail tool; use ``classify_opponent_interaction`` for the
+    role-aware primary slot and O / OD / MSR gate.
 
     Produces an ``opponent_context`` attachment::
 
@@ -458,6 +599,7 @@ def find_nearest_opponent(
                     "min_lateral_offset_iloc": int,
                     "side_by_side_iloc_count": int,
                     "active_iloc_fraction": float,
+                    "coordinate_frame": str,
                     "passed_by_player": bool,          # entry +, exit −
                     "got_passed_by_opponent": bool,    # entry −, exit +
                 },
@@ -468,7 +610,7 @@ def find_nearest_opponent(
     Empty ``candidates`` with ``data_available: False`` means the
     required position columns are absent. Empty ``candidates`` with
     ``data_available: True`` means no opponent was close enough / active
-    enough in the range — strong evidence against an Overtaking label.
+    enough in the range.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.domain.telemetry import MAX_CARS
@@ -508,8 +650,6 @@ def find_nearest_opponent(
         base_payload["message"] = "Player position trace is all NaN/inf."
         return _attach(base_payload)
 
-    hx, hy = _player_heading(player_x, player_y)
-
     candidates_raw: List[Dict[str, Any]] = []
     n_active_slots = 0
 
@@ -520,7 +660,7 @@ def find_nearest_opponent(
             continue
         ox = seg[col_x].to_numpy(dtype=float)
         oy = seg[col_y].to_numpy(dtype=float)
-        active_mask = ((ox != 0.0) | (oy != 0.0)) & np.isfinite(ox) & np.isfinite(oy)
+        active_mask = _active_opponent_mask(seg, slot, ox, oy, player_x, player_y)
         active_count = int(active_mask.sum())
         if active_count == 0:
             continue
@@ -532,8 +672,12 @@ def find_nearest_opponent(
         vx = np.where(active_mask, ox - player_x, np.nan)
         vy = np.where(active_mask, oy - player_y, np.nan)
         distance = np.sqrt(vx * vx + vy * vy)
-        signed_long = vx * hx + vy * hy
-        lateral_abs = np.abs(vx * (-hy) + vy * hx)
+        signed_long, lateral_signed, _player_s, _player_d, frame_name = _relative_position_frame(
+            seg, player_x, player_y, ox, oy,
+        )
+        signed_long = np.where(active_mask, signed_long, np.nan)
+        lateral_signed = np.where(active_mask, lateral_signed, np.nan)
+        lateral_abs = np.abs(lateral_signed)
 
         finite_dist = np.isfinite(distance)
         if not finite_dist.any():
@@ -564,6 +708,7 @@ def find_nearest_opponent(
             "min_lateral_offset_iloc": s + min_lat_local,
             "side_by_side_iloc_count": side_by_side,
             "active_iloc_fraction": float(active_fraction),
+            "coordinate_frame": frame_name,
             "passed_by_player": bool(entry_long > 0 and exit_long < 0),
             "got_passed_by_opponent": bool(entry_long < 0 and exit_long > 0),
         })
@@ -682,39 +827,629 @@ def query_opponent_trajectory(
                 "note": "opponent slot empty at this iloc",
             })
             continue
-        vx = opp_x - player_x[local]
-        vy = opp_y - player_y[local]
         samples.append({
             "iloc": s + local,
-            "distance_m": float(np.sqrt(vx * vx + vy * vy)),
-            "signed_long_gap_m": float(vx * hx[local] + vy * hy[local]),
-            "lateral_offset_m": float(vx * (-hy[local]) + vy * hx[local]),
+            "distance_m": float(np.sqrt((opp_x - player_x[local]) ** 2 + (opp_y - player_y[local]) ** 2)),
+            "signed_long_gap_m": float(signed_long_all[local]),
+            "lateral_offset_m": float(lateral_all[local]),
         })
 
     return _attach({
         "range": [s, e],
         "slot": slot_int,
         "data_available": True,
+        "coordinate_frame": frame_name,
         "samples": samples,
+    })
+
+
+def classify_opponent_interaction(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+    close_distance_m: float = 12.0,
+    side_by_side_distance_m: float = 8.0,
+    longitudinal_window_m: float = 18.0,
+    pass_margin_m: float = 1.5,
+    min_role_gain_m: float = 4.0,
+    min_active_fraction: float = 0.3,
+    max_candidates: int = 5,
+):
+    """Tool — deterministic O / OD / MSR interaction classifier.
+
+    Computes opponent-relative position math over ``[start_index, end_index)``
+    and returns a verdict the LLM can use as the gate for opponent-aware
+    labels:
+
+      * ``pass_completed`` -> O
+      * ``held_defense`` -> OD
+      * ``failed_attack`` or ``broken_defense`` -> MSR
+
+    Signed longitudinal and lateral gaps are computed in an expert-path
+    projection frame when expert positions are available; otherwise the
+    classifier falls back to the player's instantaneous heading frame. The
+    classifier intentionally reads only positional relationship and outcome.
+    Player trace technique (late brake, inside cover, switchback, defensive
+    lift) still comes from the normal graphs / queries.
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+    from app.domain.telemetry import MAX_CARS
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="opponent_interaction_classification",
+            kind="structured",
+            label="Opponent Interaction Classification (O / OD / MSR gate)",
+            content=_round_floats(content),
+        )
+
+    def _clamp01(v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
+
+    def _confidence(
+        *,
+        outcome: str,
+        min_distance: float,
+        side_count: int,
+        n_rows: int,
+        gap_delta: float,
+    ) -> float:
+        close_score = 0.0
+        if min_distance <= side_by_side_distance_m:
+            close_score = 0.18
+        elif min_distance <= close_distance_m:
+            close_score = 0.12
+        side_score = min(0.15, (side_count / max(1, n_rows)) * 0.8)
+        gain_score = min(0.15, abs(gap_delta) / 30.0 * 0.15)
+        base = {
+            "pass_completed": 0.66,
+            "broken_defense": 0.66,
+            "failed_attack": 0.48,
+            "held_defense": 0.48,
+            "side_by_side": 0.34,
+            "incidental": 0.22,
+        }.get(outcome, 0.0)
+        return _clamp01(base + close_score + side_score + gain_score)
+
+    def _confidence_level(confidence: float) -> str:
+        if confidence >= 0.82:
+            return "high"
+        if confidence >= 0.68:
+            return "medium"
+        if confidence >= 0.50:
+            return "low"
+        return "weak"
+
+    s, e = int(start_index), int(end_index)
+    base_payload: Dict[str, Any] = {
+        "range": [s, e],
+        "data_available": False,
+        "role": "unknown",
+        "outcome": "no_data",
+        "recommended_label": None,
+        "confidence": 0.0,
+        "confidence_level": "weak",
+        "primary_slot_for_role": None,
+        "gates": {"O": False, "OD": False, "MSR": False},
+        "label_gates": {"O": False, "OD": False, "MSR": False},
+        "candidates": [],
+        "confidence_policy": {
+            "high": "strong deterministic evidence; use as label gate when player-trace evidence agrees",
+            "medium": "usable deterministic evidence; cite supporting graph/query evidence",
+            "low": "weak label evidence; refine range or inspect opponent trajectory before labeling",
+            "weak": "do not label from classifier alone",
+        },
+    }
+
+    required = {"Graphics_player_pos_x", "Graphics_player_pos_y"}
+    if not required.issubset(df.columns):
+        base_payload["message"] = (
+            "Player position columns (Graphics_player_pos_x/y) missing — "
+            "cannot classify opponent interaction."
+        )
+        return _attach(base_payload)
+
+    seg = df.iloc[s:e]
+    n_rows = len(seg)
+    if n_rows < 2:
+        base_payload["message"] = "Range too short for opponent classification (need >= 2 rows)."
+        return _attach(base_payload)
+
+    player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+    player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+    if not (np.isfinite(player_x).any() and np.isfinite(player_y).any()):
+        base_payload["message"] = "Player position trace is all NaN/inf."
+        return _attach(base_payload)
+
+    candidates: List[Dict[str, Any]] = []
+    n_active_slots = 0
+
+    for slot in range(1, MAX_CARS + 1):
+        col_x = f"Car_{slot}_pos_x"
+        col_y = f"Car_{slot}_pos_y"
+        if col_x not in df.columns or col_y not in df.columns:
+            continue
+
+        ox = seg[col_x].to_numpy(dtype=float)
+        oy = seg[col_y].to_numpy(dtype=float)
+        active_mask = _active_opponent_mask(seg, slot, ox, oy, player_x, player_y)
+        active_count = int(active_mask.sum())
+        if active_count == 0:
+            continue
+        n_active_slots += 1
+        active_fraction = active_count / n_rows
+        if active_fraction < min_active_fraction:
+            continue
+
+        vx = np.where(active_mask, ox - player_x, np.nan)
+        vy = np.where(active_mask, oy - player_y, np.nan)
+        distance = np.sqrt(vx * vx + vy * vy)
+        signed_long, lateral_signed, player_s, player_d, frame_name = _relative_position_frame(
+            seg, player_x, player_y, ox, oy,
+        )
+        signed_long = np.where(active_mask, signed_long, np.nan)
+        lateral_signed = np.where(active_mask, lateral_signed, np.nan)
+        lateral_abs = np.abs(lateral_signed)
+        finite = active_mask & np.isfinite(distance) & np.isfinite(signed_long) & np.isfinite(lateral_abs)
+        if not finite.any():
+            continue
+
+        active_ilocs = np.where(finite)[0]
+        entry_idx = int(active_ilocs[0])
+        exit_idx = int(active_ilocs[-1])
+        entry_long = float(signed_long[entry_idx])
+        exit_long = float(signed_long[exit_idx])
+        gap_delta = exit_long - entry_long
+
+        min_d_local = int(np.nanargmin(distance))
+        min_lat_local = int(np.nanargmin(lateral_abs))
+        min_abs_long_local = int(np.nanargmin(np.abs(signed_long)))
+
+        broad_side_by_side = (
+            (distance <= side_by_side_distance_m)
+            | ((lateral_abs <= side_by_side_distance_m) & (np.abs(signed_long) <= longitudinal_window_m))
+        ) & finite
+        side_count = int(broad_side_by_side.sum())
+        close_enough = bool((float(distance[min_d_local]) <= close_distance_m) or side_count > 0)
+
+        passed_by_player = bool(entry_long > pass_margin_m and exit_long < -pass_margin_m)
+        got_passed_by_opponent = bool(entry_long < -pass_margin_m and exit_long > pass_margin_m)
+        attack_pressure = bool(
+            entry_long > pass_margin_m
+            and close_enough
+            and not passed_by_player
+            and not got_passed_by_opponent
+            and (
+                gap_delta <= -min_role_gain_m
+                or side_count > 0
+                or abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+            )
+        )
+        defense_pressure = bool(
+            close_enough
+            and not got_passed_by_opponent
+            and exit_long <= pass_margin_m
+            and (
+                entry_long < -pass_margin_m
+                or abs(entry_long) <= longitudinal_window_m
+                or side_count > 0
+            )
+            and (
+                gap_delta >= min_role_gain_m
+                or side_count > 0
+                or abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+            )
+        )
+
+        if passed_by_player:
+            role = "attack"
+            outcome = "pass_completed"
+            recommended = "O"
+            reason = "opponent starts ahead and ends behind the player"
+        elif got_passed_by_opponent:
+            role = "defense"
+            outcome = "broken_defense"
+            recommended = "MSR"
+            reason = "opponent starts behind and ends ahead of the player"
+        elif attack_pressure:
+            role = "attack"
+            outcome = "failed_attack"
+            recommended = "MSR"
+            reason = "opponent remained ahead, but the player closed or went side-by-side"
+        elif defense_pressure:
+            role = "defense"
+            outcome = "held_defense"
+            recommended = "OD"
+            reason = "opponent threatened from behind/alongside but did not get ahead by exit"
+        elif close_enough and side_count > 0:
+            role = "side_by_side"
+            outcome = "side_by_side"
+            recommended = None
+            reason = "cars were close/alongside without a clear attack or defense outcome"
+        elif close_enough:
+            role = "incidental"
+            outcome = "incidental"
+            recommended = None
+            reason = "nearby car did not create a clear position-change or pressure pattern"
+        else:
+            role = "none"
+            outcome = "no_close_interaction"
+            recommended = None
+            reason = "opponent was not close enough to gate O / OD / MSR"
+
+        confidence = _confidence(
+            outcome=outcome,
+            min_distance=float(distance[min_d_local]),
+            side_count=side_count,
+            n_rows=n_rows,
+            gap_delta=gap_delta,
+        )
+        candidates.append({
+            "slot": int(slot),
+            "role": role,
+            "outcome": outcome,
+            "recommended_label": recommended,
+            "confidence": confidence,
+            "confidence_level": _confidence_level(confidence),
+            "reason": reason,
+            "min_distance_m": float(distance[min_d_local]),
+            "min_distance_iloc": s + min_d_local,
+            "entry_distance_m": float(distance[entry_idx]),
+            "exit_distance_m": float(distance[exit_idx]),
+            "entry_signed_long_gap_m": entry_long,
+            "exit_signed_long_gap_m": exit_long,
+            "gap_delta_m": gap_delta,
+            "min_abs_signed_long_gap_m": float(abs(signed_long[min_abs_long_local])),
+            "player_progress_m_at_entry": float(player_s[entry_idx]),
+            "player_progress_m_at_exit": float(player_s[exit_idx]),
+            "player_lateral_offset_m_at_entry": float(player_d[entry_idx]),
+            "player_lateral_offset_m_at_exit": float(player_d[exit_idx]),
+            "min_lateral_offset_m": float(lateral_abs[min_lat_local]),
+            "min_lateral_offset_iloc": s + min_lat_local,
+            "side_by_side_iloc_count": side_count,
+            "active_iloc_fraction": float(active_fraction),
+            "coordinate_frame": frame_name,
+            "passed_by_player": passed_by_player,
+            "got_passed_by_opponent": got_passed_by_opponent,
+        })
+
+    priority = {
+        "pass_completed": 6,
+        "broken_defense": 6,
+        "failed_attack": 5,
+        "held_defense": 5,
+        "side_by_side": 3,
+        "incidental": 2,
+        "no_close_interaction": 1,
+    }
+    candidates.sort(
+        key=lambda c: (
+            priority.get(str(c["outcome"]), 0),
+            float(c["confidence"]),
+            -float(c["min_distance_m"]),
+        ),
+        reverse=True,
+    )
+    top = candidates[0] if candidates else None
+
+    if top is None:
+        return _attach({
+            **base_payload,
+            "data_available": True,
+            "n_active_slots": n_active_slots,
+            "outcome": "no_close_interaction",
+            "message": "No active opponent slot met the active-fraction threshold.",
+        })
+
+    confidence_ok = top["confidence_level"] in {"high", "medium"}
+    return _attach({
+        "range": [s, e],
+        "data_available": True,
+        "n_active_slots": n_active_slots,
+        "role": top["role"],
+        "outcome": top["outcome"],
+        "recommended_label": top["recommended_label"],
+        "confidence": top["confidence"],
+        "confidence_level": top["confidence_level"],
+        "primary_slot_for_role": top["slot"],
+        "coordinate_frame": top["coordinate_frame"],
+        "reason": top["reason"],
+        "confidence_policy": base_payload["confidence_policy"],
+        "gates": {
+            "O": top["outcome"] == "pass_completed",
+            "OD": top["outcome"] == "held_defense",
+            "MSR": top["outcome"] in {"failed_attack", "broken_defense"},
+        },
+        "label_gates": {
+            "O": top["outcome"] == "pass_completed" and confidence_ok,
+            "OD": top["outcome"] == "held_defense" and confidence_ok,
+            "MSR": top["outcome"] in {"failed_attack", "broken_defense"} and confidence_ok,
+        },
+        "candidates": candidates[:max_candidates],
     })
 
 
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
 
 
+def _lap_boundary_offsets(
+    pos: np.ndarray,
+    completed_laps: Optional[np.ndarray] = None,
+) -> List[int]:
+    """Offsets where a picked range crosses into a new lap."""
+    boundaries: List[int] = []
+    for offset in range(1, int(pos.size)):
+        if completed_laps is not None:
+            prev_lap = completed_laps[offset - 1]
+            cur_lap = completed_laps[offset]
+            if np.isfinite(prev_lap) and np.isfinite(cur_lap) and cur_lap != prev_lap:
+                boundaries.append(offset)
+                continue
+        prev_p = pos[offset - 1]
+        cur_p = pos[offset]
+        if np.isfinite(prev_p) and np.isfinite(cur_p) and (prev_p - cur_p) > 0.5:
+            boundaries.append(offset)
+    return boundaries
+
+
+def _split_interaction_windows_at_boundaries(
+    windows: List[Dict[str, Any]],
+    *,
+    boundaries: List[int],
+    start_index: int,
+    end_index: int,
+) -> List[Dict[str, Any]]:
+    """Split interaction windows at lap boundaries without changing event math."""
+    if not windows or not boundaries:
+        return windows
+
+    cuts = [int(start_index), *sorted(int(b) for b in boundaries), int(end_index)]
+    split: List[Dict[str, Any]] = []
+    for window in windows:
+        window_start = int(window["start_index"])
+        window_end = int(window["end_index"])
+        for cut_start, cut_end in zip(cuts, cuts[1:]):
+            clip_start = max(window_start, cut_start)
+            clip_end = min(window_end, cut_end)
+            if clip_end <= clip_start:
+                continue
+            clipped = dict(window)
+            clipped["start_index"] = int(clip_start)
+            clipped["end_index"] = int(clip_end)
+            clipped["source_window_range"] = [window_start, window_end]
+            split.append(clipped)
+    return split
+
+
+def _contiguous_true_runs(mask: np.ndarray) -> List[Tuple[int, int]]:
+    """Return inclusive-exclusive ``(start, end)`` runs where mask is true."""
+    runs: List[Tuple[int, int]] = []
+    i = 0
+    n = int(mask.size)
+    while i < n:
+        if not bool(mask[i]):
+            i += 1
+            continue
+        j = i + 1
+        while j < n and bool(mask[j]):
+            j += 1
+        runs.append((i, j))
+        i = j
+    return runs
+
+
+def _merge_close_ranges(
+    ranges: List[Tuple[int, int]],
+    *,
+    max_gap: int,
+) -> List[Tuple[int, int]]:
+    if not ranges:
+        return []
+    ranges = sorted(ranges)
+    merged: List[Tuple[int, int]] = [ranges[0]]
+    for s, e in ranges[1:]:
+        prev_s, prev_e = merged[-1]
+        if s - prev_e <= max_gap:
+            merged[-1] = (prev_s, max(prev_e, e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _detect_opponent_interaction_windows(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+    *,
+    close_distance_m: float = 12.0,
+    side_by_side_distance_m: float = 8.0,
+    longitudinal_window_m: float = 18.0,
+    min_window_ilocs: int = 3,
+    context_padding_ilocs: int = 8,
+    merge_gap_ilocs: int = 10,
+    min_active_fraction: float = 0.3,
+) -> List[Dict[str, Any]]:
+    """Detect opponent engagement windows for O / OD / MSR rough cuts.
+
+    Circuit-section ranges are track geometry; overtakes and defenses are
+    event geometry. This helper finds short windows where another active car
+    is close enough to affect the player's line or position, then pads them
+    so ``find_nearest_opponent`` can see entry/min/exit context in one range.
+    """
+    from app.domain.telemetry import MAX_CARS
+
+    s, e = int(start_index), int(end_index)
+    required = {"Graphics_player_pos_x", "Graphics_player_pos_y"}
+    if e - s < 2 or not required.issubset(df.columns):
+        return []
+
+    seg = df.iloc[s:e]
+    n_rows = len(seg)
+    if n_rows < 2:
+        return []
+
+    player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+    player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+    if not (np.isfinite(player_x).any() and np.isfinite(player_y).any()):
+        return []
+
+    windows: List[Dict[str, Any]] = []
+
+    for slot in range(1, MAX_CARS + 1):
+        col_x = f"Car_{slot}_pos_x"
+        col_y = f"Car_{slot}_pos_y"
+        if col_x not in df.columns or col_y not in df.columns:
+            continue
+
+        ox = seg[col_x].to_numpy(dtype=float)
+        oy = seg[col_y].to_numpy(dtype=float)
+        active_mask = _active_opponent_mask(seg, slot, ox, oy, player_x, player_y)
+        active_count = int(active_mask.sum())
+        if active_count == 0 or (active_count / n_rows) < min_active_fraction:
+            continue
+
+        vx = np.where(active_mask, ox - player_x, np.nan)
+        vy = np.where(active_mask, oy - player_y, np.nan)
+        distance = np.sqrt(vx * vx + vy * vy)
+        signed_long, lateral_signed, _player_s, _player_d, frame_name = _relative_position_frame(
+            seg, player_x, player_y, ox, oy,
+        )
+        signed_long = np.where(active_mask, signed_long, np.nan)
+        lateral_signed = np.where(active_mask, lateral_signed, np.nan)
+        lateral_abs = np.abs(lateral_signed)
+        finite = active_mask & np.isfinite(distance) & np.isfinite(signed_long) & np.isfinite(lateral_abs)
+        if not finite.any():
+            continue
+
+        side_by_side = (
+            (distance <= side_by_side_distance_m)
+            | ((lateral_abs <= side_by_side_distance_m) & (np.abs(signed_long) <= longitudinal_window_m))
+        )
+        close = (distance <= close_distance_m) | side_by_side
+        close = close & finite
+
+        runs = _merge_close_ranges(
+            _contiguous_true_runs(close),
+            max_gap=int(merge_gap_ilocs),
+        )
+        for local_start, local_end in runs:
+            padded_start = max(0, local_start - int(context_padding_ilocs))
+            padded_end = min(n_rows, local_end + int(context_padding_ilocs))
+            if padded_end - padded_start < int(min_window_ilocs):
+                continue
+
+            window_slice = slice(padded_start, padded_end)
+            finite_window = finite[window_slice]
+            if not finite_window.any():
+                continue
+            local_indices = np.where(finite_window)[0] + padded_start
+            entry_idx = int(local_indices[0])
+            exit_idx = int(local_indices[-1])
+            min_d_idx = padded_start + int(np.nanargmin(distance[window_slice]))
+            min_lat_idx = padded_start + int(np.nanargmin(lateral_abs[window_slice]))
+
+            side_count = int(((distance[window_slice] <= side_by_side_distance_m) & finite_window).sum())
+            entry_long = float(signed_long[entry_idx])
+            exit_long = float(signed_long[exit_idx])
+            windows.append({
+                "start_index": int(s + padded_start),
+                "end_index": int(s + padded_end),
+                "slot": int(slot),
+                "min_distance_m": float(distance[min_d_idx]),
+                "min_distance_iloc": int(s + min_d_idx),
+                "entry_signed_long_gap_m": entry_long,
+                "exit_signed_long_gap_m": exit_long,
+                "min_lateral_offset_m": float(lateral_abs[min_lat_idx]),
+                "side_by_side_iloc_count": side_count,
+                "coordinate_frame": frame_name,
+                "passed_by_player": bool(entry_long > 0 and exit_long < 0),
+                "got_passed_by_opponent": bool(entry_long < 0 and exit_long > 0),
+            })
+
+    # Merge overlapping windows, keeping the closest-slot summary as the
+    # representative hint. The full per-slot details remain available through
+    # find_nearest_opponent once the agent inspects the merged range.
+    windows.sort(key=lambda w: (int(w["start_index"]), int(w["end_index"])))
+    merged_windows: List[Dict[str, Any]] = []
+    for window in windows:
+        if not merged_windows or int(window["start_index"]) > int(merged_windows[-1]["end_index"]) + merge_gap_ilocs:
+            merged_windows.append(dict(window))
+            continue
+        current = merged_windows[-1]
+        current["start_index"] = min(int(current["start_index"]), int(window["start_index"]))
+        current["end_index"] = max(int(current["end_index"]), int(window["end_index"]))
+        current["slots"] = sorted(set(current.get("slots", [current["slot"]]) + [window["slot"]]))
+        if float(window["min_distance_m"]) < float(current["min_distance_m"]):
+            for key in (
+                "slot", "min_distance_m", "min_distance_iloc",
+                "entry_signed_long_gap_m", "exit_signed_long_gap_m",
+                "min_lateral_offset_m", "side_by_side_iloc_count",
+                "coordinate_frame", "passed_by_player", "got_passed_by_opponent",
+            ):
+                current[key] = window[key]
+        else:
+            current["passed_by_player"] = bool(current.get("passed_by_player")) or bool(window.get("passed_by_player"))
+            current["got_passed_by_opponent"] = bool(current.get("got_passed_by_opponent")) or bool(window.get("got_passed_by_opponent"))
+
+    return merged_windows
+
+
+def _has_active_opponent_data(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+) -> bool:
+    """True when the slice contains player + at least one other car slot.
+
+    ``Car_{1..MAX_CARS}`` includes the player's own car, so one active slot is
+    still a solo/practice slice. Two or more active slots means the session has
+    opponent telemetry available.
+    """
+    from app.domain.telemetry import MAX_CARS
+
+    seg = df.iloc[int(start_index): int(end_index)]
+    if seg.empty:
+        return False
+
+    active_slots = 0
+    for slot in range(1, MAX_CARS + 1):
+        col_x = f"Car_{slot}_pos_x"
+        col_y = f"Car_{slot}_pos_y"
+        if col_x not in df.columns or col_y not in df.columns:
+            continue
+        ox = seg[col_x].to_numpy(dtype=float)
+        oy = seg[col_y].to_numpy(dtype=float)
+        active = ((ox != 0.0) | (oy != 0.0)) & np.isfinite(ox) & np.isfinite(oy)
+        if bool(active.any()):
+            active_slots += 1
+            if active_slots >= 2:
+                return True
+    return False
+
+
 def split_lap_by_circuit_sections(
     df: pd.DataFrame, start_index: int, end_index: int,
     circuit_id: Optional[str] = None,
+    include_interaction_windows: bool = True,
+    interactions_only_when_opponents: bool = True,
 ):
-    """Tool — partition a lap-shaped range into per-`circuit_section` sub-ranges.
+    """Tool — partition a lap-shaped range into annotation sub-ranges.
 
     Walks ``Graphics_normalized_car_position`` sample-by-sample across
     ``[start_index, end_index)`` and assigns every iloc to the
     ``circuit_section`` whose ``normalized_position_range`` contains its
     position fraction. Consecutive ilocs that land in the same section are
-    grouped into one sub-range. Wrap-around sections (``range_end <
-    range_start``) and lap roll-over (a sample where position resets
-    1.0 → 0.0) are handled.
+    grouped into one sub-range.
+
+    When ``include_interaction_windows`` is true and opponent samples are
+    present, the function switches to opponent-interaction mode by default:
+    it returns close engagement windows for overtake offence / defence
+    annotation. Those windows are event-shaped and are not split by circuit
+    section; overlapping sections are attached only as context. Normal
+    circuit-section work units are returned only for solo sessions. This
+    keeps opponent sessions from producing EA / MSP / RM practice-driving
+    sections. Wrap-around sections (``range_end < range_start``) and lap
+    roll-over (a sample where position resets 1.0 → 0.0) are handled.
 
     Parameters
     ----------
@@ -735,17 +1470,23 @@ def split_lap_by_circuit_sections(
         {
             "circuit_id": <str | None>,
             "range": [start_index, end_index],
+            "opponent_session": bool,
+            "split_mode": "circuit_sections" | "opponent_interactions_only",
             "segments": [
                 {
                     "start_index": int,
                     "end_index": int,
-                    "circuit_section_id": str,
+                    "circuit_section_id": str,  # interaction_window for racing events
                     "circuit_section_name": str,
-                    "normalized_position_range": [float, float],
+                    "normalized_position_range": [float, float] | null,
                     "coverage_fraction": 0.0..1.0,
+                    "split_basis": "circuit_section" |
+                                   "opponent_interaction",
+                    "opponent_interaction": {...} | null,
                 },
                 ...
             ],
+            "interaction_windows": [...],
             "unmatched_ilocs": int,   # samples that hit no defined section
         }
 
@@ -786,6 +1527,27 @@ def split_lap_by_circuit_sections(
             "unmatched_ilocs": 0,
         })
 
+    completed_laps: Optional[np.ndarray] = None
+    if "Graphics_completed_lap" in df.columns:
+        completed_laps = df.iloc[s:e]["Graphics_completed_lap"].to_numpy(dtype=float)
+    lap_boundary_ilocs = [
+        int(s + offset)
+        for offset in _lap_boundary_offsets(pos, completed_laps)
+    ]
+    lap_boundary_set = set(lap_boundary_ilocs)
+
+    interaction_windows: List[Dict[str, Any]] = []
+    opponent_session = False
+    if include_interaction_windows:
+        opponent_session = _has_active_opponent_data(df, s, e)
+        interaction_windows = _detect_opponent_interaction_windows(df, s, e)
+        interaction_windows = _split_interaction_windows_at_boundaries(
+            interaction_windows,
+            boundaries=lap_boundary_ilocs,
+            start_index=s,
+            end_index=e,
+        )
+
     section_filter: Dict[str, Any] = {"type": "circuit_section"}
     if circuit_id is not None:
         section_filter["parent"] = circuit_id
@@ -801,7 +1563,64 @@ def split_lap_by_circuit_sections(
             "hi": float(rng[1]),
         })
 
+    def _interaction_segments_from_windows(
+        windows: List[Dict[str, Any]],
+        anchors: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        interaction_segments: List[Dict[str, Any]] = []
+        for window in windows:
+            window_start = int(window["start_index"])
+            window_end = int(window["end_index"])
+            section_context: List[Dict[str, Any]] = []
+            for segment in anchors:
+                seg_s = int(segment["start_index"])
+                seg_e = int(segment["end_index"])
+                overlap_start = max(window_start, seg_s, s)
+                overlap_end = min(window_end, seg_e, e)
+                if overlap_end <= overlap_start:
+                    continue
+                section_context.append({
+                    "circuit_section_id": segment["circuit_section_id"],
+                    "circuit_section_name": segment["circuit_section_name"],
+                    "range": [int(overlap_start), int(overlap_end)],
+                    "normalized_position_range": segment["normalized_position_range"],
+                })
+
+            interaction_segments.append({
+                "start_index": int(max(s, window_start)),
+                "end_index": int(min(e, window_end)),
+                "circuit_section_id": "interaction_window",
+                "circuit_section_name": "Racing interaction",
+                "normalized_position_range": None,
+                "coverage_fraction": 1.0,
+                "split_basis": "opponent_interaction",
+                "opponent_interaction": {
+                    "windows": [window],
+                    "section_context": section_context,
+                    "reason": (
+                        "opponent session: close overtake offence / defence "
+                        "engagement emitted as an event-shaped window; "
+                        "circuit sections are metadata only"
+                    ),
+                },
+            })
+        return interaction_segments
+
     if not candidates:
+        if opponent_session and interactions_only_when_opponents and interaction_windows:
+            return _attach({
+                "circuit_id": circuit_id,
+                "range": [s, e],
+                "opponent_session": True,
+                "split_mode": "opponent_interactions_only",
+                "segments": _interaction_segments_from_windows(interaction_windows, []),
+                "interaction_windows": interaction_windows,
+                "unmatched_ilocs": int(pos.size),
+                "warning": (
+                    "no measured circuit_section ranges matched; emitted "
+                    "racing interaction work units anchored to the circuit"
+                ),
+            })
         return _attach({
             "error": (
                 f"no circuit_section with a filled normalized_position_range "
@@ -835,6 +1654,8 @@ def split_lap_by_circuit_sections(
     cur_section: Optional[Dict[str, Any]] = None
     cur_start_iloc = s
     matched_in_run = 0
+    def _is_lap_boundary(offset: int) -> bool:
+        return int(s + offset) in lap_boundary_set
 
     def _close_run(end_iloc_exclusive: int) -> None:
         nonlocal cur_section, cur_start_iloc, matched_in_run
@@ -847,6 +1668,8 @@ def split_lap_by_circuit_sections(
                 "circuit_section_name": cur_section["name"],
                 "normalized_position_range": [cur_section["lo"], cur_section["hi"]],
                 "coverage_fraction": float(matched_in_run) / float(length) if length else 0.0,
+                "split_basis": "circuit_section",
+                "opponent_interaction": None,
             })
         cur_section = None
         cur_start_iloc = end_iloc_exclusive
@@ -855,12 +1678,15 @@ def split_lap_by_circuit_sections(
     for offset, p in enumerate(pos):
         iloc = s + offset
         section = _section_for(p)
+        lap_boundary = _is_lap_boundary(offset)
         if section is None:
             unmatched += 1
             # Keep the run open — the player may have a noisy sample.
             if cur_section is None:
                 cur_start_iloc = iloc + 1
             continue
+        if lap_boundary and cur_section is not None:
+            _close_run(iloc)
         if cur_section is None:
             cur_section = section
             cur_start_iloc = iloc
@@ -876,10 +1702,56 @@ def split_lap_by_circuit_sections(
         matched_in_run = 1
     _close_run(e)
 
+    if include_interaction_windows:
+        if opponent_session and interactions_only_when_opponents:
+            segments = _interaction_segments_from_windows(interaction_windows, segments)
+        elif interaction_windows and segments:
+            assignments: Dict[int, List[Dict[str, Any]]] = {}
+            for window in interaction_windows:
+                best_idx = None
+                best_score = (-1, -1)
+                closest_iloc = int(window.get("min_distance_iloc", window["start_index"]))
+                for idx, segment in enumerate(segments):
+                    seg_s = int(segment["start_index"])
+                    seg_e = int(segment["end_index"])
+                    overlap = min(int(window["end_index"]), seg_e) - max(int(window["start_index"]), seg_s)
+                    if overlap <= 0:
+                        continue
+                    contains_closest = 1 if seg_s <= closest_iloc < seg_e else 0
+                    score = (contains_closest, overlap)
+                    if score > best_score:
+                        best_idx = idx
+                        best_score = score
+                if best_idx is not None:
+                    assignments.setdefault(best_idx, []).append(window)
+
+            for idx, overlaps in assignments.items():
+                segment = segments[idx]
+                expanded_start = min(int(segment["start_index"]), *(int(w["start_index"]) for w in overlaps))
+                expanded_end = max(int(segment["end_index"]), *(int(w["end_index"]) for w in overlaps))
+                segment["start_index"] = int(max(s, expanded_start))
+                segment["end_index"] = int(min(e, expanded_end))
+                segment["split_basis"] = "circuit_section+opponent_interaction"
+                segment["opponent_interaction"] = {
+                    "windows": overlaps,
+                    "reason": (
+                        "section window expanded around close opponent "
+                        "engagement so O / OD / MSR labels see complete "
+                        "entry-to-exit context"
+                    ),
+                }
+
     return _attach({
         "circuit_id": circuit_id,
         "range": [s, e],
+        "opponent_session": bool(opponent_session),
+        "split_mode": (
+            "opponent_interactions_only"
+            if opponent_session and include_interaction_windows and interactions_only_when_opponents
+            else "circuit_sections"
+        ),
         "segments": segments,
+        "interaction_windows": interaction_windows,
         "unmatched_ilocs": int(unmatched),
     })
 
@@ -1103,9 +1975,13 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "Walks `Graphics_normalized_car_position` across the parent "
             "range and partitions it into one sub-range per "
             "`circuit_section` whose `normalized_position_range` contains "
-            "the sample. Produces a 'split_lap_sections' attachment with "
+            "the sample. Close opponent engagements are assigned to the "
+            "best matching section, which expands to include the padded "
+            "interaction window so "
+            "overtake / defense / racing-mistake labels are not clipped at "
+            "corner boundaries. Produces a 'split_lap_sections' attachment with "
             "an ordered `segments` list (`start_index`, `end_index`, "
-            "`circuit_section_id`, `coverage_fraction`). Used by the "
+            "`circuit_section_id`, `coverage_fraction`, `split_basis`). Used by the "
             "lap-to-segment excerpter to compute the rough split that "
             "feeds the per-section annotation agent."
         ),
@@ -1123,13 +1999,34 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "/ exit distance, signed longitudinal gap at entry & exit "
             "(+ ⇒ opponent ahead in player heading), minimum lateral "
             "offset, side-by-side iloc count, and `passed_by_player` / "
-            "`got_passed_by_opponent` flags (signed-gap sign flips). The "
-            "first candidate is the primary opponent for picking O "
-            "sub-labels. Empty `candidates` with `data_available: true` "
-            "is positive evidence AGAINST the Overtaking label — no car "
-            "was close enough to interact with."
+            "`got_passed_by_opponent` flags (signed-gap sign flips). Use "
+            "after `classify_opponent_interaction` when you need "
+            "supporting primary-slot details. Empty `candidates` with "
+            "`data_available: true` is evidence that no car was close "
+            "enough to interact with."
         ),
         "callable": find_nearest_opponent,
+    },
+    {
+        "id": "classify_opponent_interaction",
+        "label": "Classify opponent interaction outcome (O / OD / MSR gate)",
+        "description": (
+            "Deterministically classifies the opponent-relative position "
+            "pattern over the iloc range, preferring projection onto "
+            "the expert trajectory for signed longitudinal/lateral gaps "
+            "and falling back to player heading when expert positions are "
+            "missing. Returns a structured "
+            "'opponent_interaction_classification' attachment with "
+            "`role` (attack / defense / side_by_side / incidental), "
+            "`outcome` (pass_completed, held_defense, failed_attack, "
+            "broken_defense, etc.), `recommended_label` (O / OD / MSR / "
+            "null), numeric `confidence`, readable `confidence_level`, "
+            "primary opponent slot, per-slot evidence, raw outcome `gates`, "
+            "and confidence-aware `label_gates`. Use this as the "
+            "mathematical source of truth for O / OD / MSR eligibility "
+            "before choosing labels."
+        ),
+        "callable": classify_opponent_interaction,
     },
     {
         "id": "query_opponent_trajectory",

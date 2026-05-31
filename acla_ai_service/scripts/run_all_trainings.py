@@ -13,7 +13,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-from app.infra.config.pipeline import PipelineConfig
+from app.pipelines.training.config import TrainingPipelineConfig
 from app.ml.segment_classifier.service import segment_classifier
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.pipelines.training.llm_trainer import DEFAULT_MODEL, run_llm_training
@@ -21,7 +21,7 @@ from app.pipelines.training.pipeline import run_transformer_guidance_training
 
 
 async def main() -> int:
-    cfg = PipelineConfig()
+    cfg = TrainingPipelineConfig()
     parser = argparse.ArgumentParser(
         description="Run all three trainings sequentially.",
     )
@@ -44,7 +44,7 @@ async def main() -> int:
     transformer_result = await run_transformer_guidance_training(
         args.annotation_key,
         telemetry_store=service.telemetry_store,
-        cache_config=service.cache_config,
+        config=service.pipeline_config,
         backend_service=service.backend_service,
     )
     if not transformer_result.get("success"):

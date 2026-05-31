@@ -171,6 +171,12 @@ class _ToolSurface:
         att = find_nearest_opponent(self.df, s, e)
         return json.dumps({"range": [s, e], "data": att.content}, default=str)
 
+    def classify_opponent_interaction(self, start: int, end: int) -> str:
+        from app.shared.annotation_agent_tools import classify_opponent_interaction
+        s, e = self._clamp(start, end)
+        att = classify_opponent_interaction(self.df, s, e)
+        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+
     def query_opponent_trajectory(self, start: int, end: int, slot: int, n_samples: int) -> str:
         from app.shared.annotation_agent_tools import query_opponent_trajectory
         s, e = self._clamp(start, end)
@@ -271,6 +277,20 @@ def _build_tool_set(surface: _ToolSurface):
         return {"content": [{"type": "text", "text": text}]}
 
     @tool(
+        "classify_opponent_interaction",
+        "Deterministically classify the opponent-relative position pattern "
+        "over the iloc window. Returns role, outcome, recommended_label, "
+        "numeric confidence, confidence_level, primary slot, raw outcome "
+        "gates, confidence-aware label_gates, and per-slot evidence for "
+        "O / OD / MSR. Low or weak confidence needs range refinement or "
+        "extra opponent-path evidence.",
+        {"start": int, "end": int},
+    )
+    async def classify_opponent_interaction(args):
+        text = surface.classify_opponent_interaction(int(args["start"]), int(args["end"]))
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
         "query_opponent_trajectory",
         "Sample one opponent slot's relative trajectory at "
         "`n_samples` evenly-spaced ilocs: per-iloc 2D distance, signed "
@@ -301,12 +321,14 @@ def _build_tool_set(surface: _ToolSurface):
     tools_list = [
         list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
         compute_expert_phases, locate_circuit_section,
-        find_nearest_opponent, query_opponent_trajectory, search_labels,
+        find_nearest_opponent, classify_opponent_interaction,
+        query_opponent_trajectory, search_labels,
     ]
     tool_names = [f"mcp__followup__{t}" for t in [
         "list_graphs", "get_graph_guidance", "render_graph", "peek_graph",
         "query_telemetry", "compute_expert_phases", "locate_circuit_section",
-        "find_nearest_opponent", "query_opponent_trajectory", "search_labels",
+        "find_nearest_opponent", "classify_opponent_interaction",
+        "query_opponent_trajectory", "search_labels",
     ]]
 
     server = create_sdk_mcp_server(
@@ -398,7 +420,8 @@ def _build_system_prompt(
         "### How to answer\n"
         "- Ground every claim in telemetry evidence. Cite ilocs and values. "
         "Use `render_graph` / `query_telemetry` / `compute_expert_phases` "
-        "/ `find_nearest_opponent` / `query_opponent_trajectory` "
+        "/ `classify_opponent_interaction` / `find_nearest_opponent` "
+        "/ `query_opponent_trajectory` "
         "to re-inspect when the question demands fresh evidence.\n"
         "- Look labels up with `search_labels` (describe the behaviour, or "
         "pass the label's name/parent) to pull its description + guideline "
