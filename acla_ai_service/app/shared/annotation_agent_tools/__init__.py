@@ -1264,8 +1264,12 @@ def _detect_opponent_interaction_windows(
     close_distance_m: float = 12.0,
     side_by_side_distance_m: float = 8.0,
     longitudinal_window_m: float = 18.0,
+    pass_margin_m: float = 1.5,
+    min_role_gain_m: float = 4.0,
     min_window_ilocs: int = 3,
     context_padding_ilocs: int = 8,
+    event_padding_ilocs: int = 16,
+    max_event_window_ilocs: int = 80,
     merge_gap_ilocs: int = 10,
     min_active_fraction: float = 0.3,
 ) -> List[Dict[str, Any]]:
@@ -1294,6 +1298,91 @@ def _detect_opponent_interaction_windows(
         return []
 
     windows: List[Dict[str, Any]] = []
+
+    def _range_around_focal(
+        run_start: int,
+        run_end: int,
+        focal: int,
+    ) -> Tuple[int, int]:
+        """Build a bounded local event window around an attack/defense focal point."""
+        pad = int(event_padding_ilocs)
+        max_len = max(int(min_window_ilocs), int(max_event_window_ilocs))
+        event_start = max(run_start, int(focal) - pad)
+        event_end = min(run_end, int(focal) + pad + 1)
+        if event_end - event_start > max_len:
+            half = max_len // 2
+            event_start = max(run_start, int(focal) - half)
+            event_end = min(run_end, event_start + max_len)
+            event_start = max(run_start, event_end - max_len)
+        return event_start, event_end
+
+    def _event_ranges_for_close_run(
+        *,
+        run_start: int,
+        run_end: int,
+        signed_long: np.ndarray,
+        distance: np.ndarray,
+        finite: np.ndarray,
+    ) -> List[Tuple[int, int, str, str]]:
+        """Return high-signal event ranges inside one close run.
+
+        A car can sit close for a long time without an overtake/defense
+        decision happening. These ranges focus the split on gap flips or
+        meaningful gap closure instead of treating the whole close-following
+        run as the annotation target.
+        """
+        run_slice = slice(run_start, run_end)
+        finite_run = finite[run_slice]
+        if not finite_run.any():
+            return []
+
+        local_indices = np.where(finite_run)[0] + run_start
+        gaps = signed_long[local_indices]
+        if not np.isfinite(gaps).any():
+            return []
+
+        ranges: List[Tuple[int, int, str, str]] = []
+        entry_long = float(gaps[0])
+        exit_long = float(gaps[-1])
+        gap_delta = exit_long - entry_long
+        passed_by_player = entry_long > pass_margin_m and exit_long < -pass_margin_m
+        got_passed_by_opponent = entry_long < -pass_margin_m and exit_long > pass_margin_m
+
+        if passed_by_player or got_passed_by_opponent:
+            crossing_level = -pass_margin_m if passed_by_player else pass_margin_m
+            crossing_candidates = local_indices[:-1][
+                (gaps[:-1] - crossing_level) * (gaps[1:] - crossing_level) <= 0
+            ]
+            focal = int(crossing_candidates[0]) if crossing_candidates.size else int(local_indices[np.nanargmin(np.abs(gaps))])
+            event_start, event_end = _range_around_focal(run_start, run_end, focal)
+            role = "attack" if passed_by_player else "defense"
+            outcome = "pass_completed" if passed_by_player else "broken_defense"
+            ranges.append((event_start, event_end, role, outcome))
+            return ranges
+
+        if entry_long > pass_margin_m and gap_delta <= -min_role_gain_m:
+            focal = int(local_indices[np.nanargmin(gaps)])
+            event_start, event_end = _range_around_focal(run_start, run_end, focal)
+            ranges.append((event_start, event_end, "attack", "failed_attack"))
+            return ranges
+
+        if (
+            entry_long < -pass_margin_m
+            and exit_long <= pass_margin_m
+            and gap_delta >= min_role_gain_m
+        ):
+            focal = int(local_indices[np.nanargmax(gaps)])
+            event_start, event_end = _range_around_focal(run_start, run_end, focal)
+            ranges.append((event_start, event_end, "defense", "held_defense"))
+            return ranges
+
+        # Fallback for short wheel-to-wheel moments. Long steady close-following
+        # is intentionally compressed around closest approach so the batch split
+        # does not emit a whole straight/corner chain as one "interaction".
+        min_d_idx = int(run_start + np.nanargmin(distance[run_slice]))
+        event_start, event_end = _range_around_focal(run_start, run_end, min_d_idx)
+        ranges.append((event_start, event_end, "side_by_side", "side_by_side"))
+        return ranges
 
     for slot in range(1, MAX_CARS + 1):
         col_x = f"Car_{slot}_pos_x"
@@ -1333,44 +1422,67 @@ def _detect_opponent_interaction_windows(
             max_gap=int(merge_gap_ilocs),
         )
         for local_start, local_end in runs:
-            padded_start = max(0, local_start - int(context_padding_ilocs))
-            padded_end = min(n_rows, local_end + int(context_padding_ilocs))
-            if padded_end - padded_start < int(min_window_ilocs):
-                continue
+            event_ranges = _event_ranges_for_close_run(
+                run_start=local_start,
+                run_end=local_end,
+                signed_long=signed_long,
+                distance=distance,
+                finite=finite,
+            )
+            for event_start, event_end, event_role, event_outcome in event_ranges:
+                padded_start = max(0, event_start - int(context_padding_ilocs))
+                padded_end = min(n_rows, event_end + int(context_padding_ilocs))
+                if padded_end - padded_start > int(max_event_window_ilocs):
+                    focal = (event_start + event_end) // 2
+                    half = int(max_event_window_ilocs) // 2
+                    padded_start = max(0, focal - half)
+                    padded_end = min(n_rows, padded_start + int(max_event_window_ilocs))
+                    padded_start = max(0, padded_end - int(max_event_window_ilocs))
+                if padded_end - padded_start < int(min_window_ilocs):
+                    continue
 
-            window_slice = slice(padded_start, padded_end)
-            finite_window = finite[window_slice]
-            if not finite_window.any():
-                continue
-            local_indices = np.where(finite_window)[0] + padded_start
-            entry_idx = int(local_indices[0])
-            exit_idx = int(local_indices[-1])
-            min_d_idx = padded_start + int(np.nanargmin(distance[window_slice]))
-            min_lat_idx = padded_start + int(np.nanargmin(lateral_abs[window_slice]))
+                window_slice = slice(padded_start, padded_end)
+                finite_window = finite[window_slice]
+                if not finite_window.any():
+                    continue
+                local_indices = np.where(finite_window)[0] + padded_start
+                entry_idx = int(local_indices[0])
+                exit_idx = int(local_indices[-1])
+                min_d_idx = padded_start + int(np.nanargmin(distance[window_slice]))
+                min_lat_idx = padded_start + int(np.nanargmin(lateral_abs[window_slice]))
 
-            side_count = int(((distance[window_slice] <= side_by_side_distance_m) & finite_window).sum())
-            entry_long = float(signed_long[entry_idx])
-            exit_long = float(signed_long[exit_idx])
-            windows.append({
-                "start_index": int(s + padded_start),
-                "end_index": int(s + padded_end),
-                "slot": int(slot),
-                "min_distance_m": float(distance[min_d_idx]),
-                "min_distance_iloc": int(s + min_d_idx),
-                "entry_signed_long_gap_m": entry_long,
-                "exit_signed_long_gap_m": exit_long,
-                "min_lateral_offset_m": float(lateral_abs[min_lat_idx]),
-                "side_by_side_iloc_count": side_count,
-                "coordinate_frame": frame_name,
-                "passed_by_player": bool(entry_long > 0 and exit_long < 0),
-                "got_passed_by_opponent": bool(entry_long < 0 and exit_long > 0),
-            })
+                side_count = int(((distance[window_slice] <= side_by_side_distance_m) & finite_window).sum())
+                entry_long = float(signed_long[entry_idx])
+                exit_long = float(signed_long[exit_idx])
+                windows.append({
+                    "start_index": int(s + padded_start),
+                    "end_index": int(s + padded_end),
+                    "slot": int(slot),
+                    "event_role": event_role,
+                    "event_outcome": event_outcome,
+                    "min_distance_m": float(distance[min_d_idx]),
+                    "min_distance_iloc": int(s + min_d_idx),
+                    "entry_signed_long_gap_m": entry_long,
+                    "exit_signed_long_gap_m": exit_long,
+                    "min_lateral_offset_m": float(lateral_abs[min_lat_idx]),
+                    "side_by_side_iloc_count": side_count,
+                    "coordinate_frame": frame_name,
+                    "passed_by_player": bool(entry_long > 0 and exit_long < 0),
+                    "got_passed_by_opponent": bool(entry_long < 0 and exit_long > 0),
+                })
 
     # Merge overlapping windows, keeping the closest-slot summary as the
     # representative hint. The full per-slot details remain available through
     # find_nearest_opponent once the agent inspects the merged range.
     windows.sort(key=lambda w: (int(w["start_index"]), int(w["end_index"])))
     merged_windows: List[Dict[str, Any]] = []
+    event_priority = {
+        "pass_completed": 5,
+        "broken_defense": 5,
+        "failed_attack": 4,
+        "held_defense": 4,
+        "side_by_side": 2,
+    }
     for window in windows:
         if not merged_windows or int(window["start_index"]) > int(merged_windows[-1]["end_index"]) + merge_gap_ilocs:
             merged_windows.append(dict(window))
@@ -1379,9 +1491,18 @@ def _detect_opponent_interaction_windows(
         current["start_index"] = min(int(current["start_index"]), int(window["start_index"]))
         current["end_index"] = max(int(current["end_index"]), int(window["end_index"]))
         current["slots"] = sorted(set(current.get("slots", [current["slot"]]) + [window["slot"]]))
-        if float(window["min_distance_m"]) < float(current["min_distance_m"]):
+        window_rank = event_priority.get(str(window.get("event_outcome")), 0)
+        current_rank = event_priority.get(str(current.get("event_outcome")), 0)
+        if (
+            window_rank > current_rank
+            or (
+                window_rank == current_rank
+                and float(window["min_distance_m"]) < float(current["min_distance_m"])
+            )
+        ):
             for key in (
-                "slot", "min_distance_m", "min_distance_iloc",
+                "slot", "event_role", "event_outcome",
+                "min_distance_m", "min_distance_iloc",
                 "entry_signed_long_gap_m", "exit_signed_long_gap_m",
                 "min_lateral_offset_m", "side_by_side_iloc_count",
                 "coordinate_frame", "passed_by_player", "got_passed_by_opponent",
@@ -1444,8 +1565,10 @@ def split_lap_by_circuit_sections(
     When ``include_interaction_windows`` is true and opponent samples are
     present, the function switches to opponent-interaction mode by default:
     it returns close engagement windows for overtake offence / defence
-    annotation. Those windows are event-shaped and are not split by circuit
-    section; overlapping sections are attached only as context. Normal
+    annotation. Long close-car engagements are compressed around the
+    attack/defence focal point, capped to a bounded event window, then split
+    at the circuit-section ranges they overlap with those sections attached
+    as context. Normal
     circuit-section work units are returned only for solo sessions. This
     keeps opponent sessions from producing EA / MSP / RM practice-driving
     sections. Wrap-around sections (``range_end < range_start``) and lap
@@ -1568,6 +1691,40 @@ def split_lap_by_circuit_sections(
         anchors: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         interaction_segments: List[Dict[str, Any]] = []
+
+        def _build_interaction_segment(
+            window: Dict[str, Any],
+            seg_start: int,
+            seg_end: int,
+            section_context: List[Dict[str, Any]],
+        ) -> Dict[str, Any]:
+            clipped_window = dict(window)
+            window_start = int(window["start_index"])
+            window_end = int(window["end_index"])
+            if seg_start != window_start or seg_end != window_end:
+                clipped_window["start_index"] = int(seg_start)
+                clipped_window["end_index"] = int(seg_end)
+                clipped_window["source_window_range"] = [window_start, window_end]
+            return {
+                "start_index": int(max(s, seg_start)),
+                "end_index": int(min(e, seg_end)),
+                "circuit_section_id": "interaction_window",
+                "circuit_section_name": "Racing interaction",
+                "normalized_position_range": None,
+                "coverage_fraction": 1.0,
+                "split_basis": "opponent_interaction",
+                "opponent_interaction": {
+                    "windows": [clipped_window],
+                    "section_context": section_context,
+                    "reason": (
+                        "opponent session: close overtake offence / defence "
+                        "engagement emitted as an event-shaped window; "
+                        "long engagements are split by circuit-section "
+                        "context"
+                    ),
+                },
+            }
+
         for window in windows:
             window_start = int(window["start_index"])
             window_end = int(window["end_index"])
@@ -1586,24 +1743,17 @@ def split_lap_by_circuit_sections(
                     "normalized_position_range": segment["normalized_position_range"],
                 })
 
-            interaction_segments.append({
-                "start_index": int(max(s, window_start)),
-                "end_index": int(min(e, window_end)),
-                "circuit_section_id": "interaction_window",
-                "circuit_section_name": "Racing interaction",
-                "normalized_position_range": None,
-                "coverage_fraction": 1.0,
-                "split_basis": "opponent_interaction",
-                "opponent_interaction": {
-                    "windows": [window],
-                    "section_context": section_context,
-                    "reason": (
-                        "opponent session: close overtake offence / defence "
-                        "engagement emitted as an event-shaped window; "
-                        "circuit sections are metadata only"
-                    ),
-                },
-            })
+            if len(section_context) <= 1:
+                interaction_segments.append(
+                    _build_interaction_segment(window, window_start, window_end, section_context)
+                )
+                continue
+
+            for context in section_context:
+                ctx_start, ctx_end = [int(v) for v in context["range"]]
+                interaction_segments.append(
+                    _build_interaction_segment(window, ctx_start, ctx_end, [context])
+                )
         return interaction_segments
 
     if not candidates:

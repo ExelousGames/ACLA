@@ -114,7 +114,7 @@ def test_opponent_session_without_close_engagement_returns_no_work_units() -> No
     assert att.content["segments"] == []
 
 
-def test_interaction_window_keeps_sections_as_context_only() -> None:
+def test_long_close_following_compresses_to_event_window() -> None:
     n = 160
     player_x = np.arange(n, dtype=float)
     player_y = np.zeros(n, dtype=float)
@@ -125,7 +125,7 @@ def test_interaction_window_keeps_sections_as_context_only() -> None:
     })
     df["Car_1_pos_x"] = df["Graphics_player_pos_x"]
     df["Car_1_pos_y"] = df["Graphics_player_pos_y"]
-    df["Car_2_pos_x"] = df["Graphics_player_pos_x"] + 2.0
+    df["Car_2_pos_x"] = df["Graphics_player_pos_x"] + np.linspace(10.0, 2.0, n)
     df["Car_2_pos_y"] = 0.0
 
     att = split_lap_by_circuit_sections(
@@ -136,15 +136,15 @@ def test_interaction_window_keeps_sections_as_context_only() -> None:
     segments = att.content["segments"]
     assert att.content["opponent_session"] is True
     assert att.content["split_mode"] == "opponent_interactions_only"
-    assert len(segments) == 1
-    assert segments[0]["start_index"] == 0
-    assert segments[0]["end_index"] == n
-    assert segments[0]["circuit_section_id"] == "interaction_window"
-    section_context = segments[0]["opponent_interaction"]["section_context"]
-    assert {s["circuit_section_id"] for s in section_context} >= {
-        "brands_hatch3",
-        "brands_hatch4",
-    }
+    assert segments
+    assert len(segments) < 3
+    assert {s["circuit_section_id"] for s in segments} == {"interaction_window"}
+    assert all(s["start_index"] < s["end_index"] for s in segments)
+    assert all(s["end_index"] - s["start_index"] <= 80 for s in segments)
+    assert all(
+        segment["opponent_interaction"]["windows"][0]["event_outcome"] == "failed_attack"
+        for segment in segments
+    )
 
 
 def test_same_section_interaction_is_split_at_lap_boundaries() -> None:
@@ -159,7 +159,7 @@ def test_same_section_interaction_is_split_at_lap_boundaries() -> None:
     })
     df["Car_1_pos_x"] = df["Graphics_player_pos_x"]
     df["Car_1_pos_y"] = df["Graphics_player_pos_y"]
-    df["Car_2_pos_x"] = df["Graphics_player_pos_x"] + 2.0
+    df["Car_2_pos_x"] = df["Graphics_player_pos_x"] + np.tile(np.linspace(20.0, -20.0, 100), 3)
     df["Car_2_pos_y"] = 0.0
 
     att = split_lap_by_circuit_sections(
@@ -170,8 +170,17 @@ def test_same_section_interaction_is_split_at_lap_boundaries() -> None:
     segments = att.content["segments"]
     assert att.content["opponent_session"] is True
     assert att.content["split_mode"] == "opponent_interactions_only"
-    assert [s["start_index"] for s in segments] == [0, 100, 200]
-    assert [s["end_index"] for s in segments] == [100, 200, 300]
+    assert len(segments) == 3
+    assert all(s["start_index"] < s["end_index"] for s in segments)
+    assert all(
+        s["start_index"] < boundary < s["end_index"]
+        for s, boundary in zip(segments, [50, 150, 250])
+    )
+    assert all(
+        not (s["start_index"] < boundary < s["end_index"])
+        for s in segments
+        for boundary in [100, 200]
+    )
     assert {s["circuit_section_id"] for s in segments} == {"interaction_window"}
     assert all(
         s["opponent_interaction"]["section_context"][0]["circuit_section_id"] == "brands_hatch1"
