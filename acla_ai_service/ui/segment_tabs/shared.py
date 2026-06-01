@@ -234,6 +234,7 @@ def build_segment(
     parent_id: Optional[str] = None,
     chunk_index: Optional[Any] = None,
     id: Optional[str] = None,
+    opponent_interaction: Optional[Dict[str, Any]] = None,
 ) -> AnnotatedSegment:
     """Single construction point for ``AnnotatedSegment``.
 
@@ -262,6 +263,7 @@ def build_segment(
         parent_id=parent_id,
         chunk_index=chunk_index,
         telemetry_data=rows,
+        opponent_interaction=opponent_interaction,
     )
 
 
@@ -287,5 +289,4 @@ def save_annotations(session_id: str, annotations: List[AnnotatedSegment], annot
         store.save_chunk(annotation_key, session_id, data_to_save)
         if not silent:
             st.success(f"Saved {len(annotations)} annotations to {annotation_key} (session {session_id})")
-
 

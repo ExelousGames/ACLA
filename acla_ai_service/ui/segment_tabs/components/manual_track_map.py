@@ -4,7 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from app.domain.telemetry import MAX_CARS
-from .opponent_interaction import render_opponent_interaction_panel
+from .opponent_interaction import add_interaction_overlay, render_opponent_interaction_panel
 
 def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
     # --- Track Map Visualization ---
@@ -47,9 +47,10 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                  selected_time_idx = safe_end_idx - 1
             current_row = df.iloc[selected_time_idx]
             start_row = df.iloc[start_idx]
-            render_opponent_interaction_panel(
-                df, start_idx, safe_end_idx, key_prefix="manual"
+            interaction = render_opponent_interaction_panel(
+                df, start_idx, safe_end_idx, key_prefix="manual", context_id=session_id
             )
+            target_slot = interaction.get("slot") if interaction else None
             map_data = []
             
             # Add Player Position
@@ -140,6 +141,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                     candidates.append((dist2, i))
                 candidates.sort()
                 allowed_slots = {i for _, i in candidates[:5]}
+                if target_slot is not None:
+                    allowed_slots.add(int(target_slot))
 
             # Add Opponent Positions
             for i in range(1, MAX_CARS + 1):
@@ -154,11 +157,12 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                 if opp_x_col in df.columns and opp_y_col in df.columns:
                     # Filter out inactive opponents (usually 0,0 coordinates)
                     if current_row[opp_x_col] != 0 or current_row[opp_y_col] != 0:
+                        is_target = i == target_slot
                         o_data = {
                             "x": current_row[opp_x_col],
                             "y": current_row[opp_y_col],
-                            "Type": "Opponent",
-                            "ID": f"Car {i}",
+                            "Type": "Target" if is_target else "Opponent",
+                            "ID": f"Target Car {i}" if is_target else f"Car {i}",
                             "Marker": "End",
                             "Index": selected_time_idx
                         }
@@ -169,6 +173,13 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
             if map_data:
                 map_df = pd.DataFrame(map_data)
                 use_3d = "z" in map_df.columns
+                opponent_color = "#b8b8b8" if target_slot is not None else "red"
+                color_map = {
+                    "Player": "green",
+                    "Opponent": opponent_color,
+                    "Expert": "blue",
+                    "Target": "#8a63d2",
+                }
                 
                 if use_3d:
                     fig_map = px.scatter_3d(
@@ -180,10 +191,11 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         symbol="Marker",
                         hover_data=["ID", "Index"],
                         title=f"Positions (Start: {start_idx}, End: {selected_time_idx}) (3D)",
-                        color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
+                        color_discrete_map=color_map,
                         symbol_map={"Start": "diamond", "End": "circle"}
                     )
                     fig_map.update_traces(marker=dict(size=5))
+                    fig_map.update_traces(marker=dict(size=8), selector=dict(name="Target"))
                     
                     scene_dict = dict(
                         aspectmode='data',
@@ -206,9 +218,10 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         symbol="Marker",
                         hover_data=["ID", "Index"],
                         title=f"Positions (Start: {start_idx}, End: {selected_time_idx})",
-                        color_discrete_map={"Player": "green", "Opponent": "red", "Expert": "blue"},
+                        color_discrete_map=color_map,
                         symbol_map={"Start": "x", "End": "circle"}
                     )
+                    fig_map.update_traces(marker=dict(size=11), selector=dict(name="Target"))
                     if invert_x: fig_map.update_xaxes(autorange="reversed")
                     if invert_y: fig_map.update_yaxes(autorange="reversed")
 
@@ -275,6 +288,8 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         continue
                     if allowed_slots is not None and i not in allowed_slots:
                         continue
+                    if i == target_slot:
+                        continue
                     opp_x_col = f"Car_{i}_pos_x"
                     opp_y_col = f"Car_{i}_pos_y"
                     opp_z_col = f"Car_{i}_pos_z"
@@ -292,9 +307,9 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                                     name=f"Car {i} Trajectory",
                                     customdata=opp_df.index,
                                     hovertemplate='x: %{x}<br>y: %{y}<br>z: %{z}<br>Index: %{customdata}<extra></extra>',
-                                    line=dict(color="red", width=2),
-                                    opacity=0.3,
-                                    showlegend=True
+                                    line=dict(color="#9ca3af" if target_slot is not None else "red", width=2),
+                                    opacity=0.18 if target_slot is not None else 0.3,
+                                    showlegend=False if target_slot is not None else True
                                 ))
                             else:
                                 fig_map.add_trace(go.Scatter(
@@ -304,10 +319,17 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                                     name=f"Car {i} Trajectory",
                                     customdata=opp_df.index,
                                     hovertemplate='x: %{x}<br>y: %{y}<br>Index: %{customdata}<extra></extra>',
-                                    line=dict(color="red", width=1, dash="dot"),
-                                    opacity=0.3,
-                                    showlegend=True
+                                    line=dict(color="#9ca3af" if target_slot is not None else "red", width=1, dash="dot"),
+                                    opacity=0.18 if target_slot is not None else 0.3,
+                                    showlegend=False if target_slot is not None else True
                                 ))
+
+                add_interaction_overlay(
+                    fig_map,
+                    interaction,
+                    use_3d=use_3d,
+                    has_z=use_3d,
+                )
 
                 if not use_3d:
                     fig_map.update_yaxes(scaleanchor="x", scaleratio=1)

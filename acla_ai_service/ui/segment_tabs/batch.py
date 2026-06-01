@@ -10,12 +10,18 @@ from .shared import (
     LABEL_MAPPING, LABEL_NAME_TO_ID,
     LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
 )
+from .components.opponent_interaction import format_targeted_car
 from app.local_annotation_agent import ClaudeUsageExhausted
 
 _USAGE_EXHAUSTED_WARNING = (
     "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
     "credit balance). Batch halted — try again later."
 )
+
+
+def _targeted_car_suffix(opponent_interaction) -> str:
+    target = format_targeted_car(opponent_interaction)
+    return f", target={target}" if target else ""
 
 def render_rule_based_annotation(df, selected_annotation_key):
     """
@@ -413,6 +419,9 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         st.write("1 segment available.")
     process_indices = list(range(batch_range[0], batch_range[1] + 1))
     st.write(f"Selected {len(process_indices)} parent segment(s) for analysis.")
+    selected_parent_spans = _selected_parent_spans(annotations, process_indices, len(df))
+    coverage_slot = st.empty()
+    _render_subsegment_coverage_bar(coverage_slot, selected_parent_spans)
 
     # --- Backend selector ---
     backend_label = st.radio(
@@ -604,6 +613,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     )
     log(f"Finished. {success_parents}/{total} parents updated, "
         f"{total_children} children created, {error_parents} error(s).")
+    _render_subsegment_coverage_bar(coverage_slot, selected_parent_spans)
 
     # Discovery is per-parent and doesn't leave staged-review state for the
     # shared panel; clear any stale follow-up chat context from prior detailed
@@ -618,8 +628,8 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
     Picks a lap range, rough-splits it via ``split_lap_by_circuit_sections``,
     then runs the Claude `flow="lap"` pipeline on every section in order.
-    When opponent data is present, the splitter emits only close overtake
-    offence / defense engagement windows. Each result is auto-saved as a new
+    When opponent data is present, the splitter emits only close
+    racing-interaction windows. Each result is auto-saved as a new
     ``AnnotatedSegment``. When the agent revises a boundary, the downstream
     tail is re-split from the new end so the next iteration sees the shifted
     partition.
@@ -631,7 +641,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     st.write(
         "Pick a lap range; the deterministic splitter partitions it into "
         "per-`circuit_section` sub-ranges. If opponent data is present, it "
-        "emits only close overtake offence / defense engagement windows. "
+        "emits only close racing-interaction windows. "
         "Claude annotates **every** section automatically and auto-saves each "
         "result as a new segment."
     )
@@ -778,9 +788,13 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         sec_id = seg["circuit_section_id"]
         sec_start = int(seg["start_index"])
         sec_end = int(seg["end_index"])
+        target_suffix = _targeted_car_suffix(seg.get("opponent_interaction"))
 
         if skip_overlap and _section_overlaps_existing(sec_start, sec_end):
-            log(f"Section #{i} `{sec_id}` [{sec_start}, {sec_end}]: skipped (overlaps existing annotation).")
+            log(
+                f"Section #{i} `{sec_id}` [{sec_start}, {sec_end}]"
+                f"{target_suffix}: skipped (overlaps existing annotation)."
+            )
             skipped_count += 1
             i += 1
             progress_bar.progress((i) / len(segments))
@@ -789,9 +803,10 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         existing = _collect_existing_lap_annotations(int(lap_start), int(lap_end))
 
         status_text.markdown(
-            f"**Section #{i + 1}/{len(segments)}** `{sec_id}` — [{sec_start}, {sec_end}], running Claude…"
+            f"**Section #{i + 1}/{len(segments)}** `{sec_id}`"
+            f"{target_suffix} — [{sec_start}, {sec_end}], running Claude…"
         )
-        log(f"Section #{i} `{sec_id}`: running [{sec_start}, {sec_end}]")
+        log(f"Section #{i} `{sec_id}`{target_suffix}: running [{sec_start}, {sec_end}]")
 
         try:
             result = run_annotation(
@@ -825,7 +840,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
         label_ids = [l for l in result.label_ids if l in LABEL_MAPPING]
         if not label_ids:
-            log(f"Section #{i} `{sec_id}`: no valid labels resolved — skipped.")
+            log(f"Section #{i} `{sec_id}`{target_suffix}: no valid labels resolved — skipped.")
             error_count += 1
             i += 1
             progress_bar.progress(i / len(segments))
@@ -837,6 +852,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
             end=int(result.end_index),
             label_ids=label_ids,
             notes=(result.reasoning or "")[:1500],
+            opponent_interaction=seg.get("opponent_interaction"),
         )
         annotations = list(st.session_state.get("current_annotations", []))
         annotations.append(new_ann)
@@ -855,11 +871,11 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
                 "end_index": int(result.end_index),
                 "circuit_section_id": result.section_id,
             }
-            log(f"Section #{i} `{sec_id}`: saved (revised → "
+            log(f"Section #{i} `{sec_id}`{target_suffix}: saved (revised → "
                 f"[{result.start_index}, {result.end_index}]); tail rebuilt → "
                 f"{len(tail)} downstream section(s).")
         else:
-            log(f"Section #{i} `{sec_id}`: saved [{result.start_index}, {result.end_index}] "
+            log(f"Section #{i} `{sec_id}`{target_suffix}: saved [{result.start_index}, {result.end_index}] "
                 f"with {len(label_ids)} label(s).")
 
         i += 1
@@ -884,53 +900,80 @@ def _section_overlaps_existing(sec_start: int, sec_end: int) -> bool:
     return False
 
 
-def _compute_lap_coverage(lap_start: int, lap_end: int):
-    """Merge saved annotations overlapping the lap range into (covered, gaps)."""
-    raw = []
-    for ann in st.session_state.get("current_annotations", []) or []:
-        s = int(getattr(ann, "start_index", 0) or 0)
-        e = int(getattr(ann, "end_index", 0) or 0)
-        if e <= lap_start or s >= lap_end:
-            continue
-        raw.append((max(s, lap_start), min(e, lap_end)))
+def _normalise_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    raw = [(int(s), int(e)) for s, e in ranges if int(e) > int(s)]
     raw.sort()
-    covered: list[tuple[int, int]] = []
+    merged: list[tuple[int, int]] = []
     for s, e in raw:
-        if covered and s <= covered[-1][1]:
-            covered[-1] = (covered[-1][0], max(covered[-1][1], e))
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
         else:
-            covered.append((s, e))
+            merged.append((s, e))
+    return merged
+
+
+def _compute_interval_coverage(
+    target_ranges: list[tuple[int, int]],
+    annotation_ranges: list[tuple[int, int]],
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Merge annotation coverage within one or more target intervals."""
+    targets = _normalise_ranges(target_ranges)
+    annotations = _normalise_ranges(annotation_ranges)
+
+    raw_covered: list[tuple[int, int]] = []
+    for ts, te in targets:
+        for s, e in annotations:
+            if e <= ts or s >= te:
+                continue
+            raw_covered.append((max(s, ts), min(e, te)))
+    covered = _normalise_ranges(raw_covered)
+
     gaps: list[tuple[int, int]] = []
-    pos = lap_start
-    for s, e in covered:
-        if s > pos:
-            gaps.append((pos, s))
-        pos = e
-    if pos < lap_end:
-        gaps.append((pos, lap_end))
+    for ts, te in targets:
+        pos = ts
+        for s, e in covered:
+            if e <= ts or s >= te:
+                continue
+            cs, ce = max(s, ts), min(e, te)
+            if cs > pos:
+                gaps.append((pos, cs))
+            pos = max(pos, ce)
+        if pos < te:
+            gaps.append((pos, te))
     return covered, gaps
 
 
-def _render_lap_coverage_bar(slot, lap_start: int, lap_end: int) -> None:
-    """Horizontal coverage strip over the lap range — red = uncovered, green = annotated."""
+def _render_coverage_bar(
+    slot,
+    target_ranges: list[tuple[int, int]],
+    annotation_ranges: list[tuple[int, int]],
+    *,
+    title: str,
+    legend_note: str,
+) -> None:
+    """Horizontal coverage strip over target ranges."""
     import plotly.graph_objects as go
 
-    if lap_end <= lap_start:
+    targets = _normalise_ranges(target_ranges)
+    if not targets:
         slot.empty()
         return
 
-    covered, gaps = _compute_lap_coverage(lap_start, lap_end)
-    total = lap_end - lap_start
+    covered, gaps = _compute_interval_coverage(targets, annotation_ranges)
+    total = sum(e - s for s, e in targets)
     covered_len = sum(e - s for s, e in covered)
     gap_len = total - covered_len
     coverage_pct = (covered_len / total * 100) if total else 0.0
     longest_gap = max((e - s for s, e in gaps), default=0)
+    x_min = min(s for s, _ in targets)
+    x_max = max(e for _, e in targets)
 
     fig = go.Figure()
-    fig.add_shape(
-        type="rect", x0=lap_start, x1=lap_end, y0=0, y1=1,
-        fillcolor="rgba(220, 53, 69, 0.75)", line=dict(width=0), layer="below",
-    )
+    for s, e in targets:
+        fig.add_shape(
+            type="rect", x0=s, x1=e, y0=0, y1=1,
+            fillcolor="rgba(220, 53, 69, 0.75)", line=dict(width=0), layer="below",
+        )
     for s, e in covered:
         fig.add_shape(
             type="rect", x0=s, x1=e, y0=0, y1=1,
@@ -950,19 +993,100 @@ def _render_lap_coverage_bar(slot, lap_start: int, lap_end: int) -> None:
     fig.update_layout(
         height=110,
         margin=dict(l=10, r=10, t=10, b=30),
-        xaxis=dict(range=[lap_start, lap_end], title="iloc index", fixedrange=True),
+        xaxis=dict(range=[x_min, x_max], title="iloc index", fixedrange=True),
         yaxis=dict(visible=False, range=[0, 1], fixedrange=True),
         showlegend=False,
     )
 
     with slot.container():
         st.caption(
-            f"**Annotation coverage:** {coverage_pct:.1f}% covered · "
+            f"**{title}:** {coverage_pct:.1f}% covered · "
             f"{len(gaps)} gap(s) · {gap_len} iloc(s) uncovered · "
             f"longest gap {longest_gap} iloc(s)  "
-            "(🟩 annotated · 🟥 not yet reached)"
+            f"{legend_note}"
         )
         st.plotly_chart(fig, use_container_width=True)
+
+
+def _compute_lap_coverage(lap_start: int, lap_end: int):
+    """Merge saved annotations overlapping the lap range into (covered, gaps)."""
+    annotation_ranges = []
+    for ann in st.session_state.get("current_annotations", []) or []:
+        s = int(getattr(ann, "start_index", 0) or 0)
+        e = int(getattr(ann, "end_index", 0) or 0)
+        annotation_ranges.append((s, e))
+    return _compute_interval_coverage([(lap_start, lap_end)], annotation_ranges)
+
+
+def _render_lap_coverage_bar(slot, lap_start: int, lap_end: int) -> None:
+    """Horizontal coverage strip over the lap range — red = uncovered, green = annotated."""
+    annotation_ranges = []
+    for ann in st.session_state.get("current_annotations", []) or []:
+        s = int(getattr(ann, "start_index", 0) or 0)
+        e = int(getattr(ann, "end_index", 0) or 0)
+        annotation_ranges.append((s, e))
+    _render_coverage_bar(
+        slot,
+        [(lap_start, lap_end)],
+        annotation_ranges,
+        title="Annotation coverage",
+        legend_note="(🟩 annotated · 🟥 not yet reached)",
+    )
+
+
+def _selected_parent_spans(
+    annotations: list,
+    process_indices: list[int],
+    df_len: int,
+) -> list[dict]:
+    spans = []
+    for idx in process_indices:
+        if idx < 0 or idx >= len(annotations):
+            continue
+        ann = annotations[idx]
+        start_index = getattr(ann, "start_index", None)
+        end_index = getattr(ann, "end_index", None)
+        s = 0 if start_index is None else int(start_index)
+        e = df_len if end_index is None else int(end_index)
+        s = max(0, min(s, df_len))
+        e = max(0, min(e, df_len))
+        if e <= s:
+            continue
+        spans.append({
+            "id": getattr(ann, "id", None),
+            "index": idx,
+            "start_index": s,
+            "end_index": e,
+        })
+    return spans
+
+
+def _render_subsegment_coverage_bar(slot, parent_spans: list[dict]) -> None:
+    """Coverage of AI-discovered child sub-segments inside selected parents."""
+    parent_ids = {p.get("id") for p in parent_spans if p.get("id")}
+    if not parent_ids:
+        slot.empty()
+        return
+
+    target_ranges = [
+        (int(p["start_index"]), int(p["end_index"]))
+        for p in parent_spans
+    ]
+    child_ranges = []
+    for ann in st.session_state.get("current_annotations", []) or []:
+        if getattr(ann, "parent_id", None) not in parent_ids:
+            continue
+        s = int(getattr(ann, "start_index", 0) or 0)
+        e = int(getattr(ann, "end_index", 0) or 0)
+        child_ranges.append((s, e))
+
+    _render_coverage_bar(
+        slot,
+        target_ranges,
+        child_ranges,
+        title="Sub-segment coverage",
+        legend_note="(🟩 child sub-segments · 🟥 uncovered parent span)",
+    )
 
 
 def _collect_existing_lap_annotations(lap_start: int, lap_end: int):

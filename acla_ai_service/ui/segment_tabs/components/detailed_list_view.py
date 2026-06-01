@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 
 from ..shared import get_display_labels, save_annotations
+from .opponent_interaction import format_targeted_car
 
 def render_list_view(session_id, selected_annotation_key):
     # List View
@@ -26,8 +27,11 @@ def render_list_view(session_id, selected_annotation_key):
                 d = ann.to_dict()
                 d["Annotation ID"] = i
                 d["labels"] = ", ".join(get_display_labels(ann.labels))
+                d["Targeted Car"] = format_targeted_car(getattr(ann, "opponent_interaction", None))
                 if "telemetry_data" in d:
                     del d["telemetry_data"]
+                if "opponent_interaction" in d:
+                    del d["opponent_interaction"]
                 display_data.append(d)
             
             if display_data:

@@ -120,15 +120,54 @@ def _interaction_focus_block(
         if manual else
         "exists because a close opponent engagement was detected"
     )
+    target_lines: List[str] = []
+    if isinstance(opponent_interaction, dict):
+        slot = opponent_interaction.get("targeted_car_slot")
+        label = opponent_interaction.get("targeted_car_label")
+        if slot is not None or label:
+            target_lines.append(
+                f"- Preselected target: {label or f'Car {slot}'} "
+                f"(slot {slot}). Inspect this slot first."
+            )
+        for window in windows[:3]:
+            if not isinstance(window, dict):
+                continue
+            details: List[str] = []
+            for key, label_text in (
+                ("event_role", "role"),
+                ("event_outcome", "outcome"),
+                ("entry_signed_long_gap_m", "entry gap"),
+                ("exit_signed_long_gap_m", "exit gap"),
+                ("min_distance_m", "closest"),
+                ("close_following_iloc_count", "close-following ilocs"),
+                ("trailing_pressure_iloc_count", "trailing-pressure ilocs"),
+                ("leading_draft_iloc_count", "leading-draft ilocs"),
+            ):
+                value = window.get(key)
+                if value is not None:
+                    details.append(f"{label_text}: {value}")
+            if details:
+                target_lines.append(
+                    f"- Splitter evidence [{window.get('start_index')}, "
+                    f"{window.get('end_index')}]: " + "; ".join(details)
+                )
+    target_block = (
+        "\nTarget-car hint from the splitter:\n" + "\n".join(target_lines) + "\n"
+        if target_lines else ""
+    )
     return (
         "\n#### Opponent-session focus\n"
-        f"This rough range {origin}. For this work unit, do ONLY overtake "
+        f"This rough range {origin}. For this work unit, identify the "
+        "target car from the splitter evidence first, then do ONLY overtake "
         "offence / defense "
         "annotation: pick O for a successful attacking pass, OD for a held "
         "defense, or MSR for a failed attack / broken defense. If the "
-        "opponent evidence does not support one of those outcomes, submit "
+        "opponent evidence is only close-following/draft context, or the "
+        "opponent stays tucked directly behind without a lateral/alongside "
+        "threat, submit "
         "`label_ids: []` rather than labeling normal practice-driving "
         "telemetry such as EA / MSP / RM / PS / MD.\n"
+        f"{target_block}"
     )
 
 
@@ -452,7 +491,11 @@ def _claude_task_prompt(
         "`label_gates` as the mathematical eligibility check: O requires "
         "`pass_completed`, OD requires `held_defense`, and MSR requires "
         "`failed_attack` or `broken_defense`; the matching label gate "
-        "should be true before labeling. Use `find_nearest_opponent` and "
+        "should be true before labeling. `close_following` identifies the "
+        "target car but does not gate O / OD / MSR by itself. Inline rear "
+        "pressure is following, not OD; held defense needs an actual "
+        "lateral/alongside threat. Use "
+        "`find_nearest_opponent` and "
         "`query_opponent_trajectory` for the primary slot when the detailed "
         "entry-to-exit path decides the technique.\n"
         "\n"

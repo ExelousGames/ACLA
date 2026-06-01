@@ -1,5 +1,9 @@
 import streamlit as st
 import pandas as pd
+from .opponent_interaction import (
+    format_opponent_interaction_summary,
+    get_selected_opponent_interaction,
+)
 from ..shared import (
     save_annotations, get_display_labels,
     LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
@@ -35,7 +39,15 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         def format_func(option):
             ann = st.session_state.current_annotations[option]
             labels = ", ".join(get_display_labels(ann.labels))
-            return f"#{option}: {labels} (Start: {ann.start_index}, End: {ann.end_index})"
+            interaction = format_opponent_interaction_summary(
+                getattr(ann, "opponent_interaction", None)
+            )
+            target_suffix = f" | Target: {interaction}" if interaction else ""
+            return (
+                f"#{option}: {labels} "
+                f"(Start: {ann.start_index}, End: {ann.end_index})"
+                f"{target_suffix}"
+            )
     
         def on_detailed_annotation_change():
             sel = st.session_state.get("detailed_annotation_selector")
@@ -82,6 +94,11 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         is_edit = True
     
         st.markdown(f"**{form_title}**")
+        interaction = format_opponent_interaction_summary(
+            getattr(ann, "opponent_interaction", None)
+        )
+        if interaction:
+            st.caption(f"Racing interaction target: {interaction}")
         
         col_form1, col_form2 = st.columns(2)
         with col_form1:
@@ -212,11 +229,22 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
     
             # Update existing
             ann = st.session_state.current_annotations[selected_option]
+            previous_start = ann.start_index
+            previous_end = ann.end_index
+            opponent_interaction = get_selected_opponent_interaction(
+                "detailed",
+                int(s_start),
+                int(s_end),
+                context_id=session_id,
+            )
+            if opponent_interaction is None and previous_start == int(s_start) and previous_end == int(s_end):
+                opponent_interaction = getattr(ann, "opponent_interaction", None)
             ann.start_index = int(s_start)
             ann.end_index = int(s_end)
             ann.segment_length = int(s_end - s_start)
             ann.labels = label_ids
             ann.telemetry_data = telemetry_data
+            ann.opponent_interaction = opponent_interaction
 
             if go_next:
                 root_options = [i for i, a in enumerate(st.session_state.current_annotations) if not getattr(a, 'parent_id', None)]

@@ -29,6 +29,7 @@ from PIL import Image
 from ..shared import (
     LABEL_MAPPING, LABEL_NAME_TO_ID, build_segment, save_annotations,
 )
+from .opponent_interaction import OUTCOME_LABELS, ROLE_LABELS, format_targeted_car
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +43,28 @@ KEY_LAP_CURSOR = "lap_agent_cursor"              # index of the "next" section i
 KEY_LAP_STAGED = "lap_agent_staged_result"       # LapAnnotationResult-ish dict awaiting review
 KEY_LAP_LIVE = "lap_agent_live_output"           # last live-output snapshot for re-render
 KEY_LAP_SPLIT_META = "lap_agent_split_meta"      # last split_lap_sections content
+
+
+def _rough_interaction_summary(seg: Dict[str, Any]) -> str:
+    interaction = seg.get("opponent_interaction")
+    if not isinstance(interaction, dict):
+        return ""
+
+    window = None
+    windows = interaction.get("windows")
+    if isinstance(windows, list):
+        window = next((w for w in windows if isinstance(w, dict)), None)
+
+    role_key = str((window or {}).get("event_role") or interaction.get("role") or "")
+    outcome_key = str((window or {}).get("event_outcome") or interaction.get("outcome") or "")
+    role = ROLE_LABELS.get(role_key, role_key.replace("_", " ").title()) if role_key else ""
+    if role_key == "following":
+        role = ""
+    outcome = OUTCOME_LABELS.get(outcome_key, outcome_key.replace("_", " ").title()) if outcome_key else ""
+    target = format_targeted_car(interaction)
+
+    details = [v for v in (target, role, outcome) if v]
+    return " · " + " / ".join(details) if details else ""
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +268,7 @@ def execute_lap_agent_run(
         "rejected": list(result.rejected_proposals),
         "rendered_images": list(result.rendered_images),
         "tool_calls": int(result.tool_calls),
+        "opponent_interaction": head_segment.get("opponent_interaction"),
     }
 
 
@@ -264,6 +288,8 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
     Returns the *current head segment* (or None) for the caller to feed
     into ``execute_lap_agent_run``.
     """
+    from app.shared.annotation_agent_tools import get_opponent_splitter_rule_signature
+
     if not circuit_id:
         st.warning(
             "Cannot detect the circuit from `Static_track`. The "
@@ -276,7 +302,7 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
         f"Detected circuit: `{circuit_id}` — the splitter partitions the "
         "picked range automatically using each section's "
         "`normalized_position_range`. If opponent data is present, it emits "
-        "only close overtake offence / defense engagement windows."
+        "only close racing-interaction windows."
     )
 
     default_start = 0
@@ -303,9 +329,10 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
     # Auto-split trigger.
     #
     # We re-run the deterministic splitter whenever any of the inputs that
-    # define the array have changed — the picked range, the circuit, or the
-    # split version stamp (bumped by the persist hook after a successful
-    # save so the next click sees a freshly partitioned tail).
+    # define the array have changed — the picked range, the circuit, the
+    # splitter implementation signature, or the split version stamp (bumped
+    # by the persist hook after a successful save so the next click sees a
+    # freshly partitioned tail).
     # ----------------------------------------------------------------------
     if lap_end - lap_start < 3:
         st.warning(
@@ -314,8 +341,13 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
         )
         return None
 
-    desired_key = (int(lap_start), int(lap_end), circuit_id,
-                   int(st.session_state.get("lap_agent_split_version", 0)))
+    desired_key = (
+        int(lap_start),
+        int(lap_end),
+        circuit_id,
+        get_opponent_splitter_rule_signature(),
+        int(st.session_state.get("lap_agent_split_version", 0)),
+    )
     last_key = st.session_state.get("lap_agent_split_key")
     if desired_key != last_key:
         st.session_state[KEY_LAP_RANGE] = (int(lap_start), int(lap_end))
@@ -344,10 +376,19 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
     if not segments:
         split_meta = st.session_state.get(KEY_LAP_SPLIT_META, {}) or {}
         if split_meta.get("opponent_session"):
-            st.info(
-                "Opponent data is present, but no close overtake offence / "
-                "defense engagement window was found in the picked range."
-            )
+            filtered = int(split_meta.get("following_windows_filtered") or 0)
+            if filtered:
+                st.info(
+                    "Opponent data is present, but the splitter found only "
+                    "following-only windows in the picked range. Those are "
+                    "filtered out of the rough split so the LLM only annotates "
+                    "attack / defense work units."
+                )
+            else:
+                st.info(
+                    "Opponent data is present, but no close racing-interaction "
+                    "window was found in the picked range."
+                )
         else:
             detail = split_meta.get("error") or split_meta.get("warning")
             st.info(
@@ -375,7 +416,7 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
     st.markdown(f"##### Rough split — {len(segments)} section(s)")
     st.caption(
         "Auto-split from `split_lap_by_circuit_sections`. Opponent sessions "
-        "show only close overtake offence / defense windows. The cursor "
+        "show only close racing-interaction windows. The cursor "
         "advances after each saved annotation; the tail re-splits using the "
         "saved end as the new boundary."
     )
@@ -389,6 +430,7 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
             f"({seg.get('circuit_section_name', '')}) — "
             f"[{seg['start_index']}, {seg['end_index']}] "
             f"(coverage {seg.get('coverage_fraction', 0):.0%}{basis_note})"
+            f"{_rough_interaction_summary(seg)}"
         )
     st.code("\n".join(rows), language="text")
 
@@ -404,6 +446,7 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
         f"**Current section ({cursor + 1} / {len(segments)}):** "
         f"`{head['circuit_section_id']}` — "
         f"[{head['start_index']}, {head['end_index']}]"
+        f"{_rough_interaction_summary(head)}"
     )
 
     col_skip, col_drop = st.columns(2)
@@ -507,6 +550,7 @@ def render_lap_staged_review(
                 session_id=session_id,
                 selected_annotation_key=selected_annotation_key,
                 df=df,
+                opponent_interaction=staged.get("opponent_interaction"),
             )
     with col_btn2:
         if st.button("⏭ Skip & advance (don't save)", key="lap_staged_skip"):
@@ -520,7 +564,7 @@ def render_lap_staged_review(
 def _persist_lap_annotation(
     *, start: int, end: int, label_names: List[str], notes: str,
     session_id: str, selected_annotation_key: str,
-    df=None,
+    df=None, opponent_interaction: Optional[Dict[str, Any]] = None,
 ) -> None:
     if start >= end:
         st.error("Start must be less than end.")
@@ -532,6 +576,7 @@ def _persist_lap_annotation(
 
     new_ann = build_segment(
         df, start=start, end=end, label_ids=label_ids, notes=notes,
+        opponent_interaction=opponent_interaction,
     )
     annotations = list(st.session_state.get("current_annotations", []))
     annotations.append(new_ann)

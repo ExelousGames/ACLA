@@ -4,6 +4,11 @@ import numpy as np
 import plotly.express as px
 from .manual_classifier_check import render_classifier_probability_check
 from .manual_feature_calculator import render_feature_calculator
+from .opponent_interaction import (
+    format_opponent_interaction_summary,
+    format_targeted_car,
+    get_selected_opponent_interaction,
+)
 from ..shared import (
     save_annotations, get_display_labels, build_segment,
     LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
@@ -33,7 +38,15 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
         else:
             ann = st.session_state.current_annotations[option]
             labels = ", ".join(get_display_labels(ann.labels))
-            return f"#{option}: {labels} (Start: {ann.start_index}, End: {ann.end_index})"
+            interaction = format_opponent_interaction_summary(
+                getattr(ann, "opponent_interaction", None)
+            )
+            target_suffix = f" | Target: {interaction}" if interaction else ""
+            return (
+                f"#{option}: {labels} "
+                f"(Start: {ann.start_index}, End: {ann.end_index})"
+                f"{target_suffix}"
+            )
 
     if "manual_annotation_selector" not in st.session_state or st.session_state.manual_annotation_selector not in annotation_options:
         st.session_state.manual_annotation_selector = annotation_options[0] if annotation_options else "Create New"
@@ -62,6 +75,12 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
         is_edit = True
 
     st.markdown(f"**{form_title}**")
+    if is_edit:
+        interaction = format_opponent_interaction_summary(
+            getattr(ann, "opponent_interaction", None)
+        )
+        if interaction:
+            st.caption(f"Racing interaction target: {interaction}")
     
     col_form1, col_form2 = st.columns(2)
     with col_form1:
@@ -159,15 +178,24 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
             return
         
         label_ids = [LABEL_NAME_TO_ID[l] for l in s_labels if l in LABEL_NAME_TO_ID]
+        opponent_interaction = get_selected_opponent_interaction(
+            "manual",
+            int(s_start),
+            int(s_end),
+            context_id=session_id,
+        )
 
         if is_edit:
             # Update existing — keep the same id so downstream refs stay stable.
             ann = st.session_state.current_annotations[selected_option]
+            if opponent_interaction is None and ann.start_index == int(s_start) and ann.end_index == int(s_end):
+                opponent_interaction = getattr(ann, "opponent_interaction", None)
             updated = build_segment(
                 df,
                 start=int(s_start), end=int(s_end), label_ids=label_ids,
                 notes=ann.notes, parent_id=ann.parent_id,
                 chunk_index=ann.chunk_index, id=ann.id,
+                opponent_interaction=opponent_interaction,
             )
             st.session_state.current_annotations[selected_option] = updated
             st.session_state.temp_success = "Annotation updated!"
@@ -176,6 +204,7 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
                 df,
                 start=int(s_start), end=int(s_end), label_ids=label_ids,
                 chunk_index=session_id,
+                opponent_interaction=opponent_interaction,
             )
             st.session_state.current_annotations.append(annotation)
             st.session_state.temp_success = "Annotation added!"
@@ -293,8 +322,11 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
             for ann in st.session_state.current_annotations:
                 d = ann.to_dict()
                 d["labels"] = ", ".join(get_display_labels(ann.labels))
+                d["Targeted Car"] = format_targeted_car(getattr(ann, "opponent_interaction", None))
                 if "telemetry_data" in d:
                     del d["telemetry_data"]
+                if "opponent_interaction" in d:
+                    del d["opponent_interaction"]
                 display_data.append(d)
             st.dataframe(pd.DataFrame(display_data), width='stretch')
 

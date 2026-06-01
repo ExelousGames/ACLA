@@ -31,6 +31,7 @@ class AnnotatedSegment:
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
     notes: Optional[str] = None
     parent_id: Optional[str] = None
+    opponent_interaction: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -46,7 +47,8 @@ class AnnotatedSegment:
             chunk_index=data.get("chunk_index"),
             telemetry_data=data.get("telemetry_data", []),
             notes=data.get("notes"),
-            parent_id=data.get("parent_id")
+            parent_id=data.get("parent_id"),
+            opponent_interaction=data.get("opponent_interaction"),
         )
 
 

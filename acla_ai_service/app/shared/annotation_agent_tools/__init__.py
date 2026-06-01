@@ -18,6 +18,8 @@ executor produces verifiable numerical readings off the DataFrame.
 from __future__ import annotations
 
 import io
+import hashlib
+import inspect
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -465,7 +467,13 @@ def _project_points_to_reference_path(
             out=np.zeros_like(seg_len2),
             where=seg_len2 > 1e-9,
         )
-        t = np.clip(t, 0.0, 1.0)
+        t_min = np.zeros_like(t)
+        t_max = np.ones_like(t)
+        if lo == 0 and t_min.size:
+            t_min[0] = -2.0
+        if hi == max_seg_idx + 1 and t_max.size:
+            t_max[-1] = 3.0
+        t = np.minimum(np.maximum(t, t_min), t_max)
         proj_x = ref_x[:-1] + t * vx
         proj_y = ref_y[:-1] + t * vy
         dist2 = (px - proj_x) ** 2 + (py - proj_y) ** 2
@@ -480,6 +488,78 @@ def _project_points_to_reference_path(
     return s_out, d_out, idx_out
 
 
+def _project_points_to_local_reference_path(
+    point_x: np.ndarray,
+    point_y: np.ndarray,
+    ref_x: np.ndarray,
+    ref_y: np.ndarray,
+    *,
+    center_indices: np.ndarray,
+    search_radius: int = 30,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project points onto a local window of a same-session reference path.
+
+    A full-range nearest projection is fragile on hairpins and nearby parallel
+    track sections. Constraining each opponent sample to the player's local
+    neighbourhood preserves along-track ordering without snapping to a distant
+    part of the same curve.
+    """
+    n_points = int(point_x.size)
+    s_out = np.full(n_points, np.nan, dtype=float)
+    d_out = np.full(n_points, np.nan, dtype=float)
+    idx_out = np.full(n_points, -1, dtype=int)
+    if n_points == 0 or ref_x.size < 2:
+        return s_out, d_out, idx_out
+
+    ref_s = _cumulative_path_distance(ref_x, ref_y)
+    vx_all = ref_x[1:] - ref_x[:-1]
+    vy_all = ref_y[1:] - ref_y[:-1]
+    seg_len2_all = vx_all * vx_all + vy_all * vy_all
+    max_seg_idx = int(ref_x.size) - 2
+
+    for i in range(n_points):
+        px = float(point_x[i])
+        py = float(point_y[i])
+        center = int(center_indices[i]) if i < len(center_indices) else i
+        if not (np.isfinite(px) and np.isfinite(py)) or center < 0:
+            continue
+
+        lo = max(0, center - int(search_radius))
+        hi = min(max_seg_idx + 1, center + int(search_radius) + 1)
+        if hi <= lo:
+            lo = max(0, min(max_seg_idx, center))
+            hi = min(max_seg_idx + 1, lo + 1)
+
+        vx = vx_all[lo:hi]
+        vy = vy_all[lo:hi]
+        seg_len2 = seg_len2_all[lo:hi]
+        wx = px - ref_x[lo:hi]
+        wy = py - ref_y[lo:hi]
+        t = np.divide(
+            wx * vx + wy * vy,
+            seg_len2,
+            out=np.zeros_like(seg_len2),
+            where=seg_len2 > 1e-9,
+        )
+        t = np.clip(t, 0.0, 1.0)
+        proj_x = ref_x[lo:hi] + t * vx
+        proj_y = ref_y[lo:hi] + t * vy
+        dist2 = (px - proj_x) ** 2 + (py - proj_y) ** 2
+        local_seg = int(np.nanargmin(dist2))
+        seg_idx = lo + local_seg
+        seg_len = float(np.sqrt(max(seg_len2_all[seg_idx], 0.0)))
+        s_out[i] = float(ref_s[seg_idx] + t[local_seg] * seg_len)
+        cross = (
+            vx_all[seg_idx] * (py - proj_y[local_seg])
+            - vy_all[seg_idx] * (px - proj_x[local_seg])
+        )
+        sign = 1.0 if cross >= 0.0 else -1.0
+        d_out[i] = sign * float(np.sqrt(dist2[local_seg]))
+        idx_out[i] = seg_idx
+
+    return s_out, d_out, idx_out
+
+
 def _relative_position_frame(
     seg: pd.DataFrame,
     player_x: np.ndarray,
@@ -489,27 +569,39 @@ def _relative_position_frame(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
     """Return opponent-player long/lateral gaps plus player s/d.
 
-    Prefer expert-path projection when expert position columns are available.
-    Fallback uses the player's instantaneous heading, preserving behaviour for
-    datasets without expert traces.
+    Project opponents onto a local window of the player's path and subtract
+    the player's same-iloc path progress. This avoids the hairpin failure mode
+    where a straight-line tangent says a car ahead around the bend is behind.
+    Fallback uses the player's instantaneous heading.
     """
-    has_expert = (
-        "expert_optimal_player_pos_x" in seg.columns
-        and "expert_optimal_player_pos_y" in seg.columns
-    )
-    if has_expert:
-        kin = _smoothed_expert_kinematics(seg)
-        if kin is not None:
-            ref_x, ref_y, _dx, _dy, _kappa, _w = kin
-            player_s, player_d, _ = _project_points_to_reference_path(
-                player_x, player_y, ref_x, ref_y,
-            )
-            opponent_s, opponent_d, _ = _project_points_to_reference_path(
-                opponent_x, opponent_y, ref_x, ref_y,
+    if player_x.size >= 3:
+        window = min(5, int(player_x.size))
+        if window % 2 == 0:
+            window = max(1, window - 1)
+        ref_x = _moving_average(player_x, window)
+        ref_y = _moving_average(player_y, window)
+        player_s, player_d, player_ref_idx = _project_points_to_local_reference_path(
+            player_x,
+            player_y,
+            ref_x,
+            ref_y,
+            center_indices=np.arange(player_x.size),
+            search_radius=3,
+        )
+        if np.isfinite(player_s).any():
+            fallback_idx = np.arange(player_x.size)
+            center_indices = np.where(player_ref_idx >= 0, player_ref_idx, fallback_idx)
+            opponent_s, opponent_d, _ = _project_points_to_local_reference_path(
+                opponent_x,
+                opponent_y,
+                ref_x,
+                ref_y,
+                center_indices=center_indices,
+                search_radius=30,
             )
             long_gap = opponent_s - player_s
             lateral_gap = opponent_d - player_d
-            return long_gap, lateral_gap, player_s, player_d, "expert_path_projection"
+            return long_gap, lateral_gap, player_s, player_d, "player_local_path_projection"
 
     hx, hy = _player_heading(player_x, player_y)
     vx = opponent_x - player_x
@@ -519,6 +611,65 @@ def _relative_position_frame(
     player_s = _cumulative_path_distance(player_x, player_y)
     player_d = np.zeros_like(player_s)
     return long_gap, lateral_gap, player_s, player_d, "player_heading_projection"
+
+
+def _relative_long_gap_velocity(
+    seg: pd.DataFrame,
+    signed_long_gap: np.ndarray,
+    finite: np.ndarray,
+) -> Tuple[np.ndarray, str]:
+    """Derivative of opponent-player longitudinal gap.
+
+    Positive means the opponent is moving further ahead relative to the
+    player; negative means the player is closing on / moving past the
+    opponent. Uses telemetry time when available, otherwise falls back to
+    per-sample gap change for synthetic or position-only data.
+    """
+    velocity = np.full_like(signed_long_gap, np.nan, dtype=float)
+    if signed_long_gap.size < 2:
+        return velocity, "m/sample"
+
+    delta_gap = signed_long_gap[1:] - signed_long_gap[:-1]
+    valid_pairs = (
+        finite[1:]
+        & finite[:-1]
+        & np.isfinite(signed_long_gap[1:])
+        & np.isfinite(signed_long_gap[:-1])
+    )
+
+    if "Graphics_current_time" in seg.columns:
+        time_ms = pd.to_numeric(seg["Graphics_current_time"], errors="coerce").to_numpy(dtype=float)
+        delta_s = (time_ms[1:] - time_ms[:-1]) / 1000.0
+        valid_time = np.isfinite(delta_s) & (delta_s > 1e-6)
+        np.divide(
+            delta_gap,
+            delta_s,
+            out=velocity[1:],
+            where=valid_pairs & valid_time,
+        )
+        return velocity, "m/s"
+
+    velocity[1:] = np.where(valid_pairs, delta_gap, np.nan)
+    return velocity, "m/sample"
+
+
+def _relative_velocity_threshold(
+    units: str,
+    n_rows: int,
+    *,
+    min_relative_velocity_mps: float,
+    min_role_gain_m: float,
+) -> float:
+    if units == "m/s":
+        return float(min_relative_velocity_mps)
+    return float(min_role_gain_m) / max(1, int(n_rows) - 1)
+
+
+def _nan_percentile_or_none(values: np.ndarray, percentile: float) -> Optional[float]:
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    return float(np.nanpercentile(finite, percentile))
 
 
 def _active_opponent_mask(
@@ -559,7 +710,11 @@ def _active_opponent_mask(
 def find_nearest_opponent(
     df: pd.DataFrame, start_index: int, end_index: int,
     max_candidates: int = 3,
-    side_by_side_max_distance_m: float = 8.0,
+    side_by_side_max_distance_m: float = 4.0,
+    side_by_side_min_lateral_m: float = 1.25,
+    side_by_side_longitudinal_window_m: float = 6.0,
+    close_following_longitudinal_window_m: float = 30.0,
+    close_following_lateral_m: float = 6.0,
     min_active_fraction: float = 0.3,
 ):
     """Tool — identify the most relevant opponent(s) inside an iloc range.
@@ -598,6 +753,9 @@ def find_nearest_opponent(
                     "min_lateral_offset_m": float,
                     "min_lateral_offset_iloc": int,
                     "side_by_side_iloc_count": int,
+                    "close_following_iloc_count": int,
+                    "trailing_pressure_iloc_count": int,
+                    "leading_draft_iloc_count": int,
                     "active_iloc_fraction": float,
                     "coordinate_frame": str,
                     "passed_by_player": bool,          # entry +, exit −
@@ -691,9 +849,33 @@ def find_nearest_opponent(
         exit_idx = int(active_ilocs[-1])
         entry_long = float(signed_long[entry_idx])
         exit_long = float(signed_long[exit_idx])
+        finite = active_mask & finite_dist & np.isfinite(signed_long) & np.isfinite(lateral_abs)
+        min_long = float(np.nanmin(signed_long[finite])) if finite.any() else entry_long
+        max_long = float(np.nanmax(signed_long[finite])) if finite.any() else exit_long
+        min_abs_long_local = int(np.nanargmin(np.abs(signed_long)))
+        pass_crossing_close = bool(
+            float(distance[min_d_local]) <= 12.0
+            and abs(float(signed_long[min_abs_long_local])) <= 18.0
+        )
+        relative_velocity, velocity_units = _relative_long_gap_velocity(seg, signed_long, finite)
+        close_velocity_mask = finite & (
+            (distance <= 12.0)
+            | (np.abs(signed_long) <= 18.0)
+        )
+        min_rel_velocity = _nan_percentile_or_none(relative_velocity[close_velocity_mask], 10)
+        max_rel_velocity = _nan_percentile_or_none(relative_velocity[close_velocity_mask], 90)
 
-        side_by_side = int(
-            ((distance <= side_by_side_max_distance_m) & finite_dist).sum()
+        side_by_side = int((
+            finite
+            & (np.abs(signed_long) <= side_by_side_longitudinal_window_m)
+            & (lateral_abs >= side_by_side_min_lateral_m)
+            & (lateral_abs <= side_by_side_max_distance_m)
+        ).sum()
+        )
+        close_following = (
+            finite
+            & (lateral_abs <= close_following_lateral_m)
+            & (np.abs(signed_long) <= close_following_longitudinal_window_m)
         )
 
         candidates_raw.append({
@@ -704,13 +886,32 @@ def find_nearest_opponent(
             "exit_distance_m": float(distance[exit_idx]),
             "entry_signed_long_gap_m": entry_long,
             "exit_signed_long_gap_m": exit_long,
+            "min_signed_long_gap_m": min_long,
+            "max_signed_long_gap_m": max_long,
             "min_lateral_offset_m": float(lateral_abs[min_lat_local]),
             "min_lateral_offset_iloc": s + min_lat_local,
             "side_by_side_iloc_count": side_by_side,
+            "close_following_iloc_count": int(close_following.sum()),
+            "trailing_pressure_iloc_count": int((close_following & (signed_long < -1.5)).sum()),
+            "leading_draft_iloc_count": int((close_following & (signed_long > 1.5)).sum()),
+            "min_relative_long_gap_velocity": min_rel_velocity,
+            "max_relative_long_gap_velocity": max_rel_velocity,
+            "relative_velocity_units": velocity_units,
             "active_iloc_fraction": float(active_fraction),
             "coordinate_frame": frame_name,
-            "passed_by_player": bool(entry_long > 0 and exit_long < 0),
-            "got_passed_by_opponent": bool(entry_long < 0 and exit_long > 0),
+            "pass_crossing_close": pass_crossing_close,
+            "passed_by_player": bool(
+                pass_crossing_close
+                and entry_long >= -1.5
+                and exit_long < -1.5
+                and max_long > 1.5
+            ),
+            "got_passed_by_opponent": bool(
+                pass_crossing_close
+                and entry_long <= 1.5
+                and exit_long > 1.5
+                and min_long <= 1.5
+            ),
         })
 
     candidates_raw.sort(key=lambda c: c["min_distance_m"])
@@ -742,6 +943,10 @@ def query_opponent_trajectory(
       * ``lateral_offset_m``     — signed perpendicular projection
                                     (+ ⇒ opp on player's left of heading,
                                     − ⇒ right)
+      * ``relative_long_gap_velocity`` — change in signed longitudinal gap
+                                    (negative ⇒ player closing on opponent,
+                                    positive ⇒ opponent pulling away/closing
+                                    from behind)
 
     Use after ``find_nearest_opponent`` has named a candidate slot, to
     inspect HOW the relationship evolved through the range — e.g. gap
@@ -806,7 +1011,13 @@ def query_opponent_trajectory(
     player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
     ox = seg[col_x].to_numpy(dtype=float)
     oy = seg[col_y].to_numpy(dtype=float)
-    hx, hy = _player_heading(player_x, player_y)
+    active = _active_opponent_mask(seg, slot_int, ox, oy, player_x, player_y)
+    signed_long_all, lateral_all, _player_s, _player_d, frame_name = _relative_position_frame(
+        seg, player_x, player_y, ox, oy,
+    )
+    distance_all = np.sqrt((ox - player_x) ** 2 + (oy - player_y) ** 2)
+    finite = active & np.isfinite(distance_all) & np.isfinite(signed_long_all) & np.isfinite(lateral_all)
+    relative_velocity_all, velocity_units = _relative_long_gap_velocity(seg, signed_long_all, finite)
 
     if n_samples >= n_rows:
         sample_locals = list(range(n_rows))
@@ -818,20 +1029,26 @@ def query_opponent_trajectory(
         opp_x = ox[local]
         opp_y = oy[local]
         is_empty = (opp_x == 0.0) and (opp_y == 0.0)
-        if is_empty or not np.isfinite(opp_x) or not np.isfinite(opp_y):
+        if is_empty or not finite[local] or not np.isfinite(opp_x) or not np.isfinite(opp_y):
             samples.append({
                 "iloc": s + local,
                 "distance_m": None,
                 "signed_long_gap_m": None,
                 "lateral_offset_m": None,
+                "relative_long_gap_velocity": None,
                 "note": "opponent slot empty at this iloc",
             })
             continue
         samples.append({
             "iloc": s + local,
-            "distance_m": float(np.sqrt((opp_x - player_x[local]) ** 2 + (opp_y - player_y[local]) ** 2)),
+            "distance_m": float(distance_all[local]),
             "signed_long_gap_m": float(signed_long_all[local]),
             "lateral_offset_m": float(lateral_all[local]),
+            "relative_long_gap_velocity": (
+                float(relative_velocity_all[local])
+                if np.isfinite(relative_velocity_all[local])
+                else None
+            ),
         })
 
     return _attach({
@@ -839,6 +1056,7 @@ def query_opponent_trajectory(
         "slot": slot_int,
         "data_available": True,
         "coordinate_frame": frame_name,
+        "relative_velocity_units": velocity_units,
         "samples": samples,
     })
 
@@ -848,10 +1066,16 @@ def classify_opponent_interaction(
     start_index: int,
     end_index: int,
     close_distance_m: float = 12.0,
-    side_by_side_distance_m: float = 8.0,
+    side_by_side_distance_m: float = 4.0,
+    side_by_side_min_lateral_m: float = 1.25,
+    side_by_side_longitudinal_window_m: float = 6.0,
+    close_following_longitudinal_window_m: float = 30.0,
+    close_following_lateral_m: float = 6.0,
     longitudinal_window_m: float = 18.0,
     pass_margin_m: float = 1.5,
     min_role_gain_m: float = 4.0,
+    min_relative_velocity_mps: float = 0.5,
+    min_threat_overlap_ilocs: int = 3,
     min_active_fraction: float = 0.3,
     max_candidates: int = 5,
 ):
@@ -864,6 +1088,7 @@ def classify_opponent_interaction(
       * ``pass_completed`` -> O
       * ``held_defense`` -> OD
       * ``failed_attack`` or ``broken_defense`` -> MSR
+      * ``close_following`` -> target-car context only; no O / OD / MSR gate
 
     Signed longitudinal and lateral gaps are computed in an expert-path
     projection frame when expert positions are available; otherwise the
@@ -871,6 +1096,17 @@ def classify_opponent_interaction(
     classifier intentionally reads only positional relationship and outcome.
     Player trace technique (late brake, inside cover, switchback, defensive
     lift) still comes from the normal graphs / queries.
+
+    Side-by-side is deliberately tighter than general close-following:
+    the opponent must be near the player's longitudinal position and offset
+    laterally enough to be alongside. A car directly behind can be very close
+    centre-to-centre, but that is following pressure, not defense.
+
+    Close-following/draft pressure is deliberately broader than side-by-side:
+    an opponent roughly in line within ``close_following_longitudinal_window_m``
+    is a relevant interaction candidate even if the cars never overlap. Steady
+    inline following is target-car context, not by itself an attack/defense
+    outcome.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.domain.telemetry import MAX_CARS
@@ -907,6 +1143,7 @@ def classify_opponent_interaction(
             "failed_attack": 0.48,
             "held_defense": 0.48,
             "side_by_side": 0.34,
+            "close_following": 0.30,
             "incidental": 0.22,
         }.get(outcome, 0.0)
         return _clamp01(base + close_score + side_score + gain_score)
@@ -999,21 +1236,90 @@ def classify_opponent_interaction(
         exit_idx = int(active_ilocs[-1])
         entry_long = float(signed_long[entry_idx])
         exit_long = float(signed_long[exit_idx])
+        min_long = float(np.nanmin(signed_long[finite]))
+        max_long = float(np.nanmax(signed_long[finite]))
         gap_delta = exit_long - entry_long
 
         min_d_local = int(np.nanargmin(distance))
         min_lat_local = int(np.nanargmin(lateral_abs))
         min_abs_long_local = int(np.nanargmin(np.abs(signed_long)))
+        relative_velocity, velocity_units = _relative_long_gap_velocity(seg, signed_long, finite)
+        velocity_threshold = _relative_velocity_threshold(
+            velocity_units,
+            n_rows,
+            min_relative_velocity_mps=min_relative_velocity_mps,
+            min_role_gain_m=min_role_gain_m,
+        )
+        pressure_velocity_mask = finite & (
+            (distance <= close_distance_m)
+            | (np.abs(signed_long) <= longitudinal_window_m)
+            | (lateral_abs <= side_by_side_distance_m)
+        )
+        attack_gap_velocity = _nan_percentile_or_none(relative_velocity[pressure_velocity_mask], 25)
+        defense_gap_velocity = _nan_percentile_or_none(relative_velocity[pressure_velocity_mask], 75)
+        attack_velocity_pressure = (
+            attack_gap_velocity is not None
+            and attack_gap_velocity <= -velocity_threshold
+            and abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+        )
+        defense_velocity_pressure = (
+            defense_gap_velocity is not None
+            and defense_gap_velocity >= velocity_threshold
+            and abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+        )
 
         broad_side_by_side = (
-            (distance <= side_by_side_distance_m)
-            | ((lateral_abs <= side_by_side_distance_m) & (np.abs(signed_long) <= longitudinal_window_m))
+            (np.abs(signed_long) <= side_by_side_longitudinal_window_m)
+            & (lateral_abs >= side_by_side_min_lateral_m)
+            & (lateral_abs <= side_by_side_distance_m)
         ) & finite
         side_count = int(broad_side_by_side.sum())
-        close_enough = bool((float(distance[min_d_local]) <= close_distance_m) or side_count > 0)
+        overlap_count = int((finite & (np.abs(signed_long) <= pass_margin_m)).sum())
+        lateral_threat = (
+            finite
+            & (lateral_abs >= side_by_side_min_lateral_m)
+            & (lateral_abs <= close_following_lateral_m)
+            & (np.abs(signed_long) <= longitudinal_window_m)
+        )
+        lateral_threat_count = int(lateral_threat.sum())
+        if lateral_threat_count:
+            max_threat_long = float(np.nanmax(signed_long[lateral_threat]))
+            defense_threat_gain = max_threat_long - entry_long
+            defense_fallback_from_peak = max_threat_long - exit_long
+        else:
+            max_threat_long = float(np.nanmax(signed_long[finite]))
+            defense_threat_gain = 0.0
+            defense_fallback_from_peak = 0.0
+        sustained_overlap = side_count >= int(min_threat_overlap_ilocs)
+        close_following = (
+            (lateral_abs <= close_following_lateral_m)
+            & (np.abs(signed_long) <= close_following_longitudinal_window_m)
+        ) & finite
+        close_following_count = int(close_following.sum())
+        trailing_pressure_count = int((close_following & (signed_long < -pass_margin_m)).sum())
+        leading_draft_count = int((close_following & (signed_long > pass_margin_m)).sum())
+        close_enough = bool(
+            (float(distance[min_d_local]) <= close_distance_m)
+            or side_count > 0
+            or close_following_count > 0
+        )
+        pass_crossing_close = bool(
+            float(distance[min_d_local]) <= close_distance_m
+            and abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+        )
 
-        passed_by_player = bool(entry_long > pass_margin_m and exit_long < -pass_margin_m)
-        got_passed_by_opponent = bool(entry_long < -pass_margin_m and exit_long > pass_margin_m)
+        passed_by_player = bool(
+            pass_crossing_close
+            and entry_long >= -pass_margin_m
+            and exit_long < -pass_margin_m
+            and max_long > pass_margin_m
+        )
+        got_passed_by_opponent = bool(
+            pass_crossing_close
+            and entry_long <= pass_margin_m
+            and exit_long > pass_margin_m
+            and min_long <= pass_margin_m
+        )
         attack_pressure = bool(
             entry_long > pass_margin_m
             and close_enough
@@ -1021,8 +1327,11 @@ def classify_opponent_interaction(
             and not got_passed_by_opponent
             and (
                 gap_delta <= -min_role_gain_m
-                or side_count > 0
-                or abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+                or attack_velocity_pressure
+                or (
+                    side_count > 0
+                    and abs(float(signed_long[min_abs_long_local])) <= pass_margin_m
+                )
             )
         )
         defense_pressure = bool(
@@ -1030,14 +1339,21 @@ def classify_opponent_interaction(
             and not got_passed_by_opponent
             and exit_long <= pass_margin_m
             and (
-                entry_long < -pass_margin_m
-                or abs(entry_long) <= longitudinal_window_m
-                or side_count > 0
+                sustained_overlap
+                or (
+                    lateral_threat_count > 0
+                    and defense_threat_gain >= min_role_gain_m
+                    and max_threat_long >= -pass_margin_m
+                )
+                or (
+                    lateral_threat_count > 0
+                    and defense_velocity_pressure
+                    and max_threat_long >= -pass_margin_m
+                )
             )
             and (
-                gap_delta >= min_role_gain_m
-                or side_count > 0
-                or abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+                defense_fallback_from_peak >= min_role_gain_m
+                or (sustained_overlap and exit_long <= -pass_margin_m)
             )
         )
 
@@ -1061,11 +1377,21 @@ def classify_opponent_interaction(
             outcome = "held_defense"
             recommended = "OD"
             reason = "opponent threatened from behind/alongside but did not get ahead by exit"
-        elif close_enough and side_count > 0:
+        elif close_enough and sustained_overlap:
             role = "side_by_side"
             outcome = "side_by_side"
             recommended = None
             reason = "cars were close/alongside without a clear attack or defense outcome"
+        elif close_following_count > 0:
+            role = "following"
+            outcome = "close_following"
+            recommended = None
+            if trailing_pressure_count > 0:
+                reason = "opponent was close-following behind without a decisive held-defense pattern"
+            elif leading_draft_count > 0:
+                reason = "player was close-following the opponent ahead without a decisive attack pattern"
+            else:
+                reason = "cars were close in line without a clear pass outcome"
         elif close_enough:
             role = "incidental"
             outcome = "incidental"
@@ -1099,6 +1425,8 @@ def classify_opponent_interaction(
             "entry_signed_long_gap_m": entry_long,
             "exit_signed_long_gap_m": exit_long,
             "gap_delta_m": gap_delta,
+            "min_signed_long_gap_m": min_long,
+            "max_signed_long_gap_m": max_long,
             "min_abs_signed_long_gap_m": float(abs(signed_long[min_abs_long_local])),
             "player_progress_m_at_entry": float(player_s[entry_idx]),
             "player_progress_m_at_exit": float(player_s[exit_idx]),
@@ -1107,6 +1435,18 @@ def classify_opponent_interaction(
             "min_lateral_offset_m": float(lateral_abs[min_lat_local]),
             "min_lateral_offset_iloc": s + min_lat_local,
             "side_by_side_iloc_count": side_count,
+            "overlap_iloc_count": overlap_count,
+            "lateral_threat_iloc_count": lateral_threat_count,
+            "close_following_iloc_count": close_following_count,
+            "trailing_pressure_iloc_count": trailing_pressure_count,
+            "leading_draft_iloc_count": leading_draft_count,
+            "pass_crossing_close": pass_crossing_close,
+            "defense_threat_gain_m": defense_threat_gain,
+            "defense_fallback_from_peak_m": defense_fallback_from_peak,
+            "attack_relative_long_gap_velocity": attack_gap_velocity,
+            "defense_relative_long_gap_velocity": defense_gap_velocity,
+            "relative_velocity_threshold": float(velocity_threshold),
+            "relative_velocity_units": velocity_units,
             "active_iloc_fraction": float(active_fraction),
             "coordinate_frame": frame_name,
             "passed_by_player": passed_by_player,
@@ -1119,6 +1459,7 @@ def classify_opponent_interaction(
         "failed_attack": 5,
         "held_defense": 5,
         "side_by_side": 3,
+        "close_following": 2,
         "incidental": 2,
         "no_close_interaction": 1,
     }
@@ -1152,6 +1493,8 @@ def classify_opponent_interaction(
         "confidence": top["confidence"],
         "confidence_level": top["confidence_level"],
         "primary_slot_for_role": top["slot"],
+        "targeted_car_slot": top["slot"],
+        "targeted_car_label": f"Car {top['slot']}",
         "coordinate_frame": top["coordinate_frame"],
         "reason": top["reason"],
         "confidence_policy": base_payload["confidence_policy"],
@@ -1262,10 +1605,16 @@ def _detect_opponent_interaction_windows(
     end_index: int,
     *,
     close_distance_m: float = 12.0,
-    side_by_side_distance_m: float = 8.0,
+    side_by_side_distance_m: float = 4.0,
+    side_by_side_min_lateral_m: float = 1.25,
+    side_by_side_longitudinal_window_m: float = 6.0,
+    close_following_longitudinal_window_m: float = 30.0,
+    close_following_lateral_m: float = 6.0,
     longitudinal_window_m: float = 18.0,
     pass_margin_m: float = 1.5,
     min_role_gain_m: float = 4.0,
+    min_relative_velocity_mps: float = 0.5,
+    min_threat_overlap_ilocs: int = 3,
     min_window_ilocs: int = 3,
     context_padding_ilocs: int = 8,
     event_padding_ilocs: int = 16,
@@ -1321,7 +1670,10 @@ def _detect_opponent_interaction_windows(
         run_start: int,
         run_end: int,
         signed_long: np.ndarray,
+        lateral_signed: np.ndarray,
         distance: np.ndarray,
+        relative_velocity: np.ndarray,
+        velocity_threshold: float,
         finite: np.ndarray,
     ) -> List[Tuple[int, int, str, str]]:
         """Return high-signal event ranges inside one close run.
@@ -1345,8 +1697,59 @@ def _detect_opponent_interaction_windows(
         entry_long = float(gaps[0])
         exit_long = float(gaps[-1])
         gap_delta = exit_long - entry_long
-        passed_by_player = entry_long > pass_margin_m and exit_long < -pass_margin_m
-        got_passed_by_opponent = entry_long < -pass_margin_m and exit_long > pass_margin_m
+        min_long = float(np.nanmin(gaps))
+        max_long = float(np.nanmax(gaps))
+        min_run_distance = float(np.nanmin(distance[local_indices]))
+        min_abs_long = float(np.nanmin(np.abs(gaps)))
+        pass_crossing_close = bool(
+            min_run_distance <= close_distance_m
+            and min_abs_long <= longitudinal_window_m
+        )
+        passed_by_player = bool(
+            pass_crossing_close
+            and entry_long >= -pass_margin_m
+            and exit_long < -pass_margin_m
+            and max_long > pass_margin_m
+        )
+        got_passed_by_opponent = bool(
+            pass_crossing_close
+            and entry_long <= pass_margin_m
+            and exit_long > pass_margin_m
+            and min_long <= pass_margin_m
+        )
+        attack_velocity = _nan_percentile_or_none(relative_velocity[local_indices], 25)
+        defense_velocity = _nan_percentile_or_none(relative_velocity[local_indices], 75)
+        attack_velocity_pressure = (
+            attack_velocity is not None
+            and attack_velocity <= -velocity_threshold
+            and min_abs_long <= longitudinal_window_m
+        )
+        defense_velocity_pressure = (
+            defense_velocity is not None
+            and defense_velocity >= velocity_threshold
+            and min_abs_long <= longitudinal_window_m
+        )
+        local_lateral_abs = np.abs(lateral_signed[local_indices])
+        side_by_side_local = (
+            (np.abs(gaps) <= side_by_side_longitudinal_window_m)
+            & (local_lateral_abs >= side_by_side_min_lateral_m)
+            & (local_lateral_abs <= side_by_side_distance_m)
+        )
+        lateral_threat = (
+            (local_lateral_abs >= side_by_side_min_lateral_m)
+            & (local_lateral_abs <= close_following_lateral_m)
+            & (np.abs(gaps) <= longitudinal_window_m)
+        )
+        lateral_threat_count = int(lateral_threat.sum())
+        if lateral_threat_count:
+            max_threat_long = float(np.nanmax(gaps[lateral_threat]))
+            defense_threat_gain = max_threat_long - entry_long
+            defense_fallback_from_peak = max_threat_long - exit_long
+        else:
+            max_threat_long = float(np.nanmax(gaps))
+            defense_threat_gain = 0.0
+            defense_fallback_from_peak = 0.0
+        sustained_overlap = int(side_by_side_local.sum()) >= int(min_threat_overlap_ilocs)
 
         if passed_by_player or got_passed_by_opponent:
             crossing_level = -pass_margin_m if passed_by_player else pass_margin_m
@@ -1360,28 +1763,57 @@ def _detect_opponent_interaction_windows(
             ranges.append((event_start, event_end, role, outcome))
             return ranges
 
-        if entry_long > pass_margin_m and gap_delta <= -min_role_gain_m:
+        attack_threat = bool(
+            sustained_overlap
+            or lateral_threat_count >= int(min_threat_overlap_ilocs)
+        )
+        if (
+            entry_long > pass_margin_m
+            and attack_threat
+            and (gap_delta <= -min_role_gain_m or attack_velocity_pressure)
+        ):
             focal = int(local_indices[np.nanargmin(gaps)])
             event_start, event_end = _range_around_focal(run_start, run_end, focal)
             ranges.append((event_start, event_end, "attack", "failed_attack"))
             return ranges
 
-        if (
-            entry_long < -pass_margin_m
-            and exit_long <= pass_margin_m
-            and gap_delta >= min_role_gain_m
-        ):
+        defense_threat = bool(
+            sustained_overlap
+            or (
+                lateral_threat_count > 0
+                and defense_threat_gain >= min_role_gain_m
+                and max_threat_long >= -pass_margin_m
+            )
+            or (
+                lateral_threat_count > 0
+                and defense_velocity_pressure
+                and max_threat_long >= -pass_margin_m
+            )
+        )
+        defense_repelled = bool(
+            defense_fallback_from_peak >= min_role_gain_m
+            or (sustained_overlap and exit_long <= -pass_margin_m)
+        )
+        if defense_threat and defense_repelled and exit_long <= pass_margin_m:
             focal = int(local_indices[np.nanargmax(gaps)])
             event_start, event_end = _range_around_focal(run_start, run_end, focal)
             ranges.append((event_start, event_end, "defense", "held_defense"))
             return ranges
 
-        # Fallback for short wheel-to-wheel moments. Long steady close-following
-        # is intentionally compressed around closest approach so the batch split
-        # does not emit a whole straight/corner chain as one "interaction".
+        # Fallback for non-decisive close moments. Long steady close-following
+        # is intentionally compressed around closest approach and marked as
+        # target-car context rather than attack/defense evidence.
         min_d_idx = int(run_start + np.nanargmin(distance[run_slice]))
         event_start, event_end = _range_around_focal(run_start, run_end, min_d_idx)
-        ranges.append((event_start, event_end, "side_by_side", "side_by_side"))
+        side_by_side_run = (
+            (np.abs(signed_long[run_slice]) <= side_by_side_longitudinal_window_m)
+            & (np.abs(lateral_signed[run_slice]) >= side_by_side_min_lateral_m)
+            & (np.abs(lateral_signed[run_slice]) <= side_by_side_distance_m)
+        ) & finite_run
+        if int(side_by_side_run.sum()) >= int(min_threat_overlap_ilocs):
+            ranges.append((event_start, event_end, "side_by_side", "side_by_side"))
+        else:
+            ranges.append((event_start, event_end, "following", "close_following"))
         return ranges
 
     for slot in range(1, MAX_CARS + 1):
@@ -1409,12 +1841,24 @@ def _detect_opponent_interaction_windows(
         finite = active_mask & np.isfinite(distance) & np.isfinite(signed_long) & np.isfinite(lateral_abs)
         if not finite.any():
             continue
+        relative_velocity, velocity_units = _relative_long_gap_velocity(seg, signed_long, finite)
+        velocity_threshold = _relative_velocity_threshold(
+            velocity_units,
+            n_rows,
+            min_relative_velocity_mps=min_relative_velocity_mps,
+            min_role_gain_m=min_role_gain_m,
+        )
 
         side_by_side = (
-            (distance <= side_by_side_distance_m)
-            | ((lateral_abs <= side_by_side_distance_m) & (np.abs(signed_long) <= longitudinal_window_m))
+            (np.abs(signed_long) <= side_by_side_longitudinal_window_m)
+            & (lateral_abs >= side_by_side_min_lateral_m)
+            & (lateral_abs <= side_by_side_distance_m)
         )
-        close = (distance <= close_distance_m) | side_by_side
+        close_following = (
+            (lateral_abs <= close_following_lateral_m)
+            & (np.abs(signed_long) <= close_following_longitudinal_window_m)
+        )
+        close = (distance <= close_distance_m) | side_by_side | close_following
         close = close & finite
 
         runs = _merge_close_ranges(
@@ -1426,7 +1870,10 @@ def _detect_opponent_interaction_windows(
                 run_start=local_start,
                 run_end=local_end,
                 signed_long=signed_long,
+                lateral_signed=lateral_signed,
                 distance=distance,
+                relative_velocity=relative_velocity,
+                velocity_threshold=velocity_threshold,
                 finite=finite,
             )
             for event_start, event_end, event_role, event_outcome in event_ranges:
@@ -1451,9 +1898,28 @@ def _detect_opponent_interaction_windows(
                 min_d_idx = padded_start + int(np.nanargmin(distance[window_slice]))
                 min_lat_idx = padded_start + int(np.nanargmin(lateral_abs[window_slice]))
 
-                side_count = int(((distance[window_slice] <= side_by_side_distance_m) & finite_window).sum())
+                side_count = int((side_by_side[window_slice] & finite_window).sum())
+                close_following_count = int((close_following[window_slice] & finite_window).sum())
+                trailing_pressure_count = int((
+                    close_following[window_slice]
+                    & finite_window
+                    & (signed_long[window_slice] < -pass_margin_m)
+                ).sum())
+                leading_draft_count = int((
+                    close_following[window_slice]
+                    & finite_window
+                    & (signed_long[window_slice] > pass_margin_m)
+                ).sum())
+                velocity_window = relative_velocity[window_slice]
+                min_rel_velocity = _nan_percentile_or_none(velocity_window, 10)
+                max_rel_velocity = _nan_percentile_or_none(velocity_window, 90)
                 entry_long = float(signed_long[entry_idx])
                 exit_long = float(signed_long[exit_idx])
+                min_abs_long_idx = padded_start + int(np.nanargmin(np.abs(signed_long[window_slice])))
+                pass_crossing_close = bool(
+                    float(distance[min_d_idx]) <= close_distance_m
+                    and abs(float(signed_long[min_abs_long_idx])) <= longitudinal_window_m
+                )
                 windows.append({
                     "start_index": int(s + padded_start),
                     "end_index": int(s + padded_end),
@@ -1466,9 +1932,17 @@ def _detect_opponent_interaction_windows(
                     "exit_signed_long_gap_m": exit_long,
                     "min_lateral_offset_m": float(lateral_abs[min_lat_idx]),
                     "side_by_side_iloc_count": side_count,
+                    "close_following_iloc_count": close_following_count,
+                    "trailing_pressure_iloc_count": trailing_pressure_count,
+                    "leading_draft_iloc_count": leading_draft_count,
+                    "min_relative_long_gap_velocity": min_rel_velocity,
+                    "max_relative_long_gap_velocity": max_rel_velocity,
+                    "relative_velocity_threshold": float(velocity_threshold),
+                    "relative_velocity_units": velocity_units,
                     "coordinate_frame": frame_name,
-                    "passed_by_player": bool(entry_long > 0 and exit_long < 0),
-                    "got_passed_by_opponent": bool(entry_long < 0 and exit_long > 0),
+                    "pass_crossing_close": pass_crossing_close,
+                    "passed_by_player": bool(pass_crossing_close and entry_long > 0 and exit_long < 0),
+                    "got_passed_by_opponent": bool(pass_crossing_close and entry_long < 0 and exit_long > 0),
                 })
 
     # Merge overlapping windows, keeping the closest-slot summary as the
@@ -1482,6 +1956,7 @@ def _detect_opponent_interaction_windows(
         "failed_attack": 4,
         "held_defense": 4,
         "side_by_side": 2,
+        "close_following": 1,
     }
     for window in windows:
         if not merged_windows or int(window["start_index"]) > int(merged_windows[-1]["end_index"]) + merge_gap_ilocs:
@@ -1505,6 +1980,10 @@ def _detect_opponent_interaction_windows(
                 "min_distance_m", "min_distance_iloc",
                 "entry_signed_long_gap_m", "exit_signed_long_gap_m",
                 "min_lateral_offset_m", "side_by_side_iloc_count",
+                "close_following_iloc_count", "trailing_pressure_iloc_count",
+                "leading_draft_iloc_count", "min_relative_long_gap_velocity",
+                "max_relative_long_gap_velocity", "relative_velocity_threshold",
+                "relative_velocity_units",
                 "coordinate_frame", "passed_by_player", "got_passed_by_opponent",
             ):
                 current[key] = window[key]
@@ -1513,6 +1992,138 @@ def _detect_opponent_interaction_windows(
             current["got_passed_by_opponent"] = bool(current.get("got_passed_by_opponent")) or bool(window.get("got_passed_by_opponent"))
 
     return merged_windows
+
+
+def _align_interaction_windows_with_classifier(
+    df: pd.DataFrame,
+    windows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Make rough-split window hints agree with the label-gate classifier."""
+    aligned: List[Dict[str, Any]] = []
+    for window in windows:
+        out = dict(window)
+        try:
+            att = classify_opponent_interaction(
+                df,
+                int(out["start_index"]),
+                int(out["end_index"]),
+            )
+            content = getattr(att, "content", None)
+        except Exception:
+            content = None
+
+        if isinstance(content, dict) and content.get("data_available"):
+            candidates = [
+                c for c in content.get("candidates", [])
+                if isinstance(c, dict) and c.get("slot") is not None
+            ]
+            selected = None
+            window_slot = out.get("slot")
+            if window_slot is not None:
+                selected = next(
+                    (c for c in candidates if int(c.get("slot")) == int(window_slot)),
+                    None,
+                )
+            if selected is None and candidates:
+                selected = candidates[0]
+
+            if selected is not None:
+                out["slot"] = int(selected["slot"])
+                selected_role = str(selected.get("role", out.get("event_role")))
+                selected_outcome = str(selected.get("outcome", out.get("event_outcome")))
+                preserve_following = (
+                    out.get("event_outcome") == "close_following"
+                    and selected_outcome == "failed_attack"
+                    and not bool(selected.get("passed_by_player"))
+                    and not bool(selected.get("got_passed_by_opponent"))
+                    and int(selected.get("side_by_side_iloc_count") or 0) < 3
+                    and int(selected.get("lateral_threat_iloc_count") or 0) < 3
+                )
+                if preserve_following:
+                    out["event_role"] = "following"
+                    out["event_outcome"] = "close_following"
+                else:
+                    out["event_role"] = selected_role
+                    out["event_outcome"] = selected_outcome
+                out["classifier_role"] = content.get("role")
+                out["classifier_outcome"] = content.get("outcome")
+                out["recommended_label"] = (
+                    None if preserve_following else selected.get("recommended_label")
+                )
+                for key in (
+                    "entry_signed_long_gap_m",
+                    "exit_signed_long_gap_m",
+                    "min_distance_m",
+                    "min_distance_iloc",
+                    "min_lateral_offset_m",
+                    "side_by_side_iloc_count",
+                    "close_following_iloc_count",
+                    "trailing_pressure_iloc_count",
+                    "leading_draft_iloc_count",
+                    "relative_velocity_units",
+                ):
+                    if key in selected:
+                        out[key] = selected[key]
+        aligned.append(out)
+    return aligned
+
+
+def _align_interaction_segments_with_classifier(
+    df: pd.DataFrame,
+    segments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Refresh final rough-split segment hints after clipping/section merging."""
+    for segment in segments:
+        interaction = segment.get("opponent_interaction")
+        if not isinstance(interaction, dict):
+            continue
+        windows = interaction.get("windows")
+        if not isinstance(windows, list) or not windows:
+            continue
+
+        aligned_windows = _align_interaction_windows_with_classifier(df, windows)
+        interaction["windows"] = aligned_windows
+        first = next((w for w in aligned_windows if isinstance(w, dict)), None)
+        if first is not None:
+            interaction["targeted_car_slot"] = first.get("slot")
+            interaction["targeted_car_label"] = (
+                f"Car {first['slot']}" if first.get("slot") is not None else None
+            )
+            interaction["role"] = first.get("event_role")
+            interaction["outcome"] = first.get("event_outcome")
+    return segments
+
+
+def _is_following_only_interaction_window(window: Dict[str, Any]) -> bool:
+    """True for close-following context that should not become an LLM work unit."""
+    role = str(window.get("event_role") or window.get("role") or "")
+    outcome = str(window.get("event_outcome") or window.get("outcome") or "")
+    recommended = window.get("recommended_label")
+    return (
+        role == "following"
+        or outcome == "close_following"
+    ) and not recommended
+
+
+def get_opponent_splitter_rule_signature() -> str:
+    """Stable cache key fragment derived from splitter/classifier code."""
+    parts: List[str] = []
+    for fn in (
+        _project_points_to_local_reference_path,
+        _relative_position_frame,
+        classify_opponent_interaction,
+        _detect_opponent_interaction_windows,
+        _align_interaction_windows_with_classifier,
+        _align_interaction_segments_with_classifier,
+        _is_following_only_interaction_window,
+    ):
+        try:
+            parts.append(inspect.getsource(fn))
+        except (OSError, TypeError):
+            code = getattr(fn, "__code__", None)
+            parts.append(repr(code.co_code if code is not None else fn))
+    digest = hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+    return digest[:12]
 
 
 def _has_active_opponent_data(
@@ -1571,7 +2182,9 @@ def split_lap_by_circuit_sections(
     as context. Normal
     circuit-section work units are returned only for solo sessions. This
     keeps opponent sessions from producing EA / MSP / RM practice-driving
-    sections. Wrap-around sections (``range_end < range_start``) and lap
+    sections. Close-following-only windows are treated as context and are
+    filtered out instead of becoming LLM annotation work units. Wrap-around
+    sections (``range_end < range_start``) and lap
     roll-over (a sample where position resets 1.0 → 0.0) are handled.
 
     Parameters
@@ -1622,6 +2235,7 @@ def split_lap_by_circuit_sections(
     from app.internal_knowledge_base.label_lookup import find_labels
 
     s, e = int(start_index), int(end_index)
+    splitter_signature = get_opponent_splitter_rule_signature()
 
     def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
         return PipelineAttachment(
@@ -1637,6 +2251,7 @@ def split_lap_by_circuit_sections(
             "circuit_id": circuit_id,
             "range": [s, e],
             "segments": [],
+            "opponent_splitter_rule_signature": splitter_signature,
             "unmatched_ilocs": 0,
         })
 
@@ -1647,6 +2262,7 @@ def split_lap_by_circuit_sections(
             "circuit_id": circuit_id,
             "range": [s, e],
             "segments": [],
+            "opponent_splitter_rule_signature": splitter_signature,
             "unmatched_ilocs": 0,
         })
 
@@ -1660,6 +2276,7 @@ def split_lap_by_circuit_sections(
     lap_boundary_set = set(lap_boundary_ilocs)
 
     interaction_windows: List[Dict[str, Any]] = []
+    following_windows_filtered = 0
     opponent_session = False
     if include_interaction_windows:
         opponent_session = _has_active_opponent_data(df, s, e)
@@ -1670,6 +2287,17 @@ def split_lap_by_circuit_sections(
             start_index=s,
             end_index=e,
         )
+        interaction_windows = _align_interaction_windows_with_classifier(
+            df,
+            interaction_windows,
+        )
+        following_windows_filtered = sum(
+            1 for w in interaction_windows if _is_following_only_interaction_window(w)
+        )
+        interaction_windows = [
+            w for w in interaction_windows
+            if not _is_following_only_interaction_window(w)
+        ]
 
     section_filter: Dict[str, Any] = {"type": "circuit_section"}
     if circuit_id is not None:
@@ -1714,10 +2342,15 @@ def split_lap_by_circuit_sections(
                 "coverage_fraction": 1.0,
                 "split_basis": "opponent_interaction",
                 "opponent_interaction": {
+                    "targeted_car_slot": clipped_window.get("slot"),
+                    "targeted_car_label": (
+                        f"Car {clipped_window['slot']}"
+                        if clipped_window.get("slot") is not None else None
+                    ),
                     "windows": [clipped_window],
                     "section_context": section_context,
                     "reason": (
-                        "opponent session: close overtake offence / defence "
+                        "opponent session: close attack / defense "
                         "engagement emitted as an event-shaped window; "
                         "long engagements are split by circuit-section "
                         "context"
@@ -1758,17 +2391,39 @@ def split_lap_by_circuit_sections(
 
     if not candidates:
         if opponent_session and interactions_only_when_opponents and interaction_windows:
+            interaction_segments = _align_interaction_segments_with_classifier(
+                df,
+                _interaction_segments_from_windows(interaction_windows, []),
+            )
             return _attach({
                 "circuit_id": circuit_id,
                 "range": [s, e],
                 "opponent_session": True,
                 "split_mode": "opponent_interactions_only",
-                "segments": _interaction_segments_from_windows(interaction_windows, []),
+                "segments": interaction_segments,
                 "interaction_windows": interaction_windows,
+                "following_windows_filtered": int(following_windows_filtered),
+                "opponent_splitter_rule_signature": splitter_signature,
                 "unmatched_ilocs": int(pos.size),
                 "warning": (
                     "no measured circuit_section ranges matched; emitted "
                     "racing interaction work units anchored to the circuit"
+                ),
+            })
+        if opponent_session and interactions_only_when_opponents:
+            return _attach({
+                "circuit_id": circuit_id,
+                "range": [s, e],
+                "opponent_session": True,
+                "split_mode": "opponent_interactions_only",
+                "segments": [],
+                "interaction_windows": [],
+                "following_windows_filtered": int(following_windows_filtered),
+                "opponent_splitter_rule_signature": splitter_signature,
+                "unmatched_ilocs": int(pos.size),
+                "warning": (
+                    "opponent data was present, but only following-only "
+                    "windows were found; no LLM annotation work units emitted"
                 ),
             })
         return _attach({
@@ -1779,6 +2434,7 @@ def split_lap_by_circuit_sections(
             "circuit_id": circuit_id,
             "range": [s, e],
             "segments": [],
+            "opponent_splitter_rule_signature": splitter_signature,
             "unmatched_ilocs": 0,
         })
 
@@ -1882,7 +2538,10 @@ def split_lap_by_circuit_sections(
                 segment["start_index"] = int(max(s, expanded_start))
                 segment["end_index"] = int(min(e, expanded_end))
                 segment["split_basis"] = "circuit_section+opponent_interaction"
+                target_slot = overlaps[0].get("slot") if overlaps else None
                 segment["opponent_interaction"] = {
+                    "targeted_car_slot": target_slot,
+                    "targeted_car_label": f"Car {target_slot}" if target_slot is not None else None,
                     "windows": overlaps,
                     "reason": (
                         "section window expanded around close opponent "
@@ -1890,6 +2549,7 @@ def split_lap_by_circuit_sections(
                         "entry-to-exit context"
                     ),
                 }
+        segments = _align_interaction_segments_with_classifier(df, segments)
 
     return _attach({
         "circuit_id": circuit_id,
@@ -1902,6 +2562,8 @@ def split_lap_by_circuit_sections(
         ),
         "segments": segments,
         "interaction_windows": interaction_windows,
+        "following_windows_filtered": int(following_windows_filtered),
+        "opponent_splitter_rule_signature": splitter_signature,
         "unmatched_ilocs": int(unmatched),
     })
 
@@ -2148,7 +2810,8 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "`candidates` list carries per-slot summary: minimum / entry "
             "/ exit distance, signed longitudinal gap at entry & exit "
             "(+ ⇒ opponent ahead in player heading), minimum lateral "
-            "offset, side-by-side iloc count, and `passed_by_player` / "
+            "offset, side-by-side iloc count, close-following evidence, "
+            "and `passed_by_player` / "
             "`got_passed_by_opponent` flags (signed-gap sign flips). Use "
             "after `classify_opponent_interaction` when you need "
             "supporting primary-slot details. Empty `candidates` with "
@@ -2167,12 +2830,15 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "and falling back to player heading when expert positions are "
             "missing. Returns a structured "
             "'opponent_interaction_classification' attachment with "
-            "`role` (attack / defense / side_by_side / incidental), "
+            "`role` (attack / defense / following / side_by_side / incidental), "
             "`outcome` (pass_completed, held_defense, failed_attack, "
-            "broken_defense, etc.), `recommended_label` (O / OD / MSR / "
+            "broken_defense, close_following, etc.), `recommended_label` (O / OD / MSR / "
             "null), numeric `confidence`, readable `confidence_level`, "
             "primary opponent slot, per-slot evidence, raw outcome `gates`, "
-            "and confidence-aware `label_gates`. Use this as the "
+            "and confidence-aware `label_gates`. Inline close-following "
+            "cars can be relevant even when they never become side-by-side, "
+            "but `close_following` does not gate O / OD / MSR by itself. "
+            "Use this as the "
             "mathematical source of truth for O / OD / MSR eligibility "
             "before choosing labels."
         ),
