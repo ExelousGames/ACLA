@@ -8,6 +8,7 @@ import { useAuth } from 'hooks/AuthProvider';
 import apiService from 'services/api.service';
 import { PythonShellOptions } from 'services/pythonService';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
+import AiChat from './ai-chat/ai-chat';
 
 enum RecordingState {
     CHECKING = 'CHECKING', // checking for live session
@@ -147,6 +148,7 @@ export default function LiveAnalysisSessionRecording() {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [showRetryButton, setShowRetryButton] = useState(false);
     const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+    const [assistantOpen, setAssistantOpen] = useState(false);
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
 
     const canOpenFloatingChat = typeof window !== 'undefined'
@@ -763,8 +765,39 @@ export default function LiveAnalysisSessionRecording() {
         state === RecordingState.READY ? 'live-recording-bar__channel--live' :
         state === RecordingState.UPLOAD_READY ? 'live-recording-bar__channel--stopped' :
         '';
+    const assistantSessionId = analysisContext.sessionSelected?.SessionId;
+    const assistantSessionLabel = analysisContext.sessionSelected?.session_name || 'Live Telemetry';
 
     return (
+        <>
+        <aside className={`live-recording-assistant ${assistantOpen ? 'live-recording-assistant--open' : ''}`} aria-hidden={!assistantOpen}>
+            <div className="live-recording-assistant__header">
+                <span className="live-recording-assistant__title">AI Assistant</span>
+                <button
+                    type="button"
+                    className="live-recording-assistant__close"
+                    onClick={() => setAssistantOpen(false)}
+                    aria-label="Close AI assistant"
+                    tabIndex={assistantOpen ? 0 : -1}
+                >
+                    Close
+                </button>
+            </div>
+            {assistantOpen && (
+                <AiChat
+                    sessionId={assistantSessionId}
+                    title={`AI Assistant - ${assistantSessionLabel}`}
+                />
+            )}
+        </aside>
+        {assistantOpen && (
+            <button
+                type="button"
+                className="live-recording-assistant__scrim"
+                onClick={() => setAssistantOpen(false)}
+                aria-label="Close AI assistant"
+            />
+        )}
         <Box className={`live-recording-bar ${isRecording ? 'live-recording-bar--rec' : ''}`} position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
             <Flex height="100%" align="center" position="relative" overflow="hidden" className="live-recording-bar__inner">
                 <Flex gap="3" align="center" p="3" style={{ minWidth: 0, flex: 1 }}>
@@ -775,6 +808,16 @@ export default function LiveAnalysisSessionRecording() {
                     </div>
 
                     {controlButtons}
+                    <Button
+                        radius="full"
+                        variant={assistantOpen ? 'solid' : 'outline'}
+                        color={assistantOpen ? 'green' : 'gray'}
+                        onClick={() => setAssistantOpen((open) => !open)}
+                    >
+                        <Flex align="center" gap="2">
+                            <span>{assistantOpen ? 'Assistant Open' : 'AI Assistant'}</span>
+                        </Flex>
+                    </Button>
                     {canOpenFloatingChat && (
                         <Button
                             radius="full"
@@ -855,5 +898,6 @@ export default function LiveAnalysisSessionRecording() {
 
             </Flex>
         </Box>
+        </>
     );
 }

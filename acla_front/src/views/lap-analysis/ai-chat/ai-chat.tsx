@@ -6,12 +6,12 @@ import { detectEnvironment } from 'utils/environment';
 import { createAiCommandRegistry, frontendToolSchemas, QUERY_SCOPE_SCHEMA } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
-import { useOpportunityForecastAgent } from './use-opportunity-forecast-agent';
 
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
+const MAX_OPPORTUNITY_FORECAST_ROWS = 80;
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -51,14 +51,6 @@ interface AiChatProps {
     sessionId?: string;
     title?: string;
 }
-
-const QUICK_PROMPTS = [
-    "How's my fuel?",
-    "Best line through T3?",
-    "Pit or stay out?",
-    "Who's behind me?",
-    "Bring it home safe",
-];
 
 const formatClock = (d: Date) =>
     `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
@@ -103,6 +95,18 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     // would otherwise see a stale state value.
     const neuralTtsDisabledRef = useRef<boolean>(false);
     const analysisContext = useContext(AnalysisContext);
+    const opportunityForecastRowsRef = useRef<Record<string, any>[]>([]);
+
+    useEffect(() => {
+        const liveData = analysisContext?.liveData as Record<string, any> | null;
+        if (!liveData || Object.keys(liveData).length === 0) {
+            return;
+        }
+        opportunityForecastRowsRef.current = [
+            ...opportunityForecastRowsRef.current,
+            liveData,
+        ].slice(-MAX_OPPORTUNITY_FORECAST_ROWS);
+    }, [analysisContext?.liveData]);
 
     // Utility function to generate unique message IDs
     const generateUniqueId = useCallback((prefix: string = 'msg') => {
@@ -218,26 +222,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         setTrackGuideEnabled(true);
     };
 
-    const handleOpportunityForecast = useCallback((summary: string) => {
-        setMessages(prev => prev
-            .filter(m => !m.isLoading)
-            .concat({
-                id: generateUniqueId('opportunity'),
-                content: summary,
-                isUser: false,
-                timestamp: new Date(),
-                kind: 'chat',
-                streamedAudio: true,
-            }));
-        try {
-            localStorage.setItem('acla-pill-msg', JSON.stringify({
-                text: summary.slice(0, 280),
-                ts: Date.now(),
-                emotion: 'hearing',
-            }));
-        } catch { /* ignore storage write failures */ }
-    }, [generateUniqueId]);
-
     const voiceConversation = useVoiceConversation({
         sessionId,
         onEvent: handleVoiceEvent,
@@ -249,18 +233,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             sessionIntelligence: analysisContext?.sessionIntelligence,
             startTrackGuide,
             setTrackGuideEnabled,
+            getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
         }),
     });
 
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
-
-    useOpportunityForecastAgent({
-        enabled: voiceActive,
-        liveData: analysisContext?.liveData as Record<string, any> | null,
-        sendObservation: voiceConversation.sendObservation,
-        onForecast: handleOpportunityForecast,
-    });
 
     const addStatusMessage = (type: string, content: string) => {
         const message: Message = {
@@ -883,21 +861,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         <div ref={messagesEndRef} />
                     </div>
                 </section>
-            </div>
-
-            {/* Pills */}
-            <div className="ai-chat__pills">
-                {QUICK_PROMPTS.map(p => (
-                    <button
-                        key={p}
-                        type="button"
-                        className="ai-chat__pill"
-                        onClick={() => handleSendMessage(p)}
-                        disabled={isLoading}
-                    >
-                        {p}
-                    </button>
-                ))}
             </div>
 
             {/* Input row */}

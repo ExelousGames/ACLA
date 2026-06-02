@@ -526,33 +526,6 @@
 .ai-chat__debug-row--error { color: var(--lp-red); }
 
 /* ── Pills ───────────────────────────────────────── */
-.ai-chat__pills {
-  position: relative;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-start;
-}
-.ai-chat__pill {
-  font-family: var(--lp-mono);
-  font-size: 11px;
-  letter-spacing: 1px;
-  color: rgba(255, 255, 255, 0.7);
-  padding: 6px 14px;
-  border: 1px solid var(--lp-border);
-  border-radius: var(--lp-radius-pill);
-  background: rgba(22, 22, 40, 0.6);
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.ai-chat__pill::before { content: '"'; color: var(--lp-green); margin-right: 4px; }
-.ai-chat__pill::after  { content: '"'; color: var(--lp-green); margin-left: 4px; }
-.ai-chat__pill:hover {
-  color: var(--lp-white);
-  border-color: var(--lp-green);
-  background: rgba(0, 230, 118, 0.06);
-}
-
 /* ── Input row ───────────────────────────────────── */
 .ai-chat__input-row {
   position: relative;

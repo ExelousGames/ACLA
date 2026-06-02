@@ -3,6 +3,7 @@ import { visualizationController } from 'views/lap-analysis/visualization/Visual
 import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import { FIELD_GROUPS } from 'views/lap-analysis/session-intelligence/telemetry-query';
+import { getOpportunityForecast } from 'services/opportunityForecastService';
 
 export interface AiCommandRegistryContext {
     sessionId?: string;
@@ -11,6 +12,7 @@ export interface AiCommandRegistryContext {
     sessionIntelligence?: SessionIntelligence | null;
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
+    getOpportunityTelemetryRows: () => Record<string, any>[];
 }
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
@@ -58,6 +60,59 @@ export const QUERY_SCOPE_SCHEMA = {
 } as const;
 
 const _FIELD_GROUP_NAMES = Object.keys(FIELD_GROUPS).join(', ');
+const DEFAULT_OPPORTUNITY_HORIZON_SECONDS = 10;
+const DEFAULT_OPPORTUNITY_WHEN_HORIZONS_SECONDS = [6, 10, 15, 20, 30];
+const DEFAULT_OPPORTUNITY_TOP_K = 3;
+
+const toPositiveNumber = (value: unknown): number | undefined => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const getOpportunityHorizons = (args: Record<string, any>): number[] => {
+    const explicit = Array.isArray(args.horizon_seconds_options)
+        ? args.horizon_seconds_options
+            .map(toPositiveNumber)
+            .filter((value): value is number => value !== undefined)
+        : [];
+
+    if (explicit.length > 0) {
+        return Array.from(new Set(explicit)).slice(0, 5);
+    }
+
+    const single = toPositiveNumber(args.horizon_seconds);
+    if (single !== undefined) {
+        return [single];
+    }
+
+    return args.question_type === 'when'
+        ? DEFAULT_OPPORTUNITY_WHEN_HORIZONS_SECONDS
+        : [DEFAULT_OPPORTUNITY_HORIZON_SECONDS];
+};
+
+const getOpportunityTopK = (value: unknown): number => {
+    const parsed = Math.floor(Number(value));
+    return Number.isFinite(parsed) && parsed > 0
+        ? Math.min(parsed, 5)
+        : DEFAULT_OPPORTUNITY_TOP_K;
+};
+
+const summarizeOpportunityForecast = (forecast: any): string => {
+    if (forecast.model_status === 'not_trained') {
+        return `next ${forecast.horizon_seconds}s: model not trained`;
+    }
+
+    const opportunities = Array.isArray(forecast.opportunities) ? forecast.opportunities : [];
+    if (opportunities.length === 0) {
+        return `next ${forecast.horizon_seconds}s: no strong opportunity`;
+    }
+
+    return `next ${forecast.horizon_seconds}s: ${opportunities.map((item: any) => {
+        const percent = Math.round(Number(item.probability || 0) * 100);
+        const section = item.circuit_section_name ? ` at ${item.circuit_section_name}` : '';
+        return `${item.label_name || item.label_id} ${percent}%${section}`;
+    }).join(' | ')}`;
+};
 
 export const frontendToolSchemas: FrontendToolSchema[] = [
     {
@@ -73,6 +128,49 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         name: 'stop_per_turn_coaching',
         title: 'Stopping per-turn coaching',
         description: 'Stop per-corner coaching. Use when driver asks to be left alone.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'opportunity_forecast',
+        title: 'Checking opportunity',
+        description:
+            'Run exactly one live opportunity forecast and return upcoming overtake or defense opportunities. ' +
+            'Use when the driver asks if they can overtake, defend, pass, attack, or find an opportunity. ' +
+            'For "can I overtake in the next 6 seconds", pass horizon_seconds=6 and question_type=next_seconds. ' +
+            'For "any opportunity in the next corner", pass question_type=next_corner. ' +
+            'For "when can I overtake", pass question_type=when so several horizons are checked in this one call. ' +
+            'Do not use this to start background monitoring.',
+        properties: {
+            question_type: {
+                type: 'string',
+                enum: ['next_seconds', 'next_corner', 'when', 'general'],
+                description:
+                    'Use next_seconds for a specified time, next_corner for the upcoming corner, and when for timing questions.',
+            },
+            horizon_seconds: {
+                type: 'number',
+                description:
+                    'Single forecast horizon in seconds. Use the driver-specified time, e.g. 6 for "next 6 seconds". Default 10.',
+            },
+            horizon_seconds_options: {
+                type: 'array',
+                items: { type: 'number' },
+                description:
+                    'Multiple horizons to check in one tool call. Use for "when can I overtake"; default is 6, 10, 15, 20, 30.',
+            },
+            top_k: {
+                type: 'integer',
+                description: 'Maximum number of opportunity labels to return. Default 3.',
+            },
+        },
+        required: [],
+    },
+    {
+        name: 'get_next_corner',
+        title: 'Looking up next corner',
+        description:
+            'Name and normalized distance of the next corner ahead. Use with opportunity_forecast when the driver asks about the next corner.',
         properties: {},
         required: [],
     },
@@ -118,13 +216,6 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
             },
         },
         required: ['eventType', 'scope'],
-    },
-    {
-        name: 'get_next_corner',
-        title: 'Looking up next corner',
-        description: 'Name and normalized distance of the next corner ahead.',
-        properties: {},
-        required: [],
     },
 ];
 
@@ -206,6 +297,43 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
     async stop_per_turn_coaching() {
         return { status: 'stopped' };
+    },
+
+    async opportunity_forecast(args) {
+        const telemetryRows = context.getOpportunityTelemetryRows();
+        if (telemetryRows.length === 0) {
+            return { error: 'no_live_telemetry' };
+        }
+
+        const questionType = ['next_seconds', 'next_corner', 'when'].includes(args.question_type)
+            ? args.question_type
+            : 'general';
+        const horizonsSeconds = getOpportunityHorizons(args);
+        const topK = getOpportunityTopK(args.top_k);
+        const nextCorner = questionType === 'next_corner'
+            ? context.sessionIntelligence?.getNextCorner() ?? null
+            : null;
+        const forecasts = await Promise.all(horizonsSeconds.map((horizonSeconds) =>
+            getOpportunityForecast({
+                telemetry_data: telemetryRows,
+                horizon_seconds: horizonSeconds,
+                top_k: topK,
+            })
+        ));
+        const firstForecast = forecasts[0];
+
+        return {
+            ...firstForecast,
+            request: {
+                question_type: questionType,
+                horizons_seconds: horizonsSeconds,
+                top_k: topK,
+            },
+            forecasts,
+            summaries: forecasts.map(summarizeOpportunityForecast),
+            next_corner: nextCorner,
+            telemetry_rows: telemetryRows.length,
+        };
     },
 
     // ── Expert line ───────────────────────────────────────────────────────────
