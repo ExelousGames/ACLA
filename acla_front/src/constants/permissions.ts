@@ -11,7 +11,6 @@ export const PERMISSION_ACTIONS = {
 export const PERMISSION_RESOURCES = {
     USER: 'user',
     RACING_SESSION: 'racing_session',
-    RACING_MAP: 'racing_map',
     ALL: 'all'
 } as const;
 

@@ -3,7 +3,7 @@ import { Stage, Layer, Line } from 'react-konva';
 import { AddControlPoints } from 'utils/curve-tobezier/curve-to-bezier';
 import { offsetBezierPoints, Point, getBezierTangent, getEndDirection, pointOnCubicBezierSpline, calculateSegmentLengths } from 'utils/curve-tobezier/points-on-curve';
 import apiService from 'services/api.service';
-import { MapInfo, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
+import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../analysis-context';
 import LiveAnalysisSessionRecording from '../liveAnalysisSessionRecording';
 import { useEnvironment } from 'contexts/EnvironmentContext';
@@ -188,25 +188,13 @@ const SessionAnalysisMap = () => {
     }
 
     function createInitialShapes() {
-
-        apiService.post('/racingmap/map/infolists', { name: analysisContext.mapSelected }).then((result) => {
-            const data = result.data as MapInfo;
-            setTurningPoints(data.points.map((point) => {
-                return {
-                    type: point.type,
-                    index: point.index,
-                    position: [point.position[0], point.position[1]],
-                    description: "",
-                    info: "",
-                };
-            }));
-        }).catch((e) => {
-        });
+        setTurningPoints(toTurningPoints(analysisContext.sessionSelected?.points || []));
 
         if (analysisContext.sessionSelected?.SessionId) {
             apiService.post('/racing-session/detailedSessionInfo', { id: analysisContext.sessionSelected?.SessionId }).then((result) => {
                 const data = result.data as RacingSessionDetailedInfoDto;
                 analysisContext.setSession(data);
+                setTurningPoints(toTurningPoints(data.points || []));
             }).catch((e) => {
             });
         }
@@ -492,6 +480,17 @@ const SessionAnalysisMap = () => {
 
 
 };
+
+function toTurningPoints(points: RacingSessionDetailedInfoDto['points']): RacingTurningPoint[] {
+    return points.map((point, index) => ({
+        type: 0,
+        index: point.id ?? index,
+        position: [point.position_x, point.position_y] as Point,
+        description: point.description || "",
+        info: point.info || "",
+        variables: point.variables,
+    }));
+}
 
 function convert_1D_array_to_2d_array(points: number[]): Point[] {
     const result: Point[] = [];

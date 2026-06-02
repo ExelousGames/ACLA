@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto, MapBasicInfoListDto } from 'src/dto/racing-session.dto';
 import { RacingSession } from 'src/schemas/racing-session.schema';
 import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
 import { ObjectId } from 'mongodb';
@@ -38,16 +38,16 @@ export class RacingSessionService {
     async retrieveAllRacingSessionsBasicInfo(mapName: string, userId: string): Promise<SessionBasicInfoListDto | null> {
 
         try {
-            let racingMap: SessionBasicInfoListDto = new SessionBasicInfoListDto();
+            let sessionList: SessionBasicInfoListDto = new SessionBasicInfoListDto();
             //find all sessions with the map name and user id, only return session_name and _id
             const data = await this.racingSession.find({ 'map': mapName, 'user_id': userId }).select('session_name user_id').exec();
             data.forEach((element) => {
-                racingMap.list.push({
+                sessionList.list.push({
                     name: element.session_name,
                     sessionId: element._id.toString()
                 });
             });
-            return racingMap;
+            return sessionList;
 
         }
         catch (e) {
@@ -55,6 +55,22 @@ export class RacingSessionService {
             throw new Error(`Failed to process data: ${e.message}`);
         }
 
+    }
+
+    async retrieveAllSessionMapBasicInfo(userId: string): Promise<MapBasicInfoListDto | null> {
+        try {
+            const filter = userId ? { user_id: userId } : {};
+            const mapNames = await this.racingSession.distinct('map', filter).exec();
+            const result = new MapBasicInfoListDto();
+            result.list = mapNames
+                .filter((name): name is string => typeof name === 'string' && name.length > 0)
+                .sort((a, b) => a.localeCompare(b))
+                .map((name) => ({ name }));
+
+            return result;
+        } catch (e) {
+            throw new Error(`Failed to process data: ${e.message}`);
+        }
     }
 
     async retrieveSessionDetailedInfo(id: string): Promise<RacingSessionDetailedInfoDto | null> {

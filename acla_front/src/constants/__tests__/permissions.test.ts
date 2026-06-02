@@ -21,7 +21,6 @@ describe('permissions constants', () => {
         it('should define all expected resources', () => {
             expect(PERMISSION_RESOURCES.USER).toBe('user');
             expect(PERMISSION_RESOURCES.RACING_SESSION).toBe('racing_session');
-            expect(PERMISSION_RESOURCES.RACING_MAP).toBe('racing_map');
             expect(PERMISSION_RESOURCES.ALL).toBe('all');
         });
     });

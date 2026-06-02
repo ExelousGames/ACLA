@@ -1,7 +1,6 @@
 //Only when the database is first created (empty data directory)
 
 db.createCollection("userinfos");
-db.createCollection("racingmaps");
 db.createCollection("racingsessions");
 db.createCollection("permissions");
 db.createCollection("roles");
@@ -92,48 +91,6 @@ const permissions = [
         createdAt: new Date()
     },
 
-    // Racing Map permissions
-    {
-        id: "perm_racing_map_create",
-        name: "Create Racing Map",
-        description: "Permission to create new racing maps",
-        action: "create",
-        resource: "racing_map",
-        createdAt: new Date()
-    },
-    {
-        id: "perm_racing_map_read",
-        name: "Read Racing Map",
-        description: "Permission to view racing maps",
-        action: "read",
-        resource: "racing_map",
-        createdAt: new Date()
-    },
-    {
-        id: "perm_racing_map_update",
-        name: "Update Racing Map",
-        description: "Permission to update racing maps",
-        action: "update",
-        resource: "racing_map",
-        createdAt: new Date()
-    },
-    {
-        id: "perm_racing_map_delete",
-        name: "Delete Racing Map",
-        description: "Permission to delete racing maps",
-        action: "delete",
-        resource: "racing_map",
-        createdAt: new Date()
-    },
-    {
-        id: "perm_racing_map_manage",
-        name: "Manage Racing Map",
-        description: "Full permission to manage racing maps",
-        action: "manage",
-        resource: "racing_map",
-        createdAt: new Date()
-    },
-
     {
         id: "perm_all_manage",
         name: "Manage All",
@@ -174,10 +131,6 @@ const racingSessionReadPerm = db.permissions.findOne({ id: "perm_racing_session_
 const racingSessionCreatePerm = db.permissions.findOne({ id: "perm_racing_session_create" })._id;
 const racingSessionUpdatePerm = db.permissions.findOne({ id: "perm_racing_session_update" })._id;
 const racingSessionManagePerm = db.permissions.findOne({ id: "perm_racing_session_manage" })._id;
-const racingMapReadPerm = db.permissions.findOne({ id: "perm_racing_map_read" })._id;
-const racingMapCreatePerm = db.permissions.findOne({ id: "perm_racing_map_create" })._id;
-const racingMapUpdatePerm = db.permissions.findOne({ id: "perm_racing_map_update" })._id;
-const racingMapManagePerm = db.permissions.findOne({ id: "perm_racing_map_manage" })._id;
 const allManagePerm = db.permissions.findOne({ id: "perm_all_manage" })._id;
 
 // Insert initial roles
@@ -196,8 +149,7 @@ const roles = [
         description: "Administrative access to manage users and system resources",
         permissions: [
             userManagePerm,
-            racingSessionManagePerm,
-            racingMapManagePerm
+            racingSessionManagePerm
         ],
         createdAt: new Date(),
         isActive: true
@@ -205,14 +157,11 @@ const roles = [
     {
         id: "role_moderator",
         name: "Moderator",
-        description: "Moderate racing sessions and maps",
+        description: "Moderate racing sessions",
         permissions: [
             userReadPerm,
             userUpdatePerm,
-            racingMapCreatePerm,
             racingSessionManagePerm,
-            racingMapUpdatePerm,
-            racingMapReadPerm
         ],
         createdAt: new Date(),
         isActive: true
@@ -222,8 +171,7 @@ const roles = [
         name: "User",
         description: "Basic user access to participate in racing",
         permissions: [
-            racingSessionReadPerm,
-            racingMapReadPerm
+            racingSessionReadPerm
         ],
         createdAt: new Date(),
         isActive: true
@@ -233,8 +181,7 @@ const roles = [
         name: "Guest",
         description: "Read-only access to public content",
         permissions: [
-            racingSessionReadPerm,
-            racingMapReadPerm
+            racingSessionReadPerm
         ],
         createdAt: new Date(),
         isActive: true

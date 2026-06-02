@@ -6,7 +6,6 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './shared/auth/auth.module';
 import { AuthorizationModule } from './shared/authorization/authorization.module';
-import { RacingMapModule } from './modules/map/racing-map.module';
 import { RacingSessionModule } from './modules/racing-session/racing-session.module';
 import { AiModelModule as UserSessionAiModelModule } from './modules/user-session-ai-model/user-session-ai-model.module';
 import { AiModelModule } from './modules/ai-model/ai-model.module';
@@ -26,7 +25,6 @@ import { VoiceModule } from './voice/voice.module';
     AuthModule,
     AuthorizationModule,
     SeedModule,
-    RacingMapModule,
     UserInfoModule,
     RacingSessionModule,
     UserSessionAiModelModule,

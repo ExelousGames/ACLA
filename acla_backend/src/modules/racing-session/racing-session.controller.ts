@@ -1,7 +1,7 @@
 import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, MapBasicInfoListDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
@@ -64,6 +64,12 @@ export class RacingSessionController {
     @Post('sessionbasiclist')
     retrieveAllRacingBasicSessionsInfo(@Request() req, @Body() body): Promise<SessionBasicInfoListDto | null> {
         return this.racingSessionService.retrieveAllRacingSessionsBasicInfo(body.map_name, body.user_id);
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('mapbasiclist')
+    retrieveAllSessionMapBasicInfo(@Request() req, @Body() body): Promise<MapBasicInfoListDto | null> {
+        return this.racingSessionService.retrieveAllSessionMapBasicInfo(body.user_id);
     }
 
 

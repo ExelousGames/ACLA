@@ -26,15 +26,24 @@ import { ScrollArea } from "radix-ui";
 import { AllMapsBasicInfoListDto, MapOption } from 'data/live-analysis/live-analysis-type';
 import { AnalysisContext } from '../analysis-context';
 import apiService from 'services/api.service';
+import { useAuth } from 'hooks/AuthProvider';
 
 const MapList = () => {
 
     const [options, setOptions] = useState<MapOption[]>([]);
     const [loaded, setLoaded] = useState(false);
+    const auth = useAuth();
 
     useEffect(() => {
+        const userId = auth?.userProfile?.id;
 
-        apiService.get('/racingmap/map/infolists')
+        if (!userId) {
+            setOptions([]);
+            setLoaded(true);
+            return;
+        }
+
+        apiService.post('/racing-session/mapbasiclist', { user_id: userId })
             .then((result) => {
                 const data = result.data as AllMapsBasicInfoListDto;
                 let count = 0;
@@ -49,8 +58,9 @@ const MapList = () => {
                 }))
 
             }).catch((e) => {
+                setOptions([]);
             }).finally(() => setLoaded(true));
-    }, []);
+    }, [auth?.userProfile?.id]);
 
     return (
         <ScrollArea.Root className="MapListScrollAreaRoot">

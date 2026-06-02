@@ -14,24 +14,7 @@ export type SessionOption = {
 }
 
 export type AllMapsBasicInfoListDto = {
-    list: [{ name: string; }];
-}
-
-
-
-export type MapInfo = {
-
-    name: string,
-    mimetype: string,
-    ImageData: Buffer;
-    points: [{
-        position: number[],
-        type: number,
-        index: number, //type and index are used together. some points are index sensitive
-        description?: string,
-        info?: string,
-        variables?: [{ key: string, value: string }] //any word match {key} in description or info will be replaced with the value
-    }]
+    list: { name: string; }[];
 }
 
 export type UploadReacingSessionInitDto = {

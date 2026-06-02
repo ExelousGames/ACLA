@@ -5,6 +5,12 @@ export class SessionBasicInfoListDto {
     }[] = []
 }
 
+export class MapBasicInfoListDto {
+    list: {
+        name: string
+    }[] = []
+}
+
 export class UploadReacingSessionInitDto {
     sessionName: string;
     mapName: string;
