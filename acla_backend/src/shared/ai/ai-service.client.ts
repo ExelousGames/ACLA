@@ -87,6 +87,29 @@ export interface ImitationLearningGuidanceResponse {
     confidence_score?: number;
 }
 
+export interface OpportunityForecastRequest {
+    telemetry_data: { [key: string]: any }[];
+    horizon_seconds?: number;
+    top_k?: number;
+}
+
+export interface OpportunityForecastOpportunity {
+    label_id: string;
+    label_name: string;
+    parent_label: string;
+    probability: number;
+    circuit_section_id?: string;
+    circuit_section_name?: string;
+}
+
+export interface OpportunityForecastResponse {
+    status: string;
+    model_status?: string;
+    horizon_seconds: number;
+    opportunities: OpportunityForecastOpportunity[];
+    circuit_section_match?: any;
+}
+
 // Phase 2 — text-to-speech via Kokoro
 export interface VoiceSynthesizeRequest {
     text: string;
@@ -150,6 +173,18 @@ export class AiServiceClient {
         } catch (error) {
             throw new HttpException(
                 `AI Service imitation learning guidance failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async getOpportunityForecast(request: OpportunityForecastRequest): Promise<OpportunityForecastResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/opportunity-forecast`, request);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service opportunity forecast failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }

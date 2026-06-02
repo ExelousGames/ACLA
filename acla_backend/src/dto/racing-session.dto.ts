@@ -93,3 +93,26 @@ export class ImitationLearningGuidanceResponseDto {
     confidence_score?: number;
     success: boolean;
 }
+
+export class OpportunityForecastRequestDto {
+    telemetry_data: { [key: string]: any }[];
+    horizon_seconds?: number;
+    top_k?: number;
+}
+
+export class OpportunityForecastOpportunityDto {
+    label_id: string;
+    label_name: string;
+    parent_label: string;
+    probability: number;
+    circuit_section_id?: string;
+    circuit_section_name?: string;
+}
+
+export class OpportunityForecastResponseDto {
+    status: string;
+    model_status?: string;
+    horizon_seconds: number;
+    opportunities: OpportunityForecastOpportunityDto[];
+    circuit_section_match?: any;
+}

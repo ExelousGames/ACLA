@@ -107,6 +107,9 @@ export interface VoiceConversation {
      *  open. The backend treats it as a synthetic user turn and runs
      *  the LLM (same path as a spoken turn). */
     sendUserText: (text: string) => boolean;
+    /** Push a background observation into the open voice session. Returns
+     *  false when the voice WebSocket is not ready. */
+    sendObservation: (data: Record<string, unknown>) => boolean;
 }
 
 export function useVoiceConversation(
@@ -464,10 +467,22 @@ export function useVoiceConversation(
         }
     }, []);
 
+    const sendObservation = useCallback((data: Record<string, unknown>): boolean => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        try {
+            ws.send(JSON.stringify({ type: 'observation', data }));
+            return true;
+        } catch (err) {
+            console.warn('[voice] sendObservation failed:', err);
+            return false;
+        }
+    }, []);
+
     // Auto-cleanup on unmount.
     useEffect(() => {
         return () => stop();
     }, [stop]);
 
-    return { state, error, micLevel, start, stop, sendUserText };
+    return { state, error, micLevel, start, stop, sendUserText, sendObservation };
 }

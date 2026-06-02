@@ -73,7 +73,7 @@ _SESSION_GATED_ROUTES = {
     "batch_lap":          render_batch_lap,
 }
 # Training routes — all three share the single training tab.
-_TRAINING_ROUTES = {"classifier", "transformer"}
+_TRAINING_ROUTES = {"classifier", "transformer", "opportunity_forecaster"}
 
 _ALL_ROUTES = set(_SESSION_GATED_ROUTES) | _TRAINING_ROUTES
 

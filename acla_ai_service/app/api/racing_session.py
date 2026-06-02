@@ -9,6 +9,7 @@ from pydantic import BaseModel
 import asyncio
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.racing_engineer.expert_actions import predict_expert_actions
+from app.ml.opportunity_forecaster import opportunity_forecaster
 
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
@@ -54,6 +55,11 @@ class ImitationPredictRequest(BaseModel):
     track_name: str
     car_name: str   
     user_id: Optional[str] = None
+
+class OpportunityForecastRequest(BaseModel):
+    telemetry_data: List[Dict[str, Any]]
+    horizon_seconds: Optional[float] = 10.0
+    top_k: Optional[int] = 3
     
 # Initialize telemetry service
 telemetryMLService = Full_dataset_TelemetryMLService()
@@ -89,3 +95,22 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Expert guidance failed: {str(e)}")
+
+
+@router.post("/opportunity-forecast")
+async def get_opportunity_forecast(request: OpportunityForecastRequest) -> Dict[str, Any]:
+    try:
+        if not request.telemetry_data:
+            raise HTTPException(status_code=400, detail="telemetry_data is required")
+
+        result = opportunity_forecaster.forecast(
+            request.telemetry_data,
+            horizon_seconds=request.horizon_seconds or 10.0,
+            top_k=request.top_k or 3,
+        )
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Opportunity forecast failed: {str(e)}")
+

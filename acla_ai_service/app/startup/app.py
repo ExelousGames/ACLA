@@ -15,6 +15,7 @@ from app.infra.config import settings
 from app.integrations.backend.client import backend_service
 from app.llama.health import check_llama_server
 from app.llama.process import LlamaServerProcess
+from app.ml.opportunity_forecaster.bootstrap import ensure_opportunity_forecaster_model
 from app.ml.segment_classifier.bootstrap import ensure_segment_classifier_model
 from app.startup.llama import start_chat_sidecar
 from app.api import (
@@ -85,6 +86,10 @@ async def lifespan(app: FastAPI):
             print("🧩 segment_classifier: ready")
         else:
             print("🧩 segment_classifier: NOT ready (no local artifacts and no active backend payload)")
+        if await ensure_opportunity_forecaster_model():
+            print("opportunity_forecaster: ready")
+        else:
+            print("opportunity_forecaster: NOT ready (no local artifacts and no active backend payload)")
 
     yield
 

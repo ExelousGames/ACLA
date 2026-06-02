@@ -1,13 +1,13 @@
 import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -502,6 +502,33 @@ export class RacingSessionController {
         } catch (error) {
             console.error('Imitation learning guidance failed:', error);
             throw new BadRequestException(`Failed to get imitation learning guidance: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('opportunity-forecast')
+    async getOpportunityForecast(
+        @Request() req,
+        @Body() body: OpportunityForecastRequestDto
+    ): Promise<OpportunityForecastResponseDto> {
+        try {
+            if (!Array.isArray(body.telemetry_data) || body.telemetry_data.length === 0) {
+                throw new BadRequestException('telemetry_data is required');
+            }
+
+            const forecastRequest: OpportunityForecastRequest = {
+                telemetry_data: body.telemetry_data,
+                horizon_seconds: body.horizon_seconds ?? 10,
+                top_k: body.top_k ?? 3
+            };
+
+            return await this.aiServiceClient.getOpportunityForecast(forecastRequest);
+        } catch (error) {
+            if (error instanceof BadRequestException) {
+                throw error;
+            }
+            console.error('Opportunity forecast failed:', error);
+            throw new BadRequestException(`Failed to get opportunity forecast: ${error.message}`);
         }
     }
 

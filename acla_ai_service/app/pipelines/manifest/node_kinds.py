@@ -150,6 +150,13 @@ register(NodeKindSpec(
     ui_route="transformer",
 ))
 register(NodeKindSpec(
+    kind="opportunity_forecaster",
+    category="training",
+    display="Opportunity Forecaster Training",
+    description="Future successful overtake / defense probability model.",
+    ui_route="opportunity_forecaster",
+))
+register(NodeKindSpec(
     kind="llm_training",
     category="training",
     display="LLM Training",

@@ -1083,6 +1083,32 @@ def _format_observation_for_llm(data: dict) -> str:
     if it decides the observation warrants it.
     """
     event = data.get("event", "event")
+    if event == "opportunity_forecast":
+        opportunities = data.get("opportunities") or []
+        labels: List[str] = []
+        for item in opportunities[:3]:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("label_name") or item.get("label_id") or "opportunity"
+            probability = item.get("probability")
+            if isinstance(probability, (int, float)):
+                label = f"{label} {round(probability * 100)}%"
+            section = item.get("circuit_section_name")
+            if section:
+                label = f"{label} at {section}"
+            labels.append(str(label))
+        horizon = data.get("horizon_seconds")
+        horizon_text = f"next {horizon}s" if horizon is not None else "upcoming"
+        if labels:
+            return (
+                f"opportunity_forecast {horizon_text}: {', '.join(labels)}. "
+                "Explain what it means and what the driver should do next in one short engineer radio message."
+            )
+        return (
+            f"opportunity_forecast {horizon_text}: no strong opportunity labels. "
+            "If useful, tell the driver to keep building the setup in one short radio message."
+        )
+
     bits = [event]
     for k in ("section", "lap", "lap_number"):
         v = data.get(k)

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useContext, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useContext, useMemo, useCallback } from 'react';
 import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
@@ -6,6 +6,7 @@ import { detectEnvironment } from 'utils/environment';
 import { createAiCommandRegistry, frontendToolSchemas, QUERY_SCOPE_SCHEMA } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
+import { useOpportunityForecastAgent } from './use-opportunity-forecast-agent';
 
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
@@ -102,6 +103,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     // would otherwise see a stale state value.
     const neuralTtsDisabledRef = useRef<boolean>(false);
     const analysisContext = useContext(AnalysisContext);
+
+    // Utility function to generate unique message IDs
+    const generateUniqueId = useCallback((prefix: string = 'msg') => {
+        return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+    }, []);
 
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
@@ -212,6 +218,26 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         setTrackGuideEnabled(true);
     };
 
+    const handleOpportunityForecast = useCallback((summary: string) => {
+        setMessages(prev => prev
+            .filter(m => !m.isLoading)
+            .concat({
+                id: generateUniqueId('opportunity'),
+                content: summary,
+                isUser: false,
+                timestamp: new Date(),
+                kind: 'chat',
+                streamedAudio: true,
+            }));
+        try {
+            localStorage.setItem('acla-pill-msg', JSON.stringify({
+                text: summary.slice(0, 280),
+                ts: Date.now(),
+                emotion: 'hearing',
+            }));
+        } catch { /* ignore storage write failures */ }
+    }, [generateUniqueId]);
+
     const voiceConversation = useVoiceConversation({
         sessionId,
         onEvent: handleVoiceEvent,
@@ -226,10 +252,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         }),
     });
 
-    // Utility function to generate unique message IDs
-    const generateUniqueId = (prefix: string = 'msg') => {
-        return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
-    };
+    const vState = voiceConversation.state;
+    const voiceActive = vState === 'listening' || vState === 'speaking';
+
+    useOpportunityForecastAgent({
+        enabled: voiceActive,
+        liveData: analysisContext?.liveData as Record<string, any> | null,
+        sendObservation: voiceConversation.sendObservation,
+        onForecast: handleOpportunityForecast,
+    });
 
     const addStatusMessage = (type: string, content: string) => {
         const message: Message = {
@@ -395,7 +426,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
             lastGuidanceTimestampRef.current = now;
         }
-    }, [analysisContext?.latestGuidanceMessage]);
+    }, [analysisContext?.latestGuidanceMessage, generateUniqueId]);
 
     useEffect(() => {
         if (messages.length === 0) {
@@ -513,8 +544,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     // ── Voice state → mic panel display ─────────────────────────────
-    const vState = voiceConversation.state;
-    const voiceActive = vState === 'listening' || vState === 'speaking';
     const channelLabel =
         vState === 'idle' ? 'CH-1 · OFFLINE' :
         vState === 'connecting' ? 'CH-1 · CONNECTING' :
