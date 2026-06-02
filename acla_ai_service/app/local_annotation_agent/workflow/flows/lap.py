@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from app.domain.label_hierarchy import normalize_grouped_label_ids
 from app.domain.labels import LABEL_MAPPING
 from app.internal_knowledge_base import skills
 from app.local_annotation_agent import (
@@ -438,7 +439,7 @@ def _claude_task_prompt(
         "the boundary is event-shaped and circuit sections are context only. "
         "Your job is to label which circuit this is, identify a named "
         "circuit_section only when the range clearly belongs to one, and pick the "
-        "main label (+ optional ST1–ST6, + optional sub-label) by "
+        "main label (+ optional ST1-ST6, + optional sub-label) by "
         "matching the section's telemetry against each candidate label's "
         "`characteristics` block in the skill.\n"
         "\n"
@@ -482,8 +483,10 @@ def _claude_task_prompt(
         "and read each returned sub-label's `description`. Attach a "
         "sub-label ONLY when its description matches the **entire** "
         "section's telemetry — partial-fit cases stay in the "
-        "detailed-annotation flow. Re-query with different wording to "
-        "broaden.\n"
+        "detailed-annotation flow. Sub-labels are refinements for grouping "
+        "under their parent main label, not standalone labels; if you "
+        "include a sub-label, include its parent main label too. Re-query "
+        "with different wording to broaden.\n"
         "5. **Submit.** Call `submit_result` with the chosen IDs.\n"
         "\n"
         "For O / OD / MSR, always call `classify_opponent_interaction` over "
@@ -814,26 +817,5 @@ def _parse_claude(
 def _clean_label_ids(
     raw_label_ids: Any,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
-    cleaned: List[str] = []
-    rejected: List[Dict[str, Any]] = []
-    if not isinstance(raw_label_ids, list):
-        rejected.append({
-            "value": raw_label_ids, "reason": "label_ids was not a list",
-        })
-        return cleaned, rejected
-    for i, raw_lid in enumerate(raw_label_ids):
-        if not isinstance(raw_lid, str):
-            rejected.append({
-                "index": i, "value": raw_lid, "reason": "must be string",
-            })
-            continue
-        if raw_lid not in LABEL_MAPPING:
-            rejected.append({
-                "index": i, "value": raw_lid,
-                "reason": f"unknown label_id '{raw_lid}'",
-            })
-            continue
-        if raw_lid in cleaned:
-            continue
-        cleaned.append(raw_lid)
+    cleaned, rejected, _ = normalize_grouped_label_ids(raw_label_ids)
     return cleaned, rejected

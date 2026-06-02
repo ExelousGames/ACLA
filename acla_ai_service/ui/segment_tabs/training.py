@@ -20,6 +20,7 @@ from segment_tabs._training_runner import render_card, spawn
 
 _AI_SERVICE_DIR = Path(__file__).resolve().parents[2]
 _SCRIPTS = _AI_SERVICE_DIR / "scripts"
+TRAINING_ROUTES = frozenset({"classifier", "transformer", "opportunity_forecaster"})
 
 
 def render_training(active_view: str, annotation_key: Optional[str]) -> None:
@@ -152,5 +153,4 @@ def _opportunity_forecaster_form(default_ann_key: str) -> None:
             ]
             spawn("opportunity_forecaster", cmd)
             st.rerun()
-
 

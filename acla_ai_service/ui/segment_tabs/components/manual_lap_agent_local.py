@@ -31,7 +31,8 @@ def render_lap_agent_local(df, session_id, selected_annotation_key, circuit_id, 
             "shared **Planner → describe_graphs → Label Verifier → "
             "Synthesizer** harness over a local Qwen-VL GGUF model on "
             "llama-server. Same agent as detailed annotation — different "
-            "prompts and the lap-annotation skill."
+            "prompts and the lap-annotation skill. Sub-labels are kept under "
+            "their parent main label when the whole segment fits."
         )
 
         col_s1, col_s2 = st.columns(2)

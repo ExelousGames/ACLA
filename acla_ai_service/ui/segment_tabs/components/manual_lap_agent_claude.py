@@ -32,8 +32,8 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
             "`locate_circuit_section`, `classify_opponent_interaction`, "
             "`revise_range`, `submit_result`. The agent inspects the section, "
             "shrinks / extends the boundary when a rule fires, then "
-            "submits parent labels (circuit + circuit_section + ST1-ST6 + "
-            "optional main)."
+            "submits grouped labels (circuit + optional circuit_section + "
+            "main + optional ST1-ST6 + optional whole-segment sub-label)."
         )
 
         max_iterations = st.number_input(

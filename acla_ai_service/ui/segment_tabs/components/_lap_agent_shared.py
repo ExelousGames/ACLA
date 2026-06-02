@@ -29,6 +29,7 @@ from PIL import Image
 from ..shared import (
     LABEL_MAPPING, LABEL_NAME_TO_ID, build_segment, save_annotations,
 )
+from app.domain.label_hierarchy import normalize_grouped_label_ids
 from .opponent_interaction import OUTCOME_LABELS, ROLE_LABELS, format_targeted_car
 
 
@@ -515,6 +516,10 @@ def render_lap_staged_review(
         ]
         seg_labels = st.multiselect(
             "Labels", options=all_label_options, default=default_labels,
+            help=(
+                "Sub-labels are allowed when the whole segment fits them; "
+                "their parent label is kept for grouping."
+            ),
             key="lap_staged_labels",
         )
         seg_notes = st.text_area(
@@ -569,7 +574,19 @@ def _persist_lap_annotation(
     if start >= end:
         st.error("Start must be less than end.")
         return
-    label_ids = [LABEL_NAME_TO_ID[n] for n in label_names if n in LABEL_NAME_TO_ID]
+    raw_label_ids = [LABEL_NAME_TO_ID[n] for n in label_names if n in LABEL_NAME_TO_ID]
+    label_ids, rejected, added_parents = normalize_grouped_label_ids(raw_label_ids)
+    if rejected:
+        st.warning(
+            "Ignored invalid label(s): "
+            + ", ".join(str(r.get("value")) for r in rejected)
+        )
+    if added_parents:
+        notes = (
+            (notes.rstrip() + "\n\n") if notes.strip() else ""
+        ) + "Auto-added parent label(s): " + ", ".join(
+            LABEL_MAPPING.get(lid, lid) for lid in added_parents
+        )
     if not label_ids:
         st.error("No valid labels resolved.")
         return
