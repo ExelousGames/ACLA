@@ -81,6 +81,14 @@
 .TabContent {
     height: 100%;
     overflow: hidden;
-    display: flex;
     flex-direction: column;
+}
+
+.TabContent[data-state='active'] {
+    display: flex;
+}
+
+.TabContent[data-state='inactive'],
+.TabContent[hidden] {
+    display: none !important;
 }
