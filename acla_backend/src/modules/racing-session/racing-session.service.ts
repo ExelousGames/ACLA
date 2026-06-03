@@ -440,6 +440,67 @@ export class RacingSessionService {
         }
     }
 
+    async listUserSessionsForAnalysis(userId: string): Promise<Array<{
+        sessionId: string;
+        session_name: string;
+        map: string;
+        car_name: string;
+        userId: string;
+        totalDataPoints: number;
+        totalChunks: number;
+        chunkSize: number;
+    }>> {
+        const sessions = await this.racingSession.find({ user_id: userId })
+            .select('session_name map car_name user_id totalDataPoints totalChunks chunkSize dataChunkFileIds')
+            .exec();
+
+        return sessions.map((session) => ({
+            sessionId: session._id.toString(),
+            session_name: session.session_name,
+            map: session.map,
+            car_name: session.car_name,
+            userId: session.user_id,
+            totalDataPoints: session.totalDataPoints || 0,
+            totalChunks: session.dataChunkFileIds?.length || session.totalChunks || 0,
+            chunkSize: session.chunkSize || 0,
+        }));
+    }
+
+    async getUserSessionAnalysisChunk(userId: string, sessionId: string, chunkIndex: number): Promise<{
+        stream: NodeJS.ReadableStream;
+        fileSize: number;
+        totalChunks: number;
+    }> {
+        if (!Types.ObjectId.isValid(sessionId)) {
+            throw new Error('Invalid session id');
+        }
+
+        const session = await this.racingSession.findOne({ _id: sessionId, user_id: userId })
+            .select('dataChunkFileIds totalChunks')
+            .exec();
+
+        if (!session) {
+            throw new Error('Session not found');
+        }
+
+        const fileIds = session.dataChunkFileIds || [];
+        if (chunkIndex < 0 || chunkIndex >= fileIds.length) {
+            throw new Error('Chunk index out of range');
+        }
+
+        const fileId = new ObjectId(fileIds[chunkIndex].toString());
+        const [stream, fileSize] = await Promise.all([
+            this.gridfsService.downloadJSONStream(fileId, GRIDFS_BUCKETS.RACING_SESSIONS),
+            this.gridfsService.getFileSize(fileId, GRIDFS_BUCKETS.RACING_SESSIONS),
+        ]);
+
+        return {
+            stream,
+            fileSize,
+            totalChunks: fileIds.length,
+        };
+    }
+
     /**
      * Clean up temporary streaming files for a specific download session
      * @param downloadId - The download session ID

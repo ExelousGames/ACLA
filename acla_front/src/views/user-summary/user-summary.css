@@ -1,0 +1,79 @@
+.user-summary-container {
+    height: 100%;
+    overflow: auto;
+    padding: 24px;
+    background: var(--lp-bg);
+    color: var(--lp-white);
+    font-family: var(--lp-sans);
+    box-sizing: border-box;
+}
+
+.user-summary-card {
+    width: min(900px, 100%);
+    min-height: 520px;
+    padding: 24px !important;
+    background: var(--lp-bg-panel) !important;
+    border: 1px solid var(--lp-border) !important;
+    border-radius: var(--lp-radius) !important;
+    color: var(--lp-white) !important;
+}
+
+.user-summary-card .rt-Heading {
+    color: var(--lp-white);
+}
+
+.user-summary-card .rt-Text.rt-r-color-gray {
+    color: var(--lp-gray) !important;
+    font-family: var(--lp-mono);
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+}
+
+.user-summary-card .rt-Separator,
+.user-summary-card .rt-SeparatorRoot {
+    background: var(--lp-border) !important;
+}
+
+.user-summary-card .rt-Button {
+    background: var(--lp-green-dim) !important;
+    border: 1px solid var(--lp-green) !important;
+    color: var(--lp-green) !important;
+    font-family: var(--lp-mono) !important;
+    font-size: 11px !important;
+    letter-spacing: 2px !important;
+    text-transform: uppercase !important;
+    border-radius: var(--lp-radius-sm) !important;
+}
+
+.user-summary-card .rt-Button:hover {
+    background: rgba(0, 230, 118, 0.18) !important;
+}
+
+.user-summary-analysis-control {
+    align-items: flex-start;
+}
+
+.user-summary-analysis-control .rt-Text {
+    max-width: 260px;
+    font-family: var(--lp-sans) !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+}
+
+.user-summary-editor {
+    min-height: 360px;
+    resize: vertical;
+    background: rgba(14, 14, 24, 0.7) !important;
+    border: 1px solid var(--lp-border-strong) !important;
+    border-radius: var(--lp-radius-sm) !important;
+    color: var(--lp-white) !important;
+    font-family: var(--lp-mono) !important;
+    font-size: 13px !important;
+    line-height: 1.6 !important;
+    box-shadow: none !important;
+}
+
+.user-summary-editor:focus {
+    border-color: var(--lp-green) !important;
+    box-shadow: 0 0 0 3px var(--lp-green-dim) !important;
+}

@@ -14,11 +14,16 @@ export class UserProfileDto {
     email: string;
     roles: any[];
     permissions: any[];
+    userSummary?: Record<string, any>;
     isActive: boolean;
     createdAt: Date;
     lastLogin: Date;
     userId?: string; // From JWT payload
     username?: string; // From JWT payload (email)
+}
+
+export class UserSummaryDto {
+    summary: Record<string, any>;
 }
 
 export class UpdateUserPermissionsDto {

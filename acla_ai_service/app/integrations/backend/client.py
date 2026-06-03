@@ -188,6 +188,55 @@ class BackendService:
             logger.error(f"Backend request to {endpoint} failed: {str(e)}")
             raise Exception(f"Backend function call failed: {str(e)}\n")
 
+    async def get_user_analysis_sessions(self, user_id: str) -> Dict[str, Any]:
+        response = await self.call_backend_function(
+            "racing-session/analysis/user-sessions/init",
+            "POST",
+            {"userId": user_id},
+            timeout_seconds=120.0,
+        )
+        if response.get("error"):
+            raise RuntimeError(str(response["error"]))
+        return response
+
+    async def iter_user_analysis_chunks(self, user_id: str, session_meta: Dict[str, Any]):
+        """Yield raw telemetry row chunks for one user-owned racing session."""
+        if not await self.ensure_connection():
+            raise RuntimeError("Failed to establish backend connection")
+
+        total_chunks = int(session_meta.get("totalChunks") or 0)
+        session_id = session_meta.get("sessionId")
+        if not session_id:
+            return
+
+        auth_headers = self.get_auth_headers()
+        timeout = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=60.0)
+
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            url = f"{self.base_url}:{self.base_port}/racing-session/analysis/user-sessions/chunk"
+            for chunk_index in range(total_chunks):
+                response = await client.post(
+                    url,
+                    json={
+                        "userId": user_id,
+                        "sessionId": session_id,
+                        "chunkIndex": chunk_index,
+                    },
+                    headers=auth_headers,
+                )
+                response.raise_for_status()
+                chunk_rows = response.json()
+                if isinstance(chunk_rows, list):
+                    yield chunk_rows
+                elif isinstance(chunk_rows, dict) and isinstance(chunk_rows.get("data"), list):
+                    yield chunk_rows["data"]
+                else:
+                    logger.warning(
+                        "Analysis chunk %s:%s did not contain a row list",
+                        session_id,
+                        chunk_index,
+                    )
+
     async def get_all_racing_sessions_streaming(
         self,
         cache_key: str,

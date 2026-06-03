@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
+import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
 import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, MapBasicInfoListDto } from 'src/dto/racing-session.dto';
@@ -210,6 +210,81 @@ export class RacingSessionController {
             if (!res.headersSent) {
                 throw new BadRequestException(`Failed to download chunk: ${error.message}`);
             }
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('analysis/user-sessions/init')
+    async initializeUserSessionsAnalysis(
+        @Request() req,
+        @Body() body: { userId?: string }
+    ) {
+        const targetUserId = body.userId;
+        if (!targetUserId) {
+            throw new BadRequestException('userId is required');
+        }
+        this.assertCanAccessAnalysisTarget(req, targetUserId);
+
+        const sessions = await this.racingSessionService.listUserSessionsForAnalysis(targetUserId);
+        return {
+            userId: targetUserId,
+            totalSessions: sessions.length,
+            sessions,
+        };
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('analysis/user-sessions/chunk')
+    async downloadUserSessionAnalysisChunk(
+        @Request() req,
+        @Body() body: { userId?: string; sessionId?: string; chunkIndex?: number },
+        @Res() res: Response
+    ): Promise<void> {
+        try {
+            const targetUserId = body.userId;
+            if (!targetUserId || !body.sessionId || body.chunkIndex === undefined) {
+                throw new BadRequestException('userId, sessionId, and chunkIndex are required');
+            }
+            this.assertCanAccessAnalysisTarget(req, targetUserId);
+
+            const chunk = await this.racingSessionService.getUserSessionAnalysisChunk(
+                targetUserId,
+                body.sessionId,
+                Number(body.chunkIndex),
+            );
+
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Content-Length', chunk.fileSize.toString());
+            res.setHeader('X-Session-Id', body.sessionId);
+            res.setHeader('X-Chunk-Index', String(body.chunkIndex));
+            res.setHeader('X-Total-Chunks', String(chunk.totalChunks));
+
+            chunk.stream.on('error', (error) => {
+                this.logger.error(`Error streaming analysis chunk ${body.sessionId}:${body.chunkIndex}: ${error.message}`);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Failed to stream analysis chunk' });
+                }
+            });
+
+            chunk.stream.pipe(res);
+        } catch (error) {
+            this.logger.error(`Failed to stream analysis chunk: ${error.message}`);
+            if (!res.headersSent) {
+                if (error instanceof BadRequestException || error instanceof ForbiddenException) {
+                    throw error;
+                }
+                throw new BadRequestException(`Failed to stream analysis chunk: ${error.message}`);
+            }
+        }
+    }
+
+    private assertCanAccessAnalysisTarget(req: any, targetUserId: string): void {
+        const authenticatedUserId = req.user?.userId;
+        const authenticatedUsername = req.user?.username;
+        const isAiService = authenticatedUsername && authenticatedUsername === process.env.AI_SERVICE_USERNAME;
+
+        if (authenticatedUserId !== targetUserId && !isAiService) {
+            throw new ForbiddenException('Cannot access analysis data for another user');
         }
     }
 

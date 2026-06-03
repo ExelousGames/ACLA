@@ -111,6 +111,15 @@ export interface OpportunityForecastResponse {
 }
 
 // Phase 2 — text-to-speech via Kokoro
+export interface AnalyzeUserSessionsRequest {
+    user_id: string;
+}
+
+export interface AnalyzeUserSessionsResponse {
+    status: string;
+    sessionAnalysis: Record<string, any>;
+}
+
 export interface VoiceSynthesizeRequest {
     text: string;
     voice?: string;       // e.g. "af_bella"; defaults to AI service's kokoro_default_voice
@@ -196,6 +205,22 @@ export class AiServiceClient {
      * to the browser, which plays them via HTMLAudioElement, replacing
      * the robotic window.speechSynthesis output.
      */
+    async analyzeUserSessions(request: AnalyzeUserSessionsRequest): Promise<AnalyzeUserSessionsResponse> {
+        try {
+            const response = await axios.post(
+                `${this.aiServiceUrl}/racing-session/analyze-user-sessions`,
+                request,
+                { timeout: 24 * 60 * 60 * 1000 },
+            );
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service user session analysis failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
     async synthesizeVoice(request: VoiceSynthesizeRequest): Promise<Buffer> {
         try {
             const response = await axios.post(
