@@ -3,16 +3,24 @@ import { visualizationController } from 'views/lap-analysis/visualization/Visual
 import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import { FIELD_GROUPS } from 'views/lap-analysis/session-intelligence/telemetry-query';
-import { getOpportunityForecast } from 'services/opportunityForecastService';
+import { detectOvertakeTacticalState } from './overtake-agent-detector';
 
 export interface AiCommandRegistryContext {
     sessionId?: string;
     analysisContext?: any;
     // Populated during live recording. Null in post-session analysis view.
     sessionIntelligence?: SessionIntelligence | null;
+    opportunityAgentState: OpportunityAgentState;
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     getOpportunityTelemetryRows: () => Record<string, any>[];
+}
+
+export interface OpportunityAgentState {
+    intervalId: ReturnType<typeof setInterval> | null;
+    inFlight: boolean;
+    lastAlertKey: string | null;
+    lastAlertAt: number;
 }
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
@@ -60,58 +68,28 @@ export const QUERY_SCOPE_SCHEMA = {
 } as const;
 
 const _FIELD_GROUP_NAMES = Object.keys(FIELD_GROUPS).join(', ');
-const DEFAULT_OPPORTUNITY_HORIZON_SECONDS = 10;
-const DEFAULT_OPPORTUNITY_WHEN_HORIZONS_SECONDS = [6, 10, 15, 20, 30];
-const DEFAULT_OPPORTUNITY_TOP_K = 3;
+const DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS = 5;
+const OVERTAKE_AGENT_MIN_INTERVAL_SECONDS = 2;
+const OVERTAKE_AGENT_MAX_INTERVAL_SECONDS = 15;
+const OVERTAKE_AGENT_REPEAT_ALERT_MS = 20000;
 
 const toPositiveNumber = (value: unknown): number | undefined => {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 };
 
-const getOpportunityHorizons = (args: Record<string, any>): number[] => {
-    const explicit = Array.isArray(args.horizon_seconds_options)
-        ? args.horizon_seconds_options
-            .map(toPositiveNumber)
-            .filter((value): value is number => value !== undefined)
-        : [];
-
-    if (explicit.length > 0) {
-        return Array.from(new Set(explicit)).slice(0, 5);
-    }
-
-    const single = toPositiveNumber(args.horizon_seconds);
-    if (single !== undefined) {
-        return [single];
-    }
-
-    return args.question_type === 'when'
-        ? DEFAULT_OPPORTUNITY_WHEN_HORIZONS_SECONDS
-        : [DEFAULT_OPPORTUNITY_HORIZON_SECONDS];
+const getAgentIntervalSeconds = (value: unknown): number => {
+    const parsed = toPositiveNumber(value) ?? DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS;
+    return Math.min(
+        OVERTAKE_AGENT_MAX_INTERVAL_SECONDS,
+        Math.max(OVERTAKE_AGENT_MIN_INTERVAL_SECONDS, parsed),
+    );
 };
 
-const getOpportunityTopK = (value: unknown): number => {
-    const parsed = Math.floor(Number(value));
-    return Number.isFinite(parsed) && parsed > 0
-        ? Math.min(parsed, 5)
-        : DEFAULT_OPPORTUNITY_TOP_K;
-};
-
-const summarizeOpportunityForecast = (forecast: any): string => {
-    if (forecast.model_status === 'not_trained') {
-        return `next ${forecast.horizon_seconds}s: model not trained`;
-    }
-
-    const opportunities = Array.isArray(forecast.opportunities) ? forecast.opportunities : [];
-    if (opportunities.length === 0) {
-        return `next ${forecast.horizon_seconds}s: no strong opportunity`;
-    }
-
-    return `next ${forecast.horizon_seconds}s: ${opportunities.map((item: any) => {
-        const percent = Math.round(Number(item.probability || 0) * 100);
-        const section = item.circuit_section_name ? ` at ${item.circuit_section_name}` : '';
-        return `${item.label_name || item.label_id} ${percent}%${section}`;
-    }).join(' | ')}`;
+const getTacticalAlertKey = (result: any): string => {
+    const section = result.projected_section || result.next_corner?.name || 'unknown-section';
+    const opponent = result.opponent_id ?? result.opponent_slot ?? 'unknown-opponent';
+    return `${result.event}:${opponent}:${section}`;
 };
 
 export const frontendToolSchemas: FrontendToolSchema[] = [
@@ -132,45 +110,33 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         required: [],
     },
     {
-        name: 'opportunity_forecast',
-        title: 'Checking opportunity',
+        name: 'start_overtake_agent',
+        title: 'Starting overtake agent',
         description:
-            'Run exactly one live opportunity forecast and return upcoming overtake or defense opportunities. ' +
-            'Use when the driver asks if they can overtake, defend, pass, attack, or find an opportunity. ' +
-            'For "can I overtake in the next 6 seconds", pass horizon_seconds=6 and question_type=next_seconds. ' +
-            'For "any opportunity in the next corner", pass question_type=next_corner. ' +
-            'For "when can I overtake", pass question_type=when so several horizons are checked in this one call. ' +
-            'Do not use this to start background monitoring.',
+            'Open continuous overtake agent mode. Use only when the driver explicitly asks to open, enable, watch, ' +
+            'monitor, or plan attack/defense overtake agent mode. Do not use for one-off questions like "when can I overtake". ' +
+            'The agent uses live car coordinates to detect attack windows and defense threats until stopped.',
         properties: {
-            question_type: {
-                type: 'string',
-                enum: ['next_seconds', 'next_corner', 'when', 'general'],
-                description:
-                    'Use next_seconds for a specified time, next_corner for the upcoming corner, and when for timing questions.',
-            },
-            horizon_seconds: {
+            interval_seconds: {
                 type: 'number',
-                description:
-                    'Single forecast horizon in seconds. Use the driver-specified time, e.g. 6 for "next 6 seconds". Default 10.',
-            },
-            horizon_seconds_options: {
-                type: 'array',
-                items: { type: 'number' },
-                description:
-                    'Multiple horizons to check in one tool call. Use for "when can I overtake"; default is 6, 10, 15, 20, 30.',
-            },
-            top_k: {
-                type: 'integer',
-                description: 'Maximum number of opportunity labels to return. Default 3.',
+                description: 'How often to check while agent mode is active. Default 5; clamped to 2-15.',
             },
         },
+        required: [],
+    },
+    {
+        name: 'stop_overtake_agent',
+        title: 'Stopping overtake agent',
+        description:
+            'Stop background overtake planning. Use when the driver asks you to stop watching for passes or leave them alone.',
+        properties: {},
         required: [],
     },
     {
         name: 'get_next_corner',
         title: 'Looking up next corner',
         description:
-            'Name and normalized distance of the next corner ahead. Use with opportunity_forecast when the driver asks about the next corner.',
+            'Name and normalized distance of the next corner ahead.',
         properties: {},
         required: [],
     },
@@ -299,41 +265,82 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         return { status: 'stopped' };
     },
 
-    async opportunity_forecast(args) {
+    async start_overtake_agent(args, ctx) {
         const telemetryRows = context.getOpportunityTelemetryRows();
         if (telemetryRows.length === 0) {
             return { error: 'no_live_telemetry' };
         }
 
-        const questionType = ['next_seconds', 'next_corner', 'when'].includes(args.question_type)
-            ? args.question_type
-            : 'general';
-        const horizonsSeconds = getOpportunityHorizons(args);
-        const topK = getOpportunityTopK(args.top_k);
-        const nextCorner = questionType === 'next_corner'
-            ? context.sessionIntelligence?.getNextCorner() ?? null
-            : null;
-        const forecasts = await Promise.all(horizonsSeconds.map((horizonSeconds) =>
-            getOpportunityForecast({
-                telemetry_data: telemetryRows,
-                horizon_seconds: horizonSeconds,
-                top_k: topK,
-            })
-        ));
-        const firstForecast = forecasts[0];
+        const agent = context.opportunityAgentState;
+        if (agent.intervalId) {
+            return { status: 'already_running', agent_mode: 'overtake' };
+        }
+
+        const intervalSeconds = getAgentIntervalSeconds(args.interval_seconds);
+
+        const runTacticalCycle = async (notify: boolean): Promise<any> => {
+            if (agent.inFlight) {
+                return { status: 'skipped_in_flight' };
+            }
+
+            const rows = context.getOpportunityTelemetryRows();
+            if (rows.length === 0) {
+                return { status: 'no_live_telemetry' };
+            }
+
+            agent.inFlight = true;
+            try {
+                const result = detectOvertakeTacticalState(rows);
+
+                if (notify && result.status === 'actionable') {
+                    const alertKey = getTacticalAlertKey(result);
+                    const now = Date.now();
+                    if (agent.lastAlertKey !== alertKey || now - agent.lastAlertAt > OVERTAKE_AGENT_REPEAT_ALERT_MS) {
+                        agent.lastAlertKey = alertKey;
+                        agent.lastAlertAt = now;
+                        ctx.sendObservation({
+                            ...result,
+                            source: 'overtake_agent',
+                            agent_mode: 'overtake',
+                            telemetry_rows: rows.length,
+                        });
+                    }
+                }
+
+                return {
+                    status: 'checked',
+                    tactical_state: result,
+                    telemetry_rows: rows.length,
+                };
+            } finally {
+                agent.inFlight = false;
+            }
+        };
+
+        const initial = await runTacticalCycle(false);
+
+        agent.intervalId = setInterval(() => {
+            void runTacticalCycle(true);
+        }, intervalSeconds * 1000);
 
         return {
-            ...firstForecast,
-            request: {
-                question_type: questionType,
-                horizons_seconds: horizonsSeconds,
-                top_k: topK,
-            },
-            forecasts,
-            summaries: forecasts.map(summarizeOpportunityForecast),
-            next_corner: nextCorner,
-            telemetry_rows: telemetryRows.length,
+            status: 'started',
+            agent_mode: 'overtake',
+            interval_seconds: intervalSeconds,
+            initial,
         };
+    },
+
+    async stop_overtake_agent() {
+        const agent = context.opportunityAgentState;
+        if (agent.intervalId) {
+            clearInterval(agent.intervalId);
+        }
+        agent.intervalId = null;
+        agent.inFlight = false;
+        agent.lastAlertKey = null;
+        agent.lastAlertAt = 0;
+        return { status: 'stopped', agent_mode: 'overtake' };
     },
 
     // ── Expert line ───────────────────────────────────────────────────────────

@@ -68,10 +68,12 @@ Tool use:
 - Don't offer to do things — either call the tool now, or say you can't
   and stop. No "would you like…", no "shall I…", no pivoting to a
   different track or topic the driver didn't ask about.
-- If an opportunity_forecast tool is available and the driver asks about
-  overtake, defense, passing, attacking, the next corner, or when an
-  opportunity is coming, call it once and answer from that result. Do not
-  start background monitoring unless a separate tool explicitly supports it.
+- Use start_overtake_agent only when the driver explicitly asks to open,
+  enable, watch, monitor, or plan with overtake agent mode. Do not start it
+  for one-off questions like "when can I overtake?" If they ask a one-off
+  timing question, say that live timing needs overtake agent mode opened.
+- Use stop_overtake_agent when the driver asks to stop, disable, cancel, or
+  close overtake agent mode.
 - When analyze_telemetry returns labels with definitions and remedies,
   pick the 1-2 that matter most and weave them into a natural comment.
   Don't read the whole catalog aloud.
@@ -1087,7 +1089,45 @@ def _format_observation_for_llm(data: dict) -> str:
     if it decides the observation warrants it.
     """
     event = data.get("event", "event")
+    if event in ("attack_window", "defense_threat"):
+        section = data.get("projected_section") or None
+        next_corner = data.get("next_corner") or {}
+        if not isinstance(next_corner, dict):
+            next_corner = {}
+        corner_name = next_corner.get("name")
+        location = section or corner_name or "the next section"
+        time_to_overlap = data.get("time_to_overlap_seconds")
+        closing_speed = data.get("closing_speed_mps")
+        distance = data.get("distance_m")
+        opponent = data.get("opponent_id")
+        if opponent is None:
+            opponent = data.get("opponent_slot")
+
+        details: List[str] = []
+        if isinstance(time_to_overlap, (int, float)):
+            details.append(f"arriving in {round(float(time_to_overlap), 1)}s")
+        if isinstance(closing_speed, (int, float)):
+            details.append(f"closing speed {round(float(closing_speed), 1)} m/s")
+        if isinstance(distance, (int, float)):
+            details.append(f"distance {round(float(distance), 1)}m")
+        if opponent is not None:
+            details.append(f"opponent {opponent}")
+        detail_text = ", ".join(details) if details else "coordinate-derived relative motion"
+
+        if event == "attack_window":
+            return (
+                f"overtake_agent attack_window at {location}: {detail_text}. "
+                "Tell the driver an attack is opening and give one short action."
+            )
+        return (
+            f"overtake_agent defense_threat at {location}: {detail_text}. "
+            "Tell the driver to defend and give one short action."
+        )
+
     if event == "opportunity_forecast":
+        selected = data.get("selected_opportunity") or {}
+        if not isinstance(selected, dict):
+            selected = {}
         opportunities = data.get("opportunities") or []
         labels: List[str] = []
         for item in opportunities[:3]:
@@ -1103,13 +1143,35 @@ def _format_observation_for_llm(data: dict) -> str:
             labels.append(str(label))
         horizon = data.get("horizon_seconds")
         horizon_text = f"next {horizon}s" if horizon is not None else "upcoming"
+        mode = data.get("mode")
+        source = data.get("source")
+        next_corner = data.get("next_corner") or {}
+        if not isinstance(next_corner, dict):
+            next_corner = {}
+        corner_name = next_corner.get("name")
+        section_match = data.get("circuit_section_match") or {}
+        best_match = section_match.get("best_match") if isinstance(section_match, dict) else None
+        selected_section = selected.get("circuit_section_name")
+        if not selected_section and isinstance(best_match, dict):
+            selected_section = best_match.get("name")
+        location_bits = []
+        if selected_section:
+            location_bits.append(f"forecast section {selected_section}")
+        if corner_name:
+            location_bits.append(f"next corner {corner_name}")
+        location_text = f" ({'; '.join(location_bits)})" if location_bits else ""
         if labels:
+            if mode == "agent" or source == "overtake_agent":
+                return (
+                    f"overtake_agent alert {horizon_text}{location_text}: {', '.join(labels)}. "
+                    "Tell the driver the next possible pass window relative to the circuit section and give one short action."
+                )
             return (
-                f"opportunity_forecast {horizon_text}: {', '.join(labels)}. "
+                f"opportunity_forecast {horizon_text}{location_text}: {', '.join(labels)}. "
                 "Explain what it means and what the driver should do next in one short engineer radio message."
             )
         return (
-            f"opportunity_forecast {horizon_text}: no strong opportunity labels. "
+            f"opportunity_forecast {horizon_text}{location_text}: no strong opportunity labels. "
             "If useful, tell the driver to keep building the setup in one short radio message."
         )
 

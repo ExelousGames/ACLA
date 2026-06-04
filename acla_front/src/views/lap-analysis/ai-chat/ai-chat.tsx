@@ -3,7 +3,12 @@ import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
-import { createAiCommandRegistry, frontendToolSchemas, QUERY_SCOPE_SCHEMA } from './ai-command-registry';
+import {
+    createAiCommandRegistry,
+    frontendToolSchemas,
+    QUERY_SCOPE_SCHEMA,
+} from './ai-command-registry';
+import type { OpportunityAgentState } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 
@@ -11,7 +16,7 @@ const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as co
 type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
-const MAX_OPPORTUNITY_FORECAST_ROWS = 80;
+const MAX_OVERTAKE_AGENT_ROWS = 300;
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -96,6 +101,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const neuralTtsDisabledRef = useRef<boolean>(false);
     const analysisContext = useContext(AnalysisContext);
     const opportunityForecastRowsRef = useRef<Record<string, any>[]>([]);
+    const opportunityAgentStateRef = useRef<OpportunityAgentState>({
+        intervalId: null,
+        inFlight: false,
+        lastAlertKey: null,
+        lastAlertAt: 0,
+    });
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -105,7 +116,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         opportunityForecastRowsRef.current = [
             ...opportunityForecastRowsRef.current,
             liveData,
-        ].slice(-MAX_OPPORTUNITY_FORECAST_ROWS);
+        ].slice(-MAX_OVERTAKE_AGENT_ROWS);
     }, [analysisContext?.liveData]);
 
     // Utility function to generate unique message IDs
@@ -231,6 +242,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             sessionId,
             analysisContext,
             sessionIntelligence: analysisContext?.sessionIntelligence,
+            opportunityAgentState: opportunityAgentStateRef.current,
             startTrackGuide,
             setTrackGuideEnabled,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
@@ -449,7 +461,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     }, [TrackGuideEnabled, sessionId]);
 
     useEffect(() => {
+        const opportunityAgent = opportunityAgentStateRef.current;
         return () => {
+            if (opportunityAgent.intervalId) {
+                clearInterval(opportunityAgent.intervalId);
+                opportunityAgent.intervalId = null;
+            }
+
             const existingCharts = visualizationController.getCurrentInstances();
             existingCharts.forEach(chart => {
                 if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
