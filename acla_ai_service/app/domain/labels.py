@@ -5,7 +5,95 @@ from any framework or service. Moved from app/models/segment_models.py
 in refactor/hexagonal-v1, Step 3.
 """
 
-from typing import Dict, List
+from typing import Any, Dict, List
+
+
+LEGACY_LABEL_MAP: Dict[Any, str] = {
+    # Original integer-coded main labels.
+    "3": "EA",
+    "5": "RM",
+    3: "EA",
+    5: "RM",
+    "1": "O",
+    "2": "MD",
+    "4": "PS",
+
+    # Mistake split (Practice vs Racing).
+    "MS": "MSP",
+    "MS1": "MSP1",
+    "MS2": "MSP2",
+    "MS3": "MSP3",
+    "MS4": "MSP4",
+    "MS5": "MSP5",
+    "MS6": "MSP6",
+    "MS7": "MSP7",
+    "MS8": "MSP8",
+    "MS9": "MSP9",
+    "MS10": "MSP10",
+    "MS11": "MSP11",
+    "MS13": "MSP13",
+    "MS14": "MSP14",
+    "MS15": "MSP15",
+    "MS16": "MSP16",
+    "MS17": "MSP17",
+    "MS18": "MSP18",
+    "MS19": "MSP19",
+    "MS20": "MSP20",
+    "MS21": "MSP21",
+    "MS22": "MSP22",
+    "MS23": "MSP23",
+    "MS24": "MSP24",
+    "MS25": "MSP25",
+    "MS26": "MSP26",
+    "MS27": "MSP27",
+    "MS28": "MSP28",
+    "MS29": "MSP29",
+    "MS30": "MSP30",
+    "MS31": "MSP31",
+    "MS32": "MSP32",
+    "MS33": "MSP33",
+    "MS34": "MSP34",
+    "MS35": "MSP35",
+    "MS36": "MSP36",
+    "MS37": "MSP37",
+    "MS38": "MSP38",
+    "MS41": "MSP41",
+    "MS42": "MSP42",
+    "MS43": "MSP43",
+    "MS44": "MSP44",
+    "MS45": "MSP45",
+    "MS46": "MSP46",
+    "MS47": "MSP47",
+    "MS48": "MSP48",
+    "MS49": "MSP49",
+    "MS50": "MSP50",
+    "MS51": "MSP51",
+    "MS52": "MSP52",
+    "MS53": "MSR1",
+    "MS54": "MSR2",
+
+    # Overtaking split (offensive O vs defensive OD).
+    "O2": "OD1",
+    "O6": "OD2",
+}
+
+
+def normalize_label_id(label: Any) -> str:
+    return str(LEGACY_LABEL_MAP.get(label, LEGACY_LABEL_MAP.get(str(label), label)))
+
+
+def normalize_label_ids(labels: Any) -> List[str]:
+    if not isinstance(labels, list):
+        return []
+
+    normalized: List[str] = []
+    seen = set()
+    for label in labels:
+        current = normalize_label_id(label)
+        if current not in seen:
+            normalized.append(current)
+            seen.add(current)
+    return normalized
 
 
 LABEL_MAPPING: Dict[str, str] = {
@@ -148,6 +236,20 @@ LABEL_MAPPING: Dict[str, str] = {
     "ST4": "Exit corner leading to straight",
     "ST5": "Between consecutive corners",
     "ST6": "Consecutive corners with no straight in between",
+    "ST7": "Constant-radius corner",
+    "ST8": "Increasing-radius corner",
+    "ST9": "Decreasing-radius corner",
+    "ST10": "Hairpin corner",
+    "ST11": "Chicane or esses",
+    "ST12": "Entry altitude uphill",
+    "ST13": "Entry altitude level",
+    "ST14": "Entry altitude downhill",
+    "ST15": "Apex altitude uphill",
+    "ST16": "Apex altitude level",
+    "ST17": "Apex altitude downhill",
+    "ST18": "Exit altitude uphill",
+    "ST19": "Exit altitude level",
+    "ST20": "Exit altitude downhill",
 }
 LABEL_NAME_TO_ID: Dict[str, str] = {v: k for k, v in LABEL_MAPPING.items()}
 
@@ -160,9 +262,9 @@ MAIN_LABEL_GUIDELINES: Dict[str, str] = {
     "RM": "Recovery & Merge: The driver is recovering from mistake such as slower speed. identify if driver is recovery from low speed, off-track, or merge back to expert line.",
     "MSP": "Practice Mistake: A technical driving error (timing, line, brake/throttle modulation, gear, off-track, …) NOT caused by interaction with another car. \n   - Step 1: Analyze the 'Time Difference to Expert' graph; a mistake normally causes this time gap to increase continuously without decreasing shortly after.\n   - Step 2: Examine the differences in 'throttle' and 'brake' between the player and the expert to find out why the player is slower.\n   - Step 3: Examine the 'push_limit' graph to find understeer or oversteer, which could lead to lower speed.\n   - Step 4: Check the 'Trajectory' map for mistakes caused by deviations from the optimal line.\n   - Step 5: Find the MSP sub-label that describes the *root cause*.",
     "MSR": "Racing Mistake: Time / position loss caused by an interaction with a close opponent. Requires `classify_opponent_interaction` with `outcome: failed_attack` or `outcome: broken_defense`, `gates.MSR: true`, and `label_gates.MSR: true`. Failed overtakes mirror the O subtypes (use MSR3 for a failed O1 late-brake attack, MSR4 for a failed O3 outside-line sweep, MSR5 for a failed O4 switchback, MSR6 for a failed O5 slipstream gain). Broken defenses mirror OD (MSR7 for a broken OD1 inside cover, MSR8 for a broken OD2 defensive lift). Use the generic MSR1 / MSR2 only when the attempt type cannot be identified from telemetry. If no adverse classifier outcome is present, it's not MSR.",
-    "brands_hatch": "Circuit Feature (Brands Hatch):Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Brands Hatch circuit. Also, identify the shape of the segment using labels ST1-6 ",
-    "silverstone": "Circuit Feature (Silverstone): Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Silverstone circuit. Also, identify the shape of the segment using labels ST1-6.",
-    "Segment Type": "Segment Type: if the segment contains a corner, label the shape as in the corner. if the segment is on the straight, label as on the straight. if the segment is approaching a corner but not yet in it, label as approach to corner. if the segment is exiting a corner, label as exit corner. if the segment is between corners and hasnt be name yet, label as between corners."
+    "brands_hatch": "Circuit Feature (Brands Hatch):Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Brands Hatch circuit. Also, identify the shape of the segment using ST labels.",
+    "silverstone": "Circuit Feature (Silverstone): Look at the Trajectories Overlay and Identify specific named corners or straight sections of the Silverstone circuit. Also, identify the shape of the segment using ST labels.",
+    "Segment Type": "Segment Type: use ST1-ST6 for the base segment shape. For corner segments, add one corner-shape refinement from ST7-ST11 when clear, and add entry, apex, and exit altitude labels from ST12-ST20 when altitude evidence is clear."
 }
 
 LABEL_IMAGE_MAP: Dict[str, str] = {
@@ -182,14 +284,17 @@ LABEL_CATEGORIES: Dict[str, List[str]] = {
     "silverstone":["silverstone1","silverstone2","silverstone3","silverstone4","silverstone5","silverstone6","silverstone7","silverstone8","silverstone9","silverstone10","silverstone11","silverstone12","silverstone13","silverstone14","silverstone15","silverstone16","silverstone17","silverstone18","silverstone20","silverstone21","silverstone19"],
     "MSP":["MSP1","MSP2","MSP3","MSP4","MSP5","MSP6","MSP7","MSP8","MSP9","MSP10","MSP11","MSP13","MSP14","MSP15","MSP16","MSP17","MSP18","MSP19","MSP20","MSP21","MSP22","MSP23","MSP24","MSP25","MSP26","MSP27","MSP28","MSP29","MSP30","MSP31","MSP32","MSP33","MSP34","MSP35","MSP36","MSP37","MSP38","MSP41","MSP42","MSP43","MSP44","MSP45","MSP46","MSP47","MSP48","MSP49","MSP50","MSP51","MSP52"],
     "MSR":["MSR1","MSR2","MSR3","MSR4","MSR5","MSR6","MSR7","MSR8"],
-    "Segment Type": ["ST1", "ST2", "ST3", "ST4", "ST5", "ST6"]
+    "Segment Type": ["ST1", "ST2", "ST3", "ST4", "ST5", "ST6", "ST7", "ST8", "ST9", "ST10", "ST11", "ST12", "ST13", "ST14", "ST15", "ST16", "ST17", "ST18", "ST19", "ST20"]
 }
 
 
 __all__ = [
+    "LEGACY_LABEL_MAP",
     "LABEL_MAPPING",
     "LABEL_NAME_TO_ID",
     "MAIN_LABEL_GUIDELINES",
     "LABEL_IMAGE_MAP",
     "LABEL_CATEGORIES",
+    "normalize_label_id",
+    "normalize_label_ids",
 ]

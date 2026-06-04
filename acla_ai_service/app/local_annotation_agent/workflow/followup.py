@@ -159,6 +159,12 @@ class _ToolSurface:
         att = compute_expert_phases(self.df, s, e)
         return json.dumps({"phases_range": [s, e], "data": att.content}, default=str)
 
+    def measure_segment_shape(self, start: int, end: int) -> str:
+        from app.shared.annotation_agent_tools import measure_segment_shape
+        s, e = self._clamp(start, end)
+        att = measure_segment_shape(self.df, s, e)
+        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+
     def locate_circuit_section(self, start: int, end: int) -> str:
         from app.shared.annotation_agent_tools import locate_circuit_section
         s, e = self._clamp(start, end)
@@ -254,6 +260,16 @@ def _build_tool_set(surface: _ToolSurface):
         return {"content": [{"type": "text", "text": text}]}
 
     @tool(
+        "measure_segment_shape",
+        "Measure base segment shape, corner-shape refinement, and "
+        "entry/apex/exit altitude trends for ST labels.",
+        {"start": int, "end": int},
+    )
+    async def measure_segment_shape(args):
+        text = surface.measure_segment_shape(int(args["start"]), int(args["end"]))
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
         "locate_circuit_section",
         "Identify which named circuit_section the iloc window overlaps.",
         {"start": int, "end": int},
@@ -320,13 +336,14 @@ def _build_tool_set(surface: _ToolSurface):
 
     tools_list = [
         list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
-        compute_expert_phases, locate_circuit_section,
+        compute_expert_phases, measure_segment_shape, locate_circuit_section,
         find_nearest_opponent, classify_opponent_interaction,
         query_opponent_trajectory, search_labels,
     ]
     tool_names = [f"mcp__followup__{t}" for t in [
         "list_graphs", "get_graph_guidance", "render_graph", "peek_graph",
-        "query_telemetry", "compute_expert_phases", "locate_circuit_section",
+        "query_telemetry", "compute_expert_phases", "measure_segment_shape",
+        "locate_circuit_section",
         "find_nearest_opponent", "classify_opponent_interaction",
         "query_opponent_trajectory", "search_labels",
     ]]
@@ -420,8 +437,8 @@ def _build_system_prompt(
         "### How to answer\n"
         "- Ground every claim in telemetry evidence. Cite ilocs and values. "
         "Use `render_graph` / `query_telemetry` / `compute_expert_phases` "
-        "/ `classify_opponent_interaction` / `find_nearest_opponent` "
-        "/ `query_opponent_trajectory` "
+        "/ `measure_segment_shape` / `classify_opponent_interaction` "
+        "/ `find_nearest_opponent` / `query_opponent_trajectory` "
         "to re-inspect when the question demands fresh evidence.\n"
         "- Look labels up with `search_labels` (describe the behaviour, or "
         "pass the label's name/parent) to pull its description + guideline "

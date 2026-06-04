@@ -1,6 +1,6 @@
 """
-Service for training and using an LSTM Classifier to identify behavioral segments.
-Refactored to support variable length segments and learn temporal relations.
+Service for training and using a 1D-CNN classifier to identify behavioral segments.
+Refactored to support variable length segments and learn local temporal relations.
 """
 
 import numpy as np
@@ -19,6 +19,7 @@ from typing import List, Dict, Any, Tuple, Optional, Iterator
 import asyncio
 import base64
 import json
+import logging
 import shutil
 import random
 import hashlib
@@ -26,7 +27,7 @@ import copy
 from collections import defaultdict
 
 from app.storage import get_shared_telemetry_store
-from app.domain.labels import LABEL_MAPPING
+from app.domain.labels import LABEL_MAPPING, normalize_label_id, normalize_label_ids
 from app.domain.segment import AnnotatedSegment, PredictedSegment, SegmentFeatureCatalog
 
 # Extracted in refactor/hexagonal-v4 — Page 5 of the architecture diagram.
@@ -38,6 +39,8 @@ from app.storage.datasets.segment_dataset import (
     compute_derived_features,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models", max_length: int = 100):
@@ -47,12 +50,15 @@ class SegmentClassifierService:
         self.mlb_path = self.models_directory / "segment_labels.joblib"
         self.scaler_path = self.models_directory / "segment_scaler.joblib"
         self.pos_weight_path = self.models_directory / "segment_pos_weight.pt"
+        self.thresholds_path = self.models_directory / "segment_thresholds.json"
         self.store = get_shared_telemetry_store()
         self.model = None
         self.mlb = None 
         self.scaler = None
         self.pos_weight = None
         self.label_counts = {}
+        self.feature_names = None
+        self.label_thresholds = {}
         
         # Device selection with explicit AMD/NVIDIA support check
         if torch.cuda.is_available():
@@ -76,6 +82,151 @@ class SegmentClassifierService:
                 print(f"Debug: Error getting torch version info: {e}")
 
         self.max_length = max_length
+
+    def _current_feature_names(self) -> List[str]:
+        return SegmentFeatureCatalog.get_all_available_features()
+
+    def _legacy_feature_names_for_scaler(self, scaler_feature_count: Optional[int]) -> Optional[List[str]]:
+        """Feature layout used by artifacts trained before gap columns were added."""
+        if scaler_feature_count is None:
+            return None
+
+        current_features = self._current_feature_names()
+        legacy_features = []
+        replaced_gap_columns = False
+
+        for feature in current_features:
+            if feature == "Graphics_gap_ahead":
+                legacy_features.append("Graphics_current_tyre_set")
+                replaced_gap_columns = True
+            elif feature == "Graphics_gap_behind":
+                replaced_gap_columns = True
+                continue
+            else:
+                legacy_features.append(feature)
+
+        if replaced_gap_columns and len(legacy_features) * 2 == scaler_feature_count:
+            return legacy_features
+        return None
+
+    def _scaler_feature_count(self) -> Optional[int]:
+        if self.scaler is None:
+            return None
+        count = getattr(self.scaler, "n_features_in_", None)
+        if count is not None:
+            return int(count)
+        mean = getattr(self.scaler, "mean_", None)
+        if mean is not None:
+            return int(len(mean))
+        return None
+
+    def _feature_names_for_model(self) -> List[str]:
+        scaler_feature_count = self._scaler_feature_count()
+        if self.feature_names:
+            if scaler_feature_count is None or len(self.feature_names) * 2 == scaler_feature_count:
+                return list(self.feature_names)
+            self.feature_names = None
+
+        current_features = self._current_feature_names()
+        if scaler_feature_count == len(current_features) * 2:
+            self.feature_names = current_features
+            return list(current_features)
+
+        legacy_features = self._legacy_feature_names_for_scaler(scaler_feature_count)
+        if legacy_features is not None:
+            self.feature_names = legacy_features
+            return list(legacy_features)
+
+        self.feature_names = current_features
+        return list(current_features)
+
+    def _prepare_numeric_features(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """Return numeric model features in the exact order expected by the scaler."""
+        expected_features = self._feature_names_for_model()
+        missing_features = [feature for feature in expected_features if feature not in dataframe.columns]
+        if missing_features:
+            logger.warning(
+                "segment_classifier input missing %d/%d expected feature columns; filling with 0. Sample: %s",
+                len(missing_features),
+                len(expected_features),
+                missing_features[:10],
+            )
+        df = dataframe.reindex(columns=expected_features, fill_value=0)
+        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+        if df.empty:
+            return df
+        return compute_derived_features(df)
+
+    def _load_label_thresholds(self) -> None:
+        if not self.thresholds_path.exists():
+            self.label_thresholds = {}
+            return
+
+        try:
+            data = json.loads(self.thresholds_path.read_text())
+        except Exception as exc:
+            logger.warning("segment_classifier threshold file could not be read: %s", exc)
+            self.label_thresholds = {}
+            return
+
+        raw_thresholds = data.get("thresholds", data) if isinstance(data, dict) else {}
+        if not isinstance(raw_thresholds, dict):
+            self.label_thresholds = {}
+            return
+
+        thresholds = {}
+        for label, value in raw_thresholds.items():
+            try:
+                threshold = float(value)
+            except (TypeError, ValueError):
+                continue
+            if 0.0 < threshold < 1.0:
+                thresholds[str(label)] = threshold
+        self.label_thresholds = thresholds
+
+    def _save_label_thresholds(self) -> None:
+        payload = {
+            "version": 1,
+            "defaultThreshold": 0.5,
+            "thresholds": self.label_thresholds,
+        }
+        self.thresholds_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+    def _threshold_for_label(self, label: Any) -> float:
+        return float(self.label_thresholds.get(str(label), 0.5))
+
+    def _thresholds_for_classes(self) -> np.ndarray:
+        if self.mlb is None:
+            return np.array([], dtype=float)
+        return np.array([self._threshold_for_label(label) for label in self.mlb.classes_], dtype=float)
+
+    def _fit_label_thresholds(self, probabilities: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
+        """Choose per-label thresholds that maximize validation F1."""
+        thresholds: Dict[str, float] = {}
+        candidates = np.arange(0.10, 0.91, 0.05)
+
+        for i, label in enumerate(self.mlb.classes_):
+            y_true = targets[:, i].astype(bool)
+            y_score = probabilities[:, i]
+            best_threshold = 0.5
+            best_f1 = -1.0
+
+            for threshold in candidates:
+                y_pred = y_score > threshold
+                tp = np.logical_and(y_pred, y_true).sum()
+                fp = np.logical_and(y_pred, ~y_true).sum()
+                fn = np.logical_and(~y_pred, y_true).sum()
+                precision = tp / (tp + fp + 1e-8)
+                recall = tp / (tp + fn + 1e-8)
+                f1 = 2 * precision * recall / (precision + recall + 1e-8)
+
+                if f1 > best_f1 or (f1 == best_f1 and abs(threshold - 0.5) < abs(best_threshold - 0.5)):
+                    best_f1 = f1
+                    best_threshold = float(threshold)
+
+            thresholds[str(label)] = round(best_threshold, 2)
+
+        return thresholds
 
     def _compute_segment_hash(self, segment_dict: Dict) -> str:
         """Compute deterministic hash for a segment based on its content."""
@@ -104,31 +255,182 @@ class SegmentClassifierService:
             
         return hashlib.md5(hash_data.encode()).hexdigest()
     
-    def _assign_split(self, segment_hash: str, val_split: float) -> str:
-        """Deterministically assign segment to train or val based on hash."""
+    def _assign_split(self, hash_value: str, val_split: float) -> str:
+        """Deterministically assign an item/group to train or val based on hash."""
         # Use first 8 characters of hash to generate a number between 0 and 1
-        hash_int = int(segment_hash[:8], 16)
+        hash_int = int(hash_value[:8], 16)
         hash_normalized = hash_int / (16**8)
         
         return "val" if hash_normalized < val_split else "train"
 
+    def _segment_group_key(self, segment_dict: Dict[str, Any]) -> str:
+        """Return the Static_track split key for an annotated segment."""
+        value = segment_dict.get("Static_track")
+        if value not in (None, ""):
+            value = str(value).strip()
+            if value:
+                return value
+
+        telemetry_data = segment_dict.get("telemetry_data")
+        if isinstance(telemetry_data, list) and telemetry_data:
+            first_row = telemetry_data[0]
+            if isinstance(first_row, dict):
+                value = first_row.get("Static_track")
+                if value not in (None, ""):
+                    value = str(value).strip()
+                    if value:
+                        return value
+
+        for row in telemetry_data or []:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("Static_track")
+            if value not in (None, ""):
+                value = str(value).strip()
+                if value:
+                    return value
+
+        try:
+            fallback_data = json.dumps(segment_dict, sort_keys=True, default=str)
+        except Exception:
+            fallback_data = str(segment_dict)
+        fallback_hash = hashlib.md5(fallback_data.encode()).hexdigest()
+        return f"segment:{fallback_hash}"
+
+    def _segment_session_key(self, segment_dict: Dict[str, Any]) -> str:
+        """Return the session-level split key within a Static_track group."""
+        for key in ("session_id", "sessionId", "sessionID", "chunk_index", "chunk_id"):
+            value = segment_dict.get(key)
+            if value not in (None, ""):
+                value = str(value).strip()
+                if value:
+                    return value
+
+        telemetry_data = segment_dict.get("telemetry_data")
+        for row in telemetry_data or []:
+            if not isinstance(row, dict):
+                continue
+            for key in ("session_id", "sessionId", "sessionID", "chunk_index", "chunk_id"):
+                value = row.get(key)
+                if value not in (None, ""):
+                    value = str(value).strip()
+                    if value:
+                        return value
+
+        try:
+            fallback_data = json.dumps(segment_dict, sort_keys=True, default=str)
+        except Exception:
+            fallback_data = str(segment_dict)
+        fallback_hash = hashlib.md5(fallback_data.encode()).hexdigest()
+        return f"segment:{fallback_hash}"
+
+    def _rebalance_track_label_splits(
+        self,
+        track_key: str,
+        session_keys: List[str],
+        session_splits: Dict[str, str],
+        session_label_counts: Dict[str, Dict[Any, int]],
+    ) -> None:
+        """Move sessions within a track so splittable labels appear in train and val."""
+        if len(session_keys) < 2:
+            return
+
+        label_to_sessions = defaultdict(list)
+        for session_key in session_keys:
+            for label, count in session_label_counts[session_key].items():
+                if count > 0:
+                    label_to_sessions[label].append(session_key)
+
+        splittable_labels = sorted(
+            label
+            for label, label_session_keys in label_to_sessions.items()
+            if len(label_session_keys) > 1
+        )
+        if not splittable_labels:
+            return
+
+        splittable_label_set = set(splittable_labels)
+        max_moves = len(session_keys) * len(splittable_labels) * 2
+
+        for _ in range(max_moves):
+            train_counts = defaultdict(int)
+            val_counts = defaultdict(int)
+            split_session_counts = defaultdict(int)
+
+            for session_key in session_keys:
+                split = session_splits[session_key]
+                split_session_counts[split] += 1
+                target_counts = val_counts if split == "val" else train_counts
+                for label, count in session_label_counts[session_key].items():
+                    target_counts[label] += count
+
+            move = None
+            for label in splittable_labels:
+                if train_counts[label] == 0:
+                    source_split = "val"
+                    target_split = "train"
+                    source_counts = val_counts
+                elif val_counts[label] == 0:
+                    source_split = "train"
+                    target_split = "val"
+                    source_counts = train_counts
+                else:
+                    continue
+
+                candidates = [
+                    session_key
+                    for session_key in label_to_sessions[label]
+                    if session_splits[session_key] == source_split
+                ]
+                valid_candidates = []
+                for session_key in candidates:
+                    if split_session_counts[source_split] <= 1:
+                        continue
+                    candidate_counts = session_label_counts[session_key]
+                    would_empty_label = any(
+                        moved_label in splittable_label_set
+                        and source_counts[moved_label] - moved_count <= 0
+                        for moved_label, moved_count in candidate_counts.items()
+                    )
+                    if not would_empty_label:
+                        valid_candidates.append(session_key)
+
+                if valid_candidates:
+                    move = min(
+                        valid_candidates,
+                        key=lambda session_key: hashlib.md5(
+                            f"{track_key}:{label}:{session_key}:{target_split}".encode()
+                        ).hexdigest(),
+                    )
+                    move = (move, target_split)
+                    break
+
+            if move is None:
+                break
+
+            session_key, target_split = move
+            session_splits[session_key] = target_split
+
     async def prepare_training_data(self, source_cache_key: str, train_cache_key: str, val_cache_key: str, val_split: float = 0.2, chunk_size: int = 100):
         """
-        Splits data from source_cache_key into train and val keys with stratified, deterministic splitting.
+        Splits data from source_cache_key into train and val keys within each track.
         Uses two-pass approach:
-        1. First pass: Collect label statistics per segment
-        2. Second pass: Perform stratified split using deterministic hashing
+        1. First pass: collect valid segments and group sessions by Static_track
+        2. Second pass: assign sessions within each track using deterministic hashing,
+           then rebalance labels that can appear in both train and validation
         """
         print(f"Preparing training data: splitting {source_cache_key} into {train_cache_key} and {val_cache_key}")
-        print("Using deterministic stratified splitting for consistent label distribution...")
+        print("Using deterministic per-track, per-label session splitting to avoid same-session leakage...")
         
         # Clear existing keys
         for key in [train_cache_key, val_cache_key]:
             self.store.clear_cache(key)
         
         # PASS 1: Collect label statistics
-        print("Pass 1: Collecting label statistics...")
-        label_to_segments = defaultdict(list)  # Maps label -> list of (chunk_idx, item_idx, hash)
+        print("Pass 1: Collecting track/session groups and label statistics...")
+        track_to_session_items = defaultdict(lambda: defaultdict(list))
+        track_session_label_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        label_counts = defaultdict(int)
         chunk_index = []  # Store (chunk_data, chunk_idx)
         
         chunks = self.store.get_cached_data_chunks(source_cache_key)
@@ -157,30 +459,35 @@ class SegmentClassifierService:
                 except Exception:
                     continue
                 
-                valid_items.append(d)
-                
-                # Compute hash and extract labels
-                segment_hash = self._compute_segment_hash(d)
-                
-                # Extract labels (handle both 'labels' and mapped labels)
-                labels = d.get("labels", [])
+                # Extract labels and migrate legacy IDs before any training split/cache.
+                labels = normalize_label_ids(d.get("labels", []))
+                item = d
+                if labels != d.get("labels", []):
+                    item = dict(d)
+                    item["labels"] = labels
+
+                valid_items.append(item)
+                item_key = (chunk_idx, len(valid_items) - 1)
+
                 if labels:
-                    mapped_labels = [LABEL_MAPPING.get(str(l), str(l)) for l in labels]
-                    
-                    # Store segment for each label it has
-                    # Use unique labels to avoid double counting
-                    for lbl in set(mapped_labels):
-                        label_to_segments[lbl].append((chunk_idx, len(valid_items) - 1, segment_hash))
+                    track_key = self._segment_group_key(item)
+                    session_key = self._segment_session_key(item)
+                    track_to_session_items[track_key][session_key].append(item_key)
+
+                    for lbl in set(labels):
+                        track_session_label_counts[track_key][session_key][lbl] += 1
+                        label_counts[lbl] += 1
             
             if valid_items:
                 chunk_index.append((valid_items, chunk_idx))
                 chunk_idx += 1
         
         print(f"Found {len(chunk_index)} chunks with {sum(len(items) for items, _ in chunk_index)} valid segments")
-        print(f"Label distribution: {[(label, len(segments)) for label, segments in sorted(label_to_segments.items())]}")
+        print(f"Found {len(track_to_session_items)} track groups for splitting")
+        print(f"Label distribution: {[(label, count) for label, count in sorted(label_counts.items())]}")
         
-        # PASS 2: Stratified split using deterministic hashing
-        print("Pass 2: Performing stratified split...")
+        # PASS 2: Per-track session split using deterministic hashing, then label rebalancing
+        print("Pass 2: Performing per-track session split with label coverage balancing...")
         
         # For each label, split segments deterministically
         train_segments_set = set()  # Set of (chunk_idx, item_idx)
@@ -189,20 +496,59 @@ class SegmentClassifierService:
         train_label_counts = defaultdict(int)
         val_label_counts = defaultdict(int)
         
-        for label, segments in label_to_segments.items():
-            for chunk_idx, item_idx, segment_hash in segments:
-                split = self._assign_split(segment_hash, val_split)
-                
-                if split == "val":
-                    val_segments_set.add((chunk_idx, item_idx))
-                    val_label_counts[label] += 1
-                else:
-                    train_segments_set.add((chunk_idx, item_idx))
-                    train_label_counts[label] += 1
+        for track_key, session_items in track_to_session_items.items():
+            session_keys = sorted(
+                session_items.keys(),
+                key=lambda session_key: hashlib.md5(f"{track_key}:{session_key}".encode()).hexdigest(),
+            )
+            val_session_keys = {
+                session_key
+                for session_key in session_keys
+                if self._assign_split(
+                    hashlib.md5(f"{track_key}:{session_key}".encode()).hexdigest(),
+                    val_split,
+                ) == "val"
+            }
+
+            if session_keys and not val_session_keys:
+                val_session_keys.add(session_keys[0])
+            if len(session_keys) > 1 and len(val_session_keys) == len(session_keys):
+                val_session_keys.remove(session_keys[-1])
+
+            session_splits = {
+                session_key: "val" if session_key in val_session_keys else "train"
+                for session_key in session_keys
+            }
+            self._rebalance_track_label_splits(
+                track_key,
+                session_keys,
+                session_splits,
+                track_session_label_counts[track_key],
+            )
+
+            for session_key in session_keys:
+                split = session_splits[session_key]
+                target_set = val_segments_set if split == "val" else train_segments_set
+                target_counts = val_label_counts if split == "val" else train_label_counts
+
+                for item_key in session_items[session_key]:
+                    target_set.add(item_key)
+                for label, count in track_session_label_counts[track_key][session_key].items():
+                    target_counts[label] += count
         
         print(f"Train segments: {len(train_segments_set)}, Val segments: {len(val_segments_set)}")
         print(f"Train label distribution: {dict(train_label_counts)}")
         print(f"Val label distribution: {dict(val_label_counts)}")
+        unsplit_labels = [
+            label
+            for label in sorted(label_counts.keys())
+            if train_label_counts[label] == 0 or val_label_counts[label] == 0
+        ]
+        if unsplit_labels:
+            print(
+                "Labels without both train and validation coverage "
+                f"(not splittable without breaking session grouping): {unsplit_labels}"
+            )
         
         # PASS 3: Write splits to storage
         print("Pass 3: Writing splits to storage...")
@@ -248,7 +594,7 @@ class SegmentClassifierService:
         self.scaler = StandardScaler()
         max_seq_len = 0
         
-        expected_features = SegmentFeatureCatalog.get_all_available_features()
+        self.feature_names = self._current_feature_names()
         
         has_data = False
         
@@ -273,7 +619,7 @@ class SegmentClassifierService:
                     continue
                 
                 # Collect labels
-                mapped_labels = ann.labels
+                mapped_labels = normalize_label_ids(ann.labels)
                 all_labels.update(mapped_labels)
                 for l in mapped_labels:
                     self.label_counts[l] = self.label_counts.get(l, 0) + 1
@@ -284,17 +630,8 @@ class SegmentClassifierService:
                 
                 df = pd.DataFrame(ann.telemetry_data)
                 
-                # Align features for scaler
-                current_cols = df.columns.tolist()
-                if current_cols != expected_features:
-                     for f in expected_features:
-                         if f not in df.columns:
-                             df[f] = 0
-                     df = df[expected_features]
-                
+                df = df.reindex(columns=self.feature_names, fill_value=0)
                 df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-                
-                # Compute derived features (deltas) to match dataset structure
                 df = compute_derived_features(df)
 
                 if df.empty:
@@ -333,10 +670,18 @@ class SegmentClassifierService:
             
         print("Preprocessor fitting complete.")
 
-    async def train_model(self, epochs=10, batch_size=32, learning_rate=0.001, val_split=0.1):
-        """Train the LSTM Classifier using streaming data with train/val split."""
+    async def train_model(
+        self,
+        epochs=10,
+        batch_size=32,
+        learning_rate=0.001,
+        val_split=0.1,
+        annotation_cache_key: Optional[str] = None,
+    ):
+        """Train the CNN classifier using streaming data with train/val split."""
         from app.pipelines.training.config import TrainingPipelineConfig
-        cache_key = TrainingPipelineConfig().annotation_cache_key
+        cache_key = annotation_cache_key or TrainingPipelineConfig().annotation_cache_key
+        print(f"Training source annotation dataset: {cache_key}")
         
         train_key = f"{cache_key}_train"
         val_key = f"{cache_key}_val"
@@ -351,7 +696,7 @@ class SegmentClassifierService:
             self.mlb, 
             self.scaler, 
             self.max_length,
-            SegmentFeatureCatalog.get_all_available_features()
+            self._feature_names_for_model()
         )
 
         val_dataset = StreamingSegmentDataset(
@@ -360,7 +705,7 @@ class SegmentClassifierService:
             self.mlb, 
             self.scaler, 
             self.max_length,
-            SegmentFeatureCatalog.get_all_available_features()
+            self._feature_names_for_model()
         )
         
         # num_workers=0 — avoids subprocess Lance reader complications.
@@ -451,11 +796,11 @@ class SegmentClassifierService:
         # Final Evaluation Report
         print("\nGenerating final evaluation report on validation set...")
         self.model.eval()
-        all_preds = []
+        all_probs = []
         all_targets = []
         
         # Segment-level accumulation
-        all_segment_preds = []
+        all_segment_probs = []
         all_segment_targets = []
         
         with torch.no_grad():
@@ -463,21 +808,18 @@ class SegmentClassifierService:
                 val_X, val_y, val_mask = val_X.to(self.device), val_y.to(self.device), val_mask.to(self.device)
                 outputs, _ = self.model(val_X)
                 
-                # --- Per-Timestep Evaluation ---
-                # Threshold logits (sigmoid(0) = 0.5)
-                preds = (outputs > 0).float()
+                probs = torch.sigmoid(outputs)
                 
                 # Filter by mask
                 mask_flat = val_mask.cpu().bool().numpy().flatten()
-                preds_flat = preds.cpu().numpy().reshape(-1, output_dim)
+                probs_flat = probs.cpu().numpy().reshape(-1, output_dim)
                 targets_flat = val_y.cpu().numpy().reshape(-1, output_dim)
                 
                 if len(mask_flat) > 0:
-                    all_preds.append(preds_flat[mask_flat])
+                    all_probs.append(probs_flat[mask_flat])
                     all_targets.append(targets_flat[mask_flat])
 
                 # --- Per-Segment Evaluation ---
-                probs = torch.sigmoid(outputs)
                 batch_size_curr = val_X.size(0)
                 
                 for i in range(batch_size_curr):
@@ -490,21 +832,31 @@ class SegmentClassifierService:
                     # val_y shape: (batch, seq_len, num_classes)
                     seg_target = val_y[i, 0].cpu().numpy()
                     
-                    # Predictions: Average probability over valid timesteps
+                    # Average probability over valid timesteps.
                     seg_probs = probs[i, :length].mean(dim=0)
-                    seg_pred = (seg_probs > 0.5).float().cpu().numpy()
                     
-                    all_segment_preds.append(seg_pred)
+                    all_segment_probs.append(seg_probs.cpu().numpy())
                     all_segment_targets.append(seg_target)
-        
-        if all_segment_preds:
-            y_seg_pred = np.array(all_segment_preds)
+
+        target_names = [
+            LABEL_MAPPING.get(normalize_label_id(l), normalize_label_id(l))
+            for l in self.mlb.classes_
+        ]
+
+        if all_segment_probs:
+            y_seg_probs = np.array(all_segment_probs)
             y_seg_true = np.array(all_segment_targets)
+            self.label_thresholds = self._fit_label_thresholds(y_seg_probs, y_seg_true)
+            thresholds = self._thresholds_for_classes()
+            y_seg_pred = (y_seg_probs > thresholds).astype(float)
+
+            print("\nPer-label thresholds selected from validation segments:")
+            for label, threshold in self.label_thresholds.items():
+                normalized_label = normalize_label_id(label)
+                label_name = LABEL_MAPPING.get(normalized_label, normalized_label)
+                print(f"{label_name}: threshold={threshold:.2f}")
             
             print("\n=== Segment-Level Classification Report (Aggregated) ===")
-            # Use mappings for display
-            target_names = [LABEL_MAPPING.get(str(l), str(l)) for l in self.mlb.classes_]
-            
             seg_report = classification_report(
                 y_seg_true,
                 y_seg_pred,
@@ -513,12 +865,15 @@ class SegmentClassifierService:
             )
             print(seg_report)
             print("========================================================\n")
+        else:
+            self.label_thresholds = {str(label): 0.5 for label in self.mlb.classes_}
 
-        if all_preds:
+        if all_probs:
             # Concatenate
-            y_pred = np.concatenate(all_preds)
+            y_probs = np.concatenate(all_probs)
             y_true = np.concatenate(all_targets)
-            
+            y_pred = (y_probs > self._thresholds_for_classes()).astype(float)
+
             # Generate report
             report_dict = classification_report(
                 y_true, 
@@ -545,7 +900,8 @@ class SegmentClassifierService:
                     score = metrics['precision']
                     support = metrics['support']  # Number of timesteps, not segments
                     
-                    label_name = LABEL_MAPPING.get(label, str(label))
+                    normalized_label = normalize_label_id(label)
+                    label_name = LABEL_MAPPING.get(normalized_label, normalized_label)
                     print(f"{label_name}: Precision={score:.4f}, Support={support} timesteps")
 
         # Save model and artifacts
@@ -554,12 +910,14 @@ class SegmentClassifierService:
         joblib.dump(self.scaler, self.scaler_path)
         if self.pos_weight is not None:
             torch.save(self.pos_weight, self.pos_weight_path)
+        self._save_label_thresholds()
         
         # Save config with model architecture
         config = {
             "max_length": self.max_length,
             "hidden_dim": hidden_dim,
-            "num_layers": num_layers
+            "num_layers": num_layers,
+            "feature_names": self._feature_names_for_model(),
         }
         with open(self.models_directory / "segment_config.json", "w") as f:
             json.dump(config, f)
@@ -580,6 +938,7 @@ class SegmentClassifierService:
                     "hidden_dim": hidden_dim,
                     "num_layers": num_layers,
                     "num_labels": len(self.mlb.classes_) if self.mlb is not None else 0,
+                    "feature_count": self._scaler_feature_count() or 0,
                 },
                 is_active=True,
             )
@@ -590,6 +949,7 @@ class SegmentClassifierService:
     def load_model(self):
         """Load the trained model."""
         if self.model_path.exists() and self.mlb_path.exists() and self.scaler_path.exists():
+            self.feature_names = None
             self.mlb = joblib.load(self.mlb_path)
             self.scaler = joblib.load(self.scaler_path)
             if self.pos_weight_path.exists():
@@ -605,10 +965,24 @@ class SegmentClassifierService:
                     self.max_length = config.get("max_length", self.max_length)
                     hidden_dim = config.get("hidden_dim", hidden_dim)
                     num_layers = config.get("num_layers", num_layers)
-            
+                    feature_names = config.get("feature_names")
+                    scaler_feature_count = self._scaler_feature_count()
+                    if (
+                        isinstance(feature_names, list)
+                        and all(isinstance(f, str) for f in feature_names)
+                        and (
+                            scaler_feature_count is None
+                            or len(feature_names) * 2 == scaler_feature_count
+                        )
+                    ):
+                        self.feature_names = feature_names
+
+            self._feature_names_for_model()
+            self._load_label_thresholds()
+
             input_dim = self.scaler.mean_.shape[0]
             output_dim = len(self.mlb.classes_)
-            
+
             self.model = CNN1DModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
             self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
             self.model.eval()
@@ -616,14 +990,14 @@ class SegmentClassifierService:
         return False
 
     # Artifact filenames packed into / unpacked from the backend payload.
-    # pos_weight is optional — training may finish without one.
+    # pos_weight and thresholds are optional to keep old classifier payloads loadable.
     _ARTIFACT_FILES_REQUIRED = (
         "segment_classifier.pth",
         "segment_labels.joblib",
         "segment_scaler.joblib",
         "segment_config.json",
     )
-    _ARTIFACT_FILES_OPTIONAL = ("segment_pos_weight.pt",)
+    _ARTIFACT_FILES_OPTIONAL = ("segment_pos_weight.pt", "segment_thresholds.json")
 
     def serialize_artifacts(self) -> Dict[str, Any]:
         """Pack the on-disk model files into a JSON-safe dict for backend upload."""
@@ -670,24 +1044,7 @@ class SegmentClassifierService:
             if not self.load_model():
                 raise ValueError("Model not trained or found.")
 
-        df = segment_df.copy()
-        
-        # Align features with training data
-        expected_features = SegmentFeatureCatalog.get_all_available_features()
-        
-        # 1. Ensure all expected features exist
-        for feature in expected_features:
-            if feature not in df.columns:
-                df[feature] = 0
-                
-        # 2. Select only expected features in correct order
-        df = df[expected_features]
-        
-        # 3. Ensure numeric
-        numeric_df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-
-        # Feature engineering
-        numeric_df = compute_derived_features(numeric_df)
+        numeric_df = self._prepare_numeric_features(segment_df)
 
         if numeric_df.empty:
             return []
@@ -713,13 +1070,16 @@ class SegmentClassifierService:
             valid_probs = probs_tensor[0, :original_len, :]
             probs = valid_probs.mean(dim=0).cpu().numpy()
             
-        threshold = 0.5
         labels = []
+        seen_labels = set()
         for i, p in enumerate(probs):
             label = self.mlb.classes_[i]
                 
-            if p > threshold:
-                labels.append(label)
+            if p > self._threshold_for_label(label):
+                normalized_label = normalize_label_id(label)
+                if normalized_label not in seen_labels:
+                    labels.append(normalized_label)
+                    seen_labels.add(normalized_label)
         
         return labels
 
@@ -729,24 +1089,7 @@ class SegmentClassifierService:
             if not self.load_model():
                 return {}
 
-        df = segment_df.copy()
-        
-        # Align features with training data
-        expected_features = SegmentFeatureCatalog.get_all_available_features()
-        
-        # 1. Ensure all expected features exist
-        for feature in expected_features:
-            if feature not in df.columns:
-                df[feature] = 0
-                
-        # 2. Select only expected features in correct order
-        df = df[expected_features]
-        
-        # 3. Ensure numeric
-        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-        
-        # 4. Feature engineering
-        df = compute_derived_features(df)
+        df = self._prepare_numeric_features(segment_df)
 
         if df.empty:
             return {}
@@ -772,46 +1115,30 @@ class SegmentClassifierService:
             
         result = {}
         for i, p in enumerate(probs):
-            label = self.mlb.classes_[i]
-            result[label] = float(p)
+            label = normalize_label_id(self.mlb.classes_[i])
+            result[label] = max(result.get(label, 0.0), float(p))
             
         return dict(sorted(result.items(), key=lambda item: item[1], reverse=True))
 
     def scan_telemetry_data(self, dataframe: pd.DataFrame) -> List[PredictedSegment]:
         """
         Scan a dataframe and return found segments with labels.
-        Uses full-sequence inference with Bi-LSTM and smoothing.
+        Uses full-window CNN inference with probability smoothing.
         """
         if self.model is None:
             if not self.load_model():
-                return []
+                raise ValueError("Segment classifier model not trained or found.")
         
-        df = dataframe
-        
-        # Align features with training data
-        expected_features = SegmentFeatureCatalog.get_all_available_features()
-        
-        # 1. Ensure all expected features exist
-        for feature in expected_features:
-            if feature not in df.columns:
-                df[feature] = 0
-                
-        # 2. Select only expected features in correct order
-        df = df[expected_features]
-        
-        # 3. Ensure numeric
-        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-        
-        if df.empty:
+        source_df = dataframe.reset_index(drop=True)
+        numeric_df = self._prepare_numeric_features(source_df)
+        if numeric_df.empty:
             return []
-            
-        # Feature engineering
-        numeric_df = compute_derived_features(df)
 
         # Scale
         X_scaled = self.scaler.transform(numeric_df.values)
         
-        # Inference on full sequence to allow Bi-LSTM to see full context
+        # Inference on the full window lets the 1D-CNN use local row context
+        # across the window instead of treating rows independently.
         # Note: For extremely long sequences (>10k steps), we might need overlapping windows,
         # but for typical telemetry sessions, full sequence is better for context.
         self.model.eval()
@@ -828,20 +1155,23 @@ class SegmentClassifierService:
 
         probs_smoothed = probs_df.rolling(window=5, center=True, min_periods=1).mean().values
             
-        # Threshold and Segment
-        threshold = 0.5
-        active_mask = probs_smoothed > threshold
+        # Threshold each label independently, then group contiguous rows that
+        # share the same active label set.
+        active_mask = probs_smoothed > self._thresholds_for_classes()
         
         found_segments = []
         current_labels = []
         current_start = 0
         
         # Iterate through to find contiguous segments with the same label set
-        for i in range(len(df)):
+        for i in range(len(numeric_df)):
             # Get labels that are True for this index
             row_mask = active_mask[i]
             labels_indices = np.where(row_mask)[0]
-            labels_at_i = [self.mlb.classes_[idx] for idx in labels_indices]
+            labels_at_i = list({
+                normalize_label_id(self.mlb.classes_[idx])
+                for idx in labels_indices
+            })
             labels_at_i.sort()
             
             if i == 0:
@@ -863,7 +1193,7 @@ class SegmentClassifierService:
         if current_labels:
             found_segments.append({
                 "start_index": current_start,
-                "end_index": len(df),
+                "end_index": len(numeric_df),
                 "labels": current_labels
             })
         
@@ -876,7 +1206,7 @@ class SegmentClassifierService:
             if end - start < 3:
                 continue
 
-            segment_df = df.iloc[start:end]
+            segment_df = source_df.iloc[start:end]
             
             # Extract actual data and wrap with metadata
             segment_data = segment_df.to_dict('records')
@@ -893,7 +1223,7 @@ class SegmentClassifierService:
 
     async def scan_session(self, dataframe: Optional[pd.DataFrame] = None, target_labels: Optional[List[int]] = None, **kwargs) -> None:
         """
-        Scan a session and find segments matching labels using LSTM.
+        Scan a session and find segments matching labels using the CNN classifier.
         Identifies intervals, extracts actual segments, and saves to cache.
         """
         # Reuse the logic from scan_telemetry_data to ensure consistency

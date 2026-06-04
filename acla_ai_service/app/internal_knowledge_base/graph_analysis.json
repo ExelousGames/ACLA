@@ -1,7 +1,7 @@
 {
   "_skill": {
     "name": "graph_analysis",
-    "description": "Per-graph description instructions for the VLM (brake, speed, throttle, speed_delta, trajectory_detailed, trajectory_gas_brake, trajectory_offset, trajectory_balance, push_limit, time_delta). Each entry tells the VLM how to read the graph precisely — what axes mean, what colours encode, what shapes/predicates to call out. Also carries cross-graph guidelines (triggered when specific graph combinations are present) and a trajectory shape vocabulary.\n",
+    "description": "Per-graph description instructions for the VLM (brake, speed, throttle, speed_delta, trajectory_detailed, trajectory_gas_brake, trajectory_offset, altitude_profile, trajectory_balance, push_limit, time_delta). Each entry tells the VLM how to read the graph precisely — what axes mean, what colours encode, what shapes/predicates to call out. Also carries cross-graph guidelines (triggered when specific graph combinations are present) and a trajectory shape vocabulary.\n",
     "when_to_use": [
       "Injecting graph-specific checklists into the describe_graphs VLM prompt.",
       "Looking up axis/colour conventions for a single graph id.",
@@ -389,6 +389,40 @@
         "For chicanes (multiple phases of opposite direction) the per-phase tagging convention holds — the underlying sign flip handles the direction switch, so positive still means wider in every phase",
         "Anchor every callout to expert's entry / apex / exit indices from the phase_indices attachment",
         "Do NOT interpret the offset as oversteer / understeer / over-limit — describe lateral offset only"
+      ]
+    },
+    "altitude_profile": {
+      "title": "Altitude Profile: Expert vs Player",
+      "graph_type": "feature_plot",
+      "axes": {
+        "x": "Segment index (time progression left to right)",
+        "y": "Z position / altitude in metres"
+      },
+      "visual_elements": [
+        "Expert and player altitude traces when both z-position columns are available",
+        "Yellow circle = Entry marker from expert-anchored phase detection",
+        "Red star = Apex marker from expert-anchored phase detection",
+        "Green triangle = Exit marker from expert-anchored phase detection",
+        "Numbered apex labels (#1, #2, ...) on chicanes / esses"
+      ],
+      "how_to_analyze": "Observe (record values, do not summarise yet): 1. Read phase_indices.phases or the segment_shape_measurement attachment when present. Use the entry / apex / exit ilocs as the authoritative phase anchors.\n2. For the entry phase, compare altitude at entry start vs the point approaching apex. Record the start index, end index, both altitude values, and delta. Tag the trend as uphill, level, or downhill.\n3. For the apex phase, inspect a short window around the apex marker. Record whether altitude is rising, level, or falling through apex.\n4. For the exit phase, compare altitude from apex / late apex toward exit. Record the start index, end index, both altitude values, and delta. Tag the trend as uphill, level, or downhill.\n5. If both expert and player altitude traces exist, describe whether they match closely or whether one has a visibly different z profile. Do not use altitude differences to infer performance by itself.\n\nCompose: 6. Write one paragraph in travel order: entry altitude trend, apex altitude trend, exit altitude trend. Include the matching ST altitude label names only when the trend is clear: Entry altitude uphill / level / downhill, Apex altitude uphill / level / downhill, Exit altitude uphill / level / downhill.\n",
+      "glossary": {
+        "entry altitude uphill": "Altitude rises across the corner-entry phase. Corresponds to ST12 when clear.",
+        "entry altitude level": "Altitude stays approximately flat across the corner-entry phase. Corresponds to ST13 when clear.",
+        "entry altitude downhill": "Altitude falls across the corner-entry phase. Corresponds to ST14 when clear.",
+        "apex altitude uphill": "Altitude rises through the apex window. Corresponds to ST15 when clear.",
+        "apex altitude level": "Altitude stays approximately flat through the apex window. Corresponds to ST16 when clear.",
+        "apex altitude downhill": "Altitude falls through the apex window. Corresponds to ST17 when clear.",
+        "exit altitude uphill": "Altitude rises across the corner-exit phase. Corresponds to ST18 when clear.",
+        "exit altitude level": "Altitude stays approximately flat across the corner-exit phase. Corresponds to ST19 when clear.",
+        "exit altitude downhill": "Altitude falls across the corner-exit phase. Corresponds to ST20 when clear."
+      },
+      "sentence_format_guide": "One paragraph. Use this structure: \"Entry altitude is <uphill|level|downhill> from index A (<Z1> m) to index B (<Z2> m), delta <D> m — <ST12|ST13|ST14 name>. Apex altitude is <uphill|level|downhill> through index C..., delta <D> m — <ST15|ST16|ST17 name>. Exit altitude is <uphill|level|downhill> from index E to F..., delta <D> m — <ST18|ST19|ST20 name>.\" Skip a phase if the z trace is missing or too noisy to commit.\n",
+      "common_description_errors": [
+        "Do NOT infer altitude from the 2D trajectory map; use z-position / altitude only",
+        "Do NOT choose an uphill/downhill label without citing start/end ilocs and altitude delta",
+        "Do NOT confuse lateral trajectory offset with altitude",
+        "Do NOT force a label when the z trace is flat or missing"
       ]
     }
   },

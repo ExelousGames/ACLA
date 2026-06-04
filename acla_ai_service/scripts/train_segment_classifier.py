@@ -13,9 +13,11 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
 from app.ml.segment_classifier.service import segment_classifier
+from app.pipelines.training.config import TrainingPipelineConfig
 
 
 async def main() -> int:
+    cfg = TrainingPipelineConfig()
     parser = argparse.ArgumentParser(
         description="Train the LSTM segment classifier.",
     )
@@ -23,17 +25,20 @@ async def main() -> int:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-split", type=float, default=0.1)
+    parser.add_argument("--annotation-key", default=cfg.annotation_cache_key)
     args = parser.parse_args()
 
     print(
         f"[INFO] Starting classifier training: epochs={args.epochs} "
-        f"batch_size={args.batch_size} lr={args.lr} val_split={args.val_split}"
+        f"batch_size={args.batch_size} lr={args.lr} val_split={args.val_split} "
+        f"annotation_key={args.annotation_key}"
     )
     await segment_classifier.train_model(
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.lr,
         val_split=args.val_split,
+        annotation_cache_key=args.annotation_key,
     )
     print("[INFO] Classifier training complete.")
     return 0

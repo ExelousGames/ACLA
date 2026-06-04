@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -14,6 +15,7 @@ from app.ml.segment_classifier.service import segment_classifier
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
 WINDOW_ROWS = 2000
 WINDOW_OVERLAP_ROWS = 100
+logger = logging.getLogger(__name__)
 
 
 def _track_id(raw: Any) -> str:
@@ -71,6 +73,7 @@ def _ensure_track(summary: Dict[str, Any], track_id: str, track_name: str) -> Di
             "trackName": track_name,
             "sessionsAnalyzed": 0,
             "sessionsSkipped": 0,
+            "sessionsFailed": 0,
             "totalTelemetryRows": 0,
             "cars": {},
             "sections": {},
@@ -157,7 +160,9 @@ async def analyze_user_sessions(user_id: str) -> Dict[str, Any]:
         "classifier": "segment_classifier",
         "sessionsAnalyzed": 0,
         "sessionsSkipped": 0,
+        "sessionsFailed": 0,
         "totalTelemetryRows": 0,
+        "errors": [],
         "tracks": {},
     }
 
@@ -176,9 +181,6 @@ async def analyze_user_sessions(user_id: str) -> Dict[str, Any]:
             track_summary["sessionsSkipped"] += 1
             continue
 
-        summary["sessionsAnalyzed"] += 1
-        track_summary["sessionsAnalyzed"] += 1
-
         car_name = str(session_meta.get("car_name") or "unknown")
         track_summary["cars"][car_name] = track_summary["cars"].get(car_name, 0) + 1
 
@@ -186,21 +188,39 @@ async def analyze_user_sessions(user_id: str) -> Dict[str, Any]:
         buffer_start = 0
         seen = set()
 
-        async for chunk_rows in backend_service.iter_user_analysis_chunks(user_id, session_meta):
-            summary["totalTelemetryRows"] += len(chunk_rows)
-            track_summary["totalTelemetryRows"] += len(chunk_rows)
-            buffer.extend(chunk_rows)
+        try:
+            async for chunk_rows in backend_service.iter_user_analysis_chunks(user_id, session_meta):
+                summary["totalTelemetryRows"] += len(chunk_rows)
+                track_summary["totalTelemetryRows"] += len(chunk_rows)
+                buffer.extend(chunk_rows)
 
-            advance = max(1, WINDOW_ROWS - WINDOW_OVERLAP_ROWS)
-            while len(buffer) >= WINDOW_ROWS:
-                window = buffer[:WINDOW_ROWS]
-                emit_end = buffer_start + advance
-                _scan_window(summary, session_meta, window, buffer_start, emit_end, seen)
-                buffer = buffer[advance:]
-                buffer_start += advance
+                advance = max(1, WINDOW_ROWS - WINDOW_OVERLAP_ROWS)
+                while len(buffer) >= WINDOW_ROWS:
+                    window = buffer[:WINDOW_ROWS]
+                    emit_end = buffer_start + advance
+                    _scan_window(summary, session_meta, window, buffer_start, emit_end, seen)
+                    buffer = buffer[advance:]
+                    buffer_start += advance
 
-        if buffer:
-            _scan_window(summary, session_meta, buffer, buffer_start, None, seen)
+            if buffer:
+                _scan_window(summary, session_meta, buffer, buffer_start, None, seen)
+        except Exception as exc:
+            session_id = str(session_meta.get("sessionId") or "")
+            message = str(exc)
+            logger.exception("User session analysis failed for session %s", session_id)
+            summary["sessionsFailed"] += 1
+            track_summary["sessionsFailed"] += 1
+            summary["errors"].append(
+                {
+                    "sessionId": session_id,
+                    "trackId": track_id,
+                    "message": message,
+                }
+            )
+            continue
+
+        summary["sessionsAnalyzed"] += 1
+        track_summary["sessionsAnalyzed"] += 1
 
     return summary
 

@@ -108,6 +108,15 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
         ),
     },
     {
+        "id": "altitude_profile",
+        "title": "Altitude Profile: Expert vs Player",
+        "description": (
+            "Player and expert z-position over segment index. "
+            "Expert-anchored entry/apex/exit markers show where altitude "
+            "should be read for ST entry/apex/exit altitude labels."
+        ),
+    },
+    {
         "id": "gear",
         "title": "Gear Selection: Expert vs Player",
         "description": "Expert vs player gear traces (integer steps).",
@@ -395,6 +404,287 @@ def compute_expert_phases(
         kind="structured",
         label="Phase Indices (expert-anchored)",
         content=_round_floats({"phases": shifted_phases, "smoothing_window": int(window)}),
+    )
+
+
+def _classify_base_segment_shape(
+    phases: List[Dict[str, Any]],
+    n_rows: int,
+) -> Dict[str, Any]:
+    if not phases:
+        return {
+            "label_id": "ST2",
+            "label_name": "On the straight",
+            "reason": "No expert curvature arc cleared the corner threshold.",
+        }
+
+    if len(phases) >= 2:
+        gaps = [
+            int(phases[i + 1]["entry"]) - int(phases[i]["exit"])
+            for i in range(len(phases) - 1)
+        ]
+        close_gap = max(4, int(0.15 * max(n_rows, 1)))
+        label_id = "ST6" if gaps and max(gaps) <= close_gap else "ST5"
+        label_name = (
+            "Consecutive corners with no straight in between"
+            if label_id == "ST6" else "Between consecutive corners"
+        )
+        return {
+            "label_id": label_id,
+            "label_name": label_name,
+            "reason": (
+                f"{len(phases)} expert curvature arcs detected; "
+                f"inter-arc gaps={gaps} ilocs."
+            ),
+        }
+
+    phase = phases[0]
+    entry = int(phase["entry"])
+    exit_ = int(phase["exit"])
+    entry_frac = entry / max(n_rows - 1, 1)
+    exit_frac = exit_ / max(n_rows - 1, 1)
+
+    if entry_frac <= 0.15 and exit_frac >= 0.85:
+        label_id = "ST1"
+        reason = "One curvature arc spans most of the segment."
+    elif entry_frac > 0.25:
+        label_id = "ST3"
+        reason = "Segment starts before the detected curvature arc."
+    elif exit_frac < 0.75:
+        label_id = "ST4"
+        reason = "Detected curvature arc ends before the segment exit."
+    else:
+        label_id = "ST1"
+        reason = "One curvature arc dominates the segment."
+
+    names = {
+        "ST1": "In the corner",
+        "ST3": "Approach to corner",
+        "ST4": "Exit corner leading to straight",
+    }
+    return {"label_id": label_id, "label_name": names[label_id], "reason": reason}
+
+
+def _turn_angle_degrees(dx: np.ndarray, dy: np.ndarray, entry: int, exit_: int) -> float:
+    if exit_ <= entry or dx.size == 0 or dy.size == 0:
+        return 0.0
+    lo = max(0, min(entry, dx.size - 1))
+    hi = max(0, min(exit_, dx.size - 1))
+    angles = np.unwrap(np.arctan2(dy[lo: hi + 1], dx[lo: hi + 1]))
+    if angles.size < 2:
+        return 0.0
+    return float(abs(angles[-1] - angles[0]) * 180.0 / np.pi)
+
+
+def _classify_corner_shape_refinement(
+    phases: List[Dict[str, Any]],
+    kappa: np.ndarray,
+    dx: np.ndarray,
+    dy: np.ndarray,
+) -> Optional[Dict[str, Any]]:
+    if not phases:
+        return None
+
+    if len(phases) >= 2:
+        directions = {str(p.get("direction")) for p in phases}
+        if len(directions) >= 2:
+            return {
+                "label_id": "ST11",
+                "label_name": "Chicane or esses",
+                "reason": "Multiple expert curvature arcs with direction change.",
+            }
+
+    primary = max(phases, key=lambda p: abs(float(p.get("kappa_peak", 0.0))))
+    entry = int(primary["entry"])
+    exit_ = int(primary["exit"])
+    if exit_ <= entry:
+        return None
+
+    turn_deg = _turn_angle_degrees(dx, dy, entry, exit_)
+    if turn_deg >= 135.0:
+        return {
+            "label_id": "ST10",
+            "label_name": "Hairpin corner",
+            "reason": f"Estimated direction change is {turn_deg:.1f} degrees.",
+        }
+
+    arc_k = np.abs(kappa[entry: exit_ + 1])
+    arc_k = arc_k[np.isfinite(arc_k)]
+    if arc_k.size < 6:
+        return None
+
+    thirds = np.array_split(arc_k, 3)
+    first = float(np.nanmedian(thirds[0]))
+    last = float(np.nanmedian(thirds[-1]))
+    denom = max(first, last, _KAPPA_FLOOR)
+    rel_change = (last - first) / denom
+    if abs(rel_change) <= 0.25:
+        label_id = "ST7"
+        label_name = "Constant-radius corner"
+        reason = "Curvature stays broadly steady from entry to exit."
+    elif rel_change < 0:
+        label_id = "ST8"
+        label_name = "Increasing-radius corner"
+        reason = "Curvature decreases toward exit, so radius opens up."
+    else:
+        label_id = "ST9"
+        label_name = "Decreasing-radius corner"
+        reason = "Curvature increases toward exit, so radius tightens."
+
+    return {
+        "label_id": label_id,
+        "label_name": label_name,
+        "reason": reason,
+        "entry_median_abs_curvature": first,
+        "exit_median_abs_curvature": last,
+        "relative_curvature_change": float(rel_change),
+        "turn_angle_degrees": turn_deg,
+    }
+
+
+def _altitude_columns(df: pd.DataFrame) -> List[str]:
+    cols: List[str] = []
+    if "expert_optimal_player_pos_z" in df.columns:
+        cols.append("expert_optimal_player_pos_z")
+    if "Graphics_player_pos_z" in df.columns:
+        cols.append("Graphics_player_pos_z")
+    return cols
+
+
+def _classify_altitude_delta(delta_m: float) -> str:
+    threshold = 0.25
+    if delta_m > threshold:
+        return "uphill"
+    if delta_m < -threshold:
+        return "downhill"
+    return "level"
+
+
+def _altitude_phase_summary(
+    values: np.ndarray,
+    start: int,
+    end: int,
+) -> Optional[Dict[str, Any]]:
+    lo = max(0, min(int(start), values.size - 1))
+    hi = max(lo + 1, min(int(end), values.size))
+    span = values[lo:hi]
+    finite_idx = np.where(np.isfinite(span))[0]
+    if finite_idx.size < 2:
+        return None
+    first_i = lo + int(finite_idx[0])
+    last_i = lo + int(finite_idx[-1])
+    delta = float(values[last_i] - values[first_i])
+    return {
+        "start_offset": first_i,
+        "end_offset": last_i,
+        "start_altitude_m": float(values[first_i]),
+        "end_altitude_m": float(values[last_i]),
+        "delta_m": delta,
+        "trend": _classify_altitude_delta(delta),
+    }
+
+
+def measure_segment_shape(
+    df: pd.DataFrame, start_index: int, end_index: int,
+):
+    """Tool — deterministic ST shape and altitude summary for a segment.
+
+    Uses expert-anchored curvature phases for base shape and corner-shape
+    refinements, then reads z-position trends over entry / apex / exit
+    windows to suggest ST12-ST20 altitude labels.
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+
+    start = int(start_index)
+    end = int(end_index)
+    segment = df.iloc[start:end]
+    phases, window = _detect_expert_phases(segment)
+    kin = _smoothed_expert_kinematics(segment)
+
+    shape: Dict[str, Any] = {
+        "range": [start, end],
+        "smoothing_window": int(window),
+        "base_segment_shape": _classify_base_segment_shape(phases, len(segment)),
+        "corner_shape_refinement": None,
+        "altitude": {
+            "source_column": None,
+            "entry": None,
+            "apex": None,
+            "exit": None,
+            "labels": [],
+        },
+        "phases": [],
+    }
+
+    if kin is not None:
+        _x_s, _y_s, dx, dy, kappa, _w = kin
+        shape["corner_shape_refinement"] = _classify_corner_shape_refinement(
+            phases, kappa, dx, dy,
+        )
+
+    iloc_fields = ("entry", "apex", "exit", "min_speed_iloc", "peak_steer_iloc")
+    shape["phases"] = [
+        {
+            k: (int(v) + start if k in iloc_fields else v)
+            for k, v in phase.items()
+        }
+        for phase in phases
+    ]
+
+    alt_cols = _altitude_columns(segment)
+    if phases and alt_cols:
+        alt_col = alt_cols[0]
+        alt = segment[alt_col].to_numpy(dtype=float)
+        primary = max(phases, key=lambda p: abs(float(p.get("kappa_peak", 0.0))))
+        entry_phase = phases[0]
+        exit_phase = phases[-1]
+        apex = int(primary["apex"])
+        apex_half_window = max(2, int(0.05 * max(len(segment), 1)))
+        spans = {
+            "entry": (int(entry_phase["entry"]), int(entry_phase["apex"]) + 1),
+            "apex": (apex - apex_half_window, apex + apex_half_window + 1),
+            "exit": (int(exit_phase["apex"]), int(exit_phase["exit"]) + 1),
+        }
+        label_map = {
+            "entry": {"uphill": "ST12", "level": "ST13", "downhill": "ST14"},
+            "apex": {"uphill": "ST15", "level": "ST16", "downhill": "ST17"},
+            "exit": {"uphill": "ST18", "level": "ST19", "downhill": "ST20"},
+        }
+        label_names = {
+            "ST12": "Entry altitude uphill",
+            "ST13": "Entry altitude level",
+            "ST14": "Entry altitude downhill",
+            "ST15": "Apex altitude uphill",
+            "ST16": "Apex altitude level",
+            "ST17": "Apex altitude downhill",
+            "ST18": "Exit altitude uphill",
+            "ST19": "Exit altitude level",
+            "ST20": "Exit altitude downhill",
+        }
+        shape["altitude"]["source_column"] = alt_col
+        for phase_name, (lo, hi) in spans.items():
+            summary = _altitude_phase_summary(alt, lo, hi)
+            if summary is None:
+                continue
+            summary["start_iloc"] = int(summary.pop("start_offset")) + start
+            summary["end_iloc"] = int(summary.pop("end_offset")) + start
+            trend = str(summary["trend"])
+            label_id = label_map[phase_name][trend]
+            summary["label_id"] = label_id
+            summary["label_name"] = label_names[label_id]
+            shape["altitude"][phase_name] = summary
+            shape["altitude"]["labels"].append({
+                "label_id": label_id,
+                "label_name": label_names[label_id],
+                "phase": phase_name,
+                "trend": trend,
+            })
+
+    return PipelineAttachment(
+        name="segment_shape_measurement",
+        kind="structured",
+        label="Segment Shape Measurement",
+        content=_round_floats(shape),
     )
 
 
@@ -2761,6 +3051,20 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "callable": compute_expert_phases,
     },
     {
+        "id": "measure_segment_shape",
+        "label": "Segment shape + altitude measurement",
+        "description": (
+            "Measures expert-anchored curvature and z-position over the "
+            "segment to suggest ST labels. Produces a "
+            "'segment_shape_measurement' attachment with `base_segment_shape` "
+            "(ST1-ST6), optional `corner_shape_refinement` (ST7-ST11), "
+            "entry / apex / exit altitude summaries, and suggested "
+            "altitude labels (ST12-ST20). Use this whenever deciding "
+            "corner shape or altitude ST labels."
+        ),
+        "callable": measure_segment_shape,
+    },
+    {
         "id": "locate_circuit_section",
         "label": "Circuit Section Match (named corner / straight)",
         "description": (
@@ -3355,7 +3659,7 @@ _GRAPH_GUIDELINE_TRIGGERS: Dict[str, Dict[str, Any]] = {
         {"brake", "throttle", "speed", "speed_delta", "push_limit", "trajectory_balance"},
     ]},
     "trajectory_and_features":    {"required": set(),                                  "any_of": [
-        {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset"},
+        {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset", "altitude_profile"},
         {"throttle", "brake", "speed", "speed_delta", "push_limit", "trajectory_balance"},
     ]},
     "balance_and_push_limit":     {"required": {"trajectory_balance", "push_limit"},   "any_of": []},
@@ -3788,15 +4092,92 @@ def _create_trajectory_offset_plot(table: pd.DataFrame) -> Optional[Image.Image]
     return _plot_to_image(fig)
 
 
+def _create_altitude_profile_plot(table: pd.DataFrame) -> Optional[Image.Image]:
+    """Altitude profile over segment index with expert phase markers."""
+    altitude_cols = [
+        c for c in ("expert_optimal_player_pos_z", "Graphics_player_pos_z")
+        if c in table.columns
+    ]
+    if not altitude_cols or table.empty:
+        return None
+
+    x_axis = table.index.to_numpy()
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    label_by_col = {
+        "expert_optimal_player_pos_z": "Expert altitude",
+        "Graphics_player_pos_z": "Player altitude",
+    }
+    color_by_col = {
+        "expert_optimal_player_pos_z": "steelblue",
+        "Graphics_player_pos_z": "green",
+    }
+    for col in altitude_cols:
+        ax.plot(
+            x_axis,
+            table[col].to_numpy(dtype=float),
+            label=label_by_col.get(col, col),
+            color=color_by_col.get(col),
+            linewidth=2 if col == "Graphics_player_pos_z" else 1.5,
+            linestyle="--" if col.startswith("expert_") else "-",
+        )
+
+    marker_col = (
+        "expert_optimal_player_pos_z"
+        if "expert_optimal_player_pos_z" in table.columns
+        else altitude_cols[0]
+    )
+    marker_values = table[marker_col].to_numpy(dtype=float)
+    phases, _ = _detect_expert_phases(table)
+    for k, ph in enumerate(phases):
+        entry_i, apex_i, exit_i = ph["entry"], ph["apex"], ph["exit"]
+        entry_label = "Entry" if k == 0 else None
+        apex_label = "Apex" if k == 0 else None
+        exit_label = "Exit" if k == 0 else None
+        ax.scatter(
+            x_axis[entry_i], marker_values[entry_i],
+            marker="o", color="yellow", s=90, zorder=6,
+            edgecolor="black", linewidth=0.6, label=entry_label,
+        )
+        ax.scatter(
+            x_axis[apex_i], marker_values[apex_i],
+            marker="*", color="red", s=180, zorder=7,
+            edgecolor="black", linewidth=0.6, label=apex_label,
+        )
+        ax.scatter(
+            x_axis[exit_i], marker_values[exit_i],
+            marker="^", color="limegreen", s=90, zorder=6,
+            edgecolor="black", linewidth=0.6, label=exit_label,
+        )
+        if len(phases) > 1:
+            ax.annotate(
+                f"#{k + 1}",
+                xy=(x_axis[apex_i], marker_values[apex_i]),
+                xytext=(6, 6), textcoords="offset points",
+                fontsize=9, fontweight="bold", color="red", zorder=8,
+            )
+
+    ax.set_title("Altitude Profile")
+    ax.set_xlabel("Index")
+    ax.set_ylabel("Z position / altitude (m)")
+    ax.grid(True)
+    ax.legend(loc="best")
+    return _plot_to_image(fig)
+
+
 def _resolve_track_config(df: pd.DataFrame) -> Dict[str, str]:
     """Auto-detect trajectory column names from the DataFrame."""
     tc: Dict[str, str] = {}
     if "Graphics_player_pos_x" in df.columns:
         tc["player_x"] = "Graphics_player_pos_x"
         tc["player_y"] = "Graphics_player_pos_y"
+        if "Graphics_player_pos_z" in df.columns:
+            tc["player_z"] = "Graphics_player_pos_z"
     if "expert_optimal_player_pos_x" in df.columns:
         tc["expert_x"] = "expert_optimal_player_pos_x"
         tc["expert_y"] = "expert_optimal_player_pos_y"
+        if "expert_optimal_player_pos_z" in df.columns:
+            tc["expert_z"] = "expert_optimal_player_pos_z"
     return tc
 
 
@@ -3931,6 +4312,18 @@ def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     return out
 
 
+def _build_altitude_profile(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Player/expert z-position plus expert x/y for phase marker placement."""
+    track = _resolve_track_config(df)
+    cols = [
+        track[k] for k in ("expert_x", "expert_y", "expert_z", "player_z")
+        if track.get(k)
+    ]
+    if not any(c.endswith("_pos_z") for c in cols):
+        return None
+    return _project_columns(df, cols)
+
+
 _GRAPH_BUILDERS = {
     "throttle":             _build_throttle,
     "brake":                _build_brake,
@@ -3943,6 +4336,7 @@ _GRAPH_BUILDERS = {
     "trajectory_detailed":  _build_trajectory_detailed,
     "trajectory_gas_brake": _build_trajectory_gas_brake,
     "trajectory_offset":    _build_trajectory_offset,
+    "altitude_profile":     _build_altitude_profile,
 }
 
 
@@ -3951,6 +4345,7 @@ _GRAPH_RENDERERS = {
     "trajectory_gas_brake": _create_gas_brake_trajectory_plot,
     "trajectory_balance":   _create_balance_line_plot,
     "trajectory_offset":    _create_trajectory_offset_plot,
+    "altitude_profile":     _create_altitude_profile_plot,
 }
 
 

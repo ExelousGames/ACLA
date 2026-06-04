@@ -1016,9 +1016,173 @@
         "ST4",
         "ST5"
       ]
+    },
+    "ST7": {
+      "name": "Constant-radius corner",
+      "type": "segment_type",
+      "description": "Corner shape refinement: the corner keeps a consistent radius from entry through apex to exit, with smooth and steady curvature.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST8",
+        "ST9",
+        "ST10",
+        "ST11"
+      ]
+    },
+    "ST8": {
+      "name": "Increasing-radius corner",
+      "type": "segment_type",
+      "description": "Corner shape refinement: the corner opens up after entry or apex; curvature decreases and radius increases toward exit.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST7",
+        "ST9",
+        "ST10",
+        "ST11"
+      ]
+    },
+    "ST9": {
+      "name": "Decreasing-radius corner",
+      "type": "segment_type",
+      "description": "Corner shape refinement: the corner tightens from entry toward apex or exit; curvature increases and radius decreases.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST7",
+        "ST8",
+        "ST10",
+        "ST11"
+      ]
+    },
+    "ST10": {
+      "name": "Hairpin corner",
+      "type": "segment_type",
+      "description": "Corner shape refinement: a very tight slow corner with a large direction change, usually near 180 degrees.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST7",
+        "ST8",
+        "ST9",
+        "ST11"
+      ]
+    },
+    "ST11": {
+      "name": "Chicane or esses",
+      "type": "segment_type",
+      "description": "Corner shape refinement: linked left-right or right-left direction changes, including chicanes, esses, and S-bends.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST7",
+        "ST8",
+        "ST9",
+        "ST10"
+      ]
+    },
+    "ST12": {
+      "name": "Entry altitude uphill",
+      "type": "segment_type",
+      "description": "Altitude refinement: the corner entry rises uphill across the entry phase.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST13",
+        "ST14"
+      ]
+    },
+    "ST13": {
+      "name": "Entry altitude level",
+      "type": "segment_type",
+      "description": "Altitude refinement: the corner entry is approximately level with no clear uphill or downhill trend.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST12",
+        "ST14"
+      ]
+    },
+    "ST14": {
+      "name": "Entry altitude downhill",
+      "type": "segment_type",
+      "description": "Altitude refinement: the corner entry drops downhill across the entry phase.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST12",
+        "ST13"
+      ]
+    },
+    "ST15": {
+      "name": "Apex altitude uphill",
+      "type": "segment_type",
+      "description": "Altitude refinement: altitude is rising through the apex phase.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST16",
+        "ST17"
+      ]
+    },
+    "ST16": {
+      "name": "Apex altitude level",
+      "type": "segment_type",
+      "description": "Altitude refinement: altitude is approximately level through the apex phase.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST15",
+        "ST17"
+      ]
+    },
+    "ST17": {
+      "name": "Apex altitude downhill",
+      "type": "segment_type",
+      "description": "Altitude refinement: altitude is falling through the apex phase.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST15",
+        "ST16"
+      ]
+    },
+    "ST18": {
+      "name": "Exit altitude uphill",
+      "type": "segment_type",
+      "description": "Altitude refinement: the corner exit rises uphill across the exit phase.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST19",
+        "ST20"
+      ]
+    },
+    "ST19": {
+      "name": "Exit altitude level",
+      "type": "segment_type",
+      "description": "Altitude refinement: the corner exit is approximately level with no clear uphill or downhill trend.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST18",
+        "ST20"
+      ]
+    },
+    "ST20": {
+      "name": "Exit altitude downhill",
+      "type": "segment_type",
+      "description": "Altitude refinement: the corner exit drops downhill across the exit phase.",
+      "parent": null,
+      "children": [],
+      "exclusive_with": [
+        "ST18",
+        "ST19"
+      ]
     }
   },
   "category_guidelines": {
-    "Segment Type": "If the segment contains a corner, label the shape as 'In the corner' (ST1).  If the segment is on the straight, label as 'On the straight' (ST2).  If the segment is approaching a corner but not yet in it, label as 'Approach to corner' (ST3).  If the segment is exiting a corner, label as 'Exit corner leading to straight' (ST4).  If the segment is between corners and hasn't been named yet, label as 'Between consecutive corners' (ST5).  If the segment covers consecutive corners with no straight in between, label as 'Consecutive corners with no straight in between' (ST6).\n"
+    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. When altitude evidence is clear, optionally add one entry altitude label from ST12-ST14, one apex altitude label from ST15-ST17, and one exit altitude label from ST18-ST20.\n"
   }
 }

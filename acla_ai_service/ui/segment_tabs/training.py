@@ -38,7 +38,7 @@ def render_training(active_view: str, annotation_key: Optional[str]) -> None:
             "classifier",
             title="1️⃣ Segment classifier (LSTM)",
             description="Trains on the currently-selected annotation dataset.",
-            render_start_form=_classifier_form,
+            render_start_form=lambda: _classifier_form(default_ann_key),
         )
         return
 
@@ -88,8 +88,9 @@ def _show_input_location(label: str, value: Optional[str]) -> None:
 # Per-card start forms — each calls spawn(...) + st.rerun() on submit.
 # ---------------------------------------------------------------------------
 
-def _classifier_form() -> None:
+def _classifier_form(default_ann_key: str) -> None:
     with st.form("classifier_form"):
+        ann_key = st.text_input("Annotation key", value=default_ann_key)
         c1, c2, c3, c4 = st.columns(4)
         epochs = c1.number_input("Epochs", min_value=1, max_value=500, value=10)
         batch_size = c2.number_input("Batch size", min_value=1, max_value=2048, value=32)
@@ -104,6 +105,7 @@ def _classifier_form() -> None:
                 "--batch-size", str(int(batch_size)),
                 "--lr", str(float(lr)),
                 "--val-split", str(float(val_split)),
+                "--annotation-key", ann_key,
             ]
             spawn("classifier", cmd)
             st.rerun()
@@ -153,4 +155,3 @@ def _opportunity_forecaster_form(default_ann_key: str) -> None:
             ]
             spawn("opportunity_forecaster", cmd)
             st.rerun()
-

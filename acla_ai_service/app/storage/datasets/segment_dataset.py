@@ -27,6 +27,7 @@ import pandas as pd
 import torch
 from torch.utils.data import IterableDataset
 
+from app.domain.labels import normalize_label_ids
 from app.domain.segment import AnnotatedSegment
 
 
@@ -97,7 +98,7 @@ class StreamingSegmentDataset(IterableDataset):
                 seg_X = df.values
 
                 # Use labels directly (IDs)
-                mapped_labels = ann.labels
+                mapped_labels = normalize_label_ids(ann.labels)
 
                 # Create target
                 label_vec = self.mlb.transform([mapped_labels])[0]

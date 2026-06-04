@@ -281,11 +281,13 @@ def _local_planner_prompt(
         "trigger range refinement or extra opponent-path evidence; "
         "use `find_nearest_opponent` / `query_opponent_trajectory` when "
         "the primary slot's detailed path decides the technique, and",
-        "  3. optionally identify the trajectory shape if an ST1-ST6 pick "
-        "would be unambiguous.",
+        "  3. optionally identify the base segment shape, corner shape, "
+        "and entry/apex/exit altitude if the ST picks would be unambiguous.",
         "Keep the plan tight — typically 1-3 describe_graphs steps plus a "
-        "label_verifier. `trajectory_offset` + `time_difference_to_expert` "
-        "are the two diagnostic graphs called out by the skill.",
+        "label_verifier. `trajectory_offset` + `time_delta` are the two "
+        "diagnostic graphs called out by the skill; add `altitude_profile` "
+        "and `measure_segment_shape` when deciding ST altitude or corner "
+        "shape labels.",
         "",
         "Plan format: JSON object with a single key \"steps\". Each step:",
         "  - \"step_id\": integer (1, 2, 3, ...).",
@@ -303,8 +305,9 @@ def _local_planner_prompt(
         '["trajectory_offset", "brake", "throttle"], "tools": '
         '["compute_expert_phases"]},',
         '    {"step_id": 2, "agent": "describe_graphs", "description": '
-        '"Measure trajectory shape to pick ST1-ST6.", "requested_graphs": '
-        '["trajectory_detailed"], "tools": []},',
+        '"Measure trajectory and altitude to pick ST labels.", "requested_graphs": '
+        '["trajectory_detailed", "altitude_profile"], "tools": '
+        '["measure_segment_shape"]},',
         '    {"step_id": 3, "agent": "label_verifier", "description": '
         '"Shortlist labels by similarity to observations.", '
         '"requested_graphs": [], "tools": []}',
@@ -371,8 +374,8 @@ def _local_synth_prompts(
         f"The shortlist retrieved for this section is: {verified_inline}. "
         "Pick the parent label(s) from this shortlist by matching the "
         "section's telemetry against each candidate's `characteristics` "
-        "block in the skill. An ST1-ST6 pick is OPTIONAL — include one only "
-        "when the trajectory shape is unambiguous. At most ONE of "
+        "block in the skill. ST picks are OPTIONAL — include only labels "
+        "whose shape or altitude evidence is unambiguous. At most ONE of "
         "{EA, MSP, MSR, RM} may be attached.",
         "",
         "#### Output format",
@@ -439,7 +442,7 @@ def _claude_task_prompt(
         "the boundary is event-shaped and circuit sections are context only. "
         "Your job is to label which circuit this is, identify a named "
         "circuit_section only when the range clearly belongs to one, and pick the "
-        "main label (+ optional ST1-ST6, + optional sub-label) by "
+        "main label (+ optional ST labels, + optional sub-label) by "
         "matching the section's telemetry against each candidate label's "
         "`characteristics` block in the skill.\n"
         "\n"
@@ -475,9 +478,11 @@ def _claude_task_prompt(
         "pick the best-matching main label (EA / MSP / MSR / RM / PS / O / "
         "OD / MD), or none when telemetry is too noisy to commit. At most "
         "one of {EA, MSP, MSR, RM} may be attached.\n"
-        "3. **Maybe pick ONE segment type.** Call `search_labels(query="
-        "<trajectory shape>, types=\"segment_type\")` and attach one ST1-ST6 "
-        "only when the shape is unambiguous; skip it otherwise.\n"
+        "3. **Maybe pick ST labels.** Call `measure_segment_shape` and "
+        "render `altitude_profile` when entry/apex/exit altitude matters; "
+        "then call `search_labels(query=<trajectory shape and altitude>, "
+        "types=\"segment_type\")` and attach ST labels only when the shape "
+        "or entry/apex/exit altitude is unambiguous; skip them otherwise.\n"
         "4. **Check for a sub-label fit.** When a main label was picked, "
         "call `search_labels(query=<what you observed>, parent_id=<main>)` "
         "and read each returned sub-label's `description`. Attach a "

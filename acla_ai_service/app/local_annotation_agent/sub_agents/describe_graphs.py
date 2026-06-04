@@ -86,6 +86,7 @@ def _call_llm(prompt: str) -> str:
 # omitted here.
 _VLM_PIPELINE_TOOL_IDS = (
     "compute_expert_phases",
+    "measure_segment_shape",
     "locate_circuit_section",
     "find_nearest_opponent",
     "classify_opponent_interaction",

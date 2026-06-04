@@ -17,6 +17,7 @@ Box stays flow-free by exposing generic capability tools:
     render_graph                PNG + descriptor over [start, end]
     query_telemetry             deterministic math on the df
     compute_expert_phases       per-arc entry/apex/exit ilocs
+    measure_segment_shape       deterministic ST shape + altitude summary
     locate_circuit_section      named-section match for an iloc window
     find_nearest_opponent       multi-car positional context (top opponents)
     classify_opponent_interaction deterministic O / OD / MSR outcome gate
@@ -161,6 +162,9 @@ def _build_system_prompt(request: AgentRequest) -> str:
         "`peek_graph`).\n"
         "- `compute_expert_phases(start, end)` — corner entry/apex/exit "
         "ilocs derived from expert telemetry.\n"
+        "- `measure_segment_shape(start, end)` — deterministic ST shape "
+        "summary: base segment shape, optional corner-shape refinement, "
+        "and entry/apex/exit altitude trends.\n"
         "- `locate_circuit_section(start, end)` — named-section match "
         "ranked by normalised-position overlap.\n"
         "- `find_nearest_opponent(start, end)` — opponent context "
@@ -396,6 +400,12 @@ class _ToolSurface:
         att = compute_expert_phases(self.df, s, e)
         return json.dumps({"phases_range": [s, e], "data": att.content}, default=str)
 
+    def measure_segment_shape(self, start: int, end: int) -> str:
+        from app.shared.annotation_agent_tools import measure_segment_shape
+        s, e = self._clamp_to_window(start, end)
+        att = measure_segment_shape(self.df, s, e)
+        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+
     def locate_circuit_section(self, start: int, end: int) -> str:
         from app.shared.annotation_agent_tools import locate_circuit_section
         s, e = self._clamp_to_window(start, end)
@@ -586,6 +596,20 @@ def _build_tool_set(surface: _ToolSurface):
         return {"content": [{"type": "text", "text": text}]}
 
     @tool(
+        "measure_segment_shape",
+        "Measure base segment shape, corner-shape refinement, and "
+        "entry/apex/exit altitude trends for ST labels.",
+        {"start": int, "end": int},
+    )
+    async def measure_segment_shape(args):
+        text = surface.measure_segment_shape(int(args["start"]), int(args["end"]))
+        surface._emit_tool_event(
+            "measure_segment_shape",
+            {"start": args.get("start"), "end": args.get("end")}, text,
+        )
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool(
         "locate_circuit_section",
         "Identify which named circuit_section the iloc window overlaps.",
         {"start": int, "end": int},
@@ -715,7 +739,7 @@ def _build_tool_set(surface: _ToolSurface):
 
     tools_list = [
         list_graphs, get_graph_guidance, render_graph, peek_graph, query_telemetry,
-        compute_expert_phases, locate_circuit_section,
+        compute_expert_phases, measure_segment_shape, locate_circuit_section,
         find_nearest_opponent, classify_opponent_interaction, query_opponent_trajectory,
         get_circuit_id,
         revise_range, submit_result,
@@ -727,6 +751,7 @@ def _build_tool_set(surface: _ToolSurface):
         "mcp__agent__peek_graph",
         "mcp__agent__query_telemetry",
         "mcp__agent__compute_expert_phases",
+        "mcp__agent__measure_segment_shape",
         "mcp__agent__locate_circuit_section",
         "mcp__agent__find_nearest_opponent",
         "mcp__agent__classify_opponent_interaction",

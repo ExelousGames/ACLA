@@ -37,7 +37,7 @@ async def main() -> int:
     logger = logging.getLogger("run_all_trainings")
 
     print("\n=== [1/3] Segment classifier ===")
-    await segment_classifier.train_model()
+    await segment_classifier.train_model(annotation_cache_key=args.annotation_key)
 
     print("\n=== [2/3] Transformer guidance ===")
     service = Full_dataset_TelemetryMLService(logger=logger, pipeline_config=cfg)
