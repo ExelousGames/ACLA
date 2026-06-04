@@ -9,8 +9,6 @@ import { Types } from 'mongoose';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import { pipeline, Readable } from 'stream';
-import { promisify } from 'util';
 
 @Injectable()
 export class RacingSessionService {
@@ -214,40 +212,29 @@ export class RacingSessionService {
     }
 
     /**
-     * Initializes streaming download by preparing session files on disk
-     * @param trackName - Track name to filter sessions (optional)
-     * @param carName - Car name to filter sessions (optional)
-     * @param chunkSize - Size of each data chunk (legacy parameter, ignored)
-     * @returns Session metadata with file streaming information plus streaming context
+     * Initializes a streaming download by returning metadata only.
+     * Actual telemetry rows are streamed from GridFS by download/chunk.
      */
-    async initializeSessionsDownload(trackName?: string, carName?: string, chunkSize: number = 1000): Promise<AllSessionsInitResponseDto & { streamingContext?: any }> {
+    async initializeSessionsDownload(trackName?: string, carName?: string, chunkSize: number = 1000, sessionId?: string): Promise<AllSessionsInitResponseDto> {
         try {
-            // Prepare sessions for streaming - this creates temporary files
-            const streamingData = await this.prepareSessionsForStreaming(trackName, carName);
+            const sessions = await this.listSessionsForDownload(trackName, carName, sessionId);
 
-            // Map to the expected DTO format
-            const sessionMetadata = streamingData.sessionFiles.map(sessionFile => ({
-                sessionId: sessionFile.sessionId,
-                session_name: sessionFile.session_name,
-                map: sessionFile.map,
-                car_name: sessionFile.car_name,
-                userId: sessionFile.userId,
-                dataSize: sessionFile.dataPoints,
-                fileSize: sessionFile.fileSize,
-                dataPoints: sessionFile.dataPoints,
-                // Legacy fields for backward compatibility
-                chunkCount: 1 // Each session is now a single file
+            const sessionMetadata = sessions.map(session => ({
+                sessionId: session._id.toString(),
+                session_name: session.session_name,
+                map: session.map,
+                car_name: session.car_name,
+                userId: session.user_id,
+                dataSize: session.totalDataPoints || 0,
+                dataPoints: session.totalDataPoints || 0,
+                chunkCount: session.dataChunkFileIds?.length || session.totalChunks || 0
             }));
 
             return {
-                downloadId: streamingData.downloadId,
-                totalSessions: streamingData.totalSessions,
-                totalChunks: streamingData.totalSessions, // Each session is one "chunk" now
-                sessionMetadata,
-                streamingContext: {
-                    sessionFiles: streamingData.sessionFiles,
-                    tempDir: streamingData.tempDir
-                }
+                downloadId: crypto.randomUUID(),
+                totalSessions: sessions.length,
+                totalChunks: sessionMetadata.reduce((total, session) => total + (session.chunkCount || 0), 0),
+                sessionMetadata
             };
         } catch (error) {
             throw new Error(`Failed to initialize sessions download: ${error.message}`);
@@ -292,152 +279,52 @@ export class RacingSessionService {
         }
     }
 
-    /**
-     * Prepares session data as temporary files for streaming without memory buffering
-     * Combines all chunks for each session into a single temporary file
-     * @param trackName - Track name filter (optional)
-     * @param carName - Car name filter (optional)
-     * @returns Session metadata with temporary file paths for streaming
-     */
-    async prepareSessionsForStreaming(trackName?: string, carName?: string): Promise<{
-        downloadId: string;
-        totalSessions: number;
-        sessionFiles: Array<{
-            sessionId: string;
-            session_name: string;
-            map: string;
-            car_name: string;
-            userId: string;
-            filePath: string;
-            fileSize: number;
-            dataPoints: number;
-        }>;
-        tempDir: string;
+    async listSessionsForDownload(trackName?: string, carName?: string, sessionId?: string): Promise<any[]> {
+        const filter: any = {};
+        if (sessionId) filter._id = sessionId;
+        if (trackName) filter.map = trackName;
+        if (carName) filter.car_name = carName;
+
+        return this.racingSession.find(filter)
+            .select('session_name map car_name user_id totalDataPoints totalChunks dataChunkFileIds')
+            .exec();
+    }
+
+    async getSessionDownloadChunk(sessionId: string, chunkIndex: number): Promise<{
+        stream: NodeJS.ReadableStream;
+        fileSize: number;
+        totalChunks: number;
+        dataPoints: number;
     }> {
-        const pipelineAsync = promisify(pipeline);
-
-        try {
-            // Build filter
-            const filter: any = {};
-            if (trackName) filter.map = trackName;
-            if (carName) filter.car_name = carName;
-
-            const sessions = await this.racingSession.find(filter).exec();
-
-            // Create temporary directory for this download session
-            const downloadId = crypto.randomUUID();
-            const tempDir = path.resolve(process.cwd(), 'session_recording', 'temp', 'streaming', downloadId);
-
-            // Ensure temp directory exists
-            await fs.promises.mkdir(tempDir, { recursive: true });
-
-            const sessionFiles: Array<{
-                sessionId: string;
-                session_name: string;
-                map: string;
-                car_name: string;
-                userId: string;
-                filePath: string;
-                fileSize: number;
-                dataPoints: number;
-            }> = [];
-
-            // Process each session to create temporary files
-            for (const session of sessions) {
-                const sessionFilePath = path.join(tempDir, `${session._id.toString()}.json`);
-                const writeStream = fs.createWriteStream(sessionFilePath);
-
-                let totalDataPoints = 0;
-                let isFirstChunk = true;
-
-                // Start JSON object with _id and data array
-                writeStream.write(`{"_id":"${session._id.toString()}","data":[`);
-
-                if (session.dataChunkFileIds && session.dataChunkFileIds.length > 0) {
-                    // Stream each chunk and append to file
-                    for (let i = 0; i < session.dataChunkFileIds.length; i++) {
-                        const fileId = session.dataChunkFileIds[i];
-
-                        try {
-                            // Get readable stream from GridFS
-                            const readStream = await this.gridfsService.downloadJSONStream(new ObjectId(fileId.toString()), GRIDFS_BUCKETS.RACING_SESSIONS);
-
-                            // Parse JSON chunk and write to file
-                            let chunkData = '';
-
-                            await new Promise<void>((resolve, reject) => {
-                                readStream.on('data', (chunk: Buffer) => {
-                                    chunkData += chunk.toString();
-                                });
-
-                                readStream.on('end', () => {
-                                    try {
-                                        const jsonData = JSON.parse(chunkData);
-                                        const dataArray = Array.isArray(jsonData) ? jsonData : [];
-
-                                        // Add comma separator between chunks (except for first chunk)
-                                        if (!isFirstChunk && dataArray.length > 0) {
-                                            writeStream.write(',');
-                                        }
-
-                                        // Write data points without array brackets
-                                        if (dataArray.length > 0) {
-                                            const dataString = JSON.stringify(dataArray).slice(1, -1); // Remove [ and ]
-                                            writeStream.write(dataString);
-                                            totalDataPoints += dataArray.length;
-                                            isFirstChunk = false;
-                                        }
-
-                                        resolve();
-                                    } catch (parseError) {
-                                        reject(new Error(`Failed to parse chunk ${i} for session ${session._id}: ${parseError.message}`));
-                                    }
-                                });
-
-                                readStream.on('error', reject);
-                            });
-
-                        } catch (chunkError) {
-                            console.warn(`Failed to process chunk ${i} for session ${session._id}: ${chunkError.message}`);
-                        }
-                    }
-                }
-
-                // End JSON array and object, and close file
-                writeStream.write(']}');
-                writeStream.end();
-
-                // Wait for write stream to finish
-                await new Promise<void>((resolve, reject) => {
-                    writeStream.on('finish', resolve);
-                    writeStream.on('error', reject);
-                });
-
-                // Get file size
-                const stats = await fs.promises.stat(sessionFilePath);
-
-                sessionFiles.push({
-                    sessionId: session._id.toString(),
-                    session_name: session.session_name,
-                    map: session.map,
-                    car_name: session.car_name,
-                    userId: session.user_id,
-                    filePath: sessionFilePath,
-                    fileSize: stats.size,
-                    dataPoints: totalDataPoints
-                });
-            }
-
-            return {
-                downloadId,
-                totalSessions: sessions.length,
-                sessionFiles,
-                tempDir
-            };
-
-        } catch (error) {
-            throw new Error(`Failed to prepare sessions for streaming: ${error.message}`);
+        if (!Types.ObjectId.isValid(sessionId)) {
+            throw new Error('Invalid session id');
         }
+
+        const session = await this.racingSession.findById(sessionId)
+            .select('dataChunkFileIds totalDataPoints')
+            .exec();
+
+        if (!session) {
+            throw new Error('Session not found');
+        }
+
+        const fileIds = session.dataChunkFileIds || [];
+        if (chunkIndex < 0 || chunkIndex >= fileIds.length) {
+            throw new Error('Chunk index out of range');
+        }
+
+        const fileId = new ObjectId(fileIds[chunkIndex].toString());
+        const [stream, fileSize] = await Promise.all([
+            this.gridfsService.downloadJSONStream(fileId, GRIDFS_BUCKETS.RACING_SESSIONS),
+            this.gridfsService.getFileSize(fileId, GRIDFS_BUCKETS.RACING_SESSIONS),
+        ]);
+
+        return {
+            stream,
+            fileSize,
+            totalChunks: fileIds.length,
+            dataPoints: session.totalDataPoints || 0,
+        };
     }
 
     async listUserSessionsForAnalysis(userId: string): Promise<Array<{

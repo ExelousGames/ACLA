@@ -248,7 +248,7 @@ class BackendService:
     ) -> Dict[str, Any]:
         """
         Stream all racing sessions directly to cache without loading into memory
-        Uses file streaming implementation for memory-efficient TB-scale data processing
+        Uses GridFS chunk streaming for memory-efficient large data processing
         
         Args:
             cache_key: User-specified cache key name for storing the data
@@ -281,7 +281,7 @@ class BackendService:
                     "success": True,
                     "cached": True,
                     "cache_key": cache_key,
-                    "streaming_mode": "file_based",
+                    "streaming_mode": "gridfs_chunk_stream",
                     "memory_efficient": True,
                     "fetch_skipped": True,
                     "message": "Existing cache reused without fetching"
@@ -309,93 +309,77 @@ class BackendService:
             session_metadata = init_response.get("sessionMetadata", [])
             total_sessions = init_response.get("totalSessions", 0)
             
-            logger.info(f"Initialized file streaming download for {total_sessions} sessions")
-            logger.info(f"Backend prepared temporary files for memory-efficient streaming")
+            logger.info(f"Initialized chunk streaming download for {total_sessions} sessions")
+            logger.info(f"Backend will stream GridFS chunks directly")
             logger.info(f"Using shared cache for data reuse across all services")
             
-            # Create session streamer for the new file-based streaming approach
-            class FileStreamSessionIterator:
+            class ChunkStreamSessionIterator:
                 def __init__(self, session_metadata, download_id, backend_service):
                     self.session_metadata = session_metadata
                     self.download_id = download_id
                     self.backend_service = backend_service
                 
                 async def __aiter__(self):
-                    """Stream each session by downloading files directly from backend"""
+                    """Stream each stored telemetry chunk directly from backend."""
                     for session_meta in self.session_metadata:
                         session_id = session_meta["sessionId"]
+                        chunk_count = int(session_meta.get("chunkCount") or 0)
                         
-                        try:
-                            # Request session file stream from backend
-                            session_payload = await self._stream_session_file(session_id, session_meta)
-                            
-                            chunk_id = session_id
-                            chunk_data = session_payload
-
-                            if isinstance(session_payload, dict):
-                                chunk_id = session_payload.get("_id", session_id)
-                                chunk_data = session_payload.get("data", session_payload)
-                            
-                            # Store only the raw session telemetry so downstream consumers do not
-                            # rely on wrapper metadata while reconstructing dataframes.
-                            yield (chunk_data, chunk_id)
-                            
-                        except Exception as e:
-                            logger.error(f"Failed to stream session {session_id}: {str(e)}")
-                            # Continue with other sessions instead of failing completely
-                            continue
+                        for chunk_index in range(chunk_count):
+                            try:
+                                chunk_rows = await self._stream_session_chunk(
+                                    session_id,
+                                    session_meta,
+                                    chunk_index,
+                                )
+                                yield (chunk_rows, f"{session_id}:chunk_{chunk_index:06d}")
+                            except Exception as e:
+                                logger.error(
+                                    f"Failed to stream session chunk {session_id}:{chunk_index}: {str(e)}"
+                                )
+                                continue
                 
-                async def _stream_session_file(self, session_id: str, session_meta: dict) -> Any:
-                    """Stream a single session file from backend and parse JSON"""
+                async def _stream_session_chunk(self, session_id: str, session_meta: dict, chunk_index: int) -> Any:
+                    """Stream a single GridFS-backed telemetry chunk from backend and parse JSON."""
                     try:
-                        # Prepare request for file streaming
                         stream_request = {
                             "downloadId": self.download_id,
                             "sessionId": session_id,
                             "trackName": session_meta.get("map", ""),
                             "carName": session_meta.get("car_name", ""),
-                            "chunkIndex": 0   # File streaming mode (not chunk-based)
+                            "chunkIndex": chunk_index
                         }
                         
-                                        # httpx and json are already imported at module level
-                        
-                        # Get auth headers
                         auth_headers = self.backend_service.get_auth_headers()
-                        
-                        # Configure timeout for file streaming
                         timeout = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=60.0)  # 10 minute read timeout for large files
                         
                         async with httpx.AsyncClient(timeout=timeout) as client:
                             url = f"{self.backend_service.base_url}:{self.backend_service.base_port}/racing-session/download/chunk"
                             
-                            # Stream the file response
                             async with client.stream("POST", url, json=stream_request, headers=auth_headers) as response:
                                 response.raise_for_status()
                                 
-                                # Read the entire JSON response in chunks to avoid memory issues
                                 content = ""
                                 async for chunk in response.aiter_text():
                                     content += chunk
                                 
-                                # Parse the complete JSON
-                                session_data = json.loads(content)
-                                
-                                # Return the parsed session data
-                                return session_data
+                                chunk_data = json.loads(content)
+                                if isinstance(chunk_data, dict) and isinstance(chunk_data.get("data"), list):
+                                    return chunk_data["data"]
+                                return chunk_data
                                 
                     except httpx.HTTPStatusError as e:
-                        raise Exception(f"HTTP {e.response.status_code}: Failed to download session file")
+                        raise Exception(f"HTTP {e.response.status_code}: Failed to download session chunk")
                     except json.JSONDecodeError as e:
-                        raise Exception(f"Failed to parse session JSON: {str(e)}")
+                        raise Exception(f"Failed to parse session chunk JSON: {str(e)}")
                     except Exception as e:
-                        raise Exception(f"Failed to stream session file: {str(e)}")
+                        raise Exception(f"Failed to stream session chunk: {str(e)}")
             
             # Calculate estimated size based on session metadata
             total_data_points = sum(session.get("dataPoints", 0) for session in session_metadata)
             estimated_size_mb = (total_data_points * 100) / (1024 * 1024)  # Rough estimate: 100 bytes per data point
             
-            # Create the file stream iterator
-            streamer = FileStreamSessionIterator(session_metadata, download_id, self)
+            streamer = ChunkStreamSessionIterator(session_metadata, download_id, self)
             
             # Stream sessions to cache
             cache_success = await data_cache.cache_chunks_streaming(
@@ -406,7 +390,7 @@ class BackendService:
             if not cache_success:
                 raise RuntimeError("Failed to stream sessions to cache")
             
-            logger.info(f"Successfully streamed {total_sessions} sessions to cache using file streaming")
+            logger.info(f"Successfully streamed {total_sessions} sessions to cache using GridFS chunk streaming")
             
             # Clean up download session on backend (optional - backend will auto-cleanup)
             try:
@@ -427,7 +411,7 @@ class BackendService:
                 "total_data_points": total_data_points,
                 "cached": True,
                 "cache_key": cache_key,
-                "streaming_mode": "file_based",
+                "streaming_mode": "gridfs_chunk_stream",
                 "memory_efficient": True,
                 "summary": {
                     "sessions_streamed": total_sessions,
@@ -530,7 +514,7 @@ class BackendService:
                                 timeout_seconds=timeout_seconds
                             )
                             
-                            if "error" in chunk_response:
+                            if isinstance(chunk_response, dict) and "error" in chunk_response:
                                 if retry_attempt < max_retries - 1:
                                     logger.warning(f"Chunk {chunk_index} failed (attempt {retry_attempt + 1}): {chunk_response['error']}. Retrying...")
                                     await asyncio.sleep(5 * (retry_attempt + 1))  # Exponential backoff
@@ -539,7 +523,7 @@ class BackendService:
                                     logger.error(f"Failed to download chunk {chunk_index} for session {session_id} after {max_retries} attempts: {chunk_response['error']}")
                                     break
                             
-                            chunk_data = chunk_response.get("data", [])
+                            chunk_data = chunk_response if isinstance(chunk_response, list) else chunk_response.get("data", [])
                             logger.info(f"Successfully downloaded chunk {chunk_index + 1}/{chunk_count} with {len(chunk_data)} records")
                             break  # Success, exit retry loop
                             

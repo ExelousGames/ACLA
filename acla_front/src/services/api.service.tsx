@@ -1,4 +1,4 @@
-import axios, { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
+import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 
 
 type ApiResponse<T> = {
@@ -69,9 +69,9 @@ export class ApiService {
     }
 
     // POST method
-    public async post<T>(url: string, data?: object): Promise<AxiosResponse<T>> {
+    public async post<T>(url: string, data?: object, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
         try {
-            return await this.axiosInstance.post<T>(url, data);
+            return await this.axiosInstance.post<T>(url, data, config);
         } catch (error) {
             throw error as ApiError;
         }

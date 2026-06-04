@@ -13,6 +13,7 @@ describe('RacingSessionService', () => {
     racingSessionModel = {
       find: jest.fn(),
       findOne: jest.fn(),
+      findById: jest.fn(),
     };
     gridfsService = {
       downloadJSONStream: jest.fn(),
@@ -66,5 +67,69 @@ describe('RacingSessionService', () => {
       },
     ]);
     expect(racingSessionModel.find).toHaveBeenCalledWith({ user_id: 'user-1' });
+  });
+
+  it('initializes download for only the requested session when sessionId is provided', async () => {
+    racingSessionModel.find.mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue([
+          {
+            _id: { toString: () => 'session-1' },
+            session_name: 'Race 1',
+            map: 'Brands Hatch',
+            car_name: 'BMW',
+            user_id: 'user-1',
+            totalDataPoints: 50,
+            totalChunks: 2,
+            dataChunkFileIds: ['file-1', 'file-2'],
+          },
+        ]),
+      }),
+    });
+
+    const result = await service.initializeSessionsDownload('Brands Hatch', undefined, 1000, 'session-1');
+
+    expect(result).toMatchObject({
+      totalSessions: 1,
+      totalChunks: 2,
+      sessionMetadata: [
+        {
+          sessionId: 'session-1',
+          session_name: 'Race 1',
+          map: 'Brands Hatch',
+          car_name: 'BMW',
+          userId: 'user-1',
+          dataSize: 50,
+          dataPoints: 50,
+          chunkCount: 2,
+        },
+      ],
+    });
+    expect(result.downloadId).toEqual(expect.any(String));
+    expect(racingSessionModel.find).toHaveBeenCalledWith({ _id: 'session-1', map: 'Brands Hatch' });
+  });
+
+  it('returns a stream for the requested download chunk', async () => {
+    const sessionId = '507f1f77bcf86cd799439011';
+    const stream = { pipe: jest.fn() };
+
+    racingSessionModel.findById.mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({
+          dataChunkFileIds: ['507f1f77bcf86cd799439012', '507f1f77bcf86cd799439013'],
+          totalDataPoints: 100,
+        }),
+      }),
+    });
+    gridfsService.downloadJSONStream.mockResolvedValue(stream);
+    gridfsService.getFileSize.mockResolvedValue(4096);
+
+    await expect(service.getSessionDownloadChunk(sessionId, 1)).resolves.toEqual({
+      stream,
+      fileSize: 4096,
+      totalChunks: 2,
+      dataPoints: 100,
+    });
+    expect(racingSessionModel.findById).toHaveBeenCalledWith(sessionId);
   });
 });

@@ -46,17 +46,65 @@
     color: var(--lp-gray);
 }
 
-.visualizations-container {
+.visualization-workspace {
     width: 100%;
     background: transparent;
-    border-radius: var(--lp-radius);
-    padding: 8px;
-    overflow: auto;
     flex: 1;
     min-height: 0;
     display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 30%);
     gap: 14px;
-    align-content: start;
+    overflow: hidden;
+}
+
+.visualization-workspace--map-only {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.static-map-container {
+    min-width: 0;
+    min-height: 0;
+    background: var(--lp-bg-panel);
+    border-radius: var(--lp-radius);
+    border: 1px solid var(--lp-border);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    color: var(--lp-white);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.32);
+}
+
+.static-map-header {
+    display: flex;
+    align-items: center;
+    min-height: 42px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--lp-border);
+    background: rgba(255, 255, 255, 0.02);
+    flex-shrink: 0;
+}
+
+.static-map-header .rt-Text {
+    font-family: var(--lp-mono);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--lp-green);
+}
+
+.static-map-body {
+    flex: 1;
+    min-height: 0;
+}
+
+.visualizations-container {
+    min-width: 0;
+    min-height: 0;
+    padding-right: 4px;
+    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
 }
 
 .visualization-container {
@@ -132,8 +180,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100%;
-    min-height: 240px;
+    min-height: 220px;
     border: 1px dashed var(--lp-border-strong);
     border-radius: var(--lp-radius);
     background:
@@ -152,10 +199,17 @@
 @media (max-width: 768px) {
     .dynamic-visualization-manager { padding: 10px; }
     .manager-header { margin-bottom: 8px; }
-    .visualizations-container {
-        padding: 4px;
+    .visualization-workspace {
         gap: 8px;
-        grid-template-columns: 1fr !important;
+        grid-template-columns: 1fr;
+        overflow: auto;
+    }
+    .static-map-container {
+        min-height: 460px;
+    }
+    .visualizations-container {
+        padding: 0;
+        overflow: visible;
     }
     .visualization-container { min-height: 200px; }
 }

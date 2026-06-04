@@ -11,7 +11,6 @@ import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGu
 import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { createReadStream } from 'fs';
 import * as crypto from 'crypto';
 
 @Controller('racing-session')
@@ -30,8 +29,6 @@ export class RacingSessionController {
     private downloadStates = new Map<string, {
         initData: AllSessionsInitResponseDto;
         downloadedChunks: Set<string>; // Track downloaded chunks by "sessionId:chunkIndex"
-        streamingFiles?: Map<string, { filePath: string; fileSize: number; }>; // Track streaming file paths by sessionId
-        tempDir?: string; // Directory containing temporary streaming files
         createdAt: Date;
     }>();
 
@@ -84,49 +81,26 @@ export class RacingSessionController {
     @Post('download/init')
     async initializeSessionsDownload(
         @Request() req,
-        @Body() body: { trackName?: string, carName?: string, chunkSize?: number }
+        @Body() body: { trackName?: string, carName?: string, sessionId?: string, chunkSize?: number }
     ): Promise<AllSessionsInitResponseDto> {
         try {
             const chunkSize = body.chunkSize || 1000; // Legacy parameter, ignored in streaming mode
-            const initDataWithContext = await this.racingSessionService.initializeSessionsDownload(body.trackName, body.carName, chunkSize);
+            const initDataWithContext = await this.racingSessionService.initializeSessionsDownload(body.trackName, body.carName, chunkSize, body.sessionId);
 
-            // Store download state for tracking with streaming file information
-            const streamingFiles = new Map<string, { filePath: string; fileSize: number; }>();
-
-            // Populate streaming files map from the context
-            if (initDataWithContext.streamingContext?.sessionFiles) {
-                for (const sessionFile of initDataWithContext.streamingContext.sessionFiles) {
-                    streamingFiles.set(sessionFile.sessionId, {
-                        filePath: sessionFile.filePath,
-                        fileSize: sessionFile.fileSize
-                    });
-                }
-            }
-
-            // Remove streaming context from response (internal use only)
-            const initData: AllSessionsInitResponseDto = {
-                downloadId: initDataWithContext.downloadId,
-                totalSessions: initDataWithContext.totalSessions,
-                totalChunks: initDataWithContext.totalChunks,
-                sessionMetadata: initDataWithContext.sessionMetadata
-            };
-
-            this.downloadStates.set(initData.downloadId, {
-                initData,
+            this.downloadStates.set(initDataWithContext.downloadId, {
+                initData: initDataWithContext,
                 downloadedChunks: new Set<string>(),
-                streamingFiles,
-                tempDir: initDataWithContext.streamingContext?.tempDir,
                 createdAt: new Date()
             });
 
-            this.logger.log(`Initialized download session ${initData.downloadId} with ${initData.totalSessions} sessions`);
+            this.logger.log(`Initialized download session ${initDataWithContext.downloadId} with ${initDataWithContext.totalSessions} sessions`);
 
             // Clean up old download states (older than 2 hours)
             this.cleanupOldDownloadStates().catch(error => {
                 this.logger.error(`Error during download state cleanup: ${error.message}`);
             });
 
-            return initData;
+            return initDataWithContext;
         } catch (error) {
             throw new BadRequestException(`Failed to initialize download: ${error.message}`);
         }
@@ -159,51 +133,36 @@ export class RacingSessionController {
                 throw new BadRequestException('Session not found in download');
             }
 
-            // Get streaming file information
-            const streamingFile = downloadState.streamingFiles?.get(body.sessionId);
-            if (!streamingFile) {
-                this.logger.error(`Session streaming file not found for session ${body.sessionId}`);
-                throw new BadRequestException('Session streaming file not found');
-            }
-
-            const { filePath, fileSize } = streamingFile;
-
-            // Verify file exists
-            try {
-                await fs.access(filePath);
-            } catch (error) {
-                this.logger.error(`Session file not accessible: ${filePath}, error: ${error.message}`);
-                throw new BadRequestException('Session file not accessible');
-            }
+            const chunkIndex = Number(body.chunkIndex || 0);
+            const chunk = await this.racingSessionService.getSessionDownloadChunk(body.sessionId, chunkIndex);
 
             // Set response headers for streaming
             res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Content-Length', fileSize.toString());
-            res.setHeader('Content-Disposition', `attachment; filename="session_${body.sessionId}.json"`);
+            res.setHeader('Content-Length', chunk.fileSize.toString());
+            res.setHeader('Content-Disposition', `attachment; filename="session_${body.sessionId}_chunk_${chunkIndex}.json"`);
             res.setHeader('X-Download-Id', body.downloadId);
             res.setHeader('X-Session-Id', body.sessionId);
+            res.setHeader('X-Chunk-Index', chunkIndex.toString());
+            res.setHeader('X-Total-Chunks', chunk.totalChunks.toString());
+            res.setHeader('X-Data-Points', chunk.dataPoints.toString());
 
             // Track downloaded session
-            const chunkKey = `${body.sessionId}:0`; // Always index 0 for streaming mode
+            const chunkKey = `${body.sessionId}:${chunkIndex}`;
             downloadState.downloadedChunks.add(chunkKey);
 
-            // Create read stream and pipe to response
-            const readStream = createReadStream(filePath);
-
             // Handle stream errors
-            readStream.on('error', (error) => {
-                this.logger.error(`Error streaming file ${filePath}: ${error.message}`);
+            chunk.stream.on('error', (error) => {
+                this.logger.error(`Error streaming session chunk ${body.sessionId}:${chunkIndex}: ${error.message}`);
                 if (!res.headersSent) {
                     res.status(500).json({ error: 'Failed to stream session data' });
                 }
             });
 
-            readStream.on('end', () => {
-                this.logger.log(`Successfully streamed session ${body.sessionId} (${fileSize} bytes)`);
+            chunk.stream.on('end', () => {
+                this.logger.log(`Successfully streamed session chunk ${body.sessionId}:${chunkIndex} (${chunk.fileSize} bytes)`);
             });
 
-            // Pipe the file stream to response
-            readStream.pipe(res);
+            chunk.stream.pipe(res);
 
         } catch (error) {
             this.logger.error(`Failed to stream session chunk: ${error.message}`);
@@ -635,8 +594,7 @@ export class RacingSessionController {
             createdAt: state.createdAt,
             sessionCount: state.initData.totalSessions,
             downloadedChunks: state.downloadedChunks.size,
-            hasStreamingFiles: !!state.streamingFiles && state.streamingFiles.size > 0,
-            tempDir: state.tempDir
+            totalChunks: state.initData.totalChunks || 0
         }));
 
         return {

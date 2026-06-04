@@ -3,11 +3,15 @@ import { Box, Button, DropdownMenu, IconButton, Flex, Text } from '@radix-ui/the
 import { PlusIcon, Cross2Icon, DragHandleDots2Icon } from '@radix-ui/react-icons';
 import { visualizationRegistry, VisualizationInstance } from './VisualizationRegistry';
 import { visualizationController } from './VisualizationController';
+import MapVisualization from './charts/MapVisualization';
 import './DynamicVisualizationManager.css';
 
 interface DynamicVisualizationManagerProps {
     onLayoutChange?: (instances: VisualizationInstance[]) => void;
 }
+
+const STATIC_MAP_TYPE = 'map-visualization';
+const STATIC_MAP_ID = 'static-map-visualization';
 
 const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = ({
     onLayoutChange
@@ -35,7 +39,9 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
     // Setup controller callback on mount
     useEffect(() => {
         const handleControllerUpdate = (instances: VisualizationInstance[]) => {
-            setVisualizations(instances);
+            const next = instances.filter((instance) => instance.type !== STATIC_MAP_TYPE);
+            setVisualizations(next);
+            onLayoutChange?.(next);
         };
 
         visualizationController.setUpdateCallback(handleControllerUpdate);
@@ -43,15 +49,24 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
         return () => {
             visualizationController.setUpdateCallback(() => { });
         };
-    }, []);
+    }, [onLayoutChange]);
 
     useEffect(() => {
-        visualizationController.setCurrentInstances(visualizations);
+        visualizationController.setCurrentInstances([
+            {
+                id: STATIC_MAP_ID,
+                type: STATIC_MAP_TYPE,
+                config: {},
+                position: { x: 0, y: 0, width: '100%', height: '100%' }
+            },
+            ...visualizations
+        ]);
     }, [visualizations]);
 
     const applyVisualizations = useCallback((next: VisualizationInstance[]) => {
-        setVisualizations(next);
-        onLayoutChange?.(next);
+        const rightRailVisualizations = next.filter((instance) => instance.type !== STATIC_MAP_TYPE);
+        setVisualizations(rightRailVisualizations);
+        onLayoutChange?.(rightRailVisualizations);
     }, [onLayoutChange]);
 
     const getInstanceHeight = useCallback((instance: VisualizationInstance): number => {
@@ -222,12 +237,6 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
         setResizingId(null);
     }, [updateVisualizationHeight]);
 
-    const columnCount = useMemo(() => {
-        if (visualizations.length <= 1) return 1;
-        if (visualizations.length <= 4) return 2;
-        return 3;
-    }, [visualizations.length]);
-
     // Render a single visualization
     const renderVisualization = (instance: VisualizationInstance) => {
         const component = visualizationRegistry.getComponent(instance.type);
@@ -285,6 +294,7 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
 
     const availableTypes = useMemo(() => (
         visualizationRegistry.getAllTypes().filter(type =>
+            type !== STATIC_MAP_TYPE &&
             !visualizations.some(visualization => visualization.type === type)
         )
     ), [visualizations]);
@@ -321,19 +331,20 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
                 </DropdownMenu.Root>
             </Flex>
 
-            <Box
-                className="visualizations-container"
-                style={{
-                    minHeight: '150px',
-                    gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))`
-                }}
-            >
-                {visualizations.length === 0 ? (
-                    <Box className="empty-state">
-                        <Text color="gray">No visualizations added yet. Click "Add Visualization" to get started.</Text>
+            <Box className={`visualization-workspace${visualizations.length === 0 ? ' visualization-workspace--map-only' : ''}`}>
+                <Box className="static-map-container">
+                    <Box className="static-map-header">
+                        <Text size="2" weight="medium">2D Telemetry Trajectory</Text>
                     </Box>
-                ) : (
-                    visualizations.map(renderVisualization)
+                    <Box className="static-map-body">
+                        <MapVisualization id={STATIC_MAP_ID} width="100%" height="100%" />
+                    </Box>
+                </Box>
+
+                {visualizations.length > 0 && (
+                    <Box className="visualizations-container">
+                        {visualizations.map(renderVisualization)}
+                    </Box>
                 )}
             </Box>
         </Box>
