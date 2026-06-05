@@ -41,6 +41,8 @@ from app.storage.datasets.segment_dataset import (
 
 logger = logging.getLogger(__name__)
 
+MIN_CLASSIFICATION_CONFIDENCE = 0.7
+
 
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models", max_length: int = 100):
@@ -187,13 +189,16 @@ class SegmentClassifierService:
     def _save_label_thresholds(self) -> None:
         payload = {
             "version": 1,
-            "defaultThreshold": 0.5,
+            "defaultThreshold": MIN_CLASSIFICATION_CONFIDENCE,
             "thresholds": self.label_thresholds,
         }
         self.thresholds_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
 
     def _threshold_for_label(self, label: Any) -> float:
-        return float(self.label_thresholds.get(str(label), 0.5))
+        configured_threshold = float(
+            self.label_thresholds.get(str(label), MIN_CLASSIFICATION_CONFIDENCE)
+        )
+        return max(configured_threshold, MIN_CLASSIFICATION_CONFIDENCE)
 
     def _thresholds_for_classes(self) -> np.ndarray:
         if self.mlb is None:
@@ -1075,7 +1080,7 @@ class SegmentClassifierService:
         for i, p in enumerate(probs):
             label = self.mlb.classes_[i]
                 
-            if p > self._threshold_for_label(label):
+            if p >= self._threshold_for_label(label):
                 normalized_label = normalize_label_id(label)
                 if normalized_label not in seen_labels:
                     labels.append(normalized_label)
@@ -1157,7 +1162,7 @@ class SegmentClassifierService:
             
         # Threshold each label independently, then group contiguous rows that
         # share the same active label set.
-        active_mask = probs_smoothed > self._thresholds_for_classes()
+        active_mask = probs_smoothed >= self._thresholds_for_classes()
         
         found_segments = []
         current_labels = []

@@ -23,6 +23,10 @@ class FakeMlb:
     classes_ = np.array(["EA", "MSP1"])
 
 
+class FakeSingleLabelMlb:
+    classes_ = np.array(["EA"])
+
+
 class FakeLegacyMlb:
     classes_ = np.array(["MS1", "MSP1"])
 
@@ -30,6 +34,18 @@ class FakeLegacyMlb:
 class FakeModel:
     def __call__(self, x):
         return torch.tensor([[[2.0, 1.0]]]), None
+
+
+class FakeSequenceModel:
+    def __init__(self, probability: float):
+        self.probability = probability
+
+    def eval(self):
+        return None
+
+    def __call__(self, x):
+        probabilities = torch.full((1, x.shape[1], 1), self.probability)
+        return torch.logit(probabilities), None
 
 
 class FakeIdentityScaler:
@@ -101,9 +117,9 @@ def test_thresholds_are_loaded_per_label(tmp_path: Path):
     service._load_label_thresholds()
 
     assert service._threshold_for_label("EA") == 0.7
-    assert service._threshold_for_label("MSP1") == 0.35
-    assert service._threshold_for_label("unknown") == 0.5
-    assert service._thresholds_for_classes().tolist() == [0.7, 0.35]
+    assert service._threshold_for_label("MSP1") == 0.7
+    assert service._threshold_for_label("unknown") == 0.7
+    assert service._thresholds_for_classes().tolist() == [0.7, 0.7]
 
 
 def test_scan_telemetry_data_raises_when_model_is_missing():
@@ -113,6 +129,26 @@ def test_scan_telemetry_data_raises_when_model_is_missing():
 
     with pytest.raises(ValueError, match="Segment classifier model not trained or found"):
         service.scan_telemetry_data(pd.DataFrame([{"speed": 120.0}]))
+
+
+def test_scan_telemetry_data_requires_seventy_percent_confidence():
+    service = SegmentClassifierService.__new__(SegmentClassifierService)
+    service.model = FakeSequenceModel(0.69)
+    service.scaler = FakeIdentityScaler()
+    service.mlb = FakeSingleLabelMlb()
+    service.feature_names = ["speed"]
+    service.label_thresholds = {}
+    service.device = torch.device("cpu")
+
+    data = pd.DataFrame([{"speed": 100.0}, {"speed": 101.0}, {"speed": 102.0}])
+
+    assert service.scan_telemetry_data(data) == []
+
+    service.model = FakeSequenceModel(0.7)
+    segments = service.scan_telemetry_data(data)
+
+    assert len(segments) == 1
+    assert segments[0].labels == ["EA"]
 
 
 def test_predict_segment_probabilities_normalizes_legacy_artifact_labels():
