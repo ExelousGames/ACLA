@@ -421,7 +421,11 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     st.write(f"Selected {len(process_indices)} parent segment(s) for analysis.")
     selected_parent_spans = _selected_parent_spans(annotations, process_indices, len(df))
     coverage_slot = st.empty()
-    _render_subsegment_coverage_bar(coverage_slot, selected_parent_spans)
+    _render_subsegment_coverage_bar(
+        coverage_slot,
+        selected_parent_spans,
+        chart_key="batch_agent_subsegment_coverage_initial",
+    )
 
     # --- Backend selector ---
     backend_label = st.radio(
@@ -613,7 +617,11 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     )
     log(f"Finished. {success_parents}/{total} parents updated, "
         f"{total_children} children created, {error_parents} error(s).")
-    _render_subsegment_coverage_bar(coverage_slot, selected_parent_spans)
+    _render_subsegment_coverage_bar(
+        coverage_slot,
+        selected_parent_spans,
+        chart_key="batch_agent_subsegment_coverage_final",
+    )
 
     # Discovery is per-parent and doesn't leave staged-review state for the
     # shared panel; clear any stale follow-up chat context from prior detailed
@@ -676,7 +684,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         return
 
     coverage_slot = st.empty()
-    _render_lap_coverage_bar(coverage_slot, int(lap_start), int(lap_end))
+    _render_lap_coverage_bar(
+        coverage_slot,
+        int(lap_start),
+        int(lap_end),
+        chart_key="batch_lap_claude_coverage_initial",
+    )
 
     st.markdown("---")
     max_iterations = st.number_input(
@@ -887,7 +900,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     )
     log(f"Finished. {saved_count} saved, {skipped_count} skipped, {error_count} error(s).")
 
-    _render_lap_coverage_bar(coverage_slot, int(lap_start), int(lap_end))
+    _render_lap_coverage_bar(
+        coverage_slot,
+        int(lap_start),
+        int(lap_end),
+        chart_key="batch_lap_claude_coverage_final",
+    )
 
 
 def _section_overlaps_existing(sec_start: int, sec_end: int) -> bool:
@@ -950,6 +968,7 @@ def _render_coverage_bar(
     *,
     title: str,
     legend_note: str,
+    chart_key: str,
 ) -> None:
     """Horizontal coverage strip over target ranges."""
     import plotly.graph_objects as go
@@ -1005,7 +1024,7 @@ def _render_coverage_bar(
             f"longest gap {longest_gap} iloc(s)  "
             f"{legend_note}"
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key=chart_key)
 
 
 def _compute_lap_coverage(lap_start: int, lap_end: int):
@@ -1018,7 +1037,13 @@ def _compute_lap_coverage(lap_start: int, lap_end: int):
     return _compute_interval_coverage([(lap_start, lap_end)], annotation_ranges)
 
 
-def _render_lap_coverage_bar(slot, lap_start: int, lap_end: int) -> None:
+def _render_lap_coverage_bar(
+    slot,
+    lap_start: int,
+    lap_end: int,
+    *,
+    chart_key: str,
+) -> None:
     """Horizontal coverage strip over the lap range — red = uncovered, green = annotated."""
     annotation_ranges = []
     for ann in st.session_state.get("current_annotations", []) or []:
@@ -1031,6 +1056,7 @@ def _render_lap_coverage_bar(slot, lap_start: int, lap_end: int) -> None:
         annotation_ranges,
         title="Annotation coverage",
         legend_note="(🟩 annotated · 🟥 not yet reached)",
+        chart_key=chart_key,
     )
 
 
@@ -1061,7 +1087,12 @@ def _selected_parent_spans(
     return spans
 
 
-def _render_subsegment_coverage_bar(slot, parent_spans: list[dict]) -> None:
+def _render_subsegment_coverage_bar(
+    slot,
+    parent_spans: list[dict],
+    *,
+    chart_key: str,
+) -> None:
     """Coverage of AI-discovered child sub-segments inside selected parents."""
     parent_ids = {p.get("id") for p in parent_spans if p.get("id")}
     if not parent_ids:
@@ -1086,6 +1117,7 @@ def _render_subsegment_coverage_bar(slot, parent_spans: list[dict]) -> None:
         child_ranges,
         title="Sub-segment coverage",
         legend_note="(🟩 child sub-segments · 🟥 uncovered parent span)",
+        chart_key=chart_key,
     )
 
 
