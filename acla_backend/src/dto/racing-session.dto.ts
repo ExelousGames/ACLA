@@ -122,3 +122,22 @@ export class OpportunityForecastResponseDto {
     opportunities: OpportunityForecastOpportunityDto[];
     circuit_section_match?: any;
 }
+
+export class SegmentClassificationRequestDto {
+    session_id: string;
+}
+
+export class SegmentClassificationSegmentDto {
+    id?: string;
+    labels: string[];
+    start_index: number;
+    end_index: number;
+}
+
+export class SegmentClassificationResponseDto {
+    status: string;
+    session_id: string;
+    samples_analyzed: number;
+    segment_count: number;
+    segments: SegmentClassificationSegmentDto[];
+}

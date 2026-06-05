@@ -22,6 +22,27 @@ type LoadState = {
     message?: string;
 };
 
+type SegmentClassificationSegment = {
+    id?: string;
+    labels: string[];
+    start_index: number;
+    end_index: number;
+};
+
+type SegmentClassificationResult = {
+    status: string;
+    session_id: string;
+    samples_analyzed: number;
+    segment_count: number;
+    segments: SegmentClassificationSegment[];
+};
+
+type SegmentOverlayRun = {
+    labels: string[];
+    color: string;
+    points: Vec3[];
+};
+
 type ProjectedPoint = Vec3 & {
     screenX: number;
     screenY: number;
@@ -40,9 +61,32 @@ const MAX_PLAYBACK_DELTA_SECONDS = 0.25;
 const FIT_ZOOM = 1;
 const DRIVER_FOCUS_ZOOM = 2.8;
 const MIN_ZOOM = 0.35;
-const MAX_ZOOM = 6;
+const MAX_ZOOM = 24;
 const PLAYER_COLOR = '#00e676';
 const OPPONENT_COLORS = ['#29b6f6', '#ffca28', '#ef5350', '#ab47bc', '#ff8a65', '#26c6da'];
+const SEGMENT_OVERLAY_COLORS = ['#ffca28', '#29b6f6', '#ef5350', '#ab47bc', '#ff8a65', '#26c6da', '#ec407a', '#66bb6a'];
+
+const getCarColor = (carKey: string, isPlayer: boolean): string => {
+    if (isPlayer) return PLAYER_COLOR;
+
+    let hash = 0;
+    for (let index = 0; index < carKey.length; index += 1) {
+        hash = ((hash << 5) - hash + carKey.charCodeAt(index)) | 0;
+    }
+
+    return OPPONENT_COLORS[Math.abs(hash) % OPPONENT_COLORS.length];
+};
+
+const getSegmentColor = (segment: SegmentClassificationSegment, index: number): string => {
+    const key = segment.labels.join('|') || segment.id || String(index);
+    let hash = index;
+
+    for (let charIndex = 0; charIndex < key.length; charIndex += 1) {
+        hash = ((hash << 5) - hash + key.charCodeAt(charIndex)) | 0;
+    }
+
+    return SEGMENT_OVERLAY_COLORS[Math.abs(hash) % SEGMENT_OVERLAY_COLORS.length];
+};
 
 const getLastFrameIndex = (frames: TelemetryFrame[]): number => Math.max(0, frames.length - 1);
 
@@ -131,6 +175,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
     const recordedCacheRef = useRef<Map<string, TelemetryFrame[]>>(new Map());
+    const segmentClassificationCacheRef = useRef<Map<string, SegmentClassificationResult>>(new Map());
     const currentPlaybackTimeRef = useRef(0);
     const playbackRef = useRef<{ animationId: number | null; lastTick: number | null; elapsed: number }>({
         animationId: null,
@@ -148,6 +193,8 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     const [cameraMode, setCameraMode] = useState<CameraMode>('driver');
     const [zoom, setZoom] = useState(DRIVER_FOCUS_ZOOM);
     const [axisFlip, setAxisFlip] = useState<AxisFlipState>({ x: false, y: false, z: false });
+    const [segmentClassification, setSegmentClassification] = useState<SegmentClassificationResult | null>(null);
+    const [segmentLoadState, setSegmentLoadState] = useState<LoadState>({ status: 'idle' });
 
     const selectedSessionId = analysisContext.sessionSelected?.SessionId || '';
     const isRecordedMode = Boolean(selectedSessionId);
@@ -174,6 +221,49 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     const driverCameraTarget = useMemo(() => (
         currentFrame?.cars.find((car) => car.key === currentPlayerKey)?.position || null
     ), [currentFrame, currentPlayerKey]);
+    const segmentOverlayRuns = useMemo<SegmentOverlayRun[]>(() => {
+        if (!isRecordedMode || !segmentClassification?.segments?.length) {
+            return [];
+        }
+
+        return segmentClassification.segments
+            .map((segment, index) => {
+                const points: Vec3[] = [];
+
+                visibleFrames.forEach((frame) => {
+                    const sourceIndex = frame.sourceIndex;
+                    if (sourceIndex === undefined || sourceIndex < segment.start_index || sourceIndex >= segment.end_index) {
+                        return;
+                    }
+
+                    const playerKey = frame.playerKey || 'slot:0';
+                    const playerCar = frame.cars.find((car) => car.key === playerKey) || frame.cars[0];
+                    if (playerCar) {
+                        points.push(playerCar.position);
+                    }
+                });
+
+                return {
+                    labels: segment.labels,
+                    color: getSegmentColor(segment, index),
+                    points
+                };
+            })
+            .filter((run) => run.points.length > 1);
+    }, [isRecordedMode, segmentClassification, visibleFrames]);
+    const activeSegmentLabels = useMemo(() => {
+        if (!currentFrame || !segmentClassification?.segments?.length || currentFrame.sourceIndex === undefined) {
+            return [];
+        }
+
+        const activeSegments = segmentClassification.segments.filter((segment) => (
+            currentFrame.sourceIndex !== undefined
+            && currentFrame.sourceIndex >= segment.start_index
+            && currentFrame.sourceIndex < segment.end_index
+        ));
+
+        return Array.from(new Set(activeSegments.flatMap((segment) => segment.labels)));
+    }, [currentFrame, segmentClassification]);
 
     useEffect(() => {
         currentPlaybackTimeRef.current = currentPlaybackTime;
@@ -207,14 +297,14 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             return;
         }
 
-        const parsed = parseTelemetryFrame(analysisContext.liveData as Record<string, any>, liveFrames.length);
-        if (!parsed) return;
-
         setLiveFrames((previous) => {
+            const parsed = parseTelemetryFrame(analysisContext.liveData as Record<string, any>, previous.length);
+            if (!parsed) return previous;
+
             const next = [...previous, parsed];
             return next.length > LIVE_TRAIL_LIMIT ? next.slice(next.length - LIVE_TRAIL_LIMIT) : next;
         });
-    }, [analysisContext.TelemetryDataLiveStatus, analysisContext.liveData, isLiveMode, liveFrames.length]);
+    }, [analysisContext.TelemetryDataLiveStatus, analysisContext.liveData, isLiveMode]);
 
     useEffect(() => {
         if (!isRecordedMode) {
@@ -307,6 +397,70 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             cancelled = true;
         };
     }, [analysisContext.mapSelected, analysisContext.sessionSelected?.car, isRecordedMode, selectedSessionId]);
+
+    useEffect(() => {
+        if (!isRecordedMode || !selectedSessionId) {
+            setSegmentClassification(null);
+            setSegmentLoadState({ status: 'idle' });
+            return;
+        }
+
+        const cached = segmentClassificationCacheRef.current.get(selectedSessionId);
+        if (cached) {
+            setSegmentClassification(cached);
+            setSegmentLoadState(cached.segment_count > 0
+                ? { status: 'ready' }
+                : { status: 'empty', message: 'AI analysis found no classified segments.' });
+        } else {
+            setSegmentClassification(null);
+            setSegmentLoadState({ status: 'idle' });
+        }
+    }, [isRecordedMode, selectedSessionId]);
+
+    const handleRunSegmentClassification = useCallback(async () => {
+        if (!isRecordedMode || !selectedSessionId || segmentLoadState.status === 'loading') {
+            return;
+        }
+
+        const cached = segmentClassificationCacheRef.current.get(selectedSessionId);
+        if (cached) {
+            setSegmentClassification(cached);
+            setSegmentLoadState(cached.segment_count > 0
+                ? { status: 'ready' }
+                : { status: 'empty', message: 'AI analysis found no classified segments.' });
+            return;
+        }
+
+        setSegmentLoadState({ status: 'loading', message: 'Running AI segment analysis...' });
+        setSegmentClassification(null);
+
+        try {
+            const response = await apiService.post<SegmentClassificationResult>('/racing-session/segment-classification', {
+                session_id: selectedSessionId
+            }, { timeout: RECORDED_TELEMETRY_TIMEOUT_MS });
+
+            const result = response.data;
+            const normalizedResult: SegmentClassificationResult = {
+                ...result,
+                segments: Array.isArray(result?.segments) ? result.segments : [],
+                segment_count: Number(result?.segment_count) || 0,
+                samples_analyzed: Number(result?.samples_analyzed) || 0,
+                session_id: result?.session_id || selectedSessionId,
+                status: result?.status || 'success'
+            };
+
+            segmentClassificationCacheRef.current.set(selectedSessionId, normalizedResult);
+            setSegmentClassification(normalizedResult);
+            setSegmentLoadState(normalizedResult.segment_count > 0
+                ? { status: 'ready' }
+                : { status: 'empty', message: 'AI analysis found no classified segments.' });
+        } catch (error: any) {
+            setSegmentLoadState({
+                status: 'error',
+                message: error?.data?.message || error?.message || 'Failed to run AI segment analysis.'
+            });
+        }
+    }, [isRecordedMode, selectedSessionId, segmentLoadState.status]);
 
     useEffect(() => {
         const playbackState = playbackRef.current;
@@ -486,9 +640,9 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             return keyA.localeCompare(keyB);
         });
 
-        groupedEntries.forEach(([key, item], index) => {
+        groupedEntries.forEach(([key, item]) => {
             const isPlayer = key === playerKey;
-            const color = isPlayer ? PLAYER_COLOR : OPPONENT_COLORS[index % OPPONENT_COLORS.length];
+            const color = getCarColor(key, isPlayer);
             const segments = segmentVisiblePoints(item.samples);
             const shadowSegments = segments.map((segment) => segment.map((point) => ({ ...point, y: 0 })));
             const tailSegments = segmentVisiblePoints(item.samples.slice(-80));
@@ -496,6 +650,12 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             drawSegments(shadowSegments, 'rgba(0,0,0,0.4)', isPlayer ? 8 : 5, isPlayer ? 0.42 : 0.24);
             drawSegments(segments, color, isPlayer ? 5 : 3, isPlayer ? 0.95 : 0.7);
             drawSegments(tailSegments, '#ffffff', isPlayer ? 1.4 : 0.8, isPlayer ? 0.55 : 0.25);
+        });
+
+        segmentOverlayRuns.forEach((run) => {
+            drawLine(run.points, 'rgba(0,0,0,0.66)', 12, 0.7);
+            drawLine(run.points, run.color, 7, 0.9);
+            drawLine(run.points, 'rgba(255,255,255,0.76)', 1.5, 0.72);
         });
 
         const currentCars = currentFrame?.cars || [];
@@ -507,7 +667,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             }))
             .sort((a, b) => a.projected.depth - b.projected.depth)
             .forEach(({ car, projected, isPlayer }, index) => {
-                const color = isPlayer ? PLAYER_COLOR : OPPONENT_COLORS[index % OPPONENT_COLORS.length];
+                const color = getCarColor(car.key, isPlayer);
                 const markerSize = isPlayer ? 8 : 6;
                 context.save();
                 context.translate(projected.screenX, projected.screenY);
@@ -528,7 +688,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                     context.restore();
                 }
             });
-    }, [bounds, canvasSize, currentFrame, projectPoint, trackFrames, visibleFrames]);
+    }, [bounds, canvasSize, currentFrame, projectPoint, segmentOverlayRuns, trackFrames, visibleFrames]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -611,8 +771,60 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                         <Text size="1" className="map-visualization__metric">
                             {Math.max(0, (currentFrame?.cars.length || 1) - 1)} opponents
                         </Text>
+                        {isRecordedMode && (
+                            <Button
+                                size="1"
+                                variant="soft"
+                                onClick={handleRunSegmentClassification}
+                                disabled={!selectedSessionId || segmentLoadState.status === 'loading'}
+                            >
+                                {segmentLoadState.status === 'loading' ? 'Analyzing...' : 'Run AI Analysis'}
+                            </Button>
+                        )}
                     </Flex>
                 </div>
+
+                {isRecordedMode && segmentLoadState.status !== 'idle' && (
+                    <div className="map-visualization__hud map-visualization__hud--segments">
+                        <Flex direction="column" gap="2">
+                            <Flex align="center" gap="2" wrap="wrap">
+                                <Badge
+                                    color={segmentLoadState.status === 'error' ? 'red' : segmentLoadState.status === 'empty' ? 'gray' : 'amber'}
+                                    variant="soft"
+                                >
+                                    {segmentLoadState.status === 'loading'
+                                        ? 'AI analyzing'
+                                        : segmentLoadState.status === 'error'
+                                            ? 'AI analysis failed'
+                                            : `${segmentClassification?.segment_count ?? 0} AI segments`}
+                                </Badge>
+                                {segmentLoadState.status === 'ready' && activeSegmentLabels.length > 0 && (
+                                    <Text size="1" className="map-visualization__metric">
+                                        Active: {activeSegmentLabels.join(', ')}
+                                    </Text>
+                                )}
+                            </Flex>
+                            {segmentLoadState.message && (
+                                <Text size="1" className="map-visualization__segment-message">
+                                    {segmentLoadState.message}
+                                </Text>
+                            )}
+                            {segmentLoadState.status === 'ready' && segmentClassification?.segments?.length ? (
+                                <Flex gap="2" wrap="wrap" className="map-visualization__segment-legend">
+                                    {segmentClassification.segments.slice(0, 6).map((segment, index) => (
+                                        <span key={segment.id || `${segment.start_index}-${segment.end_index}`} className="map-visualization__segment-legend-item">
+                                            <span
+                                                className="map-visualization__segment-swatch"
+                                                style={{ backgroundColor: getSegmentColor(segment, index) }}
+                                            />
+                                            {segment.labels.join(', ') || 'Unlabeled'}
+                                        </span>
+                                    ))}
+                                </Flex>
+                            ) : null}
+                        </Flex>
+                    </div>
+                )}
 
                 <div className="map-visualization__hud map-visualization__hud--camera">
                     <Flex align="center" gap="2" justify="end" wrap="wrap">

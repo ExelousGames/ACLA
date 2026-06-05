@@ -18,6 +18,7 @@ describe('RacingSessionService', () => {
     gridfsService = {
       downloadJSONStream: jest.fn(),
       getFileSize: jest.fn(),
+      downloadJSON: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -129,6 +130,32 @@ describe('RacingSessionService', () => {
       fileSize: 4096,
       totalChunks: 2,
       dataPoints: 100,
+    });
+    expect(racingSessionModel.findById).toHaveBeenCalledWith(sessionId);
+  });
+
+  it('loads ordered telemetry chunks for segment classification', async () => {
+    const sessionId = '507f1f77bcf86cd799439011';
+
+    racingSessionModel.findById.mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({
+          map: 'Brands Hatch',
+          car_name: 'BMW',
+          user_id: 'user-1',
+          dataChunkFileIds: ['507f1f77bcf86cd799439012', '507f1f77bcf86cd799439013'],
+        }),
+      }),
+    });
+    gridfsService.downloadJSON
+      .mockResolvedValueOnce([{ row: 1 }])
+      .mockResolvedValueOnce([{ row: 2 }, { row: 3 }]);
+
+    await expect(service.getSessionTelemetryForClassification('user-1', sessionId)).resolves.toEqual({
+      sessionId,
+      trackName: 'Brands Hatch',
+      carName: 'BMW',
+      telemetryData: [{ row: 1 }, { row: 2 }, { row: 3 }],
     });
     expect(racingSessionModel.findById).toHaveBeenCalledWith(sessionId);
   });

@@ -388,6 +388,59 @@ export class RacingSessionService {
         };
     }
 
+    async getSessionTelemetryForClassification(userId: string, sessionId: string): Promise<{
+        sessionId: string;
+        trackName: string;
+        carName: string;
+        telemetryData: any[];
+    }> {
+        if (!Types.ObjectId.isValid(sessionId)) {
+            throw new Error('Invalid session id');
+        }
+
+        const session = await this.racingSession.findById(sessionId)
+            .select('map car_name user_id dataChunkFileIds')
+            .exec();
+
+        if (!session) {
+            throw new Error('Session not found');
+        }
+
+        if (session.user_id !== userId) {
+            throw new Error('Session not found or access denied');
+        }
+
+        const fileIds = session.dataChunkFileIds || [];
+        if (fileIds.length === 0) {
+            throw new Error('Session has no telemetry chunks');
+        }
+
+        const telemetryData: any[] = [];
+        for (const fileId of fileIds) {
+            const chunk = await this.gridfsService.downloadJSON(
+                new ObjectId(fileId.toString()),
+                GRIDFS_BUCKETS.RACING_SESSIONS,
+            );
+
+            if (!Array.isArray(chunk)) {
+                throw new Error('Session telemetry chunk is not an array');
+            }
+
+            telemetryData.push(...chunk);
+        }
+
+        if (telemetryData.length === 0) {
+            throw new Error('Session has no telemetry rows');
+        }
+
+        return {
+            sessionId,
+            trackName: session.map || '',
+            carName: session.car_name || '',
+            telemetryData,
+        };
+    }
+
     /**
      * Clean up temporary streaming files for a specific download session
      * @param downloadId - The download session ID

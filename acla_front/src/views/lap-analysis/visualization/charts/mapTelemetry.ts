@@ -15,6 +15,7 @@ export type TelemetryFrame = {
     time: number;
     cars: CarPoint[];
     playerKey: string | null;
+    sourceIndex?: number;
 };
 
 export type VisibilitySample = {
@@ -46,6 +47,9 @@ export const getPlaybackFrameIndex = (frames: TelemetryFrame[], elapsed: number)
 const DEFAULT_SAMPLE_RATE_HZ = 60;
 const LAP_TIME_RESET_THRESHOLD_SECONDS = 1;
 const MIN_FRAME_STEP_SECONDS = 1 / DEFAULT_SAMPLE_RATE_HZ;
+const MAX_MULTI_CAR_FRAME_GAP_SECONDS = 1;
+const COMPRESSED_MULTI_CAR_FRAME_STEP_SECONDS = 0.25;
+const MAX_ABSOLUTE_TRACK_COORDINATE = 1000000;
 
 const toFiniteNumber = (value: unknown): number | null => {
     const parsed = Number(value);
@@ -64,6 +68,28 @@ const parseMaybeArray = (value: unknown): any[] => {
     }
 };
 
+const getUsableIdSlots = (carIds: any[]): Set<number> => {
+    const counts = new Map<string, number>();
+
+    carIds.forEach((id) => {
+        if (id === null || id === undefined) return;
+        counts.set(String(id), (counts.get(String(id)) || 0) + 1);
+    });
+
+    const usableSlots = new Set<number>();
+    carIds.forEach((id, slot) => {
+        if (id === null || id === undefined) return;
+        if (counts.get(String(id)) === 1) usableSlots.add(slot);
+    });
+
+    return usableSlots;
+};
+
+const getCarKey = (slot: number, carIds: any[], usableIdSlots: Set<number>): string => {
+    const id = carIds[slot];
+    return usableIdSlots.has(slot) ? `id:${String(id)}` : `slot:${slot}`;
+};
+
 const coordToVec3 = (coord: any): Vec3 | null => {
     if (!coord || typeof coord !== 'object') return null;
 
@@ -73,6 +99,11 @@ const coordToVec3 = (coord: any): Vec3 | null => {
 
     if (x === null || y === null) return null;
     if (x === 0 && y === 0 && z === 0) return null;
+    if (
+        Math.abs(x) > MAX_ABSOLUTE_TRACK_COORDINATE
+        || Math.abs(y) > MAX_ABSOLUTE_TRACK_COORDINATE
+        || Math.abs(z) > MAX_ABSOLUTE_TRACK_COORDINATE
+    ) return null;
 
     return { x, y, z };
 };
@@ -86,16 +117,22 @@ const getFrameTimeSeconds = (row: Record<string, any>, fallbackIndex: number): n
     return raw > 100 ? raw / 1000 : raw;
 };
 
-const getPlayerKey = (coords: any[], carIds: any[], playerCarId: number | string | null): string | null => {
+const getPlayerKey = (
+    coords: any[],
+    carIds: any[],
+    usableIdSlots: Set<number>,
+    playerCarId: number | string | null
+): string | null => {
     if (playerCarId !== null && carIds.length > 0) {
         const idMatch = carIds.findIndex((id) => String(id) === String(playerCarId));
-        if (idMatch >= 0) return `id:${String(playerCarId)}`;
+        if (idMatch >= 0 && usableIdSlots.has(idMatch)) {
+            return getCarKey(idMatch, carIds, usableIdSlots);
+        }
     }
 
     const playerIndex = toFiniteNumber(playerCarId);
     if (playerIndex !== null && playerIndex >= 0 && playerIndex < coords.length) {
-        const id = carIds[playerIndex];
-        return id !== undefined && id !== null ? `id:${String(id)}` : `slot:${playerIndex}`;
+        return getCarKey(playerIndex, carIds, usableIdSlots);
     }
 
     return coords.length > 0 ? 'slot:0' : null;
@@ -107,7 +144,8 @@ export const parseTelemetryFrame = (row: Record<string, any>, index: number): Te
 
     const carIds = parseMaybeArray(row.Graphics_car_id);
     const playerCarId = row.Graphics_player_car_id ?? null;
-    const playerKey = getPlayerKey(coords, carIds, playerCarId);
+    const usableIdSlots = getUsableIdSlots(carIds);
+    const playerKey = getPlayerKey(coords, carIds, usableIdSlots, playerCarId);
     const cars: CarPoint[] = [];
 
     coords.forEach((coord, slot) => {
@@ -115,11 +153,15 @@ export const parseTelemetryFrame = (row: Record<string, any>, index: number): Te
         if (!position) return;
 
         const id = carIds[slot] ?? null;
-        const key = id !== null && id !== undefined ? `id:${String(id)}` : `slot:${slot}`;
+        const key = getCarKey(slot, carIds, usableIdSlots);
         cars.push({ key, id, slot, position });
     });
 
-    return cars.length > 0 ? { time: getFrameTimeSeconds(row, index), cars, playerKey } : null;
+    const drawablePlayerKey = cars.some((car) => car.key === playerKey)
+        ? playerKey
+        : cars[0]?.key ?? null;
+
+    return cars.length > 0 ? { time: getFrameTimeSeconds(row, index), cars, playerKey: drawablePlayerKey, sourceIndex: index } : null;
 };
 
 export const normalizeTelemetryFrames = (frames: TelemetryFrame[]): TelemetryFrame[] => {
@@ -135,9 +177,16 @@ export const normalizeTelemetryFrames = (frames: TelemetryFrame[]): TelemetryFra
         }
 
         const candidateSessionTime = rawTime + lapOffset;
-        const sessionTime = index > 0 && candidateSessionTime <= previousSessionTime
-            ? previousSessionTime + MIN_FRAME_STEP_SECONDS
-            : candidateSessionTime;
+        let sessionTime = candidateSessionTime;
+        if (index > 0 && candidateSessionTime <= previousSessionTime) {
+            sessionTime = previousSessionTime + MIN_FRAME_STEP_SECONDS;
+        } else if (
+            index > 0
+            && frame.cars.length > 1
+            && candidateSessionTime - previousSessionTime > MAX_MULTI_CAR_FRAME_GAP_SECONDS
+        ) {
+            sessionTime = previousSessionTime + COMPRESSED_MULTI_CAR_FRAME_STEP_SECONDS;
+        }
         previousRawTime = rawTime;
         previousSessionTime = sessionTime;
 

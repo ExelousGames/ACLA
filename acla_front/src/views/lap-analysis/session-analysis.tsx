@@ -59,12 +59,21 @@ const SessionAnalysis = () => {
     const [latestGuidanceMessage, setLatestGuidanceMessage] = useState<string | null>(null);
     const sessionIntelligenceRef = useRef<SessionIntelligence>(new SessionIntelligence());
 
-    const setLiveSessionData = (data: {}) => {
-        setLiveData(data);
-        if (Object.keys(data).length > 0) {
+    const setLiveSessionData = useCallback((data: {}) => {
+        const hasLiveData = Object.keys(data).length > 0;
+
+        setLiveData((previous) => {
+            if (!hasLiveData && Object.keys(previous).length === 0) {
+                return previous;
+            }
+
+            return data;
+        });
+
+        if (hasLiveData) {
             sessionIntelligenceRef.current.tick(data as any);
         }
-    };
+    }, []);
 
     // Use ref to persist file path during recording to prevent state reset issues
     const recordingFilePathRef = useRef<string | null>(null);

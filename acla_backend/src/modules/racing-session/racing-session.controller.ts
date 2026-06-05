@@ -1,7 +1,7 @@
-import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
+import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, HttpException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, MapBasicInfoListDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
@@ -569,6 +569,43 @@ export class RacingSessionController {
             }
             console.error('Opportunity forecast failed:', error);
             throw new BadRequestException(`Failed to get opportunity forecast: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('segment-classification')
+    async classifySessionSegments(
+        @Request() req,
+        @Body() body: SegmentClassificationRequestDto
+    ): Promise<SegmentClassificationResponseDto> {
+        try {
+            const sessionId = body.session_id || (body as any).sessionId;
+            if (!sessionId) {
+                throw new BadRequestException('session_id is required');
+            }
+
+            const userId = req.user?.userId;
+            if (!userId) {
+                throw new BadRequestException('Authenticated user id is required');
+            }
+
+            const sessionPayload = await this.racingSessionService.getSessionTelemetryForClassification(
+                userId,
+                sessionId,
+            );
+
+            return await this.aiServiceClient.classifySegments({
+                session_id: sessionPayload.sessionId,
+                telemetry_data: sessionPayload.telemetryData,
+                track_name: sessionPayload.trackName,
+                car_name: sessionPayload.carName,
+            });
+        } catch (error) {
+            if (error instanceof BadRequestException || error instanceof ForbiddenException || error instanceof HttpException) {
+                throw error;
+            }
+            console.error('Segment classification failed:', error);
+            throw new BadRequestException(`Failed to classify session segments: ${error.message}`);
         }
     }
 

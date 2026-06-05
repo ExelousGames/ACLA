@@ -110,6 +110,28 @@ export interface OpportunityForecastResponse {
     circuit_section_match?: any;
 }
 
+export interface SegmentClassificationRequest {
+    session_id?: string;
+    telemetry_data: { [key: string]: any }[];
+    track_name?: string;
+    car_name?: string;
+}
+
+export interface SegmentClassificationSegment {
+    id?: string;
+    labels: string[];
+    start_index: number;
+    end_index: number;
+}
+
+export interface SegmentClassificationResponse {
+    status: string;
+    session_id: string;
+    samples_analyzed: number;
+    segment_count: number;
+    segments: SegmentClassificationSegment[];
+}
+
 // Phase 2 — text-to-speech via Kokoro
 export interface AnalyzeUserSessionsRequest {
     user_id: string;
@@ -195,6 +217,23 @@ export class AiServiceClient {
             throw new HttpException(
                 `AI Service opportunity forecast failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async classifySegments(request: SegmentClassificationRequest): Promise<SegmentClassificationResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/segment-classification`, request);
+            return response.data;
+        } catch (error) {
+            const axiosError = error as any;
+            const detail = axiosError?.response?.data?.detail
+                || axiosError?.response?.data?.message
+                || axiosError?.message;
+            const status = axiosError?.response?.status || HttpStatus.SERVICE_UNAVAILABLE;
+            throw new HttpException(
+                `AI Service segment classification failed: ${detail}`,
+                status
             );
         }
     }

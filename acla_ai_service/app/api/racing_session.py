@@ -7,8 +7,10 @@ from typing import Dict, Any, List, Optional
 from httpx import request
 from pydantic import BaseModel
 import asyncio
+import pandas as pd
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.racing_engineer.expert_actions import predict_expert_actions
+from app.ml.segment_classifier.service import segment_classifier
 from app.ml.opportunity_forecaster import opportunity_forecaster
 from app.services.user_session_analysis import analyze_user_sessions
 
@@ -64,6 +66,12 @@ class OpportunityForecastRequest(BaseModel):
 
 class AnalyzeUserSessionsRequest(BaseModel):
     user_id: str
+
+class SegmentClassificationRequest(BaseModel):
+    session_id: Optional[str] = None
+    telemetry_data: List[Dict[str, Any]]
+    track_name: Optional[str] = None
+    car_name: Optional[str] = None
     
 # Initialize telemetry service
 telemetryMLService = Full_dataset_TelemetryMLService()
@@ -117,6 +125,40 @@ async def get_opportunity_forecast(request: OpportunityForecastRequest) -> Dict[
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Opportunity forecast failed: {str(e)}")
+
+
+@router.post("/segment-classification")
+async def classify_session_segments(request: SegmentClassificationRequest) -> Dict[str, Any]:
+    try:
+        if not request.telemetry_data:
+            raise HTTPException(status_code=400, detail="telemetry_data is required")
+
+        dataframe = pd.DataFrame(request.telemetry_data)
+        predicted_segments = segment_classifier.scan_telemetry_data(dataframe)
+        segments = []
+
+        for segment in predicted_segments:
+            segment_dict = segment.to_dict() if hasattr(segment, "to_dict") else dict(segment)
+            segments.append({
+                "id": segment_dict.get("id"),
+                "labels": segment_dict.get("labels", []),
+                "start_index": segment_dict.get("start_index"),
+                "end_index": segment_dict.get("end_index"),
+            })
+
+        return {
+            "status": "success",
+            "session_id": request.session_id,
+            "samples_analyzed": len(request.telemetry_data),
+            "segment_count": len(segments),
+            "segments": segments,
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Segment classification failed: {str(e)}")
 
 
 @router.post("/analyze-user-sessions")

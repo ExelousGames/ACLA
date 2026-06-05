@@ -9,10 +9,15 @@ import { ForbiddenException } from '@nestjs/common';
 describe('RacingSessionController', () => {
   let controller: RacingSessionController;
   let racingSessionService: any;
+  let aiServiceClient: any;
 
   beforeEach(async () => {
     racingSessionService = {
       listUserSessionsForAnalysis: jest.fn(),
+      getSessionTelemetryForClassification: jest.fn(),
+    };
+    aiServiceClient = {
+      classifySegments: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -20,7 +25,7 @@ describe('RacingSessionController', () => {
       providers: [
         { provide: RacingSessionService, useValue: racingSessionService },
         { provide: UserSessionAiModelService, useValue: {} },
-        { provide: AiServiceClient, useValue: {} },
+        { provide: AiServiceClient, useValue: aiServiceClient },
         { provide: UserInfoService, useValue: {} },
       ],
     }).compile();
@@ -51,5 +56,42 @@ describe('RacingSessionController', () => {
         { userId: 'user-1' },
       ),
     ).resolves.toEqual({ userId: 'user-1', totalSessions: 0, sessions: [] });
+  });
+
+  it('loads and forwards a saved session for segment classification', async () => {
+    racingSessionService.getSessionTelemetryForClassification.mockResolvedValue({
+      sessionId: 'session-1',
+      trackName: 'Brands Hatch',
+      carName: 'BMW',
+      telemetryData: [{ speed: 120 }],
+    });
+    aiServiceClient.classifySegments.mockResolvedValue({
+      status: 'success',
+      session_id: 'session-1',
+      samples_analyzed: 1,
+      segment_count: 1,
+      segments: [{ id: 'segment-1', labels: ['EA'], start_index: 0, end_index: 1 }],
+    });
+
+    await expect(
+      controller.classifySessionSegments(
+        { user: { userId: 'user-1' } },
+        { session_id: 'session-1' },
+      ),
+    ).resolves.toEqual({
+      status: 'success',
+      session_id: 'session-1',
+      samples_analyzed: 1,
+      segment_count: 1,
+      segments: [{ id: 'segment-1', labels: ['EA'], start_index: 0, end_index: 1 }],
+    });
+
+    expect(racingSessionService.getSessionTelemetryForClassification).toHaveBeenCalledWith('user-1', 'session-1');
+    expect(aiServiceClient.classifySegments).toHaveBeenCalledWith({
+      session_id: 'session-1',
+      telemetry_data: [{ speed: 120 }],
+      track_name: 'Brands Hatch',
+      car_name: 'BMW',
+    });
   });
 });

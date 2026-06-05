@@ -13,6 +13,7 @@ describe('MapVisualization telemetry parsing', () => {
         }, 0);
 
         expect(frame?.playerKey).toBe('id:20');
+        expect(frame?.sourceIndex).toBe(0);
         expect(frame?.cars).toHaveLength(2);
         expect(frame?.cars[1].position).toEqual({ x: 120, y: 12, z: 2 });
     });
@@ -42,6 +43,87 @@ describe('MapVisualization telemetry parsing', () => {
         expect(frame?.time).toBeCloseTo(3 / 60);
     });
 
+    it('uses slot keys when ACC reports duplicate car ids for opponents', () => {
+        const frame = parseTelemetryFrame({
+            Graphics_current_time: 1000,
+            Graphics_player_car_id: 0,
+            Graphics_car_id: [0, 0, 0],
+            Graphics_car_coordinates: [
+                { x: 100, y: 10, z: 1 },
+                { x: 120, y: 12, z: 2 },
+                { x: 140, y: 14, z: 3 }
+            ]
+        }, 0);
+
+        expect(frame?.playerKey).toBe('slot:0');
+        expect(frame?.cars.map((car) => car.key)).toEqual(['slot:0', 'slot:1', 'slot:2']);
+    });
+
+    it('keeps duplicate-id opponent trajectories separate across frames', () => {
+        const frames = parseTelemetryFrames([
+            {
+                Graphics_current_time: 1000,
+                Graphics_player_car_id: 0,
+                Graphics_car_id: [0, 0],
+                Graphics_car_coordinates: [
+                    { x: 100, y: 10, z: 1 },
+                    { x: 200, y: 20, z: 2 }
+                ]
+            },
+            {
+                Graphics_current_time: 2000,
+                Graphics_player_car_id: 0,
+                Graphics_car_id: [0, 0],
+                Graphics_car_coordinates: [
+                    { x: 110, y: 10, z: 1 },
+                    { x: 210, y: 20, z: 2 }
+                ]
+            }
+        ]);
+
+        expect(frames.map((frame) => frame.playerKey)).toEqual(['slot:0', 'slot:0']);
+        expect(frames[0].cars.map((car) => car.key)).toEqual(['slot:0', 'slot:1']);
+        expect(frames[1].cars.map((car) => car.key)).toEqual(['slot:0', 'slot:1']);
+        expect(frames[1].cars[1].position.x - frames[0].cars[1].position.x).toBe(10);
+    });
+
+    it('compresses large multi-car telemetry gaps so opponent replays do not stall', () => {
+        const frames = parseTelemetryFrames([
+            {
+                Graphics_current_time: 0,
+                Graphics_car_coordinates: [
+                    { x: 100, y: 10, z: 1 },
+                    { x: 120, y: 12, z: 2 }
+                ]
+            },
+            {
+                Graphics_current_time: 1000,
+                Graphics_car_coordinates: [
+                    { x: 110, y: 10, z: 1 },
+                    { x: 130, y: 12, z: 2 }
+                ]
+            },
+            {
+                Graphics_current_time: 9000,
+                Graphics_car_coordinates: [
+                    { x: 120, y: 10, z: 1 },
+                    { x: 140, y: 12, z: 2 }
+                ]
+            },
+            {
+                Graphics_current_time: 10000,
+                Graphics_car_coordinates: [
+                    { x: 130, y: 10, z: 1 },
+                    { x: 150, y: 12, z: 2 }
+                ]
+            }
+        ]);
+
+        expect(frames.map((frame) => frame.time)).toEqual([0, 1, 1.25, 1.5]);
+        expect(getPlaybackFrameIndex(frames, 1.1)).toBe(2);
+        expect(getPlaybackFrameIndex(frames, 1.4)).toBe(3);
+    });
+
     it('filters invalid zero coordinates and empty rows', () => {
         const frames = parseTelemetryFrames([
             { Graphics_car_coordinates: [{ x: 0, y: 0, z: 0 }] },
@@ -49,7 +131,24 @@ describe('MapVisualization telemetry parsing', () => {
         ]);
 
         expect(frames).toHaveLength(1);
+        expect(frames[0].sourceIndex).toBe(1);
         expect(frames[0].cars[0].position).toEqual({ x: 8, y: 9, z: 0 });
+    });
+
+    it('filters impossible coordinate outliers before they affect map bounds', () => {
+        const frame = parseTelemetryFrame({
+            Graphics_current_time: 1000,
+            Graphics_player_car_id: 0,
+            Graphics_car_id: [1, 2],
+            Graphics_car_coordinates: [
+                { x: 3744661726298112, y: 0, z: 6.4337007530853315e35 },
+                { x: 100, y: 12, z: -40 }
+            ]
+        }, 0);
+
+        expect(frame?.cars).toHaveLength(1);
+        expect(frame?.cars[0].position).toEqual({ x: 100, y: 12, z: -40 });
+        expect(frame?.playerKey).toBe('id:2');
     });
 
     it('keeps session playback time monotonic when lap time resets', () => {
@@ -74,6 +173,7 @@ describe('MapVisualization telemetry parsing', () => {
         ]);
 
         expect(frames[3].time).toBeGreaterThan(frames[2].time);
+        expect(frames[3].sourceIndex).toBe(3);
         expect(frames.map((frame) => frame.time)).toEqual([0, 1, 2, 2 + (1 / 60), 3]);
     });
 
