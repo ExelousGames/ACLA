@@ -70,7 +70,16 @@ describe('RacingSessionController', () => {
       session_id: 'session-1',
       samples_analyzed: 1,
       segment_count: 1,
-      segments: [{ id: 'segment-1', labels: ['EA'], start_index: 0, end_index: 1 }],
+      segments: [{
+        id: 'segment-1',
+        labels: ['EA'],
+        main_label_id: 'EA',
+        main_label_name: 'Expert Adherence',
+        start_index: 0,
+        end_index: 1,
+        sub_labels: [],
+        sub_segments: [{ start_index: 0, end_index: 1, labels: [] }],
+      }],
     });
 
     await expect(
@@ -83,7 +92,16 @@ describe('RacingSessionController', () => {
       session_id: 'session-1',
       samples_analyzed: 1,
       segment_count: 1,
-      segments: [{ id: 'segment-1', labels: ['EA'], start_index: 0, end_index: 1 }],
+      segments: [{
+        id: 'segment-1',
+        labels: ['EA'],
+        main_label_id: 'EA',
+        main_label_name: 'Expert Adherence',
+        start_index: 0,
+        end_index: 1,
+        sub_labels: [],
+        sub_segments: [{ start_index: 0, end_index: 1, labels: [] }],
+      }],
     });
 
     expect(racingSessionService.getSessionTelemetryForClassification).toHaveBeenCalledWith('user-1', 'session-1');

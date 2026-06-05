@@ -15,18 +15,17 @@ import {
     Vec3,
     VisibilitySample
 } from './mapTelemetry';
+import {
+    getActiveSubLabelTexts,
+    getSegmentMainLabelText,
+    getSegmentSubLabelTexts,
+    SegmentClassificationSegment
+} from './segmentClassificationDisplay';
 import './MapVisualization.css';
 
 type LoadState = {
     status: 'idle' | 'loading' | 'ready' | 'empty' | 'error';
     message?: string;
-};
-
-type SegmentClassificationSegment = {
-    id?: string;
-    labels: string[];
-    start_index: number;
-    end_index: number;
 };
 
 type SegmentClassificationResult = {
@@ -38,9 +37,13 @@ type SegmentClassificationResult = {
 };
 
 type SegmentOverlayRun = {
-    labels: string[];
     color: string;
     points: Vec3[];
+};
+
+type ActiveSegmentSummary = {
+    mainLabel: string;
+    subLabels: string[];
 };
 
 type ProjectedPoint = Vec3 & {
@@ -78,7 +81,7 @@ const getCarColor = (carKey: string, isPlayer: boolean): string => {
 };
 
 const getSegmentColor = (segment: SegmentClassificationSegment, index: number): string => {
-    const key = segment.labels.join('|') || segment.id || String(index);
+    const key = segment.main_label_id || segment.main_label_name || segment.labels?.join('|') || segment.id || String(index);
     let hash = index;
 
     for (let charIndex = 0; charIndex < key.length; charIndex += 1) {
@@ -244,25 +247,31 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                 });
 
                 return {
-                    labels: segment.labels,
                     color: getSegmentColor(segment, index),
                     points
                 };
             })
             .filter((run) => run.points.length > 1);
     }, [isRecordedMode, segmentClassification, visibleFrames]);
-    const activeSegmentLabels = useMemo(() => {
+    const activeSegmentSummary = useMemo<ActiveSegmentSummary | null>(() => {
         if (!currentFrame || !segmentClassification?.segments?.length || currentFrame.sourceIndex === undefined) {
-            return [];
+            return null;
         }
 
-        const activeSegments = segmentClassification.segments.filter((segment) => (
+        const activeSegment = segmentClassification.segments.find((segment) => (
             currentFrame.sourceIndex !== undefined
             && currentFrame.sourceIndex >= segment.start_index
             && currentFrame.sourceIndex < segment.end_index
         ));
 
-        return Array.from(new Set(activeSegments.flatMap((segment) => segment.labels)));
+        if (!activeSegment || currentFrame.sourceIndex === undefined) {
+            return null;
+        }
+
+        return {
+            mainLabel: getSegmentMainLabelText(activeSegment),
+            subLabels: getActiveSubLabelTexts(activeSegment, currentFrame.sourceIndex)
+        };
     }, [currentFrame, segmentClassification]);
 
     useEffect(() => {
@@ -798,9 +807,12 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                                             ? 'AI analysis failed'
                                             : `${segmentClassification?.segment_count ?? 0} AI segments`}
                                 </Badge>
-                                {segmentLoadState.status === 'ready' && activeSegmentLabels.length > 0 && (
+                                {segmentLoadState.status === 'ready' && activeSegmentSummary && (
                                     <Text size="1" className="map-visualization__metric">
-                                        Active: {activeSegmentLabels.join(', ')}
+                                        Active: {activeSegmentSummary.mainLabel}
+                                        {activeSegmentSummary.subLabels.length > 0
+                                            ? ` - ${activeSegmentSummary.subLabels.join(', ')}`
+                                            : ''}
                                     </Text>
                                 )}
                             </Flex>
@@ -810,17 +822,26 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                                 </Text>
                             )}
                             {segmentLoadState.status === 'ready' && segmentClassification?.segments?.length ? (
-                                <Flex gap="2" wrap="wrap" className="map-visualization__segment-legend">
+                                <div className="map-visualization__segment-legend">
                                     {segmentClassification.segments.slice(0, 6).map((segment, index) => (
                                         <span key={segment.id || `${segment.start_index}-${segment.end_index}`} className="map-visualization__segment-legend-item">
                                             <span
                                                 className="map-visualization__segment-swatch"
                                                 style={{ backgroundColor: getSegmentColor(segment, index) }}
                                             />
-                                            {segment.labels.join(', ') || 'Unlabeled'}
+                                            <span className="map-visualization__segment-copy">
+                                                <span className="map-visualization__segment-main-label">
+                                                    {getSegmentMainLabelText(segment)}
+                                                </span>
+                                                {getSegmentSubLabelTexts(segment).length > 0 && (
+                                                    <span className="map-visualization__segment-sub-labels">
+                                                        {getSegmentSubLabelTexts(segment).join(', ')}
+                                                    </span>
+                                                )}
+                                            </span>
                                         </span>
                                     ))}
-                                </Flex>
+                                </div>
                             ) : null}
                         </Flex>
                     </div>

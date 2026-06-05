@@ -13,6 +13,7 @@ from app.racing_engineer.expert_actions import predict_expert_actions
 from app.ml.segment_classifier.service import segment_classifier
 from app.ml.opportunity_forecaster import opportunity_forecaster
 from app.services.user_session_analysis import analyze_user_sessions
+from app.domain.label_hierarchy import build_main_label_segments
 
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
@@ -135,16 +136,18 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
 
         dataframe = pd.DataFrame(request.telemetry_data)
         predicted_segments = segment_classifier.scan_telemetry_data(dataframe)
-        segments = []
+        raw_segments = []
 
         for segment in predicted_segments:
             segment_dict = segment.to_dict() if hasattr(segment, "to_dict") else dict(segment)
-            segments.append({
+            raw_segments.append({
                 "id": segment_dict.get("id"),
                 "labels": segment_dict.get("labels", []),
                 "start_index": segment_dict.get("start_index"),
                 "end_index": segment_dict.get("end_index"),
             })
+
+        segments = build_main_label_segments(raw_segments)
 
         return {
             "status": "success",

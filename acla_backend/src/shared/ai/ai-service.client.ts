@@ -117,11 +117,26 @@ export interface SegmentClassificationRequest {
     car_name?: string;
 }
 
+export interface SegmentClassificationLabel {
+    label_id: string;
+    label_name: string;
+}
+
+export interface SegmentClassificationSubSegment {
+    start_index: number;
+    end_index: number;
+    labels: SegmentClassificationLabel[];
+}
+
 export interface SegmentClassificationSegment {
     id?: string;
     labels: string[];
+    main_label_id: string;
+    main_label_name: string;
     start_index: number;
     end_index: number;
+    sub_labels: SegmentClassificationLabel[];
+    sub_segments: SegmentClassificationSubSegment[];
 }
 
 export interface SegmentClassificationResponse {

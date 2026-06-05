@@ -1,4 +1,5 @@
 import { getPlaybackFrameIndex, parseTelemetryFrame, parseTelemetryFrames, segmentVisiblePoints } from './mapTelemetry';
+import { getSegmentMainLabelText, getSegmentSubLabelTexts } from './segmentClassificationDisplay';
 
 describe('MapVisualization telemetry parsing', () => {
     it('parses array coordinates and matches the player by car id', () => {
@@ -239,5 +240,39 @@ describe('MapVisualization playback indexing', () => {
 
     it('signals completion after the final telemetry frame', () => {
         expect(getPlaybackFrameIndex(frames, 2.6)).toBe(-1);
+    });
+});
+
+describe('MapVisualization AI segment labels', () => {
+    it('formats main-first segment labels with sub labels', () => {
+        const segment = {
+            labels: ['MSP', 'MSP1', 'ST3'],
+            main_label_id: 'MSP',
+            main_label_name: 'Mistake (Practice)',
+            start_index: 0,
+            end_index: 3,
+            sub_labels: [
+                { label_id: 'MSP1', label_name: 'Initiate brake too late' },
+                { label_id: 'ST3', label_name: 'Approach to corner' }
+            ],
+            sub_segments: []
+        };
+
+        expect(getSegmentMainLabelText(segment)).toBe('Mistake (Practice)');
+        expect(getSegmentSubLabelTexts(segment)).toEqual([
+            'Initiate brake too late',
+            'Approach to corner'
+        ]);
+    });
+
+    it('falls back to flat labels for older segment responses', () => {
+        const segment = {
+            labels: ['EA', 'ST2'],
+            start_index: 0,
+            end_index: 3
+        };
+
+        expect(getSegmentMainLabelText(segment)).toBe('EA, ST2');
+        expect(getSegmentSubLabelTexts(segment)).toEqual([]);
     });
 });
