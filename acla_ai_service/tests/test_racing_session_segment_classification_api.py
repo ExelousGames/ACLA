@@ -100,7 +100,7 @@ def test_segment_classification_returns_compact_segments(monkeypatch):
                 "id": "segment-1",
                 "labels": ["EA"],
                 "main_label_id": "EA",
-                "main_label_name": "Expert Adherence",
+                "main_label_name": "Expert Adherence (Training)",
                 "start_index": 0,
                 "end_index": 2,
                 "sub_labels": [],

@@ -102,6 +102,73 @@ def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
 LOGGER = logging.getLogger(__name__)
 
 
+def _interaction_section_context(
+    opponent_interaction: Optional[dict],
+) -> List[Dict[str, Any]]:
+    if not isinstance(opponent_interaction, dict):
+        return []
+    context = opponent_interaction.get("section_context") or []
+    if not isinstance(context, list):
+        return []
+    return [c for c in context if isinstance(c, dict)]
+
+
+def _preselected_interaction_section_id(
+    opponent_interaction: Optional[dict],
+) -> Optional[str]:
+    """Return a splitter-provided circuit_section id when it is unambiguous."""
+    section_ids: List[str] = []
+    for context in _interaction_section_context(opponent_interaction):
+        section_id = context.get("circuit_section_id")
+        if (
+            isinstance(section_id, str)
+            and section_id
+            and section_id != "interaction_window"
+            and section_id in LABEL_MAPPING
+            and section_id not in section_ids
+        ):
+            section_ids.append(section_id)
+    return section_ids[0] if len(section_ids) == 1 else None
+
+
+def _range_section_line(
+    *,
+    section_id: str,
+    section_name: str,
+    section_split_basis: Optional[str],
+    opponent_interaction: Optional[dict],
+    for_local_synth: bool = False,
+) -> str:
+    preselected_section_id = _preselected_interaction_section_id(opponent_interaction)
+    if preselected_section_id:
+        preselected_name = LABEL_MAPPING.get(
+            preselected_section_id, preselected_section_id,
+        )
+        prefix = "- circuit_section id" if for_local_synth else "- circuit_section"
+        return (
+            f"{prefix}: `{preselected_section_id}` ({preselected_name}) "
+            "from the splitter's opponent sub-segment context; include it "
+            "in label_ids."
+        )
+    if "interaction" in str(section_split_basis or ""):
+        return (
+            "- circuit_section id: not preselected for this interaction "
+            "window; call `locate_circuit_section` if a named section label "
+            "is needed."
+            if for_local_synth
+            else "- racing interaction window: circuit_section is not "
+            "preselected; use `locate_circuit_section` only as context."
+        )
+    return (
+        f"- circuit_section id: `{section_id}` "
+        "(located by the splitter; include it in label_ids)"
+        if for_local_synth
+        else f"- circuit_section: `{section_id}` ({section_name}) "
+        "— located by the splitter; the synthesizer emits it (with the "
+        "circuit) as a label."
+    )
+
+
 def _interaction_focus_block(
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
@@ -152,6 +219,20 @@ def _interaction_focus_block(
                     f"- Splitter evidence [{window.get('start_index')}, "
                     f"{window.get('end_index')}]: " + "; ".join(details)
                 )
+        for context in _interaction_section_context(opponent_interaction):
+            section_id = context.get("circuit_section_id")
+            if not section_id or section_id == "interaction_window":
+                continue
+            section_name = (
+                context.get("circuit_section_name")
+                or LABEL_MAPPING.get(section_id, section_id)
+            )
+            section_range = context.get("range")
+            suffix = f" over ilocs {section_range}" if section_range else ""
+            target_lines.append(
+                f"- Splitter section context: `{section_id}` "
+                f"({section_name}){suffix}."
+            )
     target_block = (
         "\nTarget-car hint from the splitter:\n" + "\n".join(target_lines) + "\n"
         if target_lines else ""
@@ -241,13 +322,11 @@ def _local_planner_prompt(
         f"- Lap range: [{lap_start}, {lap_end}] (length {lap_end - lap_start})",
         "",
         "#### Range under review",
-        (
-            "- racing interaction window: circuit_section is not preselected; "
-            "use `locate_circuit_section` only as context."
-            if "interaction" in str(section_split_basis or "")
-            else f"- circuit_section: `{section_id}` ({section_name}) "
-            "— located by the splitter; the synthesizer emits it (with the "
-            "circuit) as a label."
+        _range_section_line(
+            section_id=section_id,
+            section_name=section_name,
+            section_split_basis=section_split_basis,
+            opponent_interaction=opponent_interaction,
         ),
         f"- rough iloc boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})",
@@ -351,13 +430,12 @@ def _local_synth_prompts(
         "signature does not hold across the rough range.",
         "",
         "#### Range under review",
-        (
-            "- circuit_section id: not preselected for this interaction "
-            "window; call `locate_circuit_section` if a named section label "
-            "is needed."
-            if "interaction" in str(section_split_basis or "")
-            else f"- circuit_section id: `{section_id}` "
-            "(located by the splitter; include it in label_ids)"
+        _range_section_line(
+            section_id=section_id,
+            section_name=LABEL_MAPPING.get(section_id, section_id),
+            section_split_basis=section_split_basis,
+            opponent_interaction=opponent_interaction,
+            for_local_synth=True,
         ),
         f"- circuit id: `{circuit_id}` "
         "(from Static_track; include it in label_ids)",
@@ -421,6 +499,15 @@ def _claude_task_prompt(
     interaction_focus = _interaction_focus_block(
         section_split_basis, opponent_interaction,
     )
+    preselected_section_id = _preselected_interaction_section_id(opponent_interaction)
+    preselected_section_block = ""
+    if preselected_section_id:
+        preselected_section_block = (
+            "- Splitter section context: "
+            f"`{preselected_section_id}` "
+            f"({LABEL_MAPPING.get(preselected_section_id, preselected_section_id)}) "
+            "from the opponent sub-segment; include it in `label_ids`.\n"
+        )
 
     existing_block = ""
     if existing_section_annotations:
@@ -452,6 +539,7 @@ def _claude_task_prompt(
         f"- Rough section boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})\n"
         f"- Split basis: {section_split_basis or 'circuit_section'}\n"
+        f"{preselected_section_block}"
         f"{existing_block}"
         f"{interaction_focus}"
         "\n"
@@ -464,10 +552,12 @@ def _claude_task_prompt(
         "description of what you observed:\n"
         "\n"
         "1. **Identify the circuit + optional circuit_section.** Call "
-        "`get_circuit_id` for the circuit id and `locate_circuit_section` "
+        "`get_circuit_id` for the circuit id. If the splitter section "
+        "context above names exactly one circuit_section, include that "
+        "section id in `label_ids`; otherwise call `locate_circuit_section` "
         "for the named section that the iloc window overlaps. Include the "
-        "circuit id in `label_ids`; include the returned circuit_section id "
-        "only when it is not ambiguous. When `locate_circuit_section` reports "
+        "circuit id in `label_ids`; include a circuit_section id only when "
+        "it is not ambiguous. When `locate_circuit_section` reports "
         "`is_ambiguous` (e.g. pit lane vs. the adjacent straight share a "
         "normalized position range), do NOT guess — read its `top_matches` "
         "and disambiguate with a second signal (pit-limiter speed, "
@@ -576,6 +666,10 @@ def build_request(
             "parent_end": int(section_end),
             "split_basis": section_split_basis or "circuit_section",
             "opponent_interaction": opponent_interaction,
+            "preselected_circuit_section_id": (
+                _preselected_interaction_section_id(opponent_interaction)
+            ),
+            "section_context": _interaction_section_context(opponent_interaction),
             "main_labels": [circuit_id] if circuit_id else [],
             "existing_children": [
                 {
@@ -666,6 +760,8 @@ def parse(
     section_id: str,
     section_start: int,
     section_end: int,
+    circuit_id: Optional[str] = None,
+    opponent_interaction: Optional[dict] = None,
 ) -> LapAnnotationResult:
     """Decode the raw response into a LapAnnotationResult.
 
@@ -680,9 +776,11 @@ def parse(
     """
     if backend == "claude":
         return _parse_claude(response, lap_start, lap_end, section_id,
-                             section_start, section_end)
+                             section_start, section_end, circuit_id,
+                             opponent_interaction)
     return _parse_local(response, lap_start, lap_end, section_id,
-                        section_start, section_end)
+                        section_start, section_end, circuit_id,
+                        opponent_interaction)
 
 
 def _parse_local(
@@ -692,6 +790,8 @@ def _parse_local(
     section_id: str,
     section_start: int,
     section_end: int,
+    circuit_id: Optional[str],
+    opponent_interaction: Optional[dict],
 ) -> LapAnnotationResult:
     raw = response.raw_response or ""
     parsed = parse_json_response(raw)
@@ -723,6 +823,9 @@ def _parse_local(
 
     raw_label_ids = parsed.get("label_ids") or []
     cleaned, rejected = _clean_label_ids(raw_label_ids)
+    cleaned = _with_preselected_interaction_labels(
+        cleaned, circuit_id, opponent_interaction,
+    )
 
     revised_flag = bool(parsed.get("revised")) or (
         new_start != section_start or new_end != section_end
@@ -757,6 +860,8 @@ def _parse_claude(
     section_id: str,
     section_start: int,
     section_end: int,
+    circuit_id: Optional[str],
+    opponent_interaction: Optional[dict],
 ) -> LapAnnotationResult:
     raw = response.raw_response or ""
     parsed = parse_json_response(raw) if raw else None
@@ -767,6 +872,9 @@ def _parse_claude(
     if parsed:
         raw_label_ids = parsed.get("label_ids") or []
         cleaned, rejected = _clean_label_ids(raw_label_ids)
+        cleaned = _with_preselected_interaction_labels(
+            cleaned, circuit_id, opponent_interaction,
+        )
         reasoning = str(parsed.get("reasoning") or "")
 
     # Resolve final range — prefer claude.revised_range attachment when
@@ -824,3 +932,28 @@ def _clean_label_ids(
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     cleaned, rejected, _ = normalize_grouped_label_ids(raw_label_ids)
     return cleaned, rejected
+
+
+def _with_preselected_interaction_labels(
+    label_ids: List[str],
+    circuit_id: Optional[str],
+    opponent_interaction: Optional[dict],
+) -> List[str]:
+    """Add splitter-provided circuit context to non-empty interaction labels."""
+    if not label_ids:
+        return label_ids
+
+    section_id = _preselected_interaction_section_id(opponent_interaction)
+    if not section_id:
+        return label_ids
+
+    prefix: List[str] = []
+    if circuit_id and circuit_id in LABEL_MAPPING:
+        prefix.append(circuit_id)
+    prefix.append(section_id)
+
+    merged: List[str] = []
+    for label_id in [*prefix, *label_ids]:
+        if label_id not in merged:
+            merged.append(label_id)
+    return merged

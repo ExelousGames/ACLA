@@ -17,7 +17,7 @@
   },
   "labels": {
     "EA": {
-      "name": "Expert Adherence",
+      "name": "Expert Adherence (Training)",
       "characteristics": "Player tracks the expert through the section.\n  - `trajectory_offset` stays within ±0.5 m of zero for the whole range.\n  - `time_difference_to_expert` slope is ≈ 0 (gap neither grows nor\n    shrinks) — confirm with `compute_slope`.\n  - Speed delta at sampled ilocs is small.\nMutually exclusive with MSP and RM.\n"
     },
     "MSP": {

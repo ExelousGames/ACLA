@@ -101,12 +101,12 @@ LABEL_MAPPING: Dict[str, str] = {
     "O": "Successful Overtake",
     "OD": "Successful Defense",
     "MD": "Missing data",
-    "EA": "Expert Adherence",
+    "EA": "Expert Adherence (Training)",
     "PS": "Pit Stop",
     "RM": "Recovery & Merge",
     "MSP": "Mistake (Practice)",
     "MSR": "Mistake (Racing)",
-    ################### Detailed Expert Adherence Labels (for label EA) ###################
+    ################### Detailed Expert Adherence (Training) Labels (for label EA) ###################
 
     ################### Detailed Successful Overtake Labels (for label O) ###################
     "O1": "Late-brake attack at entry",
@@ -257,7 +257,7 @@ MAIN_LABEL_GUIDELINES: Dict[str, str] = {
     "O": "Successful Overtake: Player gained a position. Requires `classify_opponent_interaction` with `outcome: pass_completed`, `gates.O: true`, and `label_gates.O: true`. Without that deterministic pass outcome, do NOT attach O; a failed attack belongs in MSR.",
     "OD": "Successful Defense: Player held position against a real threat. Requires `classify_opponent_interaction` with `outcome: held_defense`, `gates.OD: true`, and `label_gates.OD: true`. A merely close opponent is not enough; no held-defense outcome means no OD.",
     "MD": "Missing Data: This segment contains gaps or corrupted telemetry. Identify if the sensor data drops to zero or becomes inconsistent unexpectedly.",
-    "EA": "Expert Adherence: The driver is following the optimal racing line and speed profile closely. nothing needs to be labeled right now.",
+    "EA": "Expert Adherence (Training): The driver is following the optimal racing line and speed profile closely. nothing needs to be labeled right now.",
     "PS": "Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Look for significant speed reduction and distinct trajectory deviation into the pit area.",
     "RM": "Recovery & Merge: The driver is recovering from mistake such as slower speed. identify if driver is recovery from low speed, off-track, or merge back to expert line.",
     "MSP": "Practice Mistake: A technical driving error (timing, line, brake/throttle modulation, gear, off-track, …) NOT caused by interaction with another car. \n   - Step 1: Analyze the 'Time Difference to Expert' graph; a mistake normally causes this time gap to increase continuously without decreasing shortly after.\n   - Step 2: Examine the differences in 'throttle' and 'brake' between the player and the expert to find out why the player is slower.\n   - Step 3: Examine the 'push_limit' graph to find understeer or oversteer, which could lead to lower speed.\n   - Step 4: Check the 'Trajectory' map for mistakes caused by deviations from the optimal line.\n   - Step 5: Find the MSP sub-label that describes the *root cause*.",

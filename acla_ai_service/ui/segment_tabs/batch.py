@@ -654,6 +654,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         "result as a new segment."
     )
 
+    range_context = (session_id, selected_annotation_key, len(df))
+    if st.session_state.get("batch_lap_claude_range_context") != range_context:
+        st.session_state["batch_lap_claude_range_context"] = range_context
+        st.session_state["batch_lap_claude_start"] = 0
+        st.session_state["batch_lap_claude_end"] = min(len(df), 5000)
+
     track_name = (
         df["Static_track"].iloc[0]
         if "Static_track" in df.columns and not df.empty else None

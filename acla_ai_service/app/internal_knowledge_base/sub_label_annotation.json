@@ -68,10 +68,10 @@
       ]
     },
     "EA": {
-      "name": "Expert Adherence",
+      "name": "Expert Adherence (Training)",
       "type": "main",
       "description": "Driver closely follows the expert's line and speed profile.  Look for **overall gap holds stable** in the time delta and **speed match** in the speed delta.  The player's **entry trajectory** and **exit trajectory** track the expert through entry, apex, and exit, with the trajectory offset **aligned** (within ±0.5 m of zero) across every beat.\n",
-      "annotation_guideline": "How to identify the sublabels for Expert Adherence: The driver is following the optimal racing line and speed profile closely.  Nothing needs to be labeled right now.\n",
+      "annotation_guideline": "How to identify the sublabels for Expert Adherence (Training): The driver is following the optimal racing line and speed profile closely.  Nothing needs to be labeled right now.\n",
       "parent": null,
       "children": [],
       "exclusive_with": [

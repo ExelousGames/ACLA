@@ -303,6 +303,8 @@ def _run_lap(
         section_id=section_id,
         section_start=section_start,
         section_end=section_end,
+        circuit_id=circuit_id,
+        opponent_interaction=opponent_interaction,
     )
 
 
