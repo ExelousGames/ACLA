@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import pandas as pd
 
-from app.pipelines.training.pipeline.cleaning import _clean_position_anomalies
+from app.pipelines.training.pipeline.cleaning import (
+    _clean_position_anomalies,
+    _update_top_lap,
+)
 
 
 def test_position_cleanup_removes_anomalous_player_row_and_resets_index() -> None:
@@ -61,3 +64,36 @@ def test_position_cleanup_keeps_session_start_relocation() -> None:
     assert len(cleaned) == len(df)
     assert cleaned["Graphics_player_pos_x"].tolist() == [-279.0, -259.0, -258.0, -257.0]
     assert cleaned["Graphics_player_pos_y"].tolist() == [-85.0, -335.0, -336.0, -337.0]
+
+
+def test_update_top_lap_keeps_one_fastest_lap_per_bucket() -> None:
+    top_laps = {}
+    slow_lap = {
+        "id": "slow",
+        "lap_time_ms": 91_000,
+        "records": [{"Static_track": "monza"}],
+        "car": "gt3",
+        "avg_grip_int": 3,
+    }
+    faster_lap = {
+        "id": "fast",
+        "lap_time_ms": 89_000,
+        "records": [{"Static_track": "monza"}],
+        "car": "gt3",
+        "avg_grip_int": 3,
+    }
+    other_grip_lap = {
+        "id": "other-grip",
+        "lap_time_ms": 95_000,
+        "records": [{"Static_track": "monza"}],
+        "car": "gt3",
+        "avg_grip_int": 4,
+    }
+
+    _update_top_lap(top_laps, slow_lap)
+    _update_top_lap(top_laps, faster_lap)
+    _update_top_lap(top_laps, other_grip_lap)
+
+    assert len(top_laps) == 2
+    assert top_laps[("monza", "gt3", 3)]["id"] == "fast"
+    assert top_laps[("monza", "gt3", 4)]["id"] == "other-grip"

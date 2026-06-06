@@ -22,13 +22,7 @@ async def main() -> int:
     parser = argparse.ArgumentParser(
         description="Download, process, and enrich telemetry data for annotation.",
     )
-    parser.add_argument(
-        "--top-laps-count",
-        type=int,
-        default=1,
-        help="Number of top laps to keep per track/car/grip bucket.",
-    )
-    args = parser.parse_args()
+    parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s",
@@ -43,7 +37,6 @@ async def main() -> int:
     print(f"[INFO] Processed sessions cache: {cfg.processed_session_data_cache_key}")
     print(f"[INFO] Top laps cache: {cfg.top_laps_cache_key}")
     print(f"[INFO] Enriched sessions cache: {cfg.enriched_sessions_cache_key}")
-    print(f"[INFO] Top laps count: {args.top_laps_count}")
 
     try:
         result = await prepare_training_data(
@@ -51,7 +44,6 @@ async def main() -> int:
             config=service.pipeline_config,
             backend_service=service.backend_service,
             imitate_expert_feature_names=service._imitate_expert_feature_names,
-            top_laps_count=args.top_laps_count,
         )
     except Exception as exc:
         logger.exception("Data preparation failed")

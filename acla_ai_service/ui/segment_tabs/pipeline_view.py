@@ -434,19 +434,11 @@ def _render_data_preparation_card(store: Any, cfg: TrainingPipelineConfig) -> No
 
     def _start_form() -> None:
         with st.form("prepare_data_form"):
-            top_laps_count = st.number_input(
-                "Top laps per track/car/grip bucket",
-                min_value=1,
-                max_value=50,
-                value=1,
-            )
             if st.form_submit_button("Start data preparation", use_container_width=True):
                 cmd = [
                     sys.executable,
                     "-u",
                     str(_SCRIPTS / "prepare_training_data.py"),
-                    "--top-laps-count",
-                    str(int(top_laps_count)),
                 ]
                 spawn("prepare_data", cmd)
                 st.rerun()

@@ -55,7 +55,6 @@ async def prepare_training_data(
     cache_config: Optional[TrainingPipelineConfig] = None,
     backend_service=None,
     imitate_expert_feature_names: List[str],
-    top_laps_count: int = 5,
 ) -> Dict[str, Any]:
     """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
 
@@ -138,7 +137,6 @@ async def prepare_training_data(
             imitate_expert_feature_names=imitate_expert_feature_names,
             telemetry_time_gap_ms=500,
             processed_sessions_cache_key=processed_sessions_cache_key,
-            top_laps_count=top_laps_count,
             protected_session_ids=protected_session_ids,
         )
 

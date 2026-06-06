@@ -28,6 +28,8 @@ MAX_PLAYER_POSITION_JUMP_M = 500.0
 MAX_PLAYER_POSITION_SPEED_MPS = 250.0
 MAX_OPPONENT_POSITION_JUMP_M = 1_000.0
 MAX_OPPONENT_DISTANCE_FROM_PLAYER_M = 20_000.0
+TopLapKey = Tuple[str, str, int]
+TopLapMap = Dict[TopLapKey, Dict[str, Any]]
 
 
 def print_section_divider(title: str, width: int = 80) -> None:
@@ -208,6 +210,30 @@ def _clean_position_anomalies(df: pd.DataFrame, context: str = "") -> pd.DataFra
     return cleaned.reset_index(drop=True)
 
 
+def _update_top_lap(
+    top_laps: TopLapMap,
+    candidate: Dict[str, Any],
+) -> Tuple[Optional[TopLapKey], Optional[Dict[str, Any]], bool]:
+    records = candidate.get("records", [])
+    if not records:
+        return None, None, False
+
+    key = (
+        records[0].get("Static_track", "unknown_track"),
+        candidate.get("car", "unknown_car"),
+        candidate.get("avg_grip_int", 2),
+    )
+    current_top_lap = top_laps.get(key)
+    if (
+        current_top_lap is None
+        or candidate["lap_time_ms"] < current_top_lap["lap_time_ms"]
+    ):
+        top_laps[key] = candidate
+        return key, current_top_lap, True
+
+    return key, None, False
+
+
 async def process_lap_sessions_efficiently(
     session_data_cache_key: str,
     *,
@@ -216,7 +242,6 @@ async def process_lap_sessions_efficiently(
     imitate_expert_feature_names: List[str],
     telemetry_time_gap_ms: int = 100,
     processed_sessions_cache_key: Optional[str] = None,
-    top_laps_count: int = 5,
     protected_session_ids: Optional[Iterable[Any]] = None,
 ) -> None:
     """
@@ -227,8 +252,8 @@ async def process_lap_sessions_efficiently(
         f"[INFO] Processing cached dataset '{session_data_cache_key}' with immediate caching"
     )
 
-    # Keyed by (track, car, avg_grip_int). Stores the fastest lap(s) per combo.
-    top_laps: Dict[Tuple[str, str, int], List[Dict[str, Any]]] = {}
+    # Keyed by (track, car, avg_grip_int). Stores the fastest lap per combo.
+    top_laps: TopLapMap = {}
     total_sessions_cached = 0
     total_processed = 0
     chunk_idx = 0
@@ -237,35 +262,25 @@ async def process_lap_sessions_efficiently(
 
     def update_top_laps(candidate: Dict[str, Any]) -> None:
         records = candidate.get("records", [])
-        if not records:
-            return
         print(
             f"[DEBUG] Evaluating lap {candidate.get('id', 'unknown')} with {len(records)} telemetry records"
         )
 
-        track_name = records[0].get("Static_track", "unknown_track")
-        car_name = candidate.get("car", "unknown_car")
-        avg_grip_int = candidate.get("avg_grip_int", 2)
-        key = (track_name, car_name, avg_grip_int)
+        key, replaced_lap, updated = _update_top_lap(top_laps, candidate)
+        if key is None:
+            return
 
-        if key not in top_laps:
-            top_laps[key] = []
-
-        bucket = top_laps[key]
-
-        if len(bucket) < top_laps_count:
-            bucket.append(candidate)
+        if updated and replaced_lap is None:
             print(
-                f"[DEBUG] Added lap {candidate['id']} to top laps for {key} ({len(bucket)}/{top_laps_count}, time: {candidate['lap_time_ms']}ms)"
+                f"[DEBUG] Added top lap {candidate['id']} for {key} "
+                f"(time: {candidate['lap_time_ms']}ms)"
             )
             return
 
-        slowest_idx = max(range(len(bucket)), key=lambda idx: bucket[idx]["lap_time_ms"])
-        slowest = bucket[slowest_idx]
-        if candidate["lap_time_ms"] < slowest["lap_time_ms"]:
-            bucket[slowest_idx] = candidate
+        if replaced_lap is not None:
             print(
-                f"[DEBUG] Replaced slowest lap {slowest['id']} with {candidate['id']} for {key} (time: {candidate['lap_time_ms']}ms)"
+                f"[DEBUG] Replaced top lap {replaced_lap['id']} with "
+                f"{candidate['id']} for {key} (time: {candidate['lap_time_ms']}ms)"
             )
 
     session_chunks_iterator = telemetry_store.get_cached_data_chunks(cache_key=session_data_cache_key, include_ids=True)
@@ -355,9 +370,8 @@ async def process_lap_sessions_efficiently(
     print(f"[DEBUG] - Session chunks cached: {total_sessions_cached}")
 
     if top_laps:
-        for key, laps in top_laps.items():
-            lap_times = [lap_info["lap_time_ms"] for lap_info in laps]
-            print(f"[DEBUG] Top lap times for {key}: {sorted(lap_times)}")
+        for key, lap_info in top_laps.items():
+            print(f"[DEBUG] Top lap time for {key}: {lap_info['lap_time_ms']}")
 
     if not session_chunks_processed:
         if protected_chunks_skipped:
@@ -387,20 +401,13 @@ async def process_lap_sessions_efficiently(
     top_laps_cache_key = cache_config.top_laps_cache_key
     try:
         async def top_laps_generator():
-            for key, bucket_laps in top_laps.items():
+            for key, lap_info in top_laps.items():
                 track_name, car_name, avg_grip_int = key
-                if len(bucket_laps) < top_laps_count:
-                    print(f"[WARNING] Insufficient top laps found for {key}: {len(bucket_laps)}/{top_laps_count}")
-
-                bucket_laps.sort(key=lambda entry: entry["lap_time_ms"])
-
-                bucket_records = []
-                for lap_info in bucket_laps:
-                    bucket_records.append(lap_info["records"])
+                bucket_records = [lap_info["records"]]
 
                 if bucket_records:
                     chunk_id = f"{track_name}|{car_name}|grip{avg_grip_int}"
-                    print(f"[DEBUG] Yielding top laps chunk for {key} ({len(bucket_records)} laps)")
+                    print(f"[DEBUG] Yielding top lap chunk for {key}")
                     yield (bucket_records, chunk_id)
 
         cache_success = await telemetry_store.cache_chunks_streaming(
