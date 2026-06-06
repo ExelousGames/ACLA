@@ -1,7 +1,7 @@
 """
 Cleaning stage of the training pipeline.
 
-Streams raw session telemetry, filters / cleans per-chunk via FeatureProcessor,
+Streams raw session telemetry, filters / cleans per-session via FeatureProcessor,
 selects the top laps per track, and caches the processed chunks for downstream
 enrichment.
 """
@@ -15,7 +15,10 @@ import numpy as np
 import pandas as pd
 
 from app.shared.telemetry import FeatureProcessor
-from app.pipelines.manifest.protection import is_protected_chunk_id
+from app.pipelines.manifest.protection import (
+    is_protected_chunk_id,
+    session_id_from_chunk_id,
+)
 
 PLAYER_POSITION_COLUMNS = (
     "Graphics_player_pos_x",
@@ -30,6 +33,50 @@ MAX_OPPONENT_POSITION_JUMP_M = 1_000.0
 MAX_OPPONENT_DISTANCE_FROM_PLAYER_M = 20_000.0
 TopLapKey = Tuple[str, str, int]
 TopLapMap = Dict[TopLapKey, Dict[str, Any]]
+
+
+def _records_from_chunk_payload(chunk_data: Any) -> List[Dict[str, Any]]:
+    if isinstance(chunk_data, list):
+        return chunk_data
+    if isinstance(chunk_data, dict) and isinstance(chunk_data.get("data"), list):
+        return chunk_data["data"]
+    return []
+
+
+def _iter_session_payloads(
+    chunk_tuples: Iterable[Tuple[Any, Any]],
+    protected_session_ids: Optional[Iterable[Any]] = None,
+    stats: Optional[Dict[str, int]] = None,
+) -> Iterable[Tuple[List[Dict[str, Any]], str, int]]:
+    """Assemble raw GridFS chunks back into session-sized payloads."""
+    current_session_id: Optional[str] = None
+    current_records: List[Dict[str, Any]] = []
+    current_chunk_count = 0
+
+    def bump(name: str) -> None:
+        if stats is not None:
+            stats[name] = stats.get(name, 0) + 1
+
+    for chunk_data, chunk_id in chunk_tuples:
+        bump("raw_chunks_seen")
+        session_id = session_id_from_chunk_id(chunk_id)
+
+        if current_session_id is not None and session_id != current_session_id:
+            yield current_records, current_session_id, current_chunk_count
+            current_records = []
+            current_chunk_count = 0
+
+        if is_protected_chunk_id(chunk_id, protected_session_ids):
+            bump("protected_chunks_skipped")
+            current_session_id = None
+            continue
+
+        current_session_id = session_id
+        current_records.extend(_records_from_chunk_payload(chunk_data))
+        current_chunk_count += 1
+
+    if current_session_id is not None:
+        yield current_records, current_session_id, current_chunk_count
 
 
 def print_section_divider(title: str, width: int = 80) -> None:
@@ -287,10 +334,10 @@ async def process_lap_sessions_efficiently(
     print(f"[DEBUG] Created chunk iterator for cache key: {session_data_cache_key}")
 
     session_chunks_processed = 0
-    protected_chunks_skipped = 0
+    chunk_stats: Dict[str, int] = {}
 
     async def process_chunk_result(result_tuple):
-        nonlocal chunk_idx, total_sessions_cached
+        nonlocal chunk_idx, total_processed, total_sessions_cached
         c_idx, laps_processed, candidates, records, error, chunk_id = result_tuple
 
         if error:
@@ -298,6 +345,7 @@ async def process_lap_sessions_efficiently(
             return
 
         chunk_idx += 1
+        total_processed += len(records)
 
         for candidate in candidates:
             update_top_laps(candidate)
@@ -326,17 +374,17 @@ async def process_lap_sessions_efficiently(
     with ProcessPoolExecutor(max_workers=4) as executor:
         pending_aws = set()
 
-        for chunk_tuple in session_chunks_iterator:
-            session_chunk_df, chunk_id = chunk_tuple
-            if is_protected_chunk_id(chunk_id, protected_session_ids):
-                protected_chunks_skipped += 1
-                continue
-            session_chunks_processed += 1
+        for session_records, session_id, session_chunk_count in _iter_session_payloads(
+            session_chunks_iterator,
+            protected_session_ids,
+            chunk_stats,
+        ):
+            session_chunks_processed += session_chunk_count
 
             future = executor.submit(
                 process_single_chunk,
-                session_chunk_df,
-                chunk_id,
+                session_records,
+                session_id,
                 features,
                 telemetry_time_gap_ms,
             )
@@ -363,8 +411,8 @@ async def process_lap_sessions_efficiently(
 
     print(f"[DEBUG] Finished processing all chunks:")
     print(f"[DEBUG] - Total chunks processed: {session_chunks_processed}")
-    print(f"[DEBUG] - Protected chunks skipped: {protected_chunks_skipped}")
-    print(f"[DEBUG] - Valid chunks processed: {chunk_idx}")
+    print(f"[DEBUG] - Protected chunks skipped: {chunk_stats.get('protected_chunks_skipped', 0)}")
+    print(f"[DEBUG] - Valid sessions processed: {chunk_idx}")
     print(f"[DEBUG] - Total records processed: {total_processed}")
     print(f"[DEBUG] - Tracks found: {len(top_laps)}")
     print(f"[DEBUG] - Session chunks cached: {total_sessions_cached}")
@@ -374,7 +422,7 @@ async def process_lap_sessions_efficiently(
             print(f"[DEBUG] Top lap time for {key}: {lap_info['lap_time_ms']}")
 
     if not session_chunks_processed:
-        if protected_chunks_skipped:
+        if chunk_stats.get("protected_chunks_skipped", 0):
             print("[INFO] No unprotected chunks were available for processing.")
             return
         raise ValueError(
@@ -388,15 +436,15 @@ async def process_lap_sessions_efficiently(
 
     if not top_laps:
         raise ValueError(
-            f"No top laps found. Processed {chunk_idx} valid chunks."
+            f"No top laps found. Processed {chunk_idx} valid sessions from {session_chunks_processed} raw chunks."
         )
 
     if total_sessions_cached == 0:
         raise ValueError("No session data cached for transformer training")
 
-    print(f"[SUCCESS] Processed {chunk_idx} chunks")
+    print(f"[SUCCESS] Processed {chunk_idx} sessions from {session_chunks_processed} raw chunks")
     print(f"[SUCCESS] Selected top laps from {len(top_laps)} (track, car, grip) buckets")
-    print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} chunks")
+    print(f"[SUCCESS] Cached {total_sessions_cached} session batches across {chunk_idx} sessions")
 
     top_laps_cache_key = cache_config.top_laps_cache_key
     try:
@@ -428,7 +476,7 @@ def process_single_chunk(
     chunk_idx: Union[int, str],
     features: List[str],
     telemetry_time_gap_ms: int,
-) -> Tuple[int, int, List[Dict[str, Any]], List[Dict[str, Any]], Optional[Exception], Optional[str]]:
+) -> Tuple[Union[int, str], int, List[Dict[str, Any]], List[Dict[str, Any]], Optional[Exception], Optional[str]]:
     """Process a single chunk of telemetry data in a separate process."""
     chunk_id = str(chunk_idx)
     actual_data = chunk_data

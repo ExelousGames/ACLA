@@ -6,6 +6,7 @@ import pandas as pd
 
 from app.pipelines.training.pipeline.cleaning import (
     _clean_position_anomalies,
+    _iter_session_payloads,
     _update_top_lap,
 )
 
@@ -97,3 +98,28 @@ def test_update_top_lap_keeps_one_fastest_lap_per_bucket() -> None:
     assert len(top_laps) == 2
     assert top_laps[("monza", "gt3", 3)]["id"] == "fast"
     assert top_laps[("monza", "gt3", 4)]["id"] == "other-grip"
+
+
+def test_iter_session_payloads_assembles_raw_chunks_and_skips_protected_session() -> None:
+    stats = {}
+    chunks = [
+        ([{"row": 1}], "session-a:chunk_000000"),
+        ([{"row": 2}], "session-a:chunk_000001"),
+        ([{"row": 3}], "session-b:chunk_000000"),
+        ([{"row": 4}], "session-c:chunk_000000"),
+    ]
+
+    sessions = list(
+        _iter_session_payloads(
+            chunks,
+            protected_session_ids={"session-b"},
+            stats=stats,
+        )
+    )
+
+    assert sessions == [
+        ([{"row": 1}, {"row": 2}], "session-a", 2),
+        ([{"row": 4}], "session-c", 1),
+    ]
+    assert stats["raw_chunks_seen"] == 4
+    assert stats["protected_chunks_skipped"] == 1
