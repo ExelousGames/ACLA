@@ -1248,7 +1248,7 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                     filtered_labels = [lbl for lbl in seg.labels if str(lbl) in main_labels_set]
                     
                     if filtered_labels:
-                        from app.domain.segment import AnnotatedSegment
+                        from app.shared.segment import AnnotatedSegment
                         # Classifier emits inclusive-end indices; the slice is
                         # df.iloc[start_idx : end_idx + 1] to match. Stored
                         # end_index stays inclusive to align with the rule-based

@@ -21,7 +21,7 @@ import pandas as pd
 
 warnings.filterwarnings('ignore', category=UserWarning)
 
-from app.domain.expert_features import ExpertFeatureCatalog
+from app.shared.expert_features import ExpertFeatureCatalog
 from app.ml.imitation.model import (
     FastestLapEntry,
     FastestLapStore,

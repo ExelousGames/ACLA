@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from app.domain.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.domain.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
+from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
+from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
 from app.integrations.backend.client import backend_service
 from app.ml.segment_classifier.service import segment_classifier
 

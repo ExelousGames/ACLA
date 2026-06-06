@@ -11,7 +11,7 @@ import pandas as pd
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from app.domain.telemetry import FeatureProcessor
+from app.shared.telemetry import FeatureProcessor
 from app.local_llm.local_llm import GenerationRequest
 from app.ml.prompts import generate_llm_prompt_from_labels
 from app.ml.segment_classifier.service import segment_classifier

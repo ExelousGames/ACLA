@@ -6,7 +6,7 @@ same shape minus labels, emitted by the classifier).
 
 ``SegmentFeatureCatalog`` aggregates feature-name lists from the
 three upstream catalogs (telemetry, expert, tire-grip). All three
-sources live in app/domain/ so this file is a true leaf.
+sources live in app/shared/ so this file is a true leaf.
 
 Moved from app/models/segment_models.py in refactor/hexagonal-v1, Step 3.
 """
@@ -15,9 +15,9 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-from app.domain.expert_features import ExpertFeatureCatalog
-from app.domain.telemetry import TelemetryFeatures
-from app.domain.tire_grip_features import TireGripFeatureCatalog
+from app.shared.expert_features import ExpertFeatureCatalog
+from app.shared.telemetry import TelemetryFeatures
+from app.shared.tire_grip_features import TireGripFeatureCatalog
 
 
 @dataclass

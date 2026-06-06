@@ -12,37 +12,12 @@ root_package = app
 #                       storage
 #                          │
 #                          ▼
-#   domain | features | infra | internal_knowledge_base | external_knowledge_base  (leaves)
+#   features | infra | internal_knowledge_base | external_knowledge_base  (leaves)
 #
 # Same-band imports are allowed deliberately (e.g. the annotation workflow dispatches to the
 # Claude annotation agent). Contracts target boundaries that REGRESSION would damage.
 
 # ─── Leaves ───────────────────────────────────────────────────────────────────
-
-[importlinter:contract:domain-is-leaf]
-name = app/domain is a leaf
-type = forbidden
-source_modules =
-    app.domain
-forbidden_modules =
-    app.api
-    app.startup
-    app.racing_engineer
-    app.pipelines
-    app.local_annotation_agent
-    app.claude_annotation_agent
-    app.shared
-    app.claude
-    app.llama
-    app.local_llm
-    app.cloud_llm
-    app.voice
-    app.ml
-    app.integrations
-    app.storage
-    app.features
-    app.internal_knowledge_base
-    app.external_knowledge_base
 
 [importlinter:contract:features-is-leaf]
 name = app/features is a leaf (stateless math)
@@ -56,7 +31,6 @@ forbidden_modules =
     app.pipelines
     app.local_annotation_agent
     app.claude_annotation_agent
-    app.shared
     app.claude
     app.llama
     app.local_llm
@@ -87,13 +61,12 @@ forbidden_modules =
     app.ml
     app.integrations
     app.storage
-    app.domain
     app.features
     app.internal_knowledge_base
     app.external_knowledge_base
 
-[importlinter:contract:knowledge-bases-only-touch-domain]
-name = knowledge bases only reach down to domain/infra
+[importlinter:contract:knowledge-bases-only-touch-shared]
+name = knowledge bases only reach down to shared/infra
 type = forbidden
 source_modules =
     app.internal_knowledge_base
@@ -105,7 +78,6 @@ forbidden_modules =
     app.pipelines
     app.local_annotation_agent
     app.claude_annotation_agent
-    app.shared
     app.claude
     app.llama
     app.local_llm
@@ -130,7 +102,6 @@ forbidden_modules =
     app.pipelines
     app.local_annotation_agent
     app.claude_annotation_agent
-    app.shared
     app.claude
     app.llama
     app.local_llm

@@ -34,13 +34,13 @@ _ensure_app_module_on_path()
 try:
     from app.storage import get_shared_telemetry_store
     from app.pipelines.training.config import TrainingPipelineConfig
-    import app.domain.labels
-    import app.domain.segment
+    import app.shared.labels
+    import app.shared.segment
     # Force reload to pick up model changes (e.g. new fields)
-    importlib.reload(app.domain.labels)
-    importlib.reload(app.domain.segment)
-    from app.domain.labels import LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES, LABEL_IMAGE_MAP
-    from app.domain.segment import AnnotatedSegment, SegmentFeatureCatalog
+    importlib.reload(app.shared.labels)
+    importlib.reload(app.shared.segment)
+    from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES, LABEL_IMAGE_MAP
+    from app.shared.segment import AnnotatedSegment, SegmentFeatureCatalog
     from app.pipelines.inference.segment_updater import SegmentUpdater
 
 except ImportError:

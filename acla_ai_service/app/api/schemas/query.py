@@ -2,7 +2,7 @@
 
 These shapes are the public HTTP boundary of the AI service — they cross
 the wire between React and FastAPI. They are NOT used for internal
-function-to-function calls; for that, use the domain types in app/domain/.
+function-to-function calls; for that, use the domain types in app/shared/.
 
 Moved from app/models/api_models.py in refactor/hexagonal-v1, Step 3.
 """

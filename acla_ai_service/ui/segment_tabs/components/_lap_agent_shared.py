@@ -29,7 +29,7 @@ from PIL import Image
 from ..shared import (
     LABEL_MAPPING, LABEL_NAME_TO_ID, build_segment, save_annotations,
 )
-from app.domain.label_hierarchy import normalize_grouped_label_ids
+from app.shared.label_hierarchy import normalize_grouped_label_ids
 from .opponent_interaction import OUTCOME_LABELS, ROLE_LABELS, format_targeted_car
 
 

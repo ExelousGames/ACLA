@@ -16,8 +16,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from app.domain.expert_features import ExpertFeatureCatalog
-from app.domain.tire_grip_features import TireGripFeatureCatalog
+from app.shared.expert_features import ExpertFeatureCatalog
+from app.shared.tire_grip_features import TireGripFeatureCatalog
 
 
 def visualize_optimal_segments(

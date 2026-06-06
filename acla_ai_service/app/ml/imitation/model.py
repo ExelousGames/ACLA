@@ -5,7 +5,7 @@ fastest lap per ``(track, car, avg_grip_int)`` combination and answer
 position-based queries by 1-D interpolating that one lap's telemetry against
 ``normalized_position``.
 
-Pure leaves: imports only ``numpy``, ``pandas``, and ``app.domain``.
+Pure leaves: imports only ``numpy``, ``pandas``, and ``app.shared``.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-from app.domain.expert_features import ExpertFeatureCatalog
+from app.shared.expert_features import ExpertFeatureCatalog
 
 
 # EXPERT_OPTIMAL_* expert-feature name -> raw telemetry column it sources from.

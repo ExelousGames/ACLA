@@ -17,8 +17,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from app.domain.label_hierarchy import normalize_grouped_label_ids
-from app.domain.labels import LABEL_MAPPING
+from app.shared.label_hierarchy import normalize_grouped_label_ids
+from app.shared.labels import LABEL_MAPPING
 from app.internal_knowledge_base import skills
 from app.local_annotation_agent import (
     AgentRequest,

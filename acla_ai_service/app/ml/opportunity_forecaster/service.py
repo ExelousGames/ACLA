@@ -13,9 +13,9 @@ import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 
-from app.domain.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.domain.labels import LABEL_MAPPING
-from app.domain.telemetry import MAX_CARS
+from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
+from app.shared.labels import LABEL_MAPPING
+from app.shared.telemetry import MAX_CARS
 
 
 FORECAST_LABELS = ("O1", "O3", "O4", "O5", "OD1", "OD2")

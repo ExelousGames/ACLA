@@ -1,8 +1,8 @@
 """Pipeline graph view.
 
-Three columns:
+Four columns:
 
-    Annotation Components → Output Datasets → Model Components
+    Data Preparation → Annotation Components → Output Datasets → Model Components
 
 Each annotation card owns:
 - a **kind** dropdown (lap / detailed / batch_* / llm / …) that decides
@@ -23,7 +23,9 @@ each column so the user can grow the pipeline incrementally.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 import streamlit as st
@@ -46,6 +48,11 @@ from app.pipelines.manifest.registry import save as save_pipeline, slugify
 from app.pipelines.manifest.label_migration import migrate_dataset_labels
 from app.pipelines.manifest.segment_refresh import refresh_node_segments
 from app.pipelines.training.config import TrainingPipelineConfig
+from segment_tabs._training_runner import render_card, spawn
+
+
+_AI_SERVICE_DIR = Path(__file__).resolve().parents[2]
+_SCRIPTS = _AI_SERVICE_DIR / "scripts"
 
 
 MODE_LABELS = {
@@ -431,6 +438,69 @@ def _render_maintenance_dropdown(
             st.rerun()
 
 
+# ── Data preparation card ───────────────────────────────────────────────────
+def _prepare_cache_rows(store: Any, cfg: TrainingPipelineConfig) -> list[tuple[str, str, str]]:
+    rows = [
+        ("Raw sessions", cfg.session_data_cache_key),
+        ("Processed sessions", cfg.processed_session_data_cache_key),
+        ("Top laps", cfg.top_laps_cache_key),
+        ("Enriched sessions", cfg.enriched_sessions_cache_key),
+    ]
+    result = []
+    for label, key in rows:
+        try:
+            if store.has_cached_data(key):
+                meta = store.get_cache_metadata(key)
+                n = meta.total_records if meta else 0
+                ts = meta.updated_at[:19] if meta and meta.updated_at else "unknown"
+                status = f"ready · {n:,} records · updated {ts}"
+            else:
+                status = "not populated"
+        except Exception as exc:
+            status = f"unknown ({exc})"
+        result.append((label, key, status))
+    return result
+
+
+def _render_prepare_cache_status(store: Any, cfg: TrainingPipelineConfig) -> None:
+    st.markdown("**Output caches**")
+    for label, key, status in _prepare_cache_rows(store, cfg):
+        st.caption(f"{label}: `{key}` · {status}")
+
+
+def _render_data_preparation_card(store: Any, cfg: TrainingPipelineConfig) -> None:
+    _render_prepare_cache_status(store, cfg)
+
+    def _start_form() -> None:
+        with st.form("prepare_data_form"):
+            top_laps_count = st.number_input(
+                "Top laps per track/car/grip bucket",
+                min_value=1,
+                max_value=50,
+                value=1,
+            )
+            if st.form_submit_button("Start data preparation", use_container_width=True):
+                cmd = [
+                    sys.executable,
+                    "-u",
+                    str(_SCRIPTS / "prepare_training_data.py"),
+                    "--top-laps-count",
+                    str(int(top_laps_count)),
+                ]
+                spawn("prepare_data", cmd)
+                st.rerun()
+
+    render_card(
+        "prepare_data",
+        title="Data Preparation",
+        description=(
+            "Downloads backend sessions, selects top laps, and enriches "
+            "telemetry for annotation."
+        ),
+        render_start_form=_start_form,
+    )
+
+
 # ── Annotation card ──────────────────────────────────────────────────────────
 def _render_annotation_card(
     pipeline: Pipeline, node: AnnotationNode, store: Any, cfg: TrainingPipelineConfig,
@@ -765,7 +835,13 @@ def render_pipeline_view(pipeline: Pipeline, store: Any) -> None:
 
     cfg = TrainingPipelineConfig()
 
-    col_ann, col_out, col_tr = st.columns([1.5, 1.2, 1.2])
+    col_prepare, col_ann, col_out, col_tr = st.columns([1.2, 1.5, 1.2, 1.2])
+
+    # ── Data preparation ────────────────────────────────────────────────
+    with col_prepare:
+        st.markdown('<div class="pipe-col-header">Data Preparation</div>',
+                    unsafe_allow_html=True)
+        _render_data_preparation_card(store, cfg)
 
     # ── Annotation nodes ────────────────────────────────────────────────
     with col_ann:

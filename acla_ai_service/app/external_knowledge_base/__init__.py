@@ -17,7 +17,7 @@ Layout::
 Every file is addressed by its human name (slugged), never by an internal
 label id. Core categories use direct keyed lookups via ``label(name)`` /
 ``feature(name)`` etc. Internal ids (``MSP44``, ``RM7``, …) live in
-``LABEL_MAPPING`` in ``app/domain/labels.py``; convert id → name via
+``LABEL_MAPPING`` in ``app/shared/labels.py``; convert id → name via
 ``LABEL_MAPPING[id]`` upstream before reaching this module.
 
 Two newer surfaces sit alongside that:
@@ -61,7 +61,7 @@ _DIR = Path(__file__).resolve().parent
 # category name → {entry stem → loaded dict}. Populated lazily on first read.
 # The stem is the slugged human name (labels/oversteering_at_entry.md →
 # "oversteering_at_entry"). Internal label ids (MSP44, RM7, …) live only in
-# app/domain/labels.py; they are never used to address files here.
+# app/shared/labels.py; they are never used to address files here.
 _CACHE: Dict[str, Dict[str, dict]] = {}
 _CACHE_LOCK = threading.Lock()
 

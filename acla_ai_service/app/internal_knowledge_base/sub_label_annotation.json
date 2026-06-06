@@ -1,7 +1,7 @@
 {
   "_skill": {
     "name": "sub_label_annotation",
-    "description": "LLM-facing label catalog (main, sub, segment_type only). Per-label description, hierarchy (parent/children), exclusive_with constraints, and annotation_guideline. Descriptions carry inline VLM predicates so hybrid (vector + BM25) similarity over observation text shortlists the matching labels. Circuit and circuit_section labels are NOT in this catalog — the LLM picks them via the `get_circuit_id` / `locate_circuit_section` tools (geometry from app/domain/circuit_sections.py), not by search.\n",
+    "description": "LLM-facing label catalog (main, sub, segment_type only). Per-label description, hierarchy (parent/children), exclusive_with constraints, and annotation_guideline. Descriptions carry inline VLM predicates so hybrid (vector + BM25) similarity over observation text shortlists the matching labels. Circuit and circuit_section labels are NOT in this catalog — the LLM picks them via the `get_circuit_id` / `locate_circuit_section` tools (geometry from app/shared/circuit_sections.py), not by search.\n",
     "when_to_use": [
       "Drilling into a parent-labelled section to pick sub-labels (detailed flow).",
       "Hybrid-similarity shortlist of candidate labels from VLM observations.",

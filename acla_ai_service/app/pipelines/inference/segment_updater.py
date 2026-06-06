@@ -2,7 +2,7 @@
 import pandas as pd
 import logging
 from typing import List, Dict, Any
-from app.domain.segment import AnnotatedSegment
+from app.shared.segment import AnnotatedSegment
 from app.storage import get_shared_telemetry_store
 
 logger = logging.getLogger(__name__)

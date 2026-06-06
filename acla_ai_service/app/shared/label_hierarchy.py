@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.domain.labels import LABEL_CATEGORIES, LABEL_MAPPING
+from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING
 
 
 BEHAVIOR_MAIN_LABEL_IDS = tuple(

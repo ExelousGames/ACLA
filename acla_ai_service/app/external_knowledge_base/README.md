@@ -20,7 +20,7 @@ features/<NAME>.md             one per telemetry channel (driver_push_to_limit.m
 
 The filename stem is the **slugged human name** — lowercase, non-alphanumeric
 replaced with `_`. Internal label ids (`MSP44`, `RM7`, …) live in
-`LABEL_MAPPING` in `app/domain/labels.py` and never appear in filenames,
+`LABEL_MAPPING` in `app/shared/labels.py` and never appear in filenames,
 prose, or anywhere the LLM can see. Convert id → name via
 `LABEL_MAPPING[id]` upstream; the corpus is addressed by name only.
 
@@ -85,7 +85,7 @@ headings so tools can look them up by name.
 |---|---|
 | `## Definition` | One-paragraph plain-English statement of what the action *is*. |
 | `## Physics` | Why it happens, from a vehicle-dynamics perspective. |
-| `## Telemetry signature` | Bullet list of telemetry features that flag it. Reference channel names from `app/domain/telemetry.py` etc. |
+| `## Telemetry signature` | Bullet list of telemetry features that flag it. Reference channel names from `app/shared/telemetry.py` etc. |
 | `## Engineer interpretation` | The voice of a real race engineer talking to a driver. 2–4 sentences. This is what the LLM mostly leans on for the "engineer voice." |
 | `## Remedies` | Bullet list of concrete next-time actions the driver can take. |
 
@@ -111,7 +111,7 @@ parent files (`silverstone.md`, `brands_hatch.md`) can be added the
 same way. These document the *family* — what counts as a "mistake,"
 what "expert adherence" means, when "recovery & merge" applies. They
 absorb the role the long-unused `MAIN_LABEL_GUIDELINES` dict in
-`app/domain/labels.py` was reaching for.
+`app/shared/labels.py` was reaching for.
 
 Same section conventions, but `Remedies` typically isn't applicable
 (too generic at the family level).
@@ -120,7 +120,7 @@ Same section conventions, but `Remedies` typically isn't applicable
 
 One file per channel the engineer might reference: `push_limit.md`,
 `speed_difference.md`, `expert_optimal_throttle.md`, `Physics_brake.md`,
-etc. Mirrors the column names in `app/domain/telemetry.py`,
+etc. Mirrors the column names in `app/shared/telemetry.py`,
 `expert_features.py`, `tire_grip_features.py`.
 
 Recommended sections:

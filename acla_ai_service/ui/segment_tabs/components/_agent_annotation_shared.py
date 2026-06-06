@@ -27,7 +27,7 @@ from ..shared import (
     save_annotations,
 )
 
-from app.domain.segment import AnnotatedSegment
+from app.shared.segment import AnnotatedSegment
 _NODE_ICONS = {
     "planner": "🧠",
     "step_solver": "🛠️",

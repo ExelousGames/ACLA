@@ -27,8 +27,8 @@ import copy
 from collections import defaultdict
 
 from app.storage import get_shared_telemetry_store
-from app.domain.labels import LABEL_MAPPING, normalize_label_id, normalize_label_ids
-from app.domain.segment import AnnotatedSegment, PredictedSegment, SegmentFeatureCatalog
+from app.shared.labels import LABEL_MAPPING, normalize_label_id, normalize_label_ids
+from app.shared.segment import AnnotatedSegment, PredictedSegment, SegmentFeatureCatalog
 
 # Extracted in refactor/hexagonal-v4 — Page 5 of the architecture diagram.
 # Model classes are pure (no I/O); dataset + derived-features helper own I/O.

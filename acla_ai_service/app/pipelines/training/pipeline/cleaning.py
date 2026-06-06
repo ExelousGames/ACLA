@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-from app.domain.telemetry import FeatureProcessor
+from app.shared.telemetry import FeatureProcessor
 
 PLAYER_POSITION_COLUMNS = (
     "Graphics_player_pos_x",

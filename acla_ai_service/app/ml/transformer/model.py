@@ -18,9 +18,9 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Import contextual feature catalogs for quality weighting
-from app.domain.tire_grip_features import TireGripFeatureCatalog
-from app.domain.expert_features import ExpertFeatureCatalog
-from app.domain.telemetry import TelemetryFeatures, _safe_float  # Force unbuffered output for real-time print statements
+from app.shared.tire_grip_features import TireGripFeatureCatalog
+from app.shared.expert_features import ExpertFeatureCatalog
+from app.shared.telemetry import TelemetryFeatures, _safe_float  # Force unbuffered output for real-time print statements
 import os
 
 # Extracted in refactor/hexagonal-v4 — pulled out of this 2740-line module.

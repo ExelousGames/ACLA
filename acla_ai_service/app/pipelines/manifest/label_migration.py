@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.domain.labels import LEGACY_LABEL_MAP
+from app.shared.labels import LEGACY_LABEL_MAP
 
 
 @dataclass

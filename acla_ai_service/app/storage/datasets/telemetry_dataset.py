@@ -29,9 +29,9 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
 
-from app.domain.expert_features import ExpertFeatureCatalog
-from app.domain.telemetry import TelemetryFeatures, _safe_float
-from app.domain.tire_grip_features import TireGripFeatureCatalog
+from app.shared.expert_features import ExpertFeatureCatalog
+from app.shared.telemetry import TelemetryFeatures, _safe_float
+from app.shared.tire_grip_features import TireGripFeatureCatalog
 from app.storage.datasets.transformer_scaler import PerFeatureScaler, _RunningFeatureStats
 
 

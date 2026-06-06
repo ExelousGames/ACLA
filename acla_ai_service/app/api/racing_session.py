@@ -13,7 +13,7 @@ from app.racing_engineer.expert_actions import predict_expert_actions
 from app.ml.segment_classifier.service import segment_classifier
 from app.ml.opportunity_forecaster import opportunity_forecaster
 from app.services.user_session_analysis import analyze_user_sessions
-from app.domain.label_hierarchy import build_main_label_segments
+from app.shared.label_hierarchy import build_main_label_segments
 
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])

@@ -19,7 +19,7 @@ import json
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from app.domain.labels import LABEL_MAPPING
+from app.shared.labels import LABEL_MAPPING
 from app.internal_knowledge_base.label_search import get_doc
 from app.local_annotation_agent import (
     AgentRequest,

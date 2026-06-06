@@ -35,7 +35,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 
 # Import your telemetry models
-from app.domain.telemetry import (
+from app.shared.telemetry import (
     TelemetryFeatures,
     _safe_float,
 )

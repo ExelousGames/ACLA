@@ -1,5 +1,5 @@
 from typing import List, Any
-from app.domain.labels import LABEL_MAPPING
+from app.shared.labels import LABEL_MAPPING
 MAIN_EVENT_LABELS = [
     "1", "2", "EA", "4", "RM", "MSP", "MSR", "O", "OD"
 ]

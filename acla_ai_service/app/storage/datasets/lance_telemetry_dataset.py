@@ -33,8 +33,8 @@ from torch.utils.data import Dataset
 
 import lance
 
-from app.domain.telemetry import _safe_float
-from app.domain.tire_grip_features import TireGripFeatureCatalog
+from app.shared.telemetry import _safe_float
+from app.shared.tire_grip_features import TireGripFeatureCatalog
 from app.storage.datasets.transformer_scaler import (
     PerFeatureScaler,
     _RunningFeatureStats,

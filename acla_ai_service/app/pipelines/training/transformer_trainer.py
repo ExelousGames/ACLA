@@ -33,9 +33,9 @@ from torch.utils.data import DataLoader
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-from app.domain.expert_features import ExpertFeatureCatalog
-from app.domain.telemetry import TelemetryFeatures, _safe_float
-from app.domain.tire_grip_features import TireGripFeatureCatalog
+from app.shared.expert_features import ExpertFeatureCatalog
+from app.shared.telemetry import TelemetryFeatures, _safe_float
+from app.shared.tire_grip_features import TireGripFeatureCatalog
 from app.ml.transformer.model import (
     ExpertActionTransformer,
     _safe_number,

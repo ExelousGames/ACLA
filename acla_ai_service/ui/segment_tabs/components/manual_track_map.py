@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-from app.domain.telemetry import MAX_CARS
+from app.shared.telemetry import MAX_CARS
 from .opponent_interaction import add_interaction_overlay, render_opponent_interaction_panel
 
 def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):

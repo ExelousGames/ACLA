@@ -28,7 +28,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from app.domain.labels import LABEL_MAPPING
+from app.shared.labels import LABEL_MAPPING
 from app.internal_knowledge_base.label_search import get_doc
 from app.shared.annotation_agent_tools import graph_analysis_prompt
 

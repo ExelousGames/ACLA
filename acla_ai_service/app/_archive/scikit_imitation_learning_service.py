@@ -28,7 +28,7 @@ from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 
 # Import your telemetry models
-from app.domain.telemetry import TelemetryFeatures, FeatureProcessor
+from app.shared.telemetry import TelemetryFeatures, FeatureProcessor
 
 warnings.filterwarnings('ignore', category=UserWarning)
 

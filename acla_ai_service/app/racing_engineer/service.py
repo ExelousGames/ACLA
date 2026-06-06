@@ -172,7 +172,7 @@ class AIService:
             return {"labels": [], "_label_ids": []}
         import asyncio as _asyncio
         import pandas as _pd
-        from app.domain.labels import LABEL_MAPPING
+        from app.shared.labels import LABEL_MAPPING
 
         def _run() -> List[str]:
             df = _pd.DataFrame(telemetry_rows)
@@ -205,7 +205,7 @@ class AIService:
         slugged file under ``app/skills/external/racing_engineer/labels/``. Ids are
         never used to address files.
         """
-        from app.domain.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
+        from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
 
         if not label_id:
             return {"error": "label_id is required"}
@@ -353,7 +353,7 @@ class AIService:
         if "error" in classify_result:
             return classify_result
 
-        from app.domain.labels import LABEL_NAME_TO_ID
+        from app.shared.labels import LABEL_NAME_TO_ID
 
         labels_out: List[Dict[str, Any]] = []
         for name in classify_result.get("labels", []):

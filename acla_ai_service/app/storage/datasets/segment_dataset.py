@@ -27,8 +27,8 @@ import pandas as pd
 import torch
 from torch.utils.data import IterableDataset
 
-from app.domain.labels import normalize_label_ids
-from app.domain.segment import AnnotatedSegment
+from app.shared.labels import normalize_label_ids
+from app.shared.segment import AnnotatedSegment
 
 
 def compute_derived_features(df: pd.DataFrame) -> pd.DataFrame:

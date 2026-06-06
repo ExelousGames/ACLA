@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import pandas as pd
 import numpy as np
 
-from app.domain.telemetry import MAX_CARS
+from app.shared.telemetry import MAX_CARS
 from .opponent_interaction import add_interaction_overlay, render_opponent_interaction_panel
 
 def render_track_map(df, viz_start_idx, viz_end_idx, session_id):

@@ -9,7 +9,7 @@ in Python:
   skill query engine — the same data the hybrid ``search`` retriever
   indexes.
 * Circuit sections are deterministic geometry, owned by
-  ``app.domain.circuit_sections``. We synthesize their docs from the
+  ``app.shared.circuit_sections``. We synthesize their docs from the
   section ranges (``type="circuit_section"``, ``parent=<circuit>``,
   ``normalized_position_range``), naming them from ``LABEL_MAPPING``.
 
@@ -26,8 +26,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from app.domain.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.domain.labels import LABEL_MAPPING
+from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
+from app.shared.labels import LABEL_MAPPING
 from app.internal_knowledge_base import skills
 from app.internal_knowledge_base._query import matches
 

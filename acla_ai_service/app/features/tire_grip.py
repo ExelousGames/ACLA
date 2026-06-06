@@ -24,10 +24,10 @@ import pandas as pd
 # Suppress warnings
 warnings.filterwarnings('ignore', category=UserWarning)
 
-# Domain types moved to app/domain/ in refactor/hexagonal-v1 Step 2.
+# Domain types moved to app/shared/ in refactor/hexagonal-v1 Step 2.
 # Re-imported here so internal references and external callers
 # (transformer_model, segment_models, telemetry_segment_visualizer) keep working.
-from app.domain.tire_grip_features import SlipEnvelopeConfig, TireGripFeatureCatalog
+from app.shared.tire_grip_features import SlipEnvelopeConfig, TireGripFeatureCatalog
 
 EPS = 1e-6
 

@@ -1061,7 +1061,7 @@ def find_nearest_opponent(
     enough in the range.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
-    from app.domain.telemetry import MAX_CARS
+    from app.shared.telemetry import MAX_CARS
 
     def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
         return PipelineAttachment(
@@ -1399,7 +1399,7 @@ def classify_opponent_interaction(
     outcome.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
-    from app.domain.telemetry import MAX_CARS
+    from app.shared.telemetry import MAX_CARS
 
     def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
         return PipelineAttachment(
@@ -1919,7 +1919,7 @@ def _detect_opponent_interaction_windows(
     is close enough to affect the player's line or position, then pads them
     so ``find_nearest_opponent`` can see entry/min/exit context in one range.
     """
-    from app.domain.telemetry import MAX_CARS
+    from app.shared.telemetry import MAX_CARS
 
     s, e = int(start_index), int(end_index)
     required = {"Graphics_player_pos_x", "Graphics_player_pos_y"}
@@ -2427,7 +2427,7 @@ def _has_active_opponent_data(
     still a solo/practice slice. Two or more active slots means the session has
     opponent telemetry available.
     """
-    from app.domain.telemetry import MAX_CARS
+    from app.shared.telemetry import MAX_CARS
 
     seg = df.iloc[int(start_index): int(end_index)]
     if seg.empty:
@@ -3005,7 +3005,7 @@ def get_circuit_id(df: pd.DataFrame):
     unknown circuit slips through.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
-    from app.domain.circuits import CIRCUIT_NAMES
+    from app.shared.circuits import CIRCUIT_NAMES
 
     def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
         return PipelineAttachment(

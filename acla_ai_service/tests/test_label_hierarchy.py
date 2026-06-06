@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.domain.label_hierarchy import build_main_label_segments, normalize_grouped_label_ids
+from app.shared.label_hierarchy import build_main_label_segments, normalize_grouped_label_ids
 
 
 def test_normalize_grouped_label_ids_adds_missing_parent() -> None:

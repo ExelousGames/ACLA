@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from app.domain.segment import PredictedSegment
+from app.shared.segment import PredictedSegment
 from app.features.tire_grip import TireGripAnalysisService
 from app.integrations.backend.client import backend_service as default_backend_service
 from app.ml.imitation.model import NoExpertLapError
