@@ -5,10 +5,10 @@ built ``AnnotatedSegment``s without slicing the underlying telemetry,
 so saved segments had indices but no rows. The save side is fixed
 going forward; this script repairs already-saved chunks.
 
-For each lap annotation node that has both an ``input_key`` (forked
-telemetry source) and an ``output_key`` (segment dataset) wired in the
-pipeline JSON, every segment in every chunk gets its ``telemetry_data``
-filled from ``input_key.iloc[start:end]``. Idempotent — segments that
+For each lap annotation node that has both a resolved input source and
+an ``output_key`` (segment dataset) wired in the pipeline JSON, every
+segment in every chunk gets its ``telemetry_data`` filled from
+``input.iloc[start:end]``. Idempotent — segments that
 already carry telemetry are left alone.
 
     python scripts/backfill_lap_telemetry.py [pipeline_id]
@@ -95,13 +95,13 @@ def _backfill_chunk(
     return out, filled, already
 
 
-def _backfill_node(store, node: AnnotationNode) -> None:
+def _backfill_node(store, pipeline: Pipeline, node: AnnotationNode) -> None:
     print(f"\n── {node.id} ({node.kind}) ──")
-    input_key = node.input_key
+    input_key = pipeline.effective_input_key(node)
     output_key = node.output_key
 
     if not input_key:
-        print(f"  · no input_key in manifest — nothing to slice from; skipping")
+        print(f"  · no input source resolves — nothing to slice from; skipping")
         return
     if not output_key:
         print(f"  · no output_key in manifest — skipping")
@@ -168,10 +168,10 @@ def main(pipeline_id: str = "migrated_2026_05_21") -> None:
           f"{len(lap_nodes)} lap node(s):")
     for n in lap_nodes:
         print(f"  • {n.id} ({n.kind}) "
-              f"input_key={n.input_key!r} output_key={n.output_key!r}")
+              f"input={pipeline.effective_input_key(n)!r} output_key={n.output_key!r}")
 
     for node in lap_nodes:
-        _backfill_node(store, node)
+        _backfill_node(store, pipeline, node)
 
     print("\nAll done.")
 

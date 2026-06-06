@@ -58,7 +58,7 @@ from segment_tabs.training import TRAINING_ROUTES, render_training
 from segment_tabs.pipeline_view import render_pipeline_view
 from segment_tabs.pipeline_sidebar import render_pipeline_sidebar
 from segment_tabs.output_picker import needs_output_setup, render_output_picker
-from app.pipelines.manifest.models import MODE_COPY
+from app.pipelines.manifest.models import MODE_SOURCE
 
 
 # ── Route → renderer map ──────────────────────────────────────────────────
@@ -162,7 +162,7 @@ def main() -> None:
         return
 
     # Reconcile annotation_key with the (possibly newly-set) node output.
-    if active_node is not None and active_node.mode == MODE_COPY and active_node.output_key:
+    if active_node is not None and active_node.mode == MODE_SOURCE and active_node.output_key:
         annotation_key = active_node.output_key
         st.session_state["pipeline_annotation_key"] = annotation_key
 
@@ -175,11 +175,11 @@ def main() -> None:
 
     # ── Session-data-gated tabs ─────────────────────────────────────────
     if not session_key:
-        st.error("Pipeline node has no input dataset — fork the source from the Pipeline view.")
+        st.error("Pipeline node has no input dataset — pick a source from the Pipeline view.")
         return
     if session_key not in store.list_cache_keys():
         st.error(f"Input dataset `{session_key}` not found in the store. "
-                 "It may have been deleted — re-fork or re-pick the source.")
+                 "It may have been deleted — re-pick the source.")
         return
 
     st.info(f"Annotating data from: `{session_key}`")

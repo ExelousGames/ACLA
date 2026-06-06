@@ -7,7 +7,7 @@ the enriched dataset used by segmentation and transformer training.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,7 @@ from app.pipelines.inference.visualizer import (
     visualize_segment_position_coverage,
 )
 from app.pipelines.training.pipeline.cleaning import print_section_divider
+from app.pipelines.manifest.protection import is_protected_chunk_id
 
 
 async def enrich_sessions_with_context(
@@ -145,6 +146,7 @@ async def enriched_contextual_data(
     cache_config,
     backend_service=None,
     logger: Optional[logging.Logger] = None,
+    protected_session_ids: Optional[Iterable[Any]] = None,
 ) -> Tuple[str, Any]:
     """
     Streamlined contextual data enrichment using chunk iterator approach.
@@ -189,11 +191,17 @@ async def enriched_contextual_data(
     tire_service = TireGripAnalysisService()
 
     print("[INFO] Streaming cached session telemetry to train tire grip model")
-    session_training_iterator = telemetry_store.get_cached_data_chunks(
-        cache_key=sessions_cache_key
-    )
+    def _unprotected_training_chunks():
+        for payload, chunk_id in telemetry_store.get_cached_data_chunks(
+            cache_key=sessions_cache_key,
+            include_ids=True,
+        ):
+            if is_protected_chunk_id(chunk_id, protected_session_ids):
+                continue
+            yield payload
+
     tire_grip_training = await tire_service.train_tire_grip_model_streaming(
-        chunk_iterator=session_training_iterator
+        chunk_iterator=_unprotected_training_chunks()
     )
     if not tire_grip_training.get("success", False):
         raise RuntimeError(
@@ -223,9 +231,13 @@ async def enriched_contextual_data(
     )
 
     processed_chunks = 0
+    protected_chunks_skipped = 0
 
     for chunk_tuple in session_chunks_iterator:
         session_chunk_df, chunk_id = chunk_tuple
+        if is_protected_chunk_id(chunk_id, protected_session_ids):
+            protected_chunks_skipped += 1
+            continue
         session_chunk_df = pd.DataFrame(session_chunk_df)
 
         if session_chunk_df is None or session_chunk_df.empty:
@@ -260,6 +272,7 @@ async def enriched_contextual_data(
 
     print(f"[SUCCESS] Enrichment completed:")
     print(f"  - Processed {processed_chunks} data chunks from cache")
+    print(f"  - Skipped {protected_chunks_skipped} protected chunk(s)")
     print(f"  - Enriched data cached to: {enriched_sessions_cache_key}")
 
     return enriched_sessions_cache_key, imitation_learning

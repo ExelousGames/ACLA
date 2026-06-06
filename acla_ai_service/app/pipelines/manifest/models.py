@@ -2,23 +2,20 @@
 
 An annotation runs in one of three modes:
 
-- ``"copy"`` — ``source_ref`` is copied into the per-node ``input_key``
-  and lineage fields (``copied_at``, ``source_updated_at_on_copy``)
-  drive the "behind source" badge. The node writes to its own
+- ``"source"`` — reads ``source_ref`` directly and writes to its own
   ``output_key``.
-- ``"secondary_worker"`` — no copy. Reads the *target* sibling's
+- ``"secondary_worker"`` — reads the *target* sibling's
   output and writes back to the same dataset (e.g. detailed
   annotation adding child segments to a parent's output).
-- ``"coworker"`` — no copy. Reads the *target* sibling's input and
+- ``"coworker"`` — reads the *target* sibling's input and
   writes to the target's output (e.g. an AI agent assisting a human
   annotator in parallel on the same input → output flow).
 
-For the two no-copy modes, ``source_ref`` is ``"<target_id>.output"``
+For the two worker modes, ``source_ref`` is ``"<target_id>.output"``
 — the suffix is just the node-reference convention; the actual keys
 are looked up via the target's effective input/output.
 
-Training nodes don't copy; their ``input_ref`` resolves to an
-annotation's output via :meth:`Pipeline.resolve_source_key`.
+Training nodes read annotation output via :meth:`Pipeline.resolve_source_key`.
 """
 
 from __future__ import annotations
@@ -28,10 +25,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 
-MODE_COPY = "copy"
+MODE_SOURCE = "source"
 MODE_SECONDARY_WORKER = "secondary_worker"
 MODE_COWORKER = "coworker"
-_VALID_MODES = {MODE_COPY, MODE_SECONDARY_WORKER, MODE_COWORKER}
+_VALID_MODES = {MODE_SOURCE, MODE_SECONDARY_WORKER, MODE_COWORKER}
+_SOURCE_MODE_ALIASES = {"copy", "fork"}
 
 
 def _now_iso() -> str:
@@ -42,13 +40,10 @@ def _now_iso() -> str:
 class AnnotationNode:
     id: str                                          # unique within pipeline (stable ref key)
     kind: str                                        # matches a NodeKindSpec.kind
-    output_key: str = ""                             # this annotation's output dataset (copy mode). Empty = not configured yet; the annotation page's popup sets it on first open.
+    output_key: str = ""                             # this annotation's output dataset (source mode). Empty = not configured yet; the annotation page's popup sets it on first open.
     name: Optional[str] = None                       # user-editable display label; falls back to kind.display
-    source_ref: Optional[str] = None                 # copy: any cache_key or "<id>.output". Non-copy: "<target_id>.output".
-    input_key: Optional[str] = None                  # copied dataset this annotation reads from (copy mode)
-    copied_at: Optional[str] = None
-    source_updated_at_on_copy: Optional[str] = None
-    mode: str = MODE_COPY                            # "copy" | "secondary_worker" | "coworker"
+    source_ref: Optional[str] = None                 # source: any cache_key or "<id>.output". Worker modes: "<target_id>.output".
+    mode: str = MODE_SOURCE                          # "source" | "secondary_worker" | "coworker"
     output_dir: Optional[str] = None                 # filesystem dir holding output_key's lance dataset; None = default lance store dir
 
     def to_dict(self) -> Dict[str, Any]:
@@ -56,30 +51,25 @@ class AnnotationNode:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "AnnotationNode":
-        # Tolerate the legacy schema (had `input_ref` but no copy lineage).
+        # Tolerate the legacy schema (had `input_ref`).
         source_ref = d.get("source_ref") or d.get("input_ref")
         # Canonicalize legacy kind strings (parent/children/batch → new names).
         from app.pipelines.manifest.node_kinds import canonicalize
-        # Migrate:
-        #   - legacy boolean `coworker_mode` → tri-state `mode` (old
-        #     "coworker" semantics == today's "secondary_worker").
-        #   - legacy string mode `"fork"` → `"copy"` (renamed).
+        # Tolerate old manifest values, but never preserve copy/fork as
+        # active modes.
         raw_mode = d.get("mode")
-        if raw_mode == "fork":
-            mode = MODE_COPY
+        if raw_mode in _SOURCE_MODE_ALIASES:
+            mode = MODE_SOURCE
         elif raw_mode in _VALID_MODES:
             mode = raw_mode
         else:
-            mode = MODE_SECONDARY_WORKER if d.get("coworker_mode") else MODE_COPY
+            mode = MODE_SECONDARY_WORKER if d.get("coworker_mode") else MODE_SOURCE
         return cls(
             id=d["id"],
             kind=canonicalize(d["kind"]),
             output_key=d.get("output_key", "") or "",
             name=d.get("name"),
             source_ref=source_ref,
-            input_key=d.get("input_key"),
-            copied_at=d.get("copied_at"),
-            source_updated_at_on_copy=d.get("source_updated_at_on_copy"),
             mode=mode,
             output_dir=d.get("output_dir"),
         )
@@ -132,7 +122,7 @@ class Pipeline:
         """Turn a ``source_ref`` into the actual output cache_key.
 
         ``"<node_id>.output"`` resolves to that annotation's effective
-        output. For a non-copy target (secondary_worker / coworker),
+        output. For a worker target (secondary_worker / coworker),
         that's the upstream's effective output (followed recursively)
         — so chaining always lands on the dataset everybody is
         actually writing to.
@@ -152,9 +142,9 @@ class Pipeline:
                         target = self.annotation(cur)
                     except KeyError:
                         return None
-                    if target.mode == MODE_COPY:
+                    if target.mode == MODE_SOURCE:
                         return target.output_key
-                    # Non-copy: write target is the upstream's output.
+                    # Worker modes: write target is the upstream's output.
                     if not target.source_ref or "." not in target.source_ref:
                         return target.source_ref
                     nxt, nxt_attr = target.source_ref.split(".", 1)
@@ -165,7 +155,7 @@ class Pipeline:
         return ref
 
     def _resolve_target(self, node: "AnnotationNode") -> Optional["AnnotationNode"]:
-        """Sibling node referenced by a non-copy node's source_ref."""
+        """Sibling node referenced by a worker node's source_ref."""
         if not node.source_ref or "." not in node.source_ref:
             return None
         target_id, attr = node.source_ref.split(".", 1)
@@ -181,14 +171,14 @@ class Pipeline:
     ) -> Optional[str]:
         """Cache_key this annotation actually reads from.
 
-        - Copy → ``node.input_key`` (the copied dataset).
+        - Source → resolved ``node.source_ref``.
         - Secondary worker → target's effective output (read + write
           the same dataset).
         - Coworker → target's effective *input* (read what the target
           reads; write where the target writes).
         """
-        if node.mode == MODE_COPY:
-            return node.input_key
+        if node.mode == MODE_SOURCE:
+            return self.resolve_source_key(node.source_ref)
         if node.mode == MODE_SECONDARY_WORKER:
             return self.resolve_source_key(node.source_ref)
         # MODE_COWORKER: chase target's input recursively (with cycle guard).
@@ -204,11 +194,11 @@ class Pipeline:
     def effective_output_key(self, node: "AnnotationNode") -> Optional[str]:
         """Cache_key this annotation actually writes to.
 
-        - Copy → ``node.output_key``.
+        - Source → ``node.output_key``.
         - Secondary worker / coworker → the upstream target's output
           (resolved recursively via ``resolve_source_key``).
         """
-        if node.mode == MODE_COPY:
+        if node.mode == MODE_SOURCE:
             return node.output_key
         return self.resolve_source_key(node.source_ref)
 
@@ -225,7 +215,7 @@ class Pipeline:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Pipeline":
         # Note: legacy manifests had a top-level ``inputs`` list. We drop
-        # it on load — each annotation now owns its own forked input.
+        # it on load — each annotation now owns its own source_ref.
         return cls(
             id=d["id"],
             version=int(d.get("version", 1)),
@@ -235,4 +225,11 @@ class Pipeline:
         )
 
 
-__all__ = ["AnnotationNode", "TrainingNode", "Pipeline"]
+__all__ = [
+    "MODE_SOURCE",
+    "MODE_SECONDARY_WORKER",
+    "MODE_COWORKER",
+    "AnnotationNode",
+    "TrainingNode",
+    "Pipeline",
+]

@@ -7,12 +7,11 @@ Four columns:
 Each annotation card owns:
 - a **kind** dropdown (lap / detailed / batch_* / llm / …) that decides
   which tab the single Open button routes to;
-- a **mode** picker — *fork* (copy source into a per-node input_key),
+- a **mode** picker — *source* (read an existing dataset),
   *secondary worker* (read a target's output, write back to it), or
   *coworker* (share both input and output with a target node);
-- a source picker — any cache_key in the store (fork), or a sibling
+- a source picker — any cache_key in the store (source), or a sibling
   annotation's ``<id>.output`` (any mode);
-- the fork's behind-source status with a Pull button (fork mode only);
 - the output dataset status;
 - one Open button that routes to the tab whose ``ui_route`` matches the
   selected kind.
@@ -24,21 +23,15 @@ each column so the user can grow the pipeline incrementally.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 import streamlit as st
 
 from app.pipelines.manifest import node_kinds
-from app.pipelines.manifest.forking import (
-    compare_against_source,
-    derive_annotation_input_key,
-    fork_dataset,
-)
 from app.pipelines.manifest.models import (
     MODE_COWORKER,
-    MODE_COPY,
+    MODE_SOURCE,
     MODE_SECONDARY_WORKER,
     AnnotationNode,
     Pipeline,
@@ -46,6 +39,7 @@ from app.pipelines.manifest.models import (
 )
 from app.pipelines.manifest.registry import save as save_pipeline, slugify
 from app.pipelines.manifest.label_migration import migrate_dataset_labels
+from app.pipelines.manifest.protection import collect_protected_session_ids
 from app.pipelines.manifest.segment_refresh import refresh_node_segments
 from app.pipelines.training.config import TrainingPipelineConfig
 from segment_tabs._training_runner import render_card, spawn
@@ -56,16 +50,15 @@ _SCRIPTS = _AI_SERVICE_DIR / "scripts"
 
 
 MODE_LABELS = {
-    MODE_COPY: "Copy from source",
+    MODE_SOURCE: "Use existing data",
     MODE_SECONDARY_WORKER: "Secondary worker (adds to target's output)",
     MODE_COWORKER: "Coworker (shares target's input + output)",
 }
-MODE_ORDER = [MODE_COPY, MODE_SECONDARY_WORKER, MODE_COWORKER]
+MODE_ORDER = [MODE_SOURCE, MODE_SECONDARY_WORKER, MODE_COWORKER]
 MODE_DESCRIPTIONS = {
-    MODE_COPY: (
-        "Copy the source dataset into this node's own input. The copy is "
-        "independent — edits here don't touch the source, and you can pull "
-        "in upstream changes later via the **Update from source** button."
+    MODE_SOURCE: (
+        "Read the selected source dataset directly. Data preparation updates "
+        "the existing datasets in place while preserving protected sessions."
     ),
     MODE_SECONDARY_WORKER: (
         "Read **and** write the target's *output* dataset. Use when this "
@@ -156,10 +149,6 @@ div[class*="st-key-mode_pick_"] .stButton > button:disabled p:not(:first-child) 
 """
 
 
-def _now_iso() -> str:
-    return datetime.now().isoformat()
-
-
 def _card(html: str, kind_class: str = "") -> None:
     klass = f"pipe-card {kind_class}".strip()
     st.markdown(f'<div class="{klass}">{html}</div>', unsafe_allow_html=True)
@@ -207,7 +196,7 @@ def _source_options(pipeline: Pipeline, store: Any, self_id: str,
                     siblings_only: bool) -> list[str]:
     """Candidate sources for one annotation's input.
 
-    Fork mode: every cache_key in the store + every other annotation's
+    Source mode: every cache_key in the store + every other annotation's
         ``<id>.output``.
     Secondary worker / coworker: only sibling outputs (these modes
         target a node, not an external Lance dataset — there's nobody
@@ -225,37 +214,6 @@ def _source_options(pipeline: Pipeline, store: Any, self_id: str,
     return sibling_outputs + store_keys
 
 
-def _fork_for_annotation(pipeline: Pipeline, node: AnnotationNode, store: Any) -> None:
-    """(Re-)fork ``node.source_ref`` into a fresh per-annotation input_key."""
-    source_key = pipeline.resolve_source_key(node.source_ref)
-    if not source_key:
-        st.error(f"Could not resolve source `{node.source_ref}`.")
-        return
-    if not store.has_cached_data(source_key):
-        st.error(f"Source `{source_key}` has no data in the store yet.")
-        return
-
-    pipeline.version += 1
-    target_key = derive_annotation_input_key(
-        pipeline_id=pipeline.id, node_id=node.id, version=pipeline.version,
-    )
-    progress = st.progress(0.0, text=f"Forking `{source_key}` → `{target_key}`…")
-
-    def _tick(done: int, total: int) -> None:
-        if total > 0:
-            progress.progress(done / total, text=f"Forking ({done}/{total})")
-
-    fork_dataset(source_key=source_key, target_key=target_key,
-                 store=store, progress=_tick)
-
-    src_meta = store.get_cache_metadata(source_key)
-    node.input_key = target_key
-    node.copied_at = _now_iso()
-    node.source_updated_at_on_copy = src_meta.updated_at if src_meta else None
-    save_pipeline(pipeline)
-    progress.empty()
-
-
 def _annotation_input_status(
     pipeline: Pipeline, node: AnnotationNode, store: Any,
 ) -> tuple[str, str, str]:
@@ -264,7 +222,7 @@ def _annotation_input_status(
         return ('<span class="pipe-chip grey">no source</span>',
                 "Pick a source below.", "empty")
 
-    target_label = "Target" if node.mode != MODE_COPY else "Source"
+    target_label = "Target" if node.mode != MODE_SOURCE else "Source"
     source_line = f"{target_label}: <code>{node.source_ref}</code>"
 
     if node.mode == MODE_SECONDARY_WORKER:
@@ -281,7 +239,7 @@ def _annotation_input_status(
             exists, n = False, 0
         detail = (
             f"{source_line} → <code>{read_key}</code><br/>"
-            f"Read &amp; write target's output (no copy)"
+            f"Read &amp; write target's output"
             + (f" · {n:,} rec." if exists else " · target output empty.")
         )
         chip = '<span class="pipe-chip purple">secondary worker' + (
@@ -305,7 +263,7 @@ def _annotation_input_status(
         detail = (
             f"{source_line}<br/>"
             f"Reads target's input: <code>{read_key or '—'}</code>"
-            + (f" · {n:,} rec." if exists else " · empty/not copied yet.")
+            + (f" · {n:,} rec." if exists else " · empty/not ready yet.")
             + f"<br/>Writes target's output: <code>{write_key or '—'}</code>"
         )
         chip = '<span class="pipe-chip teal">coworker' + (
@@ -313,35 +271,31 @@ def _annotation_input_status(
         )
         return (chip, detail, "coworker")
 
-    # Copy mode below.
+    # Default source mode below.
     source_key = pipeline.resolve_source_key(node.source_ref)
     if source_key and source_key != node.source_ref:
         source_line += f" → <code>{source_key}</code>"
-    if not node.input_key:
-        return ('<span class="pipe-chip amber">no copy yet</span>',
-                f"{source_line}<br/>"
-                f"No local copy yet — click <b>Copy from source</b> to make one.",
-                "empty")
-
     if not source_key:
         return ('<span class="pipe-chip amber">source missing</span>',
                 f"{source_line}<br/>"
-                f"Copy: <code>{node.input_key}</code> (source no longer resolves).",
+                "Source no longer resolves.",
                 "behind")
 
-    cmp = compare_against_source(store, source_key, node.input_key)
-    if cmp.is_behind:
-        delta = cmp.source_total_records - cmp.copy_total_records
-        return ('<span class="pipe-chip amber">copy behind source</span>',
+    try:
+        exists = store.has_cached_data(source_key)
+        meta = store.get_cache_metadata(source_key) if exists else None
+        n = meta.total_records if meta else 0
+    except Exception:
+        exists, n = False, 0
+
+    if not exists:
+        return ('<span class="pipe-chip amber">source empty</span>',
                 f"{source_line}<br/>"
-                f"Copy: <code>{node.input_key}</code> · {cmp.copy_total_records:,} rec"
-                f" (source has {cmp.source_total_records:,}"
-                + (f", +{delta:,}" if delta > 0 else "") + ") — "
-                f"click <b>Update from source</b> to re-copy.",
-                "behind")
-    return ('<span class="pipe-chip green">copy up to date</span>',
+                "Reads the existing source dataset directly.",
+                "empty")
+    return ('<span class="pipe-chip green">source ready</span>',
             f"{source_line}<br/>"
-            f"Copy: <code>{node.input_key}</code> · {cmp.copy_total_records:,} rec",
+            f"Reads existing data directly · {n:,} rec",
             "has-data")
 
 
@@ -388,19 +342,26 @@ def _render_maintenance_dropdown(
             disabled=refresh_disabled,
             help=(
                 "Re-slice telemetry_data on every saved segment from the "
-                "current input. Run after 'Update from source' to propagate "
-                "new columns into segments that were annotated against the "
-                "old input."
+                "current input. Run after data preparation refreshes existing "
+                "source data to propagate new columns into saved segments."
             ),
         ):
             try:
-                summary = refresh_node_segments(store, node)
+                protected_session_ids = collect_protected_session_ids(store)
+                input_key = pipeline.effective_input_key(node)
+                summary = refresh_node_segments(
+                    store,
+                    node,
+                    input_key=input_key,
+                    protected_session_ids=protected_session_ids,
+                )
             except ValueError as exc:
                 st.error(f"Refresh failed: {exc}")
             else:
                 st.toast(
                     f"Refreshed {summary.segments_refreshed} segment(s) "
-                    f"across {summary.chunks_written} chunk(s).",
+                    f"across {summary.chunks_written} chunk(s); "
+                    f"skipped {summary.chunks_skipped_protected} protected chunk(s).",
                     icon="✅",
                 )
                 if summary.missing_input_sessions:
@@ -514,7 +475,7 @@ def _render_annotation_card(
     effective_out = pipeline.effective_output_key(node)
     out_label, out_n, out_ts = _output_status(store, effective_out) if effective_out else ("—", 0, "")
 
-    if node.mode == MODE_COPY:
+    if node.mode == MODE_SOURCE:
         if not node.output_key:
             out_line = (
                 '<br/>Output: <i>not configured yet</i> — '
@@ -591,33 +552,22 @@ def _render_annotation_card(
         open_disabled = not effective
 
         with btn_cols[0]:
-            if node.mode != MODE_COPY:
-                # No copy in non-copy modes — show a disabled stub for layout.
-                stub_label = ("Secondary worker (no copy)"
+            if node.mode != MODE_SOURCE:
+                # Show a disabled stub for layout.
+                stub_label = ("Secondary worker"
                               if node.mode == MODE_SECONDARY_WORKER
-                              else "Coworker (no copy)")
-                st.button(stub_label, key=f"copy_{node.id}",
+                              else "Coworker")
+                st.button(stub_label, key=f"mode_status_{node.id}",
                           use_container_width=True, disabled=True)
             else:
-                behind = (kind_class == "behind")
-                has_copy = bool(node.input_key)
-                if has_copy:
-                    copy_label = "Update from source"
-                    btn_disabled = not behind or not node.source_ref
-                else:
-                    copy_label = "Copy from source"
-                    btn_disabled = not node.source_ref
-                if st.button(copy_label, key=f"copy_{node.id}",
-                             use_container_width=True,
-                             disabled=btn_disabled):
-                    _fork_for_annotation(pipeline, node, store)
-                    st.rerun()
+                st.button("Uses source data", key=f"mode_status_{node.id}",
+                          use_container_width=True, disabled=True)
         with btn_cols[1]:
             out_key = pipeline.effective_output_key(node)
-            has_input_data = _has_cached_data(store, node.input_key)
+            has_input_data = _has_cached_data(store, effective)
             has_output_data = _has_cached_data(store, out_key)
             refresh_disabled = not (
-                node.mode == MODE_COPY and has_input_data and has_output_data
+                node.mode == MODE_SOURCE and has_input_data and has_output_data
             )
             _render_maintenance_dropdown(
                 pipeline,
@@ -669,7 +619,7 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
 
         # Pending mode lives in session state so the popover-button
         # picker (which reruns on click) survives between renders.
-        pending_mode = st.session_state.setdefault("add_ann_mode", MODE_COPY)
+        pending_mode = st.session_state.setdefault("add_ann_mode", MODE_SOURCE)
         picked = _render_mode_picker(pending_mode, key_prefix="add")
         if picked is not None and picked != pending_mode:
             st.session_state["add_ann_mode"] = picked
@@ -678,7 +628,7 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
             st.rerun()
 
         # ── Source picker ────────────────────────────────────────────────
-        siblings_only = pending_mode != MODE_COPY
+        siblings_only = pending_mode != MODE_SOURCE
         source_options = _source_options(
             pipeline, store, self_id="", siblings_only=siblings_only,
         )
@@ -692,7 +642,7 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         chosen_src = st.selectbox(
             "Source", options=display_options, index=src_idx,
             key="add_ann_source_select",
-            help=("Copy mode: any cache_key in the store, or a sibling "
+            help=("Source mode: any cache_key in the store, or a sibling "
                   "annotation's output. Secondary worker / coworker: pick "
                   "the target sibling annotation."),
         )
@@ -701,10 +651,10 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         )
         if siblings_only and not source_options:
             st.caption(":warning: No sibling annotations to target — "
-                       "create one in copy mode first.")
+                       "create one in source mode first.")
 
         if name_slug:
-            if pending_mode == MODE_COPY:
+            if pending_mode == MODE_SOURCE:
                 st.caption(
                     f"Node id will be: `{name_slug}`. Output dataset location is "
                     "configured on the annotation page (first-time popup)."

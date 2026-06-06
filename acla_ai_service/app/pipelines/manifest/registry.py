@@ -3,9 +3,9 @@
 Manifests are JSON files in ``app/storage/pipelines/``. One file per
 pipeline, named ``<pipeline_id>.json``.
 
-Pipelines start empty — no hardcoded main-dataset fork. The user adds
+Pipelines start empty. The user adds
 annotation components in the UI and picks the source for each one
-(which is then forked into the annotation's own input dataset).
+directly.
 """
 
 from __future__ import annotations

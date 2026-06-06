@@ -1,11 +1,9 @@
 """Refresh ``telemetry_data`` on one annotation node's saved segments.
 
-Run this after hitting "Update from source" on a node in the pipeline
-view: that pulls new columns into the node's ``input_key`` but leaves
-the existing segments in ``output_key`` carrying their old
-``telemetry_data`` snapshot. This script re-slices every segment's
-``telemetry_data`` from ``input_key.iloc[start:end]`` so the new
-columns land on the saved segment dicts.
+Run this after data preparation refreshes source data. Saved segments
+in ``output_key`` carry their old ``telemetry_data`` snapshot; this
+script re-slices every segment's ``telemetry_data`` from the resolved
+input source so the new columns land on the saved segment dicts.
 
     python scripts/refresh_segment_telemetry.py <pipeline_id> <node_id>
 """
@@ -44,11 +42,12 @@ def main(pipeline_id: str, node_id: str) -> None:
         )
 
     store = get_shared_lance_store()
+    input_key = pipeline.effective_input_key(node)
     print(f"Refreshing `{node.id}` ({node.kind}) — "
-          f"input={node.input_key} → output={node.output_key}")
+          f"input={input_key} → output={node.output_key}")
 
     try:
-        summary = refresh_node_segments(store, node)
+        summary = refresh_node_segments(store, node, input_key=input_key)
     except ValueError as exc:
         raise SystemExit(str(exc))
 

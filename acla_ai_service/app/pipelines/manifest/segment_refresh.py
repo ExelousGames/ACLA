@@ -1,21 +1,21 @@
 """Re-slice ``telemetry_data`` on a node's saved segments from its input.
 
-"Update from source" pulls new columns into ``node.input_key``, but the
+Data preparation refreshes the existing input datasets, but the
 segments already saved in ``node.output_key`` keep the per-row dicts
 they were created with. :func:`refresh_node_segments` re-slices every
-segment's ``telemetry_data`` from the current
-``input_key.iloc[start:end]`` so the new columns land on the saved
-segments.
+segment's ``telemetry_data`` from the current input rows so the new
+columns land on the saved segments.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
 from app.pipelines.manifest.models import AnnotationNode
+from app.pipelines.manifest.protection import is_protected_chunk_id
 
 
 def _load_input_session(store: Any, input_key: str, session_id: str) -> pd.DataFrame:
@@ -50,17 +50,22 @@ class RefreshSummary:
     segments_total: int = 0
     segments_refreshed: int = 0
     segments_skipped: int = 0
+    chunks_skipped_protected: int = 0
     missing_input_sessions: List[str] = field(default_factory=list)
 
 
-def refresh_node_segments(store: Any, node: AnnotationNode) -> RefreshSummary:
+def refresh_node_segments(
+    store: Any,
+    node: AnnotationNode,
+    input_key: Optional[str],
+    protected_session_ids: Optional[Iterable[Any]] = None,
+) -> RefreshSummary:
     """Refresh ``telemetry_data`` on every segment in ``node.output_key``
-    from the current rows in ``node.input_key``. Raises ``ValueError``
+    from the current input rows. Raises ``ValueError``
     if the node isn't wired for a refresh (missing keys / empty input)."""
-    input_key = node.input_key
     output_key = node.output_key
     if not input_key:
-        raise ValueError(f"Node {node.id!r} has no input_key.")
+        raise ValueError(f"Node {node.id!r} has no input dataset.")
     if not output_key:
         raise ValueError(f"Node {node.id!r} has no output_key.")
     if not store.has_cached_data(input_key):
@@ -72,6 +77,9 @@ def refresh_node_segments(store: Any, node: AnnotationNode) -> RefreshSummary:
     summary = RefreshSummary(chunks_total=len(session_ids))
 
     for sid in session_ids:
+        if is_protected_chunk_id(sid, protected_session_ids):
+            summary.chunks_skipped_protected += 1
+            continue
         segments = store.get_chunk(output_key, sid)
         if not isinstance(segments, list) or not segments:
             continue

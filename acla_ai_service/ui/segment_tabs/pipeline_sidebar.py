@@ -1,9 +1,8 @@
 """Sidebar: pipeline picker + maintenance.
 
 Picker chooses which pipeline is active. Creating a new pipeline just
-takes a name — there is no implicit "main dataset" to fork; the user
-picks the source for each annotation component individually in the
-main view.
+takes a name; the user picks the source for each annotation component
+individually in the main view.
 """
 
 from __future__ import annotations
@@ -98,7 +97,7 @@ def render_pipeline_sidebar(store: Any, cfg: TrainingPipelineConfig) -> Optional
                      use_container_width=True):
             delete_pipeline(pipeline.id)
             set_active_pipeline_id(None)
-            st.success(f"Deleted pipeline `{pipeline.id}` (forked Lance data left in place).")
+            st.success(f"Deleted pipeline `{pipeline.id}`.")
             st.rerun()
 
     return pipeline

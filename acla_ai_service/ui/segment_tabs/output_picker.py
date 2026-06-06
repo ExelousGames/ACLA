@@ -1,4 +1,4 @@
-"""First-time output-location popup for copy-mode annotation nodes.
+"""First-time output-location popup for source-mode annotation nodes.
 
 When a user opens an annotation page from a freshly-created node, the
 node has no ``output_key`` yet — the popup here collects the destination
@@ -6,7 +6,7 @@ node has no ``output_key`` yet — the popup here collects the destination
 page itself renders. Existing nodes (created before this change) skip
 the popup because they already carry an ``output_key``.
 
-The popup is only shown for ``mode == MODE_COPY``. Secondary-worker and
+The popup is only shown for ``mode == MODE_SOURCE``. Secondary-worker and
 coworker nodes write to the target's output, so they don't need their
 own file.
 """
@@ -18,7 +18,7 @@ from typing import Optional
 
 import streamlit as st
 
-from app.pipelines.manifest.models import MODE_COPY, AnnotationNode, Pipeline
+from app.pipelines.manifest.models import MODE_SOURCE, AnnotationNode, Pipeline
 from app.pipelines.manifest.registry import save as save_pipeline, slugify
 
 from .shared import get_store, register_output_dir
@@ -40,7 +40,7 @@ def _suggested_name(pipeline: Pipeline, node: AnnotationNode) -> str:
 
 def needs_output_setup(node: AnnotationNode) -> bool:
     """Whether the popup should fire for this node on this open."""
-    return node.mode == MODE_COPY and not node.output_key
+    return node.mode == MODE_SOURCE and not node.output_key
 
 
 def render_output_picker(
@@ -63,7 +63,7 @@ def render_output_picker(
         default_name = _suggested_name(pipeline, node)
 
         st.markdown(
-            f"**Node:** `{node.id}` · **Mode:** Copy from source\n\n"
+            f"**Node:** `{node.id}` · **Mode:** Use existing data\n\n"
             "Choose where the output dataset for this annotation will be saved."
         )
 

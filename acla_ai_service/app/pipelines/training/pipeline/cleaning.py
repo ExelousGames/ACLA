@@ -9,12 +9,13 @@ enrichment.
 import asyncio
 import re
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 
 from app.shared.telemetry import FeatureProcessor
+from app.pipelines.manifest.protection import is_protected_chunk_id
 
 PLAYER_POSITION_COLUMNS = (
     "Graphics_player_pos_x",
@@ -216,6 +217,7 @@ async def process_lap_sessions_efficiently(
     telemetry_time_gap_ms: int = 100,
     processed_sessions_cache_key: Optional[str] = None,
     top_laps_count: int = 5,
+    protected_session_ids: Optional[Iterable[Any]] = None,
 ) -> None:
     """
     Streamlined processing of large cached datasets with a bounded memory footprint while caching
@@ -270,6 +272,7 @@ async def process_lap_sessions_efficiently(
     print(f"[DEBUG] Created chunk iterator for cache key: {session_data_cache_key}")
 
     session_chunks_processed = 0
+    protected_chunks_skipped = 0
 
     async def process_chunk_result(result_tuple):
         nonlocal chunk_idx, total_sessions_cached
@@ -310,6 +313,9 @@ async def process_lap_sessions_efficiently(
 
         for chunk_tuple in session_chunks_iterator:
             session_chunk_df, chunk_id = chunk_tuple
+            if is_protected_chunk_id(chunk_id, protected_session_ids):
+                protected_chunks_skipped += 1
+                continue
             session_chunks_processed += 1
 
             future = executor.submit(
@@ -342,6 +348,7 @@ async def process_lap_sessions_efficiently(
 
     print(f"[DEBUG] Finished processing all chunks:")
     print(f"[DEBUG] - Total chunks processed: {session_chunks_processed}")
+    print(f"[DEBUG] - Protected chunks skipped: {protected_chunks_skipped}")
     print(f"[DEBUG] - Valid chunks processed: {chunk_idx}")
     print(f"[DEBUG] - Total records processed: {total_processed}")
     print(f"[DEBUG] - Tracks found: {len(top_laps)}")
@@ -353,6 +360,9 @@ async def process_lap_sessions_efficiently(
             print(f"[DEBUG] Top lap times for {key}: {sorted(lap_times)}")
 
     if not session_chunks_processed:
+        if protected_chunks_skipped:
+            print("[INFO] No unprotected chunks were available for processing.")
+            return
         raise ValueError(
             f"No chunks were returned by iterator for cache key {session_data_cache_key}. Check if data exists in cache."
         )
