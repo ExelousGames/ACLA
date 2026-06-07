@@ -59,6 +59,12 @@ from segment_tabs.pipeline_view import render_pipeline_view
 from segment_tabs.pipeline_sidebar import render_pipeline_sidebar
 from segment_tabs.output_picker import needs_output_setup, render_output_picker
 from app.pipelines.manifest.models import MODE_SOURCE
+from app.pipelines.manifest.registry import list_pipelines, load as load_pipeline
+from app.storage.lance.backup import (
+    create_lance_backup,
+    list_lance_backups,
+    restore_lance_backup,
+)
 
 
 # ── Route → renderer map ──────────────────────────────────────────────────
@@ -92,6 +98,128 @@ def _sync_pipeline_dir_map(pipeline) -> None:
             register_output_dir(node.output_key, node.output_dir)
 
 
+def _sync_all_pipeline_dir_maps() -> None:
+    for pipeline_id in list_pipelines():
+        pipeline = load_pipeline(pipeline_id)
+        if pipeline is not None:
+            _sync_pipeline_dir_map(pipeline)
+
+
+def _format_backup_label(item: dict) -> str:
+    size = item.get("size_mb")
+    size_label = f"{size} MB" if size is not None else "unknown size"
+    return f"{item.get('filename', 'unknown backup')} | {size_label}"
+
+
+def _backup_preview_rows(store_info: dict) -> list[dict]:
+    return [
+        {
+            "dataset": entry.get("cache_key"),
+            "chunks": entry.get("chunk_count", 0),
+            "records": entry.get("total_records", 0),
+            "size_mb": entry.get("size_mb", 0),
+            "strategy": entry.get("strategy"),
+            "directory": entry.get("directory"),
+            "updated_at": entry.get("updated_at"),
+        }
+        for entry in store_info.get("entries", [])
+    ]
+
+
+def _render_dataset_backup_section(store) -> None:
+    with st.expander("Dataset backups", expanded=False):
+        notice = st.session_state.pop("dataset_backup_notice", None)
+        if notice:
+            st.success(notice)
+
+        try:
+            store_info = store.get_cache_info()
+            backup_info = list_lance_backups(store)
+        except Exception as exc:
+            st.error(f"Could not load backup status: {exc}")
+            return
+
+        st.caption(
+            f"{store_info.get('entry_count', 0)} datasets | "
+            f"{store_info.get('total_size_mb', 0)} MB"
+        )
+        st.caption(f"Source directory: `{store_info['store_directory']}`")
+        st.caption(f"Backup directory: `{backup_info['backup_directory']}`")
+
+        st.markdown("**This backup will save**")
+        preview_rows = _backup_preview_rows(store_info)
+        if preview_rows:
+            st.dataframe(
+                preview_rows,
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info("No datasets found in the Lance store.")
+
+        if st.button("Create full dataset backup", use_container_width=True):
+            try:
+                result = create_lance_backup(store)
+                backup = result["backup"]
+                manifest = result["manifest"]
+                st.session_state["dataset_backup_notice"] = (
+                    f"Created `{backup['filename']}` "
+                    f"with {manifest['entry_count']} datasets."
+                )
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Backup failed: {exc}")
+
+        backups = backup_info["backups"]
+        if not backups:
+            st.info("No backups found yet.")
+            return
+
+        st.markdown("**Available backups**")
+        st.dataframe(
+            [
+                {
+                    "filename": backup["filename"],
+                    "size_mb": backup["size_mb"],
+                    "created_at": backup["created_at"],
+                }
+                for backup in backups[:10]
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+        selected = st.selectbox(
+            "Restore backup",
+            backups,
+            format_func=_format_backup_label,
+            key="dataset_backup_restore_choice",
+        )
+        confirmed = st.checkbox(
+            "I understand restore replaces the current dataset store",
+            key="dataset_backup_restore_confirmed",
+        )
+        if st.button(
+            "Restore selected backup",
+            type="secondary",
+            use_container_width=True,
+            disabled=not confirmed,
+        ):
+            try:
+                result = restore_lance_backup(selected["filename"], store)
+                notice = f"Restored `{result['restored_backup']['filename']}`."
+                if result.get("safety_backup"):
+                    notice += (
+                        " Current data was saved first as "
+                        f"`{result['safety_backup']['filename']}`."
+                    )
+                st.session_state["dataset_backup_notice"] = notice
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Restore failed: {exc}")
+
+
 def main() -> None:
     store = get_store()
     cfg = TrainingPipelineConfig()
@@ -105,6 +233,9 @@ def main() -> None:
             os._exit(0)
         st.markdown("---")
         pipeline = render_pipeline_sidebar(store, cfg)
+        _sync_all_pipeline_dir_maps()
+        st.markdown("---")
+        _render_dataset_backup_section(store)
 
     st.title("Telemetry Annotation Pipeline")
 

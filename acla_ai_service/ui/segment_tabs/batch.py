@@ -1,6 +1,7 @@
 import streamlit as st
 import time
 import traceback
+from pprint import pformat
 import pandas as pd
 import copy
 
@@ -17,6 +18,74 @@ _USAGE_EXHAUSTED_WARNING = (
     "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
     "credit balance). Batch halted — try again later."
 )
+
+_ERROR_DETAIL_ATTRS = (
+    "result",
+    "error",
+    "message",
+    "details",
+    "data",
+    "payload",
+    "stdout",
+    "stderr",
+    "returncode",
+    "exit_code",
+    "code",
+    "status",
+)
+
+
+def _format_error_details(exc: BaseException) -> str:
+    """Return an inspectable error report for SDK exceptions.
+
+    Some Claude SDK failures stringify to a terse or misleading message
+    (for example, only the result type). Dumping structured attributes keeps
+    the batch log useful without changing control flow.
+    """
+    lines = [
+        f"type: {type(exc).__module__}.{type(exc).__qualname__}",
+        f"str: {str(exc)!r}",
+        f"repr: {repr(exc)}",
+    ]
+    if exc.args:
+        lines.append(f"args: {pformat(exc.args)}")
+
+    seen = set()
+    for attr in _ERROR_DETAIL_ATTRS:
+        if hasattr(exc, attr):
+            try:
+                value = getattr(exc, attr)
+            except Exception as attr_exc:
+                value = f"<failed to read: {attr_exc!r}>"
+            lines.append(f"{attr}: {pformat(value)}")
+            seen.add(attr)
+
+    public_attrs = {
+        key: value
+        for key, value in getattr(exc, "__dict__", {}).items()
+        if not key.startswith("_") and key not in seen
+    }
+    if public_attrs:
+        lines.append(f"public_attrs: {pformat(public_attrs)}")
+
+    if exc.__cause__ is not None:
+        lines.append(
+            "cause: "
+            f"{type(exc.__cause__).__module__}.{type(exc.__cause__).__qualname__} "
+            f"{exc.__cause__!r}"
+        )
+    if exc.__context__ is not None and exc.__context__ is not exc.__cause__:
+        lines.append(
+            "context: "
+            f"{type(exc.__context__).__module__}.{type(exc.__context__).__qualname__} "
+            f"{exc.__context__!r}"
+        )
+
+    tb = traceback.format_exc().rstrip()
+    if tb:
+        lines.append("traceback:")
+        lines.append(tb)
+    return "\n".join(lines)
 
 
 def _targeted_car_suffix(opponent_interaction) -> str:
@@ -852,7 +921,10 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         except Exception as e:
             error_count += 1
             log(f"Section #{i} `{sec_id}`: ERROR — {e}")
-            log(traceback.format_exc().splitlines()[-1])
+            log(
+                f"Section #{i} `{sec_id}`: detailed error result\n"
+                f"{_format_error_details(e)}"
+            )
             i += 1
             progress_bar.progress(i / len(segments))
             continue

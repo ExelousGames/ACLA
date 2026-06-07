@@ -102,6 +102,28 @@ class LanceTelemetryStore:
     def _dir(self, cache_key: str) -> Path:
         return self._key_dirs.get(cache_key, self.store_dir)
 
+    def storage_directory_for(self, cache_key: str) -> Path:
+        """Return the directory that owns ``cache_key``."""
+        return self._dir(cache_key)
+
+    def registered_directories(self) -> Dict[str, Path]:
+        """Return per-cache-key directory overrides."""
+        return dict(self._key_dirs)
+
+    def _cache_key_directories(self) -> Dict[str, Path]:
+        keys: Dict[str, Path] = {}
+
+        if self.store_dir.exists():
+            for entry in self.store_dir.glob("*.lance"):
+                cache_key = entry.stem
+                if "." not in cache_key:
+                    keys[cache_key] = self.store_dir
+
+        for cache_key, directory in self._key_dirs.items():
+            keys[cache_key] = directory
+
+        return keys
+
     # ------------------------------------------------------------------
     # Strategy plumbing
     # ------------------------------------------------------------------
@@ -267,16 +289,8 @@ class LanceTelemetryStore:
         for the primary one and ask the strategy whether the dataset is
         populated.
         """
-        if not self.store_dir.exists():
-            return []
         keys: List[str] = []
-        for entry in self.store_dir.glob("*.lance"):
-            cache_key = entry.stem
-            # Strategies that emit auxiliary datasets name them with a known
-            # suffix (e.g. ``<key>.telemetry.lance``). Filter those out so
-            # they don't surface as separate cache_keys.
-            if "." in cache_key:
-                continue
+        for cache_key in self._cache_key_directories():
             if self.has_cached_data(cache_key):
                 keys.append(cache_key)
         return sorted(keys)
@@ -298,43 +312,46 @@ class LanceTelemetryStore:
         entries = []
         total_size_bytes = 0
 
-        if self.store_dir.exists():
-            for entry_path in self.store_dir.glob("*.lance"):
-                if "." in entry_path.stem:
-                    continue  # skip auxiliary datasets
-                cache_key = entry_path.stem
-                size_bytes = sum(
-                    f.stat().st_size
-                    for path in [entry_path] + self._strategy(cache_key).dataset_paths(self.store_dir, cache_key)[1:]
-                    for f in path.rglob("*")
-                    if f.is_file()
-                )
-                total_size_bytes += size_bytes
+        for cache_key, directory in self._cache_key_directories().items():
+            if not directory.exists() or not self.has_cached_data(cache_key):
+                continue
 
-                metadata = self._load_metadata(cache_key)
-                if metadata:
-                    entry = {
-                        "cache_key": metadata.cache_key or cache_key,
-                        "chunk_count": metadata.chunk_count,
-                        "total_records": metadata.total_records,
-                        "total_bytes": metadata.total_bytes,
-                        "chunk_sizes": list(metadata.chunk_sizes),
-                        "updated_at": metadata.updated_at,
-                        "size_mb": round(size_bytes / (1024 * 1024), 2),
-                        "strategy": self._strategy(cache_key).name,
-                    }
-                else:
-                    entry = {
-                        "cache_key": cache_key,
-                        "chunk_count": 0,
-                        "total_records": 0,
-                        "total_bytes": 0,
-                        "chunk_sizes": [],
-                        "updated_at": None,
-                        "size_mb": round(size_bytes / (1024 * 1024), 2),
-                        "strategy": self._strategy(cache_key).name,
-                    }
-                entries.append(entry)
+            strategy = self._strategy(cache_key)
+            size_bytes = sum(
+                f.stat().st_size
+                for path in strategy.dataset_paths(directory, cache_key)
+                if path.exists()
+                for f in path.rglob("*")
+                if f.is_file()
+            )
+            total_size_bytes += size_bytes
+
+            metadata = self._load_metadata(cache_key)
+            if metadata:
+                entry = {
+                    "cache_key": metadata.cache_key or cache_key,
+                    "chunk_count": metadata.chunk_count,
+                    "total_records": metadata.total_records,
+                    "total_bytes": metadata.total_bytes,
+                    "chunk_sizes": list(metadata.chunk_sizes),
+                    "updated_at": metadata.updated_at,
+                    "size_mb": round(size_bytes / (1024 * 1024), 2),
+                    "strategy": strategy.name,
+                    "directory": str(directory),
+                }
+            else:
+                entry = {
+                    "cache_key": cache_key,
+                    "chunk_count": 0,
+                    "total_records": 0,
+                    "total_bytes": 0,
+                    "chunk_sizes": [],
+                    "updated_at": None,
+                    "size_mb": round(size_bytes / (1024 * 1024), 2),
+                    "strategy": strategy.name,
+                    "directory": str(directory),
+                }
+            entries.append(entry)
 
         return {
             "store_directory": str(self.store_dir),

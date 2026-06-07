@@ -205,6 +205,26 @@ docker compose -f docker-compose.prod.yaml --env-file .prod.env up -d
 docker exec -it mongodb_c /bin/bash /backup.sh
 docker exec -it mongodb_c /bin/bash /restore.sh
 
+AI service Lance telemetry storage backups:
+
+```bash
+# Local, from acla_ai_service/
+python scripts/lance_storage_backup.py create
+python scripts/lance_storage_backup.py list
+python scripts/lance_storage_backup.py restore --latest
+python scripts/lance_storage_backup.py restore telemetry_lance_YYYYMMDD_HHMMSS.tar.gz
+
+# Docker
+docker exec -it acla_ai_service_c python scripts/lance_storage_backup.py create
+docker exec -it acla_ai_service_c python scripts/lance_storage_backup.py list
+docker exec -it acla_ai_service_c python scripts/lance_storage_backup.py restore --latest
+```
+
+Set `LANCE_BACKUP_DIR` to override the backup directory. By default backups
+are written to `app/storage/telemetry_lance_backups`. Restore replaces the
+whole Lance telemetry store and creates a pre-restore safety backup unless
+`--no-safety-backup` is passed.
+
 install docker: 
 
 sudo yum update -y  
