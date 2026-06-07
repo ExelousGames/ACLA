@@ -7,7 +7,7 @@ Training pipeline split into three stages:
 - ``training``: filter annotated segments and train the coach transformer.
 
 ``prepare_training_data`` orchestrates ``cleaning`` followed by ``enrich`` and is
-the entry point used by ``app/pipelines/training/entrypoints/run_full_pipeline.py``.
+the entry point used by ``scripts/open_pipeline_management.py``.
 ``run_transformer_guidance_training`` is re-exported here for convenience.
 """
 
