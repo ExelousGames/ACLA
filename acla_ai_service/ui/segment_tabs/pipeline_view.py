@@ -23,7 +23,6 @@ each column so the user can grow the pipeline incrementally.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 from typing import Any, Optional
 
 import streamlit as st
@@ -38,16 +37,11 @@ from app.pipelines.manifest.models import (
     TrainingNode,
 )
 from app.pipelines.manifest.registry import save as save_pipeline, slugify
-from app.pipelines.manifest.label_migration import migrate_dataset_labels
+from app.pipelines.manifest.migrate_labels import migrate_dataset_labels
 from app.pipelines.manifest.protection import collect_protected_session_ids
 from app.pipelines.manifest.segment_refresh import refresh_node_segments
 from app.pipelines.training.config import TrainingPipelineConfig
 from segment_tabs._training_runner import render_card, spawn
-
-
-_AI_SERVICE_DIR = Path(__file__).resolve().parents[2]
-_SCRIPTS = _AI_SERVICE_DIR / "scripts"
-
 
 MODE_LABELS = {
     MODE_SOURCE: "Use existing data",
@@ -438,7 +432,8 @@ def _render_data_preparation_card(store: Any, cfg: TrainingPipelineConfig) -> No
                 cmd = [
                     sys.executable,
                     "-u",
-                    str(_SCRIPTS / "prepare_training_data.py"),
+                    "-m",
+                    "app.pipelines.training.prepare_training_data",
                 ]
                 spawn("prepare_data", cmd)
                 st.rerun()

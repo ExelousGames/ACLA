@@ -847,8 +847,7 @@ async def prepare_and_train_coach_transformer_model(
         use_lance_dataloader: When True, drive training from the Lance-native dataset
             (:class:`LanceTelemetryActionDataset`) which reads columnar telemetry
             straight from the Phase-2 typed Lance store. Default ``False`` keeps the
-            legacy dict-list path; flip after running the parity script in
-            ``scripts/parity_test_transformer_dataloader.py``.
+            legacy dict-list path.
 
     Returns:
         Dictionary containing training history, evaluation metrics, and serialized model payload.

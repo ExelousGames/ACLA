@@ -11,12 +11,6 @@ shapes, same scaler-fitting behaviour — but with three structural wins:
 * **Columnar telemetry reads.** Per-chunk telemetry is materialised as a single
   Arrow Table joined on ``__segment_id__``; numpy arrays are built from
   zero-copy column views instead of dict→list→array conversion.
-
-Behaviour parity with the legacy dataset is enforced by
-``scripts/parity_test_transformer_dataloader.py``: for every segment in the
-migrated ``training_segments_`` cache_key, ``_process_segment_record`` from
-both implementations must produce identical (input, target, weight) arrays
-within float tolerance.
 """
 
 from __future__ import annotations
@@ -89,7 +83,7 @@ class LanceTelemetryActionDataset(Dataset):
         if not segments_path.exists() or not telemetry_path.exists():
             raise FileNotFoundError(
                 f"Expected Lance datasets at {segments_path} and {telemetry_path}; "
-                f"run scripts/migrate_blob_to_typed_lance.py first."
+                f"typed Lance datasets must be generated before using LanceTelemetryActionDataset."
             )
         self._segments_ds = lance.dataset(str(segments_path))
         self._telemetry_ds = lance.dataset(str(telemetry_path))
@@ -376,9 +370,6 @@ class LanceTelemetryActionDataset(Dataset):
         a single vectorised numpy expression, and the scaler is applied to
         the whole chunk's feature matrix at once.
 
-        Parity guard: numbers must match the legacy ``_process_segment_record``
-        within ``rtol=1e-5, atol=1e-6`` — enforced by
-        ``scripts/parity_test_transformer_dataloader.py``.
         """
         chunk_id = self._chunk_ids[chunk_idx]
         seg_ids_ordered = self._segment_ids_for_chunk(chunk_idx)

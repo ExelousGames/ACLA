@@ -10,7 +10,7 @@ import logging
 import sys
 from pathlib import Path
 
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parents[4]
 sys.path.append(str(project_root))
 
 from app.pipelines.training.config import TrainingPipelineConfig

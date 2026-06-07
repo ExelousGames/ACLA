@@ -45,7 +45,7 @@ def main() -> None:
     log_message("process, and enrich telemetry before selecting annotation sources.")
     log_message("Close the Streamlit app (Ctrl+C in terminal) when finished.")
 
-    app_path = Path(__file__).resolve().parents[1] / "ui" / "segment_annotation_app.py"
+    app_path = Path(__file__).resolve().parents[4] / "ui" / "segment_annotation_app.py"
 
     if not app_path.exists():
         log_message(f"Error: Could not find segment_annotation_app.py at {app_path}", level=logging.ERROR)
@@ -75,7 +75,7 @@ if __name__ == "__main__":
     if args.log_file:
         log_path = Path(args.log_file).expanduser().resolve()
     else:
-        default_dir = Path(args.log_dir).expanduser().resolve() if args.log_dir else Path(__file__).resolve().parents[1] / "logs"
+        default_dir = Path(args.log_dir).expanduser().resolve() if args.log_dir else Path(__file__).resolve().parents[4] / "logs"
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_path = default_dir / f"full_pipeline_{timestamp}.log"
 

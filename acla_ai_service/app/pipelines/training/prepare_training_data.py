@@ -1,17 +1,9 @@
-#!/usr/bin/env python3
-"""Non-interactive CLI for preparing telemetry data for annotation.
-
-Invoked by the Segment Annotation Pipeline UI as a background subprocess.
-"""
+"""CLI entrypoint for preparing telemetry data for annotation."""
 
 import argparse
 import asyncio
 import logging
 import sys
-from pathlib import Path
-
-project_root = Path(__file__).resolve().parent.parent
-sys.path.append(str(project_root))
 
 from app.pipelines.training.config import TrainingPipelineConfig
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService

@@ -1,6 +1,6 @@
 """Training tab: kick off and monitor classifier / transformer / LLM training.
 
-Each card runs the corresponding CLI script in `scripts/` as a background
+Each card runs the corresponding training pipeline entrypoint as a background
 subprocess via :mod:`segment_tabs._training_runner`. Logs persist on disk and
 survive browser refreshes.
 """
@@ -19,7 +19,7 @@ from segment_tabs._training_runner import render_card, spawn
 
 
 _AI_SERVICE_DIR = Path(__file__).resolve().parents[2]
-_SCRIPTS = _AI_SERVICE_DIR / "scripts"
+_TRAINING_ENTRYPOINTS = _AI_SERVICE_DIR / "app" / "pipelines" / "training" / "entrypoints"
 TRAINING_ROUTES = frozenset({"classifier", "transformer", "opportunity_forecaster"})
 
 
@@ -100,7 +100,7 @@ def _classifier_form(default_ann_key: str) -> None:
         val_split = c4.slider("Val split", 0.0, 0.5, 0.1, 0.05)
         if st.form_submit_button("🚀 Start", use_container_width=True):
             cmd = [
-                sys.executable, "-u", str(_SCRIPTS / "train_segment_classifier.py"),
+                sys.executable, "-u", str(_TRAINING_ENTRYPOINTS / "train_segment_classifier.py"),
                 "--epochs", str(int(epochs)),
                 "--batch-size", str(int(batch_size)),
                 "--lr", str(float(lr)),
@@ -116,7 +116,7 @@ def _transformer_form(default_ann_key: str) -> None:
         ann_key = st.text_input("Annotation key", value=default_ann_key)
         if st.form_submit_button("🚀 Start", use_container_width=True):
             cmd = [
-                sys.executable, "-u", str(_SCRIPTS / "train_transformer_guidance.py"),
+                sys.executable, "-u", str(_TRAINING_ENTRYPOINTS / "train_transformer_guidance.py"),
                 "--annotation-key", ann_key,
             ]
             spawn("transformer", cmd)
@@ -148,7 +148,7 @@ def _opportunity_forecaster_form(default_ann_key: str) -> None:
         )
         if st.form_submit_button("Start", use_container_width=True):
             cmd = [
-                sys.executable, "-u", str(_SCRIPTS / "train_opportunity_forecaster.py"),
+                sys.executable, "-u", str(_TRAINING_ENTRYPOINTS / "train_opportunity_forecaster.py"),
                 "--annotation-key", ann_key,
                 "--input-fraction", str(float(input_fraction)),
                 "--max-negatives", str(int(max_negatives)),

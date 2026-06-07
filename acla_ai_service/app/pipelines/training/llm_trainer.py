@@ -1,6 +1,6 @@
 """Shared runner for fine-tuning the telemetry LLM from a chat-format JSONL.
 
-Used by `scripts/train_telemetry_llm.py` (CLI). Progress is communicated with
+Used by `app/pipelines/training/entrypoints/train_telemetry_llm.py` (CLI). Progress is communicated with
 plain ``print()`` so the subprocess log captures it.
 """
 

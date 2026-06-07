@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parents[4]
 sys.path.append(str(project_root))
 
 from app.integrations.backend.client import backend_service

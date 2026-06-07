@@ -2,10 +2,10 @@
 
 Run this after data preparation refreshes source data. Saved segments
 in ``output_key`` carry their old ``telemetry_data`` snapshot; this
-script re-slices every segment's ``telemetry_data`` from the resolved
+module re-slices every segment's ``telemetry_data`` from the resolved
 input source so the new columns land on the saved segment dicts.
 
-    python scripts/refresh_segment_telemetry.py <pipeline_id> <node_id>
+    python -m app.pipelines.manifest.refresh_segment_telemetry <pipeline_id> <node_id>
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 def _ensure_paths() -> None:
-    root = Path(__file__).resolve().parent.parent
+    root = Path(__file__).resolve().parents[3]
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
@@ -43,8 +43,8 @@ def main(pipeline_id: str, node_id: str) -> None:
 
     store = get_shared_lance_store()
     input_key = pipeline.effective_input_key(node)
-    print(f"Refreshing `{node.id}` ({node.kind}) — "
-          f"input={input_key} → output={node.output_key}")
+    print(f"Refreshing `{node.id}` ({node.kind}) - "
+          f"input={input_key} -> output={node.output_key}")
 
     try:
         summary = refresh_node_segments(store, node, input_key=input_key)
@@ -53,7 +53,7 @@ def main(pipeline_id: str, node_id: str) -> None:
 
     print(f"  chunks:   refreshed {summary.chunks_written}/{summary.chunks_total}")
     print(f"  segments: refreshed {summary.segments_refreshed}/{summary.segments_total} "
-          f"({summary.segments_skipped} skipped — missing indices)")
+          f"({summary.segments_skipped} skipped - missing indices)")
     if summary.missing_input_sessions:
         print(f"  missing input sessions: "
               f"{', '.join(summary.missing_input_sessions)}")
@@ -62,7 +62,7 @@ def main(pipeline_id: str, node_id: str) -> None:
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         raise SystemExit(
-            "Usage: python scripts/refresh_segment_telemetry.py "
+            "Usage: python -m app.pipelines.manifest.refresh_segment_telemetry "
             "<pipeline_id> <node_id>"
         )
     main(sys.argv[1], sys.argv[2])
