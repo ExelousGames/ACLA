@@ -18,11 +18,17 @@ Conventions
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Literal
 
 
 Category = Literal["annotation", "training"]
+
+
+@dataclass(frozen=True)
+class DatasetFieldSpec:
+    field: str
+    type: str
 
 
 @dataclass(frozen=True)
@@ -33,6 +39,7 @@ class NodeKindSpec:
     description: str
     ui_route: str
     produces_output: bool = False
+    output_fields: tuple[DatasetFieldSpec, ...] = field(default_factory=tuple)
 
 
 _REGISTRY: Dict[str, NodeKindSpec] = {}
@@ -67,73 +74,81 @@ def list_by_category(category: Category) -> List[NodeKindSpec]:
     return [s for s in _REGISTRY.values() if s.category == category]
 
 
+ANNOTATED_SEGMENT_OUTPUT_FIELDS = (
+    DatasetFieldSpec("id", "str"),
+    DatasetFieldSpec("labels", "list[str]"),
+    DatasetFieldSpec("segment_length", "int"),
+    DatasetFieldSpec("start_index", "int | None"),
+    DatasetFieldSpec("end_index", "int | None"),
+    DatasetFieldSpec("chunk_index", "int | str | None"),
+    DatasetFieldSpec("telemetry_data", "list[input row]"),
+    DatasetFieldSpec("notes", "str | None"),
+    DatasetFieldSpec("parent_id", "str | None"),
+    DatasetFieldSpec("opponent_interaction", "dict | None"),
+)
+
+
+def annotation_spec(
+    *,
+    kind: str,
+    display: str,
+    description: str,
+    ui_route: str,
+) -> NodeKindSpec:
+    return NodeKindSpec(
+        kind=kind,
+        category="annotation",
+        display=display,
+        description=description,
+        ui_route=ui_route,
+        produces_output=True,
+        output_fields=ANNOTATED_SEGMENT_OUTPUT_FIELDS,
+    )
+
+
 # ── Annotation kinds ──────────────────────────────────────────────────────
-register(NodeKindSpec(
+register(annotation_spec(
     kind="lap",
-    category="annotation",
     display="Lap Annotation",
     description="Manual lap segmentation + main-label tagging.",
     ui_route="lap",
-    produces_output=True,
 ))
-register(NodeKindSpec(
+register(annotation_spec(
     kind="detailed",
-    category="annotation",
     display="Detailed Annotation",
     description="Sub-segment / sub-label refinement on top of lap segments.",
     ui_route="detailed",
-    produces_output=True,
 ))
-register(NodeKindSpec(
+register(annotation_spec(
     kind="batch_bulk_label",
-    category="annotation",
     display="Batch — Bulk Label Mgmt",
     description="Remove a label from every segment in one click.",
     ui_route="batch_bulk_label",
-    produces_output=True,
 ))
-register(NodeKindSpec(
+register(annotation_spec(
     kind="batch_rule_based",
-    category="annotation",
     display="Batch — Rule-Based",
     description="Apply a label to segments where a feature matches a value.",
     ui_route="batch_rule_based",
-    produces_output=True,
 ))
-register(NodeKindSpec(
+register(annotation_spec(
     kind="batch_classifier",
-    category="annotation",
     display="Batch — Classifier Auto",
     description="Identify segments using the trained LSTM classifier.",
     ui_route="batch_classifier",
-    produces_output=True,
 ))
-register(NodeKindSpec(
+register(annotation_spec(
     kind="batch_subseg",
-    category="annotation",
     display="Batch — Sub-Segment Discovery",
     description="Bulk discover children via Local VLM or Claude.",
     ui_route="batch_subseg",
-    produces_output=True,
 ))
-register(NodeKindSpec(
+register(annotation_spec(
     kind="batch_lap",
-    category="annotation",
     display="Batch — Lap-to-Segment Excerpter",
     description="Bulk Claude lap → per-circuit-section annotation.",
     ui_route="batch_lap",
-    produces_output=True,
 ))
-register(NodeKindSpec(
-    kind="llm",
-    category="annotation",
-    display="LLM Annotation",
-    description="Claude critique/guide draft generation for training units.",
-    ui_route="llm",
-    produces_output=True,
-))
-
-
 # ── Training kinds ────────────────────────────────────────────────────────
 register(NodeKindSpec(
     kind="classifier",
@@ -165,4 +180,11 @@ register(NodeKindSpec(
 ))
 
 
-__all__ = ["NodeKindSpec", "register", "get", "list_by_category", "canonicalize"]
+__all__ = [
+    "DatasetFieldSpec",
+    "NodeKindSpec",
+    "register",
+    "get",
+    "list_by_category",
+    "canonicalize",
+]

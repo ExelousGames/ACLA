@@ -20,6 +20,7 @@ import streamlit as st
 
 from app.pipelines.manifest.models import MODE_SOURCE, AnnotationNode, Pipeline
 from app.pipelines.manifest.registry import save as save_pipeline, slugify
+from app.pipelines.manifest.source_copy import source_copy_key
 
 from .shared import get_store, register_output_dir
 
@@ -63,8 +64,9 @@ def render_output_picker(
         default_name = _suggested_name(pipeline, node)
 
         st.markdown(
-            f"**Node:** `{node.id}` · **Mode:** Use existing data\n\n"
-            "Choose where the output dataset for this annotation will be saved."
+            f"**Node:** `{node.id}` · **Mode:** Copy from source\n\n"
+            "Choose where the annotation output and private source copy "
+            "will be saved."
         )
 
         location_choice = st.radio(
@@ -132,6 +134,7 @@ def render_output_picker(
                         return
                 save_pipeline(pipeline)
                 register_output_dir(node.output_key, node.output_dir)
+                register_output_dir(source_copy_key(node.output_key), node.output_dir)
                 result_box["output_key"] = node.output_key
                 st.rerun()
         with col_cancel:

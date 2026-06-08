@@ -1332,6 +1332,7 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                             start_index=start_idx,
                             end_index=end_idx,
                             notes="Auto-identified by Segment Classifier",
+                            chunk_index=session_id,
                             telemetry_data=seg_rows,
                         )
                         new_annotations.append(new_ann)

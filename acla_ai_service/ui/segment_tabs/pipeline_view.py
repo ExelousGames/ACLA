@@ -7,7 +7,7 @@ Four columns:
 Each annotation card owns:
 - a **kind** dropdown (lap / detailed / batch_* / llm / …) that decides
   which tab the single Open button routes to;
-- a **mode** picker — *source* (read an existing dataset),
+- a **mode** picker — *source copy* (copy from an upstream dataset),
   *secondary worker* (read a target's output, write back to it), or
   *coworker* (share both input and output with a target node);
 - a source picker — any cache_key in the store (source), or a sibling
@@ -40,19 +40,27 @@ from app.pipelines.manifest.registry import save as save_pipeline, slugify
 from app.pipelines.manifest.migrate_labels import migrate_dataset_labels
 from app.pipelines.manifest.protection import collect_protected_session_ids
 from app.pipelines.manifest.segment_refresh import refresh_node_segments
+from app.pipelines.manifest.source_copy import (
+    CHUNK_ID_PATH,
+    DICTIONARY_KEY_PATH,
+    SOURCE_COPY_SUFFIX,
+    source_copy_key,
+    sync_source_copy,
+)
 from app.pipelines.training.config import TrainingPipelineConfig
 from segment_tabs._training_runner import render_card, spawn
 
 MODE_LABELS = {
-    MODE_SOURCE: "Use existing data",
+    MODE_SOURCE: "Copy from source",
     MODE_SECONDARY_WORKER: "Secondary worker (adds to target's output)",
     MODE_COWORKER: "Coworker (shares target's input + output)",
 }
 MODE_ORDER = [MODE_SOURCE, MODE_SECONDARY_WORKER, MODE_COWORKER]
 MODE_DESCRIPTIONS = {
     MODE_SOURCE: (
-        "Read the selected source dataset directly. Data preparation updates "
-        "the existing datasets in place while preserving protected sessions."
+        "Copy the selected source dataset into this annotation's private "
+        "input. Later updates refresh only rows/sessions not touched by "
+        "this annotation output."
     ),
     MODE_SECONDARY_WORKER: (
         "Read **and** write the target's *output* dataset. Use when this "
@@ -64,6 +72,18 @@ MODE_DESCRIPTIONS = {
         "Use for parallel assistance — e.g. an AI agent helping the user "
         "annotate the same dataset side-by-side."
     ),
+}
+
+_SESSION_CHUNK_PRIMARY = {"label": "Session / chunk id", "path": CHUNK_ID_PATH}
+_DICTIONARY_PRIMARY = {"label": "Dictionary key", "path": DICTIONARY_KEY_PATH}
+_INPUT_PRIMARY_KEY_BY_KIND = {
+    "lap": _SESSION_CHUNK_PRIMARY,
+    "detailed": _SESSION_CHUNK_PRIMARY,
+    "batch_bulk_label": _SESSION_CHUNK_PRIMARY,
+    "batch_rule_based": _SESSION_CHUNK_PRIMARY,
+    "batch_classifier": _SESSION_CHUNK_PRIMARY,
+    "batch_subseg": _SESSION_CHUNK_PRIMARY,
+    "batch_lap": _SESSION_CHUNK_PRIMARY,
 }
 
 
@@ -205,7 +225,10 @@ def _source_options(pipeline: Pipeline, store: Any, self_id: str,
         store_keys = sorted(store.list_cache_keys())
     except Exception:
         store_keys = []
-    return sibling_outputs + store_keys
+    visible_store_keys = [
+        key for key in store_keys if not key.endswith(SOURCE_COPY_SUFFIX)
+    ]
+    return sibling_outputs + visible_store_keys
 
 
 def _annotation_input_status(
@@ -265,7 +288,7 @@ def _annotation_input_status(
         )
         return (chip, detail, "coworker")
 
-    # Default source mode below.
+    # Default source-copy mode below.
     source_key = pipeline.resolve_source_key(node.source_ref)
     if source_key and source_key != node.source_ref:
         source_line += f" → <code>{source_key}</code>"
@@ -285,11 +308,19 @@ def _annotation_input_status(
     if not exists:
         return ('<span class="pipe-chip amber">source empty</span>',
                 f"{source_line}<br/>"
-                "Reads the existing source dataset directly.",
+                "Source has no data to copy yet.",
                 "empty")
+    copy_key = source_copy_key(node.output_key) if node.output_key else None
+    copy_exists = bool(copy_key) and _has_cached_data(store, copy_key)
+    copy_detail = (
+        f"<br/>Private input copy: <code>{copy_key}</code>"
+        if copy_key else "<br/>Private input copy configured on first open."
+    )
+    copy_detail += " · ready" if copy_exists else " · not copied yet"
     return ('<span class="pipe-chip green">source ready</span>',
             f"{source_line}<br/>"
-            f"Reads existing data directly · {n:,} rec",
+            f"Copies from source · {n:,} rec"
+            f"{copy_detail}",
             "has-data")
 
 
@@ -316,6 +347,427 @@ def _has_cached_data(store: Any, key: Optional[str]) -> bool:
         return store.has_cached_data(key)
     except Exception:
         return False
+
+
+def _type_label(value: Any) -> str:
+    if value is None:
+        return "None"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    if isinstance(value, str):
+        return "str"
+    if isinstance(value, dict):
+        return "dict"
+    if isinstance(value, list):
+        if not value:
+            return "list[empty]"
+        return f"list[{_type_label(value[0])}]"
+    return type(value).__name__
+
+
+def _is_segment_record(record: Any) -> bool:
+    return (
+        isinstance(record, dict)
+        and "start_index" in record
+        and "end_index" in record
+        and ("labels" in record or "telemetry_data" in record)
+    )
+
+
+def _payload_records(payload: Any) -> tuple[str, list[Any]]:
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        return "dict.data", payload["data"]
+    if isinstance(payload, list):
+        return "list", payload
+    if isinstance(payload, dict):
+        return "dict", [payload]
+    return type(payload).__name__, [payload]
+
+
+def _structure_rows_from_record(record: Any, *, limit: int = 12) -> list[dict[str, str]]:
+    if not isinstance(record, dict):
+        return [{"field": "value", "type": _type_label(record)}]
+
+    rows = [
+        {"field": str(field), "type": _type_label(value)}
+        for field, value in list(record.items())[:limit]
+    ]
+    extra = len(record) - limit
+    if extra > 0:
+        rows.append({"field": f"... {extra} more", "type": ""})
+
+    telemetry = record.get("telemetry_data")
+    if isinstance(telemetry, list) and telemetry and isinstance(telemetry[0], dict):
+        sample = telemetry[0]
+        for field, value in list(sample.items())[:limit]:
+            rows.append({
+                "field": f"telemetry_data[].{field}",
+                "type": _type_label(value),
+            })
+        extra = len(sample) - limit
+        if extra > 0:
+            rows.append({"field": f"telemetry_data[] ... {extra} more", "type": ""})
+
+    return rows
+
+
+def _structure_rows_from_dictionary_payload(
+    payload: dict[Any, Any],
+    *,
+    include_value_fields: bool = False,
+    limit: int = 12,
+) -> list[dict[str, str]]:
+    rows = [{
+        "field": "Dictionary key",
+        "type": "unknown" if not payload else _type_label(next(iter(payload.keys()))),
+        "path": DICTIONARY_KEY_PATH,
+    }]
+    if not include_value_fields or not payload:
+        return rows
+
+    first_value = next(iter(payload.values()))
+    if isinstance(first_value, dict):
+        rows.extend(_structure_rows_from_record(first_value, limit=limit))
+    return rows
+
+
+def _dataset_structure(
+    store: Any,
+    key: Optional[str],
+    *,
+    declared_rows: Optional[list[dict[str, str]]] = None,
+    include_dictionary_value_fields: bool = False,
+) -> dict[str, Any]:
+    if not key:
+        return {"status": "not configured", "summary": "", "rows": declared_rows or []}
+
+    try:
+        exists = store.has_cached_data(key)
+    except Exception as exc:
+        return {"status": f"unavailable: {exc}", "summary": "", "rows": []}
+
+    if not exists:
+        rows = declared_rows or []
+        summary = "declared schema" if declared_rows else ""
+        return {"status": "empty", "summary": summary, "rows": rows}
+
+    try:
+        chunk_ids = store.list_chunk_ids(key)
+    except Exception as exc:
+        return {"status": f"could not list chunks: {exc}", "summary": "", "rows": []}
+    if not chunk_ids:
+        return {"status": "empty", "summary": "", "rows": declared_rows or []}
+
+    sample_chunk = chunk_ids[0]
+    try:
+        payload = store.get_chunk(key, sample_chunk)
+    except Exception as exc:
+        return {"status": f"could not read sample: {exc}", "summary": "", "rows": []}
+
+    chunk_row = {
+        "field": "Session / chunk id",
+        "type": "str",
+        "path": CHUNK_ID_PATH,
+    }
+    if isinstance(payload, dict) and not isinstance(payload.get("data"), list):
+        return {
+            "status": "ready",
+            "summary": f"dict[value] from `{sample_chunk}`",
+            "rows": [chunk_row] + _structure_rows_from_dictionary_payload(
+                payload,
+                include_value_fields=include_dictionary_value_fields,
+            ),
+        }
+
+    container, records = _payload_records(payload)
+    sample = next((record for record in records if record is not None), None)
+    record_label = "segment" if _is_segment_record(sample) else "row"
+    summary = f"{container}[{record_label}] from `{sample_chunk}`"
+    return {
+        "status": "ready",
+        "summary": summary,
+        "rows": [chunk_row] + _structure_rows_from_record(sample),
+    }
+
+
+def _render_dataset_structure_panel(
+    store: Any,
+    label: str,
+    key: Optional[str],
+    *,
+    declared_rows: Optional[list[dict[str, str]]] = None,
+) -> None:
+    st.markdown(f"**{label}**")
+    if key:
+        st.caption(f"`{key}`")
+    info = _dataset_structure(store, key, declared_rows=declared_rows)
+    status = info["status"]
+    summary = info["summary"]
+    st.caption(f"{status}" + (f" · {summary}" if summary else ""))
+    rows = info["rows"]
+    if rows:
+        st.dataframe(rows, hide_index=True, use_container_width=True)
+    else:
+        st.info("No structure available yet.")
+
+
+def _declared_output_rows(spec: node_kinds.NodeKindSpec) -> list[dict[str, str]]:
+    return [
+        {
+            "field": field.field,
+            "type": field.type,
+        }
+        for field in spec.output_fields
+    ]
+
+
+def _field_options(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    options: list[dict[str, str]] = []
+    for row in rows:
+        field = str(row.get("field") or "").strip()
+        if not field or field.startswith("..."):
+            continue
+        path = str(row.get("path") or field).strip()
+        if not path:
+            continue
+        if str(row.get("type") or "").startswith("list["):
+            path = f"{field}[]"
+        options.append({
+            "label": field,
+            "path": path,
+        })
+    return options
+
+
+def _input_primary_key_for_node(
+    node: AnnotationNode,
+    input_structure: dict[str, Any],
+) -> Optional[dict[str, str]]:
+    configured = _INPUT_PRIMARY_KEY_BY_KIND.get(node.kind)
+    if configured:
+        return dict(configured)
+
+    paths = {
+        str(row.get("path") or row.get("field") or "").strip()
+        for row in input_structure.get("rows", [])
+    }
+    if DICTIONARY_KEY_PATH in paths:
+        return dict(_DICTIONARY_PRIMARY)
+    return dict(_SESSION_CHUNK_PRIMARY)
+
+
+def _preview_primary_key_values(
+    store: Any,
+    key: Optional[str],
+    path: str,
+    *,
+    limit: int = 5,
+) -> list[str]:
+    if not key:
+        return []
+    try:
+        if not store.has_cached_data(key):
+            return []
+        chunk_ids = list(store.list_chunk_ids(key))
+    except Exception:
+        return []
+
+    if path == CHUNK_ID_PATH:
+        return [str(chunk_id) for chunk_id in chunk_ids[:limit]]
+
+    if path == DICTIONARY_KEY_PATH:
+        values: list[str] = []
+        for chunk_id in chunk_ids:
+            try:
+                payload = store.get_chunk(key, chunk_id)
+            except Exception:
+                continue
+            if isinstance(payload, dict) and not isinstance(payload.get("data"), list):
+                values.extend(str(value) for value in list(payload.keys())[:limit])
+            if len(values) >= limit:
+                break
+        return values[:limit]
+
+    return []
+
+
+def _format_primary_key_preview(values: list[str]) -> str:
+    if not values:
+        return "No sample values yet."
+    return "Sample values: " + ", ".join(f"`{value}`" for value in values)
+
+
+def _same_protection_reference(
+    left: Optional[dict[str, str]],
+    right: dict[str, str],
+) -> bool:
+    if not left:
+        return False
+    return (
+        left.get("output_path") == right.get("output_path")
+        and left.get("input_path") == right.get("input_path")
+    )
+
+
+def _selected_protection_reference(
+    node: AnnotationNode,
+    output_options: list[dict[str, str]],
+    input_primary: dict[str, str],
+) -> Optional[dict[str, str]]:
+    saved = node.protection_reference
+    if not saved:
+        return None
+    output_paths = {option["path"] for option in output_options}
+    if (
+        saved.get("output_path") in output_paths
+        and saved.get("input_path") == input_primary["path"]
+    ):
+        return dict(saved)
+    return None
+
+
+def _render_source_protection_selector(
+    pipeline: Pipeline,
+    node: AnnotationNode,
+    store: Any,
+    input_key: Optional[str],
+    output_structure: dict[str, Any],
+    input_structure: dict[str, Any],
+) -> tuple[bool, Optional[dict[str, str]]]:
+    if node.mode != MODE_SOURCE:
+        return True, None
+
+    output_options = _field_options(output_structure.get("rows", []))
+    if not output_options:
+        st.warning(
+            "Source-copy protection needs an output key. Copy from source "
+            "is disabled until the output dataset structure is available."
+        )
+        return False, None
+
+    input_primary = _input_primary_key_for_node(node, input_structure)
+    if not input_primary:
+        st.warning(
+            "Source-copy protection needs an input key field. Copy from source "
+            "is disabled until the input dataset structure is available."
+        )
+        return False, None
+
+    selected = _selected_protection_reference(node, output_options, input_primary)
+    saved_output = ""
+    if node.protection_reference:
+        saved_output = str(node.protection_reference.get("output_path") or "")
+    selected_output = selected.get("output_path") if selected else saved_output
+    placeholder = {"label": "— pick field —", "path": ""}
+    output_display_options = [placeholder] + output_options
+    output_paths = [option["path"] for option in output_display_options]
+    output_index = output_paths.index(selected_output) if selected_output in output_paths else 0
+
+    cols = st.columns(2)
+    with cols[0]:
+        picked_output = st.selectbox(
+            "Output foreign-key field",
+            output_display_options,
+            index=output_index,
+            key=f"protection_output_ref_{node.id}",
+            format_func=lambda item: item["label"],
+        )
+    with cols[1]:
+        st.markdown("**Input primary key**")
+        st.caption(
+            f"{input_primary['label']} · `{input_primary['path']}`"
+        )
+        st.caption(
+            _format_primary_key_preview(
+                _preview_primary_key_values(
+                    store,
+                    input_key,
+                    input_primary["path"],
+                )
+            )
+        )
+
+    if not picked_output["path"]:
+        if node.protection_reference:
+            st.warning("The saved protection fields are no longer valid for this input schema.")
+        else:
+            st.info("Pick the output field to enable Copy from source.")
+        return False, None
+
+    picked = {
+        "label": f"{picked_output['label']} -> {input_primary['label']}",
+        "output_path": picked_output["path"],
+        "input_path": input_primary["path"],
+    }
+    st.caption(
+        "Protected copied rows are matched by this component's output reference and auto-picked input primary key.",
+        help=(
+            "Pick the output field that stores the reference. The input "
+            "primary key is chosen by the annotation component, and "
+            "referenced input entries are preserved during Update from source."
+        ),
+    )
+    if not _same_protection_reference(
+        node.protection_reference,
+        picked,
+    ):
+        node.protection_reference = dict(picked)
+        save_pipeline(pipeline)
+        st.rerun()
+
+    valid = selected is not None
+    if node.protection_reference and not valid:
+        st.warning("The saved protection fields are no longer valid for this input schema.")
+    return valid, selected
+
+
+def _source_copy_summary(summary) -> str:
+    return (
+        f"Copied {summary.chunks_copied} chunk(s), "
+        f"updated {summary.chunks_updated} chunk(s), "
+        f"left {summary.chunks_skipped_unchanged} unchanged, "
+        f"preserved {summary.rows_preserved} protected row(s)"
+    )
+
+
+def _run_source_copy_update(
+    pipeline: Pipeline,
+    node: AnnotationNode,
+    store: Any,
+    protection_reference: Optional[dict[str, str]],
+) -> None:
+    source_key = pipeline.resolve_source_key(node.source_ref)
+    copy_key = source_copy_key(node.output_key) if node.output_key else None
+    if not source_key or not copy_key:
+        st.error("Source copy is not configured yet.")
+        return
+    if protection_reference is None:
+        st.error("Source copy protection is not configured with output and input fields.")
+        return
+    try:
+        summary = sync_source_copy(
+            store,
+            source_key=source_key,
+            copy_key=copy_key,
+            output_key=pipeline.effective_output_key(node),
+            protection_reference=protection_reference,
+        )
+    except Exception as exc:
+        st.error(f"Source copy failed: {exc}")
+        return
+    st.toast(_source_copy_summary(summary), icon="✅")
+    if summary.rows_preserved:
+        st.info(f"Preserved {summary.rows_preserved} protected row(s).")
+    if summary.read_failures or summary.write_failures:
+        st.warning(
+            "Some chunks failed. "
+            f"Read failures: {len(summary.read_failures)}; "
+            f"write failures: {len(summary.write_failures)}."
+        )
 
 
 def _render_maintenance_dropdown(
@@ -459,7 +911,20 @@ def _render_annotation_card(
 
     chip, detail, kind_class = _annotation_input_status(pipeline, node, store)
     spec = node_kinds.get(node.kind)
+    effective = pipeline.effective_input_key(node)
     effective_out = pipeline.effective_output_key(node)
+    source_key = pipeline.resolve_source_key(node.source_ref)
+    structure_input_key = effective
+    if node.mode == MODE_SOURCE and not _has_cached_data(store, effective):
+        structure_input_key = source_key
+    declared_output_rows = _declared_output_rows(spec)
+    input_structure = _dataset_structure(store, structure_input_key)
+    output_structure = _dataset_structure(
+        store,
+        effective_out,
+        declared_rows=declared_output_rows,
+        include_dictionary_value_fields=True,
+    )
     out_label, out_n, out_ts = _output_status(store, effective_out) if effective_out else ("—", 0, "")
 
     if node.mode == MODE_SOURCE:
@@ -498,6 +963,18 @@ def _render_annotation_card(
             kind_class=kind_class,
         )
 
+        with st.expander("Dataset structure", expanded=False):
+            struct_cols = st.columns(2)
+            with struct_cols[0]:
+                _render_dataset_structure_panel(store, "Input", structure_input_key)
+            with struct_cols[1]:
+                _render_dataset_structure_panel(
+                    store,
+                    "Output",
+                    effective_out,
+                    declared_rows=declared_output_rows,
+                )
+
         # ── Kind dropdown (no warning — change freely) ───────────────────
         try:
             kind_idx = kind_choices.index(node.kind)
@@ -532,11 +1009,21 @@ def _render_annotation_card(
                  "node to change it.",
         )
 
-        # ── Action buttons ───────────────────────────────────────────────
-        btn_cols = st.columns([1, 1, 1, 0.4])
+        protection_ready, protection_reference = _render_source_protection_selector(
+            pipeline,
+            node,
+            store,
+            structure_input_key,
+            output_structure,
+            input_structure,
+        )
 
-        effective = pipeline.effective_input_key(node)
+        # ── Action buttons ───────────────────────────────────────────────
+        btn_cols = st.columns([1.2, 1, 1, 0.4])
+
         open_disabled = not effective
+        if node.mode == MODE_SOURCE and node.output_key:
+            open_disabled = not _has_cached_data(store, effective)
 
         with btn_cols[0]:
             if node.mode != MODE_SOURCE:
@@ -547,8 +1034,29 @@ def _render_annotation_card(
                 st.button(stub_label, key=f"mode_status_{node.id}",
                           use_container_width=True, disabled=True)
             else:
-                st.button("Uses source data", key=f"mode_status_{node.id}",
-                          use_container_width=True, disabled=True)
+                copy_key = source_copy_key(node.output_key) if node.output_key else None
+                source_ready = _has_cached_data(store, source_key)
+                copy_ready = _has_cached_data(store, copy_key)
+                if copy_ready:
+                    st.warning(
+                        "Source copy exists. Update refreshes untouched data "
+                        "only; protected input rows are preserved.",
+                        icon="⚠️",
+                    )
+                label = "Update from source" if copy_ready else "Copy from source"
+                if st.button(
+                    label,
+                    key=f"source_copy_{node.id}",
+                    use_container_width=True,
+                    disabled=not (node.output_key and source_ready and protection_ready),
+                ):
+                    _run_source_copy_update(
+                        pipeline,
+                        node,
+                        store,
+                        protection_reference,
+                    )
+                    st.rerun()
         with btn_cols[1]:
             out_key = pipeline.effective_output_key(node)
             has_input_data = _has_cached_data(store, effective)

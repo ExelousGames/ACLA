@@ -21,6 +21,11 @@ from app.pipelines.manifest.protection import (
     is_protected_chunk_id,
     session_id_from_chunk_id,
 )
+from app.pipelines.manifest.source_copy import (
+    ProtectionReference,
+    source_copy_key,
+    sync_source_copy,
+)
 from app.pipelines.manifest import node_kinds, registry
 
 __all__ = [
@@ -31,6 +36,9 @@ __all__ = [
     "collect_protected_session_ids",
     "is_protected_chunk_id",
     "session_id_from_chunk_id",
+    "ProtectionReference",
+    "source_copy_key",
+    "sync_source_copy",
     "node_kinds",
     "registry",
 ]

@@ -2,8 +2,8 @@
 
 An annotation runs in one of three modes:
 
-- ``"source"`` — reads ``source_ref`` directly and writes to its own
-  ``output_key``.
+- ``"source"`` — copies ``source_ref`` to a private input dataset and
+  writes annotations to its own ``output_key``.
 - ``"secondary_worker"`` — reads the *target* sibling's
   output and writes back to the same dataset (e.g. detailed
   annotation adding child segments to a parent's output).
@@ -45,6 +45,7 @@ class AnnotationNode:
     source_ref: Optional[str] = None                 # source: any cache_key or "<id>.output". Worker modes: "<target_id>.output".
     mode: str = MODE_SOURCE                          # "source" | "secondary_worker" | "coworker"
     output_dir: Optional[str] = None                 # filesystem dir holding output_key's lance dataset; None = default lance store dir
+    protection_reference: Optional[Dict[str, str]] = None  # selected schema-backed output->input row reference for source-copy refresh.
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -72,6 +73,7 @@ class AnnotationNode:
             source_ref=source_ref,
             mode=mode,
             output_dir=d.get("output_dir"),
+            protection_reference=d.get("protection_reference"),
         )
 
 
@@ -171,13 +173,17 @@ class Pipeline:
     ) -> Optional[str]:
         """Cache_key this annotation actually reads from.
 
-        - Source → resolved ``node.source_ref``.
+        - Source → copied input dataset once ``output_key`` is configured,
+          otherwise the resolved source so first-time setup can open.
         - Secondary worker → target's effective output (read + write
           the same dataset).
         - Coworker → target's effective *input* (read what the target
           reads; write where the target writes).
         """
         if node.mode == MODE_SOURCE:
+            if node.output_key:
+                from app.pipelines.manifest.source_copy import source_copy_key
+                return source_copy_key(node.output_key)
             return self.resolve_source_key(node.source_ref)
         if node.mode == MODE_SECONDARY_WORKER:
             return self.resolve_source_key(node.source_ref)

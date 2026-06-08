@@ -60,6 +60,7 @@ from segment_tabs.pipeline_sidebar import render_pipeline_sidebar
 from segment_tabs.output_picker import needs_output_setup, render_output_picker
 from app.pipelines.manifest.models import MODE_SOURCE
 from app.pipelines.manifest.registry import list_pipelines, load as load_pipeline
+from app.pipelines.manifest.source_copy import source_copy_key
 from app.storage.lance.backup import (
     create_lance_backup,
     list_lance_backups,
@@ -96,6 +97,8 @@ def _sync_pipeline_dir_map(pipeline) -> None:
     for node in pipeline.annotations:
         if node.output_key:
             register_output_dir(node.output_key, node.output_dir)
+            if node.mode == MODE_SOURCE:
+                register_output_dir(source_copy_key(node.output_key), node.output_dir)
 
 
 def _sync_all_pipeline_dir_maps() -> None:
@@ -152,12 +155,12 @@ def _render_dataset_backup_section(store) -> None:
             st.dataframe(
                 preview_rows,
                 hide_index=True,
-                use_container_width=True,
+                width="stretch",
             )
         else:
             st.info("No datasets found in the Lance store.")
 
-        if st.button("Create full dataset backup", use_container_width=True):
+        if st.button("Create full dataset backup", width="stretch"):
             try:
                 result = create_lance_backup(store)
                 backup = result["backup"]
@@ -186,7 +189,7 @@ def _render_dataset_backup_section(store) -> None:
                 for backup in backups[:10]
             ],
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
 
         selected = st.selectbox(
@@ -202,7 +205,7 @@ def _render_dataset_backup_section(store) -> None:
         if st.button(
             "Restore selected backup",
             type="secondary",
-            use_container_width=True,
+            width="stretch",
             disabled=not confirmed,
         ):
             try:
@@ -295,7 +298,9 @@ def main() -> None:
     # Reconcile annotation_key with the (possibly newly-set) node output.
     if active_node is not None and active_node.mode == MODE_SOURCE and active_node.output_key:
         annotation_key = active_node.output_key
+        session_key = pipeline.effective_input_key(active_node)
         st.session_state["pipeline_annotation_key"] = annotation_key
+        st.session_state["pipeline_session_key"] = session_key
 
     if not annotation_key:
         st.warning("This view needs an annotation dataset — return to the Pipeline view "
@@ -309,6 +314,13 @@ def main() -> None:
         st.error("Pipeline node has no input dataset — pick a source from the Pipeline view.")
         return
     if session_key not in store.list_cache_keys():
+        if active_node is not None and active_node.mode == MODE_SOURCE and active_node.output_key:
+            st.warning(
+                "This annotation reads from a private source copy, but that "
+                "copy has not been created yet."
+            )
+            st.caption("Return to the Pipeline view and create the source copy there.")
+            return
         st.error(f"Input dataset `{session_key}` not found in the store. "
                  "It may have been deleted — re-pick the source.")
         return

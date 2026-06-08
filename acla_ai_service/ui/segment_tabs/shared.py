@@ -252,7 +252,8 @@ def build_segment(
     e = min(len(df), int(end)) if df is not None else int(end)
     rows: List[Dict[str, Any]] = []
     if df is not None and not getattr(df, "empty", False) and s < e:
-        rows = df.iloc[s:e].to_dict(orient="records")
+        segment_df = df.iloc[s:e]
+        rows = segment_df.to_dict(orient="records")
     return AnnotatedSegment(
         id=id or str(uuid.uuid4()),
         labels=list(label_ids),
@@ -289,4 +290,3 @@ def save_annotations(session_id: str, annotations: List[AnnotatedSegment], annot
         store.save_chunk(annotation_key, session_id, data_to_save)
         if not silent:
             st.success(f"Saved {len(annotations)} annotations to {annotation_key} (session {session_id})")
-
