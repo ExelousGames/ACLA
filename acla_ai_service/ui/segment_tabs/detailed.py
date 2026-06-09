@@ -16,7 +16,7 @@ from .shared import (
     load_session_data, load_annotations, save_annotations,
     get_display_labels, get_available_sessions,
     LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
-    LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
+    LABEL_CATEGORIES
 )
 
 def render_detailed_labeling(selected_annotation_key, selected_session_key, available_sessions):

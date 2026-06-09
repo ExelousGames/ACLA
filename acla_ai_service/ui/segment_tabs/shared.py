@@ -39,7 +39,7 @@ try:
     # Force reload to pick up model changes (e.g. new fields)
     importlib.reload(app.shared.labels)
     importlib.reload(app.shared.segment)
-    from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES, LABEL_IMAGE_MAP
+    from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID, LABEL_CATEGORIES, LABEL_IMAGE_MAP
     from app.shared.segment import AnnotatedSegment, SegmentFeatureCatalog
     from app.pipelines.inference.segment_updater import SegmentUpdater
 

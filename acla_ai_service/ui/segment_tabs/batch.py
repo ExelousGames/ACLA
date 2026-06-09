@@ -9,7 +9,7 @@ from .shared import (
     load_session_data, load_annotations, save_annotations,
     get_available_sessions, build_segment,
     LABEL_MAPPING, LABEL_NAME_TO_ID,
-    LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
+    LABEL_CATEGORIES
 )
 from .components.opponent_interaction import format_targeted_car
 from .components.annotation_provider_controls import render_annotation_provider_config
