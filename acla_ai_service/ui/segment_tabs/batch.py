@@ -273,106 +273,6 @@ def render_rule_based_annotation(df, selected_annotation_key):
             st.info(f"No segments matched the value '{target_value_str}' for feature '{selected_feature}'.")
 
 
-def _render_local_vlm_config():
-    """Render Local VLM settings (mirrors detailed_agent_annotation_local).
-
-    Returns a callable that, when invoked, builds an ``AnnotationPipelineConfig``
-    from the current widget values — deferring the import so the run path
-    surfaces a clean error if the LangGraph deps are missing.
-    """
-    from app.local_annotation_agent.backend import QWEN25_VL_MODELS
-
-    col_s1, col_s2 = st.columns(2)
-    with col_s1:
-        max_iterations = st.number_input(
-            "Max iterations",
-            min_value=1, max_value=10, value=3,
-            key="batch_agent_local_max_iter",
-        )
-    with col_s2:
-        temperature = st.slider(
-            "Temperature",
-            min_value=0.1, max_value=1.5, value=0.7, step=0.1,
-            key="batch_agent_local_temp",
-        )
-
-    model_options = list(QWEN25_VL_MODELS.keys())
-    default_idx = model_options.index("Qwen/Qwen2.5-VL-72B-Instruct")
-    selected_model = st.selectbox(
-        "VLM model",
-        options=model_options,
-        format_func=lambda x: QWEN25_VL_MODELS[x]["label"],
-        index=default_idx,
-        key="batch_agent_local_model",
-    )
-    model_spec = QWEN25_VL_MODELS[selected_model]
-    model_max_context = model_spec["max_context"]
-    model_max_new_tokens = model_spec["max_new_tokens"]
-
-    if "batch_agent_local_ctx" not in st.session_state:
-        st.session_state["batch_agent_local_ctx"] = min(32768, model_max_context)
-    else:
-        st.session_state["batch_agent_local_ctx"] = min(
-            st.session_state["batch_agent_local_ctx"], model_max_context,
-        )
-    if "batch_agent_local_max_new_tokens" not in st.session_state:
-        st.session_state["batch_agent_local_max_new_tokens"] = min(512, model_max_new_tokens)
-    else:
-        st.session_state["batch_agent_local_max_new_tokens"] = min(
-            st.session_state["batch_agent_local_max_new_tokens"], model_max_new_tokens,
-        )
-
-    quantization_type = st.selectbox(
-        "Quantization",
-        options=["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"],
-        index=0,
-        key="batch_agent_local_quant",
-    )
-
-    with st.expander("⚙️ Advanced model settings", expanded=False):
-        gguf_path = st.text_input(
-            "GGUF model path (override)", value="",
-            help="Leave empty to auto-detect / auto-convert.",
-            key="batch_agent_local_gguf",
-        )
-        mmproj_path = st.text_input(
-            "mmproj path (override)", value="",
-            help="Leave empty to auto-detect / auto-convert.",
-            key="batch_agent_local_mmproj",
-        )
-        context_size = st.slider(
-            "Context size",
-            min_value=2048, max_value=model_max_context, step=1024,
-            key="batch_agent_local_ctx",
-        )
-        n_gpu_layers = st.number_input(
-            "GPU layers (-1 = all)",
-            min_value=-1, max_value=200, value=-1,
-            key="batch_agent_local_ngl",
-        )
-        max_new_tokens = st.slider(
-            "Max new tokens (per VLM call)",
-            min_value=128, max_value=model_max_new_tokens, step=128,
-            key="batch_agent_local_max_new_tokens",
-        )
-
-    def build_config():
-        from app.local_annotation_agent.workflow import AnnotationPipelineConfig
-        return AnnotationPipelineConfig(
-            max_iterations=int(max_iterations),
-            max_new_tokens=int(max_new_tokens),
-            temperature=float(temperature),
-            backend="local",
-            gguf_path=gguf_path or None,
-            mmproj_path=mmproj_path or None,
-            context_size=int(context_size),
-            n_gpu_layers=int(n_gpu_layers),
-            hf_repo=selected_model,
-            quantization_type=quantization_type,
-        )
-    return build_config
-
-
 def _render_claude_config():
     """Render Claude settings (mirrors detailed_agent_annotation_claude)."""
     from app.claude.backend import CLAUDE_VLM_MODELS
@@ -462,16 +362,16 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
 
 
 def render_batch_auto_annotation(df, selected_annotation_key):
-    """Batch sub-segment discovery powered by Local VLM or Claude.
+    """Batch sub-segment discovery powered by Claude.
 
     For each parent segment in the selected range, runs the same agent
-    pipeline used by the Detailed view's 🖥️ / ☁️ expanders and auto-saves
+    pipeline used by the Detailed view's ☁️ expander and auto-saves
     the discovered children under that parent. No staged review per parent.
     """
     st.header("Batch Auto-Annotation (Sub-Segment Discovery)")
     st.write(
         "For each segment in the selected range, run the **Sub-Segment Discovery** "
-        "agent and auto-save discovered children. Choose Local VLM or Claude."
+        "agent with Claude and auto-save discovered children."
     )
 
     if not st.session_state.get("current_annotations"):
@@ -496,21 +396,9 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         chart_key="batch_agent_subsegment_coverage_initial",
     )
 
-    # --- Backend selector ---
-    backend_label = st.radio(
-        "Discovery backend",
-        options=["🖥️ Local VLM", "☁️ Claude"],
-        index=0,
-        horizontal=True,
-        key="batch_agent_backend",
-    )
-    backend_kind = "local" if backend_label.startswith("🖥️") else "claude"
-
     st.markdown("---")
-    if backend_kind == "local":
-        build_config = _render_local_vlm_config()
-    else:
-        build_config = _render_claude_config()
+    backend_kind = "claude"
+    build_config = _render_claude_config()
 
     st.markdown("---")
     skip_with_children = st.checkbox(
@@ -1102,7 +990,7 @@ def _render_coverage_bar(
             f"longest gap {longest_gap} iloc(s)  "
             f"{legend_note}"
         )
-        st.plotly_chart(fig, use_container_width=True, key=chart_key)
+        st.plotly_chart(fig, width="stretch", key=chart_key)
 
 
 def _compute_lap_coverage(lap_start: int, lap_end: int):

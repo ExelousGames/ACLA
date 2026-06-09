@@ -98,7 +98,7 @@ def _classifier_form(default_ann_key: str) -> None:
             "Learning rate", min_value=1e-6, max_value=1.0, value=1e-3, format="%.6f",
         )
         val_split = c4.slider("Val split", 0.0, 0.5, 0.1, 0.05)
-        if st.form_submit_button("🚀 Start", use_container_width=True):
+        if st.form_submit_button("🚀 Start", width="stretch"):
             cmd = [
                 sys.executable, "-u", str(_TRAINING_ENTRYPOINTS / "train_segment_classifier.py"),
                 "--epochs", str(int(epochs)),
@@ -114,7 +114,7 @@ def _classifier_form(default_ann_key: str) -> None:
 def _transformer_form(default_ann_key: str) -> None:
     with st.form("transformer_form"):
         ann_key = st.text_input("Annotation key", value=default_ann_key)
-        if st.form_submit_button("🚀 Start", use_container_width=True):
+        if st.form_submit_button("🚀 Start", width="stretch"):
             cmd = [
                 sys.executable, "-u", str(_TRAINING_ENTRYPOINTS / "train_transformer_guidance.py"),
                 "--annotation-key", ann_key,
@@ -146,7 +146,7 @@ def _opportunity_forecaster_form(default_ann_key: str) -> None:
             value=5000,
             help="Caps NO_OPPORTUNITY examples so positives are not drowned out.",
         )
-        if st.form_submit_button("Start", use_container_width=True):
+        if st.form_submit_button("Start", width="stretch"):
             cmd = [
                 sys.executable, "-u", str(_TRAINING_ENTRYPOINTS / "train_opportunity_forecaster.py"),
                 "--annotation-key", ann_key,

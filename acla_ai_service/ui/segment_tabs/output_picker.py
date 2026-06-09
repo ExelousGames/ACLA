@@ -116,7 +116,7 @@ def render_output_picker(
         with col_save:
             if st.button(
                 "Save & Continue", type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not (cleaned_dir and cleaned_name),
                 key=f"_output_picker_save_{node.id}",
             ):
@@ -139,7 +139,7 @@ def render_output_picker(
                 st.rerun()
         with col_cancel:
             if st.button(
-                "Cancel", use_container_width=True,
+                "Cancel", width="stretch",
                 key=f"_output_picker_cancel_{node.id}",
             ):
                 # Drop the node-active flag so the caller falls back to

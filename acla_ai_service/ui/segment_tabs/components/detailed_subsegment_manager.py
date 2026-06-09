@@ -119,9 +119,9 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
 
         c1, c2 = st.columns(2)
         with c1:
-            if st.button("Save Sub-Segment" if is_new else "Update Sub-Segment", use_container_width=True, type="primary"):
+            if st.button("Save Sub-Segment" if is_new else "Update Sub-Segment", width="stretch", type="primary"):
                 save_sub_segment_callback(sub_start, sub_end, sub_labels, sub_notes)
         with c2:
             if not is_new:
-                if st.button("Delete", use_container_width=True, type="secondary"):
+                if st.button("Delete", width="stretch", type="secondary"):
                     delete_sub_segment_callback()

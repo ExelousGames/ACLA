@@ -69,7 +69,7 @@ def render_pipeline_sidebar(store: Any, cfg: TrainingPipelineConfig) -> Optional
             "annotation component in the graph view."
         )
         if st.button("Create pipeline", type="primary",
-                     use_container_width=True, disabled=not new_name):
+                     width="stretch", disabled=not new_name):
             try:
                 pipeline = create_pipeline(
                     name=new_name,
@@ -94,7 +94,7 @@ def render_pipeline_sidebar(store: Any, cfg: TrainingPipelineConfig) -> Optional
     st.markdown("---")
     with st.expander("Maintenance"):
         if st.button("🗑️ Delete this pipeline", type="secondary",
-                     use_container_width=True):
+                     width="stretch"):
             delete_pipeline(pipeline.id)
             set_active_pipeline_id(None)
             st.success(f"Deleted pipeline `{pipeline.id}`.")

@@ -177,7 +177,7 @@ def _render_mode_picker(current: str, key_prefix: str) -> Optional[str]:
     ``st.button``\\s — see the ``st-key-mode_pick_*`` rules in ``_CARD_CSS``
     for the hover-expand behavior."""
     st.caption("Mode")
-    with st.popover(MODE_LABELS[current], use_container_width=True):
+    with st.popover(MODE_LABELS[current], width="stretch"):
         st.caption("Hover an option to see what it does, click to switch.")
         picked: Optional[str] = None
         for mode in MODE_ORDER:
@@ -186,7 +186,7 @@ def _render_mode_picker(current: str, key_prefix: str) -> Optional[str]:
             label = f"**{title}**\n\n{MODE_DESCRIPTIONS[mode]}"
             if st.button(
                 label, key=f"mode_pick_{key_prefix}_{mode}",
-                use_container_width=True, disabled=is_current,
+                width="stretch", disabled=is_current,
             ):
                 picked = mode
     return picked
@@ -513,7 +513,7 @@ def _render_dataset_structure_panel(
     st.caption(f"{status}" + (f" · {summary}" if summary else ""))
     rows = info["rows"]
     if rows:
-        st.dataframe(rows, hide_index=True, use_container_width=True)
+        st.dataframe(rows, hide_index=True, width="stretch")
     else:
         st.info("No structure available yet.")
 
@@ -719,13 +719,13 @@ def _render_maintenance_dropdown(
     refresh_disabled: bool,
     migrate_disabled: bool,
 ) -> None:
-    with st.popover("Maintenance", use_container_width=True):
+    with st.popover("Maintenance", width="stretch"):
         st.caption("Dataset maintenance")
 
         if st.button(
             "Refresh segments",
             key=f"refresh_segs_{node.id}",
-            use_container_width=True,
+            width="stretch",
             disabled=refresh_disabled,
             help=(
                 "Re-slice telemetry_data on every saved segment from the "
@@ -761,7 +761,7 @@ def _render_maintenance_dropdown(
         if st.button(
             "Migrate legacy labels",
             key=f"migrate_labels_{node.id}",
-            use_container_width=True,
+            width="stretch",
             disabled=migrate_disabled,
             help=(
                 "Replace old annotation labels in this node's output "
@@ -821,7 +821,7 @@ def _render_data_preparation_card(store: Any, cfg: TrainingPipelineConfig) -> No
 
     def _start_form() -> None:
         with st.form("prepare_data_form"):
-            if st.form_submit_button("Start data preparation", use_container_width=True):
+            if st.form_submit_button("Start data preparation", width="stretch"):
                 cmd = [
                     sys.executable,
                     "-u",
@@ -973,7 +973,7 @@ def _render_annotation_card(
                               if node.mode == MODE_SECONDARY_WORKER
                               else "Coworker")
                 st.button(stub_label, key=f"mode_status_{node.id}",
-                          use_container_width=True, disabled=True)
+                          width="stretch", disabled=True)
             else:
                 copy_key = source_copy_key(node.output_key) if node.output_key else None
                 source_ready = _has_cached_data(store, source_key)
@@ -982,7 +982,7 @@ def _render_annotation_card(
                 if st.button(
                     label,
                     key=f"source_copy_{node.id}",
-                    use_container_width=True,
+                    width="stretch",
                     disabled=not (node.output_key and source_ready and protection_ready),
                 ):
                     _run_source_copy_update(
@@ -1009,14 +1009,14 @@ def _render_annotation_card(
         with btn_cols[2]:
             if st.button(f"Open", key=f"open_ann_{node.id}",
                          type="primary",
-                         use_container_width=True, disabled=open_disabled):
+                         width="stretch", disabled=open_disabled):
                 _route(spec.ui_route,
                        annotation_key=pipeline.effective_output_key(node),
                        session_key=effective,
                        node_id=node.id)
         with btn_cols[3]:
             if st.button("🗑", key=f"del_ann_{node.id}",
-                         use_container_width=True,
+                         width="stretch",
                          help="Delete this annotation node"):
                 pipeline.annotations = [n for n in pipeline.annotations if n.id != node.id]
                 save_pipeline(pipeline)
@@ -1098,7 +1098,7 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         source_ref = st.session_state.get("add_ann_source")
         can_create = bool(name_clean) and bool(source_ref)
         if st.button("Create annotation node", type="primary",
-                     use_container_width=True,
+                     width="stretch",
                      disabled=not can_create):
             existing_ids = {n.id for n in pipeline.annotations} | {n.id for n in pipeline.trainings}
             if name_slug in existing_ids:
@@ -1152,13 +1152,13 @@ def _render_training_card(pipeline: Pipeline, node: TrainingNode, store: Any) ->
     btn_cols = st.columns([3, 0.4])
     with btn_cols[0]:
         if st.button(f"Configure {spec.display}", key=f"open_tr_{node.id}",
-                     use_container_width=True):
+                     width="stretch"):
             _route(spec.ui_route,
                    annotation_key=input_key or None,
                    training_node=node.id)
     with btn_cols[1]:
         if st.button("🗑", key=f"del_tr_{node.id}",
-                     use_container_width=True,
+                     width="stretch",
                      help="Delete this training node"):
             pipeline.trainings = [n for n in pipeline.trainings if n.id != node.id]
             save_pipeline(pipeline)
@@ -1190,7 +1190,7 @@ def _render_add_training(pipeline: Pipeline) -> None:
             st.caption(f"Node id will be: `{name_slug}`")
 
         if st.button("Create training node", type="primary",
-                     use_container_width=True,
+                     width="stretch",
                      disabled=not name_clean):
             existing = {n.id for n in pipeline.annotations} | {n.id for n in pipeline.trainings}
             if name_slug in existing:

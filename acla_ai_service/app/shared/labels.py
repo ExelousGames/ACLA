@@ -231,14 +231,19 @@ LABEL_MAPPING: Dict[str, str] = {
 
     "moza":"Moza",
     "moza1":"Straight between 1 Varinate and Curva Parabolica",
-    "moza2":"1 Varinate",
-    "moza3": "Curva Biassono",
-    "moza4": "2 Varinate",
-    "moza5": "Curve di Lesmo",
-    "moza6": "Curva del Serraglio",
-    "moza7": "Variante Ascari",
-    "moza8": "Curva Parabolica",
-    
+    "moza2":"1 Varinate 1st turn",
+    "moza3":"1 Varinate 2nd turn",
+    "moza4": "Curva Biassono",
+    "moza5": "2 Varinate",
+    "moza6": "Curve di Lesmo first curve",
+    "moza7": "Curve di Lesmo second curve",
+    "moza8": "Curva del Serraglio",
+    "moza9": "Variante Ascari 1st turn",
+    "moza10": "Variante Ascari 2nd turn",
+    "moza11": "Variante Ascari 3rd turn",
+    "moza12": "Straight between Variante Ascari and Curva Parabolica",
+    "moza13": "Curva Parabolica",
+
     ################### Segment Type ###################
     "ST1": "In the corner",
     "ST2": "On the straight",
@@ -292,6 +297,7 @@ LABEL_CATEGORIES: Dict[str, List[str]] = {
     "RM":["RM1", "RM2", "RM5","RM6","RM7","RM8","RM9","RM10","RM11"],
     "brands_hatch":["brands_hatch1","brands_hatch2","brands_hatch3","brands_hatch4","brands_hatch5","brands_hatch6","brands_hatch7","brands_hatch8","brands_hatch9","brands_hatch10","brands_hatch11","brands_hatch12","brands_hatch13","brands_hatch14","brands_hatch15","brands_hatch16","brands_hatch17","brands_hatch18","brands_hatch19"],
     "silverstone":["silverstone1","silverstone2","silverstone3","silverstone4","silverstone5","silverstone6","silverstone7","silverstone8","silverstone9","silverstone10","silverstone11","silverstone12","silverstone13","silverstone14","silverstone15","silverstone16","silverstone17","silverstone18","silverstone20","silverstone21","silverstone19"],
+    "moza":["moza1","moza2","moza3","moza4","moza5","moza6","moza7","moza8","moza9","moza10","moza11","moza12","moza13"],
     "MSP":["MSP1","MSP2","MSP3","MSP4","MSP5","MSP6","MSP7","MSP8","MSP9","MSP10","MSP11","MSP13","MSP14","MSP15","MSP16","MSP17","MSP18","MSP19","MSP20","MSP21","MSP22","MSP23","MSP24","MSP25","MSP26","MSP27","MSP28","MSP29","MSP30","MSP31","MSP32","MSP33","MSP34","MSP35","MSP36","MSP37","MSP38","MSP41","MSP42","MSP43","MSP44","MSP45","MSP46","MSP47","MSP48","MSP49","MSP50","MSP51","MSP52"],
     "MSR":["MSR1","MSR2","MSR3","MSR4","MSR5","MSR6","MSR7","MSR8"],
     "Segment Type": ["ST1", "ST2", "ST3", "ST4", "ST5", "ST6", "ST7", "ST8", "ST9", "ST10", "ST11", "ST12", "ST13", "ST14", "ST15", "ST16", "ST17", "ST18", "ST19", "ST20"]

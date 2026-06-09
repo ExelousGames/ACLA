@@ -39,7 +39,20 @@ CIRCUIT_SECTION_RANGES: Dict[str, Tuple[float, float]] = {
     "brands_hatch17": (0.94, 1.0),
     "brands_hatch18": (0.09, 0.11),
     "brands_hatch19": (0.18, 0.19),
-    # Silverstone — ranges TBD; entries omitted until measured.
+    #Moza
+    "moza1": (0.93, 0.08),
+    "moza2": (0.08, 0.164242),
+    "moza3": (0.164242, 0.19),
+    "moza4": (0.19, 0.285),
+    "moza5": (0.285, 0.39),
+    "moza6": (0.39, 0.467),
+    "moza7": (0.467, 0.51),
+    "moza8": (0.51, 0.623),
+    "moza9": (0.623, 0.69046),
+    "moza10": (0.69046, 0.709655),
+    "moza11": (0.709655, 0.736),
+    "moza12": (0.736, 0.84),
+    "moza13": (0.84, 0.93),
 }
 
 

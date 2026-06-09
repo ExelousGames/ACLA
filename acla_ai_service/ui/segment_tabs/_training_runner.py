@@ -160,20 +160,20 @@ def render_card(
     meta_col.code(" ".join(marker.get("cmd", [])), language="bash")
 
     bc = st.columns(3)
-    if bc[0].button("🔄 Refresh", key=f"{job}_refresh", use_container_width=True):
+    if bc[0].button("🔄 Refresh", key=f"{job}_refresh", width="stretch"):
         st.rerun()
     if running:
-        if bc[1].button("⏹ Stop", key=f"{job}_stop", use_container_width=True):
+        if bc[1].button("⏹ Stop", key=f"{job}_stop", width="stretch"):
             stop(pid)
             st.warning("SIGTERM sent. Click Refresh in a few seconds.")
     else:
         if bc[1].button(
-            "🧹 Clear status", key=f"{job}_clear", use_container_width=True,
+            "🧹 Clear status", key=f"{job}_clear", width="stretch",
         ):
             clear_marker(job)
             st.rerun()
     if bc[2].button(
-        "🆕 New run", key=f"{job}_new", use_container_width=True, disabled=running,
+        "🆕 New run", key=f"{job}_new", width="stretch", disabled=running,
         help="Clear status and show the start form again.",
     ):
         clear_marker(job)
