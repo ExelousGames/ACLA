@@ -1,7 +1,6 @@
 """Shared helpers for the VLM sub-segment discovery components.
 
-Used by ``detailed_agent_annotation_local.py`` and
-``detailed_agent_annotation_claude.py``. Owns:
+Used by provider-selected detailed AI annotation UI. Owns:
 
 - ``LiveVlmOutput``: streaming output renderer (collapsible per-step UI)
 - ``execute_pipeline_run``: wraps the LangGraph call with progress / live UI
@@ -9,7 +8,7 @@ Used by ``detailed_agent_annotation_local.py`` and
 - ``render_staged_review``: editable per-row review panel + atomic save
 - ``collect_parent_info``: parent_id / main-label hints / existing children
 
-Both backends share ``st.session_state['agent_annot_result']`` so the
+All providers share ``st.session_state['agent_annot_result']`` so the
 staged-review panel is last-run-wins.
 """
 
@@ -247,7 +246,7 @@ class LiveVlmOutput:
 
 
 def collect_parent_info(form_labels):
-    """Resolve parent metadata used by both backends.
+    """Resolve parent metadata used by all providers.
 
     Returns ``(parent_id, parent_main_label_ids, existing_children)``.
     Only Main Labels are forwarded as hints to the VLM; existing
@@ -295,17 +294,14 @@ def execute_pipeline_run(
     Caches the result under ``st.session_state['agent_annot_result']``
     so the shared staged-review panel below can pick it up.
     """
-    # One unified entry dispatches on config.backend internally; the agent
-    # box picks the LangGraph runner for "local" and the agentic Claude
-    # runner for "claude" via run_agent.
-    backend = getattr(config, "backend", "local")
+    provider_id = getattr(config, "provider_id", "local_vlm")
     try:
         from app.local_annotation_agent.workflow import run_annotation
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
             "Install with: `pip install langgraph langchain-core` "
-            "(or `pip install claude-agent-sdk` for the Claude backend)."
+            "(or the selected provider's SDK, e.g. `claude-agent-sdk`)."
         )
         return
 
@@ -316,11 +312,7 @@ def execute_pipeline_run(
     live = LiveVlmOutput()
     live.attach_progress(progress_bar, status_text)
 
-    spinner_msg = (
-        "Claude is analysing the segment…"
-        if backend == "claude"
-        else "Running sub-segment discovery pipeline…"
-    )
+    spinner_msg = f"Running sub-segment discovery with {provider_id}..."
     try:
         with st.spinner(spinner_msg):
             result = run_annotation(
@@ -352,23 +344,23 @@ def execute_pipeline_run(
     render_pipeline_result(result, form_start, form_end)
     st.session_state["agent_annot_result"] = result
 
-    # Claude-only: stash the context the follow-up chat needs so it can
+    # Claude CLI-only: stash the context the follow-up chat needs so it can
     # re-create the same parent / tool environment on every rerun.
-    if backend == "claude":
+    if provider_id == "claude_cli":
         st.session_state["agent_annot_followup_ctx"] = {
             "df": df,
             "parent_start": int(form_start),
             "parent_end": int(form_end),
             "parent_main_labels": list(parent_main_label_ids),
             "existing_children": list(existing_children),
-            "claude_model": getattr(config, "claude_model", "claude-sonnet-4-6"),
-            "use_thinking": bool(getattr(config, "claude_use_thinking", False)),
-            "max_turns": int(getattr(config, "max_iterations", 3)) * 10,
+            "claude_model": getattr(config, "model", ""),
+            "use_thinking": bool(getattr(config, "provider_options", {}).get("use_thinking", False)),
+            "max_turns": int(getattr(config, "provider_options", {}).get("max_turns", 30)),
         }
         # Fresh chat per new annotation run.
         st.session_state["agent_annot_followup_chat"] = []
     else:
-        # Local-VLM run replaces a prior Claude result — drop the stale
+        # Non-Claude run replaces a prior Claude result — drop the stale
         # follow-up state so the chat doesn't dangle over an unrelated run.
         st.session_state.pop("agent_annot_followup_ctx", None)
         st.session_state.pop("agent_annot_followup_chat", None)
@@ -445,7 +437,7 @@ def render_staged_review(
     """Editable per-row review panel for the most recent pipeline result.
 
     Reads ``st.session_state['agent_annot_result']`` — shared across
-    both backends, last-run-wins. No-op when no result is pending.
+    all providers, last-run-wins. No-op when no result is pending.
     """
     if "agent_annot_result" not in st.session_state:
         return

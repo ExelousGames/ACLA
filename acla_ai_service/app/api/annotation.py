@@ -41,31 +41,15 @@ router = APIRouter(prefix="/annotation", tags=["annotation"])
 
 
 Flow = Literal["detailed", "lap"]
-Backend = Literal["local", "claude"]
-
-
 class _ConfigBody(BaseModel):
-    """Config knobs forwarded to AnnotationPipelineConfig.
+    """Provider-neutral config forwarded to AnnotationPipelineConfig."""
 
-    Mirrors the dataclass fields without their callback machinery — the
-    HTTP entrypoint omits streaming callbacks (deferred to SSE).
-    """
-
-    backend: Backend = "local"
+    provider_id: str = "local_vlm"
+    model: str = ""
     max_new_tokens: int = 1500
     temperature: float = 0.7
-
-    # local VLM (llama-server)
-    gguf_path: Optional[str] = None
-    mmproj_path: Optional[str] = None
-    context_size: int = 32768
-    n_gpu_layers: int = -1
-    hf_repo: str = "Qwen/Qwen2.5-VL-72B-Instruct"
-    quantization_type: str = "Q4_K_M"
-
-    # claude
-    claude_model: str = "claude-sonnet-4-6"
-    claude_use_thinking: bool = False
+    max_iterations: int = 3
+    provider_options: Dict[str, Any] = Field(default_factory=dict)
 
 
 class _AnnotationRunRequest(BaseModel):
@@ -147,17 +131,12 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
 
     config_body = req.config or _ConfigBody()
     config = AnnotationPipelineConfig(
-        backend=config_body.backend,
+        provider_id=config_body.provider_id,
+        model=config_body.model,
         max_new_tokens=config_body.max_new_tokens,
         temperature=config_body.temperature,
-        gguf_path=config_body.gguf_path,
-        mmproj_path=config_body.mmproj_path,
-        context_size=config_body.context_size,
-        n_gpu_layers=config_body.n_gpu_layers,
-        hf_repo=config_body.hf_repo,
-        quantization_type=config_body.quantization_type,
-        claude_model=config_body.claude_model,
-        claude_use_thinking=config_body.claude_use_thinking,
+        max_iterations=config_body.max_iterations,
+        provider_options=dict(config_body.provider_options),
     )
 
     try:
@@ -192,7 +171,7 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
 
     return {
         "flow": req.flow,
-        "backend": config.backend,
+        "provider_id": config.provider_id,
         "result": _result_to_dict(result),
     }
 
@@ -249,24 +228,19 @@ async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse
       vlm_stream   {"chunk": str}            ← user-visible VLM tokens
       vlm_reasoning{"chunk": str}            ← thinking blocks (claude only)
       step_event   {"summary": str, "stage": dict}
-      done         {"flow": "detailed"|"lap", "backend": str, "result": dict}
+      done         {"flow": "detailed"|"lap", "provider_id": str, "result": dict}
       error        {"message": str, "error_type": str}
     """
     df = _load_dataframe(req.cache_key, req.session_id)
 
     config_body = req.config or _ConfigBody()
     config = AnnotationPipelineConfig(
-        backend=config_body.backend,
+        provider_id=config_body.provider_id,
+        model=config_body.model,
         max_new_tokens=config_body.max_new_tokens,
         temperature=config_body.temperature,
-        gguf_path=config_body.gguf_path,
-        mmproj_path=config_body.mmproj_path,
-        context_size=config_body.context_size,
-        n_gpu_layers=config_body.n_gpu_layers,
-        hf_repo=config_body.hf_repo,
-        quantization_type=config_body.quantization_type,
-        claude_model=config_body.claude_model,
-        claude_use_thinking=config_body.claude_use_thinking,
+        max_iterations=config_body.max_iterations,
+        provider_options=dict(config_body.provider_options),
     )
 
     queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
@@ -318,7 +292,7 @@ async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse
             push(_sse(
                 "done",
                 flow=req.flow,
-                backend=config.backend,
+                provider_id=config.provider_id,
                 result=_result_to_dict(result),
             ))
         except ValueError as exc:

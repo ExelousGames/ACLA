@@ -8,7 +8,7 @@ Public annotation pipeline entry — the only function the UI calls.
         LapAnnotationResult,
     )
 
-    config = AnnotationPipelineConfig(backend="local", ...)
+    config = AnnotationPipelineConfig(provider_id="local_vlm", ...)
 
     result = run_annotation(
         flow="detailed",                # "detailed" or "lap"
@@ -25,7 +25,7 @@ Public annotation pipeline entry — the only function the UI calls.
 Internally:
     1. Picks the flow module (annotation.flows.detailed / .lap).
     2. ``flow.build_request(...)`` translates domain intent into AgentRequest.
-    3. ``run_agent(request)`` dispatches to the local or claude runner.
+    3. ``run_agent(request)`` dispatches through the annotation provider registry.
     4. ``flow.parse(response, ...)`` decodes raw text into a typed result.
 
 Each layer has one job. The agent box never sees racing types; the flows
@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
 # Side-effect imports — register annotation-domain agents, tools, and
 # structured-attachment formatters with the agent box. Order matters:
@@ -50,9 +50,10 @@ from app.local_annotation_agent.workflow import tools       # noqa: F401
 from app.local_annotation_agent import AgentRequest, AgentResponse, run_agent
 from app.shared.contracts import (
     AgentCallbacks,
-    BackendConfig,
     NoopCallbacks,
+    ProviderConfig,
 )
+from app.annotation_providers.registry import get_annotation_provider
 from app.local_annotation_agent.workflow.flows import detailed as detailed_flow
 from app.local_annotation_agent.workflow.flows import lap as lap_flow
 from app.local_annotation_agent.workflow.followup import run_claude_followup
@@ -65,53 +66,29 @@ LOGGER = logging.getLogger(__name__)
 
 
 Flow = Literal["detailed", "lap"]
-Backend = Literal["local", "claude"]
-
-
-# ---------------------------------------------------------------------------
-# Backwards-compatible config — wraps BackendConfig + retains old field names
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class AnnotationPipelineConfig:
-    """Config the UI passes. Mirrors the old shape so callers don't break.
+    """Provider-neutral config the annotation UI/API passes."""
 
-    Translates to ``BackendConfig`` internally before reaching the agent.
-    Backend-irrelevant generation knobs sit at the top level; backend-
-    specific knobs are grouped by backend.
-    """
-
-    backend: Backend = "local"
-
-    max_iterations: int = 3  # kept for API parity; not honoured by the new runners
+    provider_id: str = "local_vlm"
+    model: str = ""
+    max_iterations: int = 3
     max_new_tokens: int = 1500
     temperature: float = 0.7
+    provider_options: Dict[str, Any] = field(default_factory=dict)
 
-    # local VLM (llama-server)
-    gguf_path: Optional[str] = None
-    mmproj_path: Optional[str] = None
-    context_size: int = 32768
-    n_gpu_layers: int = -1
-    hf_repo: str = "Qwen/Qwen2.5-VL-72B-Instruct"
-    quantization_type: str = "Q4_K_M"
-
-    # claude
-    claude_model: str = "claude-sonnet-4-6"
-    claude_use_thinking: bool = False
-
-    def to_backend_config(self) -> BackendConfig:
-        return BackendConfig(
+    def to_provider_config(self) -> ProviderConfig:
+        provider = get_annotation_provider(self.provider_id)
+        model = self.model or provider.default_model_id()
+        options = dict(provider.option_defaults())
+        options.update(self.provider_options or {})
+        options.setdefault("max_turns", int(self.max_iterations) * 10)
+        return ProviderConfig(
+            provider_id=self.provider_id,
+            model=model,
             max_new_tokens=self.max_new_tokens,
             temperature=self.temperature,
-            gguf_path=self.gguf_path,
-            mmproj_path=self.mmproj_path,
-            hf_repo=self.hf_repo,
-            quantization_type=self.quantization_type,
-            context_size=self.context_size,
-            n_gpu_layers=self.n_gpu_layers,
-            claude_model=self.claude_model,
-            claude_use_thinking=self.claude_use_thinking,
+            provider_options=options,
         )
 
 
@@ -178,10 +155,10 @@ def run_annotation(
     opponent_interaction: Optional[dict] = None,
     existing_section_annotations: Optional[List[dict]] = None,
 ) -> Union[AnnotationResult, LapAnnotationResult]:
-    """Run one annotation across the chosen flow and backend.
+    """Run one annotation across the chosen flow and annotation provider.
 
     The dispatch is data: pick the flow module, build the request, run
-    the agent, parse the response. No conditional logic about backends
+    the agent, parse the response. No provider-specific logic
     here — that's resolved inside the agent runner.
     """
     config = config or AnnotationPipelineConfig()
@@ -192,23 +169,26 @@ def run_annotation(
         vlm_reasoning_callback,
         step_event_callback,
     )
-    backend_config = config.to_backend_config()
+    provider = get_annotation_provider(config.provider_id)
+    provider_config = config.to_provider_config()
 
     if flow == "detailed":
         return _run_detailed(
-            backend=config.backend,
+            provider_id=config.provider_id,
+            prompt_mode=provider.prompt_mode,
             df=df,
             parent_start=_require(start_index, "start_index"),
             parent_end=_require(end_index, "end_index"),
             parent_main_labels=list(parent_main_labels or []),
             existing_children=list(existing_children or []),
-            backend_config=backend_config,
+            provider_config=provider_config,
             callbacks=callbacks,
             session_id=session_id,
         )
     if flow == "lap":
         return _run_lap(
-            backend=config.backend,
+            provider_id=config.provider_id,
+            prompt_mode=provider.prompt_mode,
             df=df,
             lap_start=_require(lap_start, "lap_start"),
             lap_end=_require(lap_end, "lap_end"),
@@ -219,7 +199,7 @@ def run_annotation(
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
             existing_section_annotations=list(existing_section_annotations or []),
-            backend_config=backend_config,
+            provider_config=provider_config,
             callbacks=callbacks,
             session_id=session_id,
         )
@@ -228,31 +208,33 @@ def run_annotation(
 
 def _run_detailed(
     *,
-    backend: Backend,
+    provider_id: str,
+    prompt_mode: str,
     df,
     parent_start: int,
     parent_end: int,
     parent_main_labels: List[str],
     existing_children: List[dict],
-    backend_config: BackendConfig,
+    provider_config: ProviderConfig,
     callbacks: AgentCallbacks,
     session_id: str,
 ) -> AnnotationResult:
     request = detailed_flow.build_request(
-        backend=backend,
+        provider_id=provider_id,
+        prompt_mode=prompt_mode,
         df=df,
         parent_start=parent_start,
         parent_end=parent_end,
         parent_main_labels=parent_main_labels,
         existing_children=existing_children,
-        config=backend_config,
+        config=provider_config,
         callbacks=callbacks,
         session_id=session_id,
     )
     response = run_agent(request)
     return detailed_flow.parse(
         response,
-        backend=backend,
+        prompt_mode=prompt_mode,
         parent_start=parent_start,
         parent_end=parent_end,
     )
@@ -260,7 +242,8 @@ def _run_detailed(
 
 def _run_lap(
     *,
-    backend: Backend,
+    provider_id: str,
+    prompt_mode: str,
     df,
     lap_start: int,
     lap_end: int,
@@ -271,12 +254,13 @@ def _run_lap(
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
     existing_section_annotations: List[dict],
-    backend_config: BackendConfig,
+    provider_config: ProviderConfig,
     callbacks: AgentCallbacks,
     session_id: str,
 ) -> LapAnnotationResult:
     request = lap_flow.build_request(
-        backend=backend,
+        provider_id=provider_id,
+        prompt_mode=prompt_mode,
         df=df,
         lap_start=lap_start,
         lap_end=lap_end,
@@ -287,7 +271,7 @@ def _run_lap(
         section_split_basis=section_split_basis,
         opponent_interaction=opponent_interaction,
         existing_section_annotations=existing_section_annotations,
-        config=backend_config,
+        config=provider_config,
         callbacks=callbacks,
         session_id=session_id,
     )
@@ -297,7 +281,7 @@ def _run_lap(
     # already carries them — no deterministic post-merge here.
     return lap_flow.parse(
         response,
-        backend=backend,
+        prompt_mode=prompt_mode,
         lap_start=lap_start,
         lap_end=lap_end,
         section_id=section_id,

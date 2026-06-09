@@ -117,6 +117,18 @@ class Settings(BaseSettings):
     # than the final top_k so the fusion has overlap to work with.
     hybrid_candidate_pool: int = 20
 
+    # AI annotation providers. This is intentionally separate from the
+    # hosted Groq/chatbot settings above; annotation provider selection is
+    # per-run in the Streamlit annotation UI.
+    annotation_enabled_providers: Optional[str] = None
+    annotation_openai_api_key_env: str = "OPENAI_API_KEY"
+    annotation_openai_models: str = "gpt-4o,gpt-4.1"
+    annotation_openai_default_model: str = "gpt-4o"
+    annotation_openai_compatible_base_url: Optional[str] = None
+    annotation_openai_compatible_api_key_env: str = "ANNOTATION_OPENAI_COMPATIBLE_API_KEY"
+    annotation_openai_compatible_models: Optional[str] = None
+    annotation_openai_compatible_default_model: Optional[str] = None
+
     # Hugging Face Configuration
     hf_token: Optional[str] = None
     hf_username: Optional[str] = None

@@ -8,8 +8,8 @@ offence / defence engagement ranges. One run of this flow annotates ONE
 range: the agent inspects telemetry, optionally shrinks/extends the
 boundary, and submits a single label proposal.
 
-    build_request(backend, df, lap_start, lap_end, section_id, ...)
-    parse(response, backend, ...) -> LapAnnotationResult
+    build_request(provider_id, prompt_mode, df, lap_start, lap_end, section_id, ...)
+    parse(response, prompt_mode, ...) -> LapAnnotationResult
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from app.local_annotation_agent import (
     AgentRequest,
     AgentResponse,
     Attachment,
-    BackendConfig,
+    ProviderConfig,
 )
 from app.shared.contracts import AgentCallbacks, NoopCallbacks
 from app.local_annotation_agent.workflow.results import (
@@ -635,7 +635,8 @@ def _claude_task_prompt(
 
 def build_request(
     *,
-    backend: str,
+    provider_id: str,
+    prompt_mode: str,
     df,
     lap_start: int,
     lap_end: int,
@@ -646,12 +647,12 @@ def build_request(
     section_split_basis: Optional[str] = None,
     opponent_interaction: Optional[dict] = None,
     existing_section_annotations: Optional[List[dict]] = None,
-    config: Optional[BackendConfig] = None,
+    config: Optional[ProviderConfig] = None,
     callbacks: Optional[AgentCallbacks] = None,
     session_id: str = "",
 ) -> AgentRequest:
     existing_section_annotations = list(existing_section_annotations or [])
-    config = config or BackendConfig()
+    config = config or ProviderConfig(provider_id=provider_id)
     callbacks = callbacks or NoopCallbacks()
 
     section_name = LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
@@ -689,7 +690,7 @@ def build_request(
     parent_start = int(section_start)
     parent_end = int(section_end)
 
-    if backend == "local":
+    if prompt_mode == "local_pipeline":
         planner_prompt = _local_planner_prompt(
             lap_start=lap_start,
             lap_end=lap_end,
@@ -716,7 +717,7 @@ def build_request(
         )
         extra_state = {"root_agent": "annotation_root"}
     else:
-        # For Claude, parent_start/end on the request bound the
+        # For tool agents, parent_start/end on the request bound the
         # working envelope. We use the LAP range so revise_range can
         # extend outward when a shrink/extend rule fires.
         parent_start = int(lap_start)
@@ -733,11 +734,12 @@ def build_request(
         synth_prompt = lambda _state: ("", "")
         extra_state = {
             "root_agent": "annotation_root",
+            "tool_agent_extra_tools": [CLAUDE_SEARCH_LABELS_TOOL],
             "claude_extra_tools": [CLAUDE_SEARCH_LABELS_TOOL],
         }
 
     return AgentRequest(
-        backend=backend,  # type: ignore[arg-type]
+        provider_id=provider_id,
         config=config,
         planner_prompt=planner_prompt,
         synth_prompt=synth_prompt,
@@ -754,7 +756,7 @@ def build_request(
 def parse(
     response: AgentResponse,
     *,
-    backend: str,
+    prompt_mode: str,
     lap_start: int,
     lap_end: int,
     section_id: str,
@@ -765,16 +767,16 @@ def parse(
 ) -> LapAnnotationResult:
     """Decode the raw response into a LapAnnotationResult.
 
-    ``backend="local"`` expects the JSON schema with revised_range +
-    label_ids + reasoning. ``backend="claude"`` reads the submit payload
-    ({label_ids, reasoning}) and the revised range from
-    ``response.attachments["claude.revised_range"]``.
+    ``prompt_mode="local_pipeline"`` expects the JSON schema with
+    revised_range + label_ids + reasoning. ``prompt_mode="tool_agent"``
+    reads the submit payload and any provider-neutral revised range
+    attachment.
 
     Returns only what the LLM committed to — including the circuit and
     circuit_section ids the LLM picked via ``get_circuit_id`` /
     ``locate_circuit_section``.
     """
-    if backend == "claude":
+    if prompt_mode == "tool_agent":
         return _parse_claude(response, lap_start, lap_end, section_id,
                              section_start, section_end, circuit_id,
                              opponent_interaction)
@@ -877,11 +879,14 @@ def _parse_claude(
         )
         reasoning = str(parsed.get("reasoning") or "")
 
-    # Resolve final range — prefer claude.revised_range attachment when
+    # Resolve final range — prefer tool_agent.revised_range attachment when
     # revise_range fired; otherwise the section's rough boundary.
     new_start, new_end = int(section_start), int(section_end)
     revised = False
-    revised_att = response.attachments.get("claude.revised_range")
+    revised_att = (
+        response.attachments.get("tool_agent.revised_range")
+        or response.attachments.get("claude.revised_range")
+    )
     if revised_att and isinstance(revised_att.content, dict):
         new_start = int(revised_att.content.get("start_index", section_start))
         new_end = int(revised_att.content.get("end_index", section_end))
@@ -903,7 +908,10 @@ def _parse_claude(
     if summary_att and isinstance(summary_att.content, str) and summary_att.content:
         reasoning = summary_att.content
 
-    transcript_att = response.attachments.get("claude.transcript")
+    transcript_att = (
+        response.attachments.get("tool_agent.transcript")
+        or response.attachments.get("claude.transcript")
+    )
     transcript = (
         transcript_att.content
         if transcript_att and isinstance(transcript_att.content, str)

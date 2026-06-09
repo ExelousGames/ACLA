@@ -14,40 +14,30 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Protocol, Tuple
 
 
 # ---------------------------------------------------------------------------
-# Backend selection + config
+# Annotation provider selection + config
 # ---------------------------------------------------------------------------
 
 
-Backend = Literal["local", "claude"]
-
-
 @dataclass
-class BackendConfig:
-    """Backend-specific knobs. Only the fields matching the active backend
-    are read; the rest are ignored.
+class ProviderConfig:
+    """Provider-neutral annotation LLM config.
 
-    ``backend == "local"`` reads gguf_path / mmproj_path / hf_repo /
-    quantization_type / context_size / n_gpu_layers.
-
-    ``backend == "claude"`` reads claude_model / claude_use_thinking.
-
-    Generation knobs (max_new_tokens, temperature) apply to both.
+    The application layer selects a provider by id and model. Provider-
+    specific options live in ``provider_options`` and are interpreted only
+    by the selected provider adapter. This keeps application flows from
+    carrying fields for every possible AI service.
     """
 
+    provider_id: str = "local_vlm"
+    model: str = ""
     max_new_tokens: int = 1500
     temperature: float = 0.7
+    provider_options: Dict[str, Any] = field(default_factory=dict)
 
-    # local VLM (llama-server)
-    gguf_path: Optional[str] = None
-    mmproj_path: Optional[str] = None
-    hf_repo: str = "Qwen/Qwen2.5-VL-72B-Instruct"
-    quantization_type: str = "Q4_K_M"
-    context_size: int = 32768
-    n_gpu_layers: int = -1
 
-    # claude
-    claude_model: str = "claude-sonnet-4-6"
-    claude_use_thinking: bool = False
+# Backwards-compatible export name for modules not yet migrated. The shape is
+# provider-neutral; do not add provider-specific fields here.
+BackendConfig = ProviderConfig
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +135,8 @@ class AgentRequest:
     the only source of intent.
 
     Fields:
-        backend             which execution path to take.
-        config              backend-specific knobs.
+        provider_id         selected annotation provider id.
+        config              provider-neutral generation config.
         planner_prompt      full text the planner sends to the VLM. The
                             planner decides which sub-agents to schedule;
                             constrain that choice in natural language here.
@@ -169,8 +159,8 @@ class AgentRequest:
                             state schema survive LangGraph's filtering.
     """
 
-    backend: Backend
-    config: BackendConfig
+    provider_id: str
+    config: ProviderConfig
     planner_prompt: str
     synth_prompt: Callable[[Dict[str, Any]], Tuple[str, str]]
     df_ref: Any

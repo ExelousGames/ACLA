@@ -4,7 +4,7 @@ Detailed (sub-segment discovery) flow.
 Wraps the agent box for the "discover ONE notable sub-segment within a
 parent segment" use case. Provides:
 
-    build_request(backend, df, range_, ...) -> AgentRequest
+    build_request(provider_id, prompt_mode, df, range_, ...) -> AgentRequest
     parse(response, ...) -> AnnotationResult
 
 The prompts and parsing here are racing-specific (parent_main_labels,
@@ -25,7 +25,7 @@ from app.local_annotation_agent import (
     AgentRequest,
     AgentResponse,
     Attachment,
-    BackendConfig,
+    ProviderConfig,
 )
 from app.shared.contracts import AgentCallbacks, NoopCallbacks
 from app.local_annotation_agent.workflow.results import (
@@ -396,24 +396,24 @@ def _claude_task_prompt(
 
 def build_request(
     *,
-    backend: str,
+    provider_id: str,
+    prompt_mode: str,
     df,
     parent_start: int,
     parent_end: int,
     parent_main_labels: List[str],
     existing_children: Optional[List[dict]] = None,
-    config: Optional[BackendConfig] = None,
+    config: Optional[ProviderConfig] = None,
     callbacks: Optional[AgentCallbacks] = None,
     session_id: str = "",
 ) -> AgentRequest:
     """Build the AgentRequest for one detailed-flow run.
 
-    Backend-aware: local + claude get different prompts (the local
-    planner emits a JSON plan; Claude reads the task + submit schema and
-    drives via MCP tools).
+    Prompt-mode-aware: local_pipeline gets a JSON-plan prompt; tool_agent
+    providers get a task + submit schema and drive via tools.
     """
     existing_children = list(existing_children or [])
-    config = config or BackendConfig()
+    config = config or ProviderConfig(provider_id=provider_id)
     callbacks = callbacks or NoopCallbacks()
 
     # Seed pool so describe_graphs / label_verifier can read it from their
@@ -440,7 +440,7 @@ def build_request(
         },
     )
 
-    if backend == "local":
+    if prompt_mode == "local_pipeline":
         planner_prompt = _local_planner_prompt(
             parent_start=parent_start,
             parent_end=parent_end,
@@ -468,11 +468,12 @@ def build_request(
     extra_state: Dict[str, Any] = {
         "root_agent": "annotation_root",
     }
-    if backend == "claude":
+    if prompt_mode == "tool_agent":
+        extra_state["tool_agent_extra_tools"] = [CLAUDE_SEARCH_LABELS_TOOL]
         extra_state["claude_extra_tools"] = [CLAUDE_SEARCH_LABELS_TOOL]
 
     return AgentRequest(
-        backend=backend,  # type: ignore[arg-type]
+        provider_id=provider_id,
         config=config,
         planner_prompt=planner_prompt,
         synth_prompt=synth_prompt,
@@ -489,20 +490,20 @@ def build_request(
 def parse(
     response: AgentResponse,
     *,
-    backend: str,
+    prompt_mode: str,
     parent_start: int,
     parent_end: int,
 ) -> AnnotationResult:
     """Decode the agent's raw_response into an AnnotationResult.
 
-    ``backend="local"`` expects a JSON object with a ``labels`` key (each
-    entry: label_id / proved / [start_index, end_index] / reasoning).
-    ``backend="claude"`` expects a JSON object with a ``proposals`` key.
+    ``prompt_mode="local_pipeline"`` expects a JSON object with a
+    ``labels`` key. ``prompt_mode="tool_agent"`` expects a submitted
+    JSON object with a ``proposals`` key.
     Both shapes lower to the same AnnotationResult.
     """
     raw = response.raw_response or ""
 
-    if backend == "claude":
+    if prompt_mode == "tool_agent":
         return _parse_claude(response, raw, parent_start, parent_end)
     return _parse_local(response, raw, parent_start, parent_end)
 

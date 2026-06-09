@@ -306,13 +306,14 @@ def _wire_local_vlm(
     step_events: List[StepEvent],
 ) -> None:
     """Bind the local VLM callables every sub-agent + evaluator reads."""
+    opts = request.config.provider_options
     cfg = LocalVLMConfig(
-        gguf_path=request.config.gguf_path,
-        mmproj_path=request.config.mmproj_path,
-        context_size=request.config.context_size,
-        n_gpu_layers=request.config.n_gpu_layers,
-        hf_repo=request.config.hf_repo,
-        quantization_type=request.config.quantization_type,
+        gguf_path=opts.get("gguf_path") or None,
+        mmproj_path=opts.get("mmproj_path") or None,
+        context_size=int(opts.get("context_size") or 32768),
+        n_gpu_layers=int(opts.get("n_gpu_layers") if opts.get("n_gpu_layers") is not None else -1),
+        hf_repo=request.config.model or str(opts.get("hf_repo") or "Qwen/Qwen2.5-VL-72B-Instruct"),
+        quantization_type=str(opts.get("quantization_type") or "Q4_K_M"),
     )
     vlm_service = get_or_start_service(cfg)
 

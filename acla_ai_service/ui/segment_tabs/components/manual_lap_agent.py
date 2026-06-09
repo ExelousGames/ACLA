@@ -1,19 +1,16 @@
-"""Dispatcher for the lap-to-segment excerpter (manual.py).
-
-Renders both backends as independent expanders, followed by the shared
-staged-review panel. Mirrors the layout of
-``detailed_agent_annotation.py``.
-"""
+"""Dispatcher for the provider-selected lap-to-segment excerpter."""
 
 from __future__ import annotations
 
 import streamlit as st
 
 from ._lap_agent_shared import (
+    KEY_LAP_RANGE, KEY_LAP_CIRCUIT,
+    execute_lap_agent_run,
     render_lap_panel, render_lap_staged_review, track_name_to_circuit_id,
 )
-from .manual_lap_agent_claude import render_lap_agent_claude
-from .manual_lap_agent_local import render_lap_agent_local
+from .annotation_provider_controls import render_annotation_provider_config
+from app.local_annotation_agent.workflow import run_annotation
 
 
 def render_manual_lap_agent(df, session_id, selected_annotation_key):
@@ -35,10 +32,62 @@ def render_manual_lap_agent(df, session_id, selected_annotation_key):
     circuit_id = track_name_to_circuit_id(track_name)
 
     # Lap range picker + rough split + current-section view render ONCE here
-    # so the backend expanders share one widget key namespace.
+    # so the provider panel uses one widget key namespace.
     head = render_lap_panel(df, circuit_id)
 
-    render_lap_agent_local(df, session_id, selected_annotation_key, circuit_id, head)
-    render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id, head)
+    with st.expander("AI Lap-to-Segment Excerpter"):
+        config = render_annotation_provider_config(
+            key_prefix="lap_provider",
+            default_temperature=0.3,
+            default_max_new_tokens=1500,
+            default_tool_budget=3,
+        )
+
+        if head is None:
+            st.caption(
+                "Pick a valid lap range above - the splitter fills the array automatically."
+            )
+        else:
+            existing = _collect_existing_lap_annotations()
+            if st.button(
+                "Run AI on current section",
+                key="lap_provider_run",
+                type="primary",
+                disabled=config is None,
+            ) and config is not None:
+                def _run_lap(**kw):
+                    return run_annotation(flow="lap", config=config, **kw)
+
+                lap_start, lap_end = st.session_state[KEY_LAP_RANGE]
+                execute_lap_agent_run(
+                    run_fn=_run_lap,
+                    df=df,
+                    lap_start=int(lap_start),
+                    lap_end=int(lap_end),
+                    head_segment=head,
+                    circuit_id=st.session_state[KEY_LAP_CIRCUIT],
+                    existing=existing,
+                    extra_kwargs={},
+                )
 
     render_lap_staged_review(session_id, selected_annotation_key, df=df)
+
+
+def _collect_existing_lap_annotations():
+    lap_range = st.session_state.get(KEY_LAP_RANGE)
+    if not lap_range:
+        return []
+    lap_start, lap_end = int(lap_range[0]), int(lap_range[1])
+    annotations = st.session_state.get("current_annotations", [])
+    out = []
+    for ann in annotations:
+        s = int(getattr(ann, "start_index", 0))
+        e = int(getattr(ann, "end_index", 0))
+        if e <= lap_start or s >= lap_end:
+            continue
+        out.append({
+            "start_index": s,
+            "end_index": e,
+            "labels": list(getattr(ann, "labels", [])),
+        })
+    return out

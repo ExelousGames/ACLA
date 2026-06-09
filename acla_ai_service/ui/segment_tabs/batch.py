@@ -12,6 +12,7 @@ from .shared import (
     LABEL_CATEGORIES, MAIN_LABEL_GUIDELINES
 )
 from .components.opponent_interaction import format_targeted_car
+from .components.annotation_provider_controls import render_annotation_provider_config
 from app.local_annotation_agent import ClaudeUsageExhausted
 
 _USAGE_EXHAUSTED_WARNING = (
@@ -273,42 +274,13 @@ def render_rule_based_annotation(df, selected_annotation_key):
             st.info(f"No segments matched the value '{target_value_str}' for feature '{selected_feature}'.")
 
 
-def _render_claude_config():
-    """Render Claude settings (mirrors detailed_agent_annotation_claude)."""
-    from app.claude.backend import CLAUDE_VLM_MODELS
-
-    max_iterations = st.number_input(
-        "Tool-call budget (×10)",
-        min_value=1, max_value=10, value=3,
-        help="Caps the agent loop at this many tool calls × 10 per parent segment.",
-        key="batch_agent_claude_max_iter",
+def _render_provider_config(key_prefix: str, *, default_temperature: float, default_max_new_tokens: int):
+    return render_annotation_provider_config(
+        key_prefix=key_prefix,
+        default_temperature=default_temperature,
+        default_max_new_tokens=default_max_new_tokens,
+        default_tool_budget=3,
     )
-    claude_model = st.selectbox(
-        "Claude model",
-        options=list(CLAUDE_VLM_MODELS.keys()),
-        format_func=lambda x: CLAUDE_VLM_MODELS[x]["label"],
-        index=0,
-        key="batch_agent_claude_model",
-    )
-    claude_use_thinking = st.checkbox(
-        "Use extended thinking",
-        value=False,
-        key="batch_agent_claude_thinking",
-    )
-    st.caption(
-        "ℹ️ Routed through `claude-agent-sdk` → your local `claude` CLI login. "
-        "Subject to Max-plan rate limits — heavy batches may stall."
-    )
-
-    def build_config():
-        from app.local_annotation_agent.workflow import AnnotationPipelineConfig
-        return AnnotationPipelineConfig(
-            max_iterations=int(max_iterations),
-            backend="claude",
-            claude_model=claude_model,
-            claude_use_thinking=bool(claude_use_thinking),
-        )
-    return build_config
 
 
 def _persist_children_for_parent(parent, result, session_id, selected_annotation_key, df):
@@ -362,7 +334,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
 
 
 def render_batch_auto_annotation(df, selected_annotation_key):
-    """Batch sub-segment discovery powered by Claude.
+    """Batch sub-segment discovery powered by a selected AI provider.
 
     For each parent segment in the selected range, runs the same agent
     pipeline used by the Detailed view's ☁️ expander and auto-saves
@@ -371,7 +343,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     st.header("Batch Auto-Annotation (Sub-Segment Discovery)")
     st.write(
         "For each segment in the selected range, run the **Sub-Segment Discovery** "
-        "agent with Claude and auto-save discovered children."
+        "agent with the selected AI provider and auto-save discovered children."
     )
 
     if not st.session_state.get("current_annotations"):
@@ -397,8 +369,11 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     )
 
     st.markdown("---")
-    backend_kind = "claude"
-    build_config = _render_claude_config()
+    config = _render_provider_config(
+        "batch_agent_provider",
+        default_temperature=0.7,
+        default_max_new_tokens=1500,
+    )
 
     st.markdown("---")
     skip_with_children = st.checkbox(
@@ -445,19 +420,22 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
     if not run_clicked:
         return
+    if config is None:
+        st.error("No annotation AI provider is available.")
+        return
 
-    # Resolve pipeline entrypoint (one unified entry handles both backends).
+    # Resolve pipeline entrypoint (one unified entry handles all providers).
     try:
         from app.local_annotation_agent.workflow import run_annotation
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
             "Install with: `pip install langgraph langchain-core` "
-            "(or `pip install claude-agent-sdk` for the Claude backend)."
+            "(or the selected provider's SDK, e.g. `claude-agent-sdk`)."
         )
         return
 
-    config = build_config()
+    provider_id = config.provider_id
 
     # Pre-compute existing-children lookup keyed by parent.id so we can
     # both decide whether to skip and pass dup-avoidance hints to the agent.
@@ -487,7 +465,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
             del logs[: len(logs) - 1000]
         _flush_log()
 
-    log(f"Starting batch sub-segment discovery: {total} parent(s), backend={backend_kind}")
+    log(f"Starting batch sub-segment discovery: {total} parent(s), provider={provider_id}")
 
     for i, idx in enumerate(process_indices):
         if st.session_state["batch_agent_stop"]:
@@ -515,7 +493,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
         status_text.markdown(
             f"**Parent #{idx}** _({i + 1}/{total})_ — [{p_start}, {p_end}], "
-            f"running {backend_kind} pipeline…"
+            f"running {provider_id} pipeline..."
         )
         log(f"Parent #{idx}: running [{p_start}, {p_end}] "
             f"main_labels={parent_main_labels or '∅'}")
@@ -589,10 +567,10 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
 
 def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
-    """Batch Claude Lap-to-Segment Excerpter.
+    """Batch provider-selected Lap-to-Segment Excerpter.
 
     Picks a lap range, rough-splits it via ``split_lap_by_circuit_sections``,
-    then runs the Claude `flow="lap"` pipeline on every section in order.
+    then runs the selected provider's `flow="lap"` pipeline on every section in order.
     When opponent data is present, the splitter emits only close
     racing-interaction windows. Each result is auto-saved as a new
     ``AnnotatedSegment``. When the agent revises a boundary, the downstream
@@ -602,12 +580,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     from .components._lap_agent_shared import (
         track_name_to_circuit_id, run_split, rebuild_remaining_segments,
     )
-    st.header("Batch Lap-to-Segment Excerpter (☁️ Claude)")
+    st.header("Batch Lap-to-Segment Excerpter (AI Provider)")
     st.write(
         "Pick a lap range; the deterministic splitter partitions it into "
         "per-`circuit_section` sub-ranges. If opponent data is present, it "
         "emits only close racing-interaction windows. "
-        "Claude annotates **every** section automatically and auto-saves each "
+        "The selected AI provider annotates every section automatically and auto-saves each "
         "result as a new segment."
     )
 
@@ -655,23 +633,10 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     )
 
     st.markdown("---")
-    max_iterations = st.number_input(
-        "Tool-call budget (×10)", min_value=1, max_value=10, value=3,
-        help="Caps the agent loop at this many tool calls × 10 per section.",
-        key="batch_lap_claude_max_iter",
-    )
-    from app.claude.backend import CLAUDE_VLM_MODELS
-    claude_model = st.selectbox(
-        "Claude model", options=list(CLAUDE_VLM_MODELS.keys()),
-        format_func=lambda x: CLAUDE_VLM_MODELS[x]["label"],
-        index=0, key="batch_lap_claude_model",
-    )
-    use_thinking = st.checkbox(
-        "Use extended thinking", value=False, key="batch_lap_claude_thinking",
-    )
-    st.caption(
-        "ℹ️ Routed through `claude-agent-sdk` → your local `claude` CLI login. "
-        "Subject to Max-plan rate limits — heavy batches may stall."
+    config = _render_provider_config(
+        "batch_lap_provider",
+        default_temperature=0.3,
+        default_max_new_tokens=1500,
     )
 
     st.markdown("---")
@@ -719,23 +684,17 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
     if not run_clicked:
         return
-
-    try:
-        from app.local_annotation_agent.workflow import (
-            AnnotationPipelineConfig, run_annotation,
-        )
-    except ImportError as e:
-        st.error(
-            f"Missing dependency: {e}\n\nInstall with `pip install claude-agent-sdk`."
-        )
+    if config is None:
+        st.error("No annotation AI provider is available.")
         return
 
-    config = AnnotationPipelineConfig(
-        backend="claude",
-        max_iterations=int(max_iterations),
-        claude_model=claude_model,
-        claude_use_thinking=bool(use_thinking),
-    )
+    try:
+        from app.local_annotation_agent.workflow import run_annotation
+    except ImportError as e:
+        st.error(
+            f"Missing dependency: {e}"
+        )
+        return
 
     segments = run_split(df, int(lap_start), int(lap_end), circuit_id)
     if not segments:
@@ -753,7 +712,8 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         return
 
     log(f"Starting batch lap excerpter: {len(segments)} section(s), "
-        f"lap=[{int(lap_start)}, {int(lap_end)}], circuit={circuit_id}")
+        f"lap=[{int(lap_start)}, {int(lap_end)}], circuit={circuit_id}, "
+        f"provider={config.provider_id}")
 
     saved_count = 0
     skipped_count = 0
@@ -780,7 +740,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
         status_text.markdown(
             f"**Section #{i + 1}/{len(segments)}** `{sec_id}`"
-            f"{target_suffix} — [{sec_start}, {sec_end}], running Claude…"
+            f"{target_suffix} — [{sec_start}, {sec_end}], running {config.provider_id}..."
         )
         log(f"Section #{i} `{sec_id}`{target_suffix}: running [{sec_start}, {sec_end}]")
 

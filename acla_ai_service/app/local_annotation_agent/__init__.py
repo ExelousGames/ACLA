@@ -30,10 +30,16 @@ from app.shared.contracts import (
     AgentRequest,
     AgentResponse,
     Attachment,
-    BackendConfig,
+    ProviderConfig,
     StepEvent,
 )
+from app.annotation_providers.registry import (
+    get_annotation_provider,
+    validate_provider_ready,
+)
 from app.claude_annotation_agent.runner import ClaudeUsageExhausted
+
+BackendConfig = ProviderConfig
 
 __all__ = [
     "AgentCallbacks",
@@ -41,6 +47,7 @@ __all__ = [
     "AgentResponse",
     "Attachment",
     "BackendConfig",
+    "ProviderConfig",
     "ClaudeUsageExhausted",
     "StepEvent",
     "run_agent",
@@ -48,19 +55,19 @@ __all__ = [
 
 
 def run_agent(request: AgentRequest) -> AgentResponse:
-    """Dispatch to the local or claude runner based on ``request.backend``.
+    """Dispatch to the selected annotation provider."""
+    provider = get_annotation_provider(request.provider_id)
+    validate_provider_ready(provider)
 
-    The two runners are independent execution paradigms — local drives a
-    LangGraph subgraph, claude hands control to an agentic session — but
-    they share the AgentRequest/AgentResponse contract so callers don't
-    care which path executes.
-    """
-    if request.backend == "local":
+    if provider.runner == "local_vlm":
         from app.local_annotation_agent.runner import run_local
         return run_local(request)
-    if request.backend == "claude":
+    if provider.runner == "claude_cli":
         from app.claude_annotation_agent.runner import run_claude
         return run_claude(request)
+    if provider.runner == "openai_compatible":
+        from app.annotation_providers.openai_runner import run_openai_compatible
+        return run_openai_compatible(request)
     raise ValueError(
-        f"unknown backend {request.backend!r}; expected 'local' or 'claude'"
+        f"unknown annotation provider runner {provider.runner!r} for {provider.id!r}"
     )
