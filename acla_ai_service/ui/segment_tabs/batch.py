@@ -342,7 +342,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     """
     st.header("Batch Auto-Annotation (Sub-Segment Discovery)")
     st.write(
-        "For each segment in the selected range, run the **Sub-Segment Discovery** "
+        "For each parent segment in the selected range, run the **Sub-Segment Discovery** "
         "agent with the selected AI provider and auto-save discovered children."
     )
 
@@ -351,16 +351,24 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         return
 
     annotations = st.session_state.current_annotations
-    total_segments = len(annotations)
-    if total_segments > 1:
-        batch_range = st.slider("Select Segment Range", 0, total_segments - 1,
-                                (0, total_segments - 1), step=1)
+    parent_annotations = [
+        ann for ann in annotations
+        if not getattr(ann, "parent_id", None)
+    ]
+    total_parents = len(parent_annotations)
+    if not parent_annotations:
+        st.info("No parent segments available to process.")
+        return
+
+    if total_parents > 1:
+        batch_range = st.slider("Select Parent Segment Range", 0, total_parents - 1,
+                                (0, total_parents - 1), step=1)
     else:
         batch_range = (0, 0)
-        st.write("1 segment available.")
+        st.write("1 parent segment available.")
     process_indices = list(range(batch_range[0], batch_range[1] + 1))
     st.write(f"Selected {len(process_indices)} parent segment(s) for analysis.")
-    selected_parent_spans = _selected_parent_spans(annotations, process_indices, len(df))
+    selected_parent_spans = _selected_parent_spans(parent_annotations, process_indices, len(df))
     coverage_slot = st.empty()
     _render_subsegment_coverage_bar(
         coverage_slot,
@@ -472,10 +480,14 @@ def render_batch_auto_annotation(df, selected_annotation_key):
             log("Stopped by user.")
             break
 
-        if idx < 0 or idx >= len(annotations):
+        if idx < 0 or idx >= len(parent_annotations):
             log(f"Skipping invalid index {idx}.")
             continue
-        parent = annotations[idx]
+        parent = parent_annotations[idx]
+        if not getattr(parent, "id", None):
+            log(f"Parent #{idx}: skipped (missing parent id).")
+            progress_bar.progress((i + 1) / total)
+            continue
 
         existing = children_by_parent.get(parent.id, [])
         if skip_with_children and existing:
@@ -612,12 +624,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     with col1:
         lap_start = st.number_input(
             "Lap start index", min_value=0, max_value=max(len(df) - 1, 0),
-            value=0, key="batch_lap_claude_start",
+            key="batch_lap_claude_start",
         )
     with col2:
         lap_end = st.number_input(
             "Lap end index", min_value=1, max_value=len(df),
-            value=min(len(df), 5000), key="batch_lap_claude_end",
+            key="batch_lap_claude_end",
         )
 
     if lap_end - lap_start < 3:
