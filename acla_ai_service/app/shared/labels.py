@@ -246,6 +246,26 @@ LABEL_MAPPING: Dict[str, str] = {
 
     #Kyalami
     "kyalami":"Kyalami",
+
+    #Suzuka
+    "suzuka":"Suzuka",
+
+    #Laguna_Seca
+    "laguna_seca":"Laguna Seca",
+
+
+    #mount_panorama
+    "mount_panorama":"Mount Panorama",
+
+    #watkins_glen
+    "watkins_glen":"Watkins Glen",
+
+    #indianapolis
+    "indianapolis":"Indianapolis",
+
+    #cota
+    "cota":"Circuit of the Americas",
+
     
     ################### Segment Type ###################
     "ST1": "In the corner",
