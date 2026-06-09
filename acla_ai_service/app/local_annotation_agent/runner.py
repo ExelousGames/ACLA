@@ -66,6 +66,10 @@ import app.local_annotation_agent.sub_agents  # noqa: F401
 LOGGER = logging.getLogger(__name__)
 
 
+class PlannerFormatError(RuntimeError):
+    """Raised when the local planner returns no valid JSON step plan."""
+
+
 # ---------------------------------------------------------------------------
 # Plan parsing — caller's planner prompt drives the available agent menu
 # ---------------------------------------------------------------------------
@@ -94,18 +98,10 @@ def _parse_planner_steps(plan_text: str) -> List[Dict[str, Any]]:
         steps_raw = None
 
     if not steps_raw or not isinstance(steps_raw, list):
-        LOGGER.warning(
-            "Could not parse planner steps; falling back to a trivial "
-            "single describe_graphs step over all available graphs.",
+        raise PlannerFormatError(
+            "Planner response did not contain a JSON object with a non-empty "
+            "`steps` array."
         )
-        from app.shared.annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
-        return [{
-            "step_id": 1,
-            "agent": "describe_graphs",
-            "description": "Analyse all available graphs.",
-            "requested_graphs": [g["id"] for g in AGENT_GRAPH_DEFINITIONS],
-            "tools": [],
-        }]
 
     structured: List[Dict[str, Any]] = []
     for i, raw_step in enumerate(steps_raw, start=1):
@@ -133,6 +129,11 @@ def _parse_planner_steps(plan_text: str) -> List[Dict[str, Any]]:
             "requested_graphs": req_graphs,
             "tools": tools,
         })
+
+    if not structured:
+        raise PlannerFormatError(
+            "Planner response contained `steps`, but none had an `agent` field."
+        )
 
     return structured
 

@@ -26,9 +26,9 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from app.annotation_providers.tool_surface import (
-    ANNOTATION_TOOL_DEFINITIONS,
     AnnotationToolSurface,
     ToolAgentCapture,
+    annotation_tool_registry,
 )
 from app.shared.contracts import AgentRequest, NoopCallbacks, ProviderConfig
 from app.shared.labels import LABEL_MAPPING
@@ -76,19 +76,17 @@ def _build_tool_set(surface: AnnotationToolSurface):
 
     tools_list = [
         _make_tool(defn)
-        for defn in ANNOTATION_TOOL_DEFINITIONS
+        for defn in annotation_tool_registry()
         if str(defn["name"]) in _FOLLOWUP_TOOL_NAME_SET
     ]
     tool_names = [f"mcp__followup__{name}" for name in _FOLLOWUP_TOOL_NAMES]
 
-    from app.local_annotation_agent.workflow.tools import (
-        CLAUDE_SEARCH_LABELS_TOOL,
-    )
+    from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
     @tool(
-        CLAUDE_SEARCH_LABELS_TOOL["name"],
-        CLAUDE_SEARCH_LABELS_TOOL["description"],
-        CLAUDE_SEARCH_LABELS_TOOL["params_schema"],
+        SEARCH_LABELS_TOOL["name"],
+        SEARCH_LABELS_TOOL["description"],
+        SEARCH_LABELS_TOOL["params_schema"],
     )
     async def search_labels(args):
         _result, text, _images = surface.call_tool("search_labels", args or {})
@@ -270,7 +268,7 @@ async def _run_async(
 ) -> str:
     sdk = _import_sdk_types()
 
-    from app.local_annotation_agent.workflow.tools import CLAUDE_SEARCH_LABELS_TOOL
+    from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
     capture = ToolAgentCapture(
         node_name="followup",
@@ -290,7 +288,7 @@ async def _run_async(
         parent_start=int(parent_start),
         parent_end=int(parent_end),
         callbacks=NoopCallbacks(),
-        extra_state={"tool_agent_extra_tools": [CLAUDE_SEARCH_LABELS_TOOL]},
+        extra_state={"tool_agent_extra_tools": [SEARCH_LABELS_TOOL]},
     )
     surface = AnnotationToolSurface(request, capture)
     server, tool_names = _build_tool_set(surface)

@@ -10,21 +10,9 @@ The runner wraps the shared annotation tool surface in Claude MCP tools and
 uses ``AgentRequest.planner_prompt`` as the initial user message — the
 caller's intent reaches Claude there.
 
-Box stays flow-free by exposing generic capability tools:
-
-    list_graphs                 catalog of telemetry graphs
-    get_graph_guidance          per-graph how_to_analyze blocks
-    render_graph                PNG + descriptor over [start, end]
-    query_telemetry             deterministic math on the df
-    compute_expert_phases       per-arc entry/apex/exit ilocs
-    measure_segment_shape       deterministic ST shape + altitude summary
-    locate_circuit_section      named-section match for an iloc window
-    find_nearest_opponent       multi-car positional context (top opponents)
-    classify_opponent_interaction deterministic O / OD / MSR outcome gate
-    query_opponent_trajectory   per-iloc relative trajectory for one slot
-    get_circuit_id              canonical circuit id from Static_track
-    revise_range                shrink/extend the working iloc range
-    submit_result               capture the final structured answer + summary
+Box stays flow-free by exposing a compact provider-neutral surface:
+recommend capabilities, execute a recommended capability by ID, retrieve
+guidance / label definitions, revise the range, and submit the result.
 
 Callers add domain-specific tools via
 ``AgentRequest.extra_state["tool_agent_extra_tools"]``. Each entry is a
@@ -40,19 +28,16 @@ capability and captures whatever Claude submits.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from typing import Any, Dict, List
+from typing import Dict
 
 from app.annotation_providers.tool_surface import (
-    ANNOTATION_TOOL_DEFINITIONS,
     AnnotationToolSurface,
     ToolAgentCapture,
-    annotation_tool_names,
+    annotation_tool_definitions,
     build_tool_agent_system_prompt,
     tool_agent_response,
     tool_agent_stage,
-    tool_agent_extra_tools,
 )
 from app.shared.contracts import AgentRequest, AgentResponse, Attachment
 
@@ -106,13 +91,9 @@ def _build_tool_set(surface: AnnotationToolSurface):
 
         return _wrapped
 
-    tools_list = [_make_tool(defn) for defn in ANNOTATION_TOOL_DEFINITIONS]
-    tool_names = [f"mcp__agent__{name}" for name in annotation_tool_names()]
-
-    for spec in tool_agent_extra_tools(surface.request):
-        wrapped = _make_extra_tool(spec, surface, tool)
-        tools_list.append(wrapped)
-        tool_names.append(f"mcp__agent__{spec['name']}")
+    tool_defs = annotation_tool_definitions(surface.request)
+    tools_list = [_make_tool(defn) for defn in tool_defs]
+    tool_names = [f"mcp__agent__{defn['name']}" for defn in tool_defs]
 
     server = create_sdk_mcp_server(
         name="agent",
@@ -120,45 +101,6 @@ def _build_tool_set(surface: AnnotationToolSurface):
         tools=tools_list,
     )
     return server, tool_names
-
-
-def _make_extra_tool(spec: Dict[str, Any], surface: AnnotationToolSurface, tool_decorator):
-    """Build an MCP tool from a caller-supplied spec.
-
-    Spec shape::
-
-        {
-            "name": str,
-            "description": str,
-            "params_schema": {param_name: type, ...},
-            "handler": Callable[[surface, args_dict], str | dict],
-        }
-
-    The handler may be sync or async; its return is wrapped as a single
-    MCP text block.
-    """
-    name = str(spec["name"])
-    description = str(spec["description"])
-    params_schema = spec.get("params_schema") or {}
-    handler = spec["handler"]
-
-    @tool_decorator(name, description, params_schema)
-    async def _wrapped(args):
-        try:
-            if asyncio.iscoroutinefunction(handler):
-                result = await handler(surface, args)
-                if not isinstance(result, str):
-                    result = json.dumps(result, default=str)
-                text = result
-                surface._emit_tool_event(name, args, text)
-            else:
-                _raw, text, _images = surface.call_tool(name, args or {})
-        except Exception as exc:
-            text = json.dumps({"error": str(exc)})
-            surface._emit_tool_event(name, args, text)
-        return {"content": [{"type": "text", "text": text}]}
-
-    return _wrapped
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ from app.local_annotation_agent.workflow.results import (
     LapAnnotationResult,
     parse_json_response,
 )
-from app.local_annotation_agent.workflow.tools import CLAUDE_SEARCH_LABELS_TOOL
+from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
 
 # ---------------------------------------------------------------------------
@@ -481,11 +481,11 @@ def _local_synth_prompts(
 
 
 # ---------------------------------------------------------------------------
-# Claude-backend task prompt
+# Tool-agent task prompt
 # ---------------------------------------------------------------------------
 
 
-def _claude_task_prompt(
+def _tool_agent_task_prompt(
     *,
     lap_start: int,
     lap_end: int,
@@ -495,7 +495,6 @@ def _claude_task_prompt(
     opponent_interaction: Optional[dict],
     existing_section_annotations: List[dict],
 ) -> str:
-    lap_skill_block = lap_annotation_prompt()
     interaction_focus = _interaction_focus_block(
         section_split_basis, opponent_interaction,
     )
@@ -527,11 +526,9 @@ def _claude_task_prompt(
         "Annotate ONE lap range. The deterministic splitter handed you a "
         "rough iloc boundary; if this is an opponent interaction window, "
         "the boundary is event-shaped and circuit sections are context only. "
-        "Your job is to label which circuit this is, identify a named "
-        "circuit_section only when the range clearly belongs to one, and pick the "
-        "main label (+ optional ST labels, + optional sub-label) by "
-        "matching the section's telemetry against each candidate label's "
-        "`characteristics` block in the skill.\n"
+        "Your job is to pick the circuit id, optional circuit_section id, "
+        "one main label when evidence supports it, optional ST labels, and "
+        "an optional matching sub-label.\n"
         "\n"
         "### Lap context\n"
         f"- Lap range: [{lap_start}, {lap_end}] "
@@ -543,66 +540,23 @@ def _claude_task_prompt(
         f"{existing_block}"
         f"{interaction_focus}"
         "\n"
-        f"{lap_skill_block}"
-        "\n"
         "### How to work\n"
-        "Follow the numbered procedure in the skill's `global_rules` block "
-        "above. Labels are not pre-loaded into this prompt — you discover "
-        "every candidate by querying `search_labels` with a plain-language "
-        "description of what you observed:\n"
-        "\n"
-        "1. **Identify the circuit + optional circuit_section.** Call "
-        "`get_circuit_id` for the circuit id. If the splitter section "
-        "context above names exactly one circuit_section, include that "
-        "section id in `label_ids`; otherwise call `locate_circuit_section` "
-        "for the named section that the iloc window overlaps. Include the "
-        "circuit id in `label_ids`; include a circuit_section id only when "
-        "it is not ambiguous. When `locate_circuit_section` reports "
-        "`is_ambiguous` (e.g. pit lane vs. the adjacent straight share a "
-        "normalized position range), do NOT guess — read its `top_matches` "
-        "and disambiguate with a second signal (pit-limiter speed, "
-        "persistent lateral offset, brake pattern); drop the section id "
-        "only if you still cannot commit.\n"
-        "2. **Pick ONE parent main label.** After inspecting the telemetry, "
-        "call `search_labels(query=<what you observed>, types=\"main\")` and "
-        "pick the best-matching main label (EA / MSP / MSR / RM / PS / O / "
-        "OD / MD), or none when telemetry is too noisy to commit. At most "
-        "one of {EA, MSP, MSR, RM} may be attached.\n"
-        "3. **Maybe pick ST labels.** Call `measure_segment_shape` and "
-        "render `altitude_profile` when entry/apex/exit altitude matters; "
-        "then call `search_labels(query=<trajectory shape and altitude>, "
-        "types=\"segment_type\")` and attach ST labels only when the shape "
-        "or entry/apex/exit altitude is unambiguous; skip them otherwise.\n"
-        "4. **Check for a sub-label fit.** When a main label was picked, "
-        "call `search_labels(query=<what you observed>, parent_id=<main>)` "
-        "and read each returned sub-label's `description`. Attach a "
-        "sub-label ONLY when its description matches the **entire** "
-        "section's telemetry — partial-fit cases stay in the "
-        "detailed-annotation flow. Sub-labels are refinements for grouping "
-        "under their parent main label, not standalone labels; if you "
-        "include a sub-label, include its parent main label too. Re-query "
-        "with different wording to broaden.\n"
-        "5. **Submit.** Call `submit_result` with the chosen IDs.\n"
-        "\n"
-        "For O / OD / MSR, always call `classify_opponent_interaction` over "
-        "the full current range first and treat its `outcome` / `gates` / "
-        "`label_gates` as the mathematical eligibility check: O requires "
-        "`pass_completed`, OD requires `held_defense`, and MSR requires "
-        "`failed_attack` or `broken_defense`; the matching label gate "
-        "should be true before labeling. `close_following` identifies the "
-        "target car but does not gate O / OD / MSR by itself. Inline rear "
-        "pressure is following, not OD; held defense needs an actual "
-        "lateral/alongside threat. Use "
-        "`find_nearest_opponent` and "
-        "`query_opponent_trajectory` for the primary slot when the detailed "
-        "entry-to-exit path decides the technique.\n"
-        "\n"
-        "Call `revise_range` when one main-label signature does not hold "
-        "uniformly across the rough range — shrink to the ilocs where ONE "
-        "characteristic block fits cleanly, or extend outward (within the "
-        "lap range) when the signature clearly continues past the rough "
-        "end. Re-render the diagnostic graphs on the new range before "
-        "submitting. After `submit_result` returns `ok: true`, stop.\n"
+        "1. Call `search_annotation_guidance` for the lap annotation rules "
+        "that match this context. Use the returned guidance as the policy; "
+        "do not rely on remembered label definitions.\n"
+        "2. Call `recommend_tools` with the concrete evidence you need "
+        "(circuit id, section overlap, graph inspection, exact telemetry "
+        "values, opponent interaction, segment shape). Execute selected "
+        "capability IDs with `run_annotation_tool`.\n"
+        "3. Discover every non-circuit candidate with `search_labels` using "
+        "plain-language observations. Query `types=\"main\"` for the main "
+        "label, `types=\"segment_type\"` for ST labels, and `parent_id` "
+        "for sub-labels under a chosen main label.\n"
+        "4. When one main-label signature only fits part of the rough "
+        "range, call `revise_range`, then re-check the evidence on the new "
+        "range before submitting.\n"
+        "5. Call `submit_result` once with the chosen IDs and stop after it "
+        "returns `ok: true`.\n"
         "\n"
         "### Submit payload shape\n"
         "`payload_json` must be a JSON object of this shape:\n"
@@ -620,9 +574,14 @@ def _claude_task_prompt(
         "\n"
         "### Hard rules\n"
         f"- Final range must satisfy {lap_start} <= start < end <= {lap_end} and be ≥ 3 ilocs.\n"
-        "- Do not invent label IDs — circuit / circuit_section ids come "
-        "from `get_circuit_id` / `locate_circuit_section`, every other id "
-        "from a `search_labels` response.\n"
+        "- Do not invent label IDs; circuit / circuit_section ids must come "
+        "from capability results, every other id from a `search_labels` "
+        "response.\n"
+        "- Include a circuit_section id only when it is unambiguous.\n"
+        "- At most one of {EA, MSP, MSR, RM} may be attached.\n"
+        "- In opponent-only windows, use O / OD / MSR or submit an empty "
+        "`label_ids` array.\n"
+        "- Sub-labels require their parent main label in `label_ids`.\n"
         "- One proposal per session — do NOT annotate downstream sections.\n"
         "- Budget tool calls: a typical section needs 7-10 calls total."
     )
@@ -722,7 +681,7 @@ def build_request(
         # extend outward when a shrink/extend rule fires.
         parent_start = int(lap_start)
         parent_end = int(lap_end)
-        planner_prompt = _claude_task_prompt(
+        planner_prompt = _tool_agent_task_prompt(
             lap_start=lap_start,
             lap_end=lap_end,
             section_start=section_start,
@@ -734,7 +693,7 @@ def build_request(
         synth_prompt = lambda _state: ("", "")
         extra_state = {
             "root_agent": "annotation_root",
-            "tool_agent_extra_tools": [CLAUDE_SEARCH_LABELS_TOOL],
+            "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
         }
 
     return AgentRequest(

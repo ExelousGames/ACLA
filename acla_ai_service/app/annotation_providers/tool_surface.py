@@ -10,8 +10,9 @@ from __future__ import annotations
 import base64
 import io
 import json
+import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 from app.shared.contracts import AgentRequest, StepEvent
 
@@ -55,7 +56,41 @@ def _openai_tool_schema(defn: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-ANNOTATION_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
+def _schema_type_for_python_type(typ: Any) -> Dict[str, Any]:
+    if typ is int:
+        return {"type": "integer"}
+    if typ is float:
+        return {"type": "number"}
+    if typ is bool:
+        return {"type": "boolean"}
+    if typ is list:
+        return {"type": "array", "items": {"type": "string"}}
+    return {"type": "string"}
+
+
+def _tool_def(
+    name: str,
+    description: str,
+    params_schema: Dict[str, Any],
+    *,
+    required: List[str] | None = None,
+    category: str = "general",
+) -> Dict[str, Any]:
+    required_params = list(required if required is not None else params_schema.keys())
+    return {
+        "name": name,
+        "description": description,
+        "params_schema": params_schema,
+        "openai_properties": {
+            str(key): _schema_type_for_python_type(typ)
+            for key, typ in params_schema.items()
+        },
+        "required": required_params,
+        "category": category,
+    }
+
+
+ANNOTATION_TOOL_REGISTRY: List[Dict[str, Any]] = [
     {
         "name": "list_graphs",
         "description": "List available telemetry graphs.",
@@ -173,6 +208,38 @@ ANNOTATION_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         },
         "required": ["start", "end", "slot", "n_samples"],
     },
+]
+
+
+EXPOSED_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
+    _tool_def(
+        "recommend_tools",
+        (
+            "Recommend annotation capability tool IDs for the stated intent. "
+            "Call this before inspecting data; then execute returned IDs with "
+            "run_annotation_tool."
+        ),
+        {"intent": str, "context_json": str},
+        category="meta",
+    ),
+    _tool_def(
+        "run_annotation_tool",
+        (
+            "Execute a recommended annotation capability by ID. args_json is "
+            "a JSON object matching that capability's parameters."
+        ),
+        {"tool_id": str, "args_json": str},
+        category="meta",
+    ),
+    _tool_def(
+        "search_annotation_guidance",
+        (
+            "Search annotation skill guidance and workflow rules. query is "
+            "plain language; scope may be a skill name or empty."
+        ),
+        {"query": str, "scope": str},
+        category="knowledge",
+    ),
     {
         "name": "revise_range",
         "description": "Revise the working iloc range before submitting.",
@@ -192,46 +259,51 @@ ANNOTATION_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "summary": {"type": "string"},
         },
         "required": ["payload_json", "summary"],
+        "category": "control",
     },
 ]
 
 
 def annotation_tool_names() -> List[str]:
-    return [str(defn["name"]) for defn in ANNOTATION_TOOL_DEFINITIONS]
+    return [str(defn["name"]) for defn in EXPOSED_TOOL_DEFINITIONS]
 
 
-def annotation_openai_tool_schemas() -> List[Dict[str, Any]]:
-    return [_openai_tool_schema(defn) for defn in ANNOTATION_TOOL_DEFINITIONS]
+def annotation_tool_registry() -> List[Dict[str, Any]]:
+    return [dict(defn) for defn in ANNOTATION_TOOL_REGISTRY]
+
+
+def _normalise_extra_tool_def(spec: Dict[str, Any]) -> Dict[str, Any]:
+    params = spec.get("params_schema") or {}
+    properties = {
+        str(key): _schema_type_for_python_type(typ)
+        for key, typ in params.items()
+    }
+    return {
+        **spec,
+        "name": str(spec["name"]),
+        "description": str(spec.get("description") or spec["name"]),
+        "openai_properties": properties,
+        "required": list(properties),
+        "category": str(spec.get("category") or "domain"),
+    }
+
+
+def annotation_tool_definitions(request: AgentRequest | None = None) -> List[Dict[str, Any]]:
+    return [
+        *EXPOSED_TOOL_DEFINITIONS,
+        *(
+            _normalise_extra_tool_def(spec)
+            for spec in (tool_agent_extra_tools(request) if request is not None else [])
+        ),
+    ]
+
+
+def annotation_openai_tool_schemas(request: AgentRequest | None = None) -> List[Dict[str, Any]]:
+    return [_openai_tool_schema(defn) for defn in annotation_tool_definitions(request)]
 
 
 def tool_agent_extra_tools(request: AgentRequest) -> List[Dict[str, Any]]:
     return request.extra_state.get("tool_agent_extra_tools") or []
-
-
-def _schema_type_for_python_type(typ: Any) -> Dict[str, Any]:
-    if typ is int:
-        return {"type": "integer"}
-    if typ is float:
-        return {"type": "number"}
-    if typ is bool:
-        return {"type": "boolean"}
-    if typ is list:
-        return {"type": "array", "items": {"type": "string"}}
-    return {"type": "string"}
-
-
-def annotation_openai_extra_tool_schemas(request: AgentRequest) -> List[Dict[str, Any]]:
-    schemas: List[Dict[str, Any]] = []
-    for spec in tool_agent_extra_tools(request):
-        params = spec.get("params_schema") or {}
-        properties = {str(key): _schema_type_for_python_type(typ) for key, typ in params.items()}
-        schemas.append(_openai_tool_schema({
-            "name": str(spec["name"]),
-            "description": str(spec.get("description") or spec["name"]),
-            "openai_properties": properties,
-            "required": list(properties),
-        }))
-    return schemas
 
 
 def _text_from_tool_result(result: Any) -> Tuple[str, List[str]]:
@@ -251,6 +323,58 @@ def _text_from_tool_result(result: Any) -> Tuple[str, List[str]]:
     if not texts:
         texts.append(json.dumps(result, default=str))
     return "\n".join(texts), images
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        token
+        for token in re.split(r"[^a-z0-9_]+", text.lower())
+        if len(token) >= 3
+    }
+
+
+def _safe_json_object(raw: str) -> Dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _tool_search_text(defn: Dict[str, Any]) -> str:
+    fields: List[str] = [
+        str(defn.get("name") or ""),
+        str(defn.get("description") or ""),
+        str(defn.get("category") or ""),
+    ]
+    fields.extend(str(key) for key in (defn.get("params_schema") or {}).keys())
+    return " ".join(fields)
+
+
+def _capability_by_name() -> Dict[str, Dict[str, Any]]:
+    return {str(defn["name"]): defn for defn in ANNOTATION_TOOL_REGISTRY}
+
+
+def _iter_guidance_records() -> Iterable[Dict[str, str]]:
+    from app.internal_knowledge_base._registry import get_registry
+
+    def walk(value: Any, path: str, skill_name: str) -> Iterable[Dict[str, str]]:
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                yield {"skill": skill_name, "path": path, "text": text}
+        elif isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f"{path}.{key}" if path else str(key)
+                yield from walk(child, child_path, skill_name)
+        elif isinstance(value, list):
+            for idx, child in enumerate(value):
+                yield from walk(child, f"{path}[{idx}]", skill_name)
+
+    for skill in get_registry().all_skills():
+        yield from walk(skill.raw_body, skill.name, skill.name)
 
 
 class AnnotationToolSurface:
@@ -296,6 +420,77 @@ class AnnotationToolSurface:
         cb = self.request.callbacks
         if cb.step_event:
             cb.step_event(msg, stage)
+
+    def recommend_tools(self, intent: str, context_json: str) -> str:
+        context = _safe_json_object(context_json)
+        top_k = int(context.get("top_k") or 6)
+        query_tokens = _tokens(f"{intent} {json.dumps(context, default=str)}")
+        scored: List[Tuple[int, Dict[str, Any]]] = []
+        for defn in ANNOTATION_TOOL_REGISTRY:
+            tool_tokens = _tokens(_tool_search_text(defn))
+            score = len(query_tokens & tool_tokens)
+            if score:
+                scored.append((score, defn))
+        scored.sort(key=lambda item: (-item[0], str(item[1]["name"])))
+
+        recommendations = []
+        for score, defn in scored[:max(1, top_k)]:
+            recommendations.append({
+                "tool_id": defn["name"],
+                "description": defn["description"],
+                "args_schema": defn.get("openai_properties") or {},
+                "required": defn.get("required") or [],
+                "match_score": score,
+            })
+        return json.dumps({
+            "intent": intent,
+            "recommendations": recommendations,
+            "note": (
+                "Use run_annotation_tool with one of these tool_id values. "
+                "If recommendations is empty, call again with a more specific intent."
+            ),
+        }, default=str)
+
+    def run_annotation_tool(self, tool_id: str, args_json: str) -> Any:
+        tool_id = str(tool_id or "").strip()
+        if tool_id not in _capability_by_name():
+            return json.dumps({
+                "error": f"unknown annotation capability {tool_id!r}",
+                "known_tool_ids": sorted(_capability_by_name()),
+            })
+        args = _safe_json_object(args_json)
+        return self._call_annotation_capability(tool_id, args)
+
+    def search_annotation_guidance(self, query: str, scope: str) -> str:
+        q = str(query or "").strip()
+        if not q:
+            return json.dumps({"error": "query is required"})
+        scope = str(scope or "").strip()
+        query_tokens = _tokens(q)
+        matches: List[Tuple[int, Dict[str, str]]] = []
+        for record in _iter_guidance_records():
+            if scope and scope not in record["path"] and scope != record["skill"]:
+                continue
+            text_tokens = _tokens(
+                f"{record['skill']} {record['path']} {record['text']}"
+            )
+            score = len(query_tokens & text_tokens)
+            if score:
+                matches.append((score, record))
+        matches.sort(key=lambda item: (-item[0], item[1]["path"]))
+        return json.dumps({
+            "query": q,
+            "scope": scope,
+            "results": [
+                {
+                    "skill": record["skill"],
+                    "path": record["path"],
+                    "text": record["text"],
+                    "match_score": score,
+                }
+                for score, record in matches[:5]
+            ],
+        }, default=str)
 
     def list_graphs(self) -> str:
         from app.shared.annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
@@ -476,34 +671,54 @@ class AnnotationToolSurface:
                 return spec["handler"]
         return None
 
-    def call_tool(self, name: str, args: Dict[str, Any]) -> Tuple[Any, str, List[str]]:
+    def _call_annotation_capability(self, name: str, args: Dict[str, Any]) -> Any:
         if name == "list_graphs":
-            result = self.list_graphs()
-        elif name == "get_circuit_id":
-            result = self.get_circuit_id()
-        elif name == "get_graph_guidance":
-            result = self.get_graph_guidance(list(args.get("graph_ids") or []))
-        elif name == "render_graph":
-            result = self.render_graph(str(args["graph_id"]), int(args["start"]), int(args["end"]))
-        elif name == "peek_graph":
-            result = self.peek_graph(str(args["graph_id"]), int(args["start"]), int(args["end"]))
-        elif name == "query_telemetry":
-            result = self.query_telemetry(str(args["query_id"]), str(args.get("params_json") or ""))
-        elif name == "compute_expert_phases":
-            result = self.compute_expert_phases(int(args["start"]), int(args["end"]))
-        elif name == "measure_segment_shape":
-            result = self.measure_segment_shape(int(args["start"]), int(args["end"]))
-        elif name == "locate_circuit_section":
-            result = self.locate_circuit_section(int(args["start"]), int(args["end"]))
-        elif name == "find_nearest_opponent":
-            result = self.find_nearest_opponent(int(args["start"]), int(args["end"]))
-        elif name == "classify_opponent_interaction":
-            result = self.classify_opponent_interaction(int(args["start"]), int(args["end"]))
-        elif name == "query_opponent_trajectory":
-            result = self.query_opponent_trajectory(
+            return self.list_graphs()
+        if name == "get_circuit_id":
+            return self.get_circuit_id()
+        if name == "get_graph_guidance":
+            return self.get_graph_guidance(list(args.get("graph_ids") or []))
+        if name == "render_graph":
+            return self.render_graph(str(args["graph_id"]), int(args["start"]), int(args["end"]))
+        if name == "peek_graph":
+            return self.peek_graph(str(args["graph_id"]), int(args["start"]), int(args["end"]))
+        if name == "query_telemetry":
+            return self.query_telemetry(str(args["query_id"]), str(args.get("params_json") or ""))
+        if name == "compute_expert_phases":
+            return self.compute_expert_phases(int(args["start"]), int(args["end"]))
+        if name == "measure_segment_shape":
+            return self.measure_segment_shape(int(args["start"]), int(args["end"]))
+        if name == "locate_circuit_section":
+            return self.locate_circuit_section(int(args["start"]), int(args["end"]))
+        if name == "find_nearest_opponent":
+            return self.find_nearest_opponent(int(args["start"]), int(args["end"]))
+        if name == "classify_opponent_interaction":
+            return self.classify_opponent_interaction(int(args["start"]), int(args["end"]))
+        if name == "query_opponent_trajectory":
+            return self.query_opponent_trajectory(
                 int(args["start"]), int(args["end"]),
                 int(args["slot"]), int(args.get("n_samples") or 5),
             )
+        return json.dumps({"error": f"unknown annotation capability {name!r}"})
+
+    def call_tool(self, name: str, args: Dict[str, Any]) -> Tuple[Any, str, List[str]]:
+        if name == "recommend_tools":
+            result = self.recommend_tools(
+                str(args.get("intent") or ""),
+                str(args.get("context_json") or ""),
+            )
+        elif name == "run_annotation_tool":
+            result = self.run_annotation_tool(
+                str(args.get("tool_id") or ""),
+                str(args.get("args_json") or ""),
+            )
+        elif name == "search_annotation_guidance":
+            result = self.search_annotation_guidance(
+                str(args.get("query") or ""),
+                str(args.get("scope") or ""),
+            )
+        elif name in _capability_by_name():
+            result = self._call_annotation_capability(name, args)
         elif name == "revise_range":
             result = self.revise_range(int(args["new_start"]), int(args["new_end"]))
         elif name == "submit_result":
@@ -535,11 +750,12 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         "You are an analyst with agentic access to a domain dataset via tools. "
         "Your task is described in the user message. Inspect the data, run "
         "queries, then submit a final structured result.\n\n"
-        "Available tools include list_graphs, get_graph_guidance, render_graph, "
-        "peek_graph, query_telemetry, compute_expert_phases, "
-        "measure_segment_shape, locate_circuit_section, find_nearest_opponent, "
-        "classify_opponent_interaction, query_opponent_trajectory, "
-        "get_circuit_id, revise_range, and submit_result.\n\n"
+        "Use `recommend_tools` to discover the most relevant data-inspection "
+        "capabilities, then execute chosen capability IDs with "
+        "`run_annotation_tool`. Use `search_annotation_guidance` and "
+        "`search_labels` to retrieve rules and label definitions instead of "
+        "guessing from memory. Use `revise_range` only when the evidence "
+        "requires a boundary change, and finish with `submit_result`.\n\n"
         f"Initial range: [{request.parent_start}, {request.parent_end}]. "
         "Do not invent identifiers. Use only IDs, labels, and categories the "
         "user message authorizes. Budget tool calls. After submit_result "

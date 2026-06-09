@@ -32,7 +32,7 @@ from app.local_annotation_agent.workflow.results import (
     AnnotationResult,
     parse_json_response,
 )
-from app.local_annotation_agent.workflow.tools import CLAUDE_SEARCH_LABELS_TOOL
+from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
 
 def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
@@ -287,35 +287,23 @@ def _local_synth_prompts(
 
 
 # ---------------------------------------------------------------------------
-# Claude-backend planner prompt — task description + submit schema
+# Tool-agent planner prompt — task description + submit schema
 # ---------------------------------------------------------------------------
 
 
-def _claude_task_prompt(
+def _tool_agent_task_prompt(
     *,
     parent_start: int,
     parent_end: int,
     parent_main_labels: List[str],
     existing_children: List[dict],
 ) -> str:
-    """User-message prompt the Claude runner sends as the session start."""
+    """User-message prompt the tool-agent runner sends as the session start."""
 
-    # The given parent main label(s) are context, not a discovery target.
-    # Candidate sub-labels + segment types are discovered via `search_labels`.
-    parent_label_blocks: List[str] = []
-    for pid in parent_main_labels:
-        entry = get_doc(pid)
-        if entry is None:
-            parent_label_blocks.append(
-                f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})"
-            )
-            continue
-        desc = entry.get("description") or "(no description)"
-        guideline_text = entry.get("annotation_guideline")
-        guideline = f"\n      guideline: {guideline_text}" if guideline_text else ""
-        parent_label_blocks.append(
-            f"  - `{entry['id']}` ({entry['name']}): {desc}{guideline}"
-        )
+    parent_label_blocks = [
+        f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})"
+        for pid in parent_main_labels
+    ]
 
     existing_block = ""
     if existing_children:
@@ -343,28 +331,18 @@ def _claude_task_prompt(
         f"{existing_block}"
         "\n"
         "### How to work\n"
-        "1. Start from each parent label's guideline — it tells you which "
-        "telemetry signals matter. Pick 3-5 graphs to inspect.\n"
-        "2. Use `list_graphs` once for the catalog, then `get_graph_guidance` "
-        "on JUST the subset you chose.\n"
-        "3. `render_graph` to inspect signals; `query_telemetry` for exact "
-        "ilocs / values.\n"
-        "4. `compute_expert_phases` once if you reason about corner phases.\n"
-        "5. `locate_circuit_section` if you need to pick a named-section label.\n"
-        "6. For racing, overtaking, defending, or close-opponent labels, "
-        "call `classify_opponent_interaction`; then use "
-        "`find_nearest_opponent` or `query_opponent_trajectory` to confirm "
-        "the specific car slot. A car tucked directly behind or ahead can "
-        "be the relevant interaction target even without side-by-side overlap.\n"
-        "7. **Discover candidate labels with `search_labels`.** Describe what "
-        "you observed in plain language and query — `search_labels(query, "
-        f"parent_id=\"{parent_main_labels[0] if parent_main_labels else '<main>'}\")` "
-        "for this parent's sub-labels, `search_labels(query, "
-        "types=\"segment_type\")` for the segment shape. Re-query with "
-        "different wording to broaden. Only IDs returned by `search_labels` "
-        "are accepted; there is no full catalog listing.\n"
-        "8. Submit via `submit_result(payload_json, summary)` when "
-        "evidence is sufficient.\n"
+        "1. Call `search_annotation_guidance` for the parent label behavior "
+        "and sub-segment discovery rules that match this range.\n"
+        "2. Call `recommend_tools` with the evidence you need to gather "
+        "(graphs, exact ilocs/values, corner phases, circuit-section "
+        "context, opponent interaction). Execute selected capability IDs "
+        "with `run_annotation_tool`.\n"
+        "3. Discover candidate labels with `search_labels`. Query by "
+        "plain-language observations, use `parent_id` for sub-labels under "
+        "the relevant parent label, and use `types=\"segment_type\"` for "
+        "segment-shape labels.\n"
+        "4. Submit via `submit_result(payload_json, summary)` when evidence "
+        "is sufficient, then stop after it returns `ok: true`.\n"
         "\n"
         "### Submit payload shape\n"
         "`payload_json` must be a JSON object of this shape:\n"
@@ -455,7 +433,7 @@ def build_request(
             )
         )
     else:
-        planner_prompt = _claude_task_prompt(
+        planner_prompt = _tool_agent_task_prompt(
             parent_start=parent_start,
             parent_end=parent_end,
             parent_main_labels=parent_main_labels,
@@ -469,7 +447,7 @@ def build_request(
         "root_agent": "annotation_root",
     }
     if prompt_mode == "tool_agent":
-        extra_state["tool_agent_extra_tools"] = [CLAUDE_SEARCH_LABELS_TOOL]
+        extra_state["tool_agent_extra_tools"] = [SEARCH_LABELS_TOOL]
 
     return AgentRequest(
         provider_id=provider_id,

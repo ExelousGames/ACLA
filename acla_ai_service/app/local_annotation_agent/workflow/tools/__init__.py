@@ -6,7 +6,7 @@ expert-phase detection, circuit-section locator) stay in
 ``agent/tools/`` because they are agent capabilities, not annotation
 concerns.
 
-``search_labels_handler`` is the Claude-side surface for the one hybrid
+``search_labels_handler`` is the tool-agent surface for the one hybrid
 label retriever (``app.internal_knowledge_base.label_search.search_labels``) —
 the agent discovers candidate labels by querying it, not from any
 enumerated catalog.
@@ -38,7 +38,7 @@ def _shape_for_llm(doc: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def search_labels_handler(_surface, args: Dict[str, Any]) -> str:
-    """Claude MCP handler — hybrid-search the label catalog.
+    """Hybrid-search the label catalog.
 
     Params: ``query`` (required, plain-language telemetry description),
     optional ``types`` (a tier: ``"main"`` / ``"segment_type"`` /
@@ -60,7 +60,7 @@ def search_labels_handler(_surface, args: Dict[str, Any]) -> str:
     return json.dumps([_shape_for_llm(d) for d in results], default=str)
 
 
-CLAUDE_SEARCH_LABELS_TOOL: Dict[str, Any] = {
+SEARCH_LABELS_TOOL: Dict[str, Any] = {
     "name": "search_labels",
     "description": (
         "Hybrid-search the annotation label catalog for the candidates "

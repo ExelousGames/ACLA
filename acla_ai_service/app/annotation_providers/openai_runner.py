@@ -10,7 +10,6 @@ from app.annotation_providers.registry import ProviderConfigurationError
 from app.annotation_providers.tool_surface import (
     AnnotationToolSurface,
     ToolAgentCapture,
-    annotation_openai_extra_tool_schemas,
     annotation_openai_tool_schemas,
     build_tool_agent_system_prompt,
     tool_agent_response,
@@ -78,10 +77,7 @@ def run_openai_compatible(request: AgentRequest) -> AgentResponse:
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            tools=[
-                *annotation_openai_tool_schemas(),
-                *annotation_openai_extra_tool_schemas(request),
-            ],
+            tools=annotation_openai_tool_schemas(request),
             tool_choice="auto",
             temperature=float(request.config.temperature),
             max_tokens=int(request.config.max_new_tokens),
