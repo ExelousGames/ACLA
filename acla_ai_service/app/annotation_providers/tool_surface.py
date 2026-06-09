@@ -205,11 +205,7 @@ def annotation_openai_tool_schemas() -> List[Dict[str, Any]]:
 
 
 def tool_agent_extra_tools(request: AgentRequest) -> List[Dict[str, Any]]:
-    return (
-        request.extra_state.get("tool_agent_extra_tools")
-        or request.extra_state.get("claude_extra_tools")
-        or []
-    )
+    return request.extra_state.get("tool_agent_extra_tools") or []
 
 
 def _schema_type_for_python_type(typ: Any) -> Dict[str, Any]:

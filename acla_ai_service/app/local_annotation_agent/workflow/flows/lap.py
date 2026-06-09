@@ -735,7 +735,6 @@ def build_request(
         extra_state = {
             "root_agent": "annotation_root",
             "tool_agent_extra_tools": [CLAUDE_SEARCH_LABELS_TOOL],
-            "claude_extra_tools": [CLAUDE_SEARCH_LABELS_TOOL],
         }
 
     return AgentRequest(

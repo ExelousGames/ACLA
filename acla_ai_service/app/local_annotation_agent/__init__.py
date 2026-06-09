@@ -11,7 +11,8 @@ run deterministic queries, and synthesise responses. It does NOT know
 what the caller wants — that intent rides in ``planner_prompt`` and
 ``synth_prompt`` on the AgentRequest. The caller also names the root
 Agent to invoke via ``request.extra_state["root_agent"]`` and may
-register additional Claude tools via ``extra_state["claude_extra_tools"]``.
+register additional tool-agent tools via
+``extra_state["tool_agent_extra_tools"]``.
 
 Sub-modules:
     contracts       Public dataclasses crossing the box boundary.

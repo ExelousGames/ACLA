@@ -470,7 +470,6 @@ def build_request(
     }
     if prompt_mode == "tool_agent":
         extra_state["tool_agent_extra_tools"] = [CLAUDE_SEARCH_LABELS_TOOL]
-        extra_state["claude_extra_tools"] = [CLAUDE_SEARCH_LABELS_TOOL]
 
     return AgentRequest(
         provider_id=provider_id,

@@ -27,7 +27,7 @@ Box stays flow-free by exposing generic capability tools:
     submit_result               capture the final structured answer + summary
 
 Callers add domain-specific tools via
-``AgentRequest.extra_state["claude_extra_tools"]``. Each entry is a
+``AgentRequest.extra_state["tool_agent_extra_tools"]``. Each entry is a
 ``{name, description, params_schema, handler}`` dict; ``handler`` is a
 callable ``(surface, args_dict) -> str | dict`` whose return is wrapped
 as an MCP text result.
