@@ -244,6 +244,9 @@ LABEL_MAPPING: Dict[str, str] = {
     "moza12": "Straight between Variante Ascari and Curva Parabolica",
     "moza13": "Curva Parabolica",
 
+    #Kyalami
+    "kyalami":"Kyalami",
+    
     ################### Segment Type ###################
     "ST1": "In the corner",
     "ST2": "On the straight",
