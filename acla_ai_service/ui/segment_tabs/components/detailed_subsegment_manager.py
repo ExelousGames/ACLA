@@ -2,7 +2,7 @@ import streamlit as st
 import copy
 from ..shared import (
     save_annotations, build_segment,
-    get_display_labels, LABEL_MAPPING, MAIN_LABEL_GUIDELINES,
+    get_display_labels, LABEL_MAPPING,
 )
 
 def render_subsegment_manager(df, session_id, selected_annotation_key):

@@ -110,8 +110,7 @@ One file per parent family — currently `mistake_practice.md`,
 parent files (`silverstone.md`, `brands_hatch.md`) can be added the
 same way. These document the *family* — what counts as a "mistake,"
 what "expert adherence" means, when "recovery & merge" applies. They
-absorb the role the long-unused `MAIN_LABEL_GUIDELINES` dict in
-`app/shared/labels.py` was reaching for.
+absorb the role the old shared label catalog was reaching for.
 
 Same section conventions, but `Remedies` typically isn't applicable
 (too generic at the family level).
