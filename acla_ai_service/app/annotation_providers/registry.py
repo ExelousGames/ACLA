@@ -63,7 +63,7 @@ def _local_provider() -> AnnotationProvider:
 
 
 def _claude_provider() -> AnnotationProvider:
-    from app.claude.backend import CLAUDE_VLM_MODELS
+    from app.annotation_providers.claude_backend import CLAUDE_VLM_MODELS
 
     models = [
         ProviderModel(id=model_id, label=str(spec.get("label") or model_id))

@@ -38,7 +38,7 @@ from app.annotation_providers.registry import (
     get_annotation_provider,
     validate_provider_ready,
 )
-from app.claude_annotation_agent.runner import ClaudeUsageExhausted
+from app.annotation_providers.claude_runner import ClaudeUsageExhausted
 
 BackendConfig = ProviderConfig
 
@@ -64,7 +64,7 @@ def run_agent(request: AgentRequest) -> AgentResponse:
         from app.local_annotation_agent.runner import run_local
         return run_local(request)
     if provider.runner == "claude_cli":
-        from app.claude_annotation_agent.runner import run_claude
+        from app.annotation_providers.claude_runner import run_claude
         return run_claude(request)
     if provider.runner == "openai_compatible":
         from app.annotation_providers.openai_runner import run_openai_compatible
