@@ -13,4 +13,5 @@ from typing import Dict
 CIRCUIT_NAMES: Dict[str, str] = {
     "brands_hatch": "Brands Hatch",
     "silverstone": "Silverstone",
+    "moza": "Moza",
 }

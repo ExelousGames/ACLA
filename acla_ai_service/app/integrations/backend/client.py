@@ -2,7 +2,7 @@
 Backend integration service for communicating with ACLA backend
 """
 
-from typing import Dict, Any, Iterable, Optional
+from typing import Dict, Any, Optional
 import httpx
 import asyncio
 import logging
@@ -16,27 +16,7 @@ import numpy as np
 from pathlib import Path
 from app.infra.config import settings
 from app.integrations.backend.schemas import ActiveModelData
-from app.pipelines.manifest.protection import (
-    clear_unprotected_chunks,
-    normalise_session_ids,
-)
 logger = logging.getLogger(__name__)
-
-
-def _filter_protected_session_metadata(
-    session_metadata: Iterable[Dict[str, Any]],
-    protected_session_ids: Optional[Iterable[Any]] = None,
-) -> tuple[list[Dict[str, Any]], int]:
-    sessions = list(session_metadata)
-    protected = normalise_session_ids(protected_session_ids)
-    if not protected:
-        return sessions, 0
-    filtered = [
-        session
-        for session in sessions
-        if str(session.get("sessionId", "")) not in protected
-    ]
-    return filtered, len(sessions) - len(filtered)
 
 
 class BackendService:
@@ -265,7 +245,6 @@ class BackendService:
         chunk_size: int = 1000,
         cleanup_cache: bool = True,
         data_cache=None,
-        protected_session_ids: Optional[Iterable[Any]] = None,
     ) -> Dict[str, Any]:
         """
         Stream all racing sessions directly to cache without loading into memory
@@ -291,23 +270,8 @@ class BackendService:
         if hasattr(data_cache, "has_cached_data") and data_cache.has_cached_data(cache_key):
             if cleanup_cache:
                 try:
-                    protected = normalise_session_ids(protected_session_ids)
-                    if protected:
-                        summary = clear_unprotected_chunks(
-                            data_cache,
-                            cache_key,
-                            protected,
-                        )
-                        logger.info(
-                            "Removed %s unprotected chunk(s) from '%s' before streaming; "
-                            "kept %s protected chunk(s)",
-                            summary.chunks_deleted,
-                            cache_key,
-                            summary.chunks_kept,
-                        )
-                    else:
-                        logger.info(f"Removing existing cache entry for key '{cache_key}' before streaming")
-                        data_cache.clear_cache(cache_key)
+                    logger.info(f"Removing existing cache entry for key '{cache_key}' before streaming")
+                    data_cache.clear_cache(cache_key)
                 except Exception as cache_error:
                     logger.warning(f"Failed to clear existing cache entry '{cache_key}': {cache_error}")
             else:
@@ -344,18 +308,9 @@ class BackendService:
             # Get all session metadata
             session_metadata = init_response.get("sessionMetadata", [])
             total_sessions = init_response.get("totalSessions", 0)
-            session_metadata, protected_sessions_skipped = _filter_protected_session_metadata(
-                session_metadata,
-                protected_session_ids,
-            )
             sessions_to_stream = len(session_metadata)
             
             logger.info(f"Initialized chunk streaming download for {total_sessions} sessions")
-            if protected_sessions_skipped:
-                logger.info(
-                    "Skipping %s protected session(s) during backend download",
-                    protected_sessions_skipped,
-                )
             logger.info(f"Backend will stream GridFS chunks directly")
             logger.info(f"Using shared cache for data reuse across all services")
             if not session_metadata:
@@ -377,11 +332,9 @@ class BackendService:
                     "cache_key": cache_key,
                     "streaming_mode": "gridfs_chunk_stream",
                     "memory_efficient": True,
-                    "protected_sessions_skipped": protected_sessions_skipped,
-                    "message": "No unprotected sessions to download",
+                    "message": "No sessions to download",
                     "summary": {
                         "sessions_streamed": 0,
-                        "sessions_skipped_protected": protected_sessions_skipped,
                         "data_points_processed": 0,
                         "cache_populated": data_cache.has_cached_data(cache_key),
                     },
@@ -487,10 +440,8 @@ class BackendService:
                 "cache_key": cache_key,
                 "streaming_mode": "gridfs_chunk_stream",
                 "memory_efficient": True,
-                "protected_sessions_skipped": protected_sessions_skipped,
                 "summary": {
                     "sessions_streamed": sessions_to_stream,
-                    "sessions_skipped_protected": protected_sessions_skipped,
                     "data_points_processed": total_data_points,
                     "cache_populated": True
                 }

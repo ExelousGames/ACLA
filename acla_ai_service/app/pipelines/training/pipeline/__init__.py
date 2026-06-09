@@ -28,11 +28,6 @@ from app.pipelines.training.pipeline.enrich import (
     process_and_cache_segments,
 )
 from app.pipelines.training.pipeline.training import run_transformer_guidance_training
-from app.pipelines.manifest.protection import (
-    clear_unprotected_chunks,
-    collect_protected_session_ids,
-    has_unprotected_chunks,
-)
 
 __all__ = [
     "prepare_training_data",
@@ -70,17 +65,10 @@ async def prepare_training_data(
     processed_sessions_cache_key = pipeline_config.processed_session_data_cache_key
     enriched_sessions_cache_key = pipeline_config.enriched_sessions_cache_key
     segments_cache_key = pipeline_config.segments_cache_key
-    protected_session_ids = collect_protected_session_ids(telemetry_store)
-    if protected_session_ids:
-        print(
-            f"[INFO] Protecting {len(protected_session_ids)} annotated session(s) "
-            "from data refresh"
-        )
     try:
         sessions_metadata = await backend.get_all_racing_sessions_streaming(
             cache_key=dataset_cache_key,
             cleanup_cache=pipeline_config.session_cleanup,
-            protected_session_ids=protected_session_ids,
         )
     except Exception as streaming_error:
         raise RuntimeError(f"Backend streaming failed: {streaming_error}") from streaming_error
@@ -89,18 +77,6 @@ async def prepare_training_data(
         raise RuntimeError(sessions_metadata.get("message") or "Backend streaming request failed")
 
     print_section_divider("LARGE DATASET ASSUMED - USING EFFICIENT PROCESSING")
-
-    if protected_session_ids and not has_unprotected_chunks(
-        telemetry_store,
-        dataset_cache_key,
-        protected_session_ids,
-    ):
-        print("[INFO] No unprotected downloaded sessions to process; data preparation is a no-op.")
-        return {
-            "success": True,
-            "protected_sessions": len(protected_session_ids),
-            "message": "No unprotected sessions to refresh",
-        }
 
     top_laps_cache_key = pipeline_config.top_laps_cache_key
     top_laps_available = False
@@ -116,19 +92,8 @@ async def prepare_training_data(
 
     if not top_laps_available:
         if pipeline_config.processed_session_cleanup and telemetry_store.has_cached_data(processed_sessions_cache_key):
-            if protected_session_ids:
-                summary = clear_unprotected_chunks(
-                    telemetry_store,
-                    processed_sessions_cache_key,
-                    protected_session_ids,
-                )
-                print(
-                    f"[INFO] Cleaned {summary.chunks_deleted} unprotected processed "
-                    f"chunk(s); kept {summary.chunks_kept} protected chunk(s)."
-                )
-            else:
-                print(f"[INFO] Cleaning up existing processed sessions cache: {processed_sessions_cache_key}")
-                telemetry_store.clear_cache(processed_sessions_cache_key)
+            print(f"[INFO] Cleaning up existing processed sessions cache: {processed_sessions_cache_key}")
+            telemetry_store.clear_cache(processed_sessions_cache_key)
 
         await process_lap_sessions_efficiently(
             session_data_cache_key=dataset_cache_key,
@@ -137,7 +102,6 @@ async def prepare_training_data(
             imitate_expert_feature_names=imitate_expert_feature_names,
             telemetry_time_gap_ms=500,
             processed_sessions_cache_key=processed_sessions_cache_key,
-            protected_session_ids=protected_session_ids,
         )
 
     print_section_divider("ENRICHING CONTEXTUAL DATA")
@@ -146,19 +110,8 @@ async def prepare_training_data(
     try:
         if pipeline_config.segment_cleanup:
             if telemetry_store.has_cached_data(enriched_sessions_cache_key):
-                if protected_session_ids:
-                    summary = clear_unprotected_chunks(
-                        telemetry_store,
-                        enriched_sessions_cache_key,
-                        protected_session_ids,
-                    )
-                    print(
-                        f"[INFO] Cleaned {summary.chunks_deleted} unprotected enriched "
-                        f"chunk(s); kept {summary.chunks_kept} protected chunk(s)."
-                    )
-                else:
-                    print(f"[INFO] Cleaning up existing enriched sessions cache: {enriched_sessions_cache_key}")
-                    telemetry_store.clear_cache(enriched_sessions_cache_key)
+                print(f"[INFO] Cleaning up existing enriched sessions cache: {enriched_sessions_cache_key}")
+                telemetry_store.clear_cache(enriched_sessions_cache_key)
             if telemetry_store.has_cached_data(segments_cache_key):
                 print(f"[INFO] Cleaning up existing segments cache: {segments_cache_key}")
                 telemetry_store.clear_cache(segments_cache_key)
@@ -169,7 +122,6 @@ async def prepare_training_data(
             telemetry_store=telemetry_store,
             cache_config=pipeline_config,
             backend_service=backend,
-            protected_session_ids=protected_session_ids,
         )
 
         return {

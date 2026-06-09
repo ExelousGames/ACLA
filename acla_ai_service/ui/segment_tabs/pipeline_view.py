@@ -49,6 +49,9 @@ from app.pipelines.manifest.source_copy import (
 )
 from app.pipelines.training.config import TrainingPipelineConfig
 from segment_tabs._training_runner import render_card, spawn
+from segment_tabs.components.annotation_key_reference import (
+    render_annotation_key_reference,
+)
 
 MODE_LABELS = {
     MODE_SOURCE: "Copy from source",
@@ -543,6 +546,16 @@ def _field_options(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     return options
 
 
+def _input_key_options(
+    input_structure: dict[str, Any],
+    default_primary: dict[str, str],
+) -> list[dict[str, str]]:
+    options = _field_options(input_structure.get("rows", []))
+    if default_primary["path"] not in {option["path"] for option in options}:
+        options.insert(0, dict(default_primary))
+    return options
+
+
 def _input_primary_key_for_node(
     node: AnnotationNode,
     input_structure: dict[str, Any],
@@ -601,35 +614,6 @@ def _format_primary_key_preview(values: list[str]) -> str:
     return "Sample values: " + ", ".join(f"`{value}`" for value in values)
 
 
-def _same_protection_reference(
-    left: Optional[dict[str, str]],
-    right: dict[str, str],
-) -> bool:
-    if not left:
-        return False
-    return (
-        left.get("output_path") == right.get("output_path")
-        and left.get("input_path") == right.get("input_path")
-    )
-
-
-def _selected_protection_reference(
-    node: AnnotationNode,
-    output_options: list[dict[str, str]],
-    input_primary: dict[str, str],
-) -> Optional[dict[str, str]]:
-    saved = node.protection_reference
-    if not saved:
-        return None
-    output_paths = {option["path"] for option in output_options}
-    if (
-        saved.get("output_path") in output_paths
-        and saved.get("input_path") == input_primary["path"]
-    ):
-        return dict(saved)
-    return None
-
-
 def _render_source_protection_selector(
     pipeline: Pipeline,
     node: AnnotationNode,
@@ -657,72 +641,29 @@ def _render_source_protection_selector(
         )
         return False, None
 
-    selected = _selected_protection_reference(node, output_options, input_primary)
-    saved_output = ""
-    if node.protection_reference:
-        saved_output = str(node.protection_reference.get("output_path") or "")
-    selected_output = selected.get("output_path") if selected else saved_output
-    placeholder = {"label": "— pick field —", "path": ""}
-    output_display_options = [placeholder] + output_options
-    output_paths = [option["path"] for option in output_display_options]
-    output_index = output_paths.index(selected_output) if selected_output in output_paths else 0
-
-    cols = st.columns(2)
-    with cols[0]:
-        picked_output = st.selectbox(
-            "Output foreign-key field",
-            output_display_options,
-            index=output_index,
-            key=f"protection_output_ref_{node.id}",
-            format_func=lambda item: item["label"],
+    input_options = _input_key_options(input_structure, input_primary)
+    if not input_options:
+        st.warning(
+            "Source-copy protection needs an input primary key. Copy from "
+            "source is disabled until the input dataset structure is available."
         )
-    with cols[1]:
-        st.markdown("**Input primary key**")
-        st.caption(
-            f"{input_primary['label']} · `{input_primary['path']}`"
-        )
-        st.caption(
-            _format_primary_key_preview(
-                _preview_primary_key_values(
-                    store,
-                    input_key,
-                    input_primary["path"],
-                )
-            )
-        )
-
-    if not picked_output["path"]:
-        if node.protection_reference:
-            st.warning("The saved protection fields are no longer valid for this input schema.")
-        else:
-            st.info("Pick the output field to enable Copy from source.")
         return False, None
 
-    picked = {
-        "label": f"{picked_output['label']} -> {input_primary['label']}",
-        "output_path": picked_output["path"],
-        "input_path": input_primary["path"],
-    }
-    st.caption(
-        "Protected copied rows are matched by this component's output reference and auto-picked input primary key.",
-        help=(
-            "Pick the output field that stores the reference. The input "
-            "primary key is chosen by the annotation component, and "
-            "referenced input entries are preserved during Update from source."
-        ),
-    )
-    if not _same_protection_reference(
-        node.protection_reference,
-        picked,
-    ):
-        node.protection_reference = dict(picked)
+    def save_reference(reference: dict[str, str]) -> None:
+        node.protection_reference = reference
         save_pipeline(pipeline)
-        st.rerun()
 
-    valid = selected is not None
-    if node.protection_reference and not valid:
-        st.warning("The saved protection fields are no longer valid for this input schema.")
-    return valid, selected
+    return render_annotation_key_reference(
+        component_id=node.id,
+        output_options=output_options,
+        input_options=input_options,
+        default_input=input_primary,
+        saved_reference=node.protection_reference,
+        input_preview=lambda path: _format_primary_key_preview(
+            _preview_primary_key_values(store, input_key, path)
+        ),
+        save_reference=save_reference,
+    )
 
 
 def _source_copy_summary(summary) -> str:
@@ -1037,12 +978,6 @@ def _render_annotation_card(
                 copy_key = source_copy_key(node.output_key) if node.output_key else None
                 source_ready = _has_cached_data(store, source_key)
                 copy_ready = _has_cached_data(store, copy_key)
-                if copy_ready:
-                    st.warning(
-                        "Source copy exists. Update refreshes untouched data "
-                        "only; protected input rows are preserved.",
-                        icon="⚠️",
-                    )
                 label = "Update from source" if copy_ready else "Copy from source"
                 if st.button(
                     label,

@@ -229,6 +229,16 @@ LABEL_MAPPING: Dict[str, str] = {
     "silverstone20":"Vale first 90 shape turn",
     "silverstone21":"Vale second over 90 rounded turn",
 
+    "moza":"Moza",
+    "moza1":"Straight between 1 Varinate and Curva Parabolica",
+    "moza2":"1 Varinate",
+    "moza3": "Curva Biassono",
+    "moza4": "2 Varinate",
+    "moza5": "Curve di Lesmo",
+    "moza6": "Curva del Serraglio",
+    "moza7": "Variante Ascari",
+    "moza8": "Curva Parabolica",
+    
     ################### Segment Type ###################
     "ST1": "In the corner",
     "ST2": "On the straight",
