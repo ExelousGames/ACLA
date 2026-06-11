@@ -155,6 +155,13 @@ register(annotation_spec(
     description="Bulk Claude lap → per-circuit-section annotation.",
     ui_route="batch_lap",
 ))
+register(annotation_spec(
+    kind="parent_labels",
+    display="Parent Label Propagation",
+    description="Append missing parent labels to child sub-segments.",
+    ui_route="parent_labels",
+    input_dataset_shape="segments",
+))
 # ── Training kinds ────────────────────────────────────────────────────────
 register(NodeKindSpec(
     kind="classifier",

@@ -55,6 +55,7 @@ from segment_tabs.batch import (
 )
 from segment_tabs.batch_subsegment import render_batch_subseg
 from segment_tabs.batch_lap import render_batch_lap
+from segment_tabs.parent_labels import render_parent_label_propagation
 from segment_tabs.training import TRAINING_ROUTES, render_training
 from segment_tabs.pipeline_view import render_pipeline_view
 from segment_tabs.pipeline_sidebar import render_pipeline_sidebar
@@ -79,6 +80,7 @@ _SESSION_GATED_ROUTES = {
     "batch_classifier":   render_batch_classifier,
     "batch_subseg":       render_batch_subseg,
     "batch_lap":          render_batch_lap,
+    "parent_labels":      render_parent_label_propagation,
 }
 # Training routes share the single training tab.
 _TRAINING_ROUTES = set(TRAINING_ROUTES)

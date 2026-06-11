@@ -91,6 +91,7 @@ _INPUT_PRIMARY_KEY_BY_KIND = {
     "batch_classifier": _SESSION_CHUNK_PRIMARY,
     "batch_subseg": _SESSION_CHUNK_PRIMARY,
     "batch_lap": _SESSION_CHUNK_PRIMARY,
+    "parent_labels": _SESSION_CHUNK_PRIMARY,
 }
 
 

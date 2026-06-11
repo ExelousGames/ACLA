@@ -542,6 +542,8 @@ def _parse_local(
                 ann_end = (
                     int(raw_end) if isinstance(raw_end, (int, float)) else parent_end
                 )
+                if not (parent_start <= ann_start < ann_end <= parent_end):
+                    continue
                 if _is_full_parent_range(ann_start, ann_end, parent_start, parent_end):
                     continue
                 sub_labels.append(lid)
