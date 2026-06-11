@@ -1,0 +1,478 @@
+import streamlit as st
+import time
+import traceback
+
+from .batch import _load_batch_session
+from .components.annotation_provider_controls import render_annotation_provider_config
+from .shared import (
+    build_segment,
+    save_annotations,
+    LABEL_CATEGORIES,
+    LABEL_MAPPING,
+)
+from app.local_annotation_agent import ClaudeUsageExhausted
+
+
+_USAGE_EXHAUSTED_WARNING = (
+    "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
+    "credit balance). Batch halted — try again later."
+)
+
+
+def _render_provider_config(key_prefix: str, *, default_temperature: float, default_max_new_tokens: int):
+    return render_annotation_provider_config(
+        key_prefix=key_prefix,
+        default_temperature=default_temperature,
+        default_max_new_tokens=default_max_new_tokens,
+        default_tool_budget=3,
+    )
+
+
+def _persist_children_for_parent(parent, result, session_id, selected_annotation_key, df):
+    """Auto-save AI-discovered children under ``parent``."""
+    from .components._agent_annotation_shared import (
+        group_proposals_by_range,
+        with_parent_label_ids,
+    )
+
+    grouped = group_proposals_by_range(result)
+    parent_label_ids = list(getattr(parent, "labels", []))
+
+    new_children = []
+    for (gs, ge), anns in grouped:
+        if gs >= ge:
+            continue
+        label_ids = [a["label_id"] for a in anns if a.get("label_id") in LABEL_MAPPING]
+        if not label_ids:
+            continue
+        notes = "; ".join(a.get("reasoning", "") for a in anns if a.get("reasoning"))[:500]
+        new_children.append(build_segment(
+            df,
+            start=int(gs),
+            end=int(ge),
+            label_ids=with_parent_label_ids(label_ids, parent_label_ids),
+            notes=notes,
+            parent_id=parent.id,
+        ))
+
+    if not new_children:
+        return 0, 0
+
+    annotations = list(st.session_state.get("current_annotations", []))
+    before = len(annotations)
+    annotations = [
+        a for a in annotations
+        if getattr(a, "parent_id", None) != parent.id
+    ]
+    replaced = before - len(annotations)
+    annotations.extend(new_children)
+    st.session_state["current_annotations"] = annotations
+    save_annotations(session_id, annotations, selected_annotation_key, silent=True)
+    return len(new_children), replaced
+
+
+def render_batch_auto_annotation(df, selected_annotation_key):
+    """Batch sub-segment discovery powered by a selected AI provider."""
+    st.header("Batch Auto-Annotation (Sub-Segment Discovery)")
+    st.write(
+        "For each parent segment in the selected range, run the **Sub-Segment Discovery** "
+        "agent with the selected AI provider and auto-save discovered children."
+    )
+
+    if not st.session_state.get("current_annotations"):
+        st.info("No segments available to process. Please create segments first.")
+        return
+
+    annotations = st.session_state.current_annotations
+    parent_annotations = [
+        ann for ann in annotations
+        if not getattr(ann, "parent_id", None)
+    ]
+    total_parents = len(parent_annotations)
+    if not parent_annotations:
+        st.info("No parent segments available to process.")
+        return
+
+    if total_parents > 1:
+        batch_range = st.slider("Select Parent Segment Range", 0, total_parents - 1,
+                                (0, total_parents - 1), step=1)
+    else:
+        batch_range = (0, 0)
+        st.write("1 parent segment available.")
+    process_indices = list(range(batch_range[0], batch_range[1] + 1))
+    st.write(f"Selected {len(process_indices)} parent segment(s) for analysis.")
+    selected_parent_spans = _selected_parent_spans(parent_annotations, process_indices, len(df))
+    coverage_slot = st.empty()
+    _render_subsegment_coverage_bar(
+        coverage_slot,
+        selected_parent_spans,
+        chart_key="batch_agent_subsegment_coverage_initial",
+    )
+
+    st.markdown("---")
+    config = _render_provider_config(
+        "batch_agent_provider",
+        default_temperature=0.7,
+        default_max_new_tokens=1500,
+    )
+
+    st.markdown("---")
+    skip_with_children = st.checkbox(
+        "Skip parents that already have child sub-segments",
+        value=True,
+        key="batch_agent_skip_with_children",
+        help=(
+            "Recommended — avoids re-running discovery on parents you've already annotated. "
+            "When unchecked, existing children of each parent are DELETED and replaced with "
+            "the new AI-discovered ones (clean re-run; old proposals are not used as hints)."
+        ),
+    )
+
+    session_id = st.session_state.get("last_session_id")
+
+    if "batch_agent_stop" not in st.session_state:
+        st.session_state["batch_agent_stop"] = False
+    if "batch_agent_logs" not in st.session_state:
+        st.session_state["batch_agent_logs"] = []
+
+    col_run, col_clear = st.columns([1, 1])
+    with col_run:
+        run_clicked = st.button(
+            "▶ Run Batch Sub-Segment Discovery",
+            key="batch_agent_run", type="primary",
+        )
+    with col_clear:
+        if st.button("Clear log", key="batch_agent_clear_log"):
+            st.session_state["batch_agent_logs"] = []
+            st.rerun()
+
+    progress_bar = st.progress(0.0)
+    status_text = st.empty()
+    log_area = st.empty()
+
+    def _flush_log():
+        if st.session_state["batch_agent_logs"]:
+            log_area.code(
+                "\n".join(st.session_state["batch_agent_logs"]),
+                language="text", line_numbers=True,
+            )
+
+    _flush_log()
+
+    if not run_clicked:
+        return
+    if config is None:
+        st.error("No annotation AI provider is available.")
+        return
+
+    try:
+        from app.local_annotation_agent.workflow import run_annotation
+    except ImportError as e:
+        st.error(
+            f"Missing dependency: {e}\n\n"
+            "Install with: `pip install langgraph langchain-core` "
+            "(or the selected provider's SDK, e.g. `claude-agent-sdk`)."
+        )
+        return
+
+    provider_id = config.provider_id
+
+    children_by_parent: dict[str, list[dict]] = {}
+    for ann in annotations:
+        pid = getattr(ann, "parent_id", None)
+        if not pid:
+            continue
+        children_by_parent.setdefault(pid, []).append({
+            "start_index": ann.start_index,
+            "end_index": ann.end_index,
+            "labels": list(ann.labels),
+        })
+
+    main_label_set = set(LABEL_CATEGORIES.get("Main Labels", []))
+    st.session_state["batch_agent_stop"] = False
+    logs = st.session_state["batch_agent_logs"]
+    total = len(process_indices)
+    success_parents = 0
+    total_children = 0
+    error_parents = 0
+
+    def log(msg: str):
+        ts = time.strftime("%H:%M:%S")
+        logs.append(f"[{ts}] {msg}")
+        if len(logs) > 1000:
+            del logs[: len(logs) - 1000]
+        _flush_log()
+
+    log(f"Starting batch sub-segment discovery: {total} parent(s), provider={provider_id}")
+
+    for i, idx in enumerate(process_indices):
+        if st.session_state["batch_agent_stop"]:
+            log("Stopped by user.")
+            break
+
+        if idx < 0 or idx >= len(parent_annotations):
+            log(f"Skipping invalid index {idx}.")
+            continue
+        parent = parent_annotations[idx]
+        if not getattr(parent, "id", None):
+            log(f"Parent #{idx}: skipped (missing parent id).")
+            progress_bar.progress((i + 1) / total)
+            continue
+
+        existing = children_by_parent.get(parent.id, [])
+        if skip_with_children and existing:
+            log(f"Parent #{idx}: skipped ({len(existing)} existing children).")
+            progress_bar.progress((i + 1) / total)
+            continue
+
+        existing_for_agent = [] if (existing and not skip_with_children) else existing
+
+        parent_main_labels = [l for l in parent.labels if l in main_label_set]
+        p_start = int(parent.start_index) if parent.start_index is not None else 0
+        p_end = int(parent.end_index) if parent.end_index is not None else len(df) - 1
+
+        status_text.markdown(
+            f"**Parent #{idx}** _({i + 1}/{total})_ — [{p_start}, {p_end}], "
+            f"running {provider_id} pipeline..."
+        )
+        log(f"Parent #{idx}: running [{p_start}, {p_end}] "
+            f"main_labels={parent_main_labels or '∅'}")
+
+        try:
+            result = run_annotation(
+                flow="detailed",
+                df=df,
+                start_index=p_start,
+                end_index=p_end,
+                session_id=session_id,
+                parent_main_labels=parent_main_labels,
+                existing_children=existing_for_agent,
+                config=config,
+            )
+        except ClaudeUsageExhausted as e:
+            log(f"Parent #{idx}: HALTED — Claude usage exhausted: {e}")
+            st.warning(_USAGE_EXHAUSTED_WARNING)
+            progress_bar.progress((i + 1) / total)
+            break
+        except Exception as e:
+            error_parents += 1
+            log(f"Parent #{idx}: ERROR — {e}")
+            log(traceback.format_exc().splitlines()[-1])
+            progress_bar.progress((i + 1) / total)
+            continue
+
+        try:
+            n_children, replaced = _persist_children_for_parent(
+                parent, result, session_id, selected_annotation_key, df,
+            )
+        except Exception as e:
+            error_parents += 1
+            log(f"Parent #{idx}: persistence ERROR — {e}")
+            progress_bar.progress((i + 1) / total)
+            continue
+
+        if n_children > 0:
+            success_parents += 1
+            total_children += n_children
+            if replaced:
+                log(f"Parent #{idx}: replaced {replaced} existing child(ren) with "
+                    f"{n_children} new sub-segment(s).")
+            else:
+                log(f"Parent #{idx}: saved {n_children} child sub-segment(s).")
+        else:
+            log(f"Parent #{idx}: pipeline produced no usable proposals "
+                f"(existing children left untouched).")
+
+        progress_bar.progress((i + 1) / total)
+
+    progress_bar.progress(1.0)
+    status_text.markdown(
+        f"**Done.** Parents updated: {success_parents}, "
+        f"new children: {total_children}, errors: {error_parents}."
+    )
+    log(f"Finished. {success_parents}/{total} parents updated, "
+        f"{total_children} children created, {error_parents} error(s).")
+    _render_subsegment_coverage_bar(
+        coverage_slot,
+        selected_parent_spans,
+        chart_key="batch_agent_subsegment_coverage_final",
+    )
+
+    st.session_state.pop("agent_annot_result", None)
+    st.session_state.pop("agent_annot_followup_ctx", None)
+    st.session_state.pop("agent_annot_followup_chat", None)
+
+
+def _normalise_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    raw = [(int(s), int(e)) for s, e in ranges if int(e) > int(s)]
+    raw.sort()
+    merged: list[tuple[int, int]] = []
+    for s, e in raw:
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _compute_interval_coverage(
+    target_ranges: list[tuple[int, int]],
+    annotation_ranges: list[tuple[int, int]],
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    targets = _normalise_ranges(target_ranges)
+    annotations = _normalise_ranges(annotation_ranges)
+
+    raw_covered: list[tuple[int, int]] = []
+    for ts, te in targets:
+        for s, e in annotations:
+            if e <= ts or s >= te:
+                continue
+            raw_covered.append((max(s, ts), min(e, te)))
+    covered = _normalise_ranges(raw_covered)
+
+    gaps: list[tuple[int, int]] = []
+    for ts, te in targets:
+        pos = ts
+        for s, e in covered:
+            if e <= ts or s >= te:
+                continue
+            cs, ce = max(s, ts), min(e, te)
+            if cs > pos:
+                gaps.append((pos, cs))
+            pos = max(pos, ce)
+        if pos < te:
+            gaps.append((pos, te))
+    return covered, gaps
+
+
+def _render_coverage_bar(
+    slot,
+    target_ranges: list[tuple[int, int]],
+    annotation_ranges: list[tuple[int, int]],
+    *,
+    title: str,
+    legend_note: str,
+    chart_key: str,
+) -> None:
+    import plotly.graph_objects as go
+
+    targets = _normalise_ranges(target_ranges)
+    if not targets:
+        slot.empty()
+        return
+
+    covered, gaps = _compute_interval_coverage(targets, annotation_ranges)
+    total = sum(e - s for s, e in targets)
+    covered_len = sum(e - s for s, e in covered)
+    gap_len = total - covered_len
+    coverage_pct = (covered_len / total * 100) if total else 0.0
+    longest_gap = max((e - s for s, e in gaps), default=0)
+    x_min = min(s for s, _ in targets)
+    x_max = max(e for _, e in targets)
+
+    fig = go.Figure()
+    for s, e in targets:
+        fig.add_shape(
+            type="rect", x0=s, x1=e, y0=0, y1=1,
+            fillcolor="rgba(220, 53, 69, 0.75)", line=dict(width=0), layer="below",
+        )
+    for s, e in covered:
+        fig.add_shape(
+            type="rect", x0=s, x1=e, y0=0, y1=1,
+            fillcolor="rgba(40, 167, 69, 0.9)", line=dict(width=0), layer="below",
+        )
+    if gaps:
+        fig.add_trace(go.Scatter(
+            x=[(s + e) / 2 for s, e in gaps],
+            y=[0.5] * len(gaps),
+            mode="markers",
+            marker=dict(size=12, color="rgba(0,0,0,0)"),
+            hovertext=[f"gap [{s}, {e}] · {e - s} iloc(s)" for s, e in gaps],
+            hoverinfo="text",
+            showlegend=False,
+        ))
+    fig.update_layout(
+        height=110,
+        margin=dict(l=10, r=10, t=10, b=30),
+        xaxis=dict(range=[x_min, x_max], title="iloc index", fixedrange=True),
+        yaxis=dict(visible=False, range=[0, 1], fixedrange=True),
+        showlegend=False,
+    )
+
+    with slot.container():
+        st.caption(
+            f"**{title}:** {coverage_pct:.1f}% covered · "
+            f"{len(gaps)} gap(s) · {gap_len} iloc(s) uncovered · "
+            f"longest gap {longest_gap} iloc(s)  "
+            f"{legend_note}"
+        )
+        st.plotly_chart(fig, width="stretch", key=chart_key)
+
+
+def _selected_parent_spans(
+    annotations: list,
+    process_indices: list[int],
+    df_len: int,
+) -> list[dict]:
+    spans = []
+    for idx in process_indices:
+        if idx < 0 or idx >= len(annotations):
+            continue
+        ann = annotations[idx]
+        start_index = getattr(ann, "start_index", None)
+        end_index = getattr(ann, "end_index", None)
+        s = 0 if start_index is None else int(start_index)
+        e = df_len if end_index is None else int(end_index)
+        s = max(0, min(s, df_len))
+        e = max(0, min(e, df_len))
+        if e <= s:
+            continue
+        spans.append({
+            "id": getattr(ann, "id", None),
+            "index": idx,
+            "start_index": s,
+            "end_index": e,
+        })
+    return spans
+
+
+def _render_subsegment_coverage_bar(
+    slot,
+    parent_spans: list[dict],
+    *,
+    chart_key: str,
+) -> None:
+    parent_ids = {p.get("id") for p in parent_spans if p.get("id")}
+    if not parent_ids:
+        slot.empty()
+        return
+
+    target_ranges = [
+        (int(p["start_index"]), int(p["end_index"]))
+        for p in parent_spans
+    ]
+    child_ranges = []
+    for ann in st.session_state.get("current_annotations", []) or []:
+        if getattr(ann, "parent_id", None) not in parent_ids:
+            continue
+        s = int(getattr(ann, "start_index", 0) or 0)
+        e = int(getattr(ann, "end_index", 0) or 0)
+        child_ranges.append((s, e))
+
+    _render_coverage_bar(
+        slot,
+        target_ranges,
+        child_ranges,
+        title="Sub-segment coverage",
+        legend_note="(🟩 child sub-segments · 🟥 uncovered parent span)",
+        chart_key=chart_key,
+    )
+
+
+def render_batch_subseg(selected_annotation_key, selected_session_key, available_sessions):
+    df, session_id = _load_batch_session(
+        selected_annotation_key, selected_session_key, available_sessions,
+    )
+    if df is None:
+        return
+    render_batch_auto_annotation(df, selected_annotation_key)

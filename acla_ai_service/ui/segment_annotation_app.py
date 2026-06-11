@@ -52,8 +52,9 @@ from segment_tabs.manual import render_manual_annotation
 from segment_tabs.detailed import render_detailed_labeling
 from segment_tabs.batch import (
     render_batch_bulk_label, render_batch_rule_based, render_batch_classifier,
-    render_batch_subseg, render_batch_lap,
 )
+from segment_tabs.batch_subsegment import render_batch_subseg
+from segment_tabs.batch_lap import render_batch_lap
 from segment_tabs.training import TRAINING_ROUTES, render_training
 from segment_tabs.pipeline_view import render_pipeline_view
 from segment_tabs.pipeline_sidebar import render_pipeline_sidebar
