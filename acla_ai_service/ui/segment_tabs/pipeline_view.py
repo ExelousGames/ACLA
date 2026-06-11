@@ -11,7 +11,7 @@ Each annotation card owns:
   *secondary worker* (read a target's output, write its own output), or
   *coworker* (share both input and output with a target node);
 - a source picker — any cache_key in the store (source), or a sibling
-  annotation's ``<id>.output`` (any mode);
+  annotation id (any mode);
 - the output dataset status;
 - one Open button that routes to the tab whose ``ui_route`` matches the
   selected kind.
@@ -211,23 +211,20 @@ def _source_options(pipeline: Pipeline, store: Any, self_id: str,
     """Candidate sources for one annotation's input.
 
     Source mode: every cache_key in the store + every other annotation's
-        ``<id>.output``.
-    Secondary worker / coworker: only sibling outputs (these modes
-        target a node, not an external Lance dataset — there's nobody
-        to chain off).
+        id.
+    Secondary worker / coworker: only sibling node ids (these modes
+        target a node, not an external Lance dataset).
     """
-    sibling_outputs = [
-        f"{n.id}.output" for n in pipeline.annotations if n.id != self_id
-    ]
+    sibling_refs = [n.id for n in pipeline.annotations if n.id != self_id]
     if siblings_only:
-        candidates = sibling_outputs
+        candidates = sibling_refs
     else:
         try:
             store_keys = sorted(store.list_cache_keys())
         except Exception:
             store_keys = []
-        candidates = sibling_outputs + store_keys
-    return candidates
+        candidates = sibling_refs + store_keys
+    return list(dict.fromkeys(candidates))
 
 
 def _output_dataset_options(store: Any) -> list[str]:
@@ -977,14 +974,17 @@ def _render_annotation_card(
             source_options,
             node.source_ref,
         )
+        source_widget_key = f"ann_src_{node.id}"
+        if st.session_state.get(source_widget_key) not in {None, *source_display_options}:
+            st.session_state.pop(source_widget_key, None)
         chosen_source = st.selectbox(
             "Input dataset",
             options=source_display_options,
             index=_select_index(source_display_options, node.source_ref),
-            key=f"ann_src_{node.id}",
+            key=source_widget_key,
             placeholder="Type to search input datasets",
-            help=("Copy from source: pick an input dataset or sibling output. "
-                  "Worker modes read from the selected sibling's dataset."),
+            help=("Copy from source: pick an input dataset or sibling "
+                  "annotation. Worker modes target the selected sibling."),
         )
         new_source_ref = (
             None if chosen_source == source_placeholder else chosen_source
@@ -1166,6 +1166,11 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         placeholder = "— pick an input dataset —"
         display_options = [placeholder] + source_options
         pending_source = st.session_state.get("add_ann_source")
+        if pending_source and pending_source not in display_options:
+            pending_source = None
+            st.session_state.pop("add_ann_source", None)
+        if st.session_state.get("add_ann_source_select") not in {None, *display_options}:
+            st.session_state.pop("add_ann_source_select", None)
         try:
             src_idx = display_options.index(pending_source) if pending_source else 0
         except ValueError:
@@ -1174,8 +1179,8 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
             "Input dataset", options=display_options, index=src_idx,
             key="add_ann_source_select",
             help=("Source mode: any cache_key in the store, or a sibling "
-                  "output dataset. Secondary worker / coworker: pick the "
-                  "sibling dataset to read from."),
+                  "annotation. Secondary worker / coworker: pick the "
+                  "sibling annotation to target."),
             disabled=not (chosen_kind and pending_mode),
         )
         st.session_state["add_ann_source"] = (
@@ -1242,17 +1247,20 @@ def _render_training_card(pipeline: Pipeline, node: TrainingNode, store: Any) ->
     )
 
     # Input picker — every annotation's output is a candidate.
-    ann_outputs = [f"{n.id}.output" for n in pipeline.annotations]
-    placeholder = "— pick an annotation output —"
-    display_options = [placeholder] + ann_outputs
+    ann_refs = [n.id for n in pipeline.annotations]
+    placeholder = "— pick an annotation —"
+    display_options = [placeholder] + ann_refs
     try:
         default_idx = display_options.index(node.input_ref) if node.input_ref else 0
     except ValueError:
         display_options = [node.input_ref] + display_options
         default_idx = 0
+    training_widget_key = f"tr_src_{node.id}"
+    if st.session_state.get(training_widget_key) not in {None, *display_options}:
+        st.session_state.pop(training_widget_key, None)
     new_ref = st.selectbox(
         "Input", options=display_options, index=default_idx,
-        key=f"tr_src_{node.id}", label_visibility="collapsed",
+        key=training_widget_key, label_visibility="collapsed",
     )
     if new_ref != placeholder and new_ref != node.input_ref:
         node.input_ref = new_ref
