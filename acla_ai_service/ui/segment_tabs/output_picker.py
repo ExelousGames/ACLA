@@ -1,14 +1,13 @@
-"""First-time output-location popup for source-mode annotation nodes.
+"""First-time output-location popup for annotation nodes with own outputs.
 
 When a user opens an annotation page from a freshly-created node, the
 node has no ``output_key`` yet — the popup here collects the destination
 *directory* and *filename* and writes them back onto the node before the
-page itself renders. Existing nodes (created before this change) skip
-the popup because they already carry an ``output_key``.
+page itself renders. Nodes that already carry an ``output_key`` skip
+the popup.
 
-The popup is only shown for ``mode == MODE_SOURCE``. Secondary-worker and
-coworker nodes write to the target's output, so they don't need their
-own file.
+The popup is shown for source and secondary-worker nodes. Coworker nodes
+write to the target's output, so they don't need their own file.
 """
 
 from __future__ import annotations
@@ -18,7 +17,12 @@ from typing import Optional
 
 import streamlit as st
 
-from app.pipelines.manifest.models import MODE_SOURCE, AnnotationNode, Pipeline
+from app.pipelines.manifest.models import (
+    MODE_SOURCE,
+    MODE_SECONDARY_WORKER,
+    AnnotationNode,
+    Pipeline,
+)
 from app.pipelines.manifest.registry import save as save_pipeline, slugify
 from app.pipelines.manifest.source_copy import source_copy_key
 
@@ -41,7 +45,7 @@ def _suggested_name(pipeline: Pipeline, node: AnnotationNode) -> str:
 
 def needs_output_setup(node: AnnotationNode) -> bool:
     """Whether the popup should fire for this node on this open."""
-    return node.mode == MODE_SOURCE and not node.output_key
+    return node.mode in {MODE_SOURCE, MODE_SECONDARY_WORKER} and not node.output_key
 
 
 def render_output_picker(
@@ -63,11 +67,19 @@ def render_output_picker(
         default_dir = _default_dir()
         default_name = _suggested_name(pipeline, node)
 
-        st.markdown(
-            f"**Node:** `{node.id}` · **Mode:** Copy from source\n\n"
+        mode_label = (
+            "Copy from source"
+            if node.mode == MODE_SOURCE
+            else "Secondary worker"
+        )
+        detail = (
             "Choose where the annotation output and private source copy "
             "will be saved."
+            if node.mode == MODE_SOURCE
+            else "Choose where this secondary worker's annotation output "
+                 "will be saved."
         )
+        st.markdown(f"**Node:** `{node.id}` · **Mode:** {mode_label}\n\n{detail}")
 
         location_choice = st.radio(
             "Location",
@@ -134,7 +146,8 @@ def render_output_picker(
                         return
                 save_pipeline(pipeline)
                 register_output_dir(node.output_key, node.output_dir)
-                register_output_dir(source_copy_key(node.output_key), node.output_dir)
+                if node.mode == MODE_SOURCE:
+                    register_output_dir(source_copy_key(node.output_key), node.output_dir)
                 result_box["output_key"] = node.output_key
                 st.rerun()
         with col_cancel:

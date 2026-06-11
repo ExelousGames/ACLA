@@ -276,10 +276,9 @@ def main() -> None:
     session_key = st.session_state.get("pipeline_session_key")
     active_node_id = st.session_state.get("pipeline_active_node_id")
 
-    # ── First-time output-location popup for copy-mode nodes ────────────
+    # ── First-time output-location popup for own-output nodes ───────────
     # If we routed here from a node card and the node still has no
-    # output_key (or it's a copy-mode node freshly created under the new
-    # form), the popup blocks until the user picks a directory + name.
+    # output_key, the popup blocks until the user picks a directory + name.
     active_node = None
     if active_node_id:
         try:
@@ -295,9 +294,9 @@ def main() -> None:
         render_training(active_view, annotation_key)
         return
 
-    # Reconcile annotation_key with the (possibly newly-set) node output.
-    if active_node is not None and active_node.mode == MODE_SOURCE and active_node.output_key:
-        annotation_key = active_node.output_key
+    # Reconcile keys from the active node after route changes or output setup.
+    if active_node is not None:
+        annotation_key = pipeline.effective_output_key(active_node)
         session_key = pipeline.effective_input_key(active_node)
         st.session_state["pipeline_annotation_key"] = annotation_key
         st.session_state["pipeline_session_key"] = session_key

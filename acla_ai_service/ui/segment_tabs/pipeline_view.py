@@ -8,7 +8,7 @@ Each annotation card owns:
 - a **kind** dropdown (lap / detailed / batch_* / llm / …) that decides
   which tab the single Open button routes to;
 - a **mode** picker — *source copy* (copy from an upstream dataset),
-  *secondary worker* (read a target's output, write back to it), or
+  *secondary worker* (read a target's output, write its own output), or
   *coworker* (share both input and output with a target node);
 - a source picker — any cache_key in the store (source), or a sibling
   annotation's ``<id>.output`` (any mode);
@@ -36,6 +36,11 @@ from app.pipelines.manifest.models import (
     Pipeline,
     TrainingNode,
 )
+from app.pipelines.manifest.dataset_structure import (
+    has_cached_data,
+    is_segment_record,
+    payload_records,
+)
 from app.pipelines.manifest.registry import save as save_pipeline, slugify
 from app.pipelines.manifest.migrate_labels import migrate_dataset_labels
 from app.pipelines.manifest.protection import collect_protected_session_ids
@@ -43,7 +48,6 @@ from app.pipelines.manifest.segment_refresh import refresh_node_segments
 from app.pipelines.manifest.source_copy import (
     CHUNK_ID_PATH,
     DICTIONARY_KEY_PATH,
-    SOURCE_COPY_SUFFIX,
     source_copy_key,
     sync_source_copy,
 )
@@ -55,7 +59,7 @@ from segment_tabs.components.annotation_key_reference import (
 
 MODE_LABELS = {
     MODE_SOURCE: "Copy from source",
-    MODE_SECONDARY_WORKER: "Secondary worker (adds to target's output)",
+    MODE_SECONDARY_WORKER: "Secondary worker (target output → own output)",
     MODE_COWORKER: "Coworker (shares target's input + output)",
 }
 MODE_ORDER = [MODE_SOURCE, MODE_SECONDARY_WORKER, MODE_COWORKER]
@@ -66,9 +70,9 @@ MODE_DESCRIPTIONS = {
         "this annotation output."
     ),
     MODE_SECONDARY_WORKER: (
-        "Read **and** write the target's *output* dataset. Use when this "
-        "node adds new data on top of another node's results — e.g. "
-        "detailed annotation adding child segments under an existing label."
+        "Read the target's *output* dataset and write this node's own "
+        "output. Use when this node derives a second-stage result from "
+        "another annotation."
     ),
     MODE_COWORKER: (
         "Read the target's *input* and write to the target's *output*. "
@@ -114,11 +118,8 @@ _CARD_CSS = """
 .pipe-chip.purple { background: #ede2ff; color: #6639ba; }
 .pipe-chip.teal   { background: #d4f4f4; color: #0a6a6a; }
 
-/* Mode picker: each option is an st.button styled as a card. The
-   button's label is multi-line markdown (title + description); CSS
-   hides the description until the button is hovered, and keeps it
-   visible on the disabled (current) option. Scoped by the
-   `st-key-mode_pick_*` class Streamlit adds when the button has key. */
+/* Legacy mode-picker card styles. Kept scoped in case older session
+   elements are still mounted during Streamlit reruns. */
 div[class*="st-key-mode_pick_"] .stButton > button {
   text-align: left;
   justify-content: flex-start;
@@ -172,24 +173,20 @@ def _card(html: str, kind_class: str = "") -> None:
 
 
 def _render_mode_picker(current: str, key_prefix: str) -> Optional[str]:
-    """Popover dropdown of mode options. Returns a new mode if the user
-    clicked one this run, else ``None``. Option cards are styled
-    ``st.button``\\s — see the ``st-key-mode_pick_*`` rules in ``_CARD_CSS``
-    for the hover-expand behavior."""
-    st.caption("Mode")
-    with st.popover(MODE_LABELS[current], width="stretch"):
-        st.caption("Hover an option to see what it does, click to switch.")
-        picked: Optional[str] = None
-        for mode in MODE_ORDER:
-            is_current = mode == current
-            title = MODE_LABELS[mode] + ("  ·  *current*" if is_current else "")
-            label = f"**{title}**\n\n{MODE_DESCRIPTIONS[mode]}"
-            if st.button(
-                label, key=f"mode_pick_{key_prefix}_{mode}",
-                width="stretch", disabled=is_current,
-            ):
-                picked = mode
-    return picked
+    """Return a newly selected mode, or ``None`` when unchanged."""
+    try:
+        mode_idx = MODE_ORDER.index(current)
+    except ValueError:
+        mode_idx = 0
+    picked = st.selectbox(
+        "Mode",
+        options=MODE_ORDER,
+        index=mode_idx,
+        format_func=lambda mode: MODE_LABELS[mode],
+        key=f"mode_pick_{key_prefix}",
+        help=MODE_DESCRIPTIONS.get(current),
+    )
+    return picked if picked != current else None
 
 
 def _route(view: str, *, annotation_key: Optional[str] = None,
@@ -210,10 +207,7 @@ def _route(view: str, *, annotation_key: Optional[str] = None,
 
 
 def _source_options(pipeline: Pipeline, store: Any, self_id: str,
-                    siblings_only: bool,
-                    *,
-                    segment_sources_only: bool = False,
-                    source_mode: str = MODE_SOURCE) -> list[str]:
+                    siblings_only: bool) -> list[str]:
     """Candidate sources for one annotation's input.
 
     Source mode: every cache_key in the store + every other annotation's
@@ -232,16 +226,41 @@ def _source_options(pipeline: Pipeline, store: Any, self_id: str,
             store_keys = sorted(store.list_cache_keys())
         except Exception:
             store_keys = []
-        visible_store_keys = [
-            key for key in store_keys if not key.endswith(SOURCE_COPY_SUFFIX)
-        ]
-        candidates = sibling_outputs + visible_store_keys
-    if segment_sources_only:
-        candidates = [
-            ref for ref in candidates
-            if _source_ref_has_segment_chunks(pipeline, store, ref, source_mode)
-        ]
+        candidates = sibling_outputs + store_keys
     return candidates
+
+
+def _output_dataset_options(store: Any) -> list[str]:
+    try:
+        return sorted(store.list_cache_keys())
+    except Exception:
+        return []
+
+
+def _with_current_option(options: list[str], current: Optional[str]) -> list[str]:
+    if current and current not in options:
+        return [current] + options
+    return options
+
+
+def _select_index(options: list[str], current: Optional[str]) -> int:
+    if current in options:
+        return options.index(current)
+    return 0
+
+
+def _valid_source_options_for_mode(
+    pipeline: Pipeline,
+    store: Any,
+    node: AnnotationNode,
+    mode: str,
+) -> list[str]:
+    return _source_options(
+        pipeline,
+        store,
+        self_id=node.id,
+        siblings_only=mode != MODE_SOURCE,
+    )
 
 
 def _annotation_input_status(
@@ -269,7 +288,7 @@ def _annotation_input_status(
             exists, n = False, 0
         detail = (
             f"{source_line} → <code>{read_key}</code><br/>"
-            f"Read &amp; write target's output"
+            f"Reads target's output"
             + (f" · {n:,} rec." if exists else " · target output empty.")
         )
         chip = '<span class="pipe-chip purple">secondary worker' + (
@@ -294,7 +313,6 @@ def _annotation_input_status(
             f"{source_line}<br/>"
             f"Reads target's input: <code>{read_key or '—'}</code>"
             + (f" · {n:,} rec." if exists else " · empty/not ready yet.")
-            + f"<br/>Writes target's output: <code>{write_key or '—'}</code>"
         )
         chip = '<span class="pipe-chip teal">coworker' + (
             " · empty</span>" if not exists else "</span>"
@@ -324,7 +342,7 @@ def _annotation_input_status(
                 "Source has no data to copy yet.",
                 "empty")
     copy_key = source_copy_key(node.output_key) if node.output_key else None
-    copy_exists = bool(copy_key) and _has_cached_data(store, copy_key)
+    copy_exists = bool(copy_key) and has_cached_data(store, copy_key)
     copy_detail = (
         f"<br/>Private input copy: <code>{copy_key}</code>"
         if copy_key else "<br/>Private input copy configured on first open."
@@ -353,54 +371,6 @@ def _output_status(store: Any, output_key: str) -> tuple[str, int, str]:
         return ("⚠️ unknown", 0, "")
 
 
-def _has_cached_data(store: Any, key: Optional[str]) -> bool:
-    if not key:
-        return False
-    try:
-        return store.has_cached_data(key)
-    except Exception:
-        return False
-
-
-def _cache_key_has_segment_chunks(store: Any, key: Optional[str]) -> bool:
-    if not _has_cached_data(store, key):
-        return False
-    try:
-        chunk_ids = list(store.list_chunk_ids(key))
-    except Exception:
-        return False
-    for chunk_id in chunk_ids:
-        try:
-            payload = store.get_chunk(key, chunk_id)
-        except Exception:
-            continue
-        _, records = _payload_records(payload)
-        if any(_is_segment_record(record) for record in records):
-            return True
-    return False
-
-
-def _source_ref_has_segment_chunks(
-    pipeline: Pipeline,
-    store: Any,
-    source_ref: str,
-    source_mode: str,
-) -> bool:
-    key: Optional[str]
-    if source_mode == MODE_COWORKER and "." in source_ref:
-        target_id, attr = source_ref.split(".", 1)
-        if attr != "output":
-            return False
-        try:
-            target = pipeline.annotation(target_id)
-        except KeyError:
-            return False
-        key = pipeline.effective_input_key(target)
-    else:
-        key = pipeline.resolve_source_key(source_ref)
-    return _cache_key_has_segment_chunks(store, key)
-
-
 def _type_label(value: Any) -> str:
     if value is None:
         return "None"
@@ -419,25 +389,6 @@ def _type_label(value: Any) -> str:
             return "list[empty]"
         return f"list[{_type_label(value[0])}]"
     return type(value).__name__
-
-
-def _is_segment_record(record: Any) -> bool:
-    return (
-        isinstance(record, dict)
-        and "start_index" in record
-        and "end_index" in record
-        and ("labels" in record or "telemetry_data" in record)
-    )
-
-
-def _payload_records(payload: Any) -> tuple[str, list[Any]]:
-    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
-        return "dict.data", payload["data"]
-    if isinstance(payload, list):
-        return "list", payload
-    if isinstance(payload, dict):
-        return "dict", [payload]
-    return type(payload).__name__, [payload]
 
 
 def _structure_rows_from_record(record: Any, *, limit: int = 12) -> list[dict[str, str]]:
@@ -535,9 +486,9 @@ def _dataset_structure(
             ),
         }
 
-    container, records = _payload_records(payload)
+    container, records = payload_records(payload)
     sample = next((record for record in records if record is not None), None)
-    record_label = "segment" if _is_segment_record(sample) else "row"
+    record_label = "segment" if is_segment_record(sample) else "row"
     summary = f"{container}[{record_label}] from `{sample_chunk}`"
     return {
         "status": "ready",
@@ -905,7 +856,7 @@ def _render_annotation_card(
     effective_out = pipeline.effective_output_key(node)
     source_key = pipeline.resolve_source_key(node.source_ref)
     structure_input_key = effective
-    if node.mode == MODE_SOURCE and not _has_cached_data(store, effective):
+    if node.mode == MODE_SOURCE and not has_cached_data(store, effective):
         structure_input_key = source_key
     declared_output_rows = _declared_output_rows(spec)
     input_structure = _dataset_structure(store, structure_input_key)
@@ -934,10 +885,26 @@ def _render_annotation_card(
             )
     else:
         share_label = "secondary worker" if node.mode == MODE_SECONDARY_WORKER else "coworker"
-        out_line = (
-            f'<br/>Output: <i>shared with target</i> <code>{effective_out or "—"}</code>'
-            f' ({share_label}) · {out_label}'
-        )
+        if node.mode == MODE_SECONDARY_WORKER:
+            if node.output_key:
+                dir_hint = (
+                    f'<br/><span class="meta">in <code>{node.output_dir}</code></span>'
+                    if node.output_dir else ""
+                )
+                out_line = (
+                    f'<br/>Output: <code>{node.output_key}</code> · {out_label}'
+                    f'{dir_hint}'
+                )
+            else:
+                out_line = (
+                    '<br/>Output: <i>not configured yet</i> — '
+                    'pick a directory &amp; filename on first open.'
+                )
+        else:
+            out_line = (
+                f'<br/>Output: <i>shared with target</i> '
+                f'<code>{effective_out or "—"}</code> ({share_label}) · {out_label}'
+            )
 
     display_name = node.name or spec.display
 
@@ -980,24 +947,85 @@ def _render_annotation_card(
             save_pipeline(pipeline)
             st.rerun()
 
-        # ── Mode (read-only — chosen at creation, locked thereafter) ─────
-        st.caption(
-            f"Mode: **{MODE_LABELS[node.mode]}** 🔒",
-            help=MODE_DESCRIPTIONS[node.mode],
-        )
+        # ── Mode / input / output controls ──────────────────────────────
+        picked_mode = _render_mode_picker(node.mode, key_prefix=node.id)
+        if picked_mode is not None:
+            valid_sources = _valid_source_options_for_mode(
+                pipeline,
+                store,
+                node,
+                picked_mode,
+            )
+            node.mode = picked_mode
+            if node.source_ref not in valid_sources:
+                node.source_ref = None
+                st.session_state.pop(f"ann_src_{node.id}", None)
+            if node.mode != MODE_SOURCE:
+                node.protection_reference = None
+            save_pipeline(pipeline)
+            st.rerun()
 
-        # ── Source (read-only — chosen at creation, locked thereafter) ───
-        placeholder = "— not set —"
-        st.selectbox(
-            "Source",
-            options=[node.source_ref or placeholder],
-            index=0,
-            key=f"ann_src_{node.id}",
-            label_visibility="collapsed",
-            disabled=True,
-            help="Source is locked after creation. Delete and recreate this "
-                 "node to change it.",
+        siblings_only = node.mode != MODE_SOURCE
+        source_options = _valid_source_options_for_mode(
+            pipeline,
+            store,
+            node,
+            node.mode,
         )
+        source_placeholder = "— pick an input dataset —"
+        source_display_options = [source_placeholder] + _with_current_option(
+            source_options,
+            node.source_ref,
+        )
+        chosen_source = st.selectbox(
+            "Input dataset",
+            options=source_display_options,
+            index=_select_index(source_display_options, node.source_ref),
+            key=f"ann_src_{node.id}",
+            placeholder="Type to search input datasets",
+            help=("Copy from source: pick an input dataset or sibling output. "
+                  "Worker modes read from the selected sibling's dataset."),
+        )
+        new_source_ref = (
+            None if chosen_source == source_placeholder else chosen_source
+        )
+        if new_source_ref != node.source_ref:
+            node.source_ref = new_source_ref
+            if node.mode == MODE_SOURCE:
+                node.protection_reference = None
+            save_pipeline(pipeline)
+            st.rerun()
+
+        if node.mode in {MODE_SOURCE, MODE_SECONDARY_WORKER}:
+            output_placeholder = "— configure on first open —"
+            output_options = [output_placeholder] + _with_current_option(
+                _output_dataset_options(store),
+                node.output_key,
+            )
+            chosen_output = st.selectbox(
+                "Output dataset",
+                options=output_options,
+                index=_select_index(output_options, node.output_key),
+                key=f"ann_out_{node.id}",
+                placeholder="Type to search output datasets",
+                help=("Choose the output dataset this node writes. Leave "
+                      "unconfigured to use the first-open output popup."),
+            )
+            new_output_key = (
+                "" if chosen_output == output_placeholder else chosen_output
+            )
+            if new_output_key != node.output_key:
+                node.output_key = new_output_key
+                node.output_dir = None
+                if node.mode == MODE_SOURCE:
+                    node.protection_reference = None
+                save_pipeline(pipeline)
+                st.rerun()
+        else:
+            st.caption(
+                f"Output dataset: shared with target "
+                f"`{pipeline.effective_output_key(node) or '—'}`"
+            )
 
         protection_ready, protection_reference = _render_source_protection_selector(
             pipeline,
@@ -1013,7 +1041,7 @@ def _render_annotation_card(
 
         open_disabled = not effective
         if node.mode == MODE_SOURCE and node.output_key:
-            open_disabled = not _has_cached_data(store, effective)
+            open_disabled = not has_cached_data(store, effective)
 
         with btn_cols[0]:
             if node.mode != MODE_SOURCE:
@@ -1025,8 +1053,8 @@ def _render_annotation_card(
                           width="stretch", disabled=True)
             else:
                 copy_key = source_copy_key(node.output_key) if node.output_key else None
-                source_ready = _has_cached_data(store, source_key)
-                copy_ready = _has_cached_data(store, copy_key)
+                source_ready = has_cached_data(store, source_key)
+                copy_ready = has_cached_data(store, copy_key)
                 label = "Update from source" if copy_ready else "Copy from source"
                 if st.button(
                     label,
@@ -1043,8 +1071,8 @@ def _render_annotation_card(
                     st.rerun()
         with btn_cols[1]:
             out_key = pipeline.effective_output_key(node)
-            has_input_data = _has_cached_data(store, effective)
-            has_output_data = _has_cached_data(store, out_key)
+            has_input_data = has_cached_data(store, effective)
+            has_output_data = has_cached_data(store, out_key)
             refresh_disabled = not (
                 node.mode == MODE_SOURCE and has_input_data and has_output_data
             )
@@ -1078,12 +1106,15 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         ann_specs = node_kinds.list_by_category("annotation")
         kind_choices = [s.kind for s in ann_specs]
         kind_labels = {s.kind: s.display for s in ann_specs}
+        kind_placeholder = "— pick annotation component —"
         chosen_kind = st.selectbox(
             "Kind",
-            options=kind_choices,
-            format_func=lambda k: kind_labels[k],
+            options=[kind_placeholder] + kind_choices,
+            format_func=lambda k: kind_labels.get(k, k),
             key="add_ann_kind",
         )
+        if chosen_kind == kind_placeholder:
+            chosen_kind = None
         name = st.text_input(
             "Name", value="", key="add_ann_name",
             placeholder="e.g. lap round 1",
@@ -1096,24 +1127,43 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         name_clean = name.strip()
         name_slug = slugify(name_clean) if name_clean else ""
 
-        # Pending mode lives in session state so the popover-button
-        # picker (which reruns on click) survives between renders.
-        pending_mode = st.session_state.setdefault("add_ann_mode", MODE_SOURCE)
-        picked = _render_mode_picker(pending_mode, key_prefix="add")
-        if picked is not None and picked != pending_mode:
-            st.session_state["add_ann_mode"] = picked
+        mode_placeholder = "— pick mode —"
+        pending_mode = st.session_state.get("add_ann_mode")
+        mode_options = [mode_placeholder] + MODE_ORDER
+        mode_idx = (
+            mode_options.index(pending_mode)
+            if pending_mode in MODE_ORDER else 0
+        )
+        picked_mode = st.selectbox(
+            "Mode",
+            options=mode_options,
+            index=mode_idx,
+            format_func=lambda mode: MODE_LABELS.get(mode, mode),
+            key="mode_pick_add",
+            help=MODE_DESCRIPTIONS.get(pending_mode),
+        )
+        new_pending_mode = (
+            None if picked_mode == mode_placeholder else picked_mode
+        )
+        if new_pending_mode != pending_mode:
+            if new_pending_mode is None:
+                st.session_state.pop("add_ann_mode", None)
+            else:
+                st.session_state["add_ann_mode"] = new_pending_mode
             # Mode change invalidates the pending source (options differ).
             st.session_state.pop("add_ann_source", None)
             st.rerun()
+        pending_mode = new_pending_mode
 
         # ── Source picker ────────────────────────────────────────────────
-        siblings_only = pending_mode != MODE_SOURCE
-        source_options = _source_options(
-            pipeline, store, self_id="", siblings_only=siblings_only,
-            segment_sources_only=chosen_kind == "detailed",
-            source_mode=pending_mode,
+        siblings_only = bool(pending_mode and pending_mode != MODE_SOURCE)
+        source_options = (
+            _source_options(
+                pipeline, store, self_id="", siblings_only=siblings_only,
+            )
+            if chosen_kind and pending_mode else []
         )
-        placeholder = "— pick a target —" if siblings_only else "— pick a source —"
+        placeholder = "— pick an input dataset —"
         display_options = [placeholder] + source_options
         pending_source = st.session_state.get("add_ann_source")
         try:
@@ -1121,40 +1171,42 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         except ValueError:
             src_idx = 0
         chosen_src = st.selectbox(
-            "Source", options=display_options, index=src_idx,
+            "Input dataset", options=display_options, index=src_idx,
             key="add_ann_source_select",
             help=("Source mode: any cache_key in the store, or a sibling "
-                  "annotation's output. Secondary worker / coworker: pick "
-                  "the target sibling annotation."),
+                  "output dataset. Secondary worker / coworker: pick the "
+                  "sibling dataset to read from."),
+            disabled=not (chosen_kind and pending_mode),
         )
         st.session_state["add_ann_source"] = (
             None if chosen_src == placeholder else chosen_src
         )
-        if chosen_kind == "detailed" and not source_options:
-            st.caption(":warning: No sources resolve to session segment chunks.")
-        elif siblings_only and not source_options:
-            st.caption(":warning: No sibling annotations to target — "
-                       "create one in source mode first.")
-        elif chosen_kind == "detailed":
-            st.caption(
-                "Detailed Annotation only lists sources that resolve to "
-                "session segment chunks."
-            )
+        if chosen_kind and pending_mode and not source_options:
+            if siblings_only:
+                st.caption(":warning: No sibling datasets are available yet.")
+            else:
+                st.caption(":warning: No datasets are available yet.")
 
-        if name_slug:
+        if name_slug and pending_mode:
             if pending_mode == MODE_SOURCE:
-                st.caption(
+                caption = (
+                    f"Node id will be: `{name_slug}`. Output dataset location is "
+                    "configured on the annotation page (first-time popup)."
+                )
+            elif pending_mode == MODE_SECONDARY_WORKER:
+                caption = (
                     f"Node id will be: `{name_slug}`. Output dataset location is "
                     "configured on the annotation page (first-time popup)."
                 )
             else:
-                st.caption(
+                caption = (
                     f"Node id will be: `{name_slug}`. Writes to the target's "
                     "output dataset (no new file is created)."
                 )
+            st.caption(caption)
 
         source_ref = st.session_state.get("add_ann_source")
-        can_create = bool(name_clean) and bool(source_ref)
+        can_create = bool(name_clean and chosen_kind and pending_mode and source_ref)
         if st.button("Create annotation node", type="primary",
                      width="stretch",
                      disabled=not can_create):
@@ -1228,12 +1280,15 @@ def _render_add_training(pipeline: Pipeline) -> None:
         tr_specs = node_kinds.list_by_category("training")
         kind_choices = [s.kind for s in tr_specs]
         kind_labels = {s.kind: s.display for s in tr_specs}
+        kind_placeholder = "— pick training component —"
         chosen_kind = st.selectbox(
             "Kind",
-            options=kind_choices,
-            format_func=lambda k: kind_labels[k],
+            options=[kind_placeholder] + kind_choices,
+            format_func=lambda k: kind_labels.get(k, k),
             key="add_tr_kind",
         )
+        if chosen_kind == kind_placeholder:
+            chosen_kind = None
         name = st.text_input(
             "Name", value="", key="add_tr_name",
             placeholder="e.g. classifier round 1",
@@ -1249,7 +1304,7 @@ def _render_add_training(pipeline: Pipeline) -> None:
 
         if st.button("Create training node", type="primary",
                      width="stretch",
-                     disabled=not name_clean):
+                     disabled=not (name_clean and chosen_kind)):
             existing = {n.id for n in pipeline.annotations} | {n.id for n in pipeline.trainings}
             if name_slug in existing:
                 st.error(f"A node named `{name_clean}` (id `{name_slug}`) already exists.")
@@ -1293,9 +1348,9 @@ def render_pipeline_view(pipeline: Pipeline, store: Any) -> None:
     with col_out:
         st.markdown('<div class="pipe-col-header">Output Datasets</div>',
                     unsafe_allow_html=True)
-        # Secondary worker / coworker nodes have no output of their own —
-        # they collaborate on the target's output. Group producers by their
-        # effective output_key so collaborators show up under the shared dataset.
+        # Group producers by effective output_key so coworkers show up
+        # under the shared target dataset while secondary workers show
+        # their own derived output.
         seen: dict[str, list[str]] = {}
         for node in pipeline.annotations:
             key = pipeline.effective_output_key(node)

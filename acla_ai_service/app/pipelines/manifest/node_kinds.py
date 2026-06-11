@@ -23,6 +23,7 @@ from typing import Dict, List, Literal
 
 
 Category = Literal["annotation", "training"]
+InputDatasetShape = Literal["records", "segments"]
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class NodeKindSpec:
     description: str
     ui_route: str
     produces_output: bool = False
+    input_dataset_shape: InputDatasetShape = "records"
     output_fields: tuple[DatasetFieldSpec, ...] = field(default_factory=tuple)
 
 
@@ -94,6 +96,7 @@ def annotation_spec(
     display: str,
     description: str,
     ui_route: str,
+    input_dataset_shape: InputDatasetShape = "records",
 ) -> NodeKindSpec:
     return NodeKindSpec(
         kind=kind,
@@ -102,6 +105,7 @@ def annotation_spec(
         description=description,
         ui_route=ui_route,
         produces_output=True,
+        input_dataset_shape=input_dataset_shape,
         output_fields=ANNOTATED_SEGMENT_OUTPUT_FIELDS,
     )
 
@@ -118,6 +122,7 @@ register(annotation_spec(
     display="Detailed Annotation",
     description="Sub-segment / sub-label refinement on top of lap segments.",
     ui_route="detailed",
+    input_dataset_shape="segments",
 ))
 register(annotation_spec(
     kind="batch_bulk_label",
@@ -182,6 +187,7 @@ register(NodeKindSpec(
 
 __all__ = [
     "DatasetFieldSpec",
+    "InputDatasetShape",
     "NodeKindSpec",
     "register",
     "get",

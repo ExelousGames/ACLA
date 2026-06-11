@@ -5,8 +5,7 @@ An annotation runs in one of three modes:
 - ``"source"`` — copies ``source_ref`` to a private input dataset and
   writes annotations to its own ``output_key``.
 - ``"secondary_worker"`` — reads the *target* sibling's
-  output and writes back to the same dataset (e.g. detailed
-  annotation adding child segments to a parent's output).
+  output and writes annotations to its own ``output_key``.
 - ``"coworker"`` — reads the *target* sibling's input and
   writes to the target's output (e.g. an AI agent assisting a human
   annotator in parallel on the same input → output flow).
@@ -40,7 +39,7 @@ def _now_iso() -> str:
 class AnnotationNode:
     id: str                                          # unique within pipeline (stable ref key)
     kind: str                                        # matches a NodeKindSpec.kind
-    output_key: str = ""                             # this annotation's output dataset (source mode). Empty = not configured yet; the annotation page's popup sets it on first open.
+    output_key: str = ""                             # this annotation's own output dataset. Empty = not configured yet; the annotation page's popup sets it on first open.
     name: Optional[str] = None                       # user-editable display label; falls back to kind.display
     source_ref: Optional[str] = None                 # source: any cache_key or "<id>.output". Worker modes: "<target_id>.output".
     mode: str = MODE_SOURCE                          # "source" | "secondary_worker" | "coworker"
@@ -63,8 +62,10 @@ class AnnotationNode:
             mode = MODE_SOURCE
         elif raw_mode in _VALID_MODES:
             mode = raw_mode
+        elif d.get("coworker_mode"):
+            mode = MODE_COWORKER
         else:
-            mode = MODE_SECONDARY_WORKER if d.get("coworker_mode") else MODE_SOURCE
+            raise ValueError(f"Invalid annotation mode for {d['id']!r}: {raw_mode!r}")
         return cls(
             id=d["id"],
             kind=canonicalize(d["kind"]),
@@ -124,10 +125,8 @@ class Pipeline:
         """Turn a ``source_ref`` into the actual output cache_key.
 
         ``"<node_id>.output"`` resolves to that annotation's effective
-        output. For a worker target (secondary_worker / coworker),
-        that's the upstream's effective output (followed recursively)
-        — so chaining always lands on the dataset everybody is
-        actually writing to.
+        output. Coworkers share the upstream target's effective output;
+        secondary workers expose their own output.
 
         Anything else is assumed to already be a cache_key in the store.
         """
@@ -136,24 +135,11 @@ class Pipeline:
         if "." in ref:
             node_id, attr = ref.split(".", 1)
             if attr == "output":
-                seen: set[str] = set()
-                cur = node_id
-                while cur not in seen:
-                    seen.add(cur)
-                    try:
-                        target = self.annotation(cur)
-                    except KeyError:
-                        return None
-                    if target.mode == MODE_SOURCE:
-                        return target.output_key
-                    # Worker modes: write target is the upstream's output.
-                    if not target.source_ref or "." not in target.source_ref:
-                        return target.source_ref
-                    nxt, nxt_attr = target.source_ref.split(".", 1)
-                    if nxt_attr != "output":
-                        return target.source_ref
-                    cur = nxt
-                return None  # cycle
+                try:
+                    target = self.annotation(node_id)
+                except KeyError:
+                    return None
+                return self.effective_output_key(target)
         return ref
 
     def _resolve_target(self, node: "AnnotationNode") -> Optional["AnnotationNode"]:
@@ -175,8 +161,7 @@ class Pipeline:
 
         - Source → copied input dataset once ``output_key`` is configured,
           otherwise the resolved source so first-time setup can open.
-        - Secondary worker → target's effective output (read + write
-          the same dataset).
+        - Secondary worker → target's effective output.
         - Coworker → target's effective *input* (read what the target
           reads; write where the target writes).
         """
@@ -186,7 +171,10 @@ class Pipeline:
                 return source_copy_key(node.output_key)
             return self.resolve_source_key(node.source_ref)
         if node.mode == MODE_SECONDARY_WORKER:
-            return self.resolve_source_key(node.source_ref)
+            target = self._resolve_target(node)
+            if target is None:
+                return None
+            return self.effective_output_key(target)
         # MODE_COWORKER: chase target's input recursively (with cycle guard).
         seen = _seen if _seen is not None else set()
         if node.id in seen:
@@ -197,16 +185,25 @@ class Pipeline:
             return None
         return self.effective_input_key(target, seen)
 
-    def effective_output_key(self, node: "AnnotationNode") -> Optional[str]:
+    def effective_output_key(
+        self, node: "AnnotationNode", _seen: Optional[set] = None,
+    ) -> Optional[str]:
         """Cache_key this annotation actually writes to.
 
         - Source → ``node.output_key``.
-        - Secondary worker / coworker → the upstream target's output
-          (resolved recursively via ``resolve_source_key``).
+        - Secondary worker → ``node.output_key``.
+        - Coworker → the upstream target's output.
         """
-        if node.mode == MODE_SOURCE:
-            return node.output_key
-        return self.resolve_source_key(node.source_ref)
+        if node.mode in {MODE_SOURCE, MODE_SECONDARY_WORKER}:
+            return node.output_key or None
+        seen = _seen if _seen is not None else set()
+        if node.id in seen:
+            return None
+        seen = seen | {node.id}
+        target = self._resolve_target(node)
+        if target is None:
+            return None
+        return self.effective_output_key(target, seen)
 
     # ── Serialization ────────────────────────────────────────────────────
     def to_dict(self) -> Dict[str, Any]:
