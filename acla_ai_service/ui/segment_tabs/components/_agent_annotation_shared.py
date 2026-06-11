@@ -459,6 +459,7 @@ def render_staged_review(
     )
 
     all_label_options = sorted(LABEL_MAPPING.values())
+    parent_label_ids = get_parent_label_ids(parent_id)
     staged_segments: list[dict] = []
     for i, ((gs, ge), anns) in enumerate(grouped):
         with st.container(border=True):
@@ -481,10 +482,14 @@ def render_staged_review(
                     key=f"agent_staged_end_{i}",
                 )
 
+            default_label_ids = with_parent_label_ids(
+                [a["label_id"] for a in anns if a["label_id"] in LABEL_MAPPING],
+                parent_label_ids,
+            )
             default_labels = [
-                LABEL_MAPPING.get(a["label_id"], a["label_id"])
-                for a in anns
-                if a["label_id"] in LABEL_MAPPING
+                LABEL_MAPPING.get(label_id, label_id)
+                for label_id in default_label_ids
+                if label_id in LABEL_MAPPING
             ]
             seg_labels = st.multiselect(
                 "Labels",
@@ -661,6 +666,35 @@ def group_proposals_by_range(result) -> list[tuple[tuple[int, int], list[dict]]]
     return [(k, grouped[k]) for k in order]
 
 
+def _resolve_label_id(label) -> str:
+    key = str(label)
+    if key in LABEL_MAPPING:
+        return key
+    return LABEL_NAME_TO_ID.get(key, key)
+
+
+def get_parent_label_ids(parent_id: str | None) -> list[str]:
+    """Return the selected parent segment's labels as label ids."""
+    if not parent_id:
+        return []
+
+    for ann in st.session_state.get("current_annotations", []):
+        if getattr(ann, "id", None) == parent_id:
+            return [_resolve_label_id(label) for label in getattr(ann, "labels", [])]
+    return []
+
+
+def with_parent_label_ids(
+    label_ids: list[str],
+    parent_label_ids: list[str],
+) -> list[str]:
+    """Prepend parent labels so child sub-segments carry whole-segment labels."""
+    return list(dict.fromkeys([
+        *[_resolve_label_id(label) for label in parent_label_ids],
+        *[_resolve_label_id(label) for label in label_ids],
+    ]))
+
+
 def _persist_staged_subsegments(
     staged_segments: list[dict],
     parent_id: str | None,
@@ -673,6 +707,7 @@ def _persist_staged_subsegments(
 
     new_children: list[AnnotatedSegment] = []
     errors: list[str] = []
+    parent_label_ids = get_parent_label_ids(parent_id)
 
     for i, seg in enumerate(staged_segments, start=1):
         start = seg["start"]
@@ -695,6 +730,8 @@ def _persist_staged_subsegments(
         if not label_ids:
             errors.append(f"Sub-segment {i}: no valid labels resolved.")
             continue
+
+        label_ids = with_parent_label_ids(label_ids, parent_label_ids)
 
         new_children.append(build_segment(
             df,

@@ -210,7 +210,10 @@ def _route(view: str, *, annotation_key: Optional[str] = None,
 
 
 def _source_options(pipeline: Pipeline, store: Any, self_id: str,
-                    siblings_only: bool) -> list[str]:
+                    siblings_only: bool,
+                    *,
+                    segment_sources_only: bool = False,
+                    source_mode: str = MODE_SOURCE) -> list[str]:
     """Candidate sources for one annotation's input.
 
     Source mode: every cache_key in the store + every other annotation's
@@ -223,15 +226,22 @@ def _source_options(pipeline: Pipeline, store: Any, self_id: str,
         f"{n.id}.output" for n in pipeline.annotations if n.id != self_id
     ]
     if siblings_only:
-        return sibling_outputs
-    try:
-        store_keys = sorted(store.list_cache_keys())
-    except Exception:
-        store_keys = []
-    visible_store_keys = [
-        key for key in store_keys if not key.endswith(SOURCE_COPY_SUFFIX)
-    ]
-    return sibling_outputs + visible_store_keys
+        candidates = sibling_outputs
+    else:
+        try:
+            store_keys = sorted(store.list_cache_keys())
+        except Exception:
+            store_keys = []
+        visible_store_keys = [
+            key for key in store_keys if not key.endswith(SOURCE_COPY_SUFFIX)
+        ]
+        candidates = sibling_outputs + visible_store_keys
+    if segment_sources_only:
+        candidates = [
+            ref for ref in candidates
+            if _source_ref_has_segment_chunks(pipeline, store, ref, source_mode)
+        ]
+    return candidates
 
 
 def _annotation_input_status(
@@ -350,6 +360,45 @@ def _has_cached_data(store: Any, key: Optional[str]) -> bool:
         return store.has_cached_data(key)
     except Exception:
         return False
+
+
+def _cache_key_has_segment_chunks(store: Any, key: Optional[str]) -> bool:
+    if not _has_cached_data(store, key):
+        return False
+    try:
+        chunk_ids = list(store.list_chunk_ids(key))
+    except Exception:
+        return False
+    for chunk_id in chunk_ids:
+        try:
+            payload = store.get_chunk(key, chunk_id)
+        except Exception:
+            continue
+        _, records = _payload_records(payload)
+        if any(_is_segment_record(record) for record in records):
+            return True
+    return False
+
+
+def _source_ref_has_segment_chunks(
+    pipeline: Pipeline,
+    store: Any,
+    source_ref: str,
+    source_mode: str,
+) -> bool:
+    key: Optional[str]
+    if source_mode == MODE_COWORKER and "." in source_ref:
+        target_id, attr = source_ref.split(".", 1)
+        if attr != "output":
+            return False
+        try:
+            target = pipeline.annotation(target_id)
+        except KeyError:
+            return False
+        key = pipeline.effective_input_key(target)
+    else:
+        key = pipeline.resolve_source_key(source_ref)
+    return _cache_key_has_segment_chunks(store, key)
 
 
 def _type_label(value: Any) -> str:
@@ -1061,6 +1110,8 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         siblings_only = pending_mode != MODE_SOURCE
         source_options = _source_options(
             pipeline, store, self_id="", siblings_only=siblings_only,
+            segment_sources_only=chosen_kind == "detailed",
+            source_mode=pending_mode,
         )
         placeholder = "— pick a target —" if siblings_only else "— pick a source —"
         display_options = [placeholder] + source_options
@@ -1079,9 +1130,16 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
         st.session_state["add_ann_source"] = (
             None if chosen_src == placeholder else chosen_src
         )
-        if siblings_only and not source_options:
+        if chosen_kind == "detailed" and not source_options:
+            st.caption(":warning: No sources resolve to session segment chunks.")
+        elif siblings_only and not source_options:
             st.caption(":warning: No sibling annotations to target — "
                        "create one in source mode first.")
+        elif chosen_kind == "detailed":
+            st.caption(
+                "Detailed Annotation only lists sources that resolve to "
+                "session segment chunks."
+            )
 
         if name_slug:
             if pending_mode == MODE_SOURCE:

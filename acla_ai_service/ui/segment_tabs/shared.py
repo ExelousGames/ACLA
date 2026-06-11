@@ -146,6 +146,31 @@ def _is_segment_list(chunk) -> bool:
     )
 
 
+def _chunk_payload(chunk):
+    if isinstance(chunk, dict) and isinstance(chunk.get("data"), list):
+        return chunk["data"]
+    return chunk
+
+
+def load_session_segments(cache_key: str, session_id: str) -> List[AnnotatedSegment]:
+    """Load one chunk when it is already an annotation/segment dataset."""
+    store = get_store()
+    try:
+        chunk = store.get_chunk(cache_key, session_id)
+    except Exception:
+        return []
+
+    payload = _chunk_payload(chunk)
+    if not _is_segment_list(payload):
+        return []
+
+    segments = [AnnotatedSegment.from_dict(d) for d in payload]
+    for segment in segments:
+        if segment.chunk_index is None:
+            segment.chunk_index = session_id
+    return segments
+
+
 def _segments_to_telemetry_df(segments: list) -> pd.DataFrame:
     """Concat each segment's ``telemetry_data`` into one flat telemetry df.
     Segments are ordered by ``start_index`` so the resulting iloc range
@@ -189,20 +214,16 @@ def load_session_data(cache_key: str, session_id: str) -> pd.DataFrame:
     if chunk is None:
         return pd.DataFrame()
 
-    if isinstance(chunk, list):
-        if _is_segment_list(chunk):
-            return _segments_to_telemetry_df(chunk)
-        return pd.DataFrame(chunk)
-    if isinstance(chunk, dict):
-        if "data" in chunk and isinstance(chunk["data"], list):
-            data = chunk["data"]
-            if _is_segment_list(data):
-                return _segments_to_telemetry_df(data)
-            return pd.DataFrame(data)
+    payload = _chunk_payload(chunk)
+    if isinstance(payload, list):
+        if _is_segment_list(payload):
+            return _segments_to_telemetry_df(payload)
+        return pd.DataFrame(payload)
+    if isinstance(payload, dict):
         try:
-            return pd.DataFrame(chunk)
+            return pd.DataFrame(payload)
         except ValueError:
-            return pd.DataFrame([chunk])
+            return pd.DataFrame([payload])
     return pd.DataFrame()
 
 def load_annotations(session_id: str, annotation_key: str) -> List[AnnotatedSegment]:

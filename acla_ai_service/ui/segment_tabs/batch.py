@@ -296,9 +296,13 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     usable proposals we keep the old children intact rather than wiping
     them out for a no-op.
     """
-    from .components._agent_annotation_shared import group_proposals_by_range
+    from .components._agent_annotation_shared import (
+        group_proposals_by_range,
+        with_parent_label_ids,
+    )
 
     grouped = group_proposals_by_range(result)
+    parent_label_ids = list(getattr(parent, "labels", []))
 
     new_children = []
     for (gs, ge), anns in grouped:
@@ -312,7 +316,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
             df,
             start=int(gs),
             end=int(ge),
-            label_ids=list(dict.fromkeys(label_ids)),
+            label_ids=with_parent_label_ids(label_ids, parent_label_ids),
             notes=notes,
             parent_id=parent.id,
         ))
