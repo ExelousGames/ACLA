@@ -7,7 +7,6 @@ import streamlit as st
 from .shared import (
     AnnotatedSegment,
     get_available_sessions,
-    get_display_labels,
     load_annotations,
     load_session_segments,
 )
@@ -25,14 +24,6 @@ def _root_segment_indices(annotations: list[AnnotatedSegment]) -> list[int]:
         if not getattr(annotation, "parent_id", None)
         or getattr(annotation, "parent_id", None) not in existing_ids
     ]
-
-
-def _format_segment_option(annotation: AnnotatedSegment, index: int) -> str:
-    labels = ", ".join(get_display_labels(annotation.labels)) or "Unlabeled"
-    start = getattr(annotation, "start_index", None)
-    end = getattr(annotation, "end_index", None)
-    length = max(0, int(end or 0) - int(start or 0))
-    return f"#{index} | {labels} | {start}-{end} | {length} rows"
 
 
 def _segments_to_positioned_dataframe(
@@ -75,60 +66,12 @@ def _safe_load_annotations(
         return []
 
 
-def _clear_detailed_form_state() -> None:
-    for key in list(st.session_state.keys()):
-        if key.startswith("detailed_form_"):
-            del st.session_state[key]
-
-
 def _set_visualization_range(start: int, end: int, max_index: int) -> None:
     safe_start = max(0, min(int(start), max_index))
     safe_end = max(safe_start, min(int(end), max_index))
     st.session_state.detailed_global_viz_range = (safe_start, safe_end)
     st.session_state.detailed_global_viz_start_input = safe_start
     st.session_state.detailed_global_viz_end_input = safe_end
-
-
-def _select_focus_segment(
-    annotations: list[AnnotatedSegment],
-    max_index: int,
-) -> int | None:
-    root_indices = _root_segment_indices(annotations)
-    if not root_indices:
-        st.warning("No root segments found in this session.")
-        return None
-
-    current = st.session_state.get("detailed_annotation_selector")
-    if current in root_indices:
-        st.session_state["detailed_focus_segment_selector"] = current
-
-    try:
-        focus_index = root_indices.index(current)
-    except ValueError:
-        focus_index = 0
-
-    focused = st.selectbox(
-        "Segment queue",
-        options=root_indices,
-        index=focus_index,
-        format_func=lambda index: _format_segment_option(annotations[index], index),
-        key="detailed_focus_segment_selector",
-        help="Pick the parent segment to refine. The editor below stays on this segment.",
-    )
-
-    previous = st.session_state.get("detailed_last_focus_segment")
-    if previous != focused:
-        annotation = annotations[focused]
-        _clear_detailed_form_state()
-        _set_visualization_range(
-            getattr(annotation, "start_index", 0) or 0,
-            getattr(annotation, "end_index", max_index) or max_index,
-            max_index,
-        )
-        st.session_state.detailed_last_focus_segment = focused
-
-    st.session_state.detailed_annotation_selector = focused
-    return focused
 
 
 def _segment_session_counts(
@@ -219,6 +162,7 @@ def render_detailed_labeling(
         st.session_state.last_session_id = session_id
         st.session_state.last_annotation_key = selected_annotation_key
         st.session_state.pop("detailed_last_focus_segment", None)
+        st.session_state.pop("detailed_focus_segment_selector", None)
 
     current_annotations = st.session_state.get("current_annotations", [])
 
@@ -241,22 +185,6 @@ def render_detailed_labeling(
         if not track_names.empty:
             st.markdown(f"**Track:** {track_names.iloc[0]}")
 
-    focused = _select_focus_segment(current_annotations, max_index)
-
-    if "detailed_global_viz_range" not in st.session_state:
-        if focused is not None:
-            annotation = current_annotations[focused]
-            _set_visualization_range(
-                getattr(annotation, "start_index", 0) or 0,
-                getattr(annotation, "end_index", max_index) or max_index,
-                max_index,
-            )
-        else:
-            _set_visualization_range(0, min(100, max_index), max_index)
-    else:
-        start, end = st.session_state.detailed_global_viz_range
-        _set_visualization_range(start, end, max_index)
-
     numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
     default_cols = ["speed_kmh", "gas", "brake", "steer_angle"]
 
@@ -267,6 +195,22 @@ def render_detailed_labeling(
     from .components.detailed_subsegment_manager import render_subsegment_manager
 
     render_subsegment_manager(df, session_id, selected_annotation_key)
+
+    selected_annotation = st.session_state.get("detailed_annotation_selector")
+    root_indices = _root_segment_indices(current_annotations)
+    if "detailed_global_viz_range" not in st.session_state:
+        if selected_annotation in root_indices:
+            annotation = current_annotations[selected_annotation]
+            _set_visualization_range(
+                getattr(annotation, "start_index", 0) or 0,
+                getattr(annotation, "end_index", max_index) or max_index,
+                max_index,
+            )
+        else:
+            _set_visualization_range(0, min(100, max_index), max_index)
+    else:
+        start, end = st.session_state.detailed_global_viz_range
+        _set_visualization_range(start, end, max_index)
 
     st.markdown("---")
     st.caption("Visualization Range")

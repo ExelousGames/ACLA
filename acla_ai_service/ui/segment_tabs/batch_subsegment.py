@@ -21,6 +21,7 @@ _USAGE_EXHAUSTED_WARNING = (
     "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
     "credit balance). Batch halted — try again later."
 )
+_MIN_DISCOVERED_CHILD_LENGTH = 3
 
 
 def _render_provider_config(key_prefix: str, *, default_temperature: float, default_max_new_tokens: int):
@@ -44,7 +45,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
 
     new_children = []
     for (gs, ge), anns in grouped:
-        if gs >= ge:
+        if ge - gs < _MIN_DISCOVERED_CHILD_LENGTH:
             continue
         label_ids = [a["label_id"] for a in anns if a.get("label_id") in LABEL_MAPPING]
         if not label_ids:
