@@ -1,11 +1,15 @@
 import streamlit as st
 import time
 import traceback
+import copy
+import pandas as pd
 
-from .batch import _load_batch_session
 from .components.annotation_provider_controls import render_annotation_provider_config
 from .shared import (
     build_segment,
+    get_available_sessions,
+    load_annotations,
+    load_session_segments,
     save_annotations,
     LABEL_CATEGORIES,
     LABEL_MAPPING,
@@ -69,6 +73,157 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     st.session_state["current_annotations"] = annotations
     save_annotations(session_id, annotations, selected_annotation_key, silent=True)
     return len(new_children), replaced
+
+
+def _segments_to_positioned_dataframe(segments) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    max_position = 0
+
+    for segment in segments:
+        rows = getattr(segment, "telemetry_data", None) or []
+        start = getattr(segment, "start_index", None)
+        end = getattr(segment, "end_index", None)
+        if end is not None:
+            max_position = max(max_position, int(end))
+        if not rows or start is None:
+            continue
+
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            continue
+        frame.index = range(int(start), int(start) + len(frame))
+        frames.append(frame)
+        max_position = max(max_position, int(start) + len(frame))
+
+    if not frames:
+        return pd.DataFrame()
+
+    df = pd.concat(frames).sort_index()
+    df = df[~df.index.duplicated(keep="first")]
+    return df.reindex(range(max_position + 1))
+
+
+def _load_batch_segment_input(
+    selected_annotation_key,
+    selected_session_key,
+    available_sessions,
+):
+    """Load segment chunks only; batch sub-segment discovery does not run on raw laps."""
+    chunk_summaries = {}
+    for session_id in available_sessions:
+        input_segments = load_session_segments(selected_session_key, session_id)
+        total_count = len([
+            segment for segment in input_segments
+            if not getattr(segment, "parent_id", None)
+        ])
+        if not total_count:
+            total_count = len(input_segments)
+        if total_count <= 0:
+            continue
+
+        try:
+            saved_annotations = load_annotations(session_id, selected_annotation_key)
+        except Exception:
+            saved_annotations = []
+
+        parent_ids = {
+            getattr(segment, "id", None)
+            for segment in input_segments
+            if not getattr(segment, "parent_id", None) and getattr(segment, "id", None)
+        }
+        if not parent_ids:
+            parent_ids = {
+                getattr(segment, "id", None)
+                for segment in input_segments
+                if getattr(segment, "id", None)
+            }
+        annotated_parent_ids = {
+            getattr(segment, "parent_id", None)
+            for segment in saved_annotations
+            if getattr(segment, "parent_id", None) in parent_ids
+        }
+        annotated_count = min(len(annotated_parent_ids), total_count)
+        chunk_summaries[session_id] = {
+            "total": total_count,
+            "annotated": annotated_count,
+            "unannotated": total_count - annotated_count,
+        }
+
+    segment_sessions = list(chunk_summaries)
+    if not segment_sessions:
+        st.subheader("Batch Auto-Annotation (Sub-Segment Discovery)")
+        st.error(
+            "Batch Sub-Segment Discovery only works on input chunks that "
+            "contain segments. Select a segment-output dataset, such as a "
+            "parent annotation node's output."
+        )
+        return None, None
+
+    def format_session_option(session_id: str) -> str:
+        summary = chunk_summaries[session_id]
+        if summary["unannotated"] == 0:
+            status = "✅"
+        elif summary["annotated"] > 0:
+            status = "🟡"
+        else:
+            status = "⭕"
+        return (
+            f"{status} {session_id} | {summary['total']} segments | "
+            f"{summary['annotated']} annotated / {summary['unannotated']} unannotated"
+        )
+
+    index = 0
+    previous_selection = st.session_state.get("batch_subseg_chunk_selector")
+    if previous_selection in segment_sessions:
+        index = segment_sessions.index(previous_selection)
+
+    col_sel1, _ = st.columns([1, 3])
+    with col_sel1:
+        session_id = st.selectbox(
+            "Select Segment Chunk",
+            options=segment_sessions,
+            format_func=format_session_option,
+            index=index,
+            key="batch_subseg_chunk_selector",
+        )
+
+    with st.spinner(f"Loading segment chunk {session_id}..."):
+        input_segments = load_session_segments(selected_session_key, session_id)
+        if not input_segments:
+            st.error("Selected input chunk has no segments.")
+            return None, None
+
+        try:
+            saved_annotations = load_annotations(session_id, selected_annotation_key)
+        except Exception:
+            saved_annotations = []
+        state_key = (
+            selected_session_key,
+            selected_annotation_key,
+            session_id,
+            len(input_segments),
+            len(saved_annotations),
+        )
+        if st.session_state.get("batch_subseg_loaded_state_key") != state_key:
+            if saved_annotations:
+                st.session_state.current_annotations = saved_annotations
+            else:
+                st.session_state.current_annotations = copy.deepcopy(input_segments)
+            st.session_state.batch_subseg_loaded_state_key = state_key
+            st.session_state.last_session_id = session_id
+            st.session_state.last_annotation_key = selected_annotation_key
+
+    df = _segments_to_positioned_dataframe(input_segments)
+    if df.empty:
+        st.warning("Selected segment chunk has no telemetry rows.")
+        return None, None
+
+    if "Static_track" in df.columns:
+        track_names = df["Static_track"].dropna()
+        if not track_names.empty:
+            st.markdown(f"**Track:** {track_names.iloc[0]}")
+
+    return df, session_id
 
 
 def render_batch_auto_annotation(df, selected_annotation_key):
@@ -470,7 +625,7 @@ def _render_subsegment_coverage_bar(
 
 
 def render_batch_subseg(selected_annotation_key, selected_session_key, available_sessions):
-    df, session_id = _load_batch_session(
+    df, session_id = _load_batch_segment_input(
         selected_annotation_key, selected_session_key, available_sessions,
     )
     if df is None:
