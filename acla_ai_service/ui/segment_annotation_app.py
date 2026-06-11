@@ -306,7 +306,7 @@ def main() -> None:
                    "and open it from a node.")
         return
 
-    st.info(f"Active annotation dataset: **{annotation_key}**")
+    st.info(f"Writing annotations to: **{annotation_key}**")
 
     # ── Session-data-gated tabs ─────────────────────────────────────────
     if not session_key:
@@ -324,7 +324,7 @@ def main() -> None:
                  "It may have been deleted — re-pick the source.")
         return
 
-    st.info(f"Annotating data from: `{session_key}`")
+    st.info(f"Reading input data from: `{session_key}`")
 
     available_sessions = get_available_sessions(session_key)
     if not available_sessions:

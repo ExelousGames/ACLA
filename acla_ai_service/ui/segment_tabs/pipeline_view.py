@@ -284,8 +284,8 @@ def _annotation_input_status(
         except Exception:
             exists, n = False, 0
         detail = (
-            f"{source_line} → <code>{read_key}</code><br/>"
-            f"Reads target's output"
+            f"{source_line}<br/>"
+            f"Input: target's output <code>{read_key}</code>"
             + (f" · {n:,} rec." if exists else " · target output empty.")
         )
         chip = '<span class="pipe-chip purple">secondary worker' + (
@@ -308,7 +308,7 @@ def _annotation_input_status(
             exists, n = False, 0
         detail = (
             f"{source_line}<br/>"
-            f"Reads target's input: <code>{read_key or '—'}</code>"
+            f"Input: target's input <code>{read_key or '—'}</code>"
             + (f" · {n:,} rec." if exists else " · empty/not ready yet.")
         )
         chip = '<span class="pipe-chip teal">coworker' + (
@@ -868,7 +868,7 @@ def _render_annotation_card(
     if node.mode == MODE_SOURCE:
         if not node.output_key:
             out_line = (
-                '<br/>Output: <i>not configured yet</i> — '
+                '<br/>Writes output: <i>not configured yet</i> — '
                 'pick a directory &amp; filename on first open.'
             )
         else:
@@ -877,7 +877,7 @@ def _render_annotation_card(
                 if node.output_dir else ""
             )
             out_line = (
-                f'<br/>Output: <code>{node.output_key}</code> · {out_label}'
+                f'<br/>Writes output: <code>{node.output_key}</code> · {out_label}'
                 f'{dir_hint}'
             )
     else:
@@ -889,17 +889,17 @@ def _render_annotation_card(
                     if node.output_dir else ""
                 )
                 out_line = (
-                    f'<br/>Output: <code>{node.output_key}</code> · {out_label}'
+                    f'<br/>Writes output: <code>{node.output_key}</code> · {out_label}'
                     f'{dir_hint}'
                 )
             else:
                 out_line = (
-                    '<br/>Output: <i>not configured yet</i> — '
+                    '<br/>Writes output: <i>not configured yet</i> — '
                     'pick a directory &amp; filename on first open.'
                 )
         else:
             out_line = (
-                f'<br/>Output: <i>shared with target</i> '
+                f'<br/>Writes output: <i>shared with target</i> '
                 f'<code>{effective_out or "—"}</code> ({share_label}) · {out_label}'
             )
 
