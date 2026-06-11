@@ -21,13 +21,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.shared.labels import LABEL_MAPPING
 from app.internal_knowledge_base.label_search import get_doc
-from app.local_annotation_agent import (
+from app.shared.contracts import (
+    AgentCallbacks,
     AgentRequest,
     AgentResponse,
     Attachment,
+    NoopCallbacks,
     ProviderConfig,
 )
-from app.shared.contracts import AgentCallbacks, NoopCallbacks
 from app.local_annotation_agent.workflow.results import (
     AnnotationResult,
     parse_json_response,
@@ -61,6 +62,15 @@ def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _is_full_parent_range(
+    start: int,
+    end: int,
+    parent_start: int,
+    parent_end: int,
+) -> bool:
+    return int(start) == int(parent_start) and int(end) == int(parent_end)
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +242,8 @@ def _local_synth_prompts(
         f"(length: {parent_end - parent_start} data points), judge "
         "every verified candidate label against the step observations. "
         "For each candidate that is proved, pinpoint its exact "
-        "start_index and end_index.",
+        "start_index and end_index as a strict child range inside the "
+        "parent range.",
     ])
 
     outro = "\n".join([
@@ -250,7 +261,11 @@ def _local_synth_prompts(
         f"- start_index and end_index are required only when \"proved\" "
         f"is true; each must satisfy {parent_start} <= start_index < "
         f"end_index <= {parent_end} and the range must contain the cited "
-        "evidence. Omit both fields when \"proved\" is false.",
+        "evidence. The range must not be identical to the parent range "
+        f"[{parent_start}, {parent_end}]. If evidence only supports the "
+        "whole parent, set \"proved\": false and explain that no strict "
+        "child sub-segment was found. Omit both fields when \"proved\" is "
+        "false.",
         "- In \"reasoning\", cite the step observation sentences that "
         "establish (or fail to establish) the predicate + qualifiers. "
         "When \"proved\" is false, name the specific qualifier that is "
@@ -320,7 +335,9 @@ def _tool_agent_task_prompt(
 
     return (
         "Discover the most notable sub-segment(s) within the parent "
-        "segment below and submit them via `submit_result`.\n"
+        "segment below and submit them via `submit_result`. A valid "
+        "sub-segment is a strict child range: it may touch one parent "
+        "boundary, but it must not be identical to the parent range.\n"
         "\n"
         "### Parent segment\n"
         f"- index range: [{parent_start}, {parent_end}] "
@@ -342,7 +359,9 @@ def _tool_agent_task_prompt(
         "the relevant parent label, and use `types=\"segment_type\"` for "
         "segment-shape labels.\n"
         "4. Submit via `submit_result(payload_json, summary)` when evidence "
-        "is sufficient, then stop after it returns `ok: true`.\n"
+        "is sufficient, then stop after it returns `ok: true`. If the "
+        "evidence only supports the whole parent range, submit an empty "
+        "`proposals` list and say no strict child sub-segment was found.\n"
         "\n"
         "### Submit payload shape\n"
         "`payload_json` must be a JSON object of this shape:\n"
@@ -358,9 +377,12 @@ def _tool_agent_task_prompt(
         "  ]\n"
         "}\n"
         "```\n"
+        "Use `{\"proposals\": []}` when no strict child range is supported.\n"
         "\n"
         "### Hard rules\n"
         f"- Every proposed range must satisfy {parent_start} <= start_index < end_index <= {parent_end}.\n"
+        f"- A proposed range must not be identical to the parent range [{parent_start}, {parent_end}].\n"
+        "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
         "- Only propose label_ids returned by `search_labels`.\n"
         "- Do not propose ranges that exactly match an already-discovered sub-segment.\n"
         "- After `submit_result` returns `ok: true`, stop calling tools."
@@ -520,6 +542,8 @@ def _parse_local(
                 ann_end = (
                     int(raw_end) if isinstance(raw_end, (int, float)) else parent_end
                 )
+                if _is_full_parent_range(ann_start, ann_end, parent_start, parent_end):
+                    continue
                 sub_labels.append(lid)
                 label_proposals.append({
                     "label_id": lid,
@@ -544,7 +568,7 @@ def _parse_local(
         sub_end=proposed_end,
         final_labels=list(dict.fromkeys(sub_labels)),
         final_reasoning=reasoning,
-        accepted=response.verdict == "pass",
+        accepted=response.verdict == "pass" and len(label_proposals) > 0,
         iterations=1,
         messages=list(response.messages),
         graph_images=list(response.graph_images),
@@ -582,6 +606,8 @@ def _parse_claude(
                 except (TypeError, ValueError):
                     continue
                 if not (parent_start <= s < e <= parent_end):
+                    continue
+                if _is_full_parent_range(s, e, parent_start, parent_end):
                     continue
                 if lid not in label_ids:
                     label_ids.append(lid)
