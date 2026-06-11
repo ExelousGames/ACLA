@@ -7,7 +7,7 @@ import copy
 
 from .shared import (
     load_session_data, load_annotations, save_annotations,
-    get_available_sessions, build_segment,
+    get_available_sessions, build_segment, load_session_segments,
     LABEL_MAPPING, LABEL_NAME_TO_ID,
     LABEL_CATEGORIES
 )
@@ -229,12 +229,12 @@ def render_rule_based_annotation(df, selected_annotation_key):
         for i, ann in enumerate(st.session_state.current_annotations):
             # Check bounds
             start = ann.start_index if ann.start_index is not None else 0
-            end = ann.end_index if ann.end_index is not None else len(df) - 1
+            end = ann.end_index if ann.end_index is not None else len(df)
             
-            if start < 0 or end >= len(df) or start > end:
+            if start < 0 or end > len(df) or start >= end:
                 continue
                 
-            segment_data = df.iloc[start : end + 1]
+            segment_data = df.iloc[start:end]
             segment_series = segment_data[selected_feature]
             
             # If we are treating as numeric but column is object, try to convert segment series
@@ -272,6 +272,144 @@ def render_rule_based_annotation(df, selected_annotation_key):
             st.warning(f"Found {count_matching_value} matching segments, but they already have the label '{selected_label_name}'.")
         else:
             st.info(f"No segments matched the value '{target_value_str}' for feature '{selected_feature}'.")
+
+    _render_parent_label_propagation(selected_annotation_key)
+
+
+def _render_parent_label_propagation(selected_annotation_key):
+    """Add each parent's labels to its direct children using ``parent_id``."""
+    st.markdown("---")
+    st.subheader("Add Parent Labels to Children")
+    st.caption("Matches each child segment to its parent by parent_id and appends any missing parent labels.")
+
+    annotations = st.session_state.get("current_annotations") or []
+    if not annotations:
+        st.info("No segments available.")
+        return
+
+    parents_by_id = {
+        getattr(ann, "id", None): ann
+        for ann in annotations
+        if getattr(ann, "id", None)
+    }
+    children_with_parent = [
+        ann for ann in annotations
+        if getattr(ann, "parent_id", None)
+    ]
+    eligible_children = [
+        child for child in children_with_parent
+        if getattr(child, "parent_id", None) in parents_by_id
+        and _missing_parent_labels(child, parents_by_id)
+    ]
+    missing_parents = sum(
+        1 for child in children_with_parent
+        if getattr(child, "parent_id", None) not in parents_by_id
+    )
+
+    st.caption(
+        f"{len(children_with_parent)} child segment(s), "
+        f"{len(eligible_children)} need parent labels."
+    )
+    if missing_parents:
+        st.caption(f"{missing_parents} child segment(s) reference a missing parent.")
+
+    apply_clicked = st.button(
+        "Add Parent Labels to Children",
+        key="rule_parent_labels_apply_btn",
+        disabled=not eligible_children,
+    )
+    if not apply_clicked:
+        return
+
+    st.session_state.last_rule_snapshot = copy.deepcopy(annotations)
+
+    children_updated = 0
+    labels_added = 0
+    for child in children_with_parent:
+        added_for_child = _missing_parent_labels(child, parents_by_id)
+        if not added_for_child:
+            continue
+
+        child.labels = list(getattr(child, "labels", []) or []) + added_for_child
+        children_updated += 1
+        labels_added += len(added_for_child)
+
+    if children_updated == 0:
+        st.info("All children already include their parent labels.")
+        return
+
+    st.success(
+        f"Added {labels_added} parent label(s) to {children_updated} child segment(s)."
+    )
+    if "last_session_id" in st.session_state and "last_annotation_key" in st.session_state:
+        save_annotations(
+            st.session_state.last_session_id,
+            st.session_state.current_annotations,
+            selected_annotation_key,
+            silent=False,
+        )
+        time.sleep(1)
+        st.rerun()
+
+
+def _missing_parent_labels(child, parents_by_id):
+    parent = parents_by_id.get(getattr(child, "parent_id", None))
+    if parent is None:
+        return []
+
+    child_labels = list(getattr(child, "labels", []) or [])
+    child_label_set = set(child_labels)
+    missing_labels = []
+    for label in getattr(parent, "labels", []) or []:
+        if label in child_label_set:
+            continue
+        missing_labels.append(label)
+        child_label_set.add(label)
+    return missing_labels
+
+
+def _render_rule_session_data_table(
+    df,
+    session_id,
+    selected_session_key,
+    available_sessions,
+):
+    """Show raw telemetry rows for any session while staying on Rule-Based Annotation."""
+    st.markdown("---")
+    st.subheader("Session Data")
+
+    if not available_sessions:
+        st.info("No sessions available to display.")
+        return
+
+    table_index = 0
+    if session_id in available_sessions:
+        table_index = available_sessions.index(session_id)
+
+    col_select, _ = st.columns([1, 3])
+    with col_select:
+        table_session_id = st.selectbox(
+            "View Session Data",
+            options=available_sessions,
+            index=table_index,
+            key="rule_session_data_selector",
+        )
+
+    if table_session_id == session_id:
+        table_df = df
+    else:
+        with st.spinner(f"Loading session {table_session_id} data..."):
+            table_df = load_session_data(selected_session_key, table_session_id)
+
+    if table_df.empty:
+        st.warning("Selected session has no data.")
+        return
+
+    st.caption(
+        f"{table_session_id} | {len(table_df):,} rows | "
+        f"{len(table_df.columns):,} columns"
+    )
+    st.dataframe(table_df, hide_index=False, width="stretch", height=420)
 
 
 def _render_provider_config(key_prefix: str, *, default_temperature: float, default_max_new_tokens: int):
@@ -1242,7 +1380,13 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                 st.error(f"Error classifying segments: {str(e)}")
 
 
-def _load_batch_session(selected_annotation_key, selected_session_key, available_sessions):
+def _load_batch_session(
+    selected_annotation_key,
+    selected_session_key,
+    available_sessions,
+    *,
+    seed_from_source_segments=False,
+):
     """Shared session selector + dataframe load for every batch page.
 
     Returns ``(df, session_id)`` or ``(None, None)`` if the page should
@@ -1254,7 +1398,10 @@ def _load_batch_session(selected_annotation_key, selected_session_key, available
         status = "✅" if s in annotated_sessions else "⭕"
         return f"{status} {s}"
 
-    current_session = st.session_state.get("detailed_session_selector")
+    current_session = (
+        st.session_state.get("batch_session_selector")
+        or st.session_state.get("detailed_session_selector")
+    )
     index = 0
     if current_session and current_session in available_sessions:
         index = available_sessions.index(current_session)
@@ -1275,7 +1422,12 @@ def _load_batch_session(selected_annotation_key, selected_session_key, available
             st.session_state.last_session_id != session_id or
             "last_annotation_key" not in st.session_state or
             st.session_state.last_annotation_key != selected_annotation_key):
-            st.session_state.current_annotations = load_annotations(session_id, selected_annotation_key)
+            saved_annotations = load_annotations(session_id, selected_annotation_key)
+            if seed_from_source_segments and not saved_annotations:
+                source_segments = load_session_segments(selected_session_key, session_id)
+                st.session_state.current_annotations = copy.deepcopy(source_segments)
+            else:
+                st.session_state.current_annotations = saved_annotations
             st.session_state.last_session_id = session_id
             st.session_state.last_annotation_key = selected_annotation_key
 
@@ -1302,10 +1454,14 @@ def render_batch_bulk_label(selected_annotation_key, selected_session_key, avail
 def render_batch_rule_based(selected_annotation_key, selected_session_key, available_sessions):
     df, session_id = _load_batch_session(
         selected_annotation_key, selected_session_key, available_sessions,
+        seed_from_source_segments=True,
     )
     if df is None:
         return
     render_rule_based_annotation(df, selected_annotation_key)
+    _render_rule_session_data_table(
+        df, session_id, selected_session_key, available_sessions,
+    )
 
 
 def render_batch_classifier(selected_annotation_key, selected_session_key, available_sessions):

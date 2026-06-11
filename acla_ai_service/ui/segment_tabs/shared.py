@@ -172,9 +172,11 @@ def load_session_segments(cache_key: str, session_id: str) -> List[AnnotatedSegm
 
 
 def _segments_to_telemetry_df(segments: list) -> pd.DataFrame:
-    """Concat each segment's ``telemetry_data`` into one flat telemetry df.
-    Segments are ordered by ``start_index`` so the resulting iloc range
-    follows the original sample order.
+    """Rebuild telemetry rows from segment ``telemetry_data``.
+
+    Segment ranges are stored as original iloc positions. Preserve those
+    positions in the dataframe shape so downstream tools can slice with
+    ``start_index``/``end_index`` the same way they do on raw sessions.
     """
     ordered = sorted(
         segments,
@@ -183,13 +185,26 @@ def _segments_to_telemetry_df(segments: list) -> pd.DataFrame:
         ),
     )
     frames = []
+    max_position = 0
     for seg in ordered:
         rows = seg.get("telemetry_data") or []
-        if rows:
-            frames.append(pd.DataFrame(rows))
+        start = seg.get("start_index")
+        end = seg.get("end_index")
+        if end is not None:
+            max_position = max(max_position, int(end))
+        if not rows or start is None:
+            continue
+        frame = pd.DataFrame(rows)
+        if frame.empty:
+            continue
+        frame.index = range(int(start), int(start) + len(frame))
+        frames.append(frame)
+        max_position = max(max_position, int(start) + len(frame))
     if not frames:
         return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
+    df = pd.concat(frames).sort_index()
+    df = df[~df.index.duplicated(keep="first")]
+    return df.reindex(range(max_position + 1))
 
 
 @st.cache_data(max_entries=1, show_spinner=False)
