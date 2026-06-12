@@ -5,10 +5,18 @@ import plotly.graph_objects as go
 
 from app.shared.telemetry import MAX_CARS
 from .opponent_interaction import add_interaction_overlay, render_opponent_interaction_panel
+from .track_sections import add_track_section_trajectory, track_sections_available
 
 def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
     # --- Track Map Visualization ---
-    show_track_map = st.checkbox("Show Track Map & Positions", value=True, key="manual_track_map_visible")
+    track_position_mode = st.selectbox(
+        "Track Position",
+        ["All positions", "5 closest cars", "Racing interactions", "Hide track map"],
+        key="manual_track_position_mode",
+    )
+    show_track_map = track_position_mode != "Hide track map"
+    only_closest = track_position_mode == "5 closest cars"
+    focus_interaction = track_position_mode == "Racing interactions"
 
     if show_track_map:
         # Check if we have position data
@@ -31,7 +39,12 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
             with col_ctrl3:
                 invert_z = st.checkbox("Invert Z", value=False, key="manual_invert_z")
             with col_ctrl4:
-                only_closest = st.checkbox("Only 5 closest cars", value=False, key="manual_only_closest")
+                show_sections = st.checkbox(
+                    "Show Track Sections",
+                    value=False,
+                    key="manual_show_track_sections",
+                    disabled=not track_sections_available(df),
+                )
             
             # Create windowed dataframe for trajectory plotting using Global Range
             start_idx = min(viz_start_idx, len(df) - 1)
@@ -124,7 +137,9 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
 
             # Optionally restrict to the 5 cars closest to the player at the end index
             allowed_slots = None
-            if only_closest and has_player_pos:
+            if focus_interaction:
+                allowed_slots = {int(target_slot)} if target_slot is not None else set()
+            elif only_closest and has_player_pos:
                 candidates = []
                 for i in range(1, MAX_CARS + 1):
                     if i == player_slot:
@@ -281,7 +296,17 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                             opacity=0.5,
                             showlegend=True
                         ))
-                
+
+                if show_sections and has_player_pos:
+                    add_track_section_trajectory(
+                        fig_map,
+                        map_plot_df,
+                        "Graphics_player_pos_x",
+                        "Graphics_player_pos_y",
+                        "Graphics_player_pos_z" if has_player_pos_z else None,
+                        use_3d=use_3d and has_player_pos_z,
+                    )
+
                 # Opponents
                 for i in range(1, MAX_CARS + 1):
                     if i == player_slot:

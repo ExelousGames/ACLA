@@ -6,6 +6,7 @@ import numpy as np
 
 from app.shared.telemetry import MAX_CARS
 from .opponent_interaction import add_interaction_overlay, render_opponent_interaction_panel
+from .track_sections import add_track_section_trajectory, track_sections_available
 
 def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
     st.subheader("Track Map & Positions")
@@ -33,12 +34,28 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
             invert_z = st.checkbox("Invert Z", value=st.session_state.get("saved_detailed_invert_z", False), key="detailed_invert_z")
             st.session_state.saved_detailed_invert_z = invert_z
         with col_ctrl4:
-            only_player = st.checkbox("Only Player", value=st.session_state.get("saved_detailed_only_player", False), key="detailed_only_player")
+            position_opts = ["All positions", "Player only", "5 closest cars", "Racing interactions"]
+            saved_position = st.session_state.get("saved_detailed_track_position_mode")
+            if saved_position not in position_opts:
+                if st.session_state.get("saved_detailed_only_player", False):
+                    saved_position = "Player only"
+                elif st.session_state.get("saved_detailed_only_closest", False):
+                    saved_position = "5 closest cars"
+                else:
+                    saved_position = "All positions"
+            track_position_mode = st.selectbox(
+                "Track Position",
+                position_opts,
+                index=position_opts.index(saved_position),
+                key="detailed_track_position_mode",
+            )
+            st.session_state.saved_detailed_track_position_mode = track_position_mode
+            only_player = track_position_mode == "Player only"
+            only_closest = track_position_mode == "5 closest cars"
+            focus_interaction = track_position_mode == "Racing interactions"
             st.session_state.saved_detailed_only_player = only_player
-        with col_ctrl5:
-            only_closest = st.checkbox("Only 5 closest cars", value=st.session_state.get("saved_detailed_only_closest", False), key="detailed_only_closest")
             st.session_state.saved_detailed_only_closest = only_closest
-        with col_ctrl6:
+        with col_ctrl5:
             traj_opts = ["Gas/Brake", "Balance (Oversteer/Understeer)", "Solid Green"]
             saved_traj = st.session_state.get("saved_detailed_traj_color_mode", "Gas/Brake")
             traj_color_mode = st.selectbox(
@@ -49,6 +66,14 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                 help="Gas/Brake: Green = Gas, Red = Brake.\n\nBalance: Red = Oversteer, Blue = Understeer."
             )
             st.session_state.saved_detailed_traj_color_mode = traj_color_mode
+        with col_ctrl6:
+            show_sections = st.checkbox(
+                "Show Track Sections",
+                value=st.session_state.get("saved_detailed_show_track_sections", False),
+                key="detailed_show_track_sections",
+                disabled=not track_sections_available(df),
+            )
+            st.session_state.saved_detailed_show_track_sections = show_sections
         
         # Create windowed dataframe for trajectory plotting using Global Range
         start_idx = min(viz_start_idx, len(df) - 1)
@@ -236,7 +261,9 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
 
         # Optionally restrict to the 5 cars closest to the player at the end index
         allowed_slots = None
-        if only_closest and has_player_pos:
+        if focus_interaction:
+            allowed_slots = {int(target_slot)} if target_slot is not None else set()
+        elif only_closest and has_player_pos:
             candidates = []
             for i in range(1, MAX_CARS + 1):
                 if i == player_slot:
@@ -411,6 +438,16 @@ def render_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         opacity=1.0,
                         showlegend=True
                     ))
+
+            if show_sections and has_player_pos:
+                add_track_section_trajectory(
+                    fig_map,
+                    map_plot_df,
+                    "Graphics_player_pos_x",
+                    "Graphics_player_pos_y",
+                    "Graphics_player_pos_z" if has_player_pos_z else None,
+                    use_3d=has_player_pos_z,
+                )
             
             # Opponents
             if not only_player:

@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from ..shared import get_display_labels, GRAPH_CONFIGS
+from .track_sections import add_track_section_bands, track_sections_available
 
 def render_feature_visualization(df: pd.DataFrame, numeric_cols: list, viz_start_idx: int, viz_end_idx: int, session_id: str):
     # Feature selection for visualization
@@ -14,6 +15,13 @@ def render_feature_visualization(df: pd.DataFrame, numeric_cols: list, viz_start
     if st.button("Add Graph", key="manual_add_graph_btn"):
         st.session_state.graph_ids.append(st.session_state.next_graph_id)
         st.session_state.next_graph_id += 1
+
+    show_sections = st.checkbox(
+        "Show Track Sections on Graphs",
+        value=False,
+        key="manual_graph_show_track_sections",
+        disabled=not track_sections_available(df),
+    )
 
     graphs_to_remove = []
 
@@ -57,6 +65,9 @@ def render_feature_visualization(df: pd.DataFrame, numeric_cols: list, viz_start
 
             # Plot without downsampling
             fig = px.line(sliced_df, x=sliced_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
+
+            if show_sections:
+                add_track_section_bands(fig, sliced_df, viz_cols[0])
 
             # Add reference lines if configured
             if config and config.reference_lines:

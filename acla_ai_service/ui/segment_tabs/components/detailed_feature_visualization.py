@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from ..shared import LABEL_CATEGORIES, LABEL_MAPPING
+from .track_sections import add_track_section_bands, track_sections_available
 
 def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, numeric_cols, default_cols):
     # Feature selection for visualization
@@ -15,6 +16,14 @@ def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, num
         st.session_state.detailed_next_graph_id += 1
 
     st.button("Add Graph", key="detailed_add_graph_btn", on_click=on_add_graph)
+
+    show_sections = st.checkbox(
+        "Show Track Sections on Graphs",
+        value=st.session_state.get("saved_detailed_graph_show_track_sections", False),
+        key="detailed_graph_show_track_sections",
+        disabled=not track_sections_available(df),
+    )
+    st.session_state.saved_detailed_graph_show_track_sections = show_sections
 
     graphs_to_remove = []
 
@@ -80,6 +89,9 @@ def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, num
                     hover_texts.append("<br>".join(lines))
                 
                 fig.update_traces(hovertemplate="%{text}", text=hover_texts)
+
+            if show_sections:
+                add_track_section_bands(fig, sliced_df, viz_cols[0])
 
             # Visualize existing annotations
             if "current_annotations" in st.session_state and st.session_state.current_annotations:

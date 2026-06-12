@@ -74,18 +74,13 @@ def pid_alive(pid: int) -> bool:
     return True
 
 
-def tail_log(log_path: Path, max_lines: int = 80) -> str:
+def read_log(log_path: Path) -> str:
     if not log_path.exists():
         return "(log file not created yet)"
     try:
-        with log_path.open("rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            size = fh.tell()
-            fh.seek(max(0, size - 16_384))  # ~last 16 KB
-            tail = fh.read().decode("utf-8", errors="replace")
+        return log_path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return f"(failed to read log: {exc})"
-    return "\n".join(tail.splitlines()[-max_lines:])
 
 
 def spawn(job: str, cmd: List[str], *, extra_info: Optional[dict] = None) -> dict:
@@ -133,7 +128,7 @@ def render_card(
     render_start_form: Callable[[], None],
 ) -> None:
     """Renders one training card: either the start form (no marker) or the
-    status/log tail (marker present). ``render_start_form`` must call
+    status/log view (marker present). ``render_start_form`` must call
     :func:`spawn` and ``st.rerun()`` when the user submits."""
     st.subheader(title)
     if description:
@@ -179,5 +174,5 @@ def render_card(
         clear_marker(job)
         st.rerun()
 
-    st.markdown(f"**Log tail** — `{log_path}`")
-    st.code(tail_log(log_path), language="text")
+    st.markdown(f"**Logs** — `{log_path}`")
+    st.code(read_log(log_path), language="text")

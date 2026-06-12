@@ -12,7 +12,6 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, TensorDataset, IterableDataset
 from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
 import joblib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Iterator
@@ -41,8 +40,6 @@ from app.storage.datasets.segment_dataset import (
 
 logger = logging.getLogger(__name__)
 
-MIN_CLASSIFICATION_CONFIDENCE = 0.7
-
 
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models", max_length: int = 100):
@@ -52,7 +49,6 @@ class SegmentClassifierService:
         self.mlb_path = self.models_directory / "segment_labels.joblib"
         self.scaler_path = self.models_directory / "segment_scaler.joblib"
         self.pos_weight_path = self.models_directory / "segment_pos_weight.pt"
-        self.thresholds_path = self.models_directory / "segment_thresholds.json"
         self.store = get_shared_telemetry_store()
         self.model = None
         self.mlb = None 
@@ -60,7 +56,6 @@ class SegmentClassifierService:
         self.pos_weight = None
         self.label_counts = {}
         self.feature_names = None
-        self.label_thresholds = {}
         
         # Device selection with explicit AMD/NVIDIA support check
         if torch.cuda.is_available():
@@ -159,79 +154,41 @@ class SegmentClassifierService:
             return df
         return compute_derived_features(df)
 
-    def _load_label_thresholds(self) -> None:
-        if not self.thresholds_path.exists():
-            self.label_thresholds = {}
-            return
+    def _labels_ranked_by_probability(self, probabilities: np.ndarray) -> List[str]:
+        """Return all labels in descending model-score order."""
+        ranked_indices = np.argsort(probabilities)[::-1]
+        labels = []
+        seen_labels = set()
+        for idx in ranked_indices:
+            normalized_label = normalize_label_id(self.mlb.classes_[idx])
+            if normalized_label not in seen_labels:
+                labels.append(normalized_label)
+                seen_labels.add(normalized_label)
+        return labels
 
-        try:
-            data = json.loads(self.thresholds_path.read_text())
-        except Exception as exc:
-            logger.warning("segment_classifier threshold file could not be read: %s", exc)
-            self.label_thresholds = {}
-            return
-
-        raw_thresholds = data.get("thresholds", data) if isinstance(data, dict) else {}
-        if not isinstance(raw_thresholds, dict):
-            self.label_thresholds = {}
-            return
-
-        thresholds = {}
-        for label, value in raw_thresholds.items():
-            try:
-                threshold = float(value)
-            except (TypeError, ValueError):
-                continue
-            if 0.0 < threshold < 1.0:
-                thresholds[str(label)] = threshold
-        self.label_thresholds = thresholds
-
-    def _save_label_thresholds(self) -> None:
-        payload = {
-            "version": 1,
-            "defaultThreshold": MIN_CLASSIFICATION_CONFIDENCE,
-            "thresholds": self.label_thresholds,
-        }
-        self.thresholds_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-
-    def _threshold_for_label(self, label: Any) -> float:
-        configured_threshold = float(
-            self.label_thresholds.get(str(label), MIN_CLASSIFICATION_CONFIDENCE)
-        )
-        return max(configured_threshold, MIN_CLASSIFICATION_CONFIDENCE)
-
-    def _thresholds_for_classes(self) -> np.ndarray:
-        if self.mlb is None:
-            return np.array([], dtype=float)
-        return np.array([self._threshold_for_label(label) for label in self.mlb.classes_], dtype=float)
-
-    def _fit_label_thresholds(self, probabilities: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
-        """Choose per-label thresholds that maximize validation F1."""
-        thresholds: Dict[str, float] = {}
-        candidates = np.arange(0.10, 0.91, 0.05)
-
-        for i, label in enumerate(self.mlb.classes_):
+    def _print_probability_summary(
+        self,
+        title: str,
+        probabilities: np.ndarray,
+        targets: np.ndarray,
+        target_names: List[str],
+    ) -> None:
+        """Log threshold-free validation diagnostics."""
+        print(title)
+        print("label | support | mean_pos_prob | mean_neg_prob | max_prob")
+        for i, label_name in enumerate(target_names):
             y_true = targets[:, i].astype(bool)
             y_score = probabilities[:, i]
-            best_threshold = 0.5
-            best_f1 = -1.0
-
-            for threshold in candidates:
-                y_pred = y_score > threshold
-                tp = np.logical_and(y_pred, y_true).sum()
-                fp = np.logical_and(y_pred, ~y_true).sum()
-                fn = np.logical_and(~y_pred, y_true).sum()
-                precision = tp / (tp + fp + 1e-8)
-                recall = tp / (tp + fn + 1e-8)
-                f1 = 2 * precision * recall / (precision + recall + 1e-8)
-
-                if f1 > best_f1 or (f1 == best_f1 and abs(threshold - 0.5) < abs(best_threshold - 0.5)):
-                    best_f1 = f1
-                    best_threshold = float(threshold)
-
-            thresholds[str(label)] = round(best_threshold, 2)
-
-        return thresholds
+            support = int(y_true.sum())
+            mean_pos = float(y_score[y_true].mean()) if support else 0.0
+            mean_neg = float(y_score[~y_true].mean()) if np.any(~y_true) else 0.0
+            max_prob = float(y_score.max()) if len(y_score) else 0.0
+            print(
+                f"{label_name}: Support={support}, "
+                f"MeanPosProb={mean_pos:.4f}, "
+                f"MeanNegProb={mean_neg:.4f}, "
+                f"MaxProb={max_prob:.4f}"
+            )
 
     def _compute_segment_hash(self, segment_dict: Dict) -> str:
         """Compute deterministic hash for a segment based on its content."""
@@ -851,63 +808,24 @@ class SegmentClassifierService:
         if all_segment_probs:
             y_seg_probs = np.array(all_segment_probs)
             y_seg_true = np.array(all_segment_targets)
-            self.label_thresholds = self._fit_label_thresholds(y_seg_probs, y_seg_true)
-            thresholds = self._thresholds_for_classes()
-            y_seg_pred = (y_seg_probs > thresholds).astype(float)
-
-            print("\nPer-label thresholds selected from validation segments:")
-            for label, threshold in self.label_thresholds.items():
-                normalized_label = normalize_label_id(label)
-                label_name = LABEL_MAPPING.get(normalized_label, normalized_label)
-                print(f"{label_name}: threshold={threshold:.2f}")
-            
-            print("\n=== Segment-Level Classification Report (Aggregated) ===")
-            seg_report = classification_report(
+            self._print_probability_summary(
+                "\n=== Segment-Level Probability Summary (Aggregated) ===",
+                y_seg_probs,
                 y_seg_true,
-                y_seg_pred,
-                target_names=target_names,
-                zero_division=0
+                target_names,
             )
-            print(seg_report)
             print("========================================================\n")
-        else:
-            self.label_thresholds = {str(label): 0.5 for label in self.mlb.classes_}
 
         if all_probs:
             # Concatenate
             y_probs = np.concatenate(all_probs)
             y_true = np.concatenate(all_targets)
-            y_pred = (y_probs > self._thresholds_for_classes()).astype(float)
-
-            # Generate report
-            report_dict = classification_report(
-                y_true, 
-                y_pred, 
-                zero_division=0,
-                output_dict=True
+            self._print_probability_summary(
+                "Validation Probability Summary (Per-Timestep):",
+                y_probs,
+                y_true,
+                target_names,
             )
-            
-            print("Validation Classification Report (Per-Timestep):")
-            # Print textual report for logs
-            print(classification_report(
-                y_true, 
-                y_pred, 
-                target_names=target_names, 
-                zero_division=0
-            ))
-            
-            print("\nPer-class Metrics (Validation Set - Per Timestep):")
-            for i, label in enumerate(self.mlb.classes_):
-                label_key = str(i)
-
-                if label_key in report_dict:
-                    metrics = report_dict[label_key]
-                    score = metrics['precision']
-                    support = metrics['support']  # Number of timesteps, not segments
-                    
-                    normalized_label = normalize_label_id(label)
-                    label_name = LABEL_MAPPING.get(normalized_label, normalized_label)
-                    print(f"{label_name}: Precision={score:.4f}, Support={support} timesteps")
 
         # Save model and artifacts
         torch.save(self.model.state_dict(), self.model_path)
@@ -915,7 +833,6 @@ class SegmentClassifierService:
         joblib.dump(self.scaler, self.scaler_path)
         if self.pos_weight is not None:
             torch.save(self.pos_weight, self.pos_weight_path)
-        self._save_label_thresholds()
         
         # Save config with model architecture
         config = {
@@ -983,8 +900,6 @@ class SegmentClassifierService:
                         self.feature_names = feature_names
 
             self._feature_names_for_model()
-            self._load_label_thresholds()
-
             input_dim = self.scaler.mean_.shape[0]
             output_dim = len(self.mlb.classes_)
 
@@ -995,14 +910,14 @@ class SegmentClassifierService:
         return False
 
     # Artifact filenames packed into / unpacked from the backend payload.
-    # pos_weight and thresholds are optional to keep old classifier payloads loadable.
+    # pos_weight is optional to keep old classifier payloads loadable.
     _ARTIFACT_FILES_REQUIRED = (
         "segment_classifier.pth",
         "segment_labels.joblib",
         "segment_scaler.joblib",
         "segment_config.json",
     )
-    _ARTIFACT_FILES_OPTIONAL = ("segment_pos_weight.pt", "segment_thresholds.json")
+    _ARTIFACT_FILES_OPTIONAL = ("segment_pos_weight.pt",)
 
     def serialize_artifacts(self) -> Dict[str, Any]:
         """Pack the on-disk model files into a JSON-safe dict for backend upload."""
@@ -1044,7 +959,7 @@ class SegmentClassifierService:
         )
 
     def predict_segment(self, segment_df: pd.DataFrame) -> List[str]:
-        """Predict labels for a single segment DataFrame."""
+        """Return labels ranked by raw model probability for a single segment."""
         if self.model is None:
             if not self.load_model():
                 raise ValueError("Model not trained or found.")
@@ -1075,18 +990,7 @@ class SegmentClassifierService:
             valid_probs = probs_tensor[0, :original_len, :]
             probs = valid_probs.mean(dim=0).cpu().numpy()
             
-        labels = []
-        seen_labels = set()
-        for i, p in enumerate(probs):
-            label = self.mlb.classes_[i]
-                
-            if p >= self._threshold_for_label(label):
-                normalized_label = normalize_label_id(label)
-                if normalized_label not in seen_labels:
-                    labels.append(normalized_label)
-                    seen_labels.add(normalized_label)
-        
-        return labels
+        return self._labels_ranked_by_probability(probs)
 
     def predict_segment_probabilities(self, segment_df: pd.DataFrame) -> Dict[str, float]:
         """Predict probabilities for all labels for a single segment DataFrame."""
@@ -1160,24 +1064,16 @@ class SegmentClassifierService:
 
         probs_smoothed = probs_df.rolling(window=5, center=True, min_periods=1).mean().values
             
-        # Threshold each label independently, then group contiguous rows that
-        # share the same active label set.
-        active_mask = probs_smoothed >= self._thresholds_for_classes()
-        
         found_segments = []
         current_labels = []
         current_start = 0
         
-        # Iterate through to find contiguous segments with the same label set
+        # Iterate through to find contiguous segments with the same top label.
+        # This keeps scanning threshold-free without marking every sigmoid
+        # output as active everywhere.
         for i in range(len(numeric_df)):
-            # Get labels that are True for this index
-            row_mask = active_mask[i]
-            labels_indices = np.where(row_mask)[0]
-            labels_at_i = list({
-                normalize_label_id(self.mlb.classes_[idx])
-                for idx in labels_indices
-            })
-            labels_at_i.sort()
+            top_idx = int(np.argmax(probs_smoothed[i]))
+            labels_at_i = [normalize_label_id(self.mlb.classes_[top_idx])]
             
             if i == 0:
                 current_labels = labels_at_i

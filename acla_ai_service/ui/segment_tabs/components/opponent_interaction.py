@@ -252,14 +252,7 @@ def render_opponent_interaction_panel(
 ) -> Optional[dict[str, Any]]:
     """Render attack/defense evidence and return the focused opponent slot."""
     state_key = _interaction_state_key(key_prefix)
-    show = st.checkbox(
-        "Show Racing Interaction",
-        value=True,
-        key=f"{key_prefix}_interaction_visible",
-    )
-    if not show:
-        st.session_state.pop(state_key, None)
-        return None
+    st.caption("Racing Interactions")
 
     s = max(0, int(start_idx))
     e = min(len(df), int(end_idx))

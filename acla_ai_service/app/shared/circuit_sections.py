@@ -75,6 +75,24 @@ CIRCUIT_SECTION_RANGES: Dict[str, Tuple[float, float]] = {
     "cota18":(0.879796,0.938694),
     "cota19":(0.938694,0.992249),
     "cota20":(0.992249,0.012884),
+
+    #indianapolis
+    "indianapolis1":(0.081036,0.171591),
+    "indianapolis2":(0.171591,0.204029),
+    "indianapolis3":(0.204029,0.284349),
+    "indianapolis4":(0.284349,0.323545),
+    "indianapolis5":(0.323545,0.392204),
+    "indianapolis6":(0.392204,0.439344),
+    "indianapolis7":(0.439344,0.514357),
+    "indianapolis8":(0.514357,0.580427),
+    "indianapolis9":(0.580427,0.609054),
+    "indianapolis10":(0.609054,0.630686),
+    "indianapolis11":(0.630686,0.666688),
+    "indianapolis12":(0.666688,0.744129),
+    "indianapolis13":(0.744129,0.82138),
+    "indianapolis14":(0.82138,0.866126),
+    "indianapolis15":(0.866126,0.952653),
+    "indianapolis16":(0.952653,0.081036),
 }
 
 

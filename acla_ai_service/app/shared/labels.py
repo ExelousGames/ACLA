@@ -365,9 +365,9 @@ LABEL_MAPPING: Dict[str, str] = {
     "indianapolis11":"Turn 10",
     "indianapolis12":"Turn 11",
     "indianapolis13":"Turn 12",
-    "indianapolis14":"Snake Pit 1st turn",
-    "indianapolis15":"Snake Pit 2nd turn",
-    "indianapolis16":"Front Straight",
+    "indianapolis14":"Turn 13",
+    "indianapolis15":"Turn 14",
+    "indianapolis16":"Front Straight \ Pit",
 
     #cota
     "cota":"Circuit of the Americas",
@@ -439,7 +439,7 @@ LABEL_CATEGORIES: Dict[str, List[str]] = {
     "mount_panorama":["mount_panorama1","mount_panorama2","mount_panorama3","mount_panorama4","mount_panorama5","mount_panorama6","mount_panorama7","mount_panorama8","mount_panorama9","mount_panorama10","mount_panorama11","mount_panorama12","mount_panorama13","mount_panorama14","mount_panorama15","mount_panorama16","mount_panorama17","mount_panorama18","mount_panorama19","mount_panorama20","mount_panorama21","mount_panorama22",],
     "watkins_glen":["watkins_glen1","watkins_glen2","watkins_glen3","watkins_glen4","watkins_glen5","watkins_glen6","watkins_glen7","watkins_glen8","watkins_glen9","watkins_glen10","watkins_glen11","watkins_glen12","watkins_glen13","watkins_glen14","watkins_glen15","watkins_glen16","watkins_glen17"],
     "indianapolis":["indianapolis1","indianapolis2","indianapolis3","indianapolis4","indianapolis5","indianapolis6","indianapolis7","indianapolis8","indianapolis9","indianapolis10","indianapolis11","indianapolis12","indianapolis13","indianapolis14","indianapolis15","indianapolis16"],
-    "cota":["cota1","cota2","cota3","cota4","cota5","cota6","cota7","cota8","cota9","cota10","cota11","cota12","cota13","cota14","cota15","cota16","cota17","cota18","cota19","cota20","cota21"],
+    "cota":["cota1","cota2","cota3","cota4","cota5","cota6","cota7","cota8","cota9","cota10","cota11","cota12","cota13","cota14","cota15","cota16","cota17","cota18","cota19","cota20"],
     "MSP":["MSP1","MSP2","MSP3","MSP4","MSP5","MSP6","MSP7","MSP8","MSP9","MSP10","MSP11","MSP13","MSP14","MSP15","MSP16","MSP17","MSP18","MSP19","MSP20","MSP21","MSP22","MSP23","MSP24","MSP25","MSP26","MSP27","MSP28","MSP29","MSP30","MSP31","MSP32","MSP33","MSP34","MSP35","MSP36","MSP37","MSP38","MSP41","MSP42","MSP43","MSP44","MSP45","MSP46","MSP47","MSP48","MSP49","MSP50","MSP51","MSP52"],
     "MSR":["MSR1","MSR2","MSR3","MSR4","MSR5","MSR6","MSR7","MSR8"],
     "Segment Type": ["ST1", "ST2", "ST3", "ST4", "ST5", "ST6", "ST7", "ST8", "ST9", "ST10", "ST11", "ST12", "ST13", "ST14", "ST15", "ST16", "ST17", "ST18", "ST19", "ST20"]
