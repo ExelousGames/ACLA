@@ -5,22 +5,20 @@ the pit lane. Segment characteristics are dominated by pit-lane rules
 technique.
 
 ## When this applies
-Segments inside the pit-lane region of the track, including the
-approach (speed reduction onto pit entry) and the exit (acceleration
-back onto track speed). Stationary time during a stop is also a pit
-stop.
+Segments inside the pit-lane region of the track, including the approach
+(speed reduction onto pit entry) and the exit (acceleration back onto
+track speed). Stationary time during a stop is also a pit stop.
 
 ## How to read pit-stop segments
-Most analysis isn't useful here — the pit-lane speed limit and the
-deliberate line off the racing surface make the telemetry incomparable
-to a normal lap. The interesting things are pit-entry timing (did the
-driver brake too early / too late for the entry line?), pit-exit
-acceleration (did they hit the limiter cleanly?), and merge-out
-behaviour (a recovery segment often follows).
+Most analysis is not useful here because the pit-lane speed limit and
+the deliberate line off the racing surface make the telemetry
+incomparable to a normal lap. The interesting things are pit-entry
+timing, pit-exit acceleration, and safe merge-out behaviour. This is
+still pit procedure unless a separate mistake creates a recovery.
 
 ## Engineer interpretation
-Don't drill into telemetry deltas for pit-stop segments — they will
-look "wrong" by design. Useful coaching is at the boundaries: smooth
-pit-entry deceleration, clean exit acceleration to track speed, safe
-merge into traffic. If the driver speeds in the pit lane, that's a
-separate problem the system flags directly.
+Do not drill into telemetry deltas for pit-stop segments; they will look
+wrong by design. Useful coaching is at the boundaries: smooth pit-entry
+deceleration, clean exit acceleration to track speed, and safe merge into
+traffic. If the driver speeds in the pit lane, that is a separate problem
+the system flags directly.

@@ -30,11 +30,11 @@
     },
     "RM": {
       "name": "Recovery & Merge",
-      "characteristics": "Player recovering from a prior mistake inside this section.\n  - `time_difference_to_expert` slope is negative across the range\n    (gap shrinks, never grows) — confirm with `compute_slope`.\n  - `trajectory_offset` trends back toward zero from a non-zero start.\nOften appears in the section immediately following an MSP. Do NOT attach when the player started at offset ≈ 0 — that's EA, not RM. Mutually exclusive with EA and MSP.\n"
+      "characteristics": "Player recovering from a prior mistake inside this section.\n  - A preceding mistake/off-track/incident explains why recovery is needed.\n  - `time_difference_to_expert` slope is negative across the range\n    (gap shrinks, never grows) — confirm with `compute_slope`.\n  - `trajectory_offset` trends back toward zero from a non-zero start.\nOften appears in the section immediately following an MSP. Do NOT attach when the player started at offset ≈ 0 — that's EA, not RM. Do NOT attach for normal pit exit; pit exit is PS / PS1. Mutually exclusive with EA and MSP.\n"
     },
     "PS": {
       "name": "Pit Stop",
-      "characteristics": "Player entering or sitting in the pit lane. Merging back out from the pit toward the expert line is RM, not PS.\n  - `distance_to_expert_line` magnitude persistently large\n    (≥ ~5 m) AND NOT trending toward zero (a decreasing offset\n    ⇒ merging out ⇒ RM, not PS).\nPicking which named catalog section to attach is a sub-label decision — see `sub_label_annotation`. Compatible with the circuit label only; do NOT combine with EA / MSP / MSR / RM / O / OD.\n"
+      "characteristics": "Player entering, sitting in, or exiting the pit lane. Pit-lane procedure is PS even when the car is accelerating out and returning toward the racing surface.\n  - Prefer direct pit signals when present: `Physics_pit_limiter_on`, `Graphics_is_in_pit_lane`, or `Graphics_is_in_pit`.\n  - Otherwise look for pit-limiter speed, deliberate pit-lane trajectory deviation, or acceleration from pit-exit speed back toward track speed.\n  - Use PS1 for the pit-exit phase specifically.\nCompatible with the circuit label only; do NOT combine with EA / MSP / MSR / RM / O / OD.\n"
     },
     "O": {
       "name": "Successful Overtake",
