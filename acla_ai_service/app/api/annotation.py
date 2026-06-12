@@ -10,8 +10,9 @@ run_annotation`` import that the Streamlit researcher UI uses today.
 The streaming variant surfaces the agent's progress / VLM-token /
 step-event callbacks live so callers can render incremental output.
 
-Telemetry is referenced by ``(cache_key, session_id)`` — the AI service
-loads from its own Lance-backed telemetry store so requests stay small.
+Telemetry is supplied directly by the request body. Annotation tools must
+only inspect the incoming segment/lap records, not reload a broader session
+from shared storage.
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ from app.local_annotation_agent.workflow import (
     LapAnnotationResult,
     run_annotation,
 )
-from app.storage import get_shared_telemetry_store
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,15 +55,19 @@ class _ConfigBody(BaseModel):
 class _AnnotationRunRequest(BaseModel):
     """Body for `POST /annotation/run`.
 
-    The dataframe is referenced by `(cache_key, session_id)` so the AI
-    service loads it from its own telemetry store — clients don't have to
-    serialise telemetry payloads.
+    The caller must provide exactly the telemetry records the agent may
+    inspect. There is intentionally no cache/session fallback here.
     """
 
+    class Config:
+        extra = "forbid"
+
     flow: Flow
-    cache_key: str = Field(..., description="Telemetry store cache key for the dataset")
-    session_id: str = Field(..., description="Chunk / session ID within the cache key")
-    session_label: str = Field("", description="Forwarded to AgentResponse.session_id for audit")
+    telemetry_data: List[Dict[str, Any]] = Field(
+        ...,
+        min_items=1,
+        description="Telemetry records for the segment/lap this annotation run may inspect.",
+    )
     config: Optional[_ConfigBody] = None
 
     # detailed-flow inputs
@@ -92,31 +96,29 @@ def _result_to_dict(result: Any) -> Dict[str, Any]:
     raise TypeError(f"Unsupported annotation result type: {type(result).__name__}")
 
 
-def _load_dataframe(cache_key: str, session_id: str):
-    """Pull the DataFrame for ``(cache_key, session_id)`` from the telemetry store."""
-    store = get_shared_telemetry_store()
-    chunk = store.get_chunk(cache_key, session_id)
-    if not chunk:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No telemetry found for cache_key={cache_key!r} "
-                f"session_id={session_id!r}"
-            ),
-        )
+def _dataframe_from_records(records: List[Dict[str, Any]], origin_start: int = 0):
+    """Build a DataFrame from only the request's allowed telemetry records.
 
-    raw = chunk
-    if isinstance(chunk, dict) and "data" in chunk:
-        raw = chunk["data"]
-    if not isinstance(raw, list):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Telemetry chunk is not a list of records (got {type(raw).__name__})",
-        )
-
+    The annotation tools address rows by absolute iloc. If the caller sends
+    a sliced segment like rows [1200, 1260), prepend empty rows so iloc 1200
+    maps to the first submitted record without exposing earlier telemetry.
+    """
     # Deferred to avoid importing pandas at module load.
     import pandas as pd
-    return pd.DataFrame(raw)
+    df = pd.DataFrame(records)
+    origin = max(0, int(origin_start or 0))
+    if origin == 0:
+        return df
+    df.index = range(origin, origin + len(df))
+    return df.reindex(range(origin + len(df))).reset_index(drop=True)
+
+
+def _telemetry_origin(req: _AnnotationRunRequest) -> int:
+    if req.flow == "detailed" and req.start_index is not None:
+        return int(req.start_index)
+    if req.flow == "lap" and req.lap_start is not None:
+        return int(req.lap_start)
+    return 0
 
 
 @router.post("/run")
@@ -127,7 +129,7 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
     makes today. Streaming progress is NOT surfaced here — clients that
     need per-step VLM tokens should wait for `/annotation/run/stream`.
     """
-    df = _load_dataframe(req.cache_key, req.session_id)
+    df = _dataframe_from_records(req.telemetry_data, _telemetry_origin(req))
 
     config_body = req.config or _ConfigBody()
     config = AnnotationPipelineConfig(
@@ -144,7 +146,6 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
             flow=req.flow,
             df=df,
             config=config,
-            session_id=req.session_label,
             # detailed-flow inputs (run_annotation validates which set is required)
             start_index=req.start_index,
             end_index=req.end_index,
@@ -231,7 +232,7 @@ async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse
       done         {"flow": "detailed"|"lap", "provider_id": str, "result": dict}
       error        {"message": str, "error_type": str}
     """
-    df = _load_dataframe(req.cache_key, req.session_id)
+    df = _dataframe_from_records(req.telemetry_data, _telemetry_origin(req))
 
     config_body = req.config or _ConfigBody()
     config = AnnotationPipelineConfig(
@@ -271,7 +272,6 @@ async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse
                 flow=req.flow,
                 df=df,
                 config=config,
-                session_id=req.session_label,
                 progress_callback=on_progress,
                 vlm_prompt_callback=on_vlm_prompt,
                 vlm_stream_callback=on_vlm_stream,

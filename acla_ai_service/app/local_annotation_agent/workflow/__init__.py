@@ -123,6 +123,22 @@ def _bag_from_kwargs(
     )
 
 
+def _bounded_df(df, start: int, end: int):
+    """Return a DataFrame exposing only [start, end) telemetry rows.
+
+    Tools use absolute iloc coordinates, so preserve those coordinates by
+    padding earlier rows with empty values instead of passing the full
+    session dataframe through.
+    """
+    s = int(start)
+    e = int(end)
+    bounded = df.iloc[s:e].copy()
+    if s <= 0:
+        return bounded.reset_index(drop=True)
+    bounded.index = range(s, s + len(bounded))
+    return bounded.reindex(range(s + len(bounded))).reset_index(drop=True)
+
+
 # ---------------------------------------------------------------------------
 # Public entry
 # ---------------------------------------------------------------------------
@@ -173,12 +189,14 @@ def run_annotation(
     provider_config = config.to_provider_config()
 
     if flow == "detailed":
+        parent_start = _require(start_index, "start_index")
+        parent_end = _require(end_index, "end_index")
         return _run_detailed(
             provider_id=config.provider_id,
             prompt_mode=provider.prompt_mode,
-            df=df,
-            parent_start=_require(start_index, "start_index"),
-            parent_end=_require(end_index, "end_index"),
+            df=_bounded_df(df, parent_start, parent_end),
+            parent_start=parent_start,
+            parent_end=parent_end,
             parent_main_labels=list(parent_main_labels or []),
             existing_children=list(existing_children or []),
             provider_config=provider_config,
@@ -186,12 +204,14 @@ def run_annotation(
             session_id=session_id,
         )
     if flow == "lap":
+        required_lap_start = _require(lap_start, "lap_start")
+        required_lap_end = _require(lap_end, "lap_end")
         return _run_lap(
             provider_id=config.provider_id,
             prompt_mode=provider.prompt_mode,
-            df=df,
-            lap_start=_require(lap_start, "lap_start"),
-            lap_end=_require(lap_end, "lap_end"),
+            df=_bounded_df(df, required_lap_start, required_lap_end),
+            lap_start=required_lap_start,
+            lap_end=required_lap_end,
             section_id=_require(section_id, "section_id"),
             section_start=_require(section_start, "section_start"),
             section_end=_require(section_end, "section_end"),

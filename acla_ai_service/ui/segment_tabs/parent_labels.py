@@ -112,11 +112,19 @@ def _format_session(summary):
     )
 
 
+def _format_labels(labels):
+    display_labels = get_display_labels(list(labels or []))
+    return ", ".join(display_labels) if display_labels else "(none)"
+
+
 def _render_missing_label_examples(annotations, source_segments):
     parents = _parents_by_id(annotations, source_segments)
     rows = []
     for child in annotations:
         if not getattr(child, "parent_id", None):
+            continue
+        parent = parents.get(getattr(child, "parent_id", None))
+        if parent is None:
             continue
         missing = _missing_parent_labels(child, parents)
         if not missing:
@@ -125,7 +133,9 @@ def _render_missing_label_examples(annotations, source_segments):
             "child_id": getattr(child, "id", ""),
             "parent_id": getattr(child, "parent_id", ""),
             "range": f"{getattr(child, 'start_index', '')}-{getattr(child, 'end_index', '')}",
-            "missing_labels": ", ".join(get_display_labels(missing)),
+            "child_labels": _format_labels(getattr(child, "labels", [])),
+            "parent_labels": _format_labels(getattr(parent, "labels", [])),
+            "missing_labels": _format_labels(missing),
         })
         if len(rows) >= 25:
             break
