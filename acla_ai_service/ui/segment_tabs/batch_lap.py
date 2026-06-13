@@ -255,7 +255,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
             progress_bar.progress((i) / len(segments))
             continue
 
-        existing = _collect_existing_lap_annotations(int(lap_start), int(lap_end))
+        existing = []
 
         status_text.markdown(
             f"**Section #{i + 1}/{len(segments)}** `{sec_id}`"
