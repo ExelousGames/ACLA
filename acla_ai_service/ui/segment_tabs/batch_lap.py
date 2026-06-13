@@ -159,13 +159,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     )
 
     st.markdown("---")
-    skip_overlap = st.checkbox(
-        "Skip sections that overlap existing annotations",
-        value=True, key="batch_lap_claude_skip_overlap",
+    clear_session_segments = st.checkbox(
+        "Delete all existing segments for this session before running",
+        value=False, key="batch_lap_claude_clear_session_segments",
         help=(
-            "Recommended — avoids re-annotating sections you've already "
-            "labelled. When unchecked, the agent runs on every section "
-            "and replaces any overlapping annotations and their children."
+            "Deletes every saved segment for the selected session in this "
+            "annotation output before the batch excerpter starts."
         ),
     )
 
@@ -215,6 +214,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         )
         return
 
+    if clear_session_segments:
+        removed_count = len(st.session_state.get("current_annotations", []) or [])
+        st.session_state["current_annotations"] = []
+        save_annotations(session_id, [], selected_annotation_key, silent=True)
+        log(f"Deleted {removed_count} existing segment(s) for session `{session_id}`.")
+
     segments = run_split(df, int(lap_start), int(lap_end), circuit_id)
     if not segments:
         split_meta = st.session_state.get("lap_agent_split_meta", {}) or {}
@@ -235,7 +240,6 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         f"provider={config.provider_id}")
 
     saved_count = 0
-    skipped_count = 0
     error_count = 0
     i = 0
     while i < len(segments):
@@ -244,18 +248,6 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         sec_start = int(seg["start_index"])
         sec_end = int(seg["end_index"])
         target_suffix = _targeted_car_suffix(seg.get("opponent_interaction"))
-
-        if skip_overlap and _section_overlaps_existing(sec_start, sec_end):
-            log(
-                f"Section #{i} `{sec_id}` [{sec_start}, {sec_end}]"
-                f"{target_suffix}: skipped (overlaps existing annotation)."
-            )
-            skipped_count += 1
-            i += 1
-            progress_bar.progress((i) / len(segments))
-            continue
-
-        existing = []
 
         status_text.markdown(
             f"**Section #{i + 1}/{len(segments)}** `{sec_id}`"
@@ -277,7 +269,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
                 circuit_id=circuit_id,
                 section_split_basis=seg.get("split_basis"),
                 opponent_interaction=seg.get("opponent_interaction"),
-                existing_section_annotations=existing,
+                existing_section_annotations=[],
             )
         except ClaudeUsageExhausted as e:
             log(f"Section #{i} `{sec_id}`: HALTED — Claude usage exhausted: {e}")
@@ -298,7 +290,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
         label_ids = [l for l in result.label_ids if l in LABEL_MAPPING]
         if not label_ids:
-            log(f"Section #{i} `{sec_id}`{target_suffix}: no valid labels resolved — skipped.")
+            log(f"Section #{i} `{sec_id}`{target_suffix}: no valid labels resolved.")
             error_count += 1
             i += 1
             progress_bar.progress(i / len(segments))
@@ -313,27 +305,6 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
             opponent_interaction=seg.get("opponent_interaction"),
         )
         annotations = list(st.session_state.get("current_annotations", []))
-        removed_parents = 0
-        removed_children = 0
-        if _section_overlaps_existing(int(result.start_index), int(result.end_index)):
-            if skip_overlap:
-                log(
-                    f"Section #{i} `{sec_id}`{target_suffix}: skipped after agent "
-                    f"(final range [{result.start_index}, {result.end_index}] "
-                    "overlaps existing annotation)."
-                )
-                skipped_count += 1
-                i += 1
-                progress_bar.progress(i / len(segments))
-                continue
-
-            annotations, removed_parents, removed_children = (
-                _remove_overlapping_annotations_and_children(
-                    annotations,
-                    int(result.start_index),
-                    int(result.end_index),
-                )
-            )
         annotations.append(new_ann)
         st.session_state["current_annotations"] = annotations
         save_annotations(session_id, annotations, selected_annotation_key, silent=True)
@@ -356,21 +327,15 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         else:
             log(f"Section #{i} `{sec_id}`{target_suffix}: saved [{result.start_index}, {result.end_index}] "
                 f"with {len(label_ids)} label(s).")
-        if removed_parents or removed_children:
-            log(
-                f"Section #{i} `{sec_id}`{target_suffix}: replaced "
-                f"{removed_parents} overlapping annotation(s) and "
-                f"{removed_children} child annotation(s)."
-            )
 
         i += 1
         progress_bar.progress(i / len(segments))
 
     progress_bar.progress(1.0)
     status_text.markdown(
-        f"**Done.** Saved: {saved_count}, skipped: {skipped_count}, errors: {error_count}."
+        f"**Done.** Saved: {saved_count}, errors: {error_count}."
     )
-    log(f"Finished. {saved_count} saved, {skipped_count} skipped, {error_count} error(s).")
+    log(f"Finished. {saved_count} saved, {error_count} error(s).")
 
     _render_lap_coverage_bar(
         coverage_slot,
@@ -378,55 +343,6 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         int(lap_end),
         chart_key="batch_lap_claude_coverage_final",
     )
-
-
-def _section_overlaps_existing(sec_start: int, sec_end: int) -> bool:
-    """True if any current annotation overlaps the section range."""
-    for ann in st.session_state.get("current_annotations", []) or []:
-        s = int(getattr(ann, "start_index", 0) or 0)
-        e = int(getattr(ann, "end_index", 0) or 0)
-        if e > sec_start and s < sec_end:
-            return True
-    return False
-
-
-def _remove_overlapping_annotations_and_children(
-    annotations: list,
-    sec_start: int,
-    sec_end: int,
-) -> tuple[list, int, int]:
-    """Drop top-level annotations overlapping a range, plus their children."""
-    parent_ids_to_remove = set()
-    for ann in annotations:
-        if not _annotation_overlaps(ann, sec_start, sec_end):
-            continue
-        parent_id = getattr(ann, "parent_id", None)
-        if parent_id:
-            parent_ids_to_remove.add(parent_id)
-            continue
-        ann_id = getattr(ann, "id", None)
-        if ann_id:
-            parent_ids_to_remove.add(ann_id)
-
-    kept = []
-    removed_parents = 0
-    removed_children = 0
-    for ann in annotations:
-        parent_id = getattr(ann, "parent_id", None)
-        if parent_id and parent_id in parent_ids_to_remove:
-            removed_children += 1
-            continue
-        if not parent_id and _annotation_overlaps(ann, sec_start, sec_end):
-            removed_parents += 1
-            continue
-        kept.append(ann)
-    return kept, removed_parents, removed_children
-
-
-def _annotation_overlaps(ann, sec_start: int, sec_end: int) -> bool:
-    s = int(getattr(ann, "start_index", 0) or 0)
-    e = int(getattr(ann, "end_index", 0) or 0)
-    return e > sec_start and s < sec_end
 
 
 def _normalise_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
