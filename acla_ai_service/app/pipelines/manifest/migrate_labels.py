@@ -5,17 +5,77 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.shared.labels import LABEL_CATEGORIES, LEGACY_LABEL_MAP
 
+_LEGACY_LABEL_MAP: Dict[Any, str] = {
+    # Original integer-coded main labels.
+    "3": "EA",
+    "5": "RM",
+    3: "EA",
+    5: "RM",
+    "1": "O",
+    "2": "MD",
+    "4": "PS",
 
-OLD_EXIT_PIT_LANE_LABEL_ID = "RM2"
-NEW_EXIT_PIT_LANE_LABEL_ID = "PS1"
-LABEL_TAXONOMY_MIGRATION_MAP: Dict[Any, str] = {
-    OLD_EXIT_PIT_LANE_LABEL_ID: NEW_EXIT_PIT_LANE_LABEL_ID,
-}
-DEFAULT_LABEL_MIGRATION_MAP: Dict[Any, str] = {
-    **LEGACY_LABEL_MAP,
-    **LABEL_TAXONOMY_MIGRATION_MAP,
+    # Mistake split (Practice vs Racing).
+    "MS": "MSP",
+    "MS1": "MSP1",
+    "MS2": "MSP2",
+    "MS3": "MSP3",
+    "MS4": "MSP4",
+    "MS5": "MSP5",
+    "MS6": "MSP6",
+    "MS7": "MSP7",
+    "MS8": "MSP8",
+    "MS9": "MSP9",
+    "MS10": "MSP10",
+    "MS11": "MSP11",
+    "MS13": "MSP13",
+    "MS14": "MSP14",
+    "MS15": "MSP15",
+    "MS16": "MSP16",
+    "MS17": "MSP17",
+    "MS18": "MSP18",
+    "MS19": "MSP19",
+    "MS20": "MSP20",
+    "MS21": "MSP21",
+    "MS22": "MSP22",
+    "MS23": "MSP23",
+    "MS24": "MSP24",
+    "MS25": "MSP25",
+    "MS26": "MSP26",
+    "MS27": "MSP27",
+    "MS28": "MSP28",
+    "MS29": "MSP29",
+    "MS30": "MSP30",
+    "MS31": "MSP31",
+    "MS32": "MSP32",
+    "MS33": "MSP33",
+    "MS34": "MSP34",
+    "MS35": "MSP35",
+    "MS36": "MSP36",
+    "MS37": "MSP37",
+    "MS38": "MSP38",
+    "MS41": "MSP41",
+    "MS42": "MSP42",
+    "MS43": "MSP43",
+    "MS44": "MSP44",
+    "MS45": "MSP45",
+    "MS46": "MSP46",
+    "MS47": "MSP47",
+    "MS48": "MSP48",
+    "MS49": "MSP49",
+    "MS50": "MSP50",
+    "MS51": "MSP51",
+    "MS52": "MSP52",
+    "MS53": "MSR1",
+    "MS54": "MSR2",
+
+    # Overtaking split (offensive O vs defensive OD).
+    "O2": "OD1",
+    "O6": "OD2",
+
+    # Pit stop taxonomy.
+    "RM2": "PS1",
 }
 
 
@@ -57,54 +117,13 @@ def _replace_labels(
             replaced += 1
         else:
             next_labels.append(label)
-    return _apply_taxonomy_parent_updates(labels, next_labels), replaced
-
-
-def _dedupe_labels(labels: List[Any]) -> List[Any]:
-    deduped: List[Any] = []
-    seen = set()
-    for label in labels:
-        if label in seen:
-            continue
-        deduped.append(label)
-        seen.add(label)
-    return deduped
-
-
-def _insert_before(labels: List[Any], anchor: Any, value: Any) -> List[Any]:
-    if value in labels:
-        return labels
-    try:
-        idx = labels.index(anchor)
-    except ValueError:
-        return labels + [value]
-    return labels[:idx] + [value] + labels[idx:]
-
-
-def _apply_taxonomy_parent_updates(
-    original_labels: List[Any], migrated_labels: List[Any],
-) -> List[Any]:
-    """Keep parent labels correct for current taxonomy migrations."""
-    if (
-        OLD_EXIT_PIT_LANE_LABEL_ID not in original_labels
-        or NEW_EXIT_PIT_LANE_LABEL_ID not in migrated_labels
-    ):
-        return _dedupe_labels(migrated_labels)
-
-    next_labels = list(migrated_labels)
-    current_rm_children = set(LABEL_CATEGORIES.get("RM", []))
-    has_current_rm_child = any(label in current_rm_children for label in next_labels)
-    if not has_current_rm_child:
-        next_labels = [label for label in next_labels if label != "RM"]
-
-    next_labels = _insert_before(next_labels, NEW_EXIT_PIT_LANE_LABEL_ID, "PS")
-    return _dedupe_labels(next_labels)
+    return next_labels, replaced
 
 
 def migrate_dataset_labels(
     store: Any,
     dataset_key: str,
-    migration_map: Dict[Any, str] = DEFAULT_LABEL_MIGRATION_MAP,
+    migration_map: Dict[Any, str] = _LEGACY_LABEL_MAP,
     *,
     dry_run: bool = False,
 ) -> LabelMigrationSummary:
@@ -160,9 +179,6 @@ def migrate_dataset_labels(
 
 
 __all__ = [
-    "DEFAULT_LABEL_MIGRATION_MAP",
-    "LEGACY_LABEL_MAP",
-    "LABEL_TAXONOMY_MIGRATION_MAP",
     "LabelMigrationSummary",
     "migrate_dataset_labels",
 ]
