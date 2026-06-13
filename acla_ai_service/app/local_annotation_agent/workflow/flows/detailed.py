@@ -384,6 +384,9 @@ def _tool_agent_task_prompt(
         f"- A proposed range must not be identical to the parent range [{parent_start}, {parent_end}].\n"
         "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
         "- Only propose label_ids returned by `search_labels`.\n"
+        "- For time-delta and offset evidence, cite deterministic tool "
+        "verdict fields (unit, materiality, end-window trend); do not "
+        "create strength judgments from raw numbers.\n"
         "- Do not propose ranges that exactly match an already-discovered sub-segment.\n"
         "- After `submit_result` returns `ok: true`, stop calling tools."
     )

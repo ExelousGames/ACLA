@@ -571,8 +571,11 @@ def _render_partials_block(
         if not has_scalar and not has_samples and not has_extras:
             lines.append(f"    result: no match — {error or '(unspecified)'}")
         else:
+            unit = extra.get("slope_unit") if query == "compute_slope" and isinstance(extra, dict) else None
+            unit = unit or (extra.get("unit") if isinstance(extra, dict) else None)
+            value_text = f"{value} {unit}" if unit and value is not None else value
             if has_scalar:
-                lines.append(f"    iloc={iloc}, value={value}")
+                lines.append(f"    iloc={iloc}, value={value_text}")
             elif not has_samples:
                 lines.append("    no primary match — diagnostic only")
             if has_samples:
@@ -585,6 +588,19 @@ def _render_partials_block(
                     tail = f" ({s_note})" if s_note else ""
                     lines.append(f"    - iloc={s_iloc}, value={s_val}{tail}")
             if has_extras:
+                if query == "compute_slope":
+                    lines.append(
+                        "    deterministic trend verdict: "
+                        f"total_change={extra.get('delta_value')} {extra.get('unit')} "
+                        f"({extra.get('total_change_direction')}, "
+                        f"{extra.get('total_change_materiality')}, "
+                        f"label_material={extra.get('total_change_is_label_material')}); "
+                        f"end_window={extra.get('end_window')} "
+                        f"end_change={extra.get('end_delta_value')} {extra.get('unit')} "
+                        f"({extra.get('end_change_direction')}, "
+                        f"{extra.get('end_change_materiality')}); "
+                        f"end_trend_change={extra.get('end_trend_change')}"
+                    )
                 extras_str = ", ".join(f"{k}={v!r}" for k, v in extra.items())
                 lines.append(f"    extra: {extras_str}")
         if error:

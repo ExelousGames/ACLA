@@ -3187,6 +3187,134 @@ def _resolve_column(column: str, segment: pd.DataFrame) -> Optional[np.ndarray]:
     return segment[column].to_numpy(dtype=float)
 
 
+_COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {
+    "expert_time_difference": {
+        "unit": "ms",
+        "flat_delta_abs": 50.0,
+        "label_material_delta_abs": 150.0,
+        "strong_delta_abs": 500.0,
+        "near_zero_abs": 50.0,
+        "positive_label": "losing_time",
+        "negative_label": "gaining_time",
+    },
+    "trajectory_offset": {
+        "unit": "m",
+        "flat_delta_abs": 0.10,
+        "label_material_delta_abs": 0.50,
+        "strong_delta_abs": 1.00,
+        "near_zero_abs": 0.50,
+        "positive_label": "moving_wider",
+        "negative_label": "moving_tighter",
+    },
+    "speed_difference": {
+        "unit": "km/h",
+        "flat_delta_abs": 2.0,
+        "label_material_delta_abs": 5.0,
+        "strong_delta_abs": 15.0,
+        "near_zero_abs": 5.0,
+        "positive_label": "speed_gap_increasing",
+        "negative_label": "speed_gap_decreasing",
+    },
+}
+
+
+def _column_semantics(column: str) -> Dict[str, Any]:
+    return {
+        "unit": "value",
+        "flat_delta_abs": 1e-9,
+        "label_material_delta_abs": 1e-9,
+        "strong_delta_abs": 1.0,
+        "near_zero_abs": 1e-9,
+        "positive_label": "rising",
+        "negative_label": "falling",
+        **_COLUMN_SEMANTICS.get(column, {}),
+    }
+
+
+def _classify_delta(delta: float, column: str) -> Dict[str, Any]:
+    meta = _column_semantics(column)
+    abs_delta = abs(float(delta))
+    flat = float(meta["flat_delta_abs"])
+    material = float(meta["label_material_delta_abs"])
+    strong = float(meta["strong_delta_abs"])
+
+    if abs_delta < flat:
+        direction = "flat"
+        domain_direction = "stable"
+        materiality = "insignificant"
+    elif delta > 0:
+        direction = "rising"
+        domain_direction = str(meta["positive_label"])
+        materiality = "strong" if abs_delta >= strong else "material" if abs_delta >= material else "small"
+    else:
+        direction = "falling"
+        domain_direction = str(meta["negative_label"])
+        materiality = "strong" if abs_delta >= strong else "material" if abs_delta >= material else "small"
+
+    return {
+        "direction": direction,
+        "domain_direction": domain_direction,
+        "materiality": materiality,
+        "is_label_material": abs_delta >= material,
+        "thresholds": {
+            "flat_below_abs_delta": flat,
+            "label_material_at_abs_delta": material,
+            "strong_at_abs_delta": strong,
+            "unit": meta["unit"],
+        },
+    }
+
+
+def _trend_change(overall_slope: float, end_slope: float, column: str) -> str:
+    eps = 1e-9
+    if abs(overall_slope) < eps:
+        return "not_applicable_overall_flat"
+    if abs(end_slope) < eps:
+        return "flattening_at_end"
+    overall_direction = "rising" if overall_slope > 0 else "falling"
+    end_direction = "rising" if end_slope > 0 else "falling"
+    if overall_direction != end_direction:
+        return f"reversing_to_{end_direction}_at_end"
+    overall_abs = abs(float(overall_slope))
+    end_abs = abs(float(end_slope))
+    if overall_abs > 0 and end_abs <= overall_abs * 0.5:
+        return "weakening_at_end"
+    if overall_abs > 0 and end_abs >= overall_abs * 1.5:
+        return "strengthening_at_end"
+    return "steady_at_end"
+
+
+def _series_zero_context(arr: np.ndarray, column: str) -> Dict[str, Any]:
+    meta = _column_semantics(column)
+    near_zero_abs = float(meta["near_zero_abs"])
+    finite = arr[np.isfinite(arr)]
+    if len(finite) == 0:
+        return {"near_zero_abs": near_zero_abs}
+
+    abs_arr = np.abs(finite)
+    min_abs_local = int(np.nanargmin(np.abs(arr))) if np.any(np.isfinite(arr)) else 0
+    near_zero_mask = abs_arr <= near_zero_abs
+    start_abs = float(abs(arr[0])) if np.isfinite(arr[0]) else None
+    end_abs = float(abs(arr[-1])) if np.isfinite(arr[-1]) else None
+    moved_toward_zero = (
+        bool(end_abs < start_abs)
+        if start_abs is not None and end_abs is not None
+        else None
+    )
+    return {
+        "near_zero_abs": near_zero_abs,
+        "start_abs": start_abs,
+        "end_abs": end_abs,
+        "min_abs": float(abs(arr[min_abs_local])) if np.isfinite(arr[min_abs_local]) else None,
+        "min_abs_iloc_offset": min_abs_local,
+        "near_zero_count": int(np.sum(near_zero_mask)),
+        "near_zero_fraction": float(np.sum(near_zero_mask) / len(finite)),
+        "starts_near_zero": bool(start_abs is not None and start_abs <= near_zero_abs),
+        "ends_near_zero": bool(end_abs is not None and end_abs <= near_zero_abs),
+        "moves_toward_zero": moved_toward_zero,
+    }
+
+
 def _query_find_extremum(
     df: pd.DataFrame, start_index: int, end_index: int,
     column: str, kind: str,
@@ -3205,7 +3333,33 @@ def _query_find_extremum(
         local = int(np.nanargmin(finite))
     else:
         return None
-    return {"iloc": int(start_index) + local, "value": float(finite[local])}
+    finite_values = finite[np.isfinite(finite)]
+    zero_context = _series_zero_context(finite, column)
+    peak_abs_local = int(np.nanargmax(np.abs(finite)))
+    extra = {
+        "unit": _column_semantics(column)["unit"],
+        "abs_min": float(np.nanmin(np.abs(finite_values))),
+        "abs_max": float(np.nanmax(np.abs(finite_values))),
+        "abs_mean": float(np.nanmean(np.abs(finite_values))),
+        "peak_abs_iloc": int(start_index) + peak_abs_local,
+        "peak_abs_value": float(finite[peak_abs_local]),
+        **zero_context,
+    }
+    if zero_context.get("min_abs_iloc_offset") is not None:
+        extra["min_abs_iloc"] = int(start_index) + int(zero_context["min_abs_iloc_offset"])
+        extra.pop("min_abs_iloc_offset", None)
+    return {
+        "iloc": int(start_index) + local,
+        "value": float(finite[local]),
+        "extra": extra,
+    }
+
+
+def _tail_window_start(length: int) -> int:
+    if length <= 3:
+        return 0
+    tail_len = max(3, min(10, int(np.ceil(length * 0.25))))
+    return max(0, length - tail_len)
 
 
 def _query_find_first_match(
@@ -3312,17 +3466,53 @@ def _query_compute_slope(
     delta_v = float(vb - va)
     delta_i = float(b_idx - a_idx)
     slope = delta_v / delta_i
+    tail_start = _tail_window_start(len(arr))
+    if not np.isfinite(arr[tail_start]):
+        finite_tail = np.where(np.isfinite(arr[tail_start:]))[0]
+        if len(finite_tail) == 0:
+            tail_start = 0
+        else:
+            tail_start += int(finite_tail[0])
+    end_va = arr[tail_start]
+    end_delta_i = float((b_idx - a_idx) - tail_start)
+    end_delta_v = float(vb - end_va)
+    end_slope = end_delta_v / end_delta_i if end_delta_i else 0.0
+    meta = _column_semantics(column)
+    overall_class = _classify_delta(delta_v, column)
+    end_class = _classify_delta(end_delta_v, column)
+    zero_context = _series_zero_context(arr, column)
+    end_zero_context = _series_zero_context(arr[tail_start:], column)
+    end_start_iloc = a_idx + tail_start
     return {
         "iloc": b_idx,
         "value": slope,
         "samples": [
             {"iloc": a_idx, "value": float(va)},
+            {"iloc": end_start_iloc, "value": float(end_va), "note": "final-window start"},
             {"iloc": b_idx, "value": float(vb)},
         ],
         "extra": {
+            "unit": meta["unit"],
+            "slope_unit": f"{meta['unit']}/iloc",
             "slope": slope,
             "delta_value": delta_v,
             "delta_iloc": delta_i,
+            "total_change_direction": overall_class["direction"],
+            "total_change_domain_direction": overall_class["domain_direction"],
+            "total_change_materiality": overall_class["materiality"],
+            "total_change_is_label_material": overall_class["is_label_material"],
+            "end_window": [end_start_iloc, b_idx],
+            "end_delta_value": end_delta_v,
+            "end_delta_iloc": end_delta_i,
+            "end_slope": end_slope,
+            "end_change_direction": end_class["direction"],
+            "end_change_domain_direction": end_class["domain_direction"],
+            "end_change_materiality": end_class["materiality"],
+            "end_change_is_label_material": end_class["is_label_material"],
+            "end_trend_change": _trend_change(slope, end_slope, column),
+            "thresholds": overall_class["thresholds"],
+            "near_zero_summary": zero_context,
+            "end_near_zero_summary": end_zero_context,
         },
     }
 
@@ -3571,7 +3761,8 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Slope across the range",
         "description": (
             "Slope of <column> from the start to the end of <range> "
-            "(value-delta / iloc-delta)."
+            "(value-delta / iloc-delta), plus deterministic unit, "
+            "materiality, near-zero, and final-window trend verdicts."
         ),
         "params_schema": {
             "range": _RANGE_PARAM_DESC,
