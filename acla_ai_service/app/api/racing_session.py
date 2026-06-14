@@ -13,7 +13,7 @@ from app.racing_engineer.expert_actions import predict_expert_actions
 from app.ml.segment_classifier.service import segment_classifier
 from app.ml.opportunity_forecaster import opportunity_forecaster
 from app.services.user_session_analysis import analyze_user_sessions
-from app.shared.label_hierarchy import build_main_label_segments
+from app.shared.label_hierarchy import build_track_area_segments
 
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
@@ -147,7 +147,11 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
                 "end_index": segment_dict.get("end_index"),
             })
 
-        segments = build_main_label_segments(raw_segments)
+        segments = build_track_area_segments(
+            raw_segments,
+            request.telemetry_data,
+            request.track_name,
+        )
 
         return {
             "status": "success",

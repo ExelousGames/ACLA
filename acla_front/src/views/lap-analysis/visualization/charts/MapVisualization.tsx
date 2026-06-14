@@ -42,8 +42,8 @@ type SegmentOverlayRun = {
 };
 
 type ActiveSegmentSummary = {
-    mainLabel: string;
-    subLabels: string[];
+    parentLabel: string;
+    childLabels: string[];
 };
 
 type ProjectedPoint = Vec3 & {
@@ -269,8 +269,8 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
         }
 
         return {
-            mainLabel: getSegmentMainLabelText(activeSegment),
-            subLabels: getActiveSubLabelTexts(activeSegment, currentFrame.sourceIndex)
+            parentLabel: getSegmentMainLabelText(activeSegment),
+            childLabels: getActiveSubLabelTexts(activeSegment, currentFrame.sourceIndex)
         };
     }, [currentFrame, segmentClassification]);
 
@@ -809,9 +809,9 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                                 </Badge>
                                 {segmentLoadState.status === 'ready' && activeSegmentSummary && (
                                     <Text size="1" className="map-visualization__metric">
-                                        Active: {activeSegmentSummary.mainLabel}
-                                        {activeSegmentSummary.subLabels.length > 0
-                                            ? ` - ${activeSegmentSummary.subLabels.join(', ')}`
+                                        Parent: {activeSegmentSummary.parentLabel}
+                                        {activeSegmentSummary.childLabels.length > 0
+                                            ? ` - Child: ${activeSegmentSummary.childLabels.join(', ')}`
                                             : ''}
                                     </Text>
                                 )}
@@ -831,11 +831,11 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                                             />
                                             <span className="map-visualization__segment-copy">
                                                 <span className="map-visualization__segment-main-label">
-                                                    {getSegmentMainLabelText(segment)}
+                                                    Parent: {getSegmentMainLabelText(segment)}
                                                 </span>
                                                 {getSegmentSubLabelTexts(segment).length > 0 && (
                                                     <span className="map-visualization__segment-sub-labels">
-                                                        {getSegmentSubLabelTexts(segment).join(', ')}
+                                                        Child: {getSegmentSubLabelTexts(segment).join(', ')}
                                                     </span>
                                                 )}
                                             </span>

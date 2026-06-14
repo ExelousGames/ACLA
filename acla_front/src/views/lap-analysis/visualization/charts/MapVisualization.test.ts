@@ -1,5 +1,5 @@
 import { getPlaybackFrameIndex, parseTelemetryFrame, parseTelemetryFrames, segmentVisiblePoints } from './mapTelemetry';
-import { getSegmentMainLabelText, getSegmentSubLabelTexts } from './segmentClassificationDisplay';
+import { getActiveSubLabelTexts, getSegmentMainLabelText, getSegmentSubLabelTexts } from './segmentClassificationDisplay';
 
 describe('MapVisualization telemetry parsing', () => {
     it('parses array coordinates and matches the player by car id', () => {
@@ -244,6 +244,51 @@ describe('MapVisualization playback indexing', () => {
 });
 
 describe('MapVisualization AI segment labels', () => {
+    it('formats parent track areas with active child analysis labels', () => {
+        const segment = {
+            labels: ['brands_hatch2', 'MSP', 'MSP1', 'EA'],
+            parent_segment_id: 'brands_hatch2',
+            parent_segment_name: 'Paddock Hill Bend',
+            main_label_id: 'brands_hatch2',
+            main_label_name: 'Paddock Hill Bend',
+            start_index: 10,
+            end_index: 30,
+            child_segments: [
+                {
+                    start_index: 12,
+                    end_index: 18,
+                    labels: [
+                        { label_id: 'MSP', label_name: 'Mistake (Practice)' },
+                        { label_id: 'MSP1', label_name: 'Initiate brake too late' }
+                    ]
+                },
+                {
+                    start_index: 22,
+                    end_index: 26,
+                    labels: [
+                        { label_id: 'EA', label_name: 'Expert Adherence (Training)' }
+                    ]
+                }
+            ]
+        };
+
+        expect(getSegmentMainLabelText(segment)).toBe('Paddock Hill Bend');
+        expect(getSegmentSubLabelTexts(segment)).toEqual([
+            'Mistake (Practice)',
+            'Initiate brake too late',
+            'Expert Adherence (Training)'
+        ]);
+        expect(getActiveSubLabelTexts(segment, 14)).toEqual([
+            'Mistake (Practice)',
+            'Initiate brake too late'
+        ]);
+        expect(getActiveSubLabelTexts(segment, 20)).toEqual([
+            'Mistake (Practice)',
+            'Initiate brake too late',
+            'Expert Adherence (Training)'
+        ]);
+    });
+
     it('formats main-first segment labels with sub labels', () => {
         const segment = {
             labels: ['MSP', 'MSP1', 'ST3'],
