@@ -18,7 +18,7 @@
   "labels": {
     "EA": {
       "name": "Expert Adherence (Training)",
-      "characteristics": "Player tracks the expert through the section.\n  - `trajectory_offset` stays within ±0.5 m of zero for the whole range.\n  - `expert_time_difference` is stable — confirm with `compute_slope` and use its deterministic `total_change_materiality`, `total_change_is_label_material`, and `end_trend_change` fields. Small millisecond changes are not mistake evidence.\n  - Speed delta at sampled ilocs is small.\nMutually exclusive with MSP and RM.\n"
+      "characteristics": "Player matches or cleanly outperforms the expert through the section.\n  - Standard adherence: `trajectory_offset` stays within ±0.5 m of zero for the whole range, `expert_time_difference` is stable, and speed delta at sampled ilocs is small.\n  - Expert-or-better clean section: EA can still apply when the player is ahead of the expert, gaining on the expert, or using a cleaner/faster line than the expert, even if `trajectory_offset` is wider/tighter than ±0.5 m. Require no off-track/cutting/instability evidence and no MSP / RM / MSR / PS / MD gate.\n  - When `expert_time_difference` exists, confirm with `compute_slope` and use its deterministic `total_change_materiality`, `total_change_is_label_material`, and `end_trend_change` fields. Small millisecond changes are not mistake evidence.\n  - When `expert_time_difference` is absent, do not rule out EA solely because the slope gate is unavailable. Use trajectory, speed/brake/throttle samples, segment shape, and the absence of MSP/RM/MSR/PS/MD evidence; note that MSP/RM slope gates cannot be satisfied.\nMutually exclusive with MSP and RM.\n"
     },
     "MSP": {
       "name": "Mistake (Practice)",

@@ -485,19 +485,31 @@ def _classify_base_segment_shape(
 
     phase = phases[0]
     entry = int(phase["entry"])
+    apex = int(phase["apex"])
     exit_ = int(phase["exit"])
     entry_frac = entry / max(n_rows - 1, 1)
+    apex_frac = apex / max(n_rows - 1, 1)
     exit_frac = exit_ / max(n_rows - 1, 1)
 
-    if entry_frac <= 0.15 and exit_frac >= 0.85:
-        shape_key = "in_corner"
-        reason = "One curvature arc spans most of the segment."
-    elif entry_frac > 0.25:
+    if entry_frac > 0.25:
         shape_key = "approach_to_corner"
         reason = "Segment starts before the detected curvature arc."
-    elif exit_frac < 0.75:
+    elif apex_frac <= 0.35 and exit_frac >= 0.75:
         shape_key = "exit_corner_to_straight"
-        reason = "Detected curvature arc ends before the segment exit."
+        reason = (
+            "Segment begins in the corner-exit phase and ends near the "
+            "corner exit; ST4 is not used for a completed corner plus a "
+            "material following straight."
+        )
+    elif exit_frac < 0.75:
+        shape_key = "in_corner"
+        reason = (
+            "Detected a single corner arc plus a material following "
+            "straight; ST4 is reserved for the corner-exit section itself."
+        )
+    elif entry_frac <= 0.15 and exit_frac >= 0.85:
+        shape_key = "in_corner"
+        reason = "One curvature arc spans most of the segment."
     else:
         shape_key = "in_corner"
         reason = "One curvature arc dominates the segment."

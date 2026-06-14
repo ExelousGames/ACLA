@@ -303,7 +303,6 @@ def _local_planner_prompt(
     circuit_id: str,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
-    existing_section_annotations: List[dict],
 ) -> str:
     from app.shared.annotation_agent_tools import (
         AGENT_GRAPH_DEFINITIONS,
@@ -325,22 +324,6 @@ def _local_planner_prompt(
     interaction_focus = _interaction_focus_block(
         section_split_basis, opponent_interaction,
     )
-
-    existing_block = ""
-    if existing_section_annotations:
-        rows = []
-        for c in existing_section_annotations:
-            names = ", ".join(
-                LABEL_MAPPING.get(l, l) for l in c.get("labels", [])
-            )
-            rows.append(
-                f"  - [{c.get('start_index')}, {c.get('end_index')}] — {names}"
-            )
-        existing_block = (
-            "\n#### Sections already annotated on this lap "
-            "(reference, do NOT re-annotate)\n"
-            + "\n".join(rows) + "\n"
-        )
 
     parts = [
         "You are a racing telemetry analyst planning the analysis for "
@@ -367,7 +350,6 @@ def _local_planner_prompt(
         f"(length {section_end - section_start})",
         f"- allowed revision envelope: [{revision_start}, {revision_end}]",
         f"- split basis: {section_split_basis or 'circuit_section'}",
-        existing_block,
         interaction_focus,
         "",
         lap_skill_block,
@@ -547,7 +529,6 @@ def _tool_agent_task_prompt(
     revision_end: int,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
-    existing_section_annotations: List[dict],
 ) -> str:
     interaction_focus = _interaction_focus_block(
         section_split_basis, opponent_interaction,
@@ -560,20 +541,6 @@ def _tool_agent_task_prompt(
             f"`{preselected_section_id}` "
             f"({LABEL_MAPPING.get(preselected_section_id, preselected_section_id)}) "
             "from the opponent sub-segment; include it in `label_ids`.\n"
-        )
-
-    existing_block = ""
-    if existing_section_annotations:
-        lines = []
-        for c in existing_section_annotations:
-            names = ", ".join(LABEL_MAPPING.get(l, l) for l in c.get("labels", []))
-            lines.append(
-                f"  - [{c['start_index']}, {c['end_index']}] — {names}"
-            )
-        existing_block = (
-            "\n### Sections already annotated on this lap "
-            "(reference, do NOT re-annotate)\n"
-            + "\n".join(lines) + "\n"
         )
 
     return (
@@ -593,7 +560,6 @@ def _tool_agent_task_prompt(
         f"- Allowed revision envelope: [{revision_start}, {revision_end}]\n"
         f"- Split basis: {section_split_basis or 'circuit_section'}\n"
         f"{preselected_section_block}"
-        f"{existing_block}"
         f"{interaction_focus}"
         "\n"
         "### How to work\n"
@@ -685,7 +651,6 @@ def build_request(
     callbacks: Optional[AgentCallbacks] = None,
     session_id: str = "",
 ) -> AgentRequest:
-    existing_section_annotations = list(existing_section_annotations or [])
     config = config or ProviderConfig(provider_id=provider_id)
     callbacks = callbacks or NoopCallbacks()
     revision_start, revision_end = _normalise_revision_bounds(
@@ -716,16 +681,7 @@ def build_request(
             ),
             "section_context": _interaction_section_context(opponent_interaction),
             "main_labels": [circuit_id] if circuit_id else [],
-            "existing_children": [
-                {
-                    "start_index": c.get("start_index"),
-                    "end_index": c.get("end_index"),
-                    "labels": [
-                        LABEL_MAPPING.get(l, l) for l in c.get("labels", [])
-                    ],
-                }
-                for c in existing_section_annotations
-            ],
+            "existing_children": [],
         },
     )
 
@@ -746,7 +702,6 @@ def build_request(
             circuit_id=circuit_id,
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
-            existing_section_annotations=existing_section_annotations,
         )
         synth_prompt: Callable[[Dict[str, Any]], Tuple[str, str]] = (
             lambda s: _local_synth_prompts(
@@ -774,7 +729,6 @@ def build_request(
             revision_end=revision_end,
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
-            existing_section_annotations=existing_section_annotations,
         )
         synth_prompt = lambda _state: ("", "")
         extra_state = {

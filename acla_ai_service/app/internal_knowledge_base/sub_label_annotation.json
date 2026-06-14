@@ -988,7 +988,7 @@
       "segment_type_role": "base_segment_shape",
       "shape_key": "exit_corner_to_straight",
       "lap_parent_allowed": true,
-      "description": "Full segment only covering corner exit leading onto a straight — starts curved, steering decreasing, throttle increasing.",
+      "description": "Segment covers the exit section of a corner that leads onto a straight — the car is still in the corner exit phase, with steering unwinding and throttle increasing. Do not use ST4 for a range that materially includes the following straight after corner exit is complete.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1259,6 +1259,6 @@
     }
   },
   "category_guidelines": {
-    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. Entry/apex/exit altitude labels (ST12-ST20) are phase-specific subsegment labels. Do not attach them to a lap parent segment that covers the whole corner; use them only when the annotation range is the matching corner phase subsegment.\n"
+    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. ST4 means the exit section of the corner itself as it leads toward a straight; it does not mean a range that includes the completed corner plus a material portion of the following straight. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. Entry/apex/exit altitude labels (ST12-ST20) are phase-specific subsegment labels. Do not attach them to a lap parent segment that covers the whole corner; use them only when the annotation range is the matching corner phase subsegment.\n"
   }
 }
