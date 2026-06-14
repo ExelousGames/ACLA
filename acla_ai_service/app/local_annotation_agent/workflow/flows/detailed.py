@@ -63,6 +63,14 @@ def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
 
 LOGGER = logging.getLogger(__name__)
 
+WHOLE_CHILD_RANGE_LABEL_RULE = (
+    "Every proposed label must describe the proposed child range as a "
+    "whole. Do not propose a label because it matches only one phase, one "
+    "apex moment, or a short slice inside the child range; shrink the "
+    "child range so the label fits throughout, submit a separate proposal "
+    "for the smaller range, or omit that label."
+)
+
 
 def _is_full_parent_range(
     start: int,
@@ -244,6 +252,9 @@ def _local_synth_prompts(
         "For each candidate that is proved, pinpoint its exact "
         "start_index and end_index as a strict child range inside the "
         "parent range.",
+        "",
+        "#### Whole-child-range fit rule",
+        WHOLE_CHILD_RANGE_LABEL_RULE,
     ])
 
     outro = "\n".join([
@@ -270,6 +281,7 @@ def _local_synth_prompts(
         "establish (or fail to establish) the predicate + qualifiers. "
         "When \"proved\" is false, name the specific qualifier that is "
         "unmet or contradicted.",
+        f"- {WHOLE_CHILD_RANGE_LABEL_RULE}",
         "- Write \"reasoning\" as a human annotation note: 2-4 concise "
         "sentences that include the key ilocs/ranges, values/trends, "
         "tool verdicts, and why those facts support this child range.",
@@ -366,6 +378,9 @@ def _tool_agent_task_prompt(
         "evidence only supports the whole parent range, submit an empty "
         "`proposals` list and say no strict child sub-segment was found.\n"
         "\n"
+        "### Whole-child-range fit rule\n"
+        f"{WHOLE_CHILD_RANGE_LABEL_RULE}\n"
+        "\n"
         "### Submit payload shape\n"
         "`payload_json` must be a JSON object of this shape:\n"
         "```json\n"
@@ -385,6 +400,7 @@ def _tool_agent_task_prompt(
         "### Hard rules\n"
         f"- Every proposed range must satisfy {parent_start} <= start_index < end_index <= {parent_end}.\n"
         f"- A proposed range must not be identical to the parent range [{parent_start}, {parent_end}].\n"
+        f"- {WHOLE_CHILD_RANGE_LABEL_RULE}\n"
         "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
         "- Only propose label_ids returned by `search_labels`.\n"
         "- For time-delta and offset evidence, cite deterministic tool "

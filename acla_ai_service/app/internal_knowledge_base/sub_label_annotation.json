@@ -15,6 +15,7 @@
       "embedding"
     ]
   },
+  "range_fit_rule": "Whole-range label rule for detailed annotation: every proposed label must describe the proposed child range as a whole. Do not propose a label because it matches only one phase, one apex moment, or a short slice inside the child range; shrink the child range so the label fits throughout, submit a separate proposal for the smaller range, or omit that label.\n",
   "labels": {
     "O": {
       "name": "Successful Overtake",
@@ -760,7 +761,7 @@
     "MSR1": {
       "name": "Failed overtake attempt (type unclear)",
       "type": "sub",
-      "description": "Fallback for a failed overtake attempt whose attempt-type signature cannot be read from the player's trace. Gate on `classify_opponent_interaction`: `outcome: failed_attack` and `gates.MSR: true`. `time_difference_to_expert` grows across the attempt. Prefer a specific subtype (MSR3 / MSR4 / MSR5 / MSR6) when the trace lets you identify which O-style attempt was tried; use MSR1 only when none of those match. Distinguished from O by the missing pass-completed classifier outcome, and from MSP by the close opponent being the cause.\n",
+      "description": "Fallback for a failed overtake attempt whose attempt-type signature cannot be read from the player's trace. Gate on `classify_opponent_interaction`: `outcome: failed_attack` and `gates.MSR: true`. `expert_time_difference` grows across the attempt. Prefer a specific subtype (MSR3 / MSR4 / MSR5 / MSR6) when the trace lets you identify which O-style attempt was tried; use MSR1 only when none of those match. Distinguished from O by the missing pass-completed classifier outcome, and from MSP by the close opponent being the cause.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -776,7 +777,7 @@
     "MSR2": {
       "name": "Defense broken (type unclear)",
       "type": "sub",
-      "description": "Fallback for a broken defense whose defense-type signature cannot be read from the player's trace. Gate on `classify_opponent_interaction`: `outcome: broken_defense` and `gates.MSR: true`. `time_difference_to_expert` usually grows across the section. Prefer a specific subtype (MSR7 / MSR8) when the trace lets you identify which OD-style defense was tried; use MSR2 only when neither matches. Distinguished from OD by the classifier returning broken defense instead of held defense.\n",
+      "description": "Fallback for a broken defense whose defense-type signature cannot be read from the player's trace. Gate on `classify_opponent_interaction`: `outcome: broken_defense` and `gates.MSR: true`. `expert_time_difference` usually grows across the section. Prefer a specific subtype (MSR7 / MSR8) when the trace lets you identify which OD-style defense was tried; use MSR2 only when neither matches. Distinguished from OD by the classifier returning broken defense instead of held defense.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -792,7 +793,7 @@
     "MSR3": {
       "name": "Failed late-brake attack at entry",
       "type": "sub",
-      "description": "Failure-mirror of O1. Player's brake **initiation onset is later than** the expert's at corner entry with **peak brake pressure higher than** the expert — a deliberate over-commit to pull alongside before the apex — but the pass did NOT stick. Often paired with **moving toward negative (tightening)** in the trajectory offset into the apex, an MSP-style entry overshoot (e.g. **entry trajectory bulges outside**), or a grip **over-limit spike** as the late brake exceeded grip. Gate on `classify_opponent_interaction`: `outcome: failed_attack` and `gates.MSR: true`. `time_difference_to_expert` grows across the attempt. Distinguished from O1 by the missing pass-completed classifier outcome; distinguished from MSR1 by the identifiable late-brake signature.\n",
+      "description": "Failure-mirror of O1. Player's brake **initiation onset is later than** the expert's at corner entry with **peak brake pressure higher than** the expert — a deliberate over-commit to pull alongside before the apex — but the pass did NOT stick. Often paired with **moving toward negative (tightening)** in the trajectory offset into the apex, an MSP-style entry overshoot (e.g. **entry trajectory bulges outside**), or a grip **over-limit spike** as the late brake exceeded grip. Gate on `classify_opponent_interaction`: `outcome: failed_attack` and `gates.MSR: true`. `expert_time_difference` grows across the attempt. Distinguished from O1 by the missing pass-completed classifier outcome; distinguished from MSR1 by the identifiable late-brake signature.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -806,7 +807,7 @@
     "MSR4": {
       "name": "Failed outside-line sweep",
       "type": "sub",
-      "description": "Failure-mirror of O3. Trajectory offset **wider than expert** across entry-to-apex by a sustained margin — going around the outside — but the pass did NOT complete. Player's wider arc cost the time the move would have saved; `time_difference_to_expert` grows across the section. Gate on `classify_opponent_interaction`: `outcome: failed_attack` and `gates.MSR: true`; `query_opponent_trajectory` shows the opponent on the inside throughout the braking-to-apex window. Distinguished from O3 by the missing pass-completed classifier outcome; from MSR1 by the identifiable outside-line signature; from MSP33 (entry too wide) by the close opponent being the cause.\n",
+      "description": "Failure-mirror of O3. Trajectory offset **wider than expert** across entry-to-apex by a sustained margin — going around the outside — but the pass did NOT complete. Player's wider arc cost the time the move would have saved; `expert_time_difference` grows across the section. Gate on `classify_opponent_interaction`: `outcome: failed_attack` and `gates.MSR: true`; `query_opponent_trajectory` shows the opponent on the inside throughout the braking-to-apex window. Distinguished from O3 by the missing pass-completed classifier outcome; from MSR1 by the identifiable outside-line signature; from MSP33 (entry too wide) by the close opponent being the cause.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -820,7 +821,7 @@
     "MSR5": {
       "name": "Failed switchback",
       "type": "sub",
-      "description": "Failure-mirror of O4. Player attempted a concede-entry / reclaim-exit switchback — brake **initiation onset earlier than** expert, trajectory crossing from **wider than expert** at entry to **tighter than expert** at exit (or the reverse intent), and earlier throttle pickup on exit — but the pass did NOT complete by section end. Gate on `classify_opponent_interaction`: `outcome: failed_attack` and `gates.MSR: true`; `query_opponent_trajectory` shows the opponent's lateral-offset crossing started but the signed longitudinal gap never produced a pass-completed classifier outcome. `time_difference_to_expert` grows across the section. Distinguished from O4 by the missing pass-completed classifier outcome; from MSR1 by the identifiable cross-line signature.\n",
+      "description": "Failure-mirror of O4. Player attempted a concede-entry / reclaim-exit switchback — brake **initiation onset earlier than** expert, trajectory crossing from **wider than expert** at entry to **tighter than expert** at exit (or the reverse intent), and earlier throttle pickup on exit — but the pass did NOT complete by section end. Gate on `classify_opponent_interaction`: `outcome: failed_attack` and `gates.MSR: true`; `query_opponent_trajectory` shows the opponent's lateral-offset crossing started but the signed longitudinal gap never produced a pass-completed classifier outcome. `expert_time_difference` grows across the section. Distinguished from O4 by the missing pass-completed classifier outcome; from MSR1 by the identifiable cross-line signature.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -848,7 +849,7 @@
     "MSR7": {
       "name": "Inside cover broken (early-brake defense)",
       "type": "sub",
-      "description": "Failure-mirror of OD1. Player's brake **initiation onset is earlier than** expert AND/OR trajectory offset held **tighter than expert** across entry-to-apex — closing the inside line — but the primary opponent got through anyway. Often paired with a wide exit (offset **moving toward positive (widening)** post-apex) as the tight defensive entry forced a compromised exit. Gate on `classify_opponent_interaction`: `outcome: broken_defense` and `gates.MSR: true`. `time_difference_to_expert` grows across the section. Distinguished from OD1 by the broken-defense classifier outcome; from MSR2 by the identifiable inside-cover signature.\n",
+      "description": "Failure-mirror of OD1. Player's brake **initiation onset is earlier than** expert AND/OR trajectory offset held **tighter than expert** across entry-to-apex — closing the inside line — but the primary opponent got through anyway. Often paired with a wide exit (offset **moving toward positive (widening)** post-apex) as the tight defensive entry forced a compromised exit. Gate on `classify_opponent_interaction`: `outcome: broken_defense` and `gates.MSR: true`. `expert_time_difference` grows across the section. Distinguished from OD1 by the broken-defense classifier outcome; from MSR2 by the identifiable inside-cover signature.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -863,7 +864,7 @@
     "MSR8": {
       "name": "Defensive lift broken on straight",
       "type": "sub",
-      "description": "Failure-mirror of OD2. On a straight: player's throttle drops **below expert** with NO matching brake (outside any braking zone) — an attempted defensive lift / feint — but the opponent's gap kept closing and they got through. Gate on `classify_opponent_interaction`: `outcome: broken_defense` and `gates.MSR: true`; `query_opponent_trajectory` shows the signed longitudinal gap crossing across the straight. `time_difference_to_expert` grows. Distinguished from OD2 by the broken-defense classifier outcome; from MSR2 by the identifiable lift signature; from MSP25 (throttle too slow) by the close opponent being the cause.\n",
+      "description": "Failure-mirror of OD2. On a straight: player's throttle drops **below expert** with NO matching brake (outside any braking zone) — an attempted defensive lift / feint — but the opponent's gap kept closing and they got through. Gate on `classify_opponent_interaction`: `outcome: broken_defense` and `gates.MSR: true`; `query_opponent_trajectory` shows the signed longitudinal gap crossing across the straight. `expert_time_difference` grows. Distinguished from OD2 by the broken-defense classifier outcome; from MSR2 by the identifiable lift signature; from MSP25 (throttle too slow) by the close opponent being the cause.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [

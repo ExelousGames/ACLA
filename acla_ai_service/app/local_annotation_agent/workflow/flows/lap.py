@@ -101,6 +101,21 @@ def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
 
 LOGGER = logging.getLogger(__name__)
 
+WHOLE_RANGE_LABEL_RULE = (
+    "Every behavior, segment-type, and sub-label must describe the final "
+    "annotation range as a whole. Do not attach a label because it matches "
+    "only one phase, one apex moment, or a short slice inside the range; "
+    "revise the range so the label fits throughout, omit that label, or "
+    "leave it for detailed child sub-segment annotation."
+)
+
+LAP_REASONING_NOTE_RULE = (
+    "Write `reasoning` as a longer human annotation note: 4-6 concise "
+    "sentences covering the final iloc range, selected label fit, key "
+    "telemetry values or trends, deterministic tool verdicts, and why "
+    "competing labels were omitted or the range was revised."
+)
+
 
 def _normalise_revision_bounds(
     *,
@@ -483,6 +498,9 @@ def _local_synth_prompts(
         "metadata says `lap_parent_allowed: false`. At most ONE of "
         "{EA, MSP, MSR, RM} may be attached.",
         "",
+        "#### Whole-range fit rule",
+        WHOLE_RANGE_LABEL_RULE,
+        "",
         "#### Output format",
         "Respond with ONE JSON object only — no surrounding prose. Schema:",
         "```json",
@@ -491,7 +509,7 @@ def _local_synth_prompts(
         '  "revised": <true|false>,',
         '  "revision_reason": "<one short sentence; empty when revised=false>",',
         '  "label_ids": ["<id>", ...],',
-        '  "reasoning": "<1-3 sentences citing ilocs / values>"',
+        '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and range-fit rationale>"',
         "}",
         "```",
         "Hard rules:",
@@ -501,6 +519,8 @@ def _local_synth_prompts(
         "above; additionally include the circuit id. Include a "
         "circuit_section id only when it was listed under 'Range under "
         "review' or returned by `locate_circuit_section`.",
+        f"- {WHOLE_RANGE_LABEL_RULE}",
+        f"- {LAP_REASONING_NOTE_RULE}",
         "- For segment-type labels, include exactly one base shape. Add "
         "corner refinement only when `measure_segment_shape` returns "
         "non-empty `phases` for the final range. Entry/apex/exit altitude "
@@ -594,15 +614,19 @@ def _tool_agent_task_prompt(
         "main-label signature needs a boundary change, call `revise_range` "
         "inside the allowed revision envelope, then re-check evidence on "
         "the new range before submitting.\n"
-        "5. Call `submit_result` once with the chosen IDs and stop after it "
-        "returns `ok: true`.\n"
+        "5. Call `submit_result(payload_json, summary)` once with the "
+        "chosen IDs, using the same longer evidence note for `summary`, "
+        "and stop after it returns `ok: true`.\n"
+        "\n"
+        "### Whole-range fit rule\n"
+        f"{WHOLE_RANGE_LABEL_RULE}\n"
         "\n"
         "### Submit payload shape\n"
         "`payload_json` must be a JSON object of this shape:\n"
         "```json\n"
         "{\n"
         '  "label_ids": ["<id>", "<id>", ...],\n'
-        '  "reasoning": "<1-3 sentences citing ilocs / values>"\n'
+        '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and range-fit rationale>"\n'
         "}\n"
         "```\n"
         "`label_ids` carries the circuit id, optional circuit_section id, "
@@ -618,6 +642,8 @@ def _tool_agent_task_prompt(
         "response.\n"
         "- Include a circuit_section id only when it is unambiguous.\n"
         "- At most one of {EA, MSP, MSR, RM} may be attached.\n"
+        f"- {WHOLE_RANGE_LABEL_RULE}\n"
+        f"- {LAP_REASONING_NOTE_RULE}\n"
         "- In opponent-only windows, use O / OD / MSR or submit an empty "
         "`label_ids` array.\n"
         "- For time-delta and offset evidence, cite deterministic tool "

@@ -15,6 +15,8 @@ _USAGE_EXHAUSTED_WARNING = (
     "credit balance). Batch halted — try again later."
 )
 
+_BATCH_LAP_NOTE_MAX_CHARS = 4000
+
 _ERROR_DETAIL_ATTRS = (
     "result",
     "error",
@@ -324,7 +326,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
             start=int(result.start_index),
             end=int(result.end_index),
             label_ids=label_ids,
-            notes=(result.reasoning or "")[:1500],
+            notes=(result.reasoning or "")[:_BATCH_LAP_NOTE_MAX_CHARS],
             opponent_interaction=seg.get("opponent_interaction"),
         )
         annotations = list(st.session_state.get("current_annotations", []))
