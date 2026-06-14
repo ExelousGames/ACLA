@@ -3243,33 +3243,16 @@ def get_pipeline_tool(tool_id: str) -> Optional[Dict[str, Any]]:
 # the query runs deterministic math — no pixel-reading.
 # ---------------------------------------------------------------------------
 
-_COLUMN_ALIASES: Dict[str, str] = {
-    "time_difference_to_expert": "expert_time_difference",
-}
-
-
 def _canonical_column(column: str) -> str:
-    return _COLUMN_ALIASES.get(column, column)
-
-
-def _column_candidates(column: str) -> List[str]:
-    canonical = _canonical_column(column)
-    candidates = [canonical]
-    for alias, target in _COLUMN_ALIASES.items():
-        if target == canonical and alias not in candidates:
-            candidates.append(alias)
-    if column not in candidates:
-        candidates.append(column)
-    return candidates
+    return column
 
 
 def _resolve_column(column: str, segment: pd.DataFrame) -> Optional[np.ndarray]:
     if not column:
         return None
-    for candidate in _column_candidates(column):
-        if candidate in segment.columns:
-            return segment[candidate].to_numpy(dtype=float)
-    return None
+    if column not in segment.columns:
+        return None
+    return segment[column].to_numpy(dtype=float)
 
 
 _COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {
@@ -4483,10 +4466,7 @@ def _build_brake(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
 
 def _build_time_delta(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    for column in ("expert_time_difference", "time_difference_to_expert"):
-        if column in df.columns:
-            return _project_columns(df, [column])
-    return None
+    return _project_columns(df, ["expert_time_difference"])
 
 
 def _build_speed_delta(df: pd.DataFrame) -> Optional[pd.DataFrame]:

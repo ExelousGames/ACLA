@@ -20,17 +20,28 @@ def _trajectory_df(x: np.ndarray, y: np.ndarray) -> pd.DataFrame:
     })
 
 
-def test_time_difference_alias_resolves_when_only_display_column_exists():
+def test_time_difference_uses_exact_expert_time_difference_column():
     df = pd.DataFrame(
-        {"time_difference_to_expert": [100.0, 150.0, 225.0, 300.0]},
+        {"expert_time_difference": [100.0, 150.0, 225.0, 300.0]},
+        index=[10, 11, 12, 13],
+    )
+
+    result = _query_compute_slope(df, 10, 13, "expert_time_difference")
+
+    assert result is not None
+    assert result["extra"]["unit"] == "ms"
+    assert result["extra"]["delta_value"] == 200.0
+
+
+def test_time_difference_to_expert_alias_is_not_used():
+    df = pd.DataFrame(
+        {"expert_time_difference": [100.0, 150.0, 225.0, 300.0]},
         index=[10, 11, 12, 13],
     )
 
     result = _query_compute_slope(df, 10, 13, "time_difference_to_expert")
 
-    assert result is not None
-    assert result["extra"]["unit"] == "ms"
-    assert result["extra"]["delta_value"] == 200.0
+    assert result is None
 
 
 def test_straight_segment_shape_does_not_emit_corner_or_altitude_labels():
