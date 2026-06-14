@@ -113,7 +113,7 @@ AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
         "description": (
             "Player and expert z-position over segment index. "
             "Expert-anchored entry/apex/exit markers show where altitude "
-            "should be read for ST entry/apex/exit altitude labels."
+            "should be read for entry/apex/exit altitude descriptions."
         ),
     },
     {
@@ -367,6 +367,37 @@ def _detect_expert_phases(
     return phases, window
 
 
+def _segment_type_label(**filters: Any) -> Dict[str, Any]:
+    from app.internal_knowledge_base.label_lookup import find_labels
+
+    matches = find_labels(type="segment_type", **filters)
+    if len(matches) != 1:
+        raise RuntimeError(
+            "segment_type knowledge lookup expected exactly one label for "
+            f"{filters!r}, found {len(matches)}"
+        )
+    doc = matches[0]
+    if not doc.get("id") or not doc.get("name"):
+        raise RuntimeError(
+            "segment_type knowledge lookup returned a label without id/name "
+            f"for {filters!r}"
+        )
+    return doc
+
+
+def _segment_type_label_result(
+    *,
+    reason: str,
+    **filters: Any,
+) -> Dict[str, Any]:
+    doc = _segment_type_label(**filters)
+    return {
+        "label_id": doc["id"],
+        "label_name": doc["name"],
+        "reason": reason,
+    }
+
+
 def compute_expert_phases(
     df: pd.DataFrame, start_index: int, end_index: int,
 ):
@@ -426,11 +457,11 @@ def _classify_base_segment_shape(
     n_rows: int,
 ) -> Dict[str, Any]:
     if not phases:
-        return {
-            "label_id": "ST2",
-            "label_name": "On the straight",
-            "reason": "No expert curvature arc cleared the corner threshold.",
-        }
+        return _segment_type_label_result(
+            segment_type_role="base_segment_shape",
+            shape_key="straight",
+            reason="No expert curvature arc cleared the corner threshold.",
+        )
 
     if len(phases) >= 2:
         gaps = [
@@ -438,19 +469,19 @@ def _classify_base_segment_shape(
             for i in range(len(phases) - 1)
         ]
         close_gap = max(4, int(0.15 * max(n_rows, 1)))
-        label_id = "ST6" if gaps and max(gaps) <= close_gap else "ST5"
-        label_name = (
-            "Consecutive corners with no straight in between"
-            if label_id == "ST6" else "Between consecutive corners"
+        shape_key = (
+            "consecutive_corners_no_straight"
+            if gaps and max(gaps) <= close_gap
+            else "between_consecutive_corners"
         )
-        return {
-            "label_id": label_id,
-            "label_name": label_name,
-            "reason": (
+        return _segment_type_label_result(
+            segment_type_role="base_segment_shape",
+            shape_key=shape_key,
+            reason=(
                 f"{len(phases)} expert curvature arcs detected; "
                 f"inter-arc gaps={gaps} ilocs."
             ),
-        }
+        )
 
     phase = phases[0]
     entry = int(phase["entry"])
@@ -459,24 +490,23 @@ def _classify_base_segment_shape(
     exit_frac = exit_ / max(n_rows - 1, 1)
 
     if entry_frac <= 0.15 and exit_frac >= 0.85:
-        label_id = "ST1"
+        shape_key = "in_corner"
         reason = "One curvature arc spans most of the segment."
     elif entry_frac > 0.25:
-        label_id = "ST3"
+        shape_key = "approach_to_corner"
         reason = "Segment starts before the detected curvature arc."
     elif exit_frac < 0.75:
-        label_id = "ST4"
+        shape_key = "exit_corner_to_straight"
         reason = "Detected curvature arc ends before the segment exit."
     else:
-        label_id = "ST1"
+        shape_key = "in_corner"
         reason = "One curvature arc dominates the segment."
 
-    names = {
-        "ST1": "In the corner",
-        "ST3": "Approach to corner",
-        "ST4": "Exit corner leading to straight",
-    }
-    return {"label_id": label_id, "label_name": names[label_id], "reason": reason}
+    return _segment_type_label_result(
+        segment_type_role="base_segment_shape",
+        shape_key=shape_key,
+        reason=reason,
+    )
 
 
 def _turn_angle_degrees(dx: np.ndarray, dy: np.ndarray, entry: int, exit_: int) -> float:
@@ -517,11 +547,11 @@ def _classify_corner_shape_refinement(
     if len(phases) >= 2:
         directions = {str(p.get("direction")) for p in phases}
         if len(directions) >= 2:
-            return {
-                "label_id": "ST11",
-                "label_name": "Chicane or esses",
-                "reason": "Multiple expert curvature arcs with direction change.",
-            }
+            return _segment_type_label_result(
+                segment_type_role="corner_shape_refinement",
+                shape_key="chicane_or_esses",
+                reason="Multiple expert curvature arcs with direction change.",
+            )
 
     primary = max(phases, key=lambda p: abs(float(p.get("kappa_peak", 0.0))))
     entry = int(primary["entry"])
@@ -531,11 +561,11 @@ def _classify_corner_shape_refinement(
 
     turn_deg = _turn_angle_degrees(dx, dy, entry, exit_)
     if turn_deg >= 135.0:
-        return {
-            "label_id": "ST10",
-            "label_name": "Hairpin corner",
-            "reason": f"Estimated direction change is {turn_deg:.1f} degrees.",
-        }
+        return _segment_type_label_result(
+            segment_type_role="corner_shape_refinement",
+            shape_key="hairpin",
+            reason=f"Estimated direction change is {turn_deg:.1f} degrees.",
+        )
 
     arc_k = np.abs(kappa[entry: exit_ + 1])
     arc_k = arc_k[np.isfinite(arc_k)]
@@ -548,27 +578,27 @@ def _classify_corner_shape_refinement(
     denom = max(first, last, _KAPPA_FLOOR)
     rel_change = (last - first) / denom
     if abs(rel_change) <= 0.25:
-        label_id = "ST7"
-        label_name = "Constant-radius corner"
+        shape_key = "constant_radius"
         reason = "Curvature stays broadly steady from entry to exit."
     elif rel_change < 0:
-        label_id = "ST8"
-        label_name = "Increasing-radius corner"
+        shape_key = "increasing_radius"
         reason = "Curvature decreases toward exit, so radius opens up."
     else:
-        label_id = "ST9"
-        label_name = "Decreasing-radius corner"
+        shape_key = "decreasing_radius"
         reason = "Curvature increases toward exit, so radius tightens."
 
-    return {
-        "label_id": label_id,
-        "label_name": label_name,
-        "reason": reason,
+    out = _segment_type_label_result(
+        segment_type_role="corner_shape_refinement",
+        shape_key=shape_key,
+        reason=reason,
+    )
+    out.update({
         "entry_median_abs_curvature": first,
         "exit_median_abs_curvature": last,
         "relative_curvature_change": float(rel_change),
         "turn_angle_degrees": turn_deg,
-    }
+    })
+    return out
 
 
 def _altitude_columns(df: pd.DataFrame) -> List[str]:
@@ -620,7 +650,7 @@ def measure_segment_shape(
 
     Uses expert-anchored curvature phases for base shape and corner-shape
     refinements, then reads z-position trends over entry / apex / exit
-    windows to suggest ST12-ST20 altitude labels.
+    windows to expose subsegment-only altitude label candidates.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
 
@@ -641,10 +671,12 @@ def measure_segment_shape(
             "apex": None,
             "exit": None,
             "labels": [],
+            "subsegment_label_candidates": [],
         },
         "label_selection_rules": [
-            "Use exactly one base_segment_shape label when adding ST labels.",
-            "Use corner_shape_refinement and altitude labels only when phases is non-empty.",
+            "Use exactly one base_segment_shape label when adding segment_type labels.",
+            "Use corner_shape_refinement only when phases is non-empty.",
+            "Do not attach altitude candidates to a lap parent segment; they are subsegment-only labels.",
         ],
         "phases": [],
     }
@@ -678,22 +710,6 @@ def measure_segment_shape(
             "apex": (apex - apex_half_window, apex + apex_half_window + 1),
             "exit": (int(exit_phase["apex"]), int(exit_phase["exit"]) + 1),
         }
-        label_map = {
-            "entry": {"uphill": "ST12", "level": "ST13", "downhill": "ST14"},
-            "apex": {"uphill": "ST15", "level": "ST16", "downhill": "ST17"},
-            "exit": {"uphill": "ST18", "level": "ST19", "downhill": "ST20"},
-        }
-        label_names = {
-            "ST12": "Entry altitude uphill",
-            "ST13": "Entry altitude level",
-            "ST14": "Entry altitude downhill",
-            "ST15": "Apex altitude uphill",
-            "ST16": "Apex altitude level",
-            "ST17": "Apex altitude downhill",
-            "ST18": "Exit altitude uphill",
-            "ST19": "Exit altitude level",
-            "ST20": "Exit altitude downhill",
-        }
         shape["altitude"]["source_column"] = alt_col
         for phase_name, (lo, hi) in spans.items():
             summary = _altitude_phase_summary(alt, lo, hi)
@@ -702,16 +718,27 @@ def measure_segment_shape(
             summary["start_iloc"] = int(summary.pop("start_offset")) + start
             summary["end_iloc"] = int(summary.pop("end_offset")) + start
             trend = str(summary["trend"])
-            label_id = label_map[phase_name][trend]
-            summary["label_id"] = label_id
-            summary["label_name"] = label_names[label_id]
-            shape["altitude"][phase_name] = summary
-            shape["altitude"]["labels"].append({
-                "label_id": label_id,
-                "label_name": label_names[label_id],
+            label_doc = _segment_type_label(
+                segment_type_role="corner_altitude",
+                corner_phase=phase_name,
+                altitude_trend=trend,
+            )
+            if label_doc.get("lap_parent_allowed") is not False:
+                raise RuntimeError(
+                    "corner_altitude knowledge label must declare "
+                    "lap_parent_allowed=false"
+                )
+            candidate = {
+                "label_id": label_doc["id"],
+                "label_name": label_doc["name"],
                 "phase": phase_name,
                 "trend": trend,
-            })
+                "annotation_scope": label_doc.get("annotation_scope"),
+                "lap_parent_allowed": label_doc["lap_parent_allowed"],
+            }
+            summary["subsegment_label_candidate"] = candidate
+            shape["altitude"][phase_name] = summary
+            shape["altitude"]["subsegment_label_candidates"].append(candidate)
 
     return PipelineAttachment(
         name="segment_shape_measurement",
@@ -3088,14 +3115,14 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Segment shape + altitude measurement",
         "description": (
             "Measures expert-anchored curvature and z-position over the "
-            "segment to suggest ST labels. Produces a "
+            "segment to suggest segment-type labels. Produces a "
             "'segment_shape_measurement' attachment with `base_segment_shape` "
-            "(ST1-ST6), optional `corner_shape_refinement` (ST7-ST11), "
-            "entry / apex / exit altitude summaries, and suggested "
-            "altitude labels (ST12-ST20). Use exactly one base ST label; "
-            "only use corner-shape or altitude ST labels when the returned "
-            "`phases` list is non-empty. Use this whenever deciding "
-            "corner shape or altitude ST labels."
+            "and optional `corner_shape_refinement` resolved from the "
+            "internal knowledge base, plus entry / apex / exit altitude "
+            "summaries. Altitude entries expose subsegment-only candidates "
+            "from the knowledge base; do not attach them to lap parent "
+            "segments. Use this whenever deciding segment shape or reading "
+            "corner altitude trends."
         ),
         "callable": measure_segment_shape,
     },

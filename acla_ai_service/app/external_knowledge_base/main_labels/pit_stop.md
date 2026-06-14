@@ -7,7 +7,10 @@ technique.
 ## When this applies
 Segments inside the pit-lane region of the track, including the approach
 (speed reduction onto pit entry) and the exit (acceleration back onto
-track speed). Stationary time during a stop is also a pit stop.
+track speed). Stationary time during a stop is also a pit stop. If direct
+pit flags are missing, the segment position must still be compatible with
+the circuit's known pit entry, pit lane, or pit-exit corridor; speed and
+trajectory shape alone are not enough.
 
 ## How to read pit-stop segments
 Most analysis is not useful here because the pit-lane speed limit and

@@ -84,8 +84,8 @@
     "PS": {
       "name": "Pit Stop",
       "type": "main",
-      "description": "Driver entering, waiting in, or exiting the pit lane. Look for dramatic speed reduction, trajectory deviation into the pit lane, pit-limiter speed, `Physics_pit_limiter_on`, `Graphics_is_in_pit_lane`, or `Graphics_is_in_pit`.\n",
-      "annotation_guideline": "How to identify the sublabels for Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Use PS for pit-lane procedure, not RM. Add PS1 when the segment is specifically pit exit: pit-limiter speed transitions into acceleration back toward track speed after leaving the pit lane.\n",
+      "description": "Driver entering, waiting in, or exiting the pit lane. Prefer direct pit-state signals: `Physics_pit_limiter_on`, `Graphics_is_in_pit_lane`, or `Graphics_is_in_pit`. Without those signals, require position evidence that the segment overlaps the circuit's known pit entry, pit lane, or pit-exit corridor; dramatic speed reduction, trajectory deviation, pit-limiter speed, or acceleration back toward track speed are supporting evidence only after the position check passes.\n",
+      "annotation_guideline": "How to identify the sublabels for Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Use PS for pit-lane procedure, not RM. First verify direct pit flags or compatible pit-entry/pit-lane/pit-exit position. Add PS1 when the segment is specifically pit exit: pit-limiter speed transitions into acceleration back toward track speed after leaving the pit lane, and the position is compatible with pit exit.\n",
       "parent": null,
       "children": [
         "PS1"
@@ -212,7 +212,7 @@
     "PS1": {
       "name": "Exit pit lane",
       "type": "sub",
-      "description": "Driver re-joining the track after a pit stop - the speed trace rises from pit-limiter speed (an **acceleration onset** well below normal corner-exit speed), pit-lane flags switch off, and the car follows the pit-exit path back toward track speed. This is pit procedure, not recovery from a mistake.\n",
+      "description": "Driver re-joining the track after a pit stop - the segment position overlaps the circuit's pit-exit corridor, the speed trace rises from pit-limiter speed (an **acceleration onset** well below normal corner-exit speed), pit-lane flags switch off when available, and the car follows the pit-exit path back toward track speed. This is pit procedure, not recovery from a mistake. Do not infer PS1 from low speed plus wide trajectory alone when the position is a normal racing section away from pit exit.\n",
       "parent": "PS",
       "children": [],
       "exclusive_with": []
@@ -933,6 +933,9 @@
     "ST1": {
       "name": "In the corner",
       "type": "segment_type",
+      "segment_type_role": "base_segment_shape",
+      "shape_key": "in_corner",
+      "lap_parent_allowed": true,
       "description": "Full segment covers entire corner — driver turning throughout (single curve, hairpin, continuous arc).",
       "parent": null,
       "children": [],
@@ -947,6 +950,9 @@
     "ST2": {
       "name": "On the straight",
       "type": "segment_type",
+      "segment_type_role": "base_segment_shape",
+      "shape_key": "straight",
+      "lap_parent_allowed": true,
       "description": "Full segment on a straight section — minimal steering, full throttle, minimal curvature.",
       "parent": null,
       "children": [],
@@ -961,6 +967,9 @@
     "ST3": {
       "name": "Approach to corner",
       "type": "segment_type",
+      "segment_type_role": "base_segment_shape",
+      "shape_key": "approach_to_corner",
+      "lap_parent_allowed": true,
       "description": "Full segment only covering the braking zone before a corner — starts straight and begins curving.",
       "parent": null,
       "children": [],
@@ -975,6 +984,9 @@
     "ST4": {
       "name": "Exit corner leading to straight",
       "type": "segment_type",
+      "segment_type_role": "base_segment_shape",
+      "shape_key": "exit_corner_to_straight",
+      "lap_parent_allowed": true,
       "description": "Full segment only covering corner exit leading onto a straight — starts curved, steering decreasing, throttle increasing.",
       "parent": null,
       "children": [],
@@ -989,6 +1001,9 @@
     "ST5": {
       "name": "Between consecutive corners",
       "type": "segment_type",
+      "segment_type_role": "base_segment_shape",
+      "shape_key": "between_consecutive_corners",
+      "lap_parent_allowed": true,
       "description": "Short transition between two corners — brief connection, not a full straight.",
       "parent": null,
       "children": [],
@@ -1003,6 +1018,9 @@
     "ST6": {
       "name": "Consecutive corners with no straight in between",
       "type": "segment_type",
+      "segment_type_role": "base_segment_shape",
+      "shape_key": "consecutive_corners_no_straight",
+      "lap_parent_allowed": true,
       "description": "Multiple corners with no intervening straight (S-shape, chicane, esses).",
       "parent": null,
       "children": [],
@@ -1017,6 +1035,9 @@
     "ST7": {
       "name": "Constant-radius corner",
       "type": "segment_type",
+      "segment_type_role": "corner_shape_refinement",
+      "shape_key": "constant_radius",
+      "lap_parent_allowed": true,
       "description": "Corner shape refinement: the corner keeps a consistent radius from entry through apex to exit, with smooth and steady curvature.",
       "parent": null,
       "children": [],
@@ -1030,6 +1051,9 @@
     "ST8": {
       "name": "Increasing-radius corner",
       "type": "segment_type",
+      "segment_type_role": "corner_shape_refinement",
+      "shape_key": "increasing_radius",
+      "lap_parent_allowed": true,
       "description": "Corner shape refinement: the corner opens up after entry or apex; curvature decreases and radius increases toward exit.",
       "parent": null,
       "children": [],
@@ -1043,6 +1067,9 @@
     "ST9": {
       "name": "Decreasing-radius corner",
       "type": "segment_type",
+      "segment_type_role": "corner_shape_refinement",
+      "shape_key": "decreasing_radius",
+      "lap_parent_allowed": true,
       "description": "Corner shape refinement: the corner tightens from entry toward apex or exit; curvature increases and radius decreases.",
       "parent": null,
       "children": [],
@@ -1056,6 +1083,9 @@
     "ST10": {
       "name": "Hairpin corner",
       "type": "segment_type",
+      "segment_type_role": "corner_shape_refinement",
+      "shape_key": "hairpin",
+      "lap_parent_allowed": true,
       "description": "Corner shape refinement: a very tight slow corner with a large direction change, usually near 180 degrees.",
       "parent": null,
       "children": [],
@@ -1069,6 +1099,9 @@
     "ST11": {
       "name": "Chicane or esses",
       "type": "segment_type",
+      "segment_type_role": "corner_shape_refinement",
+      "shape_key": "chicane_or_esses",
+      "lap_parent_allowed": true,
       "description": "Corner shape refinement: linked left-right or right-left direction changes, including chicanes, esses, and S-bends.",
       "parent": null,
       "children": [],
@@ -1082,6 +1115,11 @@
     "ST12": {
       "name": "Entry altitude uphill",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "entry",
+      "altitude_trend": "uphill",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: the corner entry rises uphill across the entry phase.",
       "parent": null,
       "children": [],
@@ -1093,6 +1131,11 @@
     "ST13": {
       "name": "Entry altitude level",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "entry",
+      "altitude_trend": "level",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: the corner entry is approximately level with no clear uphill or downhill trend.",
       "parent": null,
       "children": [],
@@ -1104,6 +1147,11 @@
     "ST14": {
       "name": "Entry altitude downhill",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "entry",
+      "altitude_trend": "downhill",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: the corner entry drops downhill across the entry phase.",
       "parent": null,
       "children": [],
@@ -1115,6 +1163,11 @@
     "ST15": {
       "name": "Apex altitude uphill",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "apex",
+      "altitude_trend": "uphill",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: altitude is rising through the apex phase.",
       "parent": null,
       "children": [],
@@ -1126,6 +1179,11 @@
     "ST16": {
       "name": "Apex altitude level",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "apex",
+      "altitude_trend": "level",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: altitude is approximately level through the apex phase.",
       "parent": null,
       "children": [],
@@ -1137,6 +1195,11 @@
     "ST17": {
       "name": "Apex altitude downhill",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "apex",
+      "altitude_trend": "downhill",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: altitude is falling through the apex phase.",
       "parent": null,
       "children": [],
@@ -1148,6 +1211,11 @@
     "ST18": {
       "name": "Exit altitude uphill",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "exit",
+      "altitude_trend": "uphill",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: the corner exit rises uphill across the exit phase.",
       "parent": null,
       "children": [],
@@ -1159,6 +1227,11 @@
     "ST19": {
       "name": "Exit altitude level",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "exit",
+      "altitude_trend": "level",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: the corner exit is approximately level with no clear uphill or downhill trend.",
       "parent": null,
       "children": [],
@@ -1170,6 +1243,11 @@
     "ST20": {
       "name": "Exit altitude downhill",
       "type": "segment_type",
+      "segment_type_role": "corner_altitude",
+      "corner_phase": "exit",
+      "altitude_trend": "downhill",
+      "annotation_scope": "subsegment_only",
+      "lap_parent_allowed": false,
       "description": "Altitude refinement: the corner exit drops downhill across the exit phase.",
       "parent": null,
       "children": [],
@@ -1180,6 +1258,6 @@
     }
   },
   "category_guidelines": {
-    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. When altitude evidence is clear, optionally add one entry altitude label from ST12-ST14, one apex altitude label from ST15-ST17, and one exit altitude label from ST18-ST20.\n"
+    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. Entry/apex/exit altitude labels (ST12-ST20) are phase-specific subsegment labels. Do not attach them to a lap parent segment that covers the whole corner; use them only when the annotation range is the matching corner phase subsegment.\n"
   }
 }

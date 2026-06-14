@@ -1,7 +1,8 @@
 ## Definition
 The car is exiting the pit lane and rejoining the racing surface
 — typically at pit-exit speed, accelerating up to track speed
-under the pit-exit line restrictions.
+under the pit-exit line restrictions. If pit flags are unavailable,
+the segment position must overlap the circuit's known pit-exit corridor.
 
 ## Physics
 Pit exit is governed by the pit-exit white line — usually the car
@@ -11,10 +12,15 @@ phase of any stint. The recovery isn't a driving mistake — it's
 a procedural phase.
 
 ## Telemetry signature
+- Segment position is compatible with pit exit.
 - Initial speed at or below pit-lane limit.
 - Throttle climbs from limit-off speed to full as the car exits.
 - Trajectory follows the pit-exit line.
 - Eventually merges into merge back to expert line as the car reaches the expert line.
+
+Do not infer pit exit from low speed plus a wide or merging trajectory
+alone when the segment is located in a normal racing section away from
+pit exit.
 
 ## Engineer interpretation
 Cold tyres, cold brakes. Don't ask the car for everything on the

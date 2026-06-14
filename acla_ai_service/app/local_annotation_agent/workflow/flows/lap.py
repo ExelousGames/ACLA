@@ -381,13 +381,14 @@ def _local_planner_prompt(
         "trigger range refinement or extra opponent-path evidence; "
         "use `find_nearest_opponent` / `query_opponent_trajectory` when "
         "the primary slot's detailed path decides the technique, and",
-        "  3. optionally identify the base segment shape, corner shape, "
-        "and entry/apex/exit altitude if the ST picks would be unambiguous.",
+        "  3. optionally identify the base segment shape and corner shape "
+        "if the segment-type picks would be unambiguous, while recording "
+        "entry/apex/exit altitude only as subsegment evidence.",
         "Keep the plan tight — typically 1-3 describe_graphs steps plus a "
         "label_verifier. `trajectory_offset` + `time_delta` are the two "
         "diagnostic graphs called out by the skill; add `altitude_profile` "
-        "and `measure_segment_shape` when deciding ST altitude or corner "
-        "shape labels.",
+        "and `measure_segment_shape` when deciding segment shape or reading "
+        "altitude trends.",
         "",
         "Plan format: JSON object with a single key \"steps\". Each step:",
         "  - \"step_id\": integer (1, 2, 3, ...).",
@@ -405,7 +406,7 @@ def _local_planner_prompt(
         '["trajectory_offset", "brake", "throttle"], "tools": '
         '["compute_expert_phases"]},',
         '    {"step_id": 2, "agent": "describe_graphs", "description": '
-        '"Measure trajectory and altitude to pick ST labels.", "requested_graphs": '
+        '"Measure trajectory and altitude for segment-type evidence.", "requested_graphs": '
         '["trajectory_detailed", "altitude_profile"], "tools": '
         '["measure_segment_shape"]},',
         '    {"step_id": 3, "agent": "label_verifier", "description": '
@@ -476,8 +477,10 @@ def _local_synth_prompts(
         f"The shortlist retrieved for this section is: {verified_inline}. "
         "Pick the parent label(s) from this shortlist by matching the "
         "section's telemetry against each candidate's `characteristics` "
-        "block in the skill. ST picks are OPTIONAL — include only labels "
-        "whose shape or altitude evidence is unambiguous. At most ONE of "
+        "block in the skill. Segment-type picks are OPTIONAL — include "
+        "only lap-parent-allowed labels whose base shape or corner-shape "
+        "evidence is unambiguous. Do not include any label whose catalog "
+        "metadata says `lap_parent_allowed: false`. At most ONE of "
         "{EA, MSP, MSR, RM} may be attached.",
         "",
         "#### Output format",
@@ -494,13 +497,15 @@ def _local_synth_prompts(
         "Hard rules:",
         f"- revised_range must satisfy {revision_start} <= start < end <= "
         f"{revision_end} and end - start >= 3.",
-        "- Every main / ST / sub label_id must come from the shortlist "
+        "- Every main / segment-type / sub label_id must come from the shortlist "
         "above; additionally include the circuit id. Include a "
         "circuit_section id only when it was listed under 'Range under "
         "review' or returned by `locate_circuit_section`.",
-        "- For ST labels, include exactly one base ST shape. Add corner "
-        "refinement or altitude ST labels only when `measure_segment_shape` "
-        "returns non-empty `phases` for the final range.",
+        "- For segment-type labels, include exactly one base shape. Add "
+        "corner refinement only when `measure_segment_shape` returns "
+        "non-empty `phases` for the final range. Entry/apex/exit altitude "
+        "candidates are subsegment-only and must not be submitted on this "
+        "lap parent segment.",
         "- An empty label_ids array is the valid 'drop this section' signal.",
     ])
 
@@ -556,8 +561,9 @@ def _tool_agent_task_prompt(
         "rough iloc boundary; if this is an opponent interaction window, "
         "the boundary is event-shaped and circuit sections are context only. "
         "Your job is to pick the circuit id, optional circuit_section id, "
-        "one main label when evidence supports it, optional ST labels, and "
-        "an optional matching sub-label.\n"
+        "one main label when evidence supports it, optional "
+        "lap-parent-allowed segment-type labels, and an optional matching "
+        "sub-label.\n"
         "\n"
         "### Lap context\n"
         f"- Lap range: [{lap_start}, {lap_end}] "
@@ -580,8 +586,10 @@ def _tool_agent_task_prompt(
         "capability IDs with `run_annotation_tool`.\n"
         "3. Discover every non-circuit candidate with `search_labels` using "
         "plain-language observations. Query `types=\"main\"` for the main "
-        "label, `types=\"segment_type\"` for ST labels, and `parent_id` "
-        "for sub-labels under a chosen main label.\n"
+        "label, `types=\"segment_type\"` for segment-type labels, and "
+        "`parent_id` for sub-labels under a chosen main label. Do not "
+        "submit labels whose returned catalog metadata says "
+        "`lap_parent_allowed: false`.\n"
         "4. Tools start scoped to the rough section boundary. When one "
         "main-label signature needs a boundary change, call `revise_range` "
         "inside the allowed revision envelope, then re-check evidence on "
@@ -598,8 +606,8 @@ def _tool_agent_task_prompt(
         "}\n"
         "```\n"
         "`label_ids` carries the circuit id, optional circuit_section id, "
-        "and your main / ST / sub picks together. An empty `label_ids` array "
-        "is a valid 'drop this section' signal. The runner reports back "
+        "and your main / segment-type / sub picks together. An empty "
+        "`label_ids` array is a valid 'drop this section' signal. The runner reports back "
         "the final iloc range (your initial range or whatever "
         "`revise_range` set last).\n"
         "\n"
@@ -615,9 +623,11 @@ def _tool_agent_task_prompt(
         "- For time-delta and offset evidence, cite deterministic tool "
         "verdict fields (unit, materiality, end-window trend); do not "
         "create strength judgments from raw numbers.\n"
-        "- For ST labels, include exactly one base ST shape. Add corner "
-        "refinement or altitude ST labels only when `measure_segment_shape` "
-        "returns non-empty `phases` for the final range.\n"
+        "- For segment-type labels, include exactly one base shape. Add "
+        "corner refinement only when `measure_segment_shape` returns "
+        "non-empty `phases` for the final range. Entry/apex/exit altitude "
+        "candidates are subsegment-only and must not be submitted on this "
+        "lap parent segment.\n"
         "- Sub-labels require their parent main label in `label_ids`.\n"
         "- One proposal per session — do NOT annotate downstream sections.\n"
         "- Budget tool calls: a typical section needs 7-10 calls total."
@@ -969,7 +979,28 @@ def _clean_label_ids(
     raw_label_ids: Any,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     cleaned, rejected, _ = normalize_grouped_label_ids(raw_label_ids)
-    return cleaned, rejected
+    if not cleaned:
+        return cleaned, rejected
+
+    from app.internal_knowledge_base.label_lookup import get_label
+
+    allowed: List[str] = []
+    for label_id in cleaned:
+        doc = get_label(label_id)
+        if doc and (
+            doc.get("lap_parent_allowed") is False
+            or doc.get("annotation_scope") == "subsegment_only"
+        ):
+            rejected.append({
+                "value": label_id,
+                "reason": (
+                    "label catalog marks this label as not allowed on "
+                    "lap parent segments"
+                ),
+            })
+            continue
+        allowed.append(label_id)
+    return allowed, rejected
 
 
 def _with_preselected_interaction_labels(

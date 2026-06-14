@@ -26,6 +26,13 @@ def _shape_for_llm(doc: Dict[str, Any]) -> Dict[str, Any]:
         "type": doc.get("type"),
         "score": round(float(doc.get("score", 0.0)), 4),
     }
+    for key, value in doc.items():
+        if key in row or key in {"id", "name", "type", "description", "score"}:
+            continue
+        if key.startswith("_"):
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            row[key] = value
     if doc.get("parent"):
         row["parent"] = doc["parent"]
     desc = (doc.get("description") or "").strip()
