@@ -97,6 +97,7 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     """Batch provider-selected Lap-to-Segment Excerpter."""
     from .components._lap_agent_shared import (
         track_name_to_circuit_id, run_split, rebuild_remaining_segments,
+        revision_bounds_for_segment,
     )
 
     st.header("Batch Lap-to-Segment Excerpter (AI Provider)")
@@ -239,7 +240,9 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         f"lap=[{int(lap_start)}, {int(lap_end)}], circuit={circuit_id}, "
         f"provider={config.provider_id}")
 
+    existing_annotations = _collect_existing_lap_annotations(int(lap_start), int(lap_end))
     saved_count = 0
+    skipped_count = 0
     error_count = 0
     i = 0
     while i < len(segments):
@@ -247,7 +250,25 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         sec_id = seg["circuit_section_id"]
         sec_start = int(seg["start_index"])
         sec_end = int(seg["end_index"])
+        revision_start, revision_end = revision_bounds_for_segment(
+            segments, i, int(lap_start), int(lap_end), seg,
+        )
         target_suffix = _targeted_car_suffix(seg.get("opponent_interaction"))
+        overlapping_ann = None
+        if not clear_session_segments:
+            overlapping_ann = _find_overlapping_annotation(
+                sec_start, sec_end, existing_annotations,
+            )
+        if overlapping_ann is not None:
+            skipped_count += 1
+            i += 1
+            progress_bar.progress(i / len(segments))
+            log(
+                f"Section #{i - 1} `{sec_id}`{target_suffix}: skipped; "
+                f"existing annotation [{overlapping_ann['start_index']}, "
+                f"{overlapping_ann['end_index']}] overlaps [{sec_start}, {sec_end}]."
+            )
+            continue
 
         status_text.markdown(
             f"**Section #{i + 1}/{len(segments)}** `{sec_id}`"
@@ -266,10 +287,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
                 section_id=sec_id,
                 section_start=sec_start,
                 section_end=sec_end,
+                revision_start=revision_start,
+                revision_end=revision_end,
                 circuit_id=circuit_id,
                 section_split_basis=seg.get("split_basis"),
                 opponent_interaction=seg.get("opponent_interaction"),
-                existing_section_annotations=[],
+                existing_section_annotations=existing_annotations,
             )
         except ClaudeUsageExhausted as e:
             log(f"Section #{i} `{sec_id}`: HALTED — Claude usage exhausted: {e}")
@@ -308,6 +331,11 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         annotations.append(new_ann)
         st.session_state["current_annotations"] = annotations
         save_annotations(session_id, annotations, selected_annotation_key, silent=True)
+        existing_annotations.append({
+            "start_index": int(new_ann.start_index),
+            "end_index": int(new_ann.end_index),
+            "labels": list(new_ann.labels),
+        })
         saved_count += 1
 
         if result.revised:
@@ -333,9 +361,9 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
 
     progress_bar.progress(1.0)
     status_text.markdown(
-        f"**Done.** Saved: {saved_count}, errors: {error_count}."
+        f"**Done.** Saved: {saved_count}, skipped: {skipped_count}, errors: {error_count}."
     )
-    log(f"Finished. {saved_count} saved, {error_count} error(s).")
+    log(f"Finished. {saved_count} saved, {skipped_count} skipped, {error_count} error(s).")
 
     _render_lap_coverage_bar(
         coverage_slot,
@@ -385,6 +413,20 @@ def _compute_interval_coverage(
         if pos < te:
             gaps.append((pos, te))
     return covered, gaps
+
+
+def _find_overlapping_annotation(
+    section_start: int,
+    section_end: int,
+    annotations: list[dict],
+) -> dict | None:
+    for ann in annotations:
+        ann_start = int(ann.get("start_index", 0) or 0)
+        ann_end = int(ann.get("end_index", 0) or 0)
+        if ann_end <= section_start or ann_start >= section_end:
+            continue
+        return ann
+    return None
 
 
 def _render_coverage_bar(

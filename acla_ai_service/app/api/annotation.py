@@ -82,6 +82,8 @@ class _AnnotationRunRequest(BaseModel):
     section_id: Optional[str] = None
     section_start: Optional[int] = None
     section_end: Optional[int] = None
+    revision_start: Optional[int] = None
+    revision_end: Optional[int] = None
     circuit_id: Optional[str] = None
     existing_section_annotations: Optional[List[Dict[str, Any]]] = None
 
@@ -157,6 +159,8 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
             section_id=req.section_id,
             section_start=req.section_start,
             section_end=req.section_end,
+            revision_start=req.revision_start,
+            revision_end=req.revision_end,
             circuit_id=req.circuit_id,
             existing_section_annotations=req.existing_section_annotations,
         )
@@ -286,6 +290,8 @@ async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse
                 section_id=req.section_id,
                 section_start=req.section_start,
                 section_end=req.section_end,
+                revision_start=req.revision_start,
+                revision_end=req.revision_end,
                 circuit_id=req.circuit_id,
                 existing_section_annotations=req.existing_section_annotations,
             )

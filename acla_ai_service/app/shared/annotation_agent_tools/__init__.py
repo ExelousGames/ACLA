@@ -197,6 +197,8 @@ def _make_colored_line_collection(
 
 _KAPPA_FLOOR = 1e-3   # absolute κ below this is treated as noise (matches existing usage in detailed_track_map.py)
 _KAPPA_FRAC = 0.20    # arc threshold = max(_KAPPA_FLOOR, _KAPPA_FRAC * max|κ|)
+_MIN_CORNER_TURN_DEG = 10.0
+_MIN_CORNER_ARC_LENGTH_M = 4.0
 
 
 def _odd(n: int) -> int:
@@ -289,7 +291,7 @@ def _detect_expert_phases(
     kin = _smoothed_expert_kinematics(segment)
     if kin is None:
         return [], 0
-    _x_s, _y_s, _dx, _dy, kappa, window = kin
+    x_s, y_s, dx, dy, kappa, window = kin
     n = len(segment)
 
     # Mask edge samples — convolution edge bias makes them unreliable for peaks.
@@ -332,7 +334,17 @@ def _detect_expert_phases(
         # Arc is [i, j)
         arc_len = j - i
         arc_peak = float(abs_k[i:j].max()) if arc_len > 0 else 0.0
-        if arc_len >= min_arc_len and arc_peak >= 2.0 * _KAPPA_FLOOR:
+        turn_deg = _turn_angle_degrees(dx, dy, i, j - 1)
+        path_len = _arc_path_length_m(x_s, y_s, i, j - 1)
+        is_geometric_corner = (
+            turn_deg >= _MIN_CORNER_TURN_DEG
+            and path_len >= _MIN_CORNER_ARC_LENGTH_M
+        )
+        if (
+            arc_len >= min_arc_len
+            and arc_peak >= 2.0 * _KAPPA_FLOOR
+            and is_geometric_corner
+        ):
             apex_local = i + int(np.argmax(abs_k[i:j]))
             phase: Dict[str, Any] = {
                 "entry": int(i),
@@ -340,6 +352,8 @@ def _detect_expert_phases(
                 "exit": int(j - 1),
                 "direction": "left" if kappa[apex_local] > 0 else "right",
                 "kappa_peak": float(kappa[apex_local]),
+                "turn_angle_degrees": float(turn_deg),
+                "arc_length_m": float(path_len),
             }
             if speed is not None and np.isfinite(speed[i:j]).any():
                 ms = i + int(np.nanargmin(speed[i:j]))
@@ -474,6 +488,21 @@ def _turn_angle_degrees(dx: np.ndarray, dy: np.ndarray, entry: int, exit_: int) 
     if angles.size < 2:
         return 0.0
     return float(abs(angles[-1] - angles[0]) * 180.0 / np.pi)
+
+
+def _arc_path_length_m(x: np.ndarray, y: np.ndarray, entry: int, exit_: int) -> float:
+    if exit_ <= entry or x.size == 0 or y.size == 0:
+        return 0.0
+    lo = max(0, min(entry, x.size - 1))
+    hi = max(0, min(exit_, x.size - 1))
+    if hi <= lo:
+        return 0.0
+    dx = np.diff(x[lo: hi + 1])
+    dy = np.diff(y[lo: hi + 1])
+    finite = np.isfinite(dx) & np.isfinite(dy)
+    if not finite.any():
+        return 0.0
+    return float(np.sqrt(dx[finite] * dx[finite] + dy[finite] * dy[finite]).sum())
 
 
 def _classify_corner_shape_refinement(
@@ -613,6 +642,10 @@ def measure_segment_shape(
             "exit": None,
             "labels": [],
         },
+        "label_selection_rules": [
+            "Use exactly one base_segment_shape label when adding ST labels.",
+            "Use corner_shape_refinement and altitude labels only when phases is non-empty.",
+        ],
         "phases": [],
     }
 
@@ -3059,7 +3092,9 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "'segment_shape_measurement' attachment with `base_segment_shape` "
             "(ST1-ST6), optional `corner_shape_refinement` (ST7-ST11), "
             "entry / apex / exit altitude summaries, and suggested "
-            "altitude labels (ST12-ST20). Use this whenever deciding "
+            "altitude labels (ST12-ST20). Use exactly one base ST label; "
+            "only use corner-shape or altitude ST labels when the returned "
+            "`phases` list is non-empty. Use this whenever deciding "
             "corner shape or altitude ST labels."
         ),
         "callable": measure_segment_shape,
@@ -3190,11 +3225,24 @@ def _canonical_column(column: str) -> str:
     return _COLUMN_ALIASES.get(column, column)
 
 
+def _column_candidates(column: str) -> List[str]:
+    canonical = _canonical_column(column)
+    candidates = [canonical]
+    for alias, target in _COLUMN_ALIASES.items():
+        if target == canonical and alias not in candidates:
+            candidates.append(alias)
+    if column not in candidates:
+        candidates.append(column)
+    return candidates
+
+
 def _resolve_column(column: str, segment: pd.DataFrame) -> Optional[np.ndarray]:
-    column = _canonical_column(column)
-    if not column or column not in segment.columns:
+    if not column:
         return None
-    return segment[column].to_numpy(dtype=float)
+    for candidate in _column_candidates(column):
+        if candidate in segment.columns:
+            return segment[candidate].to_numpy(dtype=float)
+    return None
 
 
 _COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {

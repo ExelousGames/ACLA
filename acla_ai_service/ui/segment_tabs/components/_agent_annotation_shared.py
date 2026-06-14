@@ -500,11 +500,12 @@ def render_staged_review(
 
             default_notes = "; ".join(
                 a.get("reasoning", "") for a in anns if a.get("reasoning")
-            )[:500]
-            seg_notes = st.text_input(
+            )
+            seg_notes = st.text_area(
                 "Notes (optional)",
                 value=default_notes,
                 key=f"agent_staged_notes_{i}",
+                height=140,
             )
 
             staged_segments.append({

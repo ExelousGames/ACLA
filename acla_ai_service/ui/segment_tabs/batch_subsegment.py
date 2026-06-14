@@ -50,7 +50,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
         label_ids = [a["label_id"] for a in anns if a.get("label_id") in LABEL_MAPPING]
         if not label_ids:
             continue
-        notes = "; ".join(a.get("reasoning", "") for a in anns if a.get("reasoning"))[:500]
+        notes = "; ".join(a.get("reasoning", "") for a in anns if a.get("reasoning"))
         new_children.append(build_segment(
             df,
             start=int(gs),

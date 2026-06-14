@@ -166,6 +166,8 @@ def run_annotation(
     section_id: Optional[str] = None,
     section_start: Optional[int] = None,
     section_end: Optional[int] = None,
+    revision_start: Optional[int] = None,
+    revision_end: Optional[int] = None,
     circuit_id: Optional[str] = None,
     section_split_basis: Optional[str] = None,
     opponent_interaction: Optional[dict] = None,
@@ -206,15 +208,33 @@ def run_annotation(
     if flow == "lap":
         required_lap_start = _require(lap_start, "lap_start")
         required_lap_end = _require(lap_end, "lap_end")
+        required_section_start = _require(section_start, "section_start")
+        required_section_end = _require(section_end, "section_end")
+        bounded_start = (
+            required_section_start if revision_start is None else int(revision_start)
+        )
+        bounded_end = (
+            required_section_end if revision_end is None else int(revision_end)
+        )
+        bounded_start = max(
+            required_lap_start, min(bounded_start, required_section_start)
+        )
+        bounded_end = min(
+            required_lap_end, max(bounded_end, required_section_end)
+        )
+        if bounded_end <= bounded_start:
+            bounded_start, bounded_end = required_section_start, required_section_end
         return _run_lap(
             provider_id=config.provider_id,
             prompt_mode=provider.prompt_mode,
-            df=_bounded_df(df, required_lap_start, required_lap_end),
+            df=_bounded_df(df, bounded_start, bounded_end),
             lap_start=required_lap_start,
             lap_end=required_lap_end,
             section_id=_require(section_id, "section_id"),
-            section_start=_require(section_start, "section_start"),
-            section_end=_require(section_end, "section_end"),
+            section_start=required_section_start,
+            section_end=required_section_end,
+            revision_start=bounded_start,
+            revision_end=bounded_end,
             circuit_id=_require(circuit_id, "circuit_id"),
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
@@ -270,6 +290,8 @@ def _run_lap(
     section_id: str,
     section_start: int,
     section_end: int,
+    revision_start: int,
+    revision_end: int,
     circuit_id: str,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
@@ -287,6 +309,8 @@ def _run_lap(
         section_id=section_id,
         section_start=section_start,
         section_end=section_end,
+        revision_start=revision_start,
+        revision_end=revision_end,
         circuit_id=circuit_id,
         section_split_basis=section_split_basis,
         opponent_interaction=opponent_interaction,
@@ -307,6 +331,8 @@ def _run_lap(
         section_id=section_id,
         section_start=section_start,
         section_end=section_end,
+        revision_start=revision_start,
+        revision_end=revision_end,
         circuit_id=circuit_id,
         opponent_interaction=opponent_interaction,
     )

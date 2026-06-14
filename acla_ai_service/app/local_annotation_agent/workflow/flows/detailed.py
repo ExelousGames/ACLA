@@ -270,6 +270,9 @@ def _local_synth_prompts(
         "establish (or fail to establish) the predicate + qualifiers. "
         "When \"proved\" is false, name the specific qualifier that is "
         "unmet or contradicted.",
+        "- Write \"reasoning\" as a human annotation note: 2-4 concise "
+        "sentences that include the key ilocs/ranges, values/trends, "
+        "tool verdicts, and why those facts support this child range.",
         "- The top-level JSON has a single key \"labels\" whose value "
         "is a flat list of entries. Do not wrap the list in any other "
         "container.",
@@ -372,7 +375,7 @@ def _tool_agent_task_prompt(
         '      "label_id": "<a label_id returned by search_labels>",\n'
         f'      "start_index": <int in [{parent_start}, {parent_end}]>,\n'
         f'      "end_index": <int in [{parent_start}, {parent_end}]>,\n'
-        '      "reasoning": "<cite ilocs and values>"\n'
+        '      "reasoning": "<2-4 sentence human-readable evidence note citing ilocs, values, trends, and tool verdicts>"\n'
         '    }\n'
         "  ]\n"
         "}\n"
@@ -387,6 +390,10 @@ def _tool_agent_task_prompt(
         "- For time-delta and offset evidence, cite deterministic tool "
         "verdict fields (unit, materiality, end-window trend); do not "
         "create strength judgments from raw numbers.\n"
+        "- Make each `reasoning` field a human annotation note: 2-4 "
+        "concise sentences with the key ilocs/ranges, values/trends, "
+        "tool verdicts, and why those facts support the proposed child "
+        "range.\n"
         "- Do not propose ranges that exactly match an already-discovered sub-segment.\n"
         "- After `submit_result` returns `ok: true`, stop calling tools."
     )

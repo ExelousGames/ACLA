@@ -127,7 +127,7 @@ ANNOTATION_TOOL_REGISTRY: List[Dict[str, Any]] = [
     },
     {
         "name": "peek_graph",
-        "description": "Render one graph for lap-context outside the working section.",
+        "description": "Render one graph over the current working range without changing it.",
         "params_schema": {"graph_id": str, "start": int, "end": int},
         "openai_properties": {
             "graph_id": {"type": "string"},
@@ -385,22 +385,45 @@ class AnnotationToolSurface:
         self.request = request
         self.capture = capture
 
+    def _revision_bounds(self) -> tuple[int, int]:
+        raw = self.request.extra_state.get("tool_agent_revision_bounds") or {}
+        try:
+            start = int(raw.get("start", self.request.parent_start))
+            end = int(raw.get("end", self.request.parent_end))
+        except (TypeError, ValueError):
+            start = int(self.request.parent_start)
+            end = int(self.request.parent_end)
+        if end <= start:
+            return int(self.request.parent_start), int(self.request.parent_end)
+        return start, end
+
+    def _current_window(self) -> tuple[int, int]:
+        bound_start, bound_end = self._revision_bounds()
+        start = max(bound_start, int(self.capture.cur_start))
+        end = min(bound_end, int(self.capture.cur_end))
+        if end <= start:
+            return bound_start, bound_end
+        return start, end
+
     def _clamp_to_window(self, s: int, e: int) -> tuple[int, int]:
-        lo = min(self.capture.cur_start, self.request.parent_start)
-        hi = max(self.capture.cur_end, self.request.parent_end)
+        lo, hi = self._current_window()
         s2 = max(lo, int(s))
         e2 = min(hi, int(e))
         if e2 <= s2:
             e2 = min(hi, s2 + 1)
         return s2, e2
 
-    def _clamp_to_lap(self, s: int, e: int) -> tuple[int, int]:
-        n = len(self.df)
-        s2 = max(0, int(s))
-        e2 = min(n, int(e))
-        if e2 <= s2:
-            e2 = min(n, s2 + 1)
-        return s2, e2
+    def _clamp_query_params_to_window(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        out = dict(params)
+        raw_range = out.get("range")
+        if isinstance(raw_range, (list, tuple)) and len(raw_range) == 2:
+            try:
+                out["range"] = list(self._clamp_to_window(
+                    int(raw_range[0]), int(raw_range[1]),
+                ))
+            except (TypeError, ValueError):
+                pass
+        return out
 
     def _emit_tool_event(self, name: str, inp: Dict[str, Any], summary: str) -> None:
         inp_str = json.dumps(inp, default=str)
@@ -549,7 +572,7 @@ class AnnotationToolSurface:
 
     def peek_graph(self, graph_id: str, start: int, end: int) -> Dict[str, Any]:
         from app.shared.annotation_agent_tools import build_graph, render_graph_builds
-        s, e = self._clamp_to_lap(start, end)
+        s, e = self._clamp_to_window(start, end)
         table = build_graph(graph_id, self.df)
         if table is None or table.empty:
             return {
@@ -595,6 +618,7 @@ class AnnotationToolSurface:
             return json.dumps({"error": f"params_json was not valid JSON: {exc}"})
         if not isinstance(params, dict):
             return json.dumps({"error": "params_json must decode to a JSON object."})
+        params = self._clamp_query_params_to_window(params)
         payload, err = run_pipeline_query(self.df, query_id, params)
         out = {"query": query_id, "params": params, "result": payload}
         if err:
@@ -639,10 +663,27 @@ class AnnotationToolSurface:
 
     def revise_range(self, new_start: int, new_end: int) -> str:
         s, e = int(new_start), int(new_end)
+        bound_start, bound_end = self._revision_bounds()
         if e <= s:
             return json.dumps({"ok": False, "error": f"new range [{s}, {e}] requires start < end"})
         if (e - s) < 5:
             return json.dumps({"ok": False, "error": f"new range too short ({e - s} ilocs) - minimum 5 required"})
+        if s < bound_start or e > bound_end:
+            return json.dumps({
+                "ok": False,
+                "error": (
+                    f"new range [{s}, {e}] is outside the allowed revision "
+                    f"envelope [{bound_start}, {bound_end}]"
+                ),
+            })
+        if e <= self.capture.cur_start or s >= self.capture.cur_end:
+            return json.dumps({
+                "ok": False,
+                "error": (
+                    "new range must overlap the current working range "
+                    f"[{self.capture.cur_start}, {self.capture.cur_end}]"
+                ),
+            })
         self.capture.cur_start = s
         self.capture.cur_end = e
         self.capture.revised = True
@@ -746,6 +787,15 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         else ""
     )
 
+    bounds = request.extra_state.get("tool_agent_revision_bounds") or {}
+    revision_line = ""
+    if bounds:
+        revision_line = (
+            f"Allowed revision envelope: [{bounds.get('start')}, "
+            f"{bounds.get('end')}]. Tools inspect only the current working "
+            "range until revise_range successfully changes it.\n"
+        )
+
     return (
         "You are an analyst with agentic access to a domain dataset via tools. "
         "Your task is described in the user message. Inspect the data, run "
@@ -757,6 +807,7 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         "guessing from memory. Use `revise_range` only when the evidence "
         "requires a boundary change, and finish with `submit_result`.\n\n"
         f"Initial range: [{request.parent_start}, {request.parent_end}]. "
+        f"{revision_line}"
         "Do not invent identifiers. Use only IDs, labels, and categories the "
         "user message authorizes. Budget tool calls. After submit_result "
         "returns ok: true, do not call more tools.\n"

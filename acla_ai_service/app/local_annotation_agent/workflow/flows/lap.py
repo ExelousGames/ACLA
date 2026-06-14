@@ -102,6 +102,24 @@ def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
 LOGGER = logging.getLogger(__name__)
 
 
+def _normalise_revision_bounds(
+    *,
+    lap_start: int,
+    lap_end: int,
+    section_start: int,
+    section_end: int,
+    revision_start: Optional[int],
+    revision_end: Optional[int],
+) -> Tuple[int, int]:
+    start = section_start if revision_start is None else int(revision_start)
+    end = section_end if revision_end is None else int(revision_end)
+    start = max(int(lap_start), min(start, int(section_start)))
+    end = min(int(lap_end), max(end, int(section_end)))
+    if end <= start:
+        return int(section_start), int(section_end)
+    return int(start), int(end)
+
+
 def _interaction_section_context(
     opponent_interaction: Optional[dict],
 ) -> List[Dict[str, Any]]:
@@ -265,6 +283,8 @@ def _local_planner_prompt(
     section_id: str,
     section_start: int,
     section_end: int,
+    revision_start: int,
+    revision_end: int,
     circuit_id: str,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
@@ -330,6 +350,7 @@ def _local_planner_prompt(
         ),
         f"- rough iloc boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})",
+        f"- allowed revision envelope: [{revision_start}, {revision_end}]",
         f"- split basis: {section_split_basis or 'circuit_section'}",
         existing_block,
         interaction_focus,
@@ -404,6 +425,8 @@ def _local_synth_prompts(
     section_id: str,
     section_start: int,
     section_end: int,
+    revision_start: int,
+    revision_end: int,
     circuit_id: str,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
@@ -440,6 +463,7 @@ def _local_synth_prompts(
         f"- circuit id: `{circuit_id}` "
         "(from Static_track; include it in label_ids)",
         f"- rough iloc boundary: [{section_start}, {section_end}]",
+        f"- allowed revision envelope: [{revision_start}, {revision_end}]",
         f"- split basis: {section_split_basis or 'circuit_section'}",
         f"- lap range: [{lap_start}, {lap_end}]",
         interaction_focus,
@@ -468,12 +492,15 @@ def _local_synth_prompts(
         "}",
         "```",
         "Hard rules:",
-        f"- revised_range must satisfy {lap_start} <= start < end <= "
-        f"{lap_end} and end - start >= 3.",
+        f"- revised_range must satisfy {revision_start} <= start < end <= "
+        f"{revision_end} and end - start >= 3.",
         "- Every main / ST / sub label_id must come from the shortlist "
         "above; additionally include the circuit id. Include a "
         "circuit_section id only when it was listed under 'Range under "
         "review' or returned by `locate_circuit_section`.",
+        "- For ST labels, include exactly one base ST shape. Add corner "
+        "refinement or altitude ST labels only when `measure_segment_shape` "
+        "returns non-empty `phases` for the final range.",
         "- An empty label_ids array is the valid 'drop this section' signal.",
     ])
 
@@ -491,6 +518,8 @@ def _tool_agent_task_prompt(
     lap_end: int,
     section_start: int,
     section_end: int,
+    revision_start: int,
+    revision_end: int,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
     existing_section_annotations: List[dict],
@@ -535,6 +564,7 @@ def _tool_agent_task_prompt(
         f"(length {lap_end - lap_start})\n"
         f"- Rough section boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})\n"
+        f"- Allowed revision envelope: [{revision_start}, {revision_end}]\n"
         f"- Split basis: {section_split_basis or 'circuit_section'}\n"
         f"{preselected_section_block}"
         f"{existing_block}"
@@ -552,9 +582,10 @@ def _tool_agent_task_prompt(
         "plain-language observations. Query `types=\"main\"` for the main "
         "label, `types=\"segment_type\"` for ST labels, and `parent_id` "
         "for sub-labels under a chosen main label.\n"
-        "4. When one main-label signature only fits part of the rough "
-        "range, call `revise_range`, then re-check the evidence on the new "
-        "range before submitting.\n"
+        "4. Tools start scoped to the rough section boundary. When one "
+        "main-label signature needs a boundary change, call `revise_range` "
+        "inside the allowed revision envelope, then re-check evidence on "
+        "the new range before submitting.\n"
         "5. Call `submit_result` once with the chosen IDs and stop after it "
         "returns `ok: true`.\n"
         "\n"
@@ -573,7 +604,7 @@ def _tool_agent_task_prompt(
         "`revise_range` set last).\n"
         "\n"
         "### Hard rules\n"
-        f"- Final range must satisfy {lap_start} <= start < end <= {lap_end} and be ≥ 3 ilocs.\n"
+        f"- Final range must satisfy {revision_start} <= start < end <= {revision_end} and be ≥ 3 ilocs.\n"
         "- Do not invent label IDs; circuit / circuit_section ids must come "
         "from capability results, every other id from a `search_labels` "
         "response.\n"
@@ -584,6 +615,9 @@ def _tool_agent_task_prompt(
         "- For time-delta and offset evidence, cite deterministic tool "
         "verdict fields (unit, materiality, end-window trend); do not "
         "create strength judgments from raw numbers.\n"
+        "- For ST labels, include exactly one base ST shape. Add corner "
+        "refinement or altitude ST labels only when `measure_segment_shape` "
+        "returns non-empty `phases` for the final range.\n"
         "- Sub-labels require their parent main label in `label_ids`.\n"
         "- One proposal per session — do NOT annotate downstream sections.\n"
         "- Budget tool calls: a typical section needs 7-10 calls total."
@@ -606,6 +640,8 @@ def build_request(
     section_start: int,
     section_end: int,
     circuit_id: str,
+    revision_start: Optional[int] = None,
+    revision_end: Optional[int] = None,
     section_split_basis: Optional[str] = None,
     opponent_interaction: Optional[dict] = None,
     existing_section_annotations: Optional[List[dict]] = None,
@@ -616,6 +652,14 @@ def build_request(
     existing_section_annotations = list(existing_section_annotations or [])
     config = config or ProviderConfig(provider_id=provider_id)
     callbacks = callbacks or NoopCallbacks()
+    revision_start, revision_end = _normalise_revision_bounds(
+        lap_start=lap_start,
+        lap_end=lap_end,
+        section_start=section_start,
+        section_end=section_end,
+        revision_start=revision_start,
+        revision_end=revision_end,
+    )
 
     section_name = LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
 
@@ -627,6 +671,8 @@ def build_request(
         content={
             "parent_start": int(section_start),
             "parent_end": int(section_end),
+            "revision_start": int(revision_start),
+            "revision_end": int(revision_end),
             "split_basis": section_split_basis or "circuit_section",
             "opponent_interaction": opponent_interaction,
             "preselected_circuit_section_id": (
@@ -659,6 +705,8 @@ def build_request(
             section_id=section_id,
             section_start=section_start,
             section_end=section_end,
+            revision_start=revision_start,
+            revision_end=revision_end,
             circuit_id=circuit_id,
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
@@ -671,6 +719,8 @@ def build_request(
                 section_id=section_id,
                 section_start=section_start,
                 section_end=section_end,
+                revision_start=revision_start,
+                revision_end=revision_end,
                 circuit_id=circuit_id,
                 section_split_basis=section_split_basis,
                 opponent_interaction=opponent_interaction,
@@ -679,16 +729,13 @@ def build_request(
         )
         extra_state = {"root_agent": "annotation_root"}
     else:
-        # For tool agents, parent_start/end on the request bound the
-        # working envelope. We use the LAP range so revise_range can
-        # extend outward when a shrink/extend rule fires.
-        parent_start = int(lap_start)
-        parent_end = int(lap_end)
         planner_prompt = _tool_agent_task_prompt(
             lap_start=lap_start,
             lap_end=lap_end,
             section_start=section_start,
             section_end=section_end,
+            revision_start=revision_start,
+            revision_end=revision_end,
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
             existing_section_annotations=existing_section_annotations,
@@ -697,6 +744,12 @@ def build_request(
         extra_state = {
             "root_agent": "annotation_root",
             "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
+            "tool_agent_revision_bounds": {
+                "start": int(revision_start),
+                "end": int(revision_end),
+                "initial_start": int(section_start),
+                "initial_end": int(section_end),
+            },
         }
 
     return AgentRequest(
@@ -723,6 +776,8 @@ def parse(
     section_id: str,
     section_start: int,
     section_end: int,
+    revision_start: Optional[int] = None,
+    revision_end: Optional[int] = None,
     circuit_id: Optional[str] = None,
     opponent_interaction: Optional[dict] = None,
 ) -> LapAnnotationResult:
@@ -737,13 +792,22 @@ def parse(
     circuit_section ids the LLM picked via ``get_circuit_id`` /
     ``locate_circuit_section``.
     """
+    revision_start, revision_end = _normalise_revision_bounds(
+        lap_start=lap_start,
+        lap_end=lap_end,
+        section_start=section_start,
+        section_end=section_end,
+        revision_start=revision_start,
+        revision_end=revision_end,
+    )
+
     if prompt_mode == "tool_agent":
         return _parse_claude(response, lap_start, lap_end, section_id,
-                             section_start, section_end, circuit_id,
-                             opponent_interaction)
+                             section_start, section_end, revision_start,
+                             revision_end, circuit_id, opponent_interaction)
     return _parse_local(response, lap_start, lap_end, section_id,
-                        section_start, section_end, circuit_id,
-                        opponent_interaction)
+                        section_start, section_end, revision_start,
+                        revision_end, circuit_id, opponent_interaction)
 
 
 def _parse_local(
@@ -753,6 +817,8 @@ def _parse_local(
     section_id: str,
     section_start: int,
     section_end: int,
+    revision_start: int,
+    revision_end: int,
     circuit_id: Optional[str],
     opponent_interaction: Optional[dict],
 ) -> LapAnnotationResult:
@@ -773,10 +839,11 @@ def _parse_local(
             f"lap flow (local): revised_range was not [int, int]: "
             f"{revised_range!r}"
         ) from exc
-    if not (lap_start <= new_start < new_end <= lap_end):
+    if not (revision_start <= new_start < new_end <= revision_end):
         raise RuntimeError(
             f"lap flow (local): revised_range [{new_start}, {new_end}] "
-            f"outside lap [{lap_start}, {lap_end}] or start >= end"
+            f"outside revision envelope [{revision_start}, {revision_end}] "
+            "or start >= end"
         )
     if (new_end - new_start) < 5:
         raise RuntimeError(
@@ -823,6 +890,8 @@ def _parse_claude(
     section_id: str,
     section_start: int,
     section_end: int,
+    revision_start: int,
+    revision_end: int,
     circuit_id: Optional[str],
     opponent_interaction: Optional[dict],
 ) -> LapAnnotationResult:
@@ -853,10 +922,10 @@ def _parse_claude(
         new_end = int(revised_att.content.get("end_index", section_end))
         revised = (new_start, new_end) != (section_start, section_end)
 
-    if not (lap_start <= new_start < new_end <= lap_end):
+    if not (revision_start <= new_start < new_end <= revision_end):
         raise RuntimeError(
             f"lap flow (claude): final range [{new_start}, {new_end}] "
-            f"outside lap [{lap_start}, {lap_end}]"
+            f"outside revision envelope [{revision_start}, {revision_end}]"
         )
     if (new_end - new_start) < 5:
         raise RuntimeError(

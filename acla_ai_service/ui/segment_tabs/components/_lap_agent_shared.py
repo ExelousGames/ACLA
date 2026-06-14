@@ -119,6 +119,35 @@ def rebuild_remaining_segments(
     return run_split(df, int(revised_end), int(lap_end), circuit_id)
 
 
+def revision_bounds_for_segment(
+    segments: List[Dict[str, Any]],
+    index: int,
+    lap_start: int,
+    lap_end: int,
+    current_segment: Optional[Dict[str, Any]] = None,
+) -> tuple[int, int]:
+    """Return the dynamic range a section agent may revise within.
+
+    The initial tool surface remains the selected section. This envelope
+    gives `revise_range` room to absorb adjacent splitter boundaries when
+    evidence warrants it, without exposing the whole lap.
+    """
+    if not segments or index < 0 or index >= len(segments):
+        if current_segment is None:
+            return int(lap_start), int(lap_start)
+        start = int(current_segment["start_index"])
+        end = int(current_segment["end_index"])
+        return max(int(lap_start), start), min(int(lap_end), end)
+    current = segments[index]
+    start = int(current["start_index"])
+    end = int(current["end_index"])
+    if index > 0:
+        start = min(start, int(segments[index - 1]["start_index"]))
+    if index + 1 < len(segments):
+        end = max(end, int(segments[index + 1]["end_index"]))
+    return max(int(lap_start), start), min(int(lap_end), end)
+
+
 # ---------------------------------------------------------------------------
 # Live-output panel (light version of _agent_annotation_shared.LiveVlmOutput)
 # ---------------------------------------------------------------------------
@@ -208,6 +237,14 @@ def execute_lap_agent_run(
     section_id = head_segment["circuit_section_id"]
     section_start = int(head_segment["start_index"])
     section_end = int(head_segment["end_index"])
+    segments = list(st.session_state.get(KEY_LAP_SEGMENTS, []))
+    cursor = int(st.session_state.get(KEY_LAP_CURSOR, 0))
+    if not segments:
+        segments = [head_segment]
+        cursor = 0
+    revision_start, revision_end = revision_bounds_for_segment(
+        segments, cursor, int(lap_start), int(lap_end), head_segment,
+    )
 
     try:
         with st.spinner(f"Annotating section {section_id} …"):
@@ -218,6 +255,8 @@ def execute_lap_agent_run(
                 section_id=section_id,
                 section_start=section_start,
                 section_end=section_end,
+                revision_start=revision_start,
+                revision_end=revision_end,
                 circuit_id=circuit_id,
                 section_split_basis=head_segment.get("split_basis"),
                 opponent_interaction=head_segment.get("opponent_interaction"),
