@@ -101,12 +101,12 @@ const getTrackNameForGuide = (
         ? liveData.Static_track
         : undefined;
 
-const findTriggeredCorner = (
+const findTriggeredCorners = (
     corners: CornerDefinition[],
     lastPos: number,
     currentPos: number,
-): CornerDefinition | undefined =>
-    corners.find((corner) => crossedNormalizedPosition(lastPos, currentPos, corner.from));
+): CornerDefinition[] =>
+    corners.filter((corner) => crossedNormalizedPosition(lastPos, currentPos, corner.guideFrom ?? corner.from));
 
 const extractCornerKnowledgeMessage = (raw: any): string | null => {
     if (raw?.status === 'unsupported' && typeof raw.message === 'string') {
@@ -116,15 +116,13 @@ const extractCornerKnowledgeMessage = (raw: any): string | null => {
     const knowledge = raw?.track_knowledge;
     if (!knowledge || knowledge.error) return null;
 
-    const trackName = knowledge.name || knowledge.id || 'Track';
-    const cornerName = knowledge.corner || 'corner';
     const detail = knowledge.corner_detail;
 
     if (typeof detail === 'string' && detail.trim()) {
-        return `${cornerName} (${trackName}): ${detail.trim()}`;
+        return detail.trim();
     }
     if (Array.isArray(detail) && detail.length > 0) {
-        return `${cornerName} (${trackName}): ${detail.join('. ')}`;
+        return detail.join('. ');
     }
     return null;
 };
@@ -165,6 +163,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const messagesScrollRef = useRef<HTMLDivElement>(null);
     // Active neural-TTS playback handle (Phase 2 — Kokoro via /voice-synthesize).
     const currentNeuralPlaybackRef = useRef<NeuralTtsPlayback | null>(null);
+    const speechQueueRef = useRef<Promise<void>>(Promise.resolve());
+    const speechQueueTokenRef = useRef(0);
     // Mirrors neuralTtsAvailable for read access inside async closures that
     // would otherwise see a stale state value.
     const neuralTtsDisabledRef = useRef<boolean>(false);
@@ -177,7 +177,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         lastAlertAt: 0,
     });
     const trackGuideLastPosRef = useRef<number | undefined>(undefined);
-    const trackGuideInFlightRef = useRef(false);
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
 
     useEffect(() => {
@@ -330,6 +329,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         setMessages(prev => [...prev, message]);
     };
 
+    const addGuidanceMessage = useCallback((content: string) => {
+        const message: Message = {
+            id: generateUniqueId('guidance'),
+            content,
+            isUser: false,
+            timestamp: new Date()
+        };
+        setMessages(prev => [...prev, message]);
+    }, [generateUniqueId]);
+
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     };
@@ -388,15 +397,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         const cleanText = cleanTextForSpeech(text);
         if (!cleanText) return;
 
-        speakWithNeural(cleanText, options).catch((err) => {
-            console.warn('[AI Chat] Neural TTS failed; marking unavailable for this session:', err);
-            neuralTtsDisabledRef.current = true;
-            setNeuralTtsAvailable(false);
-            setIsSpeaking(false);
-        });
+        const queueToken = speechQueueTokenRef.current;
+        speechQueueRef.current = speechQueueRef.current
+            .catch(() => undefined)
+            .then(async () => {
+                if (queueToken !== speechQueueTokenRef.current || neuralTtsDisabledRef.current) return;
+                await speakWithNeural(cleanText, options);
+            })
+            .catch((err) => {
+                console.warn('[AI Chat] Neural TTS failed; marking unavailable for this session:', err);
+                neuralTtsDisabledRef.current = true;
+                setNeuralTtsAvailable(false);
+                setIsSpeaking(false);
+            });
     };
 
     const stopSpeaking = () => {
+        speechQueueTokenRef.current += 1;
         if (currentNeuralPlaybackRef.current) {
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
@@ -518,54 +535,53 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         const trackName = getTrackNameForGuide(liveData);
         if (!trackName) return;
 
-        const triggeredCorner = findTriggeredCorner(
+        const triggeredCorners = findTriggeredCorners(
             getCornersForTrack(trackName),
             lastPos,
             currentPos,
         );
-        if (!triggeredCorner || trackGuideInFlightRef.current) return;
+        if (triggeredCorners.length === 0) return;
 
         const lap = Number(
             liveData.Graphics_completed_laps
             ?? liveData.Graphics_completed_lap
             ?? 0
         );
-        const triggerPosition = triggeredCorner.from;
-        const triggerKey = `${lap}:${triggerPosition}`;
-        if (trackGuideTriggeredRef.current.has(triggerKey)) return;
+        triggeredCorners.forEach((triggeredCorner) => {
+            const triggerPosition = triggeredCorner.guideFrom ?? triggeredCorner.from;
+            const triggerKey = `${lap}:${triggerPosition}:${triggeredCorner.name}`;
+            if (trackGuideTriggeredRef.current.has(triggerKey)) return;
 
-        trackGuideTriggeredRef.current.add(triggerKey);
-        trackGuideInFlightRef.current = true;
+            trackGuideTriggeredRef.current.add(triggerKey);
 
-        apiService.post('/racing-session/track-corner-knowledge', {
-            track_name: trackName,
-            corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
-            normalized_position: currentPos,
-            trigger_position: triggerPosition,
-            current_telemetry: liveData,
-        }).then((response) => {
-            const message = extractCornerKnowledgeMessage(response.data);
-            if (message) {
-                analysisContext?.sendGuidanceToChat(message);
-            }
-        }).catch((error) => {
-            const errorDetail = error?.data?.message || error?.data?.detail;
-            if (
-                error?.status === 404
-                && typeof errorDetail === 'string'
-                && (
-                    errorDetail.includes('not in corpus')
-                    || (errorDetail.includes('corner') && errorDetail.includes('not found'))
-                )
-            ) {
-                analysisContext?.sendGuidanceToChat("Track guide doesn't support the current track right now.");
-                return;
-            }
-            console.warn('Track guide agent knowledge request failed:', error);
-        }).finally(() => {
-            trackGuideInFlightRef.current = false;
+            apiService.post('/racing-session/track-corner-knowledge', {
+                track_name: trackName,
+                corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
+                normalized_position: triggerPosition,
+                trigger_position: triggerPosition,
+                current_telemetry: liveData,
+            }).then((response) => {
+                const message = extractCornerKnowledgeMessage(response.data);
+                if (message) {
+                    addGuidanceMessage(message);
+                }
+            }).catch((error) => {
+                const errorDetail = error?.data?.message || error?.data?.detail;
+                if (
+                    error?.status === 404
+                    && typeof errorDetail === 'string'
+                    && (
+                        errorDetail.includes('not in corpus')
+                        || (errorDetail.includes('corner') && errorDetail.includes('not found'))
+                    )
+                ) {
+                    addGuidanceMessage("Track guide doesn't support the current track right now.");
+                    return;
+                }
+                console.warn('Track guide agent knowledge request failed:', error);
+            });
         });
-    }, [analysisContext, analysisContext?.liveData, TrackGuideEnabled]);
+    }, [addGuidanceMessage, analysisContext?.liveData, TrackGuideEnabled]);
 
     // Auto-manage imitation guidance chart visibility
     useEffect(() => {

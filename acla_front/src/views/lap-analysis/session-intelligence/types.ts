@@ -43,6 +43,7 @@ export interface CornerDefinition {
     name: string;
     from: number; // normalized position
     to: number;
+    guideFrom?: number; // normalized position where coaching should request guidance
 }
 
 export interface CornerLookahead {
