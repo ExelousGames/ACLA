@@ -116,6 +116,13 @@ LAP_REASONING_NOTE_RULE = (
     "competing labels were omitted or the range was revised."
 )
 
+
+def _segment_type_label_rule() -> str:
+    return str(
+        skills.get("sub_label_annotation.category_guidelines.Segment Type", "")
+    ).strip()
+
+
 def _normalise_revision_bounds(
     *,
     lap_start: int,
@@ -502,11 +509,7 @@ def _local_synth_prompts(
         "review' or returned by `locate_circuit_section`.",
         f"- {WHOLE_RANGE_LABEL_RULE}",
         f"- {LAP_REASONING_NOTE_RULE}",
-        "- For segment-type labels, include exactly one base shape. Add "
-        "corner refinement only when `measure_segment_shape` returns "
-        "non-empty `phases` for the final range. Entry/apex/exit altitude "
-        "candidates are subsegment-only and must not be submitted on this "
-        "lap parent segment.",
+        f"- {_segment_type_label_rule()}",
         "- An empty label_ids array is the valid 'drop this section' signal.",
     ])
 
@@ -614,11 +617,7 @@ def _tool_agent_task_prompt(
         "- For time-delta and offset evidence, cite deterministic tool "
         "verdict fields (unit, materiality, end-window trend); do not "
         "create strength judgments from raw numbers.\n"
-        "- For segment-type labels, include exactly one base shape. Add "
-        "corner refinement only when `measure_segment_shape` returns "
-        "non-empty `phases` for the final range. Entry/apex/exit altitude "
-        "candidates are subsegment-only and must not be submitted on this "
-        "lap parent segment.\n"
+        f"- {_segment_type_label_rule()}\n"
         "- Sub-labels require their parent main label in `label_ids`.\n"
         "- One proposal per session — do NOT annotate downstream sections.\n"
         "- Budget tool calls: a typical section needs 7-10 calls total."

@@ -391,11 +391,22 @@ def _segment_type_label_result(
     **filters: Any,
 ) -> Dict[str, Any]:
     doc = _segment_type_label(**filters)
-    return {
+    out = {
         "label_id": doc["id"],
         "label_name": doc["name"],
         "reason": reason,
     }
+    for key in ("segment_type_role", "shape_key", "annotation_scope"):
+        if doc.get(key) is not None:
+            out[key] = doc[key]
+    return out
+
+
+def _segment_type_label_selection_rules() -> List[str]:
+    rule = str(
+        skills.get("sub_label_annotation.category_guidelines.Segment Type", "")
+    ).strip()
+    return [rule] if rule else []
 
 
 def compute_expert_phases(
@@ -763,11 +774,7 @@ def measure_segment_shape(
             "labels": [],
             "subsegment_label_candidates": [],
         },
-        "label_selection_rules": [
-            "Use exactly one base_segment_shape label when adding segment_type labels.",
-            "Use corner_shape_refinement only when phases is non-empty.",
-            "Do not attach altitude candidates to a lap parent segment; they are subsegment-only labels.",
-        ],
+        "label_selection_rules": _segment_type_label_selection_rules(),
         "phases": [],
     }
 
