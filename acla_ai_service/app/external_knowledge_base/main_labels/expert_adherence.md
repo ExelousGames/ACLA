@@ -1,11 +1,15 @@
 ## Definition
-The driver is matching the expert reference closely — line, brake
-points, throttle application, apex speed are all within tolerance.
-There's no mistake to label and no recovery to make.
+The driver is matching or cleanly outperforming the expert reference.
+Line, brake points, throttle application, and apex speed are within
+tolerance, or the driver uses a cleaner/faster line with no mistake to
+label and no recovery to make.
 
 ## When this applies
 The default for clean segments — no specific mistake fires and the
-time-difference-to-expert is flat or closing.
+time-difference-to-expert is flat, closing, or already in the driver's
+favor. If the time-difference column is unavailable, do not reject EA
+solely for that reason; use the absence of mistake/recovery/racing gates
+and the trajectory/speed/brake/throttle evidence instead.
 
 ## How to read clean segments in a session
 A clean lap is the goal. A high proportion of clean segments across a
