@@ -49,6 +49,12 @@ LOGGER = logging.getLogger(__name__)
 # Matches a leading [emotion_name] tag (e.g. "[vibing] ") at the start of LLM output.
 _EMOTION_TAG_RE = re.compile(r'^\[([a-z]+)\]\s*')
 _VALID_EMOTIONS = frozenset(["sad", "vibing", "scared", "waiting", "hearing"])
+_FUNCTION_TAG_OPEN = "<function="
+_FUNCTION_TAG_CLOSE = "</function>"
+_FUNCTION_TAG_RE = re.compile(
+    r"^<function=([A-Za-z_]\w*)>\s*(.*?)\s*</function>$",
+    re.DOTALL,
+)
 
 
 # ----------------------------------------------------------------------
@@ -375,6 +381,177 @@ def _make_tool_handler(
     return handle_tool_call, dispatch_tool
 
 
+def _split_function_tag_prefix(text: str) -> tuple[str, str]:
+    """Keep a trailing partial '<function=' prefix buffered across chunks."""
+    max_len = min(len(text), len(_FUNCTION_TAG_OPEN) - 1)
+    for size in range(max_len, 0, -1):
+        suffix = text[-size:]
+        if _FUNCTION_TAG_OPEN.startswith(suffix):
+            return text[:-size], suffix
+    return text, ""
+
+
+def _build_function_tag_recovery():
+    """Strip and dispatch Llama-style text-channel function tags.
+
+    Some OpenAI-compatible local models occasionally emit
+    ``<function=name>{...}</function>`` as text instead of using native
+    ``tool_calls``. This processor sits before transcript/TTS so those tags
+    are never shown or spoken, and sends them through the same dispatch path
+    as a native tool call. Empty argument bodies are treated as ``{}``.
+    """
+    import asyncio
+    import json as _json
+    import uuid as _uuid
+    from pipecat.frames.frames import (
+        Frame,
+        LLMFullResponseEndFrame,
+        LLMFullResponseStartFrame,
+        TextFrame,
+    )
+    from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+    class FunctionTagRecovery(FrameProcessor):
+        def __init__(self, dispatch_tool, context: Any, get_task) -> None:
+            super().__init__()
+            self._dispatch_tool = dispatch_tool
+            self._context = context
+            self._get_task = get_task
+            self._buf = ""
+
+        async def process_frame(self, frame: "Frame", direction: "FrameDirection") -> None:
+            await super().process_frame(frame, direction)
+
+            if isinstance(frame, LLMFullResponseStartFrame):
+                self._buf = ""
+                await self.push_frame(frame, direction)
+                return
+
+            if isinstance(frame, TextFrame):
+                self._buf += getattr(frame, "text", "") or ""
+                await self._drain(direction, final=False)
+                return
+
+            if isinstance(frame, LLMFullResponseEndFrame):
+                await self._drain(direction, final=True)
+                await self.push_frame(frame, direction)
+                return
+
+            await self.push_frame(frame, direction)
+
+        async def _drain(self, direction: "FrameDirection", *, final: bool) -> None:
+            while self._buf:
+                idx = self._buf.find(_FUNCTION_TAG_OPEN)
+                if idx < 0:
+                    if final:
+                        await self._push_text(self._buf, direction)
+                        self._buf = ""
+                        return
+                    emit, hold = _split_function_tag_prefix(self._buf)
+                    if emit:
+                        await self._push_text(emit, direction)
+                    self._buf = hold
+                    return
+
+                if idx > 0:
+                    await self._push_text(self._buf[:idx], direction)
+                    self._buf = self._buf[idx:]
+
+                close = self._buf.find(_FUNCTION_TAG_CLOSE)
+                if close < 0:
+                    if final:
+                        LOGGER.warning(
+                            "FunctionTagRecovery: incomplete tag dropped: %r",
+                            self._buf,
+                        )
+                        self._buf = ""
+                    return
+
+                tag_end = close + len(_FUNCTION_TAG_CLOSE)
+                full_tag = self._buf[:tag_end]
+                self._buf = self._buf[tag_end:]
+                match = _FUNCTION_TAG_RE.match(full_tag)
+                if not match:
+                    LOGGER.warning(
+                        "FunctionTagRecovery: malformed tag, passing through as text: %r",
+                        full_tag,
+                    )
+                    await self._push_text(full_tag, direction)
+                    continue
+
+                name = match.group(1)
+                raw_args = (match.group(2) or "").strip()
+                args: Dict[str, Any] = {}
+                if raw_args:
+                    try:
+                        parsed = _json.loads(raw_args)
+                    except _json.JSONDecodeError:
+                        LOGGER.warning(
+                            "FunctionTagRecovery: bad JSON args for <function=%s>: %r",
+                            name, raw_args,
+                        )
+                        continue
+                    if not isinstance(parsed, dict):
+                        LOGGER.warning(
+                            "FunctionTagRecovery: non-object args for <function=%s>: %r",
+                            name, parsed,
+                        )
+                        continue
+                    args = parsed
+
+                LOGGER.info(
+                    "[TOOL-CALL-RECOVERED] name=%s args=%r "
+                    "(from text-channel <function=...> tag)",
+                    name, args,
+                )
+                asyncio.create_task(self._recover(name, args))
+
+        async def _push_text(self, text: str, direction: "FrameDirection") -> None:
+            if text:
+                await self.push_frame(TextFrame(text=text), direction)
+
+        async def _recover(self, name: str, args: Dict[str, Any]) -> None:
+            result = await self._dispatch_tool(name, args)
+            try:
+                call_id = f"recovered_{_uuid.uuid4().hex}"
+                self._context.add_message({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": _json.dumps(args),
+                        },
+                    }],
+                })
+                self._context.add_message({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": _json.dumps(result),
+                })
+            except Exception:
+                LOGGER.exception("FunctionTagRecovery: context injection failed")
+                return
+
+            task = self._get_task()
+            if task is None:
+                LOGGER.warning(
+                    "FunctionTagRecovery: no PipelineTask bound; tool result "
+                    "is in context but model won't speak until next user turn"
+                )
+                return
+
+            try:
+                from pipecat.frames.frames import LLMRunFrame
+                await task.queue_frame(LLMRunFrame())
+            except Exception:
+                LOGGER.exception("FunctionTagRecovery: failed to queue LLMRunFrame")
+
+    return FunctionTagRecovery
+
+
 def _build_transcript_observer():
     """Construct a pass-through FrameProcessor that emits transcript text
     frames over the bound WebSocket.
@@ -596,6 +773,7 @@ async def build_voice_pipeline_task(
 
     TranscriptObserver = _build_transcript_observer()
     EmotionTagStripper = _build_emotion_tag_stripper()
+    FunctionTagRecovery = _build_function_tag_recovery()
     ContextLogger = _build_context_logger()
 
     LOGGER.info(
@@ -698,7 +876,7 @@ async def build_voice_pipeline_task(
     tool_titles = _build_title_map(fe_tools)
     tools = ToolsSchema(standard_tools=tool_schemas)
 
-    tool_handler, _ = _make_tool_handler(
+    tool_handler, dispatch_tool = _make_tool_handler(
         tool_executor, session_config, conn=websocket,
         frontend_tool_names=frontend_tool_names,
         tool_titles=tool_titles,
@@ -741,6 +919,12 @@ async def build_voice_pipeline_task(
     assistant_transcript_observer = TranscriptObserver(send_text=_send_text, role="assistant")
     emotion_tag_stripper = EmotionTagStripper()
     context_logger = ContextLogger(context)
+    task_ref: Dict[str, Any] = {"task": None}
+    function_tag_recovery = FunctionTagRecovery(
+        dispatch_tool,
+        context,
+        lambda: task_ref["task"],
+    )
 
     # --- Pipeline composition ---
     # VAD sits between the transport input and STT so Whisper only runs
@@ -749,8 +933,9 @@ async def build_voice_pipeline_task(
     #
     # user_transcript_observer sits AFTER stt so it sees the final
     # TranscriptionFrame before context_aggregator.user() consumes it.
-    # assistant_transcript_observer sits AFTER llm; tool calls use Pipecat's
-    # registered function channel and never a text fallback parser.
+    # function_tag_recovery catches local-model text-channel function tags
+    # before they can reach transcript/TTS. Native tool calls still use
+    # Pipecat's registered function channel.
     # emotion_tag_stripper sits AFTER the observer and BEFORE tts so Kokoro
     # never receives the [emotion] tag — same principle as tool_event frames
     # being UI-only signals that never reach speech synthesis.
@@ -768,6 +953,7 @@ async def build_voice_pipeline_task(
         context_aggregator.user(),
         llm,
         context_logger,
+        function_tag_recovery,
         assistant_transcript_observer,
         emotion_tag_stripper,
         tts,
@@ -782,6 +968,7 @@ async def build_voice_pipeline_task(
             enable_metrics=False,
         ),
     )
+    task_ref["task"] = task
     # --- Observation sink (frontend monitoring-agent pushes) ----------------
     # When the frontend WS sends {"type":"observation","data":{...}}, the
     # relay calls this sink. We format the observation as a synthetic user
