@@ -68,6 +68,7 @@ def test_real_corner_segment_shape_still_emits_corner_phase():
 
     assert content["base_segment_shape"]["label_id"] == "ST1"
     assert content["corner_shape_refinement"] is not None
+    assert "turn angle" in content["corner_shape_refinement"]["reason"]
     assert content["phases"]
     assert content["phases"][0]["turn_angle_degrees"] >= 10.0
 
@@ -101,3 +102,15 @@ def test_hairpin_shape_uses_turn_angle_without_radius_gate():
     assert refinement["is_near_u_turn"] is True
     assert "is_tight" not in refinement
     assert "average_radius_m" not in refinement
+
+
+def test_hairpin_shape_accepts_130_degree_turn_angle_gate():
+    theta = np.linspace(0.0, np.deg2rad(140.0), 180)
+    radius = 120.0
+    df = _trajectory_df(radius * np.cos(theta), radius * np.sin(theta))
+
+    attachment = measure_segment_shape(df, 0, len(df))
+    refinement = attachment.content["corner_shape_refinement"]
+
+    assert refinement["label_id"] == "ST10"
+    assert refinement["is_near_u_turn"] is True

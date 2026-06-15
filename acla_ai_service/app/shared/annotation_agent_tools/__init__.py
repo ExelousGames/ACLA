@@ -670,13 +670,22 @@ def _classify_corner_shape_refinement(
     rel_change = (last - first) / denom
     if abs(rel_change) <= 0.25:
         shape_key = "constant_radius"
-        reason = "Curvature stays broadly steady from entry to exit."
+        reason = (
+            "Curvature stays broadly steady from entry to exit "
+            f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
+        )
     elif rel_change < 0:
         shape_key = "increasing_radius"
-        reason = "Curvature decreases toward exit, so radius opens up."
+        reason = (
+            "Curvature decreases toward exit, so radius opens up "
+            f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
+        )
     else:
         shape_key = "decreasing_radius"
-        reason = "Curvature increases toward exit, so radius tightens."
+        reason = (
+            "Curvature increases toward exit, so radius tightens "
+            f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
+        )
 
     out = _segment_type_label_result(
         segment_type_role="corner_shape_refinement",

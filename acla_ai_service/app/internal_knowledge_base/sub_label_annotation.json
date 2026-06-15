@@ -1110,7 +1110,7 @@
         "required_flags": [
           "is_near_u_turn"
         ],
-        "near_u_turn_min_degrees": 150.0
+        "near_u_turn_min_degrees": 130.0
       },
       "parent": null,
       "children": [],
