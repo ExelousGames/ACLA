@@ -70,3 +70,34 @@ def test_real_corner_segment_shape_still_emits_corner_phase():
     assert content["corner_shape_refinement"] is not None
     assert content["phases"]
     assert content["phases"][0]["turn_angle_degrees"] >= 10.0
+
+
+def test_short_offset_corner_turn_angle_is_not_edge_inflated_to_hairpin():
+    theta = np.linspace(0.0, np.pi / 2.0, 9)
+    radius = 20.0
+    df = _trajectory_df(
+        100.0 + radius * np.cos(theta),
+        100.0 + radius * np.sin(theta),
+    )
+
+    attachment = measure_segment_shape(df, 0, len(df))
+    refinement = attachment.content["corner_shape_refinement"]
+
+    assert refinement is not None
+    assert refinement["turn_angle_degrees"] < 90.0
+    assert refinement["label_id"] != "ST10"
+    assert refinement["is_near_u_turn"] is False
+
+
+def test_hairpin_shape_uses_turn_angle_without_radius_gate():
+    theta = np.linspace(0.0, np.pi, 180)
+    radius = 120.0
+    df = _trajectory_df(radius * np.cos(theta), radius * np.sin(theta))
+
+    attachment = measure_segment_shape(df, 0, len(df))
+    refinement = attachment.content["corner_shape_refinement"]
+
+    assert refinement["label_id"] == "ST10"
+    assert refinement["is_near_u_turn"] is True
+    assert "is_tight" not in refinement
+    assert "average_radius_m" not in refinement

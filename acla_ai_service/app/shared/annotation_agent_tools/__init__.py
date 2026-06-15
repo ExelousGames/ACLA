@@ -334,7 +334,7 @@ def _detect_expert_phases(
         # Arc is [i, j)
         arc_len = j - i
         arc_peak = float(abs_k[i:j].max()) if arc_len > 0 else 0.0
-        turn_deg = _turn_angle_degrees(dx, dy, i, j - 1)
+        turn_deg = _turn_angle_degrees(x_s, y_s, i, j - 1)
         path_len = _arc_path_length_m(x_s, y_s, i, j - 1)
         is_geometric_corner = (
             turn_deg >= _MIN_CORNER_TURN_DEG
@@ -532,12 +532,19 @@ def _classify_base_segment_shape(
     )
 
 
-def _turn_angle_degrees(dx: np.ndarray, dy: np.ndarray, entry: int, exit_: int) -> float:
-    if exit_ <= entry or dx.size == 0 or dy.size == 0:
+def _turn_angle_degrees(x: np.ndarray, y: np.ndarray, entry: int, exit_: int) -> float:
+    if exit_ <= entry or x.size == 0 or y.size == 0:
         return 0.0
-    lo = max(0, min(entry, dx.size - 1))
-    hi = max(0, min(exit_, dx.size - 1))
-    angles = np.unwrap(np.arctan2(dy[lo: hi + 1], dx[lo: hi + 1]))
+    hi_limit = min(x.size, y.size) - 1
+    lo = max(0, min(entry, hi_limit))
+    hi = max(0, min(exit_, hi_limit))
+    if hi <= lo:
+        return 0.0
+    seg_dx = np.diff(x[lo: hi + 1])
+    seg_dy = np.diff(y[lo: hi + 1])
+    finite = np.isfinite(seg_dx) & np.isfinite(seg_dy)
+    moving = finite & ((seg_dx * seg_dx + seg_dy * seg_dy) > 1e-9)
+    angles = np.unwrap(np.arctan2(seg_dy[moving], seg_dx[moving]))
     if angles.size < 2:
         return 0.0
     return float(abs(angles[-1] - angles[0]) * 180.0 / np.pi)
@@ -566,11 +573,7 @@ def _hairpin_gate_config() -> Dict[str, float]:
     gate = doc.get("deterministic_gate")
     if not isinstance(gate, dict):
         raise RuntimeError("ST10 knowledge label must declare deterministic_gate")
-    required = (
-        "near_u_turn_min_degrees",
-        "tight_average_radius_max_m",
-        "parallel_return_tangent_dot_max",
-    )
+    required = ("near_u_turn_min_degrees",)
     missing = [key for key in required if key not in gate]
     if missing:
         raise RuntimeError(
@@ -589,42 +592,15 @@ def _hairpin_shape_metrics(
     exit_: int,
     turn_deg: float,
 ) -> Dict[str, Any]:
-    turn_rad = abs(float(turn_deg)) * np.pi / 180.0
     arc_length_m = _arc_path_length_m(x, y, entry, exit_)
-    average_radius_m = (
-        float(arc_length_m / turn_rad)
-        if turn_rad > 0.0 and np.isfinite(arc_length_m)
-        else None
-    )
-
-    entry_vec = np.array([dx[entry], dy[entry]], dtype=float)
-    exit_vec = np.array([dx[exit_], dy[exit_]], dtype=float)
-    entry_norm = float(np.linalg.norm(entry_vec))
-    exit_norm = float(np.linalg.norm(exit_vec))
-    if entry_norm > 0.0 and exit_norm > 0.0:
-        tangent_dot = float(np.dot(entry_vec, exit_vec) / (entry_norm * exit_norm))
-    else:
-        tangent_dot = None
 
     gate = _hairpin_gate_config()
     is_near_u_turn = turn_deg >= gate["near_u_turn_min_degrees"]
-    is_tight = (
-        average_radius_m is not None
-        and average_radius_m <= gate["tight_average_radius_max_m"]
-    )
-    is_parallel_return = (
-        tangent_dot is not None
-        and tangent_dot <= gate["parallel_return_tangent_dot_max"]
-    )
     return {
         "turn_angle_degrees": float(turn_deg),
         "arc_length_m": float(arc_length_m),
-        "average_radius_m": average_radius_m,
-        "entry_exit_tangent_dot": tangent_dot,
         "is_near_u_turn": bool(is_near_u_turn),
-        "is_tight": bool(is_tight),
-        "is_parallel_return": bool(is_parallel_return),
-        "is_hairpin": bool(is_near_u_turn and is_tight and is_parallel_return),
+        "is_hairpin": bool(is_near_u_turn),
     }
 
 
@@ -654,7 +630,7 @@ def _classify_corner_shape_refinement(
     if exit_ <= entry:
         return None
 
-    turn_deg = _turn_angle_degrees(dx, dy, entry, exit_)
+    turn_deg = _turn_angle_degrees(x, y, entry, exit_)
     hairpin_metrics = _hairpin_shape_metrics(x, y, dx, dy, entry, exit_, turn_deg)
     if hairpin_metrics["is_hairpin"]:
         out = _segment_type_label_result(
@@ -662,7 +638,7 @@ def _classify_corner_shape_refinement(
             shape_key="hairpin",
             reason=(
                 "Deterministic corner-shape gate passed "
-                f"(average radius {hairpin_metrics['average_radius_m']:.1f} m)."
+                f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
             ),
         )
         out.update(hairpin_metrics)
