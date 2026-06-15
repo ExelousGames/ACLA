@@ -26,6 +26,10 @@ Two newer surfaces sit alongside that:
     The ``## <corner>`` sections become per-corner entries the LLM can
     address by name. See ``tracks/README.md`` for the file format.
 
+  * ``track_guide(track_id, corner=None)`` — keyed lookup over
+    ``track_guides/<id>.md``. This is for driver coaching guidance, while
+    ``tracks/`` stays available for factual track notes.
+
   * ``search(query, top_k)`` — RAG retrieval over every ``.md`` in the
     racing-engineer corpus (``labels/``, ``main_labels/``, ``features/``,
     ``behaviors/``, ``tracks/``, ``knowledge/``) via the embedding index
@@ -247,8 +251,8 @@ def behavior(name: str) -> Optional[dict]:
     return _load_category("behaviors").get(name)
 
 
-def track(track_id: str, corner: Optional[str] = None) -> Optional[dict]:
-    """Return the keyed track entry, optionally filtered to one corner.
+def _track_like(category: str, track_id: str, corner: Optional[str] = None) -> Optional[dict]:
+    """Return a keyed track-shaped entry, optionally filtered to one corner.
 
     Without ``corner``: returns the full track dict plus a ``corners``
     list (the names of every ``## <name>`` section in the file) so the
@@ -262,7 +266,7 @@ def track(track_id: str, corner: Optional[str] = None) -> Optional[dict]:
     """
     if not track_id:
         return None
-    entry = _load_category("tracks").get(track_id.lower())
+    entry = _load_category(category).get(track_id.lower())
     if entry is None:
         return None
 
@@ -317,6 +321,16 @@ def track(track_id: str, corner: Optional[str] = None) -> Optional[dict]:
     }
 
 
+def track(track_id: str, corner: Optional[str] = None) -> Optional[dict]:
+    """Return factual keyed track knowledge from ``tracks/``."""
+    return _track_like("tracks", track_id, corner=corner)
+
+
+def track_guide(track_id: str, corner: Optional[str] = None) -> Optional[dict]:
+    """Return driver-coaching keyed track guide knowledge from ``track_guides/``."""
+    return _track_like("track_guides", track_id, corner=corner)
+
+
 def search(query: str, top_k: Optional[int] = None) -> List[dict]:
     """RAG search over every ``.md`` in the racing-engineer corpus.
 
@@ -361,4 +375,4 @@ def reload() -> None:
         LOGGER.exception("racing_engineer: failed to reset KB registry")
 
 
-__all__ = ["label", "feature", "behavior", "track", "search", "reload"]
+__all__ = ["label", "feature", "behavior", "track", "track_guide", "search", "reload"]

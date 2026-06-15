@@ -147,10 +147,10 @@ async def get_track_corner_knowledge(request: TrackCornerKnowledgeRequest) -> Di
         if not corner_name:
             raise HTTPException(status_code=400, detail="corner_name is required")
 
-        from app.external_knowledge_base import track as track_lookup
+        from app.external_knowledge_base import track_guide as track_guide_lookup
 
         track_key = track_name.lower().replace(" ", "_")
-        result = track_lookup(track_key, corner=corner_name)
+        result = track_guide_lookup(track_key, corner=corner_name)
         if result is None:
             return {
                 "status": "unsupported",
