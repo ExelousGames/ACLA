@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
-from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
+from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING, LABEL_NAME_TO_ID
 from app.integrations.backend.client import backend_service
 from app.ml.segment_classifier.service import segment_classifier
 
@@ -94,6 +94,127 @@ def _ensure_section(track_summary: Dict[str, Any], section_id: str) -> Dict[str,
             "labelCounts": {},
         },
     )
+
+
+def _parent_label_id(label_id: str) -> Optional[str]:
+    for parent_id, child_ids in LABEL_CATEGORIES.items():
+        if label_id in child_ids:
+            return parent_id
+    return None
+
+
+def _label_name(label_id: str) -> str:
+    return LABEL_MAPPING.get(label_id, label_id)
+
+
+def _child_segment_kind(label_id: str) -> str:
+    if label_id == "EA" or label_id.startswith("O") or label_id.startswith("OD"):
+        return "strength"
+    if label_id.startswith("MSP") or label_id.startswith("MSR"):
+        return "needs_work"
+    if label_id.startswith("RM"):
+        return "recovery"
+    return "info"
+
+
+def _section_score(section_summary: Dict[str, Any]) -> int:
+    return int(section_summary.get("expertLevelTurns", 0)) - int(section_summary.get("mistakes", 0))
+
+
+def _child_segments_for_section(section_summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    child_segments = []
+    for label_id, count in sorted(
+        section_summary.get("labelCounts", {}).items(),
+        key=lambda item: (-int(item[1]), str(item[0])),
+    ):
+        parent_label_id = _parent_label_id(label_id)
+        child_segments.append(
+            {
+                "childSegmentId": label_id,
+                "childSegmentName": _label_name(label_id),
+                "labelId": label_id,
+                "labelName": _label_name(label_id),
+                "parentLabelId": parent_label_id,
+                "parentLabelName": _label_name(parent_label_id) if parent_label_id else None,
+                "count": int(count),
+                "kind": _child_segment_kind(label_id),
+            }
+        )
+    return child_segments
+
+
+def _build_parent_segments(track_summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+    parent_segments = []
+    for section_id, section_summary in track_summary.get("sections", {}).items():
+        child_segments = _child_segments_for_section(section_summary)
+        if not child_segments:
+            continue
+
+        parent_segments.append(
+            {
+                "parentSegmentId": section_id,
+                "parentSegmentName": section_summary.get("sectionName") or _label_name(section_id),
+                "sectionId": section_id,
+                "sectionName": section_summary.get("sectionName") or _label_name(section_id),
+                "expertLevelTurns": int(section_summary.get("expertLevelTurns", 0)),
+                "mistakes": int(section_summary.get("mistakes", 0)),
+                "practiceMistakes": int(section_summary.get("practiceMistakes", 0)),
+                "racingMistakes": int(section_summary.get("racingMistakes", 0)),
+                "score": _section_score(section_summary),
+                "childSegments": child_segments,
+            }
+        )
+
+    return sorted(
+        parent_segments,
+        key=lambda segment: (
+            -int(segment["mistakes"] + segment["expertLevelTurns"]),
+            str(segment["parentSegmentName"]),
+        ),
+    )
+
+
+def _ranked_child_segments(
+    parent_segments: List[Dict[str, Any]],
+    kinds: Sequence[str],
+    limit: int = 5,
+) -> List[Dict[str, Any]]:
+    ranked = []
+    kind_set = set(kinds)
+    for parent_segment in parent_segments:
+        for child_segment in parent_segment.get("childSegments", []):
+            if child_segment.get("kind") not in kind_set:
+                continue
+            ranked.append(
+                {
+                    "parentSegmentId": parent_segment["parentSegmentId"],
+                    "parentSegmentName": parent_segment["parentSegmentName"],
+                    "childSegmentId": child_segment["childSegmentId"],
+                    "childSegmentName": child_segment["childSegmentName"],
+                    "count": child_segment["count"],
+                    "kind": child_segment["kind"],
+                }
+            )
+
+    return sorted(
+        ranked,
+        key=lambda item: (-int(item["count"]), str(item["parentSegmentName"]), str(item["childSegmentName"])),
+    )[:limit]
+
+
+def _finalize_summary(summary: Dict[str, Any]) -> Dict[str, Any]:
+    for track_summary in summary.get("tracks", {}).values():
+        parent_segments = _build_parent_segments(track_summary)
+        track_summary["parentSegments"] = parent_segments
+        track_summary["strengths"] = _ranked_child_segments(parent_segments, ["strength"])
+        track_summary["improvementAreas"] = _ranked_child_segments(parent_segments, ["needs_work", "recovery"])
+        track_summary["trackOverview"] = {
+            "parentSegmentCount": len(parent_segments),
+            "strengthCount": sum(1 for segment in parent_segments for child in segment["childSegments"] if child["kind"] == "strength"),
+            "needsWorkCount": sum(1 for segment in parent_segments for child in segment["childSegments"] if child["kind"] == "needs_work"),
+            "recoveryCount": sum(1 for segment in parent_segments for child in segment["childSegments"] if child["kind"] == "recovery"),
+        }
+    return summary
 
 
 def _increment_label(section_summary: Dict[str, Any], label: str) -> None:
@@ -222,7 +343,7 @@ async def analyze_user_sessions(user_id: str) -> Dict[str, Any]:
         summary["sessionsAnalyzed"] += 1
         track_summary["sessionsAnalyzed"] += 1
 
-    return summary
+    return _finalize_summary(summary)
 
 
 __all__ = [
