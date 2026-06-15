@@ -133,6 +133,8 @@ export class TrackCornerKnowledgeRequestDto {
 
 export class TrackCornerKnowledgeResponseDto {
     status: string;
+    message?: string;
+    reason?: string;
     track_knowledge: any;
     normalized_position?: number;
     trigger_position?: number;

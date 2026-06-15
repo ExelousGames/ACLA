@@ -72,6 +72,8 @@ class TrackCornerKnowledgeRequest(BaseModel):
     trigger_position: Optional[float] = None
     current_telemetry: Optional[Dict[str, Any]] = None
 
+TRACK_CORNER_UNSUPPORTED_MESSAGE = "Track guide doesn't support the current track right now."
+
 class AnalyzeUserSessionsRequest(BaseModel):
     user_id: str
 
@@ -150,9 +152,23 @@ async def get_track_corner_knowledge(request: TrackCornerKnowledgeRequest) -> Di
         track_key = track_name.lower().replace(" ", "_")
         result = track_lookup(track_key, corner=corner_name)
         if result is None:
-            raise HTTPException(status_code=404, detail=f"track '{track_name}' not in corpus")
+            return {
+                "status": "unsupported",
+                "message": TRACK_CORNER_UNSUPPORTED_MESSAGE,
+                "reason": "track_not_in_corpus",
+                "track_knowledge": None,
+                "normalized_position": request.normalized_position,
+                "trigger_position": request.trigger_position,
+            }
         if result.get("error"):
-            raise HTTPException(status_code=404, detail=result["error"])
+            return {
+                "status": "unsupported",
+                "message": TRACK_CORNER_UNSUPPORTED_MESSAGE,
+                "reason": "corner_not_in_corpus",
+                "track_knowledge": result,
+                "normalized_position": request.normalized_position,
+                "trigger_position": request.trigger_position,
+            }
 
         return {
             "status": "success",

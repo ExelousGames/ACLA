@@ -109,6 +109,10 @@ const findTriggeredCorner = (
     corners.find((corner) => crossedNormalizedPosition(lastPos, currentPos, corner.from));
 
 const extractCornerKnowledgeMessage = (raw: any): string | null => {
+    if (raw?.status === 'unsupported' && typeof raw.message === 'string') {
+        return raw.message;
+    }
+
     const knowledge = raw?.track_knowledge;
     if (!knowledge || knowledge.error) return null;
 
@@ -545,6 +549,18 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 analysisContext?.sendGuidanceToChat(message);
             }
         }).catch((error) => {
+            const errorDetail = error?.data?.message || error?.data?.detail;
+            if (
+                error?.status === 404
+                && typeof errorDetail === 'string'
+                && (
+                    errorDetail.includes('not in corpus')
+                    || (errorDetail.includes('corner') && errorDetail.includes('not found'))
+                )
+            ) {
+                analysisContext?.sendGuidanceToChat("Track guide doesn't support the current track right now.");
+                return;
+            }
             console.warn('Track guide agent knowledge request failed:', error);
         }).finally(() => {
             trackGuideInFlightRef.current = false;
