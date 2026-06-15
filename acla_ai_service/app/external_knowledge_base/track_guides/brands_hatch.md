@@ -1,9 +1,6 @@
 ---
 id: brands_hatch
 name: Brands Hatch GP
-country: United Kingdom
-source: Coach Dave Academy Brands Hatch GP Track Guide
-source_url: https://coachdaveacademy.com/tutorials/brands-hatch-gp-track-guide/
 ---
 
 ## Paddock Hill Bend
