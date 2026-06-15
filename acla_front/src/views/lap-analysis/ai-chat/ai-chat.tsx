@@ -3,11 +3,14 @@ import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
+import apiService from 'services/api.service';
 import {
     createAiCommandRegistry,
     frontendToolSchemas,
     QUERY_SCOPE_SCHEMA,
 } from './ai-command-registry';
+import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
+import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/types';
 import type { OpportunityAgentState } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
@@ -60,6 +63,68 @@ interface AiChatProps {
 const formatClock = (d: Date) =>
     `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 
+const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
+    if (!telemetry) return undefined;
+    const keys = [
+        'Graphics_normalized_car_position',
+        'graphics_normalized_car_position',
+        'normalized_car_position',
+        'car_position',
+    ];
+    for (const key of keys) {
+        if (key in telemetry) {
+            const value = Number(telemetry[key]);
+            if (Number.isFinite(value)) return value;
+        }
+    }
+    return undefined;
+};
+
+const crossedNormalizedPosition = (
+    lastPos: number,
+    currentPos: number,
+    targetPos: number,
+): boolean => {
+    if (currentPos >= lastPos) {
+        return lastPos < targetPos && currentPos >= targetPos;
+    }
+    return lastPos < targetPos || currentPos >= targetPos;
+};
+
+const normalizeCornerNameForKnowledge = (cornerName: string): string =>
+    cornerName.replace(/^T\d+\s+/i, '').trim();
+
+const getTrackNameForGuide = (
+    liveData: Record<string, any>,
+): string | undefined =>
+    typeof liveData.Static_track === 'string' && liveData.Static_track
+        ? liveData.Static_track
+        : undefined;
+
+const findTriggeredCorner = (
+    corners: CornerDefinition[],
+    lastPos: number,
+    currentPos: number,
+): CornerDefinition | undefined =>
+    corners.find((corner) => crossedNormalizedPosition(lastPos, currentPos, corner.from));
+
+const extractCornerKnowledgeMessage = (raw: any): string | null => {
+    const knowledge = raw?.track_knowledge;
+    if (!knowledge || knowledge.error) return null;
+
+    const trackName = knowledge.name || knowledge.id || 'Track';
+    const cornerName = knowledge.corner || 'corner';
+    const detail = knowledge.corner_detail;
+
+    if (typeof detail === 'string' && detail.trim()) {
+        return `${cornerName} (${trackName}): ${detail.trim()}`;
+    }
+    if (Array.isArray(detail) && detail.length > 0) {
+        return `${cornerName} (${trackName}): ${detail.join('. ')}`;
+    }
+    return null;
+};
+
 const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
@@ -107,6 +172,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         lastAlertKey: null,
         lastAlertAt: 0,
     });
+    const trackGuideLastPosRef = useRef<number | undefined>(undefined);
+    const trackGuideInFlightRef = useRef(false);
+    const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -226,10 +294,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     const startTrackGuide = () => {
-        visualizationController.openVisualization('imitation-guidance-chart', {}, {
-            title: 'AI Track Guidance',
-            autoUpdate: true,
-        });
         setTrackGuideEnabled(true);
     };
 
@@ -433,17 +497,59 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     }, [sessionId, messages.length]);
 
     useEffect(() => {
-        const fetchImitationLearningGuidance = async () => {
-            if (!analysisContext?.liveData || !TrackGuideEnabled) return;
-            try {
-                // Handle the response here if needed
-            } catch (error) {
-                console.error('Error fetching imitation learning guidance:', error);
-            }
-        };
+        const liveData = analysisContext?.liveData as Record<string, any> | null;
+        if (!TrackGuideEnabled) {
+            trackGuideLastPosRef.current = undefined;
+            trackGuideTriggeredRef.current.clear();
+            return;
+        }
+        if (!liveData || Object.keys(liveData).length === 0) return;
 
-        fetchImitationLearningGuidance();
-    }, [analysisContext?.liveData, TrackGuideEnabled]);
+        const currentPos = getNormalizedCarPos(liveData);
+        const lastPos = trackGuideLastPosRef.current;
+        if (currentPos === undefined) return;
+        trackGuideLastPosRef.current = currentPos;
+        if (lastPos === undefined) return;
+
+        const trackName = getTrackNameForGuide(liveData);
+        if (!trackName) return;
+
+        const triggeredCorner = findTriggeredCorner(
+            getCornersForTrack(trackName),
+            lastPos,
+            currentPos,
+        );
+        if (!triggeredCorner || trackGuideInFlightRef.current) return;
+
+        const lap = Number(
+            liveData.Graphics_completed_laps
+            ?? liveData.Graphics_completed_lap
+            ?? 0
+        );
+        const triggerPosition = triggeredCorner.from;
+        const triggerKey = `${lap}:${triggerPosition}`;
+        if (trackGuideTriggeredRef.current.has(triggerKey)) return;
+
+        trackGuideTriggeredRef.current.add(triggerKey);
+        trackGuideInFlightRef.current = true;
+
+        apiService.post('/racing-session/track-corner-knowledge', {
+            track_name: trackName,
+            corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
+            normalized_position: currentPos,
+            trigger_position: triggerPosition,
+            current_telemetry: liveData,
+        }).then((response) => {
+            const message = extractCornerKnowledgeMessage(response.data);
+            if (message) {
+                analysisContext?.sendGuidanceToChat(message);
+            }
+        }).catch((error) => {
+            console.warn('Track guide agent knowledge request failed:', error);
+        }).finally(() => {
+            trackGuideInFlightRef.current = false;
+        });
+    }, [analysisContext, analysisContext?.liveData, TrackGuideEnabled]);
 
     // Auto-manage imitation guidance chart visibility
     useEffect(() => {

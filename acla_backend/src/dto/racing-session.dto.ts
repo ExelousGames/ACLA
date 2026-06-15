@@ -123,6 +123,21 @@ export class OpportunityForecastResponseDto {
     circuit_section_match?: any;
 }
 
+export class TrackCornerKnowledgeRequestDto {
+    track_name: string;
+    corner_name: string;
+    normalized_position?: number;
+    trigger_position?: number;
+    current_telemetry?: { [key: string]: any };
+}
+
+export class TrackCornerKnowledgeResponseDto {
+    status: string;
+    track_knowledge: any;
+    normalized_position?: number;
+    trigger_position?: number;
+}
+
 export class SegmentClassificationRequestDto {
     session_id: string;
 }

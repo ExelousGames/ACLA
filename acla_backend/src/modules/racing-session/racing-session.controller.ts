@@ -1,13 +1,13 @@
 import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, HttpException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, TrackCornerKnowledgeRequestDto, TrackCornerKnowledgeResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest, TrackCornerKnowledgeRequest } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -569,6 +569,38 @@ export class RacingSessionController {
             }
             console.error('Opportunity forecast failed:', error);
             throw new BadRequestException(`Failed to get opportunity forecast: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('track-corner-knowledge')
+    async getTrackCornerKnowledge(
+        @Request() req,
+        @Body() body: TrackCornerKnowledgeRequestDto
+    ): Promise<TrackCornerKnowledgeResponseDto> {
+        try {
+            if (!body.track_name) {
+                throw new BadRequestException('track_name is required');
+            }
+            if (!body.corner_name) {
+                throw new BadRequestException('corner_name is required');
+            }
+
+            const knowledgeRequest: TrackCornerKnowledgeRequest = {
+                track_name: body.track_name,
+                corner_name: body.corner_name,
+                normalized_position: body.normalized_position,
+                trigger_position: body.trigger_position,
+                current_telemetry: body.current_telemetry
+            };
+
+            return await this.aiServiceClient.getTrackCornerKnowledge(knowledgeRequest);
+        } catch (error) {
+            if (error instanceof BadRequestException || error instanceof HttpException) {
+                throw error;
+            }
+            console.error('Track corner knowledge failed:', error);
+            throw new BadRequestException(`Failed to get track corner knowledge: ${error.message}`);
         }
     }
 

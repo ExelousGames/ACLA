@@ -110,6 +110,21 @@ export interface OpportunityForecastResponse {
     circuit_section_match?: any;
 }
 
+export interface TrackCornerKnowledgeRequest {
+    track_name: string;
+    corner_name: string;
+    normalized_position?: number;
+    trigger_position?: number;
+    current_telemetry?: { [key: string]: any };
+}
+
+export interface TrackCornerKnowledgeResponse {
+    status: string;
+    track_knowledge: any;
+    normalized_position?: number;
+    trigger_position?: number;
+}
+
 export interface SegmentClassificationRequest {
     session_id?: string;
     telemetry_data: { [key: string]: any }[];
@@ -232,6 +247,23 @@ export class AiServiceClient {
             throw new HttpException(
                 `AI Service opportunity forecast failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async getTrackCornerKnowledge(request: TrackCornerKnowledgeRequest): Promise<TrackCornerKnowledgeResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/track-corner-knowledge`, request);
+            return response.data;
+        } catch (error) {
+            const axiosError = error as any;
+            const detail = axiosError?.response?.data?.detail
+                || axiosError?.response?.data?.message
+                || axiosError?.message;
+            const status = axiosError?.response?.status || HttpStatus.SERVICE_UNAVAILABLE;
+            throw new HttpException(
+                `AI Service track corner knowledge failed: ${detail}`,
+                status
             );
         }
     }

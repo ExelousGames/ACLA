@@ -65,6 +65,13 @@ class OpportunityForecastRequest(BaseModel):
     horizon_seconds: Optional[float] = 10.0
     top_k: Optional[int] = 3
 
+class TrackCornerKnowledgeRequest(BaseModel):
+    track_name: str
+    corner_name: str
+    normalized_position: Optional[float] = None
+    trigger_position: Optional[float] = None
+    current_telemetry: Optional[Dict[str, Any]] = None
+
 class AnalyzeUserSessionsRequest(BaseModel):
     user_id: str
 
@@ -126,6 +133,37 @@ async def get_opportunity_forecast(request: OpportunityForecastRequest) -> Dict[
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Opportunity forecast failed: {str(e)}")
+
+
+@router.post("/track-corner-knowledge")
+async def get_track_corner_knowledge(request: TrackCornerKnowledgeRequest) -> Dict[str, Any]:
+    try:
+        track_name = (request.track_name or "").strip()
+        corner_name = (request.corner_name or "").strip()
+        if not track_name:
+            raise HTTPException(status_code=400, detail="track_name is required")
+        if not corner_name:
+            raise HTTPException(status_code=400, detail="corner_name is required")
+
+        from app.external_knowledge_base import track as track_lookup
+
+        track_key = track_name.lower().replace(" ", "_")
+        result = track_lookup(track_key, corner=corner_name)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"track '{track_name}' not in corpus")
+        if result.get("error"):
+            raise HTTPException(status_code=404, detail=result["error"])
+
+        return {
+            "status": "success",
+            "track_knowledge": result,
+            "normalized_position": request.normalized_position,
+            "trigger_position": request.trigger_position,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Track corner knowledge failed: {str(e)}")
 
 
 @router.post("/segment-classification")

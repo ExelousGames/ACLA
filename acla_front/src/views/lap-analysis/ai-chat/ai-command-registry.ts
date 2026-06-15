@@ -95,10 +95,10 @@ const getTacticalAlertKey = (result: any): string => {
 export const frontendToolSchemas: FrontendToolSchema[] = [
     {
         name: 'start_per_turn_coaching',
-        title: 'Starting per-turn coaching',
+        title: 'Starting track guide agent',
         description:
-            "Activate background per-corner coaching. Observations arrive as " +
-            "'[OBSERVATION]' user turns. Use when driver asks to be coached every corner.",
+            'Activate the background track guide agent. Use when the driver asks for AI guiding, ' +
+            'track guidance, or corner-by-corner coaching during a practice session.',
         properties: {},
         required: [],
     },
@@ -258,11 +258,13 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     // ── Coaching ──────────────────────────────────────────────────────────────
 
     async start_per_turn_coaching() {
-        return { status: 'not_yet_implemented' };
+        context.startTrackGuide();
+        return { status: 'started', agent_mode: 'track_guide', enabled: true };
     },
 
     async stop_per_turn_coaching() {
-        return { status: 'stopped' };
+        context.setTrackGuideEnabled(false);
+        return { status: 'stopped', agent_mode: 'track_guide', enabled: false };
     },
 
     async start_overtake_agent(args, ctx) {
