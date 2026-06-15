@@ -547,8 +547,80 @@ def _arc_path_length_m(x: np.ndarray, y: np.ndarray, entry: int, exit_: int) -> 
     return float(np.sqrt(dx[finite] * dx[finite] + dy[finite] * dy[finite]).sum())
 
 
+def _hairpin_gate_config() -> Dict[str, float]:
+    doc = _segment_type_label(
+        segment_type_role="corner_shape_refinement",
+        shape_key="hairpin",
+    )
+    gate = doc.get("deterministic_gate")
+    if not isinstance(gate, dict):
+        raise RuntimeError("ST10 knowledge label must declare deterministic_gate")
+    required = (
+        "near_u_turn_min_degrees",
+        "tight_average_radius_max_m",
+        "parallel_return_tangent_dot_max",
+    )
+    missing = [key for key in required if key not in gate]
+    if missing:
+        raise RuntimeError(
+            "ST10 deterministic_gate missing required fields: "
+            + ", ".join(missing)
+        )
+    return {key: float(gate[key]) for key in required}
+
+
+def _hairpin_shape_metrics(
+    x: np.ndarray,
+    y: np.ndarray,
+    dx: np.ndarray,
+    dy: np.ndarray,
+    entry: int,
+    exit_: int,
+    turn_deg: float,
+) -> Dict[str, Any]:
+    turn_rad = abs(float(turn_deg)) * np.pi / 180.0
+    arc_length_m = _arc_path_length_m(x, y, entry, exit_)
+    average_radius_m = (
+        float(arc_length_m / turn_rad)
+        if turn_rad > 0.0 and np.isfinite(arc_length_m)
+        else None
+    )
+
+    entry_vec = np.array([dx[entry], dy[entry]], dtype=float)
+    exit_vec = np.array([dx[exit_], dy[exit_]], dtype=float)
+    entry_norm = float(np.linalg.norm(entry_vec))
+    exit_norm = float(np.linalg.norm(exit_vec))
+    if entry_norm > 0.0 and exit_norm > 0.0:
+        tangent_dot = float(np.dot(entry_vec, exit_vec) / (entry_norm * exit_norm))
+    else:
+        tangent_dot = None
+
+    gate = _hairpin_gate_config()
+    is_near_u_turn = turn_deg >= gate["near_u_turn_min_degrees"]
+    is_tight = (
+        average_radius_m is not None
+        and average_radius_m <= gate["tight_average_radius_max_m"]
+    )
+    is_parallel_return = (
+        tangent_dot is not None
+        and tangent_dot <= gate["parallel_return_tangent_dot_max"]
+    )
+    return {
+        "turn_angle_degrees": float(turn_deg),
+        "arc_length_m": float(arc_length_m),
+        "average_radius_m": average_radius_m,
+        "entry_exit_tangent_dot": tangent_dot,
+        "is_near_u_turn": bool(is_near_u_turn),
+        "is_tight": bool(is_tight),
+        "is_parallel_return": bool(is_parallel_return),
+        "is_hairpin": bool(is_near_u_turn and is_tight and is_parallel_return),
+    }
+
+
 def _classify_corner_shape_refinement(
     phases: List[Dict[str, Any]],
+    x: np.ndarray,
+    y: np.ndarray,
     kappa: np.ndarray,
     dx: np.ndarray,
     dy: np.ndarray,
@@ -572,12 +644,18 @@ def _classify_corner_shape_refinement(
         return None
 
     turn_deg = _turn_angle_degrees(dx, dy, entry, exit_)
-    if turn_deg >= 135.0:
-        return _segment_type_label_result(
+    hairpin_metrics = _hairpin_shape_metrics(x, y, dx, dy, entry, exit_, turn_deg)
+    if hairpin_metrics["is_hairpin"]:
+        out = _segment_type_label_result(
             segment_type_role="corner_shape_refinement",
             shape_key="hairpin",
-            reason=f"Estimated direction change is {turn_deg:.1f} degrees.",
+            reason=(
+                "Deterministic corner-shape gate passed "
+                f"(average radius {hairpin_metrics['average_radius_m']:.1f} m)."
+            ),
         )
+        out.update(hairpin_metrics)
+        return out
 
     arc_k = np.abs(kappa[entry: exit_ + 1])
     arc_k = arc_k[np.isfinite(arc_k)]
@@ -608,7 +686,7 @@ def _classify_corner_shape_refinement(
         "entry_median_abs_curvature": first,
         "exit_median_abs_curvature": last,
         "relative_curvature_change": float(rel_change),
-        "turn_angle_degrees": turn_deg,
+        **hairpin_metrics,
     })
     return out
 
@@ -696,7 +774,7 @@ def measure_segment_shape(
     if kin is not None:
         _x_s, _y_s, dx, dy, kappa, _w = kin
         shape["corner_shape_refinement"] = _classify_corner_shape_refinement(
-            phases, kappa, dx, dy,
+            phases, _x_s, _y_s, kappa, dx, dy,
         )
 
     iloc_fields = ("entry", "apex", "exit", "min_speed_iloc", "peak_steer_iloc")

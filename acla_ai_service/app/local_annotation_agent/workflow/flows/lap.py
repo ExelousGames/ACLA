@@ -116,7 +116,6 @@ LAP_REASONING_NOTE_RULE = (
     "competing labels were omitted or the range was revised."
 )
 
-
 def _normalise_revision_bounds(
     *,
     lap_start: int,
