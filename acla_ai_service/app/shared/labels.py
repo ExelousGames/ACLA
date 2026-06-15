@@ -33,7 +33,7 @@ LABEL_MAPPING: Dict[str, str] = {
     "MD": "Missing data",
     "EA": "Expert Adherence (Training)",
     "PS": "Pit Stop",
-    "PS1": "Exit pit lane",
+    
     "RM": "Recovery & Merge",
     "MSP": "Mistake (Practice)",
     "MSR": "Mistake (Racing)",
@@ -44,6 +44,10 @@ LABEL_MAPPING: Dict[str, str] = {
     "O3": "Outside-line sweep",
     "O4": "Switchback",
     "O5": "Slipstream gain on straight",
+
+    ################### Detailed Pit Stop Labels (for label PS) ###################
+    "PS1": "Exit pit lane",
+    
     ################### Detailed Successful Defense Labels (for label OD) ###################
     "OD1": "Inside cover (early-brake defense)",
     "OD2": "Defensive lift on straight",

@@ -101,9 +101,8 @@ def _result_to_dict(result: Any) -> Dict[str, Any]:
 def _dataframe_from_records(records: List[Dict[str, Any]], origin_start: int = 0):
     """Build a DataFrame from only the request's allowed telemetry records.
 
-    The annotation tools address rows by absolute iloc. If the caller sends
-    a sliced segment like rows [1200, 1260), prepend empty rows so iloc 1200
-    maps to the first submitted record without exposing earlier telemetry.
+    The annotation tools address rows by absolute iloc. Keep those absolute
+    coordinates on the dataframe index without manufacturing empty prefix rows.
     """
     # Deferred to avoid importing pandas at module load.
     import pandas as pd
@@ -112,14 +111,16 @@ def _dataframe_from_records(records: List[Dict[str, Any]], origin_start: int = 0
     if origin == 0:
         return df
     df.index = range(origin, origin + len(df))
-    return df.reindex(range(origin + len(df))).reset_index(drop=True)
+    return df
 
 
 def _telemetry_origin(req: _AnnotationRunRequest) -> int:
     if req.flow == "detailed" and req.start_index is not None:
         return int(req.start_index)
-    if req.flow == "lap" and req.lap_start is not None:
-        return int(req.lap_start)
+    if req.flow == "lap":
+        for value in (req.revision_start, req.section_start, req.lap_start):
+            if value is not None:
+                return int(value)
     return 0
 
 

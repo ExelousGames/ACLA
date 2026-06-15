@@ -36,6 +36,20 @@ from app.internal_knowledge_base import skills
 
 LOGGER = logging.getLogger(__name__)
 
+
+def _absolute_iloc_slice(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+) -> pd.DataFrame:
+    """Return rows whose absolute iloc index is in [start_index, end_index)."""
+    s = int(start_index)
+    e = int(end_index)
+    if e <= s:
+        return df.iloc[0:0]
+    return df.loc[(df.index >= s) & (df.index < e)]
+
+
 AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
     {
         "id": "throttle",
@@ -443,7 +457,7 @@ def compute_expert_phases(
     from app.local_annotation_agent.evaluators import PipelineAttachment
 
     start = int(start_index)
-    segment = df.iloc[start: int(end_index)]
+    segment = _absolute_iloc_slice(df, start, int(end_index))
     phases, window = _detect_expert_phases(segment)
 
     iloc_fields = ("entry", "apex", "exit", "min_speed_iloc", "peak_steer_iloc")
@@ -733,7 +747,7 @@ def measure_segment_shape(
 
     start = int(start_index)
     end = int(end_index)
-    segment = df.iloc[start:end]
+    segment = _absolute_iloc_slice(df, start, end)
     phases, window = _detect_expert_phases(segment)
     kin = _smoothed_expert_kinematics(segment)
 
@@ -1219,7 +1233,7 @@ def find_nearest_opponent(
         )
         return _attach(base_payload)
 
-    seg = df.iloc[s:e]
+    seg = _absolute_iloc_slice(df, s, e)
     n_rows = len(seg)
     if n_rows < 2:
         base_payload["message"] = "Range too short for opponent context (need ≥ 2 rows)."
@@ -1424,7 +1438,7 @@ def query_opponent_trajectory(
         base["message"] = f"required columns missing: {missing}"
         return _attach(base)
 
-    seg = df.iloc[s:e]
+    seg = _absolute_iloc_slice(df, s, e)
     n_rows = len(seg)
     if n_rows < 2:
         base["message"] = "range too short (need ≥ 2 rows)"
@@ -1609,7 +1623,7 @@ def classify_opponent_interaction(
         )
         return _attach(base_payload)
 
-    seg = df.iloc[s:e]
+    seg = _absolute_iloc_slice(df, s, e)
     n_rows = len(seg)
     if n_rows < 2:
         base_payload["message"] = "Range too short for opponent classification (need >= 2 rows)."
@@ -2059,7 +2073,7 @@ def _detect_opponent_interaction_windows(
     if e - s < 2 or not required.issubset(df.columns):
         return []
 
-    seg = df.iloc[s:e]
+    seg = _absolute_iloc_slice(df, s, e)
     n_rows = len(seg)
     if n_rows < 2:
         return []
@@ -2562,7 +2576,7 @@ def _has_active_opponent_data(
     """
     from app.shared.telemetry import MAX_CARS
 
-    seg = df.iloc[int(start_index): int(end_index)]
+    seg = _absolute_iloc_slice(df, int(start_index), int(end_index))
     if seg.empty:
         return False
 
@@ -2678,7 +2692,8 @@ def split_lap_by_circuit_sections(
             "unmatched_ilocs": 0,
         })
 
-    pos = df.iloc[s:e][NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
+    segment = _absolute_iloc_slice(df, s, e)
+    pos = segment[NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
     if pos.size == 0:
         return _attach({
             "error": "empty slice",
@@ -2691,7 +2706,7 @@ def split_lap_by_circuit_sections(
 
     completed_laps: Optional[np.ndarray] = None
     if "Graphics_completed_lap" in df.columns:
-        completed_laps = df.iloc[s:e]["Graphics_completed_lap"].to_numpy(dtype=float)
+        completed_laps = segment["Graphics_completed_lap"].to_numpy(dtype=float)
     lap_boundary_ilocs = [
         int(s + offset)
         for offset in _lap_boundary_offsets(pos, completed_laps)
@@ -3046,7 +3061,8 @@ def locate_circuit_section(
             "best_match": None,
         })
 
-    pos = df.iloc[s:e][NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
+    segment = _absolute_iloc_slice(df, s, e)
+    pos = segment[NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
     pos = pos[np.isfinite(pos)]
     if pos.size == 0:
         return _attach({
@@ -4715,7 +4731,7 @@ def render_graph_builds(
     desc_by_id = {d["id"]: (d["title"], d["description"]) for d in AGENT_GRAPH_DEFINITIONS}
     results: List[Tuple[Image.Image, str]] = []
     for gid, table in graph_builds.items():
-        sliced = table.iloc[int(start_index): int(end_index)]
+        sliced = _absolute_iloc_slice(table, int(start_index), int(end_index))
         if sliced.empty:
             continue
         title, desc = desc_by_id.get(gid, (gid, ""))
@@ -4737,7 +4753,7 @@ def generate_telemetry_graphs(
     have raw df in hand and want one-shot build+render. Returns
     ``(PIL.Image, description)`` pairs.
     """
-    segment_df = df.iloc[int(start_index): int(end_index)]
+    segment_df = _absolute_iloc_slice(df, int(start_index), int(end_index))
     if segment_df.empty:
         return []
 

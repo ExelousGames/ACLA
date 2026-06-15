@@ -126,17 +126,14 @@ def _bag_from_kwargs(
 def _bounded_df(df, start: int, end: int):
     """Return a DataFrame exposing only [start, end) telemetry rows.
 
-    Tools use absolute iloc coordinates, so preserve those coordinates by
-    padding earlier rows with empty values instead of passing the full
-    session dataframe through.
+    Tools use absolute iloc coordinates, so preserve those coordinates on the
+    dataframe index while exposing only the requested working window.
     """
     s = int(start)
     e = int(end)
-    bounded = df.iloc[s:e].copy()
-    if s <= 0:
-        return bounded.reset_index(drop=True)
-    bounded.index = range(s, s + len(bounded))
-    return bounded.reindex(range(s + len(bounded))).reset_index(drop=True)
+    if e <= s:
+        return df.iloc[0:0].copy()
+    return df.loc[(df.index >= s) & (df.index < e)].copy()
 
 
 # ---------------------------------------------------------------------------
