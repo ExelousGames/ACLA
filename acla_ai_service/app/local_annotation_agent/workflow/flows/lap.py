@@ -116,6 +116,21 @@ LAP_REASONING_NOTE_RULE = (
     "competing labels were omitted or the range was revised."
 )
 
+REQUIRED_BEHAVIOR_PARENT_LABEL_IDS = ("O", "OD", "MD", "PS", "RM", "MSP", "MSR")
+REQUIRED_BEHAVIOR_PARENT_LABELS = (
+    "{" + ", ".join(REQUIRED_BEHAVIOR_PARENT_LABEL_IDS) + "}"
+)
+
+REQUIRED_BEHAVIOR_PARENT_LABEL_RULE = (
+    "Every saved lap segment must include at least one behavior parent "
+    f"label from {REQUIRED_BEHAVIOR_PARENT_LABELS}. Circuit, "
+    "circuit_section, segment-type, sub-label, and EA labels do not "
+    "satisfy this required-parent rule. If no required behavior parent "
+    "label fits the whole final range after any allowed revision, submit "
+    "an empty label_ids array to drop the range instead of saving a "
+    "parentless segment."
+)
+
 
 def _segment_type_label_rule() -> str:
     return str(
@@ -376,7 +391,8 @@ def _local_planner_prompt(
         "",
         "#### Task",
         "Plan describe_graphs steps gathering evidence to:",
-        "  1. score each main label (EA / MSP / MSR / RM / PS / O / OD / MD) against "
+        "  1. score each required behavior parent label "
+        "(MSP / MSR / RM / PS / O / OD / MD) against "
         "its `characteristics` block in the skill, and",
         "  2. for O / OD / MSR, gather full-range opponent context with "
         "`classify_opponent_interaction` as the mathematical label gate, "
@@ -442,7 +458,7 @@ def _local_synth_prompts(
     )
     verified_inline = (
         ", ".join(verified_labels) if verified_labels
-        else "(none — emit an empty label_ids array)"
+        else "(none — emit an empty label_ids array to drop this range)"
     )
 
     intro = "\n".join([
@@ -480,11 +496,16 @@ def _local_synth_prompts(
         f"The shortlist retrieved for this section is: {verified_inline}. "
         "Pick the parent label(s) from this shortlist by matching the "
         "section's telemetry against each candidate's `characteristics` "
-        "block in the skill. Segment-type picks are OPTIONAL — include "
+        "block in the skill. Every saved segment must include at least "
+        f"one required behavior parent from {REQUIRED_BEHAVIOR_PARENT_LABELS}; "
+        "circuit, circuit_section, segment-type, sub-label, and EA labels "
+        "do not satisfy this requirement. Segment-type picks are OPTIONAL — include "
         "only lap-parent-allowed labels whose base shape or corner-shape "
         "evidence is unambiguous. Do not include any label whose catalog "
-        "metadata says `lap_parent_allowed: false`. At most ONE of "
-        "{EA, MSP, MSR, RM} may be attached.",
+        "metadata says `lap_parent_allowed: false`. If no required "
+        "behavior parent in the shortlist fits the whole final range, "
+        "return an empty `label_ids` array to drop this range. At most ONE of "
+        "{MSP, MSR, RM} may be attached.",
         "",
         "#### Whole-range fit rule",
         WHOLE_RANGE_LABEL_RULE,
@@ -503,6 +524,7 @@ def _local_synth_prompts(
         "Hard rules:",
         f"- revised_range must satisfy {revision_start} <= start < end <= "
         f"{revision_end} and end - start >= 3.",
+        f"- {REQUIRED_BEHAVIOR_PARENT_LABEL_RULE}",
         "- Every main / segment-type / sub label_id must come from the shortlist "
         "above; additionally include the circuit id. Include a "
         "circuit_section id only when it was listed under 'Range under "
@@ -510,7 +532,8 @@ def _local_synth_prompts(
         f"- {WHOLE_RANGE_LABEL_RULE}",
         f"- {LAP_REASONING_NOTE_RULE}",
         f"- {_segment_type_label_rule()}",
-        "- An empty label_ids array is the valid 'drop this section' signal.",
+        "- An empty label_ids array is the valid 'drop this section' signal, "
+        "not a saved annotation without a required behavior parent.",
     ])
 
     return intro, outro
@@ -550,7 +573,7 @@ def _tool_agent_task_prompt(
         "rough iloc boundary; if this is an opponent interaction window, "
         "the boundary is event-shaped and circuit sections are context only. "
         "Your job is to pick the circuit id, optional circuit_section id, "
-        "one main label when evidence supports it, optional "
+        "at least one required behavior parent label for any saved segment, optional "
         "lap-parent-allowed segment-type labels, and an optional matching "
         "sub-label.\n"
         "\n"
@@ -573,7 +596,7 @@ def _tool_agent_task_prompt(
         "values, opponent interaction, segment shape). Execute selected "
         "capability IDs with `run_annotation_tool`.\n"
         "3. Discover every non-circuit candidate with `search_labels` using "
-        "plain-language observations. Query `types=\"main\"` for the main "
+        "plain-language observations. Query `types=\"main\"` for the required behavior parent "
         "label, `types=\"segment_type\"` for segment-type labels, and "
         "`parent_id` for sub-labels under a chosen main label. Do not "
         "submit labels whose returned catalog metadata says "
@@ -598,22 +621,25 @@ def _tool_agent_task_prompt(
         "}\n"
         "```\n"
         "`label_ids` carries the circuit id, optional circuit_section id, "
-        "and your main / segment-type / sub picks together. An empty "
-        "`label_ids` array is a valid 'drop this section' signal. The runner reports back "
+        "and your main / segment-type / sub picks together. Every saved "
+        f"segment must contain at least one of {REQUIRED_BEHAVIOR_PARENT_LABELS}; "
+        "otherwise submit an empty `label_ids` array as the valid "
+        "'drop this section' signal. The runner reports back "
         "the final iloc range (your initial range or whatever "
         "`revise_range` set last).\n"
         "\n"
         "### Hard rules\n"
         f"- Final range must satisfy {revision_start} <= start < end <= {revision_end} and be ≥ 3 ilocs.\n"
+        f"- {REQUIRED_BEHAVIOR_PARENT_LABEL_RULE}\n"
         "- Do not invent label IDs; circuit / circuit_section ids must come "
         "from capability results, every other id from a `search_labels` "
         "response.\n"
         "- Include a circuit_section id only when it is unambiguous.\n"
-        "- At most one of {EA, MSP, MSR, RM} may be attached.\n"
+        "- At most one of {MSP, MSR, RM} may be attached.\n"
         f"- {WHOLE_RANGE_LABEL_RULE}\n"
         f"- {LAP_REASONING_NOTE_RULE}\n"
         "- In opponent-only windows, use O / OD / MSR or submit an empty "
-        "`label_ids` array.\n"
+        "`label_ids` array to drop the range.\n"
         "- For time-delta and offset evidence, cite deterministic tool "
         "verdict fields (unit, materiality, end-window trend); do not "
         "create strength judgments from raw numbers.\n"
@@ -978,6 +1004,17 @@ def _clean_label_ids(
             })
             continue
         allowed.append(label_id)
+    if allowed and not any(
+        label_id in REQUIRED_BEHAVIOR_PARENT_LABEL_IDS for label_id in allowed
+    ):
+        rejected.append({
+            "value": allowed,
+            "reason": (
+                "saved lap segments require at least one behavior parent "
+                f"label from {REQUIRED_BEHAVIOR_PARENT_LABELS}"
+            ),
+        })
+        return [], rejected
     return allowed, rejected
 
 
