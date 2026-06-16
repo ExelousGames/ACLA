@@ -63,6 +63,21 @@ def lap_annotation_prompt(session_context: str = "practice") -> str:
         "",
     ]
 
+    action_model = skills.get("lap_annotation.action_model", {})
+    if isinstance(action_model, dict):
+        model_lines = [
+            str(action_model.get("parent_segment", "")).strip(),
+            str(action_model.get("action", "")).strip(),
+            str(action_model.get("child_segment", "")).strip(),
+        ]
+        model_lines = [line for line in model_lines if line]
+        if model_lines:
+            lines.extend([
+                "##### Segment / Action Model",
+                *model_lines,
+                "",
+            ])
+
     for entry in labels:
         lid = entry["id"]
         name = entry.get("name", lid)
@@ -679,12 +694,10 @@ def _local_synth_prompts(
         "circuit_section id only when it was listed under 'Range under "
         "review' or returned by `locate_circuit_section`.",
         f"- {WHOLE_RANGE_LABEL_RULE}",
-        "- Apply the segment completeness rule from "
-        "`lap_annotation.global_rules_by_session.common`: a corner-entry "
-        "parent segment must "
-        "include the complete driver/expert brake action, and a corner-exit "
-        "parent segment must include the complete driver/expert throttle "
-        "action. Do not treat this as optional sub-label evidence.",
+        "- Apply the segment/action model and segment completeness rules "
+        "from `lap_annotation.action_model` and "
+        "`lap_annotation.global_rules_by_session.common`. Do not treat "
+        "complete action-group evidence as optional sub-label evidence.",
         f"- {LAP_REASONING_NOTE_RULE}",
         f"- {_segment_type_label_rule()}",
         "- An empty label_ids array is the valid 'drop this section' signal, "
@@ -813,12 +826,10 @@ def _tool_agent_task_prompt(
         "- Include a circuit_section id only when it is unambiguous.\n"
         f"- {_mode_exclusion_rule(session_context)}\n"
         f"- {WHOLE_RANGE_LABEL_RULE}\n"
-        "- Apply the segment completeness rule from "
-        "`lap_annotation.global_rules_by_session.common`: a corner-entry "
-        "parent segment must "
-        "include the complete driver/expert brake action, and a corner-exit "
-        "parent segment must include the complete driver/expert throttle "
-        "action. Do not treat this as optional sub-label evidence.\n"
+        "- Apply the segment/action model and segment completeness rules "
+        "from `lap_annotation.action_model` and "
+        "`lap_annotation.global_rules_by_session.common`. Do not treat "
+        "complete action-group evidence as optional sub-label evidence.\n"
         f"- {LAP_REASONING_NOTE_RULE}\n" +
         mode_submit_rule +
         "- For time-delta and offset evidence, cite deterministic tool "

@@ -54,6 +54,14 @@ def test_lap_tool_agent_request_starts_at_section_not_full_lap():
     assert request.extra_state["tool_agent_revision_bounds"]["end"] == 25
 
 
+def test_lap_annotation_prompt_includes_segment_action_model():
+    prompt = lap_flow.lap_annotation_prompt("practice")
+
+    assert "Segment / Action Model" in prompt
+    assert "parent segment is a group of one or more complete driving actions" in prompt
+    assert "turning / trajectory, throttle input, and brake input" in prompt
+
+
 def test_lap_parse_rejects_result_outside_revision_envelope():
     response = AgentResponse(
         raw_response=json.dumps({

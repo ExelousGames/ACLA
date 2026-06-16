@@ -15,6 +15,11 @@
       "characteristics"
     ]
   },
+  "action_model": {
+    "parent_segment": "A saved lap parent segment is a group of one or more complete driving actions that together justify the behavior parent label over the final iloc range. It is not an arbitrary graph slice, a single apex moment, or one isolated label symptom.",
+    "action": "An action is a coherent driver/expert maneuver over an iloc interval, evaluated through the related turning / trajectory, throttle input, and brake input for that same interval. Turning may be straight, constant, increasing, or unwinding; throttle and brake may be applied, released, modulated, held steady, or intentionally zero.",
+    "child_segment": "Detailed child sub-segments may isolate a smaller action or phase for sub-labels, but the lap parent segment remains the action group that gives the parent behavior its context."
+  },
   "labels": {
     "EA": {
       "name": "Expert Adherence (Training)",
@@ -56,7 +61,7 @@
       "Pick MSP for a technical driving mistake, RM for recovery from a prior mistake, PS for pit-lane procedure, or MD for missing / corrupt telemetry.",
       "Use `find_trend_runs` and `compute_slope` on `expert_time_difference` for material time-loss / recovery evidence. A constant carried gap is not a new mistake or recovery.",
       "Use `find_extremum` on `trajectory_offset` for peak deviation plus returned near-zero summary (`near_zero_fraction`, `starts_near_zero`, `ends_near_zero`, `moves_toward_zero`).",
-      "Driver/expert brake or throttle comparison is required for segment completeness at entry or exit, not only for sub-labels."
+      "Driver/expert turning / trajectory, brake, and throttle comparison is required for segment completeness at entry or exit, not only for sub-labels."
     ],
     "racing": [
       "Sessions with opponent data are processed only as close overtake offence / defense engagement windows.",
@@ -75,9 +80,12 @@
       "Call `get_circuit_id` and `locate_circuit_section` for circuit context. Include circuit / circuit_section ids only when an eligible behavior parent is also included.",
       "When `locate_circuit_section` reports `is_ambiguous`, disambiguate from `top_matches` with a second signal (persistent lateral offset, brake pattern, or speed trace) rather than guessing.",
       "Whole-range label rule: every behavior, segment-type, and sub-label must describe the final annotation range as a whole. Do not attach a label because it matches only one phase, one apex moment, or a short slice inside the range; revise the range so the label fits throughout, omit that label, or leave it for detailed child sub-segment annotation.",
-      "Segment completeness rule: a saved parent segment around corner entry or exit must keep the full control action that defines that phase.",
-      "For entry, include the complete brake action made by the driver and the comparable expert brake action: first relevant application / onset before turn-in through brake release / end of braking or the stable post-brake transition.",
-      "For exit, include the complete throttle action made by the driver and the comparable expert throttle action: first relevant reapplication or lift point through the stabilized exit / full-throttle state.",
+      "Segment model: a saved lap parent segment is a group of one or more complete driving actions that together justify the behavior parent label over the final iloc range; it is not an arbitrary graph slice, a single apex moment, or one isolated label symptom.",
+      "Action model: each action must be evaluated as the related turning / trajectory, throttle input, and brake input over the same iloc interval. Zero or steady throttle / brake still count as input states when they explain the action.",
+      "Segment completeness rule: the parent segment must keep the complete action group needed for the chosen behavior parent. Do not clip the turning, throttle, or brake portion that makes the action understandable.",
+      "For entry actions, include the relevant turn-in / entry trajectory plus the complete brake action made by the driver and the comparable expert brake action: first relevant application / onset before turn-in through brake release / end of braking or the stable post-brake transition.",
+      "For exit actions, include the relevant exit / unwind trajectory plus the complete throttle action made by the driver and the comparable expert throttle action: first relevant reapplication or lift point through the stabilized exit / full-throttle state.",
+      "Before scoring the final parent label, identify the complete action or action group inside the proposed parent segment and cite the turning / trajectory, throttle, and brake evidence that makes it complete.",
       "Bounds must come from these knowledge-base rules plus deterministic tool results over `Physics_brake` / `Physics_gas` and `expert_optimal_brake` / `expert_optimal_throttle`; do not substitute remembered conventions, graph-only guesses, arbitrary padding, or fallback bounds.",
       "If deterministic results do not establish the full action interval inside the allowed revision envelope, submit `label_ids: []` rather than saving an incomplete parent segment.",
       "Render diagnostic graphs needed for the eligible labels. Use `trajectory_offset`, `expert_time_difference`, brake / throttle / speed, and deterministic telemetry queries as evidence.",
