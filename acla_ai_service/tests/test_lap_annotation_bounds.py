@@ -60,6 +60,8 @@ def test_lap_annotation_prompt_includes_segment_action_model():
     assert "Segment / Action Model" in prompt
     assert "parent segment is a group of one or more complete driving actions" in prompt
     assert "turning / trajectory, throttle input, and brake input" in prompt
+    assert "Every behavior, segment-type, and sub-label" in prompt
+    assert "describe the final annotation range as a whole" in prompt
 
 
 def test_lap_parse_rejects_result_outside_revision_envelope():
