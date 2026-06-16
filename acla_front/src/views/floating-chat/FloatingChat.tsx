@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import './floating-chat.css';
 
 /**
@@ -32,18 +32,27 @@ interface PillPayload {
     name?: string;
     /** Emotion tag emitted by the AI (e.g. "vibing", "sad"). */
     emotion?: string;
+    /** Active agent tags to display beside the assistant label. */
+    tags?: string[];
 }
 
 const parsePayload = (raw: string | null): PillPayload | null => {
     if (!raw) return null;
     try {
         const obj = JSON.parse(raw);
-        if (typeof obj?.text === 'string' && obj.text.trim()) {
+        const text = typeof obj?.text === 'string' ? obj.text.trim() : '';
+        const tags = Array.isArray(obj.tags)
+            ? obj.tags.filter((tag: unknown): tag is string => typeof tag === 'string' && !!tag.trim())
+            : typeof obj.tag === 'string' && obj.tag.trim()
+                ? [obj.tag]
+                : undefined;
+        if (text || tags) {
             return {
-                text: obj.text,
+                text,
                 ts: Number(obj.ts) || Date.now(),
                 name: typeof obj.name === 'string' ? obj.name : undefined,
                 emotion: typeof obj.emotion === 'string' ? obj.emotion : undefined,
+                tags,
             };
         }
     } catch {
@@ -64,6 +73,7 @@ const FloatingChat: React.FC = () => {
     const [name, setName] = useState('ACLA');
     const [targetWidth, setTargetWidth] = useState<number>(MIN_W);
     const [currentEmotion, setCurrentEmotion] = useState<string | null>(null);
+    const [agentTags, setAgentTags] = useState<string[]>([]);
     const [emotionGifs, setEmotionGifs] = useState<Record<string, string>>(readEmotionGifs);
 
     const sizerRef = useRef<HTMLSpanElement>(null);
@@ -74,8 +84,9 @@ const FloatingChat: React.FC = () => {
     const caretTimerRef = useRef<number | null>(null);
     const emoteRevertTimerRef = useRef<number | null>(null);
     const lastTsRef = useRef<number>(0);
+    const latestAgentTagsRef = useRef<string[]>([]);
 
-    const clearTimers = () => {
+    const clearTimers = useCallback(() => {
         if (hideTimerRef.current !== null) {
             window.clearTimeout(hideTimerRef.current);
             hideTimerRef.current = null;
@@ -92,20 +103,20 @@ const FloatingChat: React.FC = () => {
             window.clearTimeout(emoteRevertTimerRef.current);
             emoteRevertTimerRef.current = null;
         }
-    };
+    }, []);
 
-    const measure = (text: string): number => {
+    const measure = useCallback((text: string, tags: string[] = []): number => {
         const sizer = sizerRef.current;
         if (!sizer) return MIN_W;
-        sizer.textContent = text;
+        sizer.textContent = `${tags.join(' ')} ${text}`.trim();
         const textW = sizer.getBoundingClientRect().width;
         return Math.max(MIN_W, Math.min(MAX_W, Math.ceil(textW + CHROME)));
-    };
+    }, []);
 
-    const resetScroll = () => {
+    const resetScroll = useCallback(() => {
         const inner = msgInnerRef.current;
         if (inner) inner.style.transform = 'translateX(0)';
-    };
+    }, []);
 
     /** Scroll the text so the newest character is always visible. Called
      *  after each typed-text update; the CSS transition smooths the shift
@@ -118,8 +129,10 @@ const FloatingChat: React.FC = () => {
         inner.style.transform = `translateX(${overflow > 0 ? -overflow : 0}px)`;
     };
 
-    const shrink = () => {
+    const shrink = useCallback(() => {
         clearTimers();
+        const tags = latestAgentTagsRef.current;
+        setTargetWidth(tags.length ? measure('', tags) : MIN_W);
         setOpen(false);
         setShowCaret(false);
         // Wait for the collapse transition to finish before clearing text so
@@ -129,19 +142,32 @@ const FloatingChat: React.FC = () => {
             setCurrentEmotion(null);
             resetScroll();
         }, 400);
-    };
+    }, [clearTimers, measure, resetScroll]);
 
-    const speak = (text: string, displayName?: string, emotion?: string) => {
+    const setPersistentTags = useCallback((tags: string[] = []) => {
+        latestAgentTagsRef.current = tags;
+        setAgentTags(tags);
+        setTargetWidth(tags.length ? measure('', tags) : MIN_W);
+    }, [measure]);
+
+    const speak = useCallback((text: string, displayName?: string, emotion?: string, tags: string[] = []) => {
         clearTimers();
         setName(displayName || 'ACLA');
         setCurrentEmotion(emotion ?? null);
+        setPersistentTags(tags);
+        if (!text.trim()) {
+            setShowCaret(false);
+            setDisplayText('');
+            setOpen(false);
+            return;
+        }
         if (emotion && emotion !== 'idle') {
             emoteRevertTimerRef.current = window.setTimeout(() => {
                 setCurrentEmotion(null);
                 emoteRevertTimerRef.current = null;
             }, EMOTE_HOLD_MS);
         }
-        setTargetWidth(measure(text));
+        setTargetWidth(measure(text, tags));
         setOpen(true);
         setDisplayText('');
         setShowCaret(true);
@@ -162,7 +188,7 @@ const FloatingChat: React.FC = () => {
                 hideTimerRef.current = window.setTimeout(shrink, POST_TYPE_HOLD_MS);
             }
         }, TYPE_INTERVAL_MS);
-    };
+    }, [clearTimers, measure, setPersistentTags, shrink]);
 
     // Subscribe to cross-window messages. The 'storage' event only fires in
     // OTHER windows that share the same origin/partition — perfect for the
@@ -174,10 +200,14 @@ const FloatingChat: React.FC = () => {
     // double-mount (the cleanup would clear the typing/shrink timers from
     // the first run, leaving the pill stuck open with no timer to close it).
     useEffect(() => {
-        // Seed lastTsRef from whatever's in storage so the FIRST genuine new
-        // event is always strictly greater. This avoids replaying old state.
+        // Seed only lastTsRef from storage so the FIRST genuine new event is
+        // always strictly greater. Do not seed tags here: localStorage is
+        // stale across app/overlay restarts, while agent activation is live
+        // in-memory state owned by the main chat window.
         const seed = parsePayload(localStorage.getItem(SHARED_KEY));
-        if (seed) lastTsRef.current = seed.ts;
+        if (seed) {
+            lastTsRef.current = seed.ts;
+        }
 
         const onStorage = (event: StorageEvent) => {
             if (event.key === EMOTION_GIFS_KEY) {
@@ -189,14 +219,14 @@ const FloatingChat: React.FC = () => {
             if (!payload) return;
             if (payload.ts <= lastTsRef.current) return;
             lastTsRef.current = payload.ts;
-            speak(payload.text, payload.name, payload.emotion);
+            speak(payload.text, payload.name, payload.emotion, payload.tags);
         };
         window.addEventListener('storage', onStorage);
         return () => {
             window.removeEventListener('storage', onStorage);
             clearTimers();
         };
-    }, []);
+    }, [clearTimers, measure, speak]);
 
     // Roll the typed text after every paint so the caret stays visible.
     // useLayoutEffect runs synchronously post-DOM mutation, so we measure
@@ -204,6 +234,8 @@ const FloatingChat: React.FC = () => {
     useLayoutEffect(() => {
         updateScroll();
     }, [displayText, open]);
+
+    const tagged = agentTags.length > 0;
 
     // Track the OS window size to the pill so there's no transparent area
     // outside the pill (which would show the title bar of whatever sits
@@ -215,13 +247,13 @@ const FloatingChat: React.FC = () => {
         const api = (window as unknown as { electronAPI?: { resizeFloatingChat?: (w: number, h: number) => void } }).electronAPI;
         const resize = api?.resizeFloatingChat;
         if (!resize) return;
-        if (open) {
+        if (open || tagged) {
             resize(targetWidth, 72);
             return;
         }
         const t = window.setTimeout(() => resize(72, 72), 720);
         return () => window.clearTimeout(t);
-    }, [open, targetWidth]);
+    }, [open, tagged, targetWidth]);
 
     // Click the pill itself to dismiss when it's open.
     const handlePillClick = () => {
@@ -235,7 +267,7 @@ const FloatingChat: React.FC = () => {
     return (
         <div className="floating-pill-stage">
             <div
-                className={`pill${open ? ' open' : ''}`}
+                className={`pill${open ? ' open' : ''}${tagged ? ' tagged' : ''}`}
                 style={pillStyle}
                 onClick={handlePillClick}
                 aria-live="polite"
@@ -248,7 +280,12 @@ const FloatingChat: React.FC = () => {
                     })()}
                 </div>
                 <div className="body">
-                    <div className="name">{name}</div>
+                    <div className="name-row">
+                        <span className="name">{name}</span>
+                        {agentTags.map((tag) => (
+                            <span key={tag} className="agent-tag">{tag}</span>
+                        ))}
+                    </div>
                     <div className="msg" ref={msgRef}>
                         <span className="msg-inner" ref={msgInnerRef}>
                             {displayText}

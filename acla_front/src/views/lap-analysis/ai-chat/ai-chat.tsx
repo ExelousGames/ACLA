@@ -178,6 +178,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     });
     const trackGuideLastPosRef = useRef<number | undefined>(undefined);
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
+    const activeAgentTagsRef = useRef<string[]>([]);
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -194,6 +195,43 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const generateUniqueId = useCallback((prefix: string = 'msg') => {
         return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
     }, []);
+
+    const broadcastPillMessage = useCallback((text: string, options: { emotion?: Emotion | null; tags?: string[] } = {}) => {
+        try {
+            const pillText = text
+                .replace(/\*\*(.*?)\*\*/g, '$1')
+                .replace(/\*(.*?)\*/g, '$1')
+                .replace(/`(.*?)`/g, '$1')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 280);
+            if (pillText || options.tags !== undefined) {
+                localStorage.setItem('acla-pill-msg', JSON.stringify({
+                    text: pillText,
+                    ts: Date.now(),
+                    emotion: options.emotion ?? undefined,
+                    tags: options.tags ?? activeAgentTagsRef.current,
+                }));
+            }
+        } catch { /* ignore storage write failures */ }
+    }, []);
+
+    const setAgentTag = useCallback((tag: string, active: boolean) => {
+        const current = activeAgentTagsRef.current;
+        const next = active
+            ? Array.from(new Set([...current, tag]))
+            : current.filter((item) => item !== tag);
+        if (next.length === current.length && next.every((item, index) => item === current[index])) {
+            return;
+        }
+        activeAgentTagsRef.current = next;
+        broadcastPillMessage('', { tags: next });
+    }, [broadcastPillMessage]);
+
+    useEffect(() => {
+        activeAgentTagsRef.current = [];
+        broadcastPillMessage('', { tags: [] });
+    }, [broadcastPillMessage]);
 
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
@@ -231,22 +269,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             // Broadcast to the floating pill overlay (separate Electron window).
             // 'storage' events fire in other same-origin BrowserWindows but not
             // in the window that writes — perfect one-way fanout.
-            try {
-                const pillText = cleanText
-                    .replace(/\*\*(.*?)\*\*/g, '$1')
-                    .replace(/\*(.*?)\*/g, '$1')
-                    .replace(/`(.*?)`/g, '$1')
-                    .replace(/\s+/g, ' ')
-                    .trim()
-                    .slice(0, 280);
-                if (pillText) {
-                    localStorage.setItem('acla-pill-msg', JSON.stringify({
-                        text: pillText,
-                        ts: Date.now(),
-                        emotion: emotion ?? undefined,
-                    }));
-                }
-            } catch { /* ignore storage write failures */ }
+            broadcastPillMessage(cleanText, { emotion });
             return;
         }
         if (event.kind === 'tool_event') {
@@ -312,6 +335,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             opportunityAgentState: opportunityAgentStateRef.current,
             startTrackGuide,
             setTrackGuideEnabled,
+            setAgentTagActive: setAgentTag,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
         }),
     });

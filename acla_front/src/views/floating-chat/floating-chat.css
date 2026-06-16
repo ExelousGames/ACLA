@@ -99,6 +99,11 @@ html, body, #root, .App {
     padding-right: 26px;
 }
 
+.pill.tagged:not(.open) {
+    width: var(--target-w, 220px);
+    padding-right: 18px;
+}
+
 /* Avatar — always visible */
 .pill .avatar {
     width: var(--avatar);
@@ -167,12 +172,41 @@ html, body, #root, .App {
     transition-delay: 180ms;
 }
 
+.pill.tagged:not(.open) .body {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.pill .name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
 .pill .name {
     font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 10px;
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--pill-violet-soft);
+}
+
+.pill .agent-tag {
+    max-width: 112px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border: 1px solid rgba(232, 255, 58, 0.42);
+    border-radius: 999px;
+    padding: 1px 6px;
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 9px;
+    letter-spacing: 0;
+    line-height: 1.2;
+    text-transform: uppercase;
+    color: var(--pill-accent);
+    background: rgba(232, 255, 58, 0.1);
 }
 
 .pill .msg {
@@ -183,6 +217,10 @@ html, body, #root, .App {
     color: var(--pill-ink);
     overflow: hidden;
     user-select: text;  /* let the user copy text from the pill */
+}
+
+.pill.tagged:not(.open) .msg {
+    display: none;
 }
 
 /* Inner ribbon — slides left so the latest typed character is always

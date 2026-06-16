@@ -13,6 +13,7 @@ export interface AiCommandRegistryContext {
     opportunityAgentState: OpportunityAgentState;
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
+    setAgentTagActive?: (tag: string, active: boolean) => void;
     getOpportunityTelemetryRows: () => Record<string, any>[];
 }
 
@@ -259,11 +260,13 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
     async start_per_turn_coaching() {
         context.startTrackGuide();
+        context.setAgentTagActive?.('Track Guide', true);
         return { status: 'started', agent_mode: 'track_guide', enabled: true };
     },
 
     async stop_per_turn_coaching() {
         context.setTrackGuideEnabled(false);
+        context.setAgentTagActive?.('Track Guide', false);
         return { status: 'stopped', agent_mode: 'track_guide', enabled: false };
     },
 
@@ -275,6 +278,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
         const agent = context.opportunityAgentState;
         if (agent.intervalId) {
+            context.setAgentTagActive?.('Overtake', true);
             return { status: 'already_running', agent_mode: 'overtake' };
         }
 
@@ -324,6 +328,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         agent.intervalId = setInterval(() => {
             void runTacticalCycle(true);
         }, intervalSeconds * 1000);
+        context.setAgentTagActive?.('Overtake', true);
 
         return {
             status: 'started',
@@ -342,6 +347,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         agent.inFlight = false;
         agent.lastAlertKey = null;
         agent.lastAlertAt = 0;
+        context.setAgentTagActive?.('Overtake', false);
         return { status: 'stopped', agent_mode: 'overtake' };
     },
 
@@ -365,11 +371,13 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
     async track_detail_for_guide() {
         context.startTrackGuide();
+        context.setAgentTagActive?.('Track Guide', true);
         return { status: 'guidance_enabled', enabled: true };
     },
 
     async disable_guide_user_racing() {
         context.setTrackGuideEnabled(false);
+        context.setAgentTagActive?.('Track Guide', false);
         return { status: 'guidance_disabled', enabled: false };
     },
 
