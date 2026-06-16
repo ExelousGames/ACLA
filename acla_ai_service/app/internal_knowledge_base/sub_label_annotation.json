@@ -85,8 +85,8 @@
     "PS": {
       "name": "Pit Stop",
       "type": "main",
-      "description": "Driver entering, waiting in, or exiting the pit lane. Prefer direct pit-state signals: `Physics_pit_limiter_on`, `Graphics_is_in_pit_lane`, or `Graphics_is_in_pit`. Without those signals, require position evidence that the segment overlaps the circuit's known pit entry, pit lane, or pit-exit corridor; dramatic speed reduction, trajectory deviation, pit-limiter speed, or acceleration back toward track speed are supporting evidence only after the position check passes.\n",
-      "annotation_guideline": "How to identify the sublabels for Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Use PS for pit-lane procedure, not RM. First verify direct pit flags or compatible pit-entry/pit-lane/pit-exit position. Add PS1 when the segment is specifically pit exit: pit-limiter speed transitions into acceleration back toward track speed after leaving the pit lane, and the position is compatible with pit exit.\n",
+      "description": "Driver entering, waiting in, or exiting the pit lane. Require available pit evidence: `Graphics_is_in_pit` or position evidence that the segment overlaps the circuit's known pit entry, pit lane, or pit-exit corridor. Do not label PS from dramatic speed reduction, trajectory deviation, or acceleration back toward track speed alone.\n",
+      "annotation_guideline": "How to identify the sublabels for Pit Stop: The driver is entering, waiting in, or exiting the pit lane. Use PS for pit-lane procedure, not RM. First verify `Graphics_is_in_pit` or compatible pit-entry/pit-lane/pit-exit position. Add PS1 when the segment is specifically pit exit: the position is compatible with pit exit and the car accelerates back toward track speed after leaving the pit lane.\n",
       "parent": null,
       "children": [
         "PS1"
@@ -213,7 +213,7 @@
     "PS1": {
       "name": "Exit pit lane",
       "type": "sub",
-      "description": "Driver re-joining the track after a pit stop - the segment position overlaps the circuit's pit-exit corridor, the speed trace rises from pit-limiter speed (an **acceleration onset** well below normal corner-exit speed), pit-lane flags switch off when available, and the car follows the pit-exit path back toward track speed. This is pit procedure, not recovery from a mistake. Do not infer PS1 from low speed plus wide trajectory alone when the position is a normal racing section away from pit exit.\n",
+      "description": "Driver re-joining the track after a pit stop - the segment position overlaps the circuit's pit-exit corridor, the speed trace rises from low pit-exit speed (an **acceleration onset** well below normal corner-exit speed), `Graphics_is_in_pit` clears when available, and the car follows the pit-exit path back toward track speed. This is pit procedure, not recovery from a mistake. Do not infer PS1 from low speed plus wide trajectory alone when the position is a normal racing section away from pit exit.\n",
       "parent": "PS",
       "children": [],
       "exclusive_with": []

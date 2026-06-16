@@ -212,7 +212,6 @@ class TelemetryFeatures:
         "Physics_car_damage_center",
         "Physics_suspension_damage_front_left",
         "Physics_velocity_y",
-        "Physics_pit_limiter_on",
         "Physics_tyre_contact_normal_front_left_y",
         "Physics_packed_id",
         "Physics_wheel_slip_front_left",
@@ -246,7 +245,6 @@ class TelemetryFeatures:
         "Graphics_session_index",
         "Graphics_driver_stint_time_left",
         "Graphics_global_green",
-        "Graphics_is_in_pit_lane",
         "Graphics_global_chequered",
         "Graphics_global_red",
         "Graphics_current_sector_index",
@@ -508,7 +506,6 @@ class TelemetryFeatures:
             "Graphics_global_yellow_s1",
             "Graphics_global_yellow_s2",
             "Graphics_global_yellow_s3",
-            "Graphics_is_in_pit_lane",
             "Physics_tc",
             "Physics_abs"
         ]
@@ -1057,9 +1054,9 @@ class FeatureProcessor:
         
         # Handle boolean fields that might be strings
         boolean_fields = [
-            'Physics_pit_limiter_on', 'Physics_autoshifter_on', 'Physics_is_ai_controlled',
+            'Physics_autoshifter_on', 'Physics_is_ai_controlled',
             'Physics_ignition_on', 'Physics_starter_engine_on', 'Physics_is_engine_running',
-            'Graphics_is_in_pit', 'Graphics_ideal_line_on', 'Graphics_is_in_pit_lane',
+            'Graphics_is_in_pit', 'Graphics_ideal_line_on',
             'Graphics_mandatory_pit_done', 'Graphics_is_setup_menu_visible',
             'Graphics_rain_light', 'Graphics_flashing_light', 'Graphics_is_delta_positive',
             'Graphics_is_valid_lap', 'Graphics_direction_light_left', 'Graphics_direction_light_right',

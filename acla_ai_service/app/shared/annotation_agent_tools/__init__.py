@@ -3046,8 +3046,8 @@ def locate_circuit_section(
     in yet. ``best_match`` is set ONLY when the leading entry's
     ``overlap_fraction`` clears the runner-up by ``AMBIGUOUS_MARGIN``;
     otherwise ``is_ambiguous`` is true and the caller must disambiguate
-    using a second telemetry signal (pit-limiter speed, lateral offset,
-    brake pattern, etc.).
+    using a second telemetry signal (lateral offset, brake pattern, speed
+    trace, etc.).
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.internal_knowledge_base.label_lookup import find_labels
@@ -3237,8 +3237,8 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "the runner-up by a clear margin. When 'is_ambiguous' is true "
             "(e.g. pit lane and the adjacent straight share a normalized "
             "position range), enumerate 'top_matches' and disambiguate "
-            "with a second signal (pit-limiter speed, persistent lateral "
-            "offset, brake pattern). Use whenever you need to label which "
+            "with a second signal (persistent lateral offset, brake pattern, "
+            "speed trace). Use whenever you need to label which "
             "named corner / straight the segment is on — never guess from "
             "telemetry shape alone."
         ),
