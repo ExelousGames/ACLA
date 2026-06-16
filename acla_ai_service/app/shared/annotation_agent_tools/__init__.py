@@ -199,8 +199,8 @@ def _make_colored_line_collection(
 # drive erratically mid-corner, so player-derived phases are unreliable.
 # The same iloc identifies the same telemetry sample on both lines.
 #
-# Algorithm (track-data-free): smooth the expert (x, y) trace, compute
-# signed parametric curvature κ = (x'·y'' − y'·x'') / (x'² + y'²)^(3/2),
+# Algorithm (track-data-free): use the expert (x, y) trace as provided,
+# compute signed parametric curvature κ = (x'·y'' − y'·x'') / (x'² + y'²)^(3/2),
 # and split the segment into arcs where |κ| exceeds a noise threshold and
 # sign(κ) is constant. Each arc yields one (entry, apex, exit) — chicanes
 # and esses naturally produce multiple arcs of opposite sign. Apex is the
@@ -233,19 +233,18 @@ def _moving_average(arr: np.ndarray, window: int) -> np.ndarray:
     return np.convolve(arr.astype(float), kernel, mode="same")
 
 
-def _smoothed_expert_kinematics(
+def _expert_kinematics(
     segment: pd.DataFrame,
 ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]]:
-    """Smooth the expert (x, y) trace and return parametric kinematics.
+    """Return parametric kinematics from the expert (x, y) trace.
 
     Shared by ``_detect_expert_phases`` (which derives entry / apex / exit
     ilocs from the curvature peaks) and ``_create_trajectory_offset_plot``
     (which needs the unit tangent for cross-track error and the signed κ
-    for the wider/tighter sign flip). Keeping a single helper guarantees
-    the smoothing window matches across the marker positions and the
-    offset trace.
+    for the wider/tighter sign flip). The expert x/y input is already
+    smoothed upstream, so this helper does not smooth position samples.
 
-    Returns ``(x_s, y_s, dx, dy, kappa, window)`` or ``None`` if the
+    Returns ``(x, y, dx, dy, kappa, window)`` or ``None`` if the
     segment is too short, missing required columns, or all-NaN.
     """
     n = len(segment)
@@ -263,11 +262,9 @@ def _smoothed_expert_kinematics(
     y = np.where(np.isfinite(y), y, np.interp(np.arange(n), np.where(np.isfinite(y))[0], y[np.isfinite(y)])) if np.isnan(y).any() else y
 
     window = _odd(max(5, n // 30))
-    x_s = _moving_average(x, window)
-    y_s = _moving_average(y, window)
 
-    dx = np.gradient(x_s)
-    dy = np.gradient(y_s)
+    dx = np.gradient(x)
+    dy = np.gradient(y)
     ddx = np.gradient(dx)
     ddy = np.gradient(dy)
     denom = (dx * dx + dy * dy) ** 1.5
@@ -275,7 +272,7 @@ def _smoothed_expert_kinematics(
     np.divide(dx * ddy - dy * ddx, denom, out=kappa, where=denom > 1e-9)
     kappa = _moving_average(kappa, window)
 
-    return x_s, y_s, dx, dy, kappa, window
+    return x, y, dx, dy, kappa, window
 
 
 def _detect_expert_phases(
@@ -302,10 +299,10 @@ def _detect_expert_phases(
 
     See module-level comment for the algorithm.
     """
-    kin = _smoothed_expert_kinematics(segment)
+    kin = _expert_kinematics(segment)
     if kin is None:
         return [], 0
-    x_s, y_s, dx, dy, kappa, window = kin
+    x_ref, y_ref, dx, dy, kappa, window = kin
     n = len(segment)
 
     # Mask edge samples — convolution edge bias makes them unreliable for peaks.
@@ -348,8 +345,8 @@ def _detect_expert_phases(
         # Arc is [i, j)
         arc_len = j - i
         arc_peak = float(abs_k[i:j].max()) if arc_len > 0 else 0.0
-        turn_deg = _turn_angle_degrees(x_s, y_s, i, j - 1)
-        path_len = _arc_path_length_m(x_s, y_s, i, j - 1)
+        turn_deg = _turn_angle_degrees(x_ref, y_ref, i, j - 1)
+        path_len = _arc_path_length_m(x_ref, y_ref, i, j - 1)
         is_geometric_corner = (
             turn_deg >= _MIN_CORNER_TURN_DEG
             and path_len >= _MIN_CORNER_ARC_LENGTH_M
@@ -428,8 +425,8 @@ def compute_expert_phases(
 ):
     """Tool — per-arc entry / apex / exit ilocs from the expert position trace.
 
-    Computes signed parametric curvature κ on the smoothed expert (x, y)
-    trace and segments the parent slice into arcs where |κ| exceeds a
+    Computes signed parametric curvature κ on the expert (x, y) trace and
+    segments the parent slice into arcs where |κ| exceeds a
     noise threshold with constant sign. Each arc produces one
     (entry, apex, exit) tuple — chicanes / esses naturally yield multiple
     arcs of opposite ``direction``. Apex is ``argmax(|κ|)`` within the
@@ -758,7 +755,7 @@ def measure_segment_shape(
     end = int(end_index)
     segment = _absolute_iloc_slice(df, start, end)
     phases, window = _detect_expert_phases(segment)
-    kin = _smoothed_expert_kinematics(segment)
+    kin = _expert_kinematics(segment)
 
     shape: Dict[str, Any] = {
         "range": [start, end],
@@ -778,9 +775,9 @@ def measure_segment_shape(
     }
 
     if kin is not None:
-        _x_s, _y_s, dx, dy, kappa, _w = kin
+        x_ref, y_ref, dx, dy, kappa, _w = kin
         shape["corner_shape_refinement"] = _classify_corner_shape_refinement(
-            phases, _x_s, _y_s, kappa, dx, dy,
+            phases, x_ref, y_ref, kappa, dx, dy,
         )
 
     iloc_fields = ("entry", "apex", "exit", "min_speed_iloc", "peak_steer_iloc")
@@ -4855,10 +4852,10 @@ def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     if any(c not in df.columns for c in (px_col, py_col, ex_col, ey_col)):
         return None
 
-    kin = _smoothed_expert_kinematics(df)
+    kin = _expert_kinematics(df)
     if kin is None:
         return None
-    _x_s, _y_s, dx, dy, kappa, _w = kin
+    _x_ref, _y_ref, dx, dy, kappa, _w = kin
 
     tangent_norm = np.sqrt(dx * dx + dy * dy)
     tangent_norm = np.where(tangent_norm > 1e-9, tangent_norm, 1.0)

@@ -56,8 +56,8 @@ def lap_annotation_prompt(session_context: str = "practice") -> str:
         "#### Lap Annotation Skill — Candidate Label Characteristics",
         "",
         "Each candidate parent label below lists the telemetry pattern "
-        "that justifies attaching it. The `global_rules` block at the "
-        "end is the per-section detection procedure.",
+        "that justifies attaching it. The session-specific global rules "
+        "at the end are the per-section detection procedure.",
         "",
         _session_context_rule(session_context),
         "",
@@ -76,13 +76,9 @@ def lap_annotation_prompt(session_context: str = "practice") -> str:
             lines.append(characteristics)
         lines.append("")
 
-    global_rules = str(skills.get("lap_annotation.global_rules", "")).strip()
-    if not global_rules:
-        raise RuntimeError(
-            "lap_annotation.global_rules missing from internal knowledge base"
-        )
-    lines.append("##### Global rules — how to find each label")
-    lines.extend(global_rules.splitlines())
+    global_rules = _mode_specific_global_rules(session_context)
+    lines.append(f"##### Global rules — {session_context} mode")
+    lines.extend(global_rules)
     lines.append("")
 
     return "\n".join(lines)
@@ -180,64 +176,27 @@ def _session_context_rule(session_context: str) -> str:
 
 
 def _mode_specific_global_rules(session_context: str) -> List[str]:
-    common = [
-        "Every saved lap segment must include at least one eligible behavior "
-        "parent label. Circuit labels, circuit_section labels, segment-type "
-        "labels, sub-labels, and EA do not satisfy this requirement.",
-        "If no eligible behavior parent fits the whole final range after "
-        "allowed revision, submit `label_ids: []` to drop the range.",
-        "Call `get_circuit_id` and `locate_circuit_section` for circuit "
-        "context. Include circuit / circuit_section ids only when an "
-        "eligible behavior parent is also included.",
-        "When `locate_circuit_section` reports `is_ambiguous`, disambiguate "
-        "from `top_matches` with a second signal rather than guessing.",
-        "Whole-range label rule: every behavior, segment-type, and sub-label "
-        "must describe the final annotation range as a whole.",
-        "Render the diagnostic graphs needed for the eligible labels. Use "
-        "`trajectory_offset`, `expert_time_difference`, brake / throttle / "
-        "speed, and deterministic telemetry queries as evidence.",
-        "Use `measure_segment_shape` only for optional lap-parent-allowed "
-        "segment-type labels. Do not submit labels whose catalog metadata "
-        "says `lap_parent_allowed: false`.",
-        "Submit `label_ids` plus a 4-6 sentence `reasoning` note citing "
-        "deterministic tool verdict fields, ilocs, values, trends, and "
-        "range-fit rationale.",
+    mode_rules = skills.get(
+        f"lap_annotation.global_rules_by_session.{session_context}",
+        [],
+    )
+    common_rules = skills.get("lap_annotation.global_rules_by_session.common", [])
+    if not isinstance(mode_rules, list) or not isinstance(common_rules, list):
+        raise RuntimeError(
+            "lap_annotation.global_rules_by_session must contain list-valued "
+            f"{session_context!r} and 'common' rules"
+        )
+    rules = [
+        str(rule).strip()
+        for rule in [*mode_rules, *common_rules]
+        if str(rule).strip()
     ]
-    if session_context == "racing":
-        return [
-            "Sessions with opponent data are processed only as close "
-            "overtake offence / defense engagement windows.",
-            "Pick O for a successful attacking pass, OD for a held defense, "
-            "or MSR for a failed attack / broken defense.",
-            "The deterministic gate is "
-            "`classify_opponent_interaction(start, end)`: O requires "
-            "`outcome: pass_completed`; OD requires `outcome: held_defense`; "
-            "MSR requires `outcome` in {`failed_attack`, `broken_defense`}.",
-            "Prefer labels only when the matching confidence-aware "
-            "`label_gates` value is true. Low / weak classifier confidence "
-            "means revise the range, inspect `query_opponent_trajectory`, "
-            "or submit an empty label list.",
-            "PS remains eligible in racing mode, but only for pit-lane "
-            "procedure with pit evidence; do not use it for ordinary "
-            "opponent interactions.",
-            "Do not attach practice-session behavior labels MSP / RM / MD "
-            "in racing mode.",
-            *common,
-        ]
-    return [
-        "Solo sessions are processed as normal driving sections.",
-        "Pick MSP for a technical driving mistake, RM for recovery from a "
-        "prior mistake, PS for pit-lane procedure, or MD for missing / "
-        "corrupt telemetry.",
-        "Use `find_trend_runs` and `compute_slope` on "
-        "`expert_time_difference` for material time-loss / recovery "
-        "evidence. A constant carried gap is not a new mistake.",
-        "Use `trajectory_offset` extremum and near-zero summaries for "
-        "technical mistake / recovery fit.",
-        "Do not attach racing-session behavior labels O / OD / MSR in "
-        "practice mode.",
-        *common,
-    ]
+    if not rules:
+        raise RuntimeError(
+            "lap_annotation.global_rules_by_session missing rules for "
+            f"{session_context!r}"
+        )
+    return rules
 
 
 def _mode_exclusion_rule(session_context: str) -> str:
@@ -597,7 +556,10 @@ def _local_planner_prompt(
         "label_verifier. `trajectory_offset` + `time_delta` are the two "
         "diagnostic graphs called out by the skill; add `altitude_profile` "
         "and `measure_segment_shape` when deciding segment shape or reading "
-        "altitude trends.",
+        "altitude trends. For corner-entry or corner-exit segment "
+        "completeness, include brake / throttle graphs and deterministic "
+        "queries that establish the full driver-vs-expert action bounds "
+        "required by `lap_annotation.global_rules_by_session.common`.",
         "",
         "Plan format: JSON object with a single key \"steps\". Each step:",
         "  - \"step_id\": integer (1, 2, 3, ...).",
@@ -611,7 +573,7 @@ def _local_planner_prompt(
         "{",
         '  "steps": [',
         '    {"step_id": 1, "agent": "describe_graphs", "description": '
-        '"Confirm boundary + check brake/throttle onsets.", "requested_graphs": '
+        '"Confirm boundary + full entry/exit brake/throttle action bounds.", "requested_graphs": '
         '["trajectory_offset", "brake", "throttle"], "tools": '
         '["compute_expert_phases"]},',
         '    {"step_id": 2, "agent": "describe_graphs", "description": '
@@ -717,6 +679,12 @@ def _local_synth_prompts(
         "circuit_section id only when it was listed under 'Range under "
         "review' or returned by `locate_circuit_section`.",
         f"- {WHOLE_RANGE_LABEL_RULE}",
+        "- Apply the segment completeness rule from "
+        "`lap_annotation.global_rules_by_session.common`: a corner-entry "
+        "parent segment must "
+        "include the complete driver/expert brake action, and a corner-exit "
+        "parent segment must include the complete driver/expert throttle "
+        "action. Do not treat this as optional sub-label evidence.",
         f"- {LAP_REASONING_NOTE_RULE}",
         f"- {_segment_type_label_rule()}",
         "- An empty label_ids array is the valid 'drop this section' signal, "
@@ -809,9 +777,10 @@ def _tool_agent_task_prompt(
         "submit labels whose returned catalog metadata says "
         "`lap_parent_allowed: false`.\n"
         "4. Tools start scoped to the rough section boundary. When one "
-        "main-label signature needs a boundary change, call `revise_range` "
-        "inside the allowed revision envelope, then re-check evidence on "
-        "the new range before submitting.\n"
+        "main-label signature or the KB segment-completeness rule needs a "
+        "boundary change, call `revise_range` inside the allowed revision "
+        "envelope, then re-check evidence on the new range before "
+        "submitting.\n"
         "5. Call `submit_result(payload_json, summary)` once with the "
         "chosen IDs, using the same longer evidence note for `summary`, "
         "and stop after it returns `ok: true`.\n"
@@ -844,6 +813,12 @@ def _tool_agent_task_prompt(
         "- Include a circuit_section id only when it is unambiguous.\n"
         f"- {_mode_exclusion_rule(session_context)}\n"
         f"- {WHOLE_RANGE_LABEL_RULE}\n"
+        "- Apply the segment completeness rule from "
+        "`lap_annotation.global_rules_by_session.common`: a corner-entry "
+        "parent segment must "
+        "include the complete driver/expert brake action, and a corner-exit "
+        "parent segment must include the complete driver/expert throttle "
+        "action. Do not treat this as optional sub-label evidence.\n"
         f"- {LAP_REASONING_NOTE_RULE}\n" +
         mode_submit_rule +
         "- For time-delta and offset evidence, cite deterministic tool "
