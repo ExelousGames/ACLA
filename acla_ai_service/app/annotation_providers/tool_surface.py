@@ -377,6 +377,74 @@ def _iter_guidance_records() -> Iterable[Dict[str, str]]:
         yield from walk(skill.raw_body, skill.name, skill.name)
 
 
+def _request_session_context(request: AgentRequest) -> str:
+    context = str(request.extra_state.get("annotation_session_context") or "").strip()
+    return context if context in {"practice", "racing"} else ""
+
+
+def _request_eligible_behavior_label_ids(request: AgentRequest) -> List[str]:
+    raw = request.extra_state.get("eligible_behavior_label_ids") or []
+    return [str(label_id) for label_id in raw if str(label_id)]
+
+
+def _label_path_allowed_for_request(request: AgentRequest, path: str) -> bool:
+    eligible = set(_request_eligible_behavior_label_ids(request))
+    if not eligible:
+        return True
+    required_parents = {"O", "OD", "MD", "PS", "RM", "MSP", "MSR"}
+
+    lap_match = re.search(r"lap_annotation\.labels\.([A-Za-z0-9_]+)", path)
+    if lap_match:
+        return lap_match.group(1) in eligible
+
+    sub_match = re.search(r"sub_label_annotation\.labels\.([A-Za-z0-9_]+)", path)
+    if sub_match:
+        try:
+            from app.internal_knowledge_base.label_lookup import get_label
+
+            doc = get_label(sub_match.group(1))
+        except Exception:
+            doc = None
+        parent = str((doc or {}).get("parent") or "")
+        if parent in required_parents:
+            return parent in eligible
+    return True
+
+
+def _mode_specific_guidance_record(request: AgentRequest) -> Dict[str, str] | None:
+    context = _request_session_context(request)
+    eligible = _request_eligible_behavior_label_ids(request)
+    if not context or not eligible:
+        return None
+    label_set = "{" + ", ".join(eligible) + "}"
+    if context == "racing":
+        text = (
+            "Detected session mode: racing / opponent interaction. Only "
+            f"behavior parent labels from {label_set} are eligible. Use "
+            "O for a completed attack, OD for a held defense, or MSR for a "
+            "failed attack / broken defense; use PS for pit-lane procedure "
+            "when pit evidence fits the whole range. Gate O / OD / MSR with "
+            "`classify_opponent_interaction(start, end)` over the full "
+            "working range. Do not evaluate or attach practice-session "
+            "behavior parents MSP / RM / MD; submit [] if no racing or "
+            "pit-stop label fits."
+        )
+    else:
+        text = (
+            "Detected session mode: practice / solo section. Only behavior "
+            f"parent labels from {label_set} are eligible. Use MSP for "
+            "technical driving mistakes, RM for recovery, PS for pit-lane "
+            "procedure, or MD for missing / corrupt telemetry. Do not "
+            "evaluate or attach racing-session behavior parents O / OD / "
+            "MSR."
+        )
+    return {
+        "skill": "lap_annotation",
+        "path": "lap_annotation.detected_session_rules",
+        "text": text,
+    }
+
+
 class AnnotationToolSurface:
     """Thin object holding df + capture; runners call its methods as tools."""
 
@@ -493,6 +561,8 @@ class AnnotationToolSurface:
         matches: List[Tuple[int, Dict[str, str]]] = []
         for record in _iter_guidance_records():
             if scope and scope not in record["path"] and scope != record["skill"]:
+                continue
+            if not _label_path_allowed_for_request(self.request, record["path"]):
                 continue
             text_tokens = _tokens(
                 f"{record['skill']} {record['path']} {record['text']}"
@@ -795,6 +865,15 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
             f"{bounds.get('end')}]. Tools inspect only the current working "
             "range until revise_range successfully changes it.\n"
         )
+    context = _request_session_context(request)
+    eligible = _request_eligible_behavior_label_ids(request)
+    context_line = ""
+    if context and eligible:
+        context_line = (
+            f"Detected annotation mode: {context}. Eligible behavior parent "
+            f"labels: {{{', '.join(eligible)}}}. Do not inspect or submit "
+            "behavior parents outside that set.\n"
+        )
 
     return (
         "You are an analyst with agentic access to a domain dataset via tools. "
@@ -811,6 +890,7 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         "range when the task allows it or omit that label.\n\n"
         f"Initial range: [{request.parent_start}, {request.parent_end}]. "
         f"{revision_line}"
+        f"{context_line}"
         "Do not invent identifiers. Use only IDs, labels, and categories the "
         "user message authorizes. Budget tool calls. After submit_result "
         "returns ok: true, do not call more tools.\n"

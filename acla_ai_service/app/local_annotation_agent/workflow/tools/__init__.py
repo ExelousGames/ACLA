@@ -63,8 +63,30 @@ def search_labels_handler(_surface, args: Dict[str, Any]) -> str:
     if str(args.get("parent_id") or "").strip():
         filters["parent"] = str(args["parent_id"]).strip()
 
-    results = search(query, filters=filters)
+    results = search(query, top_k=24, filters=filters)
+    results = [
+        doc for doc in results
+        if _label_doc_allowed_for_surface(_surface, doc)
+    ][:8]
     return json.dumps([_shape_for_llm(d) for d in results], default=str)
+
+
+def _label_doc_allowed_for_surface(_surface, doc: Dict[str, Any]) -> bool:
+    request = getattr(_surface, "request", None)
+    if request is None:
+        return True
+    eligible = set(request.extra_state.get("eligible_behavior_label_ids") or [])
+    if not eligible:
+        return True
+
+    required_parents = {"O", "OD", "MD", "PS", "RM", "MSP", "MSR"}
+    label_id = str(doc.get("id") or "")
+    parent_id = str(doc.get("parent") or "")
+    if label_id in required_parents:
+        return label_id in eligible
+    if parent_id in required_parents:
+        return parent_id in eligible
+    return True
 
 
 SEARCH_LABELS_TOOL: Dict[str, Any] = {

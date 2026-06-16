@@ -331,6 +331,7 @@ def _run_lap(
         revision_start=revision_start,
         revision_end=revision_end,
         circuit_id=circuit_id,
+        section_split_basis=section_split_basis,
         opponent_interaction=opponent_interaction,
     )
 
