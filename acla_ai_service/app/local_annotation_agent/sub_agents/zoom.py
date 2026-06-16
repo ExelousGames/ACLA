@@ -597,12 +597,12 @@ def _render_partials_block(
                         "    deterministic trend verdict: "
                         f"total_change={extra.get('delta_value')} {extra.get('unit')} "
                         f"({extra.get('total_change_direction')}, "
-                        f"{extra.get('total_change_materiality')}, "
-                        f"label_material={extra.get('total_change_is_label_material')}); "
+                        f"{extra.get('total_change_significance')}, "
+                        f"label_significant={extra.get('total_change_is_label_significant')}); "
                         f"end_window={extra.get('end_window')} "
                         f"end_change={extra.get('end_delta_value')} {extra.get('unit')} "
                         f"({extra.get('end_change_direction')}, "
-                        f"{extra.get('end_change_materiality')}); "
+                        f"{extra.get('end_change_significance')}); "
                         f"end_trend_change={extra.get('end_trend_change')}"
                     )
                 if query == "find_trend_runs":

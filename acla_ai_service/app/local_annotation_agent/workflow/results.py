@@ -37,7 +37,7 @@ class AnnotationResult:
     sub_end: Optional[int] = None
     # Per-label proposals. Each entry:
     #   {label_id, start_index, end_index, reasoning}
-    # The UI materialises one sub-segment per AI-discovered range.
+    # The UI creates one sub-segment per AI-discovered range.
     label_annotations: List[dict] = field(default_factory=list)
 
 
@@ -111,5 +111,4 @@ def parse_json_response(raw: str) -> Optional[dict]:
             return result
 
     return None
-
 

@@ -833,7 +833,7 @@ def _tool_agent_task_prompt(
         f"- {LAP_REASONING_NOTE_RULE}\n" +
         mode_submit_rule +
         "- For time-delta and offset evidence, cite deterministic tool "
-        "verdict fields (unit, materiality, end-window trend); do not "
+        "verdict fields (unit, label-significance, end-window trend); do not "
         "create strength judgments from raw numbers.\n"
         f"- {_segment_type_label_rule()}\n"
         "- Sub-labels require their parent main label in `label_ids`.\n"

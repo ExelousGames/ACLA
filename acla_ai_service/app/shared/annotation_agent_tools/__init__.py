@@ -521,12 +521,12 @@ def _classify_base_segment_shape(
         reason = (
             "Segment begins in the corner-exit phase and ends near the "
             "corner exit; ST4 is not used for a completed corner plus a "
-            "material following straight."
+            "substantial following straight."
         )
     elif exit_frac < 0.75:
         shape_key = "in_corner"
         reason = (
-            "Detected a single corner arc plus a material following "
+            "Detected a single corner arc plus a substantial following "
             "straight; ST4 is reserved for the corner-exit section itself."
         )
     elif entry_frac <= 0.15 and exit_frac >= 0.85:
@@ -3354,7 +3354,7 @@ _COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {
     "expert_time_difference": {
         "unit": "ms",
         "flat_delta_abs": 50.0,
-        "label_material_delta_abs": 150.0,
+        "label_significant_delta_abs": 150.0,
         "strong_delta_abs": 500.0,
         "near_zero_abs": 50.0,
         "positive_label": "losing_time",
@@ -3363,7 +3363,7 @@ _COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {
     "trajectory_offset": {
         "unit": "m",
         "flat_delta_abs": 0.10,
-        "label_material_delta_abs": 0.50,
+        "label_significant_delta_abs": 0.50,
         "strong_delta_abs": 1.00,
         "near_zero_abs": 0.50,
         "positive_label": "moving_wider",
@@ -3372,7 +3372,7 @@ _COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {
     "speed_difference": {
         "unit": "km/h",
         "flat_delta_abs": 2.0,
-        "label_material_delta_abs": 5.0,
+        "label_significant_delta_abs": 5.0,
         "strong_delta_abs": 15.0,
         "near_zero_abs": 5.0,
         "positive_label": "speed_gap_increasing",
@@ -3386,7 +3386,7 @@ def _column_semantics(column: str) -> Dict[str, Any]:
     return {
         "unit": "value",
         "flat_delta_abs": 1e-9,
-        "label_material_delta_abs": 1e-9,
+        "label_significant_delta_abs": 1e-9,
         "strong_delta_abs": 1.0,
         "near_zero_abs": 1e-9,
         "positive_label": "rising",
@@ -3399,30 +3399,30 @@ def _classify_delta(delta: float, column: str) -> Dict[str, Any]:
     meta = _column_semantics(column)
     abs_delta = abs(float(delta))
     flat = float(meta["flat_delta_abs"])
-    material = float(meta["label_material_delta_abs"])
+    significant = float(meta["label_significant_delta_abs"])
     strong = float(meta["strong_delta_abs"])
 
     if abs_delta < flat:
         direction = "flat"
         domain_direction = "stable"
-        materiality = "insignificant"
+        significance = "insignificant"
     elif delta > 0:
         direction = "rising"
         domain_direction = str(meta["positive_label"])
-        materiality = "strong" if abs_delta >= strong else "material" if abs_delta >= material else "small"
+        significance = "strong" if abs_delta >= strong else "significant" if abs_delta >= significant else "small"
     else:
         direction = "falling"
         domain_direction = str(meta["negative_label"])
-        materiality = "strong" if abs_delta >= strong else "material" if abs_delta >= material else "small"
+        significance = "strong" if abs_delta >= strong else "significant" if abs_delta >= significant else "small"
 
     return {
         "direction": direction,
         "domain_direction": domain_direction,
-        "materiality": materiality,
-        "is_label_material": abs_delta >= material,
+        "significance": significance,
+        "is_label_significant": abs_delta >= significant,
         "thresholds": {
             "flat_below_abs_delta": flat,
-            "label_material_at_abs_delta": material,
+            "label_significant_at_abs_delta": significant,
             "strong_at_abs_delta": strong,
             "unit": meta["unit"],
         },
@@ -3675,16 +3675,16 @@ def _query_compute_slope(
             "delta_iloc": delta_i,
             "total_change_direction": overall_class["direction"],
             "total_change_domain_direction": overall_class["domain_direction"],
-            "total_change_materiality": overall_class["materiality"],
-            "total_change_is_label_material": overall_class["is_label_material"],
+            "total_change_significance": overall_class["significance"],
+            "total_change_is_label_significant": overall_class["is_label_significant"],
             "end_window": [end_start_iloc, b_idx],
             "end_delta_value": end_delta_v,
             "end_delta_iloc": end_delta_i,
             "end_slope": end_slope,
             "end_change_direction": end_class["direction"],
             "end_change_domain_direction": end_class["domain_direction"],
-            "end_change_materiality": end_class["materiality"],
-            "end_change_is_label_material": end_class["is_label_material"],
+            "end_change_significance": end_class["significance"],
+            "end_change_is_label_significant": end_class["is_label_significant"],
             "end_trend_change": _trend_change(slope, end_slope, column),
             "thresholds": overall_class["thresholds"],
             "near_zero_summary": zero_context,
@@ -3898,22 +3898,22 @@ def _query_find_trend_runs(
             "slope": slope,
             "direction": direction,
             "domain_direction": classification["domain_direction"],
-            "materiality": classification["materiality"],
-            "is_label_material": classification["is_label_material"],
+            "significance": classification["significance"],
+            "is_label_significant": classification["is_label_significant"],
             "role": _trend_role(column, direction),
         })
 
-    material_runs = [
+    significant_runs = [
         r for r in runs
-        if r["direction"] in {"rising", "falling"} and r["is_label_material"]
+        if r["direction"] in {"rising", "falling"} and r["is_label_significant"]
     ]
     strongest = (
-        max(material_runs, key=lambda r: abs(float(r["delta_value"])))
-        if material_runs else None
+        max(significant_runs, key=lambda r: abs(float(r["delta_value"])))
+        if significant_runs else None
     )
-    rising = [r for r in material_runs if r["direction"] == "rising"]
-    falling = [r for r in material_runs if r["direction"] == "falling"]
-    stable_only = not material_runs
+    rising = [r for r in significant_runs if r["direction"] == "rising"]
+    falling = [r for r in significant_runs if r["direction"] == "falling"]
+    stable_only = not significant_runs
     finite_values = values[np.isfinite(values)]
     constant_offset_only = bool(
         column == "expert_time_difference"
@@ -3922,15 +3922,15 @@ def _query_find_trend_runs(
         and np.nanmean(np.abs(finite_values)) > float(meta["near_zero_abs"])
     )
     if rising and falling:
-        verdict = "material_losing_time_and_recovery_runs"
+        verdict = "significant_losing_time_and_recovery_runs"
     elif rising:
-        verdict = "material_losing_time_run"
+        verdict = "significant_losing_time_run"
     elif falling:
-        verdict = "material_recovery_run"
+        verdict = "significant_recovery_run"
     elif constant_offset_only:
         verdict = "constant_offset_only"
     else:
-        verdict = "no_material_rate_change"
+        verdict = "no_significant_rate_change"
 
     samples = [
         {
@@ -3942,7 +3942,7 @@ def _query_find_trend_runs(
                 f"slope={r['slope']:.4f} {meta['unit']}/iloc"
             ),
         }
-        for r in material_runs
+        for r in significant_runs
     ]
 
     return {
@@ -3956,7 +3956,7 @@ def _query_find_trend_runs(
             "verdict": verdict,
             "constant_offset_only": constant_offset_only,
             "runs": runs,
-            "material_runs": material_runs,
+            "significant_runs": significant_runs,
             "strongest_losing_time_run": (
                 max(rising, key=lambda r: abs(float(r["delta_value"])))
                 if rising else None
@@ -4120,7 +4120,7 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "description": (
             "Slope of <column> from the start to the end of <range> "
             "(value-delta / iloc-delta), plus deterministic unit, "
-            "materiality, near-zero, and final-window trend verdicts. "
+            "significance, near-zero, and final-window trend verdicts. "
             "For `expert_time_difference`, this answers whether the whole "
             "range loses or gains time; a positive but flat value means the "
             "player is already behind, not that a new mistake happened."
@@ -4137,8 +4137,8 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "description": (
             "Piecewise rising, falling, and flat runs in <column> over "
             "<range>. Use this for `expert_time_difference` mistake/recovery "
-            "localization: rising material runs are where the player loses "
-            "time, falling material runs are where the player recovers, and "
+            "localization: rising significant runs are where the player loses "
+            "time, falling significant runs are where the player recovers, and "
             "flat positive/negative runs are constant carried gap only."
         ),
         "params_schema": {
