@@ -135,8 +135,8 @@ LAP_REASONING_NOTE_RULE = (
     "competing labels were omitted or the range was revised."
 )
 
-REQUIRED_BEHAVIOR_PARENT_LABEL_IDS = ("O", "OD", "MD", "PS", "RM", "MSP", "MSR")
-PRACTICE_BEHAVIOR_PARENT_LABEL_IDS = ("MD", "PS", "RM", "MSP")
+REQUIRED_BEHAVIOR_PARENT_LABEL_IDS = ("O", "OD", "PS", "RM", "MSP", "MSR")
+PRACTICE_BEHAVIOR_PARENT_LABEL_IDS = ("PS", "RM", "MSP")
 RACING_BEHAVIOR_PARENT_LABEL_IDS = ("O", "OD", "MSR", "PS")
 
 
@@ -178,7 +178,7 @@ def _session_context_rule(session_context: str) -> str:
             "Detected session mode: racing / opponent interaction. Only "
             f"behavior parent labels from {_label_set_text(RACING_BEHAVIOR_PARENT_LABEL_IDS)} "
             "are eligible. Do not evaluate or attach practice-session "
-            "behavior parents MSP / RM / MD for this work unit; if no "
+            "behavior parents MSP / RM for this work unit; if no "
             "overtake / defense / racing mistake or pit-stop label fits, "
             "submit an empty label_ids array."
         )
@@ -275,8 +275,8 @@ def _planner_task_context(session_context: str) -> str:
     return (
         "  2. gather technical driving evidence with `trajectory_offset`, "
         "`expert_time_difference`, brake / throttle / speed, and "
-        "deterministic telemetry queries so time-loss, recovery, pit, or "
-        "missing-data labels are supported by the whole range, and"
+        "deterministic telemetry queries so time-loss, recovery, or pit "
+        "labels are supported by the whole range, and"
     )
 
 
@@ -473,7 +473,7 @@ def _interaction_focus_block(
         "opponent stays tucked directly behind without a lateral/alongside "
         "threat, submit "
         "`label_ids: []` rather than labeling normal practice-driving "
-        "telemetry such as EA / MSP / RM / MD. PS is still valid when the "
+        "telemetry such as EA / MSP / RM. PS is still valid when the "
         "range has pit-lane procedure evidence.\n"
         f"{target_block}"
     )
@@ -734,7 +734,7 @@ def _tool_agent_task_prompt(
         )
     else:
         mode_submit_rule = (
-            "- In practice / solo sections, use MSP / RM / PS / MD or submit "
+            "- In practice / solo sections, use MSP / RM / PS or submit "
             "an empty `label_ids` array to drop the range.\n"
         )
     interaction_focus = _interaction_focus_block(

@@ -391,7 +391,7 @@ def _label_path_allowed_for_request(request: AgentRequest, path: str) -> bool:
     eligible = set(_request_eligible_behavior_label_ids(request))
     if not eligible:
         return True
-    required_parents = {"O", "OD", "MD", "PS", "RM", "MSP", "MSR"}
+    required_parents = {"O", "OD", "PS", "RM", "MSP", "MSR"}
 
     lap_match = re.search(r"lap_annotation\.labels\.([A-Za-z0-9_]+)", path)
     if lap_match:
@@ -426,15 +426,15 @@ def _mode_specific_guidance_record(request: AgentRequest) -> Dict[str, str] | No
             "when pit evidence fits the whole range. Gate O / OD / MSR with "
             "`classify_opponent_interaction(start, end)` over the full "
             "working range. Do not evaluate or attach practice-session "
-            "behavior parents MSP / RM / MD; submit [] if no racing or "
+            "behavior parents MSP / RM; submit [] if no racing or "
             "pit-stop label fits."
         )
     else:
         text = (
             "Detected session mode: practice / solo section. Only behavior "
             f"parent labels from {label_set} are eligible. Use MSP for "
-            "technical driving mistakes, RM for recovery, PS for pit-lane "
-            "procedure, or MD for missing / corrupt telemetry. Do not "
+            "technical driving mistakes, RM for recovery, or PS for pit-lane "
+            "procedure. Do not "
             "evaluate or attach racing-session behavior parents O / OD / "
             "MSR."
         )

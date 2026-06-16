@@ -30,7 +30,6 @@ LABEL_MAPPING: Dict[str, str] = {
     ################### Main Labels ###################
     "O": "Successful Overtake",
     "OD": "Successful Defense",
-    "MD": "Missing data",
     "EA": "Expert Adherence (Training)",
     "PS": "Pit Stop",
     
@@ -357,10 +356,9 @@ LABEL_IMAGE_MAP: Dict[str, str] = {
 }
 
 LABEL_CATEGORIES: Dict[str, List[str]] = {
-    "Main Labels": ["O", "OD", "MD","EA","PS","RM","MSP","MSR","brands_hatch","silverstone","kyalami","suzuka","watkins_glen","indianapolis","cota"],
+    "Main Labels": ["O", "OD","EA","PS","RM","MSP","MSR","brands_hatch","silverstone","kyalami","suzuka","watkins_glen","indianapolis","cota"],
     "O":["O1","O3","O4","O5"],
     "OD":["OD1","OD2"],
-    "MD":[],
     "EA":[],
     "PS":["PS1"],
     "RM":["RM1", "RM5","RM6","RM7","RM8","RM9","RM10","RM11"],

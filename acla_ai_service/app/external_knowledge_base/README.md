@@ -106,7 +106,7 @@ from the corpus side.
 
 One file per parent family — currently `mistake_practice.md`,
 `mistake_racing.md`, `recovery_merge.md`, `expert_adherence.md`,
-`successful_overtake.md`, `pit_stop.md`, `missing_data.md`. Per-track
+`successful_overtake.md`, `pit_stop.md`. Per-track
 parent files (`silverstone.md`, `brands_hatch.md`) can be added the
 same way. These document the *family* — what counts as a "mistake,"
 what "expert adherence" means, when "recovery & merge" applies. They

@@ -10,7 +10,7 @@ from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING, LABEL_NAME_TO_ID
 
 BEHAVIOR_MAIN_LABEL_IDS = tuple(
     label_id for label_id in LABEL_CATEGORIES["Main Labels"]
-    if label_id in {"O", "OD", "MD", "EA", "PS", "RM", "MSP", "MSR"}
+    if label_id in {"O", "OD", "EA", "PS", "RM", "MSP", "MSR"}
 )
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
 NON_TRACK_CATEGORY_IDS = {"Main Labels", "Segment Type", *BEHAVIOR_MAIN_LABEL_IDS}

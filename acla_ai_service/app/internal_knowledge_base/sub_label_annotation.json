@@ -31,7 +31,6 @@
       ],
       "exclusive_with": [
         "OD",
-        "MD",
         "PS"
       ]
     },
@@ -47,31 +46,13 @@
       ],
       "exclusive_with": [
         "O",
-        "MD",
         "PS"
-      ]
-    },
-    "MD": {
-      "name": "Missing data",
-      "type": "main",
-      "description": "Segment contains gaps, dropouts, or corrupted telemetry — sensor data drops to zero, flat-lines in an otherwise dynamic signal, or shows physically impossible values.\n",
-      "annotation_guideline": "How to identify the Missing Data label: This segment contains gaps or corrupted telemetry.  Identify if the sensor data drops to zero or becomes inconsistent unexpectedly.\n",
-      "parent": null,
-      "children": [],
-      "exclusive_with": [
-        "O",
-        "OD",
-        "EA",
-        "PS",
-        "RM",
-        "MSP",
-        "MSR"
       ]
     },
     "EA": {
       "name": "Expert Adherence (Training)",
       "type": "main",
-      "description": "Driver closely follows or cleanly outperforms the expert's line and speed profile.  Look for **overall gap holds stable**, **gap shrinks**, or player-ahead evidence in the time delta when available, plus **speed match** or better speed with no instability.  The player's **entry trajectory** and **exit trajectory** usually track the expert with trajectory offset **aligned** (within ±0.5 m of zero), but EA can still apply to a cleaner/faster line that is wider or tighter than the expert when there is no off-track/cutting/instability evidence and no MSP/RM/MSR/PS/MD gate.\n",
+      "description": "Driver closely follows or cleanly outperforms the expert's line and speed profile.  Look for **overall gap holds stable**, **gap shrinks**, or player-ahead evidence in the time delta when available, plus **speed match** or better speed with no instability.  The player's **entry trajectory** and **exit trajectory** usually track the expert with trajectory offset **aligned** (within ±0.5 m of zero), but EA can still apply to a cleaner/faster line that is wider or tighter than the expert when there is no off-track/cutting/instability evidence and no MSP/RM/MSR/PS gate.\n",
       "annotation_guideline": "How to identify the sublabels for Expert Adherence (Training): The driver is following or cleanly outperforming the optimal racing line and speed profile closely.  Nothing needs to be labeled right now.\n",
       "parent": null,
       "children": [],
@@ -92,8 +73,7 @@
         "PS1"
       ],
       "exclusive_with": [
-        "O",
-        "MD"
+        "O"
       ]
     },
     "RM": {

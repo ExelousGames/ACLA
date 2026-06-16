@@ -1,7 +1,7 @@
 {
   "_skill": {
     "name": "lap_annotation",
-    "description": "Per-label telemetry characteristics for the behavior parent labels (O, OD, MD, PS, RM, MSP, MSR) that every saved lap segment must contain at least one of. EA remains documented as clean driving context, but it is not a substitute for the required behavior parent set in this flow. Each label declares its telemetry signature (trajectory_offset, expert_time_difference slope, brake overlap, opponent context, etc.) and the global_rules_by_session blocks prescribe the detection procedure. Source of truth for \"does this range qualify as MSP / RM / O / OD / MSR / PS / MD ... at all?\" The circuit + circuit_section labels are picked by the LLM via the `get_circuit_id` / `locate_circuit_section` tools (geometry from `app/shared/circuit_sections.py`). Solo sessions are rough-cut by circuit section; sessions with opponent data emit only close overtake offence / defense engagement windows.\n",
+    "description": "Per-label telemetry characteristics for the behavior parent labels (O, OD, PS, RM, MSP, MSR) that every saved lap segment must contain at least one of. EA remains documented as clean driving context, but it is not a substitute for the required behavior parent set in this flow. Each label declares its telemetry signature (trajectory_offset, expert_time_difference slope, brake overlap, opponent context, etc.) and the global_rules_by_session blocks prescribe the detection procedure. Source of truth for \"does this range qualify as MSP / RM / O / OD / MSR / PS ... at all?\" The circuit + circuit_section labels are picked by the LLM via the `get_circuit_id` / `locate_circuit_section` tools (geometry from `app/shared/circuit_sections.py`). Solo sessions are rough-cut by circuit section; sessions with opponent data emit only close overtake offence / defense engagement windows.\n",
     "when_to_use": [
       "Lap excerpter assigning one parent label per circuit section.",
       "Building the system prompt for the lap-flow planner/synthesizer.",
@@ -23,7 +23,7 @@
   "labels": {
     "EA": {
       "name": "Expert Adherence (Training)",
-      "characteristics": "Player matches or cleanly outperforms the expert through the section.\n  - Standard adherence: `trajectory_offset` stays within ±0.5 m of zero for the whole range, `expert_time_difference` is stable, and speed delta at sampled ilocs is small.\n  - Expert-or-better clean section: EA can still apply when the player is ahead of the expert, gaining on the expert, or using a cleaner/faster line than the expert, even if `trajectory_offset` is wider/tighter than ±0.5 m. Require no off-track/cutting/instability evidence and no MSP / RM / MSR / PS / MD gate.\n  - When `expert_time_difference` exists, confirm with `find_trend_runs` and `compute_slope`. Use deterministic materiality/verdict fields; a positive but flat time gap only means the player is already behind, not that a new mistake happened inside this range.\n  - When `expert_time_difference` is absent, do not rule out EA solely because the slope gate is unavailable. Use trajectory, speed/brake/throttle samples, segment shape, and the absence of MSP/RM/MSR/PS/MD evidence; note that MSP/RM slope gates cannot be satisfied.\nMutually exclusive with MSP and RM.\n"
+      "characteristics": "Player matches or cleanly outperforms the expert through the section.\n  - Standard adherence: `trajectory_offset` stays within ±0.5 m of zero for the whole range, `expert_time_difference` is stable, and speed delta at sampled ilocs is small.\n  - Expert-or-better clean section: EA can still apply when the player is ahead of the expert, gaining on the expert, or using a cleaner/faster line than the expert, even if `trajectory_offset` is wider/tighter than ±0.5 m. Require no off-track/cutting/instability evidence and no MSP / RM / MSR / PS gate.\n  - When `expert_time_difference` exists, confirm with `find_trend_runs` and `compute_slope`. Use deterministic materiality/verdict fields; a positive but flat time gap only means the player is already behind, not that a new mistake happened inside this range.\n  - When `expert_time_difference` is absent, do not rule out EA solely because the slope gate is unavailable. Use trajectory, speed/brake/throttle samples, segment shape, and the absence of MSP/RM/MSR/PS evidence; note that MSP/RM slope gates cannot be satisfied.\nMutually exclusive with MSP and RM.\n"
     },
     "MSP": {
       "name": "Mistake (Practice)",
@@ -48,24 +48,20 @@
     "OD": {
       "name": "Successful Defense",
       "characteristics": "Player held position against a real, close opponent inside the section.\n  - Call `classify_opponent_interaction(start, end)`. Require\n    `outcome: held_defense`, `gates.OD: true`, and `label_gates.OD: true` —\n    the deterministic relationship says the opponent threatened from behind\n    / alongside but did not get ahead by exit. A merely close car with no\n    held-defense outcome is not OD. Low / weak confidence means revise the\n    range or inspect opponent trajectory before labeling.\n  - Player-trace evidence to ALSO hold: brake initiation\n    earlier than expert and/or trajectory tighter than expert\n    (inside cover), or a throttle lift on a straight with no\n    brake onset (defensive lift). Time delta need not be flat\n    — it may grow briefly during the defense as long as the\n    position holds.\nA defense that failed (opponent got past) is MSR at the section level — sub-labelled `MSR2` in the detailed flow.\n"
-    },
-    "MD": {
-      "name": "Missing data",
-      "characteristics": "Section contains telemetry gaps, dropouts, or corrupted values.\n  - A signal that should be dynamic flatlines (e.g. speed = 0 mid-lap).\n  - Physically impossible values (negative speed, gear out of range).\n  - NaN runs inside the section.\nTrigger: a `find_extremum` returns an impossible min/max, or a rendered graph shows a flat plateau where motion should exist. Compatible with every other label.\n"
     }
   },
   "global_rules_by_session": {
     "practice": [
       "Solo sessions are processed as normal driving sections rough-cut by circuit section.",
-      "Only practice-session behavior parents {MD, PS, RM, MSP} are eligible. Do not evaluate or attach racing-session behavior parents O / OD / MSR in practice mode.",
-      "Pick MSP for a technical driving mistake, RM for recovery from a prior mistake, PS for pit-lane procedure, or MD for missing / corrupt telemetry.",
+      "Only practice-session behavior parents {PS, RM, MSP} are eligible. Do not evaluate or attach racing-session behavior parents O / OD / MSR in practice mode.",
+      "Pick MSP for a technical driving mistake, RM for recovery from a prior mistake, or PS for pit-lane procedure.",
       "Use `find_trend_runs` and `compute_slope` on `expert_time_difference` for material time-loss / recovery evidence. A constant carried gap is not a new mistake or recovery.",
       "Use `find_extremum` on `trajectory_offset` for peak deviation plus returned near-zero summary (`near_zero_fraction`, `starts_near_zero`, `ends_near_zero`, `moves_toward_zero`).",
       "Driver/expert turning / trajectory, brake, and throttle comparison is required for segment completeness at entry or exit, not only for sub-labels."
     ],
     "racing": [
       "Sessions with opponent data are processed only as close overtake offence / defense engagement windows.",
-      "Only racing-session behavior parents {O, OD, MSR, PS} are eligible. Do not evaluate or attach practice-session behavior parents MSP / RM / MD in racing mode.",
+      "Only racing-session behavior parents {O, OD, MSR, PS} are eligible. Do not evaluate or attach practice-session behavior parents MSP / RM in racing mode.",
       "Pick O for a successful attacking pass, OD for a held defense, or MSR for a failed attack / broken defense.",
       "The deterministic gate for O / OD / MSR is `classify_opponent_interaction(start, end)` over the full current range: O requires `outcome: pass_completed`; OD requires `outcome: held_defense`; MSR requires `outcome` in {`failed_attack`, `broken_defense`}.",
       "Prefer labels only when the matching confidence-aware `label_gates` value is true. Low / weak classifier confidence means revise the range, inspect `query_opponent_trajectory`, or submit an empty label list if evidence remains unclear.",

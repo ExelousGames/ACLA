@@ -79,7 +79,7 @@ def _label_doc_allowed_for_surface(_surface, doc: Dict[str, Any]) -> bool:
     if not eligible:
         return True
 
-    required_parents = {"O", "OD", "MD", "PS", "RM", "MSP", "MSR"}
+    required_parents = {"O", "OD", "PS", "RM", "MSP", "MSR"}
     label_id = str(doc.get("id") or "")
     parent_id = str(doc.get("parent") or "")
     if label_id in required_parents:

@@ -13,7 +13,6 @@ _LEGACY_LABEL_MAP: Dict[Any, str] = {
     3: "EA",
     5: "RM",
     "1": "O",
-    "2": "MD",
     "4": "PS",
 
     # Mistake split (Practice vs Racing).
