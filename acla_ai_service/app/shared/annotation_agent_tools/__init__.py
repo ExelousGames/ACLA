@@ -3451,6 +3451,18 @@ def _trend_change(overall_slope: float, end_slope: float, column: str) -> str:
     return "steady_at_end"
 
 
+def _trend_role(column: str, direction: str) -> str:
+    if column == "expert_time_difference":
+        if direction == "rising":
+            return "mistake_candidate_losing_time_here"
+        if direction == "falling":
+            return "recovery_candidate_gaining_time_here"
+        return "constant_gap_not_mistake_or_recovery"
+    return _column_semantics(column)[
+        "positive_label" if direction == "rising" else "negative_label"
+    ] if direction in {"rising", "falling"} else "stable"
+
+
 def _series_zero_context(arr: np.ndarray, column: str) -> Dict[str, Any]:
     meta = _column_semantics(column)
     near_zero_abs = float(meta["near_zero_abs"])
@@ -3780,6 +3792,188 @@ def _query_find_dips_on_main_slope(
     }
 
 
+def _merge_trend_runs(runs: List[Dict[str, int]]) -> List[Dict[str, int]]:
+    if not runs:
+        return []
+
+    merged: List[Dict[str, int]] = []
+    i = 0
+    while i < len(runs):
+        run = dict(runs[i])
+        if (
+            run["sign"] == 0
+            and merged
+            and i + 1 < len(runs)
+            and runs[i + 1]["sign"] == merged[-1]["sign"]
+            and runs[i + 1]["sign"] != 0
+        ):
+            merged[-1]["end"] = runs[i + 1]["end"]
+            i += 2
+            continue
+        if merged and merged[-1]["sign"] == run["sign"]:
+            merged[-1]["end"] = run["end"]
+        else:
+            merged.append(run)
+        i += 1
+    return merged
+
+
+def _query_find_trend_runs(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, smoothing_window: int,
+) -> Optional[Dict[str, Any]]:
+    """Find rising, falling, and flat runs in <column> over the range.
+
+    This is the deterministic shape reader for time-delta style graphs.
+    For ``expert_time_difference``, rising runs are candidate mistake
+    windows because the player is losing time *inside that run*; falling
+    runs are recovery windows. Flat runs explicitly mean the existing gap
+    is being carried forward, not that a new mistake/recovery occurred.
+    """
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+
+    segment = df.loc[int(start_index): int(end_index)]
+    arr_raw = _resolve_column(column, segment)
+    if arr_raw is None or len(arr_raw) < 2:
+        return None
+
+    clean = (
+        pd.Series(arr_raw)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy()
+    )
+    finite_locs = np.where(np.isfinite(clean))[0]
+    if len(finite_locs) < 2:
+        return None
+
+    values = clean[finite_locs]
+    deltas = np.diff(values)
+    eps = 1e-9
+    signs = np.where(deltas > eps, 1, np.where(deltas < -eps, -1, 0))
+
+    primitive: List[Dict[str, int]] = []
+    run_start = 0
+    current = int(signs[0])
+    for i in range(1, len(signs)):
+        sign = int(signs[i])
+        if sign == current:
+            continue
+        primitive.append({
+            "sign": current,
+            "start": int(finite_locs[run_start]),
+            "end": int(finite_locs[i]),
+        })
+        run_start = i
+        current = sign
+    primitive.append({
+        "sign": current,
+        "start": int(finite_locs[run_start]),
+        "end": int(finite_locs[-1]),
+    })
+
+    meta = _column_semantics(column)
+    runs: List[Dict[str, Any]] = []
+    for run in _merge_trend_runs(primitive):
+        local_start = int(run["start"])
+        local_end = int(run["end"])
+        if local_end <= local_start:
+            continue
+        start_iloc = int(start_index) + local_start
+        end_iloc = int(start_index) + local_end
+        start_value = float(clean[local_start])
+        end_value = float(clean[local_end])
+        delta = end_value - start_value
+        slope = delta / float(end_iloc - start_iloc)
+        classification = _classify_delta(delta, column)
+        direction = classification["direction"]
+        runs.append({
+            "start_iloc": start_iloc,
+            "end_iloc": end_iloc,
+            "start_value": start_value,
+            "end_value": end_value,
+            "delta_value": delta,
+            "slope": slope,
+            "direction": direction,
+            "domain_direction": classification["domain_direction"],
+            "materiality": classification["materiality"],
+            "is_label_material": classification["is_label_material"],
+            "role": _trend_role(column, direction),
+        })
+
+    material_runs = [
+        r for r in runs
+        if r["direction"] in {"rising", "falling"} and r["is_label_material"]
+    ]
+    strongest = (
+        max(material_runs, key=lambda r: abs(float(r["delta_value"])))
+        if material_runs else None
+    )
+    rising = [r for r in material_runs if r["direction"] == "rising"]
+    falling = [r for r in material_runs if r["direction"] == "falling"]
+    stable_only = not material_runs
+    finite_values = values[np.isfinite(values)]
+    constant_offset_only = bool(
+        column == "expert_time_difference"
+        and stable_only
+        and len(finite_values) > 0
+        and np.nanmean(np.abs(finite_values)) > float(meta["near_zero_abs"])
+    )
+    if rising and falling:
+        verdict = "material_losing_time_and_recovery_runs"
+    elif rising:
+        verdict = "material_losing_time_run"
+    elif falling:
+        verdict = "material_recovery_run"
+    elif constant_offset_only:
+        verdict = "constant_offset_only"
+    else:
+        verdict = "no_material_rate_change"
+
+    samples = [
+        {
+            "iloc": r["end_iloc"],
+            "value": r["end_value"],
+            "note": (
+                f"{r['role']}: {r['start_iloc']}->{r['end_iloc']}, "
+                f"delta={r['delta_value']:.2f} {meta['unit']}, "
+                f"slope={r['slope']:.4f} {meta['unit']}/iloc"
+            ),
+        }
+        for r in material_runs
+    ]
+
+    return {
+        "iloc": strongest["end_iloc"] if strongest else None,
+        "value": strongest["end_value"] if strongest else None,
+        "samples": samples,
+        "extra": {
+            "unit": meta["unit"],
+            "slope_unit": f"{meta['unit']}/iloc",
+            "smoothing_window": window,
+            "verdict": verdict,
+            "constant_offset_only": constant_offset_only,
+            "runs": runs,
+            "material_runs": material_runs,
+            "strongest_losing_time_run": (
+                max(rising, key=lambda r: abs(float(r["delta_value"])))
+                if rising else None
+            ),
+            "strongest_recovery_run": (
+                max(falling, key=lambda r: abs(float(r["delta_value"])))
+                if falling else None
+            ),
+            "thresholds": _classify_delta(0.0, column)["thresholds"],
+            "near_zero_summary": _series_zero_context(clean, column),
+        },
+    }
+
+
 def _query_find_threshold_crossing(
     df: pd.DataFrame, start_index: int, end_index: int,
     columns: List[str], threshold: float, smoothing_window: int,
@@ -3929,13 +4123,33 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "description": (
             "Slope of <column> from the start to the end of <range> "
             "(value-delta / iloc-delta), plus deterministic unit, "
-            "materiality, near-zero, and final-window trend verdicts."
+            "materiality, near-zero, and final-window trend verdicts. "
+            "For `expert_time_difference`, this answers whether the whole "
+            "range loses or gains time; a positive but flat value means the "
+            "player is already behind, not that a new mistake happened."
         ),
         "params_schema": {
             "range": _RANGE_PARAM_DESC,
             "column": "DataFrame column name",
         },
         "callable": _query_compute_slope,
+    },
+    {
+        "id": "find_trend_runs",
+        "label": "Up/down/flat trend runs",
+        "description": (
+            "Piecewise rising, falling, and flat runs in <column> over "
+            "<range>. Use this for `expert_time_difference` mistake/recovery "
+            "localization: rising material runs are where the player loses "
+            "time, falling material runs are where the player recovers, and "
+            "flat positive/negative runs are constant carried gap only."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "column": "DataFrame column name",
+            "smoothing_window": "int ≥ 1 — rolling-median width (1=off, 5=light, 11=heavy)",
+        },
+        "callable": _query_find_trend_runs,
     },
     {
         "id": "find_dips_on_main_slope",

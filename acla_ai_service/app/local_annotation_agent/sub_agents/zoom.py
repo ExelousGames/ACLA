@@ -288,6 +288,10 @@ def _planner(state: AgentState) -> Dict[str, Any]:
         "the question is asking about, then pick one or more queries — "
         "typically one is enough, but questions that combine readings (e.g. "
         "'values at ilocs X and Y AND the slope between them') need multiple. "
+        "When a question asks where `expert_time_difference` shows a mistake, "
+        "time loss, recovery, gap growth, or gap shrink, prefer "
+        "`find_trend_runs` over extrema: a constant positive/negative gap is "
+        "only carried offset, not new mistake/recovery evidence. "
         f"Cap per question: {MAX_QUERIES_PER_QUESTION}. **Every query you "
         "pick MUST include `range: [start_iloc, end_iloc]` in its params.** "
         "Use a tight window around the feature you're trying to capture; "
@@ -600,6 +604,14 @@ def _render_partials_block(
                         f"({extra.get('end_change_direction')}, "
                         f"{extra.get('end_change_materiality')}); "
                         f"end_trend_change={extra.get('end_trend_change')}"
+                    )
+                if query == "find_trend_runs":
+                    lines.append(
+                        "    deterministic trend-run verdict: "
+                        f"{extra.get('verdict')}; "
+                        f"constant_offset_only={extra.get('constant_offset_only')}; "
+                        f"strongest_losing_time_run={extra.get('strongest_losing_time_run')}; "
+                        f"strongest_recovery_run={extra.get('strongest_recovery_run')}"
                     )
                 extras_str = ", ".join(f"{k}={v!r}" for k, v in extra.items())
                 lines.append(f"    extra: {extras_str}")
