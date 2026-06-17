@@ -81,6 +81,30 @@ def test_lap_parse_rejects_extra_range_fields():
         )
 
 
+def test_lap_parse_claude_accepts_summary_field_as_reasoning_fallback():
+    response = AgentResponse(
+        raw_response=json.dumps({
+            "label_ids": ["MSP"],
+            "summary": "Observed steady maintenance speed through the full split.",
+        }),
+        verdict="submitted",
+    )
+
+    result = lap_flow.parse(
+        response,
+        prompt_mode="tool_agent",
+        lap_start=0,
+        lap_end=100,
+        section_id="brands_hatch1",
+        section_start=10,
+        section_end=20,
+        circuit_id="brands_hatch",
+    )
+
+    assert result.label_ids == ["MSP"]
+    assert result.reasoning == "Observed steady maintenance speed through the full split."
+
+
 def test_tool_surface_queries_clamp_to_current_working_range():
     df = pd.DataFrame({"metric": [float(i) for i in range(100)]})
     capture = ToolAgentCapture(cur_start=10, cur_end=20)

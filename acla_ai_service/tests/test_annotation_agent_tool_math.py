@@ -6,7 +6,7 @@ from app.shared.annotation_agent_tools import (
     locate_circuit_section,
     measure_segment_shape,
 )
-from app.local_annotation_agent.workflow.preflight import _run_queries
+from app.local_annotation_agent.workflow.preflight import _prompt_block, _run_queries
 
 
 def _trajectory_df(x: np.ndarray, y: np.ndarray) -> pd.DataFrame:
@@ -83,6 +83,32 @@ def test_preflight_trajectory_offset_queries_repair_reset_segment_index():
         assert "error" not in content
         assert content["params"]["range"] == [1000, 1099]
         assert 1000 <= content["result"]["iloc"] <= 1099
+
+
+def test_preflight_expert_time_summary_uses_final_window_slope():
+    df = pd.DataFrame(
+        {
+            "expert_time_difference": [
+                0.0,
+                100.0,
+                200.0,
+                260.0,
+                300.0,
+                280.0,
+                240.0,
+                200.0,
+            ],
+            "speed_difference": np.linspace(0.0, 3.0, 8),
+        },
+        index=range(100, 108),
+    )
+
+    results = _run_queries(df, 100, 107)
+    prompt = _prompt_block("lap", 100, 107, results, [], [])
+
+    assert "do not decide mistake/recovery from the raw endpoint difference" in prompt
+    assert "end_trend_change=reversing_to_falling_at_end" in prompt
+    assert "end_moves_toward_zero=True" in prompt
 
 
 def test_straight_segment_shape_does_not_emit_corner_or_altitude_labels():

@@ -542,6 +542,7 @@ def _persist_lap_annotation(
 
     new_ann = build_segment(
         df, start=start, end=end, label_ids=label_ids, notes=notes,
+        chunk_index=session_id,
         opponent_interaction=opponent_interaction,
     )
     annotations = list(st.session_state.get("current_annotations", []))

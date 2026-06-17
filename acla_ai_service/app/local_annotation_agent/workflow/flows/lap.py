@@ -1051,7 +1051,7 @@ def _parse_claude(
     rejected: List[Dict[str, Any]] = []
     reasoning = ""
     if parsed:
-        _reject_unknown_output_fields(parsed, "claude")
+        _reject_unknown_output_fields(parsed, "claude", extra_allowed_keys={"summary"})
         raw_label_ids = parsed.get("label_ids") or []
         cleaned, rejected = _clean_label_ids(
             raw_label_ids,
@@ -1060,7 +1060,7 @@ def _parse_claude(
         cleaned = _with_preselected_interaction_labels(
             cleaned, circuit_id, opponent_interaction,
         )
-        reasoning = str(parsed.get("reasoning") or "")
+        reasoning = str(parsed.get("reasoning") or parsed.get("summary") or "")
 
     new_start, new_end = int(section_start), int(section_end)
     if (new_end - new_start) < 5:
@@ -1098,8 +1098,13 @@ def _parse_claude(
     )
 
 
-def _reject_unknown_output_fields(parsed: Dict[str, Any], source: str) -> None:
-    allowed_keys = {"label_ids", "reasoning"}
+def _reject_unknown_output_fields(
+    parsed: Dict[str, Any],
+    source: str,
+    *,
+    extra_allowed_keys: Optional[set[str]] = None,
+) -> None:
+    allowed_keys = {"label_ids", "reasoning", *(extra_allowed_keys or set())}
     unknown_keys = sorted(str(key) for key in parsed if key not in allowed_keys)
     if unknown_keys:
         raise RuntimeError(
