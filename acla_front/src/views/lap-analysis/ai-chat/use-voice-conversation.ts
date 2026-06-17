@@ -70,6 +70,7 @@ export interface VoiceConversationOptions {
     /** Driving session id — required for backend tools that look up
      *  recent telemetry / lap data by session. */
     sessionId?: string;
+    sessionMode?: 'live' | 'recorded';
     /** User id — required for backend tools that key off the logged-in
      *  user (e.g. saved preferences, history). */
     userId?: string;
@@ -137,8 +138,9 @@ export function useVoiceConversation(
     const openWs = useCallback((): WebSocket => {
         return apiService.openWebSocket('/voice/stream', {
             session_id: options.sessionId,
+            session_mode: options.sessionMode,
         });
-    }, [options.sessionId]);
+    }, [options.sessionId, options.sessionMode]);
 
     // Always-fresh handler registry — updated as options.toolHandlers changes
     // without forcing the WS to reopen.
@@ -286,6 +288,7 @@ export function useVoiceConversation(
                 try {
                     ws.send(JSON.stringify({
                         type: 'frontend_info',
+                        session_mode: options.sessionMode ?? 'live',
                         tools: options.frontendTools || [],
                         query_scope_schema: options.querySchemaScope ?? null,
                     }));
@@ -427,7 +430,7 @@ export function useVoiceConversation(
             setState('error');
             stop();
         }
-    }, [state, openWs, stop]);
+    }, [state, openWs, stop, options.sessionMode]);
 
     /**
      * Schedule a PCM16 chunk for gapless playback on the playback AudioContext.

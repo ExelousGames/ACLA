@@ -59,6 +59,7 @@ interface Message {
 
 interface AiChatProps {
     sessionId?: string;
+    sessionMode?: 'live' | 'recorded';
     title?: string;
 }
 
@@ -136,7 +137,7 @@ const extractCornerKnowledgeMessage = (raw: any): string | null => {
     return null;
 };
 
-const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) => {
+const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title = "AI Assistant" }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
 
@@ -368,11 +369,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     const voiceConversation = useVoiceConversation({
         sessionId,
+        sessionMode,
         onEvent: handleVoiceEvent,
         frontendTools: frontendToolSchemas,
         querySchemaScope: QUERY_SCOPE_SCHEMA,
         toolHandlers: createAiCommandRegistry({
             sessionId,
+            sessionMode,
             analysisContext,
             sessionIntelligence: analysisContext?.sessionIntelligence,
             opportunityAgentState: opportunityAgentStateRef.current,
@@ -387,6 +390,24 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const voiceActive = vState === 'listening' || vState === 'speaking';
     const canOpenFloatingChat = typeof window !== 'undefined'
         && Boolean((window as any).electronAPI?.openFloatingChat);
+
+    useEffect(() => {
+        if (sessionMode !== 'recorded') {
+            return;
+        }
+
+        setTrackGuideAgentEnabled(false);
+        const opportunityAgent = opportunityAgentStateRef.current;
+        if (opportunityAgent.intervalId) {
+            clearInterval(opportunityAgent.intervalId);
+            opportunityAgent.intervalId = null;
+        }
+        opportunityAgent.inFlight = false;
+        opportunityAgent.lastAlertKey = null;
+        opportunityAgent.lastAlertAt = 0;
+        setAgentTag('Track Guide', false);
+        setAgentTag('Overtake', false);
+    }, [sessionMode, setAgentTag, setTrackGuideAgentEnabled]);
 
     const toggleFloatingChat = useCallback(async () => {
         const api = (window as any).electronAPI;
@@ -635,15 +656,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (messages.length === 0) {
             const welcomeMessage: Message = {
                 id: 'welcome',
-                content: sessionId
-                    ? "Hello! I'm your AI assistant. I can help you analyze your racing session data. What would you like to know?"
-                    : "Hello! I'm your AI assistant. How can I help you today?",
+                content: sessionMode === 'recorded'
+                    ? "Recorded session assistant preview. Questions will use saved session context when recorded-session tools are available."
+                    : "Live session assistant ready. Questions will use streaming telemetry context.",
                 isUser: false,
                 timestamp: new Date()
             };
             setMessages([welcomeMessage]);
         }
-    }, [sessionId, messages.length]);
+    }, [messages.length, sessionMode]);
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -788,7 +809,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (!sent) {
             setMessages(prev => prev.concat({
                 id: generateUniqueId('ai'),
-                content: 'Click the mic to start a voice session first — text chat runs on the same connection.',
+                ...(sessionMode === 'recorded'
+                    ? { content: 'Start the assistant connection first. Recorded session context will be sent with the request.' }
+                    : { content: 'Click the mic to start a live voice session first - text chat runs on the same connection.' }),
                 isUser: false,
                 timestamp: new Date(),
                 kind: 'chat',
@@ -810,6 +833,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     // ── Voice state → mic panel display ─────────────────────────────
+    const sessionModeLabel = sessionMode === 'recorded' ? 'Recorded Session' : 'Live Session';
+    const transcriptLabel = sessionMode === 'recorded' ? 'RECORDED TRANSCRIPT' : 'LIVE TRANSCRIPT';
+
     const channelLabel =
         vState === 'idle' ? 'CH-1 · OFFLINE' :
         vState === 'connecting' ? 'CH-1 · CONNECTING' :
@@ -880,7 +906,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     {title}
                 </span>
                 <div className="ai-chat__header-meta">
-                    {sessionId && <span className="ai-chat__chip ai-chat__chip--blue">Session</span>}
+                    <span className="ai-chat__chip ai-chat__chip--blue">{sessionModeLabel}</span>
+                    {sessionMode === 'recorded' && (
+                        <span className="ai-chat__chip ai-chat__chip--amber">Preview</span>
+                    )}
                     {environment === 'electron' && (
                         <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
                     )}
@@ -1069,7 +1098,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     <div className="ai-chat__transcript-head">
                         <span className="ai-chat__transcript-title">
                             <span className="ai-chat__eyebrow-dot" />
-                            LIVE TRANSCRIPT
+                            {transcriptLabel}
                         </span>
                         <span className="ai-chat__transcript-time">{clock}</span>
                     </div>
@@ -1172,7 +1201,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     placeholder={
                         voiceActive
                             ? 'Type a message to the engineer…'
-                            : 'Click the mic to start a session, then type or talk.'
+                            : sessionMode === 'recorded'
+                                ? 'Ask about this recording.'
+                                : 'Ask about the live session.'
                     }
                     value={inputValue}
                     onChange={handleInputChange}

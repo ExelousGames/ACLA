@@ -7,6 +7,7 @@ import { detectOvertakeTacticalState } from './overtake-agent-detector';
 
 export interface AiCommandRegistryContext {
     sessionId?: string;
+    sessionMode?: 'live' | 'recorded';
     analysisContext?: any;
     // Populated during live recording. Null in post-session analysis view.
     sessionIntelligence?: SessionIntelligence | null;
@@ -216,6 +217,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     // ── Telemetry ─────────────────────────────────────────────────────────────
 
     async query_telemetry(args) {
+        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         return si.query(args as any);
@@ -225,6 +227,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     // reduce ∈ {avg,min,max,stats}; we defensively swap any other value
     // (incl. legacy 'raw') for 'stats' so a stale prompt can't leak rows.
     async query_telemetry_metric(args) {
+        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         const allowed = new Set(['avg', 'min', 'max', 'stats']);
@@ -237,6 +240,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     // to the LLM (absent from the voice tool schema) — rows must never
     // enter the LLM context.
     async _get_telemetry_for_scope(args) {
+        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         return { rows: si.getRowsForScope(args.scope) };
@@ -245,12 +249,14 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     // ── Event log ─────────────────────────────────────────────────────────────
 
     async get_event_log(args) {
+        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         return { events: si.findEvents(args as any) };
     },
 
     async get_next_corner() {
+        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         return si.getNextCorner() ?? { error: 'no_corner_data' };
@@ -259,6 +265,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     // ── Coaching ──────────────────────────────────────────────────────────────
 
     async start_per_turn_coaching() {
+        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
         context.startTrackGuide();
         context.setAgentTagActive?.('Track Guide', true);
         return { status: 'started', agent_mode: 'track_guide', enabled: true };
@@ -271,6 +278,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     },
 
     async start_overtake_agent(args, ctx) {
+        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
         const telemetryRows = context.getOpportunityTelemetryRows();
         if (telemetryRows.length === 0) {
             return { error: 'no_live_telemetry' };
@@ -370,6 +378,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     // ── Visualizations ────────────────────────────────────────────────────────
 
     async track_detail_for_guide() {
+        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
         context.startTrackGuide();
         context.setAgentTagActive?.('Track Guide', true);
         return { status: 'guidance_enabled', enabled: true };

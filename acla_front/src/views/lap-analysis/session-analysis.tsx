@@ -461,13 +461,15 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
 export const SessionAnalysisAssistant = () => {
     const analysisContext = useContext(AnalysisContext);
     const assistantSessionId = analysisContext.sessionSelected?.SessionId;
+    const assistantSessionMode = assistantSessionId ? 'recorded' : 'live';
     const assistantSessionLabel = analysisContext.sessionSelected?.session_name || 'Live Telemetry';
 
     return (
         <aside className="main-dashboard-assistant" aria-label="AI Assistant">
             <AiChat
                 sessionId={assistantSessionId}
-                title={`AI Assistant - ${assistantSessionLabel}`}
+                sessionMode={assistantSessionMode}
+                title={`AI Assistant - ${assistantSessionMode === 'recorded' ? 'Recorded' : 'Live'} - ${assistantSessionLabel}`}
             />
         </aside>
     );
