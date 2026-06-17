@@ -20,6 +20,8 @@ type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
+const DEFAULT_TTS_VOLUME = 0.9;
+const MUTED_TTS_VOLUME = 0;
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -57,11 +59,19 @@ interface Message {
 
 interface AiChatProps {
     sessionId?: string;
+    sessionMode?: 'live' | 'recorded';
     title?: string;
 }
 
 const formatClock = (d: Date) =>
     `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+
+const OverlayIcon = ({ size = 14 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect x="1.5" y="3.5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+        <rect x="5.5" y="6.5" width="9" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.3" fill="currentColor" fillOpacity="0.18" />
+    </svg>
+);
 
 const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
     if (!telemetry) return undefined;
@@ -127,7 +137,7 @@ const extractCornerKnowledgeMessage = (raw: any): string | null => {
     return null;
 };
 
-const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) => {
+const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title = "AI Assistant" }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
 
@@ -137,6 +147,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
+    const [floatingChatOpen, setFloatingChatOpen] = useState(false);
 
     // Text-to-speech states. Neural TTS (Kokoro) is the only path; we
     // optimistically assume it's available and flip this to false on first
@@ -163,8 +174,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const messagesScrollRef = useRef<HTMLDivElement>(null);
     // Active neural-TTS playback handle (Phase 2 — Kokoro via /voice-synthesize).
     const currentNeuralPlaybackRef = useRef<NeuralTtsPlayback | null>(null);
+    const currentSpeechIsGuidanceRef = useRef<boolean>(false);
     const speechQueueRef = useRef<Promise<void>>(Promise.resolve());
     const speechQueueTokenRef = useRef(0);
+    const agentSpeechTokenRef = useRef(0);
+    const mainChatbotSpeakingRef = useRef(false);
     // Mirrors neuralTtsAvailable for read access inside async closures that
     // would otherwise see a stale state value.
     const neuralTtsDisabledRef = useRef<boolean>(false);
@@ -178,6 +192,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     });
     const trackGuideLastPosRef = useRef<number | undefined>(undefined);
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
+    const trackGuideRunTokenRef = useRef(0);
     const activeAgentTagsRef = useRef<string[]>([]);
 
     useEffect(() => {
@@ -233,6 +248,24 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         broadcastPillMessage('', { tags: [] });
     }, [broadcastPillMessage]);
 
+    const stopAgentSpeaking = useCallback(() => {
+        agentSpeechTokenRef.current += 1;
+        if (currentSpeechIsGuidanceRef.current && currentNeuralPlaybackRef.current) {
+            currentNeuralPlaybackRef.current.stop();
+            currentNeuralPlaybackRef.current = null;
+            currentSpeechIsGuidanceRef.current = false;
+            setIsSpeaking(false);
+        }
+    }, []);
+
+    const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
+        if (!enabled) {
+            trackGuideRunTokenRef.current += 1;
+            stopAgentSpeaking();
+        }
+        setTrackGuideEnabled(enabled);
+    }, [stopAgentSpeaking]);
+
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
     // the same WS — frontend tools listed below are reachable from the
@@ -281,6 +314,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 ok: event.ok,
                 error: event.error,
             });
+            if (
+                event.status === 'completed'
+                && (
+                    event.name === 'stop_per_turn_coaching'
+                    || event.name === 'disable_guide_user_racing'
+                    || event.name === 'stop_overtake_agent'
+                )
+            ) {
+                stopAgentSpeaking();
+            }
             setMessages(prev => {
                 if (event.status === 'completed') {
                     for (let i = prev.length - 1; i >= 0; i--) {
@@ -320,21 +363,24 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     const startTrackGuide = () => {
+        trackGuideRunTokenRef.current += 1;
         setTrackGuideEnabled(true);
     };
 
     const voiceConversation = useVoiceConversation({
         sessionId,
+        sessionMode,
         onEvent: handleVoiceEvent,
         frontendTools: frontendToolSchemas,
         querySchemaScope: QUERY_SCOPE_SCHEMA,
         toolHandlers: createAiCommandRegistry({
             sessionId,
+            sessionMode,
             analysisContext,
             sessionIntelligence: analysisContext?.sessionIntelligence,
             opportunityAgentState: opportunityAgentStateRef.current,
             startTrackGuide,
-            setTrackGuideEnabled,
+            setTrackGuideEnabled: setTrackGuideAgentEnabled,
             setAgentTagActive: setAgentTag,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
         }),
@@ -342,6 +388,64 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
+    const canOpenFloatingChat = typeof window !== 'undefined'
+        && Boolean((window as any).electronAPI?.openFloatingChat);
+
+    useEffect(() => {
+        if (sessionMode !== 'recorded') {
+            return;
+        }
+
+        setTrackGuideAgentEnabled(false);
+        const opportunityAgent = opportunityAgentStateRef.current;
+        if (opportunityAgent.intervalId) {
+            clearInterval(opportunityAgent.intervalId);
+            opportunityAgent.intervalId = null;
+        }
+        opportunityAgent.inFlight = false;
+        opportunityAgent.lastAlertKey = null;
+        opportunityAgent.lastAlertAt = 0;
+        setAgentTag('Track Guide', false);
+        setAgentTag('Overtake', false);
+    }, [sessionMode, setAgentTag, setTrackGuideAgentEnabled]);
+
+    const toggleFloatingChat = useCallback(async () => {
+        const api = (window as any).electronAPI;
+        if (!api?.openFloatingChat) return;
+        try {
+            if (floatingChatOpen) {
+                await api.closeFloatingChat();
+                setFloatingChatOpen(false);
+            } else {
+                await api.openFloatingChat();
+                setFloatingChatOpen(true);
+            }
+        } catch (err) {
+            console.warn('Failed to toggle floating chat:', err);
+        }
+    }, [floatingChatOpen]);
+
+    useEffect(() => {
+        const api = (window as any).electronAPI;
+        if (!api?.onFloatingChatClosed) return;
+        const unsubscribe = api.onFloatingChatClosed(() => setFloatingChatOpen(false));
+        if (api.isFloatingChatOpen) {
+            api.isFloatingChatOpen()
+                .then((open: boolean) => setFloatingChatOpen(Boolean(open)))
+                .catch(() => undefined);
+        }
+        return () => { try { unsubscribe?.(); } catch { /* ignore */ } };
+    }, []);
+
+    useEffect(() => {
+        const mainChatbotSpeaking = vState === 'speaking';
+        mainChatbotSpeakingRef.current = mainChatbotSpeaking;
+        if (currentSpeechIsGuidanceRef.current && currentNeuralPlaybackRef.current) {
+            currentNeuralPlaybackRef.current.audio.volume = mainChatbotSpeaking
+                ? MUTED_TTS_VOLUME
+                : DEFAULT_TTS_VOLUME;
+        }
+    }, [vState]);
 
     const addStatusMessage = (type: string, content: string) => {
         const message: Message = {
@@ -394,22 +498,31 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (currentNeuralPlaybackRef.current) {
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
+            currentSpeechIsGuidanceRef.current = false;
         }
 
+        const isGuidanceSpeech = options?.isGuidance === true;
         setIsSpeaking(true);
         const playback = await speakWithNeuralTts(cleanText, {
-            speed: options?.isGuidance ? 1.15 : 1.0,
-            volume: 0.9,
+            speed: isGuidanceSpeech ? 1.15 : 1.0,
+            volume: isGuidanceSpeech && mainChatbotSpeakingRef.current
+                ? MUTED_TTS_VOLUME
+                : DEFAULT_TTS_VOLUME,
         });
         currentNeuralPlaybackRef.current = playback;
+        currentSpeechIsGuidanceRef.current = isGuidanceSpeech;
+        if (isGuidanceSpeech && mainChatbotSpeakingRef.current) {
+            playback.audio.volume = MUTED_TTS_VOLUME;
+        }
 
         try {
             await playback.ended;
         } finally {
             if (currentNeuralPlaybackRef.current === playback) {
                 currentNeuralPlaybackRef.current = null;
+                currentSpeechIsGuidanceRef.current = false;
+                setIsSpeaking(false);
             }
-            setIsSpeaking(false);
         }
     };
 
@@ -422,10 +535,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (!cleanText) return;
 
         const queueToken = speechQueueTokenRef.current;
+        const isGuidanceSpeech = options?.isGuidance === true;
+        const agentToken = agentSpeechTokenRef.current;
         speechQueueRef.current = speechQueueRef.current
             .catch(() => undefined)
             .then(async () => {
                 if (queueToken !== speechQueueTokenRef.current || neuralTtsDisabledRef.current) return;
+                if (isGuidanceSpeech && agentToken !== agentSpeechTokenRef.current) return;
                 await speakWithNeural(cleanText, options);
             })
             .catch((err) => {
@@ -438,10 +554,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     const stopSpeaking = () => {
         speechQueueTokenRef.current += 1;
+        agentSpeechTokenRef.current += 1;
         if (currentNeuralPlaybackRef.current) {
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
         }
+        currentSpeechIsGuidanceRef.current = false;
         setIsSpeaking(false);
     };
 
@@ -507,6 +625,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const lastProcessedGuidanceRef = useRef<string>('');
     const lastGuidanceTimestampRef = useRef<number>(0);
     useEffect(() => {
+        if (!TrackGuideEnabled) {
+            if (analysisContext?.latestGuidanceMessage) {
+                lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
+            }
+            return;
+        }
+
         if (analysisContext?.latestGuidanceMessage &&
             analysisContext.latestGuidanceMessage !== lastProcessedGuidanceRef.current) {
 
@@ -525,25 +650,26 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
             lastGuidanceTimestampRef.current = now;
         }
-    }, [analysisContext?.latestGuidanceMessage, generateUniqueId]);
+    }, [analysisContext?.latestGuidanceMessage, generateUniqueId, TrackGuideEnabled]);
 
     useEffect(() => {
         if (messages.length === 0) {
             const welcomeMessage: Message = {
                 id: 'welcome',
-                content: sessionId
-                    ? "Hello! I'm your AI assistant. I can help you analyze your racing session data. What would you like to know?"
-                    : "Hello! I'm your AI assistant. How can I help you today?",
+                content: sessionMode === 'recorded'
+                    ? "Recorded session assistant preview. Questions will use saved session context when recorded-session tools are available."
+                    : "Live session assistant ready. Questions will use streaming telemetry context.",
                 isUser: false,
                 timestamp: new Date()
             };
             setMessages([welcomeMessage]);
         }
-    }, [sessionId, messages.length]);
+    }, [messages.length, sessionMode]);
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
         if (!TrackGuideEnabled) {
+            trackGuideRunTokenRef.current += 1;
             trackGuideLastPosRef.current = undefined;
             trackGuideTriggeredRef.current.clear();
             return;
@@ -577,6 +703,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             if (trackGuideTriggeredRef.current.has(triggerKey)) return;
 
             trackGuideTriggeredRef.current.add(triggerKey);
+            const guideToken = trackGuideRunTokenRef.current;
 
             apiService.post('/racing-session/track-corner-knowledge', {
                 track_name: trackName,
@@ -585,11 +712,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 trigger_position: triggerPosition,
                 current_telemetry: liveData,
             }).then((response) => {
+                if (guideToken !== trackGuideRunTokenRef.current) return;
                 const message = extractCornerKnowledgeMessage(response.data);
                 if (message) {
                     addGuidanceMessage(message);
                 }
             }).catch((error) => {
+                if (guideToken !== trackGuideRunTokenRef.current) return;
                 const errorDetail = error?.data?.message || error?.data?.detail;
                 if (
                     error?.status === 404
@@ -680,7 +809,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (!sent) {
             setMessages(prev => prev.concat({
                 id: generateUniqueId('ai'),
-                content: 'Click the mic to start a voice session first — text chat runs on the same connection.',
+                ...(sessionMode === 'recorded'
+                    ? { content: 'Start the assistant connection first. Recorded session context will be sent with the request.' }
+                    : { content: 'Click the mic to start a live voice session first - text chat runs on the same connection.' }),
                 isUser: false,
                 timestamp: new Date(),
                 kind: 'chat',
@@ -702,6 +833,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     // ── Voice state → mic panel display ─────────────────────────────
+    const sessionModeLabel = sessionMode === 'recorded' ? 'Recorded Session' : 'Live Session';
+    const transcriptLabel = sessionMode === 'recorded' ? 'RECORDED TRANSCRIPT' : 'LIVE TRANSCRIPT';
+
     const channelLabel =
         vState === 'idle' ? 'CH-1 · OFFLINE' :
         vState === 'connecting' ? 'CH-1 · CONNECTING' :
@@ -772,7 +906,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     {title}
                 </span>
                 <div className="ai-chat__header-meta">
-                    {sessionId && <span className="ai-chat__chip ai-chat__chip--blue">Session</span>}
+                    <span className="ai-chat__chip ai-chat__chip--blue">{sessionModeLabel}</span>
+                    {sessionMode === 'recorded' && (
+                        <span className="ai-chat__chip ai-chat__chip--amber">Preview</span>
+                    )}
                     {environment === 'electron' && (
                         <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
                     )}
@@ -784,8 +921,35 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                             Voice Error
                         </span>
                     )}
-                    {isTextToSpeechEnabled && (
-                        <span className="ai-chat__chip ai-chat__chip--green">TTS On</span>
+                    {neuralTtsAvailable && (
+                        <button
+                            type="button"
+                            className={`ai-chat__chip-btn ${isTextToSpeechEnabled ? 'ai-chat__chip-btn--green' : ''}`}
+                            onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
+                            disabled={isLoading}
+                            aria-pressed={isTextToSpeechEnabled}
+                            title={
+                                isSpeaking ? 'Stop speaking' :
+                                isTextToSpeechEnabled ? 'Disable auto text-to-speech' :
+                                'Enable auto text-to-speech'
+                            }
+                        >
+                            {isSpeaking ? 'Stop TTS' : isTextToSpeechEnabled ? 'TTS On' : 'TTS Off'}
+                        </button>
+                    )}
+                    {canOpenFloatingChat && (
+                        <button
+                            type="button"
+                            className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
+                            onClick={() => { void toggleFloatingChat(); }}
+                            aria-pressed={floatingChatOpen}
+                            title={floatingChatOpen
+                                ? 'Close the always-on-top AI chat overlay'
+                                : 'Open the always-on-top AI chat overlay (visible over the game in borderless windowed mode)'}
+                        >
+                            <OverlayIcon size={14} />
+                            <span>{floatingChatOpen ? 'Overlay On' : 'AI Overlay'}</span>
+                        </button>
                     )}
                     <button
                         type="button"
@@ -923,31 +1087,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         No menus. No screens. Just talk.
                     </div>
 
-                    <div className="ai-chat__mic-controls">
-                        {neuralTtsAvailable && (
-                            <button
-                                type="button"
-                                className={`ai-chat__btn ${isTextToSpeechEnabled ? 'ai-chat__btn--primary' : ''} ${isSpeaking ? 'ai-chat__btn--danger' : ''}`}
-                                onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
-                                disabled={isLoading}
-                                title={
-                                    isSpeaking ? 'Stop speaking' :
-                                    isTextToSpeechEnabled ? 'Disable auto text-to-speech' :
-                                    'Enable auto text-to-speech'
-                                }
-                                style={{ padding: '6px 12px', fontSize: '10px' }}
-                            >
-                                {isSpeaking ? 'STOP TTS' : isTextToSpeechEnabled ? 'TTS ON' : 'TTS OFF'}
-                            </button>
-                        )}
-                    </div>
                 </aside>
 
                 <section className="ai-chat__transcript">
                     <div className="ai-chat__transcript-head">
                         <span className="ai-chat__transcript-title">
                             <span className="ai-chat__eyebrow-dot" />
-                            LIVE TRANSCRIPT
+                            {transcriptLabel}
                         </span>
                         <span className="ai-chat__transcript-time">{clock}</span>
                     </div>
@@ -985,10 +1131,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                 );
                             }
 
-                            const isGuidance = message.id.includes('guidance');
                             const role: 'driver' | 'acla' | 'guidance' = message.isUser
                                 ? 'driver'
-                                : isGuidance ? 'guidance' : 'acla';
+                                : message.id.includes('guidance') ? 'guidance' : 'acla';
                             const avatarLabel = role === 'driver' ? 'YOU' : role === 'guidance' ? '🎯' : 'AI';
                             const whoLabel = role === 'driver' ? 'YOU'
                                 : role === 'guidance' ? 'LIVE GUIDANCE'
@@ -1020,18 +1165,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                                             <>
                                                 <div className="ai-chat__msg-text">{message.content}</div>
 
-                                                {!message.isUser && neuralTtsAvailable && (
-                                                    <button
-                                                        type="button"
-                                                        className="ai-chat__msg-speaker-btn"
-                                                        onClick={() => speakText(message.content, { isGuidance })}
-                                                        disabled={isSpeaking}
-                                                        title="Speak this message"
-                                                    >
-                                                        🔊 SPEAK
-                                                    </button>
-                                                )}
-
                                             </>
                                         )}
                                     </div>
@@ -1050,7 +1183,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     placeholder={
                         voiceActive
                             ? 'Type a message to the engineer…'
-                            : 'Click the mic to start a session, then type or talk.'
+                            : sessionMode === 'recorded'
+                                ? 'Ask about this recording.'
+                                : 'Ask about the live session.'
                     }
                     value={inputValue}
                     onChange={handleInputChange}

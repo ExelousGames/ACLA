@@ -4,10 +4,11 @@ import {
     Box,
     Tabs
 } from "@radix-ui/themes";
+import { ChatBubbleIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/react-icons';
 
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { useEnvironment } from 'contexts/EnvironmentContext';
@@ -18,6 +19,7 @@ import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } fro
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from './analysis-context';
 import { SessionIntelligence } from './session-intelligence/SessionIntelligence';
+import AiChat from './ai-chat/ai-chat';
 
 const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -44,7 +46,7 @@ type PendingTelemetryWrite = {
     timeoutId: number;
 };
 
-const SessionAnalysis = () => {
+export const SessionAnalysisProvider = ({ children }: { children: React.ReactNode }) => {
 
     //must give state some init value otherwise createContext and useContext don't like it
     const [mapSelected, setMap] = useState<string | null>(null);
@@ -83,8 +85,6 @@ const SessionAnalysis = () => {
     const telemetryWriterFilePathRef = useRef<string | null>(null);
     const telemetryWriterPendingRef = useRef<Map<string, PendingTelemetryWrite>>(new Map());
     const telemetryWriterSequenceRef = useRef(0);
-
-    const environment = useEnvironment();
 
     const disposeTelemetryWriter = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
         const cleanup = telemetryWriterCleanupRef.current;
@@ -429,6 +429,7 @@ const SessionAnalysis = () => {
 
     return (
         <AnalysisContext.Provider value={{
+            activeTab,
             mapSelected,
             sessionSelected,
             liveData,
@@ -443,6 +444,7 @@ const SessionAnalysis = () => {
             setLiveSessionData,
             setRecordedSessionStaticsData,
             setRecordedSessionDataFilePath,
+            setActiveTab,
             writeRecordedLiveSessionData,
             readRecordedSessionData,
             finalizeRecordingWrites,
@@ -452,6 +454,56 @@ const SessionAnalysis = () => {
             ,
             TelemetryDataLiveStatus
         }}>
+            {children}
+        </AnalysisContext.Provider>
+    )
+};
+
+export const SessionAnalysisAssistant = () => {
+    const analysisContext = useContext(AnalysisContext);
+    const [isOpen, setIsOpen] = useState(false);
+    const assistantSessionId = analysisContext.sessionSelected?.SessionId;
+    const assistantSessionMode = assistantSessionId ? 'recorded' : 'live';
+    const assistantSessionLabel = analysisContext.sessionSelected?.session_name || 'Live Telemetry';
+    const assistantClassName = `main-dashboard-assistant${isOpen ? ' main-dashboard-assistant--open' : ' main-dashboard-assistant--folded'}`;
+
+    return (
+        <aside className={assistantClassName} aria-label="AI Assistant">
+            <button
+                type="button"
+                className="main-dashboard-assistant__toggle"
+                onClick={() => setIsOpen((open) => !open)}
+                aria-controls="main-dashboard-assistant-body"
+                aria-expanded={isOpen}
+                aria-label={isOpen ? 'Fold AI Assistant' : 'Open AI Assistant'}
+                title={isOpen ? 'Fold AI Assistant' : 'Open AI Assistant'}
+            >
+                {isOpen ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+                <ChatBubbleIcon />
+            </button>
+            <div id="main-dashboard-assistant-body" className="main-dashboard-assistant__body" aria-hidden={!isOpen}>
+                <AiChat
+                    sessionId={assistantSessionId}
+                    sessionMode={assistantSessionMode}
+                    title={`AI Assistant - ${assistantSessionMode === 'recorded' ? 'Recorded' : 'Live'} - ${assistantSessionLabel}`}
+                />
+            </div>
+        </aside>
+    );
+};
+
+const SessionAnalysis = () => {
+    const analysisContext = useContext(AnalysisContext);
+    const environment = useEnvironment();
+    const {
+        activeTab,
+        mapSelected,
+        sessionSelected,
+        setActiveTab
+    } = analysisContext;
+
+    return (
+        <>
             <Tabs.Root className={`LiveAnalysisTabsRoot ${environment === 'electron' ? 'has-recording-bar' : ''}`} defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
@@ -474,8 +526,8 @@ const SessionAnalysis = () => {
                 </Box >
             </Tabs.Root>
             {environment == 'electron' ? <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording> : ''}
-        </AnalysisContext.Provider>
-    )
+        </>
+    );
 };
 
 export default SessionAnalysis;

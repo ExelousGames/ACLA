@@ -5,6 +5,7 @@ import { VisualizationInstance } from './visualization/VisualizationRegistry';
 import { SessionIntelligence } from './session-intelligence/SessionIntelligence';
 
 export interface AnalysisContextType {
+    activeTab: string;
     mapSelected: string | null;
     sessionSelected: RacingSessionDetailedInfoDto | null;
     liveData: any;
@@ -20,6 +21,7 @@ export interface AnalysisContextType {
     setLiveSessionData: (data: {}) => void;
     setRecordedSessionStaticsData: (data: {}) => void;
     setRecordedSessionDataFilePath: (filePath: string | null) => void;
+    setActiveTab: Dispatch<SetStateAction<string>>;
     writeRecordedLiveSessionData: (data: any) => Promise<void>;
     readRecordedSessionData: (onProgress?: (read: number, total: number | null, bytesRead?: number, totalBytes?: number) => void) => Promise<any[]>;
     finalizeRecordingWrites: () => Promise<void>;
@@ -29,6 +31,7 @@ export interface AnalysisContextType {
 }
 
 export const AnalysisContext = createContext<AnalysisContextType>({
+    activeTab: 'mapLists',
     mapSelected: '',
     sessionSelected: {} as RacingSessionDetailedInfoDto,
     liveData: {} as any,
@@ -54,6 +57,9 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     setRecordedSessionDataFilePath: () => {
         console.warn('No provider for AnalysisContext');
     },
+    setActiveTab: ((value: string) => {
+        console.warn('No provider for AnalysisContext');
+    }) as Dispatch<SetStateAction<string>>,
     writeRecordedLiveSessionData: async () => {
         console.warn('No provider for AnalysisContext');
     },

@@ -70,6 +70,7 @@ export interface VoiceConversationOptions {
     /** Driving session id — required for backend tools that look up
      *  recent telemetry / lap data by session. */
     sessionId?: string;
+    sessionMode?: 'live' | 'recorded';
     /** User id — required for backend tools that key off the logged-in
      *  user (e.g. saved preferences, history). */
     userId?: string;
@@ -126,6 +127,8 @@ export function useVoiceConversation(
     const workletNodeRef = useRef<AudioWorkletNode | null>(null);
     const playbackContextRef = useRef<AudioContext | null>(null);
     const playbackQueueTimeRef = useRef<number>(0);
+    const playbackSerialRef = useRef<number>(0);
+    const playbackIdleTimeoutRef = useRef<number | null>(null);
 
     /**
      * Open the backend voice WS through apiService — same baseURL + JWT
@@ -135,8 +138,9 @@ export function useVoiceConversation(
     const openWs = useCallback((): WebSocket => {
         return apiService.openWebSocket('/voice/stream', {
             session_id: options.sessionId,
+            session_mode: options.sessionMode,
         });
-    }, [options.sessionId]);
+    }, [options.sessionId, options.sessionMode]);
 
     // Always-fresh handler registry — updated as options.toolHandlers changes
     // without forcing the WS to reopen.
@@ -171,6 +175,11 @@ export function useVoiceConversation(
         try { playbackContextRef.current?.close(); } catch { /* ignore */ }
         playbackContextRef.current = null;
         playbackQueueTimeRef.current = 0;
+        playbackSerialRef.current += 1;
+        if (playbackIdleTimeoutRef.current !== null) {
+            window.clearTimeout(playbackIdleTimeoutRef.current);
+            playbackIdleTimeoutRef.current = null;
+        }
 
         if (wsRef.current) {
             try {
@@ -279,6 +288,7 @@ export function useVoiceConversation(
                 try {
                     ws.send(JSON.stringify({
                         type: 'frontend_info',
+                        session_mode: options.sessionMode ?? 'live',
                         tools: options.frontendTools || [],
                         query_scope_schema: options.querySchemaScope ?? null,
                     }));
@@ -420,7 +430,7 @@ export function useVoiceConversation(
             setState('error');
             stop();
         }
-    }, [state, openWs, stop]);
+    }, [state, openWs, stop, options.sessionMode]);
 
     /**
      * Schedule a PCM16 chunk for gapless playback on the playback AudioContext.
@@ -428,6 +438,11 @@ export function useVoiceConversation(
     const queuePlayback = (pcm16Buffer: ArrayBuffer, context: AudioContext) => {
         const int16 = new Int16Array(pcm16Buffer);
         if (int16.length === 0) return;
+
+        if (playbackIdleTimeoutRef.current !== null) {
+            window.clearTimeout(playbackIdleTimeoutRef.current);
+            playbackIdleTimeoutRef.current = null;
+        }
 
         // Convert to Float32 in [-1, 1].
         const float32 = new Float32Array(int16.length);
@@ -441,6 +456,18 @@ export function useVoiceConversation(
         const source = context.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(context.destination);
+        const serial = ++playbackSerialRef.current;
+        source.onended = () => {
+            if (serial !== playbackSerialRef.current) return;
+            playbackIdleTimeoutRef.current = window.setTimeout(() => {
+                playbackIdleTimeoutRef.current = null;
+                if (serial !== playbackSerialRef.current) return;
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    playbackQueueTimeRef.current = context.currentTime;
+                    setState((prev) => (prev === 'speaking' ? 'listening' : prev));
+                }
+            }, 160);
+        };
 
         const now = context.currentTime;
         const startAt = Math.max(now, playbackQueueTimeRef.current);
