@@ -308,14 +308,6 @@
   margin: 0 2px;
 }
 
-.ai-chat__mic-controls {
-  width: 100%;
-  display: flex;
-  gap: 6px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
 /* ── Transcript ──────────────────────────────────── */
 .ai-chat__transcript {
   background: var(--lp-bg-panel);
@@ -435,29 +427,6 @@
   word-break: break-word;
 }
 .ai-chat__msg--driver .ai-chat__msg-text { color: rgba(232, 232, 240, 0.85); }
-
-.ai-chat__msg-speaker-btn {
-  margin-top: 6px;
-  font: inherit;
-  cursor: pointer;
-  font-family: var(--lp-mono);
-  font-size: 9px;
-  letter-spacing: 1px;
-  color: var(--lp-gray);
-  background: transparent;
-  border: 1px solid var(--lp-border-strong);
-  border-radius: var(--lp-radius-pill);
-  padding: 3px 8px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  transition: all 0.15s;
-}
-.ai-chat__msg-speaker-btn:hover:not(:disabled) {
-  color: var(--lp-green);
-  border-color: var(--lp-green);
-}
-.ai-chat__msg-speaker-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* Tool-call messages */
 .ai-chat__tool {

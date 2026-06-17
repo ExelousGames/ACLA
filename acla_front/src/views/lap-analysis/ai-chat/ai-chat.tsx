@@ -921,8 +921,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                             Voice Error
                         </span>
                     )}
-                    {isTextToSpeechEnabled && (
-                        <span className="ai-chat__chip ai-chat__chip--green">TTS On</span>
+                    {neuralTtsAvailable && (
+                        <button
+                            type="button"
+                            className={`ai-chat__chip-btn ${isTextToSpeechEnabled ? 'ai-chat__chip-btn--green' : ''}`}
+                            onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
+                            disabled={isLoading}
+                            aria-pressed={isTextToSpeechEnabled}
+                            title={
+                                isSpeaking ? 'Stop speaking' :
+                                isTextToSpeechEnabled ? 'Disable auto text-to-speech' :
+                                'Enable auto text-to-speech'
+                            }
+                        >
+                            {isSpeaking ? 'Stop TTS' : isTextToSpeechEnabled ? 'TTS On' : 'TTS Off'}
+                        </button>
                     )}
                     {canOpenFloatingChat && (
                         <button
@@ -1074,24 +1087,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         No menus. No screens. Just talk.
                     </div>
 
-                    <div className="ai-chat__mic-controls">
-                        {neuralTtsAvailable && (
-                            <button
-                                type="button"
-                                className={`ai-chat__btn ${isTextToSpeechEnabled ? 'ai-chat__btn--primary' : ''} ${isSpeaking ? 'ai-chat__btn--danger' : ''}`}
-                                onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
-                                disabled={isLoading}
-                                title={
-                                    isSpeaking ? 'Stop speaking' :
-                                    isTextToSpeechEnabled ? 'Disable auto text-to-speech' :
-                                    'Enable auto text-to-speech'
-                                }
-                                style={{ padding: '6px 12px', fontSize: '10px' }}
-                            >
-                                {isSpeaking ? 'STOP TTS' : isTextToSpeechEnabled ? 'TTS ON' : 'TTS OFF'}
-                            </button>
-                        )}
-                    </div>
                 </aside>
 
                 <section className="ai-chat__transcript">
@@ -1136,10 +1131,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                 );
                             }
 
-                            const isGuidance = message.id.includes('guidance');
                             const role: 'driver' | 'acla' | 'guidance' = message.isUser
                                 ? 'driver'
-                                : isGuidance ? 'guidance' : 'acla';
+                                : message.id.includes('guidance') ? 'guidance' : 'acla';
                             const avatarLabel = role === 'driver' ? 'YOU' : role === 'guidance' ? '🎯' : 'AI';
                             const whoLabel = role === 'driver' ? 'YOU'
                                 : role === 'guidance' ? 'LIVE GUIDANCE'
@@ -1170,18 +1164,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                         ) : (
                                             <>
                                                 <div className="ai-chat__msg-text">{message.content}</div>
-
-                                                {!message.isUser && neuralTtsAvailable && (
-                                                    <button
-                                                        type="button"
-                                                        className="ai-chat__msg-speaker-btn"
-                                                        onClick={() => speakText(message.content, { isGuidance })}
-                                                        disabled={isSpeaking}
-                                                        title="Speak this message"
-                                                    >
-                                                        🔊 SPEAK
-                                                    </button>
-                                                )}
 
                                             </>
                                         )}

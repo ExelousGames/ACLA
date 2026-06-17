@@ -4,6 +4,7 @@ import {
     Box,
     Tabs
 } from "@radix-ui/themes";
+import { ChatBubbleIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/react-icons';
 
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
@@ -460,17 +461,33 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
 
 export const SessionAnalysisAssistant = () => {
     const analysisContext = useContext(AnalysisContext);
+    const [isOpen, setIsOpen] = useState(false);
     const assistantSessionId = analysisContext.sessionSelected?.SessionId;
     const assistantSessionMode = assistantSessionId ? 'recorded' : 'live';
     const assistantSessionLabel = analysisContext.sessionSelected?.session_name || 'Live Telemetry';
+    const assistantClassName = `main-dashboard-assistant${isOpen ? ' main-dashboard-assistant--open' : ' main-dashboard-assistant--folded'}`;
 
     return (
-        <aside className="main-dashboard-assistant" aria-label="AI Assistant">
-            <AiChat
-                sessionId={assistantSessionId}
-                sessionMode={assistantSessionMode}
-                title={`AI Assistant - ${assistantSessionMode === 'recorded' ? 'Recorded' : 'Live'} - ${assistantSessionLabel}`}
-            />
+        <aside className={assistantClassName} aria-label="AI Assistant">
+            <button
+                type="button"
+                className="main-dashboard-assistant__toggle"
+                onClick={() => setIsOpen((open) => !open)}
+                aria-controls="main-dashboard-assistant-body"
+                aria-expanded={isOpen}
+                aria-label={isOpen ? 'Fold AI Assistant' : 'Open AI Assistant'}
+                title={isOpen ? 'Fold AI Assistant' : 'Open AI Assistant'}
+            >
+                {isOpen ? <ChevronRightIcon /> : <ChevronLeftIcon />}
+                <ChatBubbleIcon />
+            </button>
+            <div id="main-dashboard-assistant-body" className="main-dashboard-assistant__body" aria-hidden={!isOpen}>
+                <AiChat
+                    sessionId={assistantSessionId}
+                    sessionMode={assistantSessionMode}
+                    title={`AI Assistant - ${assistantSessionMode === 'recorded' ? 'Recorded' : 'Live'} - ${assistantSessionLabel}`}
+                />
+            </div>
         </aside>
     );
 };
