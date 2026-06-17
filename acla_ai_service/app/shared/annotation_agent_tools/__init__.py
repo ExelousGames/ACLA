@@ -3013,13 +3013,16 @@ def split_lap_by_circuit_sections(
 
 
 def locate_circuit_section(
-    df: pd.DataFrame, start_index: int, end_index: int,
+    df: pd.DataFrame,
+    circuit_id: Optional[str],
+    start_index: Optional[int] = None,
+    end_index: Optional[int] = None,
 ):
     """Tool — identify which named ``circuit_section`` the segment overlaps.
 
     Reads ``Graphics_normalized_car_position`` over ``[start_index, end_index)``
-    and compares the segment's [min, max] fraction against every
-    ``circuit_section`` label whose ``normalized_position_range`` is filled
+    and compares the segment's [min, max] fraction against that circuit's
+    ``circuit_section`` labels whose ``normalized_position_range`` is filled
     in. Returns the top matches ranked by overlap fraction (overlap / segment
     span). Handles wrap-around sections where ``range_end < range_start``
     (e.g. the pit straight that crosses the start/finish line).
@@ -3027,6 +3030,7 @@ def locate_circuit_section(
     Returns a ``circuit_section_match`` attachment with shape::
 
         {
+            "circuit_id": <str>,
             "segment_position_range": [seg_min, seg_max],
             "top_matches": [
                 {"label_id", "name", "description",
@@ -3038,9 +3042,9 @@ def locate_circuit_section(
             "best_match": <top entry, or None when ambiguous / empty>,
         }
 
-    ``top_matches`` is empty when the column is missing, all values are
-    non-finite, or no circuit_section in the catalog has its range filled
-    in yet. ``best_match`` is set ONLY when the leading entry's
+    ``top_matches`` is empty when the column is missing, the circuit is
+    unknown, all values are non-finite, or no circuit_section in the catalog
+    has its range filled in yet. ``best_match`` is set ONLY when the leading entry's
     ``overlap_fraction`` clears the runner-up by ``AMBIGUOUS_MARGIN``;
     otherwise ``is_ambiguous`` is true and the caller must disambiguate
     using a second telemetry signal (lateral offset, brake pattern, speed
@@ -3048,6 +3052,17 @@ def locate_circuit_section(
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.internal_knowledge_base.label_lookup import find_labels
+
+    # Backwards-compatible path for direct Python callers that still pass
+    # (df, start, end). Provider-facing tools should pass circuit_id first.
+    if end_index is None and start_index is not None:
+        end_index = int(start_index)
+        start_index = int(circuit_id) if circuit_id is not None else 0
+        circuit_id = None
+
+    circuit = _canonicalise_track_name(circuit_id)
+    if circuit is None and STATIC_TRACK_COLUMN in df.columns and not df.empty:
+        circuit = _canonicalise_track_name(df[STATIC_TRACK_COLUMN].iloc[0])
 
     s, e = int(start_index), int(end_index)
 
@@ -3061,7 +3076,17 @@ def locate_circuit_section(
 
     if NORMALIZED_POSITION_COLUMN not in df.columns:
         return _attach({
+            "circuit_id": circuit,
             "error": f"column '{NORMALIZED_POSITION_COLUMN}' missing from telemetry",
+            "top_matches": [],
+            "is_ambiguous": False,
+            "best_match": None,
+        })
+
+    if circuit is None:
+        return _attach({
+            "circuit_id": None,
+            "error": "circuit_id is required before locating a circuit section",
             "top_matches": [],
             "is_ambiguous": False,
             "best_match": None,
@@ -3072,6 +3097,7 @@ def locate_circuit_section(
     pos = pos[np.isfinite(pos)]
     if pos.size == 0:
         return _attach({
+            "circuit_id": circuit,
             "error": "no finite values in normalized position over the segment",
             "top_matches": [],
             "is_ambiguous": False,
@@ -3082,7 +3108,7 @@ def locate_circuit_section(
     seg_span = max(seg_hi - seg_lo, 1e-6)
 
     matches: List[Dict[str, Any]] = []
-    for entry in find_labels(type="circuit_section"):
+    for entry in find_labels(type="circuit_section", parent=circuit):
         rng = entry.get("normalized_position_range")
         if rng is None:
             continue
@@ -3119,6 +3145,7 @@ def locate_circuit_section(
     )
     best = None if is_ambiguous or not top else top[0]
     return _attach({
+        "circuit_id": circuit,
         "segment_position_range": [seg_lo, seg_hi],
         "top_matches": top,
         "is_ambiguous": is_ambiguous,
@@ -3225,8 +3252,9 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "id": "locate_circuit_section",
         "label": "Circuit Section Match (named corner / straight)",
         "description": (
-            "Reads `Graphics_normalized_car_position` over the segment "
-            "and matches it against every `circuit_section` label's "
+            "Takes a circuit id first, reads "
+            "`Graphics_normalized_car_position` over the segment, and "
+            "matches it against that circuit's `circuit_section` labels' "
             "`normalized_position_range`. Produces a "
             "'circuit_section_match' attachment with 'top_matches' "
             "(ranked by overlap fraction), an 'is_ambiguous' flag, and "

@@ -110,6 +110,15 @@ def _build_pipeline_tool_schemas(parent_start: int, parent_end: int) -> List[Dic
                 "parameters": {
                     "type": "object",
                     "properties": {
+                        **({
+                            "circuit_id": {
+                                "type": "string",
+                                "description": (
+                                    "Circuit label id returned by get_circuit_id, "
+                                    "for example brands_hatch or moza."
+                                ),
+                            },
+                        } if tid == "locate_circuit_section" else {}),
                         "start": {
                             "type": "integer",
                             "description": (
@@ -125,7 +134,11 @@ def _build_pipeline_tool_schemas(parent_start: int, parent_end: int) -> List[Dic
                             ),
                         },
                     },
-                    "required": ["start", "end"],
+                    "required": (
+                        ["circuit_id", "start", "end"]
+                        if tid == "locate_circuit_section"
+                        else ["start", "end"]
+                    ),
                 },
             },
         })
@@ -161,7 +174,15 @@ def _make_pipeline_tool_handler(
                 "error": f"invalid range [{start}, {end}] — end must be > start",
             })
         try:
-            att = tool_def["callable"](df, start, end)
+            if name == "locate_circuit_section":
+                att = tool_def["callable"](
+                    df,
+                    args.get("circuit_id"),
+                    start,
+                    end,
+                )
+            else:
+                att = tool_def["callable"](df, start, end)
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("pipeline tool '%s' raised", name)
             return _json.dumps({"error": f"{name} raised: {exc}"})

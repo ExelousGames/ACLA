@@ -3,8 +3,10 @@ import pandas as pd
 
 from app.shared.annotation_agent_tools import (
     _query_compute_slope,
+    locate_circuit_section,
     measure_segment_shape,
 )
+from app.local_annotation_agent.workflow.preflight import _run_queries
 
 
 def _trajectory_df(x: np.ndarray, y: np.ndarray) -> pd.DataFrame:
@@ -42,6 +44,45 @@ def test_time_difference_to_expert_alias_is_not_used():
     result = _query_compute_slope(df, 10, 13, "time_difference_to_expert")
 
     assert result is None
+
+
+def test_locate_circuit_section_filters_by_circuit_id():
+    df = pd.DataFrame(
+        {"Graphics_normalized_car_position": [0.95, 0.96, 0.97]},
+        index=[10, 11, 12],
+    )
+
+    brands = locate_circuit_section(df, "brands_hatch", 10, 13).content
+    moza = locate_circuit_section(df, "moza", 10, 13).content
+
+    assert brands["circuit_id"] == "brands_hatch"
+    assert {match["label_id"] for match in brands["top_matches"]} == {
+        "brands_hatch1",
+        "brands_hatch17",
+    }
+    assert moza["circuit_id"] == "moza"
+    assert [match["label_id"] for match in moza["top_matches"]] == ["moza1"]
+
+
+def test_preflight_trajectory_offset_queries_repair_reset_segment_index():
+    theta = np.linspace(0.0, np.pi / 2.0, 100)
+    radius = 30.0
+    df = _trajectory_df(radius * np.cos(theta), radius * np.sin(theta))
+    df["Graphics_player_pos_x"] = df["Graphics_player_pos_x"] + 0.5
+    df["Graphics_player_pos_y"] = df["Graphics_player_pos_y"] + 0.2
+    df["expert_time_difference"] = np.linspace(0.0, 100.0, len(df))
+    df["speed_difference"] = np.linspace(-2.0, 4.0, len(df))
+
+    results = dict(_run_queries(df, 1000, 1100))
+
+    for tool_id in (
+        "query_telemetry.find_extremum.trajectory_offset.max",
+        "query_telemetry.find_extremum.trajectory_offset.min",
+    ):
+        content = results[tool_id]
+        assert "error" not in content
+        assert content["params"]["range"] == [1000, 1099]
+        assert 1000 <= content["result"]["iloc"] <= 1099
 
 
 def test_straight_segment_shape_does_not_emit_corner_or_altitude_labels():

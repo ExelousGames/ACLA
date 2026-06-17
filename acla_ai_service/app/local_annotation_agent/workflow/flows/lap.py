@@ -31,6 +31,7 @@ from app.local_annotation_agent.workflow.results import (
     LapAnnotationResult,
     parse_json_response,
 )
+from app.local_annotation_agent.workflow.preflight import build_preflight_context
 from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
 
@@ -518,6 +519,10 @@ def _local_planner_prompt(
         lap_skill_block,
         "",
         "#### Available Step-Solver Agents",
+        "The Required Upfront Annotation Preflight block above has already "
+        "run the standard deterministic tools and hybrid semantic label "
+        "search. Plan only graph-description or targeted verifier work "
+        "needed to refine that context.",
         "Each plan step is dispatched to ONE sub-agent.",
         "- `describe_graphs` — renders the listed graphs over the split "
         "boundary and writes one observation paragraph per graph.",
@@ -529,10 +534,13 @@ def _local_planner_prompt(
         graph_catalogue,
         "",
         "#### Available Pre-Compute Tools",
+        "The standard tool group already ran in preflight. Add tools here "
+        "only for a concrete gap discovered after reading that package.",
         *tool_catalogue_lines,
         "",
         "#### Task",
-        "Plan describe_graphs steps gathering evidence to:",
+        "Plan describe_graphs steps that start from preflight and gather "
+        "only the remaining evidence needed to:",
         "  1. score only the eligible behavior parent labels "
         f"{_label_set_text(eligible_labels)} against "
         "its `characteristics` block in the skill, and",
@@ -543,8 +551,8 @@ def _local_planner_prompt(
         "Keep the plan tight — typically 1-3 describe_graphs steps plus a "
         "label_verifier. `trajectory_offset` + `time_delta` are the two "
         "diagnostic graphs called out by the skill; add `altitude_profile` "
-        "and `measure_segment_shape` when deciding segment shape or reading "
-        "altitude trends. For corner-entry or corner-exit segment "
+        "and `measure_segment_shape` only when preflight leaves segment "
+        "shape or altitude unresolved. For corner-entry or corner-exit segment "
         "completeness, include brake / throttle graphs and deterministic "
         "queries that establish the full driver-vs-expert action bounds "
         "required by `lap_annotation.global_rules_by_session.common`.",
@@ -736,18 +744,17 @@ def _tool_agent_task_prompt(
         f"{interaction_focus}"
         "\n"
         "### How to work\n"
-        "1. Call `search_annotation_guidance` for the lap annotation rules "
-        "that match this context. Use the returned guidance as the policy; "
-        "do not rely on remembered label definitions. If the guidance does "
-        "not cover the whole-range fit rule, turning / trajectory plus "
-        "brake / throttle driver-vs-expert comparison, search again "
-        "instead of inventing rules.\n"
-        "2. Call `recommend_tools` with the concrete evidence you need "
-        "(circuit id, section overlap, graph inspection, exact telemetry "
-        "values, opponent interaction, segment shape). Execute selected "
-        "capability IDs with `run_annotation_tool`.\n"
-        "3. Discover every non-circuit candidate with `search_labels` using "
-        "plain-language observations. Query `types=\"main\"` for the required behavior parent "
+        "1. Use the Required Upfront Annotation Preflight block as the "
+        "primary evidence package. It already contains deterministic tool "
+        "outputs, tool output tags, and semantic label candidates from "
+        "hybrid search.\n"
+        "2. Use `search_annotation_guidance` or extra data tools only for a "
+        "specific missing detail, not to rediscover the basic analysis path "
+        "already covered by preflight.\n"
+        "3. Use `search_labels` only for a targeted semantic re-query when "
+        "the preflight candidates miss a specific observation. Include "
+        "relevant `tool_output_tags` in the query. Query `types=\"main\"` "
+        "for the required behavior parent "
         f"label from {_label_set_text(eligible_labels)}, "
         "`types=\"segment_type\"` for segment-type labels, and "
         "`parent_id` for sub-labels under a chosen main label. Do not "
@@ -783,8 +790,8 @@ def _tool_agent_task_prompt(
         f"- Final range is fixed to [{section_start}, {section_end}].\n"
         f"- {required_label_rule}\n"
         "- Do not invent label IDs; circuit / circuit_section ids must come "
-        "from capability results, every other id from a `search_labels` "
-        "response.\n"
+        "from splitter context or capability results, every other id from "
+        "preflight semantic candidates or a targeted `search_labels` response.\n"
         "- Include a circuit_section id only when it is unambiguous.\n"
         f"- {_mode_exclusion_rule(session_context)}\n"
         f"- {WHOLE_RANGE_LABEL_RULE}\n"
@@ -855,6 +862,24 @@ def build_request(
         },
     )
 
+    fixed_label_ids = [label_id for label_id in (circuit_id, section_id) if label_id]
+    preselected_section_id = _preselected_interaction_section_id(opponent_interaction)
+    if preselected_section_id:
+        fixed_label_ids.append(preselected_section_id)
+    preflight = build_preflight_context(
+        flow="lap",
+        df=df,
+        start=section_start,
+        end=section_end,
+        eligible_behavior_label_ids=eligible_labels,
+        fixed_label_ids=fixed_label_ids,
+        extra_query_terms=[
+            session_context,
+            section_split_basis or "circuit_section",
+            LABEL_MAPPING.get(section_id, section_id),
+        ],
+    )
+
     # parent_start/end on the request are the section range — sub-agents
     # like describe_graphs operate over this window.
     parent_start = int(section_start)
@@ -871,6 +896,7 @@ def build_request(
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
         )
+        planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
         synth_prompt: Callable[[Dict[str, Any]], Tuple[str, str]] = (
             lambda s: _local_synth_prompts(
                 lap_start=lap_start,
@@ -898,6 +924,7 @@ def build_request(
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
         )
+        planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
         synth_prompt = lambda _state: ("", "")
         extra_state = {
             "root_agent": "annotation_root",
@@ -914,7 +941,7 @@ def build_request(
         df_ref=df,
         parent_start=parent_start,
         parent_end=parent_end,
-        initial_attachments=[parent_segment],
+        initial_attachments=[parent_segment, *preflight.attachments],
         callbacks=callbacks,
         session_id=session_id,
         extra_state=extra_state,

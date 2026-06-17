@@ -167,13 +167,14 @@ ANNOTATION_TOOL_REGISTRY: List[Dict[str, Any]] = [
     },
     {
         "name": "locate_circuit_section",
-        "description": "Identify named circuit section overlap.",
-        "params_schema": {"start": int, "end": int},
+        "description": "Identify named circuit section overlap within a circuit.",
+        "params_schema": {"circuit_id": str, "start": int, "end": int},
         "openai_properties": {
+            "circuit_id": {"type": "string"},
             "start": {"type": "integer"},
             "end": {"type": "integer"},
         },
-        "required": ["start", "end"],
+        "required": ["circuit_id", "start", "end"],
     },
     {
         "name": "find_nearest_opponent",
@@ -214,9 +215,9 @@ EXPOSED_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     _tool_def(
         "recommend_tools",
         (
-            "Recommend annotation capability tool IDs for the stated intent. "
-            "Call this before inspecting data; then execute returned IDs with "
-            "run_annotation_tool."
+            "Recommend annotation capability tool IDs for a specific missing "
+            "detail after reading the upfront preflight context; then execute "
+            "returned IDs with run_annotation_tool."
         ),
         {"intent": str, "context_json": str},
         category="meta",
@@ -683,10 +684,10 @@ class AnnotationToolSurface:
         att = measure_segment_shape(self.df, s, e)
         return json.dumps({"range": [s, e], "data": att.content}, default=str)
 
-    def locate_circuit_section(self, start: int, end: int) -> str:
+    def locate_circuit_section(self, circuit_id: str, start: int, end: int) -> str:
         from app.shared.annotation_agent_tools import locate_circuit_section
         s, e = self._clamp_to_window(start, end)
-        att = locate_circuit_section(self.df, s, e)
+        att = locate_circuit_section(self.df, circuit_id, s, e)
         return json.dumps({"range": [s, e], "data": att.content}, default=str)
 
     def find_nearest_opponent(self, start: int, end: int) -> str:
@@ -744,7 +745,11 @@ class AnnotationToolSurface:
         if name == "measure_segment_shape":
             return self.measure_segment_shape(int(args["start"]), int(args["end"]))
         if name == "locate_circuit_section":
-            return self.locate_circuit_section(int(args["start"]), int(args["end"]))
+            return self.locate_circuit_section(
+                str(args["circuit_id"]),
+                int(args["start"]),
+                int(args["end"]),
+            )
         if name == "find_nearest_opponent":
             return self.find_nearest_opponent(int(args["start"]), int(args["end"]))
         if name == "classify_opponent_interaction":
@@ -813,11 +818,13 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         "You are an analyst with agentic access to a domain dataset via tools. "
         "Your task is described in the user message. Inspect the data, run "
         "queries, then submit a final structured result.\n\n"
-        "Use `recommend_tools` to discover the most relevant data-inspection "
-        "capabilities, then execute chosen capability IDs with "
-        "`run_annotation_tool`. Use `search_annotation_guidance` and "
-        "`search_labels` to retrieve rules and label definitions instead of "
-        "guessing from memory. Finish with `submit_result`.\n\n"
+        "The user message includes a Required Upfront Annotation Preflight "
+        "block. Treat it as the primary analysis package: deterministic tool "
+        "outputs, tool output tags, and semantic label candidates were already "
+        "computed before this session. Use additional tools only to resolve a "
+        "specific missing detail. Use `search_labels` for targeted semantic "
+        "re-queries with relevant tool output tags. Finish with "
+        "`submit_result`.\n\n"
         "A label is valid only when its definition fits the whole range it "
         "will be attached to; if it fits only a smaller slice, omit that "
         "label.\n\n"

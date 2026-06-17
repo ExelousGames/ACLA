@@ -33,6 +33,7 @@ from app.local_annotation_agent.workflow.results import (
     AnnotationResult,
     parse_json_response,
 )
+from app.local_annotation_agent.workflow.preflight import build_preflight_context
 from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
 
@@ -164,6 +165,10 @@ def _local_planner_prompt(
         parts.append("")
     parts.extend([
         "#### Available Step-Solver Agents",
+        "The Required Upfront Annotation Preflight block above has already "
+        "run the standard deterministic tools and hybrid semantic label "
+        "search. Plan only the graph-description or targeted verifier work "
+        "needed to refine that context.",
         "Each plan step is dispatched to ONE sub-agent.",
         "- `describe_graphs` — renders the telemetry graphs listed in "
         "`requested_graphs` and writes a precise observation paragraph "
@@ -177,18 +182,21 @@ def _local_planner_prompt(
         graph_catalogue,
         "",
         "#### Available Pre-Compute Tools",
-        "Invoke per step via the `tools` field. Each invoked tool "
+        "The standard tool group already ran in preflight. Invoke an extra "
+        "tool per step via the `tools` field only for a concrete gap. Each invoked tool "
         "produces an attachment that will be attached to that step's "
         "prompt only.",
         *tool_catalogue_lines,
         "",
         "#### Task",
         "Plan analysis steps to help discover ONE notable sub-segment "
-        "within the parent segment range. A sub-segment is a contiguous "
+        "within the parent segment range, using preflight as the starting "
+        "evidence. A sub-segment is a contiguous "
         "region where a specific event or behaviour occurs. End your "
         "plan with a single `label_verifier` step over the observations "
         "produced by the preceding describe_graphs steps.",
-        "If the parent label or candidate behaviour involves racing, "
+        "If preflight leaves a racing-specific gap and the parent label or "
+        "candidate behaviour involves racing, "
         "overtaking, defending, or any close opponent interaction, include "
         "`classify_opponent_interaction`; then use `find_nearest_opponent` "
         "or `query_opponent_trajectory` to identify the specific car slot. "
@@ -363,16 +371,18 @@ def _tool_agent_task_prompt(
         f"{existing_block}"
         "\n"
         "### How to work\n"
-        "1. Call `search_annotation_guidance` for the parent label behavior "
-        "and sub-segment discovery rules that match this range.\n"
-        "2. Call `recommend_tools` with the evidence you need to gather "
-        "(graphs, exact ilocs/values, corner phases, circuit-section "
-        "context, opponent interaction). Execute selected capability IDs "
-        "with `run_annotation_tool`.\n"
-        "3. Discover candidate labels with `search_labels`. Query by "
-        "plain-language observations, use `parent_id` for sub-labels under "
-        "the relevant parent label, and use `types=\"segment_type\"` for "
-        "segment-shape labels.\n"
+        "1. Use the Required Upfront Annotation Preflight block as the "
+        "primary evidence package. It already contains deterministic tool "
+        "outputs, tool output tags, and semantic label candidates from "
+        "hybrid search.\n"
+        "2. Use `search_labels` only for a targeted semantic re-query when "
+        "the preflight candidates miss a specific observation. Include "
+        "relevant `tool_output_tags` in the query, use `parent_id` for "
+        "sub-labels under the relevant parent label, and use "
+        "`types=\"segment_type\"` for segment-shape labels.\n"
+        "3. Call additional data tools only to resolve a concrete missing "
+        "detail, not to rediscover the basic analysis path already covered "
+        "by preflight.\n"
         "4. Submit via `submit_result(payload_json, summary)` when evidence "
         "is sufficient, then stop after it returns `ok: true`. If the "
         "evidence only supports the whole parent range, submit an empty "
@@ -402,7 +412,8 @@ def _tool_agent_task_prompt(
         f"- A proposed range must not be identical to the parent range [{parent_start}, {parent_end}].\n"
         f"- {WHOLE_CHILD_RANGE_LABEL_RULE}\n"
         "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
-        "- Only propose label_ids returned by `search_labels`.\n"
+        "- Only propose label_ids returned by preflight semantic candidates "
+        "or by a targeted `search_labels` call.\n"
         "- For time-delta and offset evidence, cite deterministic tool "
         "verdict fields (unit, label-significance, end-window trend); do not "
         "create strength judgments from raw numbers.\n"
@@ -452,7 +463,8 @@ def build_request(
         content={
             "parent_start": int(parent_start),
             "parent_end": int(parent_end),
-            "main_labels": [LABEL_MAPPING.get(l, l) for l in parent_main_labels],
+            "main_labels": list(parent_main_labels),
+            "main_label_names": [LABEL_MAPPING.get(l, l) for l in parent_main_labels],
             "existing_children": [
                 {
                     "start_index": c.get("start_index"),
@@ -466,6 +478,18 @@ def build_request(
         },
     )
 
+    preflight = build_preflight_context(
+        flow="detailed",
+        df=df,
+        start=parent_start,
+        end=parent_end,
+        parent_main_labels=parent_main_labels,
+        extra_query_terms=[
+            LABEL_MAPPING.get(label_id, label_id)
+            for label_id in parent_main_labels
+        ],
+    )
+
     if prompt_mode == "local_pipeline":
         planner_prompt = _local_planner_prompt(
             parent_start=parent_start,
@@ -473,6 +497,7 @@ def build_request(
             parent_main_labels=parent_main_labels,
             existing_children=existing_children,
         )
+        planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
         synth_prompt: Callable[[Dict[str, Any]], Tuple[str, str]] = (
             lambda s: _local_synth_prompts(
                 parent_start=parent_start,
@@ -487,6 +512,7 @@ def build_request(
             parent_main_labels=parent_main_labels,
             existing_children=existing_children,
         )
+        planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
         # Not used by claude runner — kept as a no-op callable so the
         # contract holds.
         synth_prompt = lambda _state: ("", "")
@@ -505,7 +531,7 @@ def build_request(
         df_ref=df,
         parent_start=int(parent_start),
         parent_end=int(parent_end),
-        initial_attachments=[parent_segment],
+        initial_attachments=[parent_segment, *preflight.attachments],
         callbacks=callbacks,
         session_id=session_id,
         extra_state=extra_state,

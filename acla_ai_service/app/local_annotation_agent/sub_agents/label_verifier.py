@@ -48,6 +48,7 @@ def _payload(doc: Dict[str, Any], score: float) -> Dict[str, Any]:
 def compute_verified_labels(
     parent_main_labels: List[str],
     evidence_text: str,
+    eligible_behavior_label_ids: List[str] | None = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Shortlist eligible labels by hybrid similarity to the evidence prose.
 
@@ -71,8 +72,24 @@ def compute_verified_labels(
 
     merged: Dict[str, Tuple[Dict[str, Any], float]] = {}
 
+    eligible_behavior_label_ids = list(eligible_behavior_label_ids or [])
+
+    def _allowed(doc: Dict[str, Any]) -> bool:
+        if not eligible_behavior_label_ids:
+            return True
+        required_parents = {"O", "OD", "PS", "RM", "MSP", "MSR"}
+        lid = str(doc.get("id") or "")
+        parent = str(doc.get("parent") or "")
+        if lid in required_parents:
+            return lid in eligible_behavior_label_ids
+        if parent in required_parents:
+            return parent in eligible_behavior_label_ids
+        return True
+
     def _absorb(docs: List[Dict[str, Any]]) -> None:
         for d in docs:
+            if not _allowed(d):
+                continue
             lid = d["id"]
             score = float(d.get("score", 0.0))
             if lid not in merged or score > merged[lid][1]:
@@ -92,8 +109,13 @@ def compute_verified_labels(
 
 
 def evidence_text_from_pool(pool: AttachmentPool) -> str:
-    """Concatenate ``graph_observations`` from every ``*.observations`` attachment."""
+    """Concatenate preflight evidence and all ``*.observations`` attachments."""
     parts: List[str] = []
+    preflight = pool.get("init.annotation_preflight_context")
+    if preflight and isinstance(preflight.content, dict):
+        semantic_text = preflight.content.get("semantic_evidence_text")
+        if semantic_text:
+            parts.append(str(semantic_text))
     for name in sorted(pool.keys()):
         if not name.endswith(".observations"):
             continue
@@ -118,6 +140,14 @@ def parent_main_labels_from_pool(pool: AttachmentPool) -> List[str]:
     return [str(x) for x in raw if isinstance(x, str)]
 
 
+def eligible_behavior_label_ids_from_pool(pool: AttachmentPool) -> List[str]:
+    att = pool.get("init.parent_segment")
+    if not att or not isinstance(att.content, dict):
+        return []
+    raw = att.content.get("eligible_behavior_label_ids") or []
+    return [str(x) for x in raw if isinstance(x, str)]
+
+
 def _emit_verified(payload: List[dict]) -> PipelineAttachment:
     return PipelineAttachment(
         name="label_verifier.verified_labels",
@@ -133,9 +163,14 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
     messages = list(state.get("messages", []))
     pool: AttachmentPool = state.get("attachment_pool", {})
     parent_main_labels = parent_main_labels_from_pool(pool)
+    eligible_behavior_label_ids = eligible_behavior_label_ids_from_pool(pool)
     evidence = evidence_text_from_pool(pool)
 
-    verified, all_scored = compute_verified_labels(parent_main_labels, evidence)
+    verified, all_scored = compute_verified_labels(
+        parent_main_labels,
+        evidence,
+        eligible_behavior_label_ids=eligible_behavior_label_ids,
+    )
 
     if not evidence:
         LOGGER.warning("Label retrieval: no evidence text; empty shortlist.")
