@@ -126,6 +126,8 @@ export function useVoiceConversation(
     const workletNodeRef = useRef<AudioWorkletNode | null>(null);
     const playbackContextRef = useRef<AudioContext | null>(null);
     const playbackQueueTimeRef = useRef<number>(0);
+    const playbackSerialRef = useRef<number>(0);
+    const playbackIdleTimeoutRef = useRef<number | null>(null);
 
     /**
      * Open the backend voice WS through apiService — same baseURL + JWT
@@ -171,6 +173,11 @@ export function useVoiceConversation(
         try { playbackContextRef.current?.close(); } catch { /* ignore */ }
         playbackContextRef.current = null;
         playbackQueueTimeRef.current = 0;
+        playbackSerialRef.current += 1;
+        if (playbackIdleTimeoutRef.current !== null) {
+            window.clearTimeout(playbackIdleTimeoutRef.current);
+            playbackIdleTimeoutRef.current = null;
+        }
 
         if (wsRef.current) {
             try {
@@ -429,6 +436,11 @@ export function useVoiceConversation(
         const int16 = new Int16Array(pcm16Buffer);
         if (int16.length === 0) return;
 
+        if (playbackIdleTimeoutRef.current !== null) {
+            window.clearTimeout(playbackIdleTimeoutRef.current);
+            playbackIdleTimeoutRef.current = null;
+        }
+
         // Convert to Float32 in [-1, 1].
         const float32 = new Float32Array(int16.length);
         for (let i = 0; i < int16.length; i++) {
@@ -441,6 +453,18 @@ export function useVoiceConversation(
         const source = context.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(context.destination);
+        const serial = ++playbackSerialRef.current;
+        source.onended = () => {
+            if (serial !== playbackSerialRef.current) return;
+            playbackIdleTimeoutRef.current = window.setTimeout(() => {
+                playbackIdleTimeoutRef.current = null;
+                if (serial !== playbackSerialRef.current) return;
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                    playbackQueueTimeRef.current = context.currentTime;
+                    setState((prev) => (prev === 'speaking' ? 'listening' : prev));
+                }
+            }, 160);
+        };
 
         const now = context.currentTime;
         const startAt = Math.max(now, playbackQueueTimeRef.current);

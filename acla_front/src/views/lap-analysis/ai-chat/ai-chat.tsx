@@ -20,6 +20,8 @@ type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
+const DEFAULT_TTS_VOLUME = 0.9;
+const MUTED_TTS_VOLUME = 0;
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -163,8 +165,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const messagesScrollRef = useRef<HTMLDivElement>(null);
     // Active neural-TTS playback handle (Phase 2 — Kokoro via /voice-synthesize).
     const currentNeuralPlaybackRef = useRef<NeuralTtsPlayback | null>(null);
+    const currentSpeechIsGuidanceRef = useRef<boolean>(false);
     const speechQueueRef = useRef<Promise<void>>(Promise.resolve());
     const speechQueueTokenRef = useRef(0);
+    const agentSpeechTokenRef = useRef(0);
+    const mainChatbotSpeakingRef = useRef(false);
     // Mirrors neuralTtsAvailable for read access inside async closures that
     // would otherwise see a stale state value.
     const neuralTtsDisabledRef = useRef<boolean>(false);
@@ -178,6 +183,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     });
     const trackGuideLastPosRef = useRef<number | undefined>(undefined);
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
+    const trackGuideRunTokenRef = useRef(0);
     const activeAgentTagsRef = useRef<string[]>([]);
 
     useEffect(() => {
@@ -233,6 +239,24 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         broadcastPillMessage('', { tags: [] });
     }, [broadcastPillMessage]);
 
+    const stopAgentSpeaking = useCallback(() => {
+        agentSpeechTokenRef.current += 1;
+        if (currentSpeechIsGuidanceRef.current && currentNeuralPlaybackRef.current) {
+            currentNeuralPlaybackRef.current.stop();
+            currentNeuralPlaybackRef.current = null;
+            currentSpeechIsGuidanceRef.current = false;
+            setIsSpeaking(false);
+        }
+    }, []);
+
+    const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
+        if (!enabled) {
+            trackGuideRunTokenRef.current += 1;
+            stopAgentSpeaking();
+        }
+        setTrackGuideEnabled(enabled);
+    }, [stopAgentSpeaking]);
+
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
     // the same WS — frontend tools listed below are reachable from the
@@ -281,6 +305,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 ok: event.ok,
                 error: event.error,
             });
+            if (
+                event.status === 'completed'
+                && (
+                    event.name === 'stop_per_turn_coaching'
+                    || event.name === 'disable_guide_user_racing'
+                    || event.name === 'stop_overtake_agent'
+                )
+            ) {
+                stopAgentSpeaking();
+            }
             setMessages(prev => {
                 if (event.status === 'completed') {
                     for (let i = prev.length - 1; i >= 0; i--) {
@@ -320,6 +354,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     };
 
     const startTrackGuide = () => {
+        trackGuideRunTokenRef.current += 1;
         setTrackGuideEnabled(true);
     };
 
@@ -334,7 +369,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             sessionIntelligence: analysisContext?.sessionIntelligence,
             opportunityAgentState: opportunityAgentStateRef.current,
             startTrackGuide,
-            setTrackGuideEnabled,
+            setTrackGuideEnabled: setTrackGuideAgentEnabled,
             setAgentTagActive: setAgentTag,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
         }),
@@ -342,6 +377,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
+
+    useEffect(() => {
+        const mainChatbotSpeaking = vState === 'speaking';
+        mainChatbotSpeakingRef.current = mainChatbotSpeaking;
+        if (currentSpeechIsGuidanceRef.current && currentNeuralPlaybackRef.current) {
+            currentNeuralPlaybackRef.current.audio.volume = mainChatbotSpeaking
+                ? MUTED_TTS_VOLUME
+                : DEFAULT_TTS_VOLUME;
+        }
+    }, [vState]);
 
     const addStatusMessage = (type: string, content: string) => {
         const message: Message = {
@@ -394,22 +439,31 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (currentNeuralPlaybackRef.current) {
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
+            currentSpeechIsGuidanceRef.current = false;
         }
 
+        const isGuidanceSpeech = options?.isGuidance === true;
         setIsSpeaking(true);
         const playback = await speakWithNeuralTts(cleanText, {
-            speed: options?.isGuidance ? 1.15 : 1.0,
-            volume: 0.9,
+            speed: isGuidanceSpeech ? 1.15 : 1.0,
+            volume: isGuidanceSpeech && mainChatbotSpeakingRef.current
+                ? MUTED_TTS_VOLUME
+                : DEFAULT_TTS_VOLUME,
         });
         currentNeuralPlaybackRef.current = playback;
+        currentSpeechIsGuidanceRef.current = isGuidanceSpeech;
+        if (isGuidanceSpeech && mainChatbotSpeakingRef.current) {
+            playback.audio.volume = MUTED_TTS_VOLUME;
+        }
 
         try {
             await playback.ended;
         } finally {
             if (currentNeuralPlaybackRef.current === playback) {
                 currentNeuralPlaybackRef.current = null;
+                currentSpeechIsGuidanceRef.current = false;
+                setIsSpeaking(false);
             }
-            setIsSpeaking(false);
         }
     };
 
@@ -422,10 +476,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
         if (!cleanText) return;
 
         const queueToken = speechQueueTokenRef.current;
+        const isGuidanceSpeech = options?.isGuidance === true;
+        const agentToken = agentSpeechTokenRef.current;
         speechQueueRef.current = speechQueueRef.current
             .catch(() => undefined)
             .then(async () => {
                 if (queueToken !== speechQueueTokenRef.current || neuralTtsDisabledRef.current) return;
+                if (isGuidanceSpeech && agentToken !== agentSpeechTokenRef.current) return;
                 await speakWithNeural(cleanText, options);
             })
             .catch((err) => {
@@ -438,10 +495,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     const stopSpeaking = () => {
         speechQueueTokenRef.current += 1;
+        agentSpeechTokenRef.current += 1;
         if (currentNeuralPlaybackRef.current) {
             currentNeuralPlaybackRef.current.stop();
             currentNeuralPlaybackRef.current = null;
         }
+        currentSpeechIsGuidanceRef.current = false;
         setIsSpeaking(false);
     };
 
@@ -507,6 +566,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const lastProcessedGuidanceRef = useRef<string>('');
     const lastGuidanceTimestampRef = useRef<number>(0);
     useEffect(() => {
+        if (!TrackGuideEnabled) {
+            if (analysisContext?.latestGuidanceMessage) {
+                lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
+            }
+            return;
+        }
+
         if (analysisContext?.latestGuidanceMessage &&
             analysisContext.latestGuidanceMessage !== lastProcessedGuidanceRef.current) {
 
@@ -525,7 +591,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
             lastGuidanceTimestampRef.current = now;
         }
-    }, [analysisContext?.latestGuidanceMessage, generateUniqueId]);
+    }, [analysisContext?.latestGuidanceMessage, generateUniqueId, TrackGuideEnabled]);
 
     useEffect(() => {
         if (messages.length === 0) {
@@ -544,6 +610,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
         if (!TrackGuideEnabled) {
+            trackGuideRunTokenRef.current += 1;
             trackGuideLastPosRef.current = undefined;
             trackGuideTriggeredRef.current.clear();
             return;
@@ -577,6 +644,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             if (trackGuideTriggeredRef.current.has(triggerKey)) return;
 
             trackGuideTriggeredRef.current.add(triggerKey);
+            const guideToken = trackGuideRunTokenRef.current;
 
             apiService.post('/racing-session/track-corner-knowledge', {
                 track_name: trackName,
@@ -585,11 +653,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                 trigger_position: triggerPosition,
                 current_telemetry: liveData,
             }).then((response) => {
+                if (guideToken !== trackGuideRunTokenRef.current) return;
                 const message = extractCornerKnowledgeMessage(response.data);
                 if (message) {
                     addGuidanceMessage(message);
                 }
             }).catch((error) => {
+                if (guideToken !== trackGuideRunTokenRef.current) return;
                 const errorDetail = error?.data?.message || error?.data?.detail;
                 if (
                     error?.status === 404
