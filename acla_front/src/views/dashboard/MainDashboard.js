@@ -25,26 +25,34 @@ import {
 import SideMainMenu from 'views/side-main-menu/side-main-menu';
 import { MainMenuOptions } from 'data/MainMenuOptions';
 import HeaderMenu from 'views/header-menu/header-menu';
+import { SessionAnalysisAssistant, SessionAnalysisProvider } from 'views/lap-analysis/session-analysis';
+import { useEnvironment } from 'contexts/EnvironmentContext';
 
 
 const MainMenuOptionSelectionContext = createContext();
 
 const MainDashboard = ({ onTaskCreated }) => {
     const auth = useAuth();
+    const environment = useEnvironment();
 
     const [mainMenuOptionSelected, setMainMenuOption] = useState(MainMenuOptions.LIVE_ANALYSIS);
 
     return (
         <MainMenuOptionSelectionContext.Provider value={[mainMenuOptionSelected, setMainMenuOption]}>
-            <div className="main-dashboard-container">
-                <div className="main-dashboard-header">
-                    <HeaderMenu />
-                </div>
+            <SessionAnalysisProvider>
+                <div className="main-dashboard-container">
+                    <div className="main-dashboard-header">
+                        <HeaderMenu />
+                    </div>
 
-                <div className="main-dashboard-content">
-                    <SideMainMenu />
+                    <div className={`main-dashboard-content ${environment === 'electron' ? 'has-recording-bar' : ''}`}>
+                        <div className="main-dashboard-primary">
+                            <SideMainMenu />
+                        </div>
+                        <SessionAnalysisAssistant />
+                    </div>
                 </div>
-            </div>
+            </SessionAnalysisProvider>
         </MainMenuOptionSelectionContext.Provider>
     );
 };

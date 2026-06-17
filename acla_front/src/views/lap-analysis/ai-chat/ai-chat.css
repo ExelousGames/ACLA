@@ -109,6 +109,16 @@
   border-color: var(--lp-blue);
   background: var(--lp-blue-dim);
 }
+.ai-chat__chip-btn--icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ai-chat__chip-btn--green[aria-pressed='true'] {
+  color: var(--lp-green);
+  border-color: var(--lp-green);
+  background: var(--lp-green-dim);
+}
 
 /* ── Stage: mic panel + transcript ───────────────── */
 .ai-chat__stage {

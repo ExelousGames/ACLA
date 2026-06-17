@@ -7,7 +7,7 @@ import {
 
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { useEnvironment } from 'contexts/EnvironmentContext';
@@ -18,6 +18,7 @@ import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } fro
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from './analysis-context';
 import { SessionIntelligence } from './session-intelligence/SessionIntelligence';
+import AiChat from './ai-chat/ai-chat';
 
 const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -44,7 +45,7 @@ type PendingTelemetryWrite = {
     timeoutId: number;
 };
 
-const SessionAnalysis = () => {
+export const SessionAnalysisProvider = ({ children }: { children: React.ReactNode }) => {
 
     //must give state some init value otherwise createContext and useContext don't like it
     const [mapSelected, setMap] = useState<string | null>(null);
@@ -83,8 +84,6 @@ const SessionAnalysis = () => {
     const telemetryWriterFilePathRef = useRef<string | null>(null);
     const telemetryWriterPendingRef = useRef<Map<string, PendingTelemetryWrite>>(new Map());
     const telemetryWriterSequenceRef = useRef(0);
-
-    const environment = useEnvironment();
 
     const disposeTelemetryWriter = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
         const cleanup = telemetryWriterCleanupRef.current;
@@ -429,6 +428,7 @@ const SessionAnalysis = () => {
 
     return (
         <AnalysisContext.Provider value={{
+            activeTab,
             mapSelected,
             sessionSelected,
             liveData,
@@ -443,6 +443,7 @@ const SessionAnalysis = () => {
             setLiveSessionData,
             setRecordedSessionStaticsData,
             setRecordedSessionDataFilePath,
+            setActiveTab,
             writeRecordedLiveSessionData,
             readRecordedSessionData,
             finalizeRecordingWrites,
@@ -452,6 +453,38 @@ const SessionAnalysis = () => {
             ,
             TelemetryDataLiveStatus
         }}>
+            {children}
+        </AnalysisContext.Provider>
+    )
+};
+
+export const SessionAnalysisAssistant = () => {
+    const analysisContext = useContext(AnalysisContext);
+    const assistantSessionId = analysisContext.sessionSelected?.SessionId;
+    const assistantSessionLabel = analysisContext.sessionSelected?.session_name || 'Live Telemetry';
+
+    return (
+        <aside className="main-dashboard-assistant" aria-label="AI Assistant">
+            <AiChat
+                sessionId={assistantSessionId}
+                title={`AI Assistant - ${assistantSessionLabel}`}
+            />
+        </aside>
+    );
+};
+
+const SessionAnalysis = () => {
+    const analysisContext = useContext(AnalysisContext);
+    const environment = useEnvironment();
+    const {
+        activeTab,
+        mapSelected,
+        sessionSelected,
+        setActiveTab
+    } = analysisContext;
+
+    return (
+        <>
             <Tabs.Root className={`LiveAnalysisTabsRoot ${environment === 'electron' ? 'has-recording-bar' : ''}`} defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
                 <Tabs.List className="live-analysis-tablists" justify="start">
                     <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
@@ -474,8 +507,8 @@ const SessionAnalysis = () => {
                 </Box >
             </Tabs.Root>
             {environment == 'electron' ? <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording> : ''}
-        </AnalysisContext.Provider>
-    )
+        </>
+    );
 };
 
 export default SessionAnalysis;

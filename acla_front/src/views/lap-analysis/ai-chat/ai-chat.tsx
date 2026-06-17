@@ -65,6 +65,13 @@ interface AiChatProps {
 const formatClock = (d: Date) =>
     `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 
+const OverlayIcon = ({ size = 14 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect x="1.5" y="3.5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+        <rect x="5.5" y="6.5" width="9" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.3" fill="currentColor" fillOpacity="0.18" />
+    </svg>
+);
+
 const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
     if (!telemetry) return undefined;
     const keys = [
@@ -139,6 +146,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
+    const [floatingChatOpen, setFloatingChatOpen] = useState(false);
 
     // Text-to-speech states. Neural TTS (Kokoro) is the only path; we
     // optimistically assume it's available and flip this to false on first
@@ -377,6 +385,36 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
 
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
+    const canOpenFloatingChat = typeof window !== 'undefined'
+        && Boolean((window as any).electronAPI?.openFloatingChat);
+
+    const toggleFloatingChat = useCallback(async () => {
+        const api = (window as any).electronAPI;
+        if (!api?.openFloatingChat) return;
+        try {
+            if (floatingChatOpen) {
+                await api.closeFloatingChat();
+                setFloatingChatOpen(false);
+            } else {
+                await api.openFloatingChat();
+                setFloatingChatOpen(true);
+            }
+        } catch (err) {
+            console.warn('Failed to toggle floating chat:', err);
+        }
+    }, [floatingChatOpen]);
+
+    useEffect(() => {
+        const api = (window as any).electronAPI;
+        if (!api?.onFloatingChatClosed) return;
+        const unsubscribe = api.onFloatingChatClosed(() => setFloatingChatOpen(false));
+        if (api.isFloatingChatOpen) {
+            api.isFloatingChatOpen()
+                .then((open: boolean) => setFloatingChatOpen(Boolean(open)))
+                .catch(() => undefined);
+        }
+        return () => { try { unsubscribe?.(); } catch { /* ignore */ } };
+    }, []);
 
     useEffect(() => {
         const mainChatbotSpeaking = vState === 'speaking';
@@ -856,6 +894,20 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                     )}
                     {isTextToSpeechEnabled && (
                         <span className="ai-chat__chip ai-chat__chip--green">TTS On</span>
+                    )}
+                    {canOpenFloatingChat && (
+                        <button
+                            type="button"
+                            className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
+                            onClick={() => { void toggleFloatingChat(); }}
+                            aria-pressed={floatingChatOpen}
+                            title={floatingChatOpen
+                                ? 'Close the always-on-top AI chat overlay'
+                                : 'Open the always-on-top AI chat overlay (visible over the game in borderless windowed mode)'}
+                        >
+                            <OverlayIcon size={14} />
+                            <span>{floatingChatOpen ? 'Overlay On' : 'AI Overlay'}</span>
+                        </button>
                     )}
                     <button
                         type="button"
