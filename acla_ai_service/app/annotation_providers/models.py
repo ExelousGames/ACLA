@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 
 PromptMode = Literal["local_pipeline", "tool_agent"]
-RunnerKind = Literal["local_vlm", "claude_cli", "openai_compatible"]
+RunnerKind = Literal["claude_cli", "openai_compatible"]
 
 
 @dataclass(frozen=True)

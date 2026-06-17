@@ -28,7 +28,7 @@ class ProviderConfig:
     carrying fields for every possible AI service.
     """
 
-    provider_id: str = "local_vlm"
+    provider_id: str = "claude_cli"
     model: str = ""
     max_new_tokens: int = 1500
     temperature: float = 0.7

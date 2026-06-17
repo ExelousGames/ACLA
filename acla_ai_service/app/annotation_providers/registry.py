@@ -26,42 +26,6 @@ def _configured_env(name: str | None) -> bool:
     return bool(name and os.getenv(name))
 
 
-def _local_provider() -> AnnotationProvider:
-    from app.local_annotation_agent.backend import QWEN25_VL_MODELS
-
-    models = [
-        ProviderModel(
-            id=model_id,
-            label=str(spec.get("label") or model_id),
-            max_context=int(spec.get("max_context") or 32768),
-            max_new_tokens=int(spec.get("max_new_tokens") or 8192),
-        )
-        for model_id, spec in QWEN25_VL_MODELS.items()
-    ]
-    return AnnotationProvider(
-        id="local_vlm",
-        label="Local VLM",
-        runner="local_vlm",
-        prompt_mode="local_pipeline",
-        models=models,
-        default_model=models[0].id if models else "",
-        description="Local llama-server / GGUF visual model.",
-        options=[
-            ProviderOption("quantization_type", "Quantization", "select",
-                           default="Q4_K_M", options=["Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"],
-                           help="Lower is smaller/faster; higher may improve quality."),
-            ProviderOption("gguf_path", "GGUF model path override", "text",
-                           default="", advanced=True),
-            ProviderOption("mmproj_path", "mmproj path override", "text",
-                           default="", advanced=True),
-            ProviderOption("context_size", "Context size", "number",
-                           default=32768, min_value=2048, step=1024, advanced=True),
-            ProviderOption("n_gpu_layers", "GPU layers (-1 = all)", "number",
-                           default=-1, min_value=-1, max_value=200, step=1, advanced=True),
-        ],
-    )
-
-
 def _claude_provider() -> AnnotationProvider:
     from app.annotation_providers.claude_backend import CLAUDE_VLM_MODELS
 
@@ -144,7 +108,6 @@ def _openai_compatible_provider() -> AnnotationProvider:
 
 def _all_providers() -> List[AnnotationProvider]:
     return [
-        _local_provider(),
         _claude_provider(),
         _openai_provider(),
         _openai_compatible_provider(),
@@ -156,9 +119,9 @@ def _enabled_ids(all_ids: Iterable[str]) -> List[str]:
     explicit = _csv(settings.annotation_enabled_providers)
     if explicit:
         return [provider_id for provider_id in explicit if provider_id in all_id_set]
-    ids = ["local_vlm", "claude_cli"]
+    ids = ["claude_cli"]
     for provider in _all_providers():
-        if provider.id in {"local_vlm", "claude_cli"}:
+        if provider.id == "claude_cli":
             continue
         if provider.configured:
             ids.append(provider.id)

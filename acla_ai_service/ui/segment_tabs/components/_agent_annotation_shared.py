@@ -294,7 +294,7 @@ def execute_pipeline_run(
     Caches the result under ``st.session_state['agent_annot_result']``
     so the shared staged-review panel below can pick it up.
     """
-    provider_id = getattr(config, "provider_id", "local_vlm")
+    provider_id = getattr(config, "provider_id", "claude_cli")
     try:
         from app.local_annotation_agent.workflow import run_annotation
     except ImportError as e:

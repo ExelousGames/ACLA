@@ -145,7 +145,7 @@ register(annotation_spec(
 register(annotation_spec(
     kind="batch_subseg",
     display="Batch — Sub-Segment Discovery",
-    description="Bulk discover children via Local VLM or Claude.",
+    description="Bulk discover children via Claude or an OpenAI-compatible provider.",
     ui_route="batch_subseg",
     input_dataset_shape="segments",
 ))

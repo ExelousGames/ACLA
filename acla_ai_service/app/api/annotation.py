@@ -44,7 +44,7 @@ Flow = Literal["detailed", "lap"]
 class _ConfigBody(BaseModel):
     """Provider-neutral config forwarded to AnnotationPipelineConfig."""
 
-    provider_id: str = "local_vlm"
+    provider_id: str = "claude_cli"
     model: str = ""
     max_new_tokens: int = 1500
     temperature: float = 0.7

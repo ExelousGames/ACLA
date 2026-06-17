@@ -18,7 +18,7 @@ Sub-modules:
     contracts       Public dataclasses crossing the box boundary.
     framework       Planner/executor/synthesizer/evaluator topology.
     evaluators      Format + evidence evaluator suite + formatter registry.
-    backends        local_vlm (llama-server), claude_sdk (Claude Agent SDK).
+    backends        claude_sdk (Claude Agent SDK), OpenAI-compatible providers.
     sub_agents      describe_graphs, zoom — generic plan-step capabilities.
     tools           Telemetry graph rendering + query dispatchers.
     runners         local (LangGraph) and claude (agentic) execution paths.
@@ -60,9 +60,6 @@ def run_agent(request: AgentRequest) -> AgentResponse:
     provider = get_annotation_provider(request.provider_id)
     validate_provider_ready(provider)
 
-    if provider.runner == "local_vlm":
-        from app.local_annotation_agent.runner import run_local
-        return run_local(request)
     if provider.runner == "claude_cli":
         from app.annotation_providers.claude_runner import run_claude
         return run_claude(request)

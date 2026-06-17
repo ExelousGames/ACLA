@@ -182,7 +182,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 
         form_labels = selected_labels_all
 
-        # VLM Sub-Segment Discovery (Local LLM)
+        # AI Sub-Segment Discovery
         from .detailed_agent_annotation import render_agent_annotation
         render_agent_annotation(df, form_start, form_end, form_labels, session_id, selected_annotation_key)
     

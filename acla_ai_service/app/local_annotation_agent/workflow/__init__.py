@@ -8,7 +8,7 @@ Public annotation pipeline entry — the only function the UI calls.
         LapAnnotationResult,
     )
 
-    config = AnnotationPipelineConfig(provider_id="local_vlm", ...)
+    config = AnnotationPipelineConfig(provider_id="claude_cli", ...)
 
     result = run_annotation(
         flow="detailed",                # "detailed" or "lap"
@@ -70,7 +70,7 @@ Flow = Literal["detailed", "lap"]
 class AnnotationPipelineConfig:
     """Provider-neutral config the annotation UI/API passes."""
 
-    provider_id: str = "local_vlm"
+    provider_id: str = "claude_cli"
     model: str = ""
     max_iterations: int = 3
     max_new_tokens: int = 1500
