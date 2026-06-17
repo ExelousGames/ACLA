@@ -1,7 +1,7 @@
 """Claude lap-section annotation expander (manual.py).
 
-One agent session per click. Annotates ONE rough-split section at a time,
-with tools to revise the boundary before submitting. Mirrors the layout of
+One agent session per click. Annotates ONE split section at a time.
+Mirrors the layout of
 ``detailed_agent_annotation_claude.py`` so the user gets a familiar
 configuration surface.
 """
@@ -30,9 +30,8 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
             "agentic Claude session. Tools available: `render_graph`, "
             "`query_telemetry`, `compute_expert_phases`, "
             "`locate_circuit_section`, `classify_opponent_interaction`, "
-            "`revise_range`, `submit_result`. The agent inspects the section, "
-            "shrinks / extends the boundary when a rule fires, then "
-            "submits grouped labels (circuit + optional circuit_section + "
+            "`submit_result`. The agent inspects the section and submits "
+            "grouped labels (circuit + optional circuit_section + "
             "main + optional ST1-ST6 + optional whole-segment sub-label)."
         )
 

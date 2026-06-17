@@ -98,8 +98,7 @@ def _render_provider_config(key_prefix: str, *, default_temperature: float, defa
 def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     """Batch provider-selected Lap-to-Segment Excerpter."""
     from .components._lap_agent_shared import (
-        track_name_to_circuit_id, run_split, rebuild_remaining_segments,
-        revision_bounds_for_segment,
+        track_name_to_circuit_id, run_split,
     )
 
     st.header("Batch Lap-to-Segment Excerpter (AI Provider)")
@@ -252,9 +251,6 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         sec_id = seg["circuit_section_id"]
         sec_start = int(seg["start_index"])
         sec_end = int(seg["end_index"])
-        revision_start, revision_end = revision_bounds_for_segment(
-            segments, i, int(lap_start), int(lap_end), seg,
-        )
         target_suffix = _targeted_car_suffix(seg.get("opponent_interaction"))
         overlapping_ann = None
         if not clear_session_segments:
@@ -289,8 +285,6 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
                 section_id=sec_id,
                 section_start=sec_start,
                 section_end=sec_end,
-                revision_start=revision_start,
-                revision_end=revision_end,
                 circuit_id=circuit_id,
                 section_split_basis=seg.get("split_basis"),
                 opponent_interaction=seg.get("opponent_interaction"),
@@ -340,23 +334,8 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         })
         saved_count += 1
 
-        if result.revised:
-            tail = rebuild_remaining_segments(
-                df, int(lap_start), int(lap_end), circuit_id, int(result.end_index),
-            )
-            segments = segments[: i + 1] + tail
-            segments[i] = {
-                **segments[i],
-                "start_index": int(result.start_index),
-                "end_index": int(result.end_index),
-                "circuit_section_id": result.section_id,
-            }
-            log(f"Section #{i} `{sec_id}`{target_suffix}: saved (revised → "
-                f"[{result.start_index}, {result.end_index}]); tail rebuilt → "
-                f"{len(tail)} downstream section(s).")
-        else:
-            log(f"Section #{i} `{sec_id}`{target_suffix}: saved [{result.start_index}, {result.end_index}] "
-                f"with {len(label_ids)} label(s).")
+        log(f"Section #{i} `{sec_id}`{target_suffix}: saved [{result.start_index}, {result.end_index}] "
+            f"with {len(label_ids)} label(s).")
 
         i += 1
         progress_bar.progress(i / len(segments))

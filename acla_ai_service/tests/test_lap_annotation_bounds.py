@@ -20,18 +20,10 @@ def _request(df, *, parent_start=10, parent_end=20):
         df_ref=df,
         parent_start=parent_start,
         parent_end=parent_end,
-        extra_state={
-            "tool_agent_revision_bounds": {
-                "start": 8,
-                "end": 25,
-                "initial_start": parent_start,
-                "initial_end": parent_end,
-            },
-        },
     )
 
 
-def test_lap_tool_agent_request_starts_at_section_not_full_lap():
+def test_lap_tool_agent_request_is_fixed_to_section():
     df = pd.DataFrame({"metric": range(100)})
 
     request = lap_flow.build_request(
@@ -43,15 +35,17 @@ def test_lap_tool_agent_request_starts_at_section_not_full_lap():
         section_id="brands_hatch1",
         section_start=10,
         section_end=20,
-        revision_start=8,
-        revision_end=25,
         circuit_id="brands_hatch",
     )
 
     assert request.parent_start == 10
     assert request.parent_end == 20
-    assert request.extra_state["tool_agent_revision_bounds"]["start"] == 8
-    assert request.extra_state["tool_agent_revision_bounds"]["end"] == 25
+    assert set(request.extra_state) == {
+        "root_agent",
+        "tool_agent_extra_tools",
+        "annotation_session_context",
+        "eligible_behavior_label_ids",
+    }
 
 
 def test_lap_annotation_prompt_includes_segment_action_model():
@@ -64,17 +58,17 @@ def test_lap_annotation_prompt_includes_segment_action_model():
     assert "describe the final annotation range as a whole" in prompt
 
 
-def test_lap_parse_rejects_result_outside_revision_envelope():
+def test_lap_parse_rejects_extra_range_fields():
     response = AgentResponse(
         raw_response=json.dumps({
-            "revised_range": [0, 100],
+            "start_index": 0,
             "label_ids": ["MSP"],
             "reasoning": "incorrectly used the full lap",
         }),
         verdict="pass",
     )
 
-    with pytest.raises(RuntimeError, match="outside revision envelope"):
+    with pytest.raises(RuntimeError, match="unsupported output field"):
         lap_flow.parse(
             response,
             prompt_mode="local_pipeline",
@@ -83,8 +77,6 @@ def test_lap_parse_rejects_result_outside_revision_envelope():
             section_id="brands_hatch1",
             section_start=10,
             section_end=20,
-            revision_start=8,
-            revision_end=25,
             circuit_id="brands_hatch",
         )
 
@@ -109,19 +101,3 @@ def test_tool_surface_queries_clamp_to_current_working_range():
     assert by_iloc[19]["value"] == 19.0
     assert by_iloc[9]["value"] is None
     assert by_iloc[50]["value"] is None
-
-
-def test_tool_surface_revision_cannot_jump_to_full_lap():
-    df = pd.DataFrame({"metric": [float(i) for i in range(100)]})
-    capture = ToolAgentCapture(cur_start=10, cur_end=20)
-    surface = AnnotationToolSurface(_request(df), capture)
-
-    rejected = json.loads(surface.revise_range(0, 100))
-    assert rejected["ok"] is False
-    assert capture.cur_start == 10
-    assert capture.cur_end == 20
-
-    accepted = json.loads(surface.revise_range(8, 22))
-    assert accepted["ok"] is True
-    assert capture.cur_start == 8
-    assert capture.cur_end == 22
