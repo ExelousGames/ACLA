@@ -48,8 +48,7 @@ class LapAnnotationResult:
     ``label_ids`` is the flat list of parent labels the agent picked
     (circuit + circuit_section + segment_type + optional main). The UI
     persists this as a single annotated segment over
-    ``[start_index, end_index]`` — potentially revised from the rough
-    splitter boundary when ``revised`` is True.
+    ``[start_index, end_index]``.
     """
 
     section_id: str
@@ -57,10 +56,7 @@ class LapAnnotationResult:
     end_index: int
     label_ids: List[str]
     reasoning: str
-    revised: bool
     submitted: bool
-    rough_start: int
-    rough_end: int
     rejected_proposals: List[Dict[str, Any]] = field(default_factory=list)
     rendered_images: List[bytes] = field(default_factory=list)
     transcript: str = ""
@@ -111,4 +107,3 @@ def parse_json_response(raw: str) -> Optional[dict]:
             return result
 
     return None
-

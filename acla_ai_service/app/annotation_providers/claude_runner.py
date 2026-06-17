@@ -12,7 +12,7 @@ caller's intent reaches Claude there.
 
 Box stays flow-free by exposing a compact provider-neutral surface:
 recommend capabilities, execute a recommended capability by ID, retrieve
-guidance / label definitions, revise the range, and submit the result.
+guidance / label definitions, and submit the result.
 
 Callers add domain-specific tools via
 ``AgentRequest.extra_state["tool_agent_extra_tools"]``. Each entry is a
@@ -20,9 +20,7 @@ Callers add domain-specific tools via
 callable ``(surface, args_dict) -> str | dict`` whose return is wrapped
 as an MCP text result.
 
-Whether ``revise_range`` and ``submit_result`` semantics fit the flow is
-decided by the caller's planner prompt — the runner just exposes the
-capability and captures whatever Claude submits.
+The runner exposes the shared tools and captures whatever Claude submits.
 """
 
 from __future__ import annotations
@@ -171,7 +169,7 @@ async def _run_session_async(
         cb.progress(
             _CLAUDE_NODE,
             f"done — {capture.tool_calls} tool call(s), "
-            f"submitted={capture.submitted}, revised={capture.revised}",
+            f"submitted={capture.submitted}",
         )
 
 
@@ -238,16 +236,5 @@ def run_claude(request: AgentRequest) -> AgentResponse:
             kind="text",
             label="Claude Transcript",
             content=transcript,
-        )
-    if capture.revised:
-        response.attachments["claude.revised_range"] = Attachment(
-            name="claude.revised_range",
-            kind="structured",
-            label="Revised Range",
-            content={
-                "start_index": capture.cur_start,
-                "end_index": capture.cur_end,
-                "revised_from": [request.parent_start, request.parent_end],
-            },
         )
     return response

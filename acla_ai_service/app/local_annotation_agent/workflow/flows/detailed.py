@@ -654,7 +654,7 @@ def _parse_claude(
                 proposed_end = max(ends)
 
     # Prefer the synthesizer.summary attachment as the high-level
-    # reasoning; fall back to the transcript / raw payload.
+    # reasoning; otherwise use the transcript / raw payload.
     summary_att = response.attachments.get("synthesizer.summary")
     if summary_att and isinstance(summary_att.content, str) and summary_att.content:
         reasoning = summary_att.content

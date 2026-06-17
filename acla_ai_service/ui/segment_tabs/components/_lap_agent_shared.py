@@ -4,9 +4,6 @@ Owns:
   - Session-state keys for the rough-split array + staged proposal.
   - ``run_split`` — calls the interaction-aware deterministic splitter and
     stores the array.
-  - ``rebuild_remaining_segments`` — after a revise_range result,
-    re-runs the splitter from the new boundary onward (used by both
-    backends).
   - ``render_lap_panel`` — picks the lap range, runs the split, shows the
     array, and exposes the "current section" + "skip" / "remove" actions.
   - ``render_lap_staged_review`` — staged review for the last agent
@@ -103,51 +100,6 @@ def run_split(
     return list(content.get("segments") or [])
 
 
-def rebuild_remaining_segments(
-    df, lap_start: int, lap_end: int, circuit_id: Optional[str],
-    revised_end: int,
-) -> List[Dict[str, Any]]:
-    """Re-run the splitter from ``revised_end`` to ``lap_end``.
-
-    Used after an agent calls ``revise_range`` — the head of the
-    array gets replaced with the agent-decided range, and everything
-    downstream is rebuilt from the new boundary so neighbouring sections
-    pick up the shift.
-    """
-    if revised_end >= lap_end:
-        return []
-    return run_split(df, int(revised_end), int(lap_end), circuit_id)
-
-
-def revision_bounds_for_segment(
-    segments: List[Dict[str, Any]],
-    index: int,
-    lap_start: int,
-    lap_end: int,
-    current_segment: Optional[Dict[str, Any]] = None,
-) -> tuple[int, int]:
-    """Return the dynamic range a section agent may revise within.
-
-    The initial tool surface remains the selected section. This envelope
-    gives `revise_range` room to absorb adjacent splitter boundaries when
-    evidence warrants it, without exposing the whole lap.
-    """
-    if not segments or index < 0 or index >= len(segments):
-        if current_segment is None:
-            return int(lap_start), int(lap_start)
-        start = int(current_segment["start_index"])
-        end = int(current_segment["end_index"])
-        return max(int(lap_start), start), min(int(lap_end), end)
-    current = segments[index]
-    start = int(current["start_index"])
-    end = int(current["end_index"])
-    if index > 0:
-        start = min(start, int(segments[index - 1]["start_index"]))
-    if index + 1 < len(segments):
-        end = max(end, int(segments[index + 1]["end_index"]))
-    return max(int(lap_start), start), min(int(lap_end), end)
-
-
 # ---------------------------------------------------------------------------
 # Live-output panel (light version of _agent_annotation_shared.LiveVlmOutput)
 # ---------------------------------------------------------------------------
@@ -226,8 +178,7 @@ def execute_lap_agent_run(
     """Invoke a lap-annotation runner with live UI feedback.
 
     On success the result is stashed in ``st.session_state[KEY_LAP_STAGED]``
-    for the staged-review panel below. On revision, the segments array is
-    rebuilt from the revised end onward.
+    for the staged-review panel below.
     """
     progress_area = st.container()
     status_text = progress_area.empty()
@@ -237,15 +188,6 @@ def execute_lap_agent_run(
     section_id = head_segment["circuit_section_id"]
     section_start = int(head_segment["start_index"])
     section_end = int(head_segment["end_index"])
-    segments = list(st.session_state.get(KEY_LAP_SEGMENTS, []))
-    cursor = int(st.session_state.get(KEY_LAP_CURSOR, 0))
-    if not segments:
-        segments = [head_segment]
-        cursor = 0
-    revision_start, revision_end = revision_bounds_for_segment(
-        segments, cursor, int(lap_start), int(lap_end), head_segment,
-    )
-
     try:
         with st.spinner(f"Annotating section {section_id} …"):
             result = run_fn(
@@ -255,8 +197,6 @@ def execute_lap_agent_run(
                 section_id=section_id,
                 section_start=section_start,
                 section_end=section_end,
-                revision_start=revision_start,
-                revision_end=revision_end,
                 circuit_id=circuit_id,
                 section_split_basis=head_segment.get("split_basis"),
                 opponent_interaction=head_segment.get("opponent_interaction"),
@@ -275,36 +215,13 @@ def execute_lap_agent_run(
 
     progress_bar.progress(1.0)
 
-    # Rebuild downstream segments if the agent revised the boundary.
-    if result.revised:
-        downstream = rebuild_remaining_segments(
-            df, int(lap_start), int(lap_end), circuit_id, int(result.end_index),
-        )
-        # Replace the head segment with the agent's revised one and prepend
-        # the rebuilt tail. The head is now the just-annotated section; the
-        # UI advances the cursor when the user confirms the staged review.
-        segments = list(st.session_state.get(KEY_LAP_SEGMENTS, []))
-        cursor = int(st.session_state.get(KEY_LAP_CURSOR, 0))
-        # Mutate the head and discard everything after it; then append the rebuilt tail.
-        if 0 <= cursor < len(segments):
-            head = dict(segments[cursor])
-            head["start_index"] = int(result.start_index)
-            head["end_index"] = int(result.end_index)
-            head["circuit_section_id"] = result.section_id
-            segments = segments[: cursor + 1] + downstream
-            segments[cursor] = head
-            st.session_state[KEY_LAP_SEGMENTS] = segments
-
     st.session_state[KEY_LAP_STAGED] = {
         "section_id": result.section_id,
         "start_index": int(result.start_index),
         "end_index": int(result.end_index),
         "label_ids": list(result.label_ids),
         "reasoning": result.reasoning,
-        "revised": bool(result.revised),
         "submitted": bool(result.submitted),
-        "rough_start": int(result.rough_start),
-        "rough_end": int(result.rough_end),
         "rejected": list(result.rejected_proposals),
         "rendered_images": list(result.rendered_images),
         "tool_calls": int(result.tool_calls),
@@ -523,13 +440,6 @@ def render_lap_staged_review(
 
     st.markdown("---")
     st.markdown("##### Review & Edit Before Saving")
-    if staged.get("revised"):
-        st.caption(
-            f"ℹ️ Agent revised the boundary: "
-            f"rough [{staged['rough_start']}, {staged['rough_end']}] → "
-            f"new [{staged['start_index']}, {staged['end_index']}]. "
-            "Downstream array has been rebuilt."
-        )
     if staged.get("rejected"):
         st.caption(
             f"⚠️ {len(staged['rejected'])} label_id(s) rejected by the runner: "

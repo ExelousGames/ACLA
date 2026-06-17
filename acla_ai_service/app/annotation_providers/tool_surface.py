@@ -2,7 +2,7 @@
 
 Claude CLI and OpenAI-compatible annotation providers both use this module:
 the runner owns the transport, while this surface owns telemetry tools,
-range revision, and submit-result capture.
+and submit-result capture.
 """
 
 from __future__ import annotations
@@ -26,7 +26,6 @@ class ToolAgentCapture:
     node_name: str = "annotation_agent"
     cur_start: int = 0
     cur_end: int = 0
-    revised: bool = False
     submit_payload: str = ""
     submit_summary: str = ""
     submitted: bool = False
@@ -241,16 +240,6 @@ EXPOSED_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         category="knowledge",
     ),
     {
-        "name": "revise_range",
-        "description": "Revise the working iloc range before submitting.",
-        "params_schema": {"new_start": int, "new_end": int},
-        "openai_properties": {
-            "new_start": {"type": "integer"},
-            "new_end": {"type": "integer"},
-        },
-        "required": ["new_start", "new_end"],
-    },
-    {
         "name": "submit_result",
         "description": "Submit final structured JSON result.",
         "params_schema": {"payload_json": str, "summary": str},
@@ -453,24 +442,11 @@ class AnnotationToolSurface:
         self.request = request
         self.capture = capture
 
-    def _revision_bounds(self) -> tuple[int, int]:
-        raw = self.request.extra_state.get("tool_agent_revision_bounds") or {}
-        try:
-            start = int(raw.get("start", self.request.parent_start))
-            end = int(raw.get("end", self.request.parent_end))
-        except (TypeError, ValueError):
-            start = int(self.request.parent_start)
-            end = int(self.request.parent_end)
+    def _current_window(self) -> tuple[int, int]:
+        start = int(self.capture.cur_start)
+        end = int(self.capture.cur_end)
         if end <= start:
             return int(self.request.parent_start), int(self.request.parent_end)
-        return start, end
-
-    def _current_window(self) -> tuple[int, int]:
-        bound_start, bound_end = self._revision_bounds()
-        start = max(bound_start, int(self.capture.cur_start))
-        end = min(bound_end, int(self.capture.cur_end))
-        if end <= start:
-            return bound_start, bound_end
         return start, end
 
     def _clamp_to_window(self, s: int, e: int) -> tuple[int, int]:
@@ -731,38 +707,6 @@ class AnnotationToolSurface:
         att = query_opponent_trajectory(self.df, s, e, slot=int(slot), n_samples=int(n_samples))
         return json.dumps({"range": [s, e], "data": att.content}, default=str)
 
-    def revise_range(self, new_start: int, new_end: int) -> str:
-        s, e = int(new_start), int(new_end)
-        bound_start, bound_end = self._revision_bounds()
-        if e <= s:
-            return json.dumps({"ok": False, "error": f"new range [{s}, {e}] requires start < end"})
-        if (e - s) < 5:
-            return json.dumps({"ok": False, "error": f"new range too short ({e - s} ilocs) - minimum 5 required"})
-        if s < bound_start or e > bound_end:
-            return json.dumps({
-                "ok": False,
-                "error": (
-                    f"new range [{s}, {e}] is outside the allowed revision "
-                    f"envelope [{bound_start}, {bound_end}]"
-                ),
-            })
-        if e <= self.capture.cur_start or s >= self.capture.cur_end:
-            return json.dumps({
-                "ok": False,
-                "error": (
-                    "new range must overlap the current working range "
-                    f"[{self.capture.cur_start}, {self.capture.cur_end}]"
-                ),
-            })
-        self.capture.cur_start = s
-        self.capture.cur_end = e
-        self.capture.revised = True
-        return json.dumps({
-            "ok": True,
-            "new_range": [s, e],
-            "note": "Working range updated. Tool calls now operate against this range.",
-        })
-
     def submit_result(self, payload_json: str, summary: str) -> str:
         try:
             json.loads(payload_json)
@@ -830,8 +774,6 @@ class AnnotationToolSurface:
             )
         elif name in _capability_by_name():
             result = self._call_annotation_capability(name, args)
-        elif name == "revise_range":
-            result = self.revise_range(int(args["new_start"]), int(args["new_end"]))
         elif name == "submit_result":
             result = self.submit_result(str(args.get("payload_json") or ""), str(args.get("summary") or ""))
         else:
@@ -857,14 +799,6 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         else ""
     )
 
-    bounds = request.extra_state.get("tool_agent_revision_bounds") or {}
-    revision_line = ""
-    if bounds:
-        revision_line = (
-            f"Allowed revision envelope: [{bounds.get('start')}, "
-            f"{bounds.get('end')}]. Tools inspect only the current working "
-            "range until revise_range successfully changes it.\n"
-        )
     context = _request_session_context(request)
     eligible = _request_eligible_behavior_label_ids(request)
     context_line = ""
@@ -883,13 +817,11 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         "capabilities, then execute chosen capability IDs with "
         "`run_annotation_tool`. Use `search_annotation_guidance` and "
         "`search_labels` to retrieve rules and label definitions instead of "
-        "guessing from memory. Use `revise_range` only when the evidence "
-        "requires a boundary change, and finish with `submit_result`.\n\n"
+        "guessing from memory. Finish with `submit_result`.\n\n"
         "A label is valid only when its definition fits the whole range it "
-        "will be attached to; if it fits only a smaller slice, narrow the "
-        "range when the task allows it or omit that label.\n\n"
+        "will be attached to; if it fits only a smaller slice, omit that "
+        "label.\n\n"
         f"Initial range: [{request.parent_start}, {request.parent_end}]. "
-        f"{revision_line}"
         f"{context_line}"
         "Do not invent identifiers. Use only IDs, labels, and categories the "
         "user message authorizes. Budget tool calls. After submit_result "
@@ -917,18 +849,6 @@ def tool_agent_response(capture: ToolAgentCapture, request: AgentRequest):
             label="Provider Transcript",
             content=transcript,
         )
-    if capture.revised:
-        attachments["tool_agent.revised_range"] = Attachment(
-            name="tool_agent.revised_range",
-            kind="structured",
-            label="Revised Range",
-            content={
-                "start_index": capture.cur_start,
-                "end_index": capture.cur_end,
-                "revised_from": [request.parent_start, request.parent_end],
-            },
-        )
-
     messages = [{
         "role": capture.node_name,
         "content": transcript or "(no text output)",

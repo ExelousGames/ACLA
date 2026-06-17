@@ -56,7 +56,7 @@ class _AnnotationRunRequest(BaseModel):
     """Body for `POST /annotation/run`.
 
     The caller must provide exactly the telemetry records the agent may
-    inspect. There is intentionally no cache/session fallback here.
+    inspect. There is intentionally no cache/session reuse here.
     """
 
     class Config:
@@ -82,8 +82,6 @@ class _AnnotationRunRequest(BaseModel):
     section_id: Optional[str] = None
     section_start: Optional[int] = None
     section_end: Optional[int] = None
-    revision_start: Optional[int] = None
-    revision_end: Optional[int] = None
     circuit_id: Optional[str] = None
     existing_section_annotations: Optional[List[Dict[str, Any]]] = None
 
@@ -118,7 +116,7 @@ def _telemetry_origin(req: _AnnotationRunRequest) -> int:
     if req.flow == "detailed" and req.start_index is not None:
         return int(req.start_index)
     if req.flow == "lap":
-        for value in (req.revision_start, req.section_start, req.lap_start):
+        for value in (req.section_start, req.lap_start):
             if value is not None:
                 return int(value)
     return 0
@@ -160,8 +158,6 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
             section_id=req.section_id,
             section_start=req.section_start,
             section_end=req.section_end,
-            revision_start=req.revision_start,
-            revision_end=req.revision_end,
             circuit_id=req.circuit_id,
             existing_section_annotations=req.existing_section_annotations,
         )
@@ -291,8 +287,6 @@ async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse
                 section_id=req.section_id,
                 section_start=req.section_start,
                 section_end=req.section_end,
-                revision_start=req.revision_start,
-                revision_end=req.revision_end,
                 circuit_id=req.circuit_id,
                 existing_section_annotations=req.existing_section_annotations,
             )

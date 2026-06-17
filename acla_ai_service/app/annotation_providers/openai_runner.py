@@ -121,6 +121,6 @@ def run_openai_compatible(request: AgentRequest) -> AgentResponse:
     if cb.progress:
         cb.progress(
             _NODE,
-            f"done - {capture.tool_calls} tool call(s), submitted={capture.submitted}, revised={capture.revised}",
+            f"done - {capture.tool_calls} tool call(s), submitted={capture.submitted}",
         )
     return tool_agent_response(capture, request)

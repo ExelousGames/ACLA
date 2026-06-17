@@ -1,12 +1,12 @@
 """
 Lap-section excerpter flow.
 
-The caller has rough-split a lap via the deterministic
+The caller has split a lap via the deterministic
 ``split_lap_by_circuit_sections`` tool. Solo sessions produce
 circuit-section ranges; opponent sessions produce only close overtake
 offence / defence engagement ranges. One run of this flow annotates ONE
-range: the agent inspects telemetry, optionally shrinks/extends the
-boundary, and submits a single label proposal.
+range: the agent inspects telemetry within that split section and submits
+a single label proposal.
 
     build_request(provider_id, prompt_mode, df, lap_start, lap_end, section_id, ...)
     parse(response, prompt_mode, ...) -> LapAnnotationResult
@@ -124,15 +124,14 @@ WHOLE_RANGE_LABEL_RULE = (
     "Every behavior, segment-type, and sub-label must describe the final "
     "annotation range as a whole. Do not attach a label because it matches "
     "only one phase, one apex moment, or a short slice inside the range; "
-    "revise the range so the label fits throughout, omit that label, or "
-    "leave it for detailed child sub-segment annotation."
+    "omit that label or leave it for detailed child sub-segment annotation."
 )
 
 LAP_REASONING_NOTE_RULE = (
     "Write `reasoning` as a longer human annotation note: 4-6 concise "
     "sentences covering the final iloc range, selected label fit, key "
     "telemetry values or trends, deterministic tool verdicts, and why "
-    "competing labels were omitted or the range was revised."
+    "competing labels were omitted."
 )
 
 REQUIRED_BEHAVIOR_PARENT_LABEL_IDS = ("O", "OD", "PS", "RM", "MSP", "MSR")
@@ -234,9 +233,8 @@ def _required_behavior_parent_label_rule(eligible_label_ids: List[str]) -> str:
         f"label from {_label_set_text(eligible_label_ids)}. Circuit, "
         "circuit_section, segment-type, sub-label, and EA labels do not "
         "satisfy this required-parent rule. If no required behavior parent "
-        "label fits the whole final range after any allowed revision, submit "
-        "an empty label_ids array to drop the range instead of saving a "
-        "parentless segment."
+        "label fits the whole split-section range, submit an empty label_ids "
+        "array to drop the range instead of saving a parentless segment."
     )
 
 
@@ -245,7 +243,7 @@ def _planner_opening(session_context: str) -> str:
         return (
             "You are a racing telemetry analyst planning the analysis for "
             "ONE opponent-interaction range of a lap. The deterministic "
-            "splitter handed you a rough iloc boundary around a close "
+            "splitter handed you a fixed iloc boundary around a close "
             "engagement. The synthesizer downstream will pick from the "
             "eligible racing behavior labels by matching telemetry against "
             "each candidate label's `characteristics` block in the skill. "
@@ -254,7 +252,7 @@ def _planner_opening(session_context: str) -> str:
     return (
         "You are a racing telemetry analyst planning the analysis for "
         "ONE circuit-section range of a solo/practice lap. The deterministic "
-        "splitter handed you a rough iloc boundary. The synthesizer "
+        "splitter handed you a fixed iloc boundary. The synthesizer "
         "downstream will pick from the eligible practice behavior labels by "
         "matching telemetry against each candidate label's `characteristics` "
         "block in the skill. Your job here is to plan the steps that gather "
@@ -268,7 +266,7 @@ def _planner_task_context(session_context: str) -> str:
             "  2. gather full-range opponent context with "
             "`classify_opponent_interaction` as the mathematical label gate, "
             "including confidence-aware `label_gates` so low / weak results "
-            "trigger range refinement or extra opponent-path evidence; use "
+            "trigger extra opponent-path evidence; use "
             "`find_nearest_opponent` / `query_opponent_trajectory` when the "
             "primary slot's detailed path decides the technique, and"
         )
@@ -288,18 +286,14 @@ def _synth_opening(session_context: str) -> str:
             "describe_graphs steps captured the evidence below; pick the "
             "eligible racing parent label by matching the interaction "
             "window's telemetry against each candidate label's "
-            "`characteristics` block in the skill. Revising the boundary is "
-            "an escape hatch only — invoke it when one main-label signature "
-            "does not hold across the rough range."
+            "`characteristics` block in the skill."
         )
     return (
         "You are a racing telemetry analyst producing the final annotation "
         "for ONE practice / solo lap range. The describe_graphs steps "
         "captured the evidence below; pick the eligible practice parent "
         "label by matching the section's telemetry against each candidate "
-        "label's `characteristics` block in the skill. Revising the boundary "
-        "is an escape hatch only — invoke it when one main-label signature "
-        "does not hold across the rough range."
+        "label's `characteristics` block in the skill."
     )
 
 
@@ -307,24 +301,6 @@ def _segment_type_label_rule() -> str:
     return str(
         skills.get("sub_label_annotation.category_guidelines.Segment Type", "")
     ).strip()
-
-
-def _normalise_revision_bounds(
-    *,
-    lap_start: int,
-    lap_end: int,
-    section_start: int,
-    section_end: int,
-    revision_start: Optional[int],
-    revision_end: Optional[int],
-) -> Tuple[int, int]:
-    start = section_start if revision_start is None else int(revision_start)
-    end = section_end if revision_end is None else int(revision_end)
-    start = max(int(lap_start), min(start, int(section_start)))
-    end = min(int(lap_end), max(end, int(section_end)))
-    if end <= start:
-        return int(section_start), int(section_end)
-    return int(start), int(end)
 
 
 def _interaction_section_context(
@@ -464,7 +440,7 @@ def _interaction_focus_block(
     )
     return (
         "\n#### Opponent-session focus\n"
-        f"This rough range {origin}. For this work unit, identify the "
+        f"This split range {origin}. For this work unit, identify the "
         "target car from the splitter evidence first, then do ONLY overtake "
         "offence / defense "
         "annotation: pick O for a successful attacking pass, OD for a held "
@@ -491,8 +467,6 @@ def _local_planner_prompt(
     section_id: str,
     section_start: int,
     section_end: int,
-    revision_start: int,
-    revision_end: int,
     circuit_id: str,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
@@ -536,9 +510,8 @@ def _local_planner_prompt(
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
         ),
-        f"- rough iloc boundary: [{section_start}, {section_end}] "
+        f"- split iloc boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})",
-        f"- allowed revision envelope: [{revision_start}, {revision_end}]",
         f"- split basis: {section_split_basis or 'circuit_section'}",
         interaction_focus,
         "",
@@ -546,7 +519,7 @@ def _local_planner_prompt(
         "",
         "#### Available Step-Solver Agents",
         "Each plan step is dispatched to ONE sub-agent.",
-        "- `describe_graphs` — renders the listed graphs over the rough "
+        "- `describe_graphs` — renders the listed graphs over the split "
         "boundary and writes one observation paragraph per graph.",
         "- `label_verifier` — embedding-similarity filter against the "
         "candidate labels using the describe_graphs observations. End your "
@@ -612,8 +585,6 @@ def _local_synth_prompts(
     section_id: str,
     section_start: int,
     section_end: int,
-    revision_start: int,
-    revision_end: int,
     circuit_id: str,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
@@ -646,8 +617,7 @@ def _local_synth_prompts(
         ),
         f"- circuit id: `{circuit_id}` "
         "(from Static_track; include it in label_ids)",
-        f"- rough iloc boundary: [{section_start}, {section_end}]",
-        f"- allowed revision envelope: [{revision_start}, {revision_end}]",
+        f"- split iloc boundary: [{section_start}, {section_end}]",
         f"- split basis: {section_split_basis or 'circuit_section'}",
         f"- lap range: [{lap_start}, {lap_end}]",
         interaction_focus,
@@ -678,16 +648,13 @@ def _local_synth_prompts(
         "Respond with ONE JSON object only — no surrounding prose. Schema:",
         "```json",
         "{",
-        '  "revised_range": [start_iloc, end_iloc],',
-        '  "revised": <true|false>,',
-        '  "revision_reason": "<one short sentence; empty when revised=false>",',
         '  "label_ids": ["<id>", ...],',
         '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and range-fit rationale>"',
         "}",
         "```",
         "Hard rules:",
-        f"- revised_range must satisfy {revision_start} <= start < end <= "
-        f"{revision_end} and end - start >= 3.",
+        f"- The submitted range is fixed to [{section_start}, {section_end}]; "
+        "submit labels only for that exact range.",
         f"- {required_label_rule}",
         "- Every main / segment-type / sub label_id must come from the shortlist "
         "above; additionally include the circuit id. Include a "
@@ -718,8 +685,6 @@ def _tool_agent_task_prompt(
     lap_end: int,
     section_start: int,
     section_end: int,
-    revision_start: int,
-    revision_end: int,
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
 ) -> str:
@@ -752,7 +717,7 @@ def _tool_agent_task_prompt(
 
     return (
         "Annotate ONE lap range. The deterministic splitter handed you a "
-        "rough iloc boundary; if this is an opponent interaction window, "
+        "fixed split-section boundary; if this is an opponent interaction window, "
         "the boundary is event-shaped and circuit sections are context only. "
         "Your job is to pick the circuit id, optional circuit_section id, "
         "at least one required behavior parent label for any saved segment, optional "
@@ -764,9 +729,8 @@ def _tool_agent_task_prompt(
         f"- Eligible behavior parent labels: {_label_set_text(eligible_labels)}\n"
         f"- Lap range: [{lap_start}, {lap_end}] "
         f"(length {lap_end - lap_start})\n"
-        f"- Rough section boundary: [{section_start}, {section_end}] "
+        f"- Split section boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})\n"
-        f"- Allowed revision envelope: [{revision_start}, {revision_end}]\n"
         f"- Split basis: {section_split_basis or 'circuit_section'}\n"
         f"{preselected_section_block}"
         f"{interaction_focus}"
@@ -776,8 +740,8 @@ def _tool_agent_task_prompt(
         "that match this context. Use the returned guidance as the policy; "
         "do not rely on remembered label definitions. If the guidance does "
         "not cover the whole-range fit rule, turning / trajectory plus "
-        "brake / throttle driver-vs-expert comparison, or range-refinement "
-        "rule, search again instead of inventing a fallback.\n"
+        "brake / throttle driver-vs-expert comparison, search again "
+        "instead of inventing rules.\n"
         "2. Call `recommend_tools` with the concrete evidence you need "
         "(circuit id, section overlap, graph inspection, exact telemetry "
         "values, opponent interaction, segment shape). Execute selected "
@@ -789,11 +753,10 @@ def _tool_agent_task_prompt(
         "`parent_id` for sub-labels under a chosen main label. Do not "
         "submit labels whose returned catalog metadata says "
         "`lap_parent_allowed: false`.\n"
-        "4. Tools start scoped to the rough section boundary. When any "
+        "4. Tools are scoped to the split section boundary. When any "
         "main-label, segment-type, or sub-label signature fits only part "
-        "of the range, or the KB segment-completeness rule needs a boundary "
-        "change, call `revise_range` inside the allowed revision envelope, "
-        "then re-check evidence on the new range before submitting.\n"
+        "of the range, omit that label or submit an empty `label_ids` array "
+        "to drop the range.\n"
         "5. Call `submit_result(payload_json, summary)` once with the "
         "chosen IDs, using the same longer evidence note for `summary`, "
         "and stop after it returns `ok: true`.\n"
@@ -814,11 +777,10 @@ def _tool_agent_task_prompt(
         f"segment must contain at least one of {_label_set_text(eligible_labels)}; "
         "otherwise submit an empty `label_ids` array as the valid "
         "'drop this section' signal. The runner reports back "
-        "the final iloc range (your initial range or whatever "
-        "`revise_range` set last).\n"
+        "the split section range.\n"
         "\n"
         "### Hard rules\n"
-        f"- Final range must satisfy {revision_start} <= start < end <= {revision_end} and be ≥ 3 ilocs.\n"
+        f"- Final range is fixed to [{section_start}, {section_end}].\n"
         f"- {required_label_rule}\n"
         "- Do not invent label IDs; circuit / circuit_section ids must come "
         "from capability results, every other id from a `search_labels` "
@@ -858,8 +820,6 @@ def build_request(
     section_start: int,
     section_end: int,
     circuit_id: str,
-    revision_start: Optional[int] = None,
-    revision_end: Optional[int] = None,
     section_split_basis: Optional[str] = None,
     opponent_interaction: Optional[dict] = None,
     existing_section_annotations: Optional[List[dict]] = None,
@@ -869,14 +829,6 @@ def build_request(
 ) -> AgentRequest:
     config = config or ProviderConfig(provider_id=provider_id)
     callbacks = callbacks or NoopCallbacks()
-    revision_start, revision_end = _normalise_revision_bounds(
-        lap_start=lap_start,
-        lap_end=lap_end,
-        section_start=section_start,
-        section_end=section_end,
-        revision_start=revision_start,
-        revision_end=revision_end,
-    )
 
     section_name = LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
     session_context = _session_context(section_split_basis, opponent_interaction)
@@ -890,8 +842,6 @@ def build_request(
         content={
             "parent_start": int(section_start),
             "parent_end": int(section_end),
-            "revision_start": int(revision_start),
-            "revision_end": int(revision_end),
             "split_basis": section_split_basis or "circuit_section",
             "session_context": session_context,
             "eligible_behavior_label_ids": eligible_labels,
@@ -917,8 +867,6 @@ def build_request(
             section_id=section_id,
             section_start=section_start,
             section_end=section_end,
-            revision_start=revision_start,
-            revision_end=revision_end,
             circuit_id=circuit_id,
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
@@ -930,8 +878,6 @@ def build_request(
                 section_id=section_id,
                 section_start=section_start,
                 section_end=section_end,
-                revision_start=revision_start,
-                revision_end=revision_end,
                 circuit_id=circuit_id,
                 section_split_basis=section_split_basis,
                 opponent_interaction=opponent_interaction,
@@ -949,8 +895,6 @@ def build_request(
             lap_end=lap_end,
             section_start=section_start,
             section_end=section_end,
-            revision_start=revision_start,
-            revision_end=revision_end,
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
         )
@@ -960,12 +904,6 @@ def build_request(
             "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
             "annotation_session_context": session_context,
             "eligible_behavior_label_ids": eligible_labels,
-            "tool_agent_revision_bounds": {
-                "start": int(revision_start),
-                "end": int(revision_end),
-                "initial_start": int(section_start),
-                "initial_end": int(section_end),
-            },
         }
 
     return AgentRequest(
@@ -992,55 +930,38 @@ def parse(
     section_id: str,
     section_start: int,
     section_end: int,
-    revision_start: Optional[int] = None,
-    revision_end: Optional[int] = None,
     circuit_id: Optional[str] = None,
     section_split_basis: Optional[str] = None,
     opponent_interaction: Optional[dict] = None,
 ) -> LapAnnotationResult:
     """Decode the raw response into a LapAnnotationResult.
 
-    ``prompt_mode="local_pipeline"`` expects the JSON schema with
-    revised_range + label_ids + reasoning. ``prompt_mode="tool_agent"``
-    reads the submit payload and any provider-neutral revised range
-    attachment.
+    ``prompt_mode="local_pipeline"`` expects the JSON schema with label_ids
+    + reasoning. ``prompt_mode="tool_agent"`` reads the submit payload.
 
     Returns only what the LLM committed to — including the circuit and
     circuit_section ids the LLM picked via ``get_circuit_id`` /
     ``locate_circuit_section``.
     """
-    revision_start, revision_end = _normalise_revision_bounds(
-        lap_start=lap_start,
-        lap_end=lap_end,
-        section_start=section_start,
-        section_end=section_end,
-        revision_start=revision_start,
-        revision_end=revision_end,
-    )
-
     session_context = _session_context(section_split_basis, opponent_interaction)
     eligible_labels = list(_eligible_behavior_label_ids(session_context))
 
     if prompt_mode == "tool_agent":
-        return _parse_claude(response, lap_start, lap_end, section_id,
-                             section_start, section_end, revision_start,
-                             revision_end, circuit_id, opponent_interaction,
-                             eligible_labels)
-    return _parse_local(response, lap_start, lap_end, section_id,
-                        section_start, section_end, revision_start,
-                        revision_end, circuit_id, opponent_interaction,
-                        eligible_labels)
+        return _parse_claude(
+            response, section_id, section_start, section_end, circuit_id,
+            opponent_interaction, eligible_labels,
+        )
+    return _parse_local(
+        response, section_id, section_start, section_end, circuit_id,
+        opponent_interaction, eligible_labels,
+    )
 
 
 def _parse_local(
     response: AgentResponse,
-    lap_start: int,
-    lap_end: int,
     section_id: str,
     section_start: int,
     section_end: int,
-    revision_start: int,
-    revision_end: int,
     circuit_id: Optional[str],
     opponent_interaction: Optional[dict],
     eligible_behavior_label_ids: List[str],
@@ -1052,25 +973,13 @@ def _parse_local(
             f"lap flow (local): synth response was not valid JSON. "
             f"First 300 chars: {raw[:300]!r}"
         )
+    _reject_unknown_output_fields(parsed, "local")
 
-    revised_range = parsed.get("revised_range") or [section_start, section_end]
-    try:
-        new_start = int(revised_range[0])
-        new_end = int(revised_range[1])
-    except (TypeError, ValueError, IndexError) as exc:
-        raise RuntimeError(
-            f"lap flow (local): revised_range was not [int, int]: "
-            f"{revised_range!r}"
-        ) from exc
-    if not (revision_start <= new_start < new_end <= revision_end):
-        raise RuntimeError(
-            f"lap flow (local): revised_range [{new_start}, {new_end}] "
-            f"outside revision envelope [{revision_start}, {revision_end}] "
-            "or start >= end"
-        )
+    new_start = int(section_start)
+    new_end = int(section_end)
     if (new_end - new_start) < 5:
         raise RuntimeError(
-            f"lap flow (local): revised_range too short "
+            f"lap flow (local): split section range too short "
             f"({new_end - new_start} ilocs) — minimum 5"
         )
 
@@ -1083,14 +992,7 @@ def _parse_local(
         cleaned, circuit_id, opponent_interaction,
     )
 
-    revised_flag = bool(parsed.get("revised")) or (
-        new_start != section_start or new_end != section_end
-    )
     reasoning = str(parsed.get("reasoning") or "")
-    if parsed.get("revision_reason") and revised_flag:
-        reasoning = (
-            f"[revision: {parsed.get('revision_reason')}] {reasoning}".strip()
-        )
 
     return LapAnnotationResult(
         section_id=section_id,
@@ -1098,10 +1000,7 @@ def _parse_local(
         end_index=new_end,
         label_ids=cleaned,
         reasoning=reasoning or raw or "(no reasoning)",
-        revised=revised_flag,
         submitted=True,
-        rough_start=int(section_start),
-        rough_end=int(section_end),
         rejected_proposals=rejected,
         rendered_images=list(response.graph_images),
         transcript=raw,
@@ -1111,13 +1010,9 @@ def _parse_local(
 
 def _parse_claude(
     response: AgentResponse,
-    lap_start: int,
-    lap_end: int,
     section_id: str,
     section_start: int,
     section_end: int,
-    revision_start: int,
-    revision_end: int,
     circuit_id: Optional[str],
     opponent_interaction: Optional[dict],
     eligible_behavior_label_ids: List[str],
@@ -1129,6 +1024,7 @@ def _parse_claude(
     rejected: List[Dict[str, Any]] = []
     reasoning = ""
     if parsed:
+        _reject_unknown_output_fields(parsed, "claude")
         raw_label_ids = parsed.get("label_ids") or []
         cleaned, rejected = _clean_label_ids(
             raw_label_ids,
@@ -1139,27 +1035,10 @@ def _parse_claude(
         )
         reasoning = str(parsed.get("reasoning") or "")
 
-    # Resolve final range — prefer tool_agent.revised_range attachment when
-    # revise_range fired; otherwise the section's rough boundary.
     new_start, new_end = int(section_start), int(section_end)
-    revised = False
-    revised_att = (
-        response.attachments.get("tool_agent.revised_range")
-        or response.attachments.get("claude.revised_range")
-    )
-    if revised_att and isinstance(revised_att.content, dict):
-        new_start = int(revised_att.content.get("start_index", section_start))
-        new_end = int(revised_att.content.get("end_index", section_end))
-        revised = (new_start, new_end) != (section_start, section_end)
-
-    if not (revision_start <= new_start < new_end <= revision_end):
-        raise RuntimeError(
-            f"lap flow (claude): final range [{new_start}, {new_end}] "
-            f"outside revision envelope [{revision_start}, {revision_end}]"
-        )
     if (new_end - new_start) < 5:
         raise RuntimeError(
-            f"lap flow (claude): final range too short "
+            f"lap flow (claude): split section range too short "
             f"({new_end - new_start} ilocs) — minimum 5"
         )
 
@@ -1184,15 +1063,22 @@ def _parse_claude(
         end_index=new_end,
         label_ids=cleaned,
         reasoning=reasoning or transcript or "(no reasoning)",
-        revised=revised,
         submitted=response.verdict == "submitted",
-        rough_start=int(section_start),
-        rough_end=int(section_end),
         rejected_proposals=rejected,
         rendered_images=list(response.graph_images),
         transcript=transcript,
         tool_calls=0,
     )
+
+
+def _reject_unknown_output_fields(parsed: Dict[str, Any], source: str) -> None:
+    allowed_keys = {"label_ids", "reasoning"}
+    unknown_keys = sorted(str(key) for key in parsed if key not in allowed_keys)
+    if unknown_keys:
+        raise RuntimeError(
+            f"lap flow ({source}): unsupported output field(s): "
+            + ", ".join(unknown_keys)
+        )
 
 
 def _clean_label_ids(
