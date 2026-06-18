@@ -3479,9 +3479,9 @@ def _trend_change(overall_slope: float, end_slope: float, column: str) -> str:
 def _trend_role(column: str, direction: str) -> str:
     if column == "expert_time_difference":
         if direction == "rising":
-            return "mistake_candidate_losing_time_here"
+            return "time_gap_increasing"
         if direction == "falling":
-            return "recovery_candidate_gaining_time_here"
+            return "time_gap_decreasing"
         return "constant_gap_not_mistake_or_recovery"
     return _column_semantics(column)[
         "positive_label" if direction == "rising" else "negative_label"
@@ -3850,10 +3850,11 @@ def _query_find_trend_runs(
     """Find rising, falling, and flat runs in <column> over the range.
 
     This is the deterministic shape reader for time-delta style graphs.
-    For ``expert_time_difference``, rising runs are candidate mistake
-    windows because the player is losing time *inside that run*; falling
-    runs are recovery windows. Flat runs explicitly mean the existing gap
-    is being carried forward, not that a new mistake/recovery occurred.
+    For ``expert_time_difference``, rising runs show the gap increasing
+    and falling runs show the gap decreasing. Parent-label prompts decide
+    whether that rate change is a new mistake or recovery from a carried
+    prior issue. Flat runs explicitly mean the existing gap is being
+    carried forward, not that a new mistake/recovery occurred.
     """
     try:
         window = int(smoothing_window)
