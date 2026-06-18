@@ -449,8 +449,36 @@ def _prompt_block(
     lines.extend(_candidate_lines(candidates))
     lines.extend(["", "Required tool outputs:"])
     for tool_id, content in tool_outputs:
+        summary = _preflight_tool_summary(tool_id, content)
+        if summary:
+            lines.append(summary)
         lines.append(f"##### {tool_id}\n```json\n{_json(content, 2200)}\n```")
     return "\n".join(lines)
+
+
+def _preflight_tool_summary(tool_id: str, content: Dict[str, Any]) -> Optional[str]:
+    if tool_id != "query_telemetry.compute_slope.expert_time_difference":
+        return None
+    result = content.get("result")
+    if not isinstance(result, dict):
+        return None
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    end_zero = extra.get("end_near_zero_summary")
+    end_moves_toward_zero = (
+        end_zero.get("moves_toward_zero") if isinstance(end_zero, dict) else None
+    )
+    return (
+        "expert_time_difference slope verdict: "
+        f"total_change={extra.get('delta_value')} {extra.get('unit')}; "
+        f"total_change_direction={extra.get('total_change_direction')}; "
+        f"end_window={extra.get('end_window')}; "
+        f"end_change={extra.get('end_delta_value')} {extra.get('unit')}; "
+        f"end_change_direction={extra.get('end_change_direction')}; "
+        f"end_trend_change={extra.get('end_trend_change')}; "
+        f"end_moves_toward_zero={end_moves_toward_zero}"
+    )
 
 
 def _candidate_lines(candidates: List[Dict[str, Any]]) -> List[str]:
