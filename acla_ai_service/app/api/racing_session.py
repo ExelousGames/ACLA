@@ -14,6 +14,12 @@ from app.ml.segment_classifier.service import segment_classifier
 from app.ml.opportunity_forecaster import opportunity_forecaster
 from app.services.user_session_analysis import analyze_user_sessions
 from app.shared.label_hierarchy import build_track_area_segments
+from app.shared.labels import (
+    LABEL_CATEGORIES,
+    LABEL_IMAGE_MAP,
+    LABEL_MAPPING,
+    LABEL_NAME_TO_ID,
+)
 
 
 router = APIRouter(prefix="/racing-session", tags=["racing-session"])
@@ -85,6 +91,16 @@ class SegmentClassificationRequest(BaseModel):
     
 # Initialize telemetry service
 telemetryMLService = Full_dataset_TelemetryMLService()
+
+
+@router.get("/labels")
+async def get_labels() -> Dict[str, Any]:
+    return {
+        "label_mapping": LABEL_MAPPING,
+        "label_name_to_id": LABEL_NAME_TO_ID,
+        "label_image_map": LABEL_IMAGE_MAP,
+        "label_categories": LABEL_CATEGORIES,
+    }
 
 
 @router.post("/imitation-learning-guidance")

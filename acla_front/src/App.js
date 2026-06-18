@@ -3,11 +3,12 @@ import React, { useState } from 'react';
 import LoginUser from 'views/login-user/login-user';
 import RegisterUser from 'views/register-user/register-user';
 import AuthProvider from "hooks/AuthProvider";
-import { HashRouter as Router, Route, Routes, Navigate } from "react-router-dom"
+import { HashRouter as Router, Route, Routes, Navigate, Outlet } from "react-router-dom"
 import PrivateRoute from "views/routers/PrivateRoute";
 import MainDashboard from 'views/dashboard/MainDashboard'
 import UserProfile from 'views/user-profile/user-profile'
 import EnvironmentProvider from 'contexts/EnvironmentContext'
+import AiLabelsProvider from 'contexts/AiLabelsContext'
 import LandingPage from 'views/landing-page/LandingPage'
 import FloatingChat from 'views/floating-chat/FloatingChat'
 import { useAuth } from 'hooks/AuthProvider'
@@ -18,6 +19,12 @@ const PublicRoute = ({ children }) => {
   if (token) return <Navigate to="/dashboard" />;
   return children;
 };
+
+const PostLoginProviders = () => (
+  <AiLabelsProvider>
+    <Outlet />
+  </AiLabelsProvider>
+);
 
 function App() {
   // Short-circuit for the always-on-top Electron overlay window. It loads the
@@ -44,8 +51,10 @@ function App() {
               <Route path="/register" element={<PublicRoute><RegisterUser /></PublicRoute>} />
               {/*The <PrivateRoute /> component serves as a guard for protecting  */}
               <Route element={<PrivateRoute />}>
-                <Route path="/dashboard" element={<MainDashboard />} />
-                <Route path="/profile" element={<UserProfile />} />
+                <Route element={<PostLoginProviders />}>
+                  <Route path="/dashboard" element={<MainDashboard />} />
+                  <Route path="/profile" element={<UserProfile />} />
+                </Route>
               </Route>
             </Routes>
           </AuthProvider>

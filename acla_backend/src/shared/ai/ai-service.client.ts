@@ -164,6 +164,13 @@ export interface SegmentClassificationResponse {
     segments: SegmentClassificationSegment[];
 }
 
+export interface AiLabelsResponse {
+    label_mapping: Record<string, string>;
+    label_name_to_id: Record<string, string>;
+    label_image_map: Record<string, string>;
+    label_categories: Record<string, string[]>;
+}
+
 // Phase 2 — text-to-speech via Kokoro
 export interface AnalyzeUserSessionsRequest {
     user_id: string;
@@ -223,6 +230,18 @@ export class AiServiceClient {
         } catch (error) {
             throw new HttpException(
                 `AI Service health check failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async getLabels(): Promise<AiLabelsResponse> {
+        try {
+            const response = await axios.get(`${this.aiServiceUrl}/racing-session/labels`);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service labels retrieval failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }

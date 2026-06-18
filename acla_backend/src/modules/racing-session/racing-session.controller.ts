@@ -7,7 +7,7 @@ import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest, TrackCornerKnowledgeRequest } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest, TrackCornerKnowledgeRequest, AiLabelsResponse } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -542,6 +542,17 @@ export class RacingSessionController {
         } catch (error) {
             console.error('Imitation learning guidance failed:', error);
             throw new BadRequestException(`Failed to get imitation learning guidance: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Get('labels')
+    async getLabels(): Promise<AiLabelsResponse> {
+        try {
+            return await this.aiServiceClient.getLabels();
+        } catch (error) {
+            console.error('AI labels retrieval failed:', error);
+            throw new BadRequestException(`Failed to get AI labels: ${error.message}`);
         }
     }
 
