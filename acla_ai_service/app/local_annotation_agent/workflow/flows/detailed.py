@@ -33,7 +33,9 @@ from app.local_annotation_agent.workflow.results import (
     AnnotationResult,
     parse_json_response,
 )
-from app.local_annotation_agent.workflow.preflight import build_preflight_context
+from app.local_annotation_agent.workflow.preflight_detailed import (
+    build_preflight_context,
+)
 from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
 
@@ -479,7 +481,6 @@ def build_request(
     )
 
     preflight = build_preflight_context(
-        flow="detailed",
         df=df,
         start=parent_start,
         end=parent_end,

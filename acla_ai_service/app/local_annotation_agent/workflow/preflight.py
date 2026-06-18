@@ -1,4 +1,4 @@
-"""Required upfront analysis package for annotation flows."""
+"""Shared upfront analysis package for annotation flows."""
 
 from __future__ import annotations
 
@@ -12,16 +12,19 @@ from app.shared.contracts import Attachment
 from app.shared.labels import LABEL_MAPPING
 
 
-PREFLIGHT_TOOL_IDS: Tuple[str, ...] = (
+SHARED_PREFLIGHT_TOOL_IDS: Tuple[str, ...] = (
     "get_circuit_id",
     "compute_expert_phases",
     "measure_segment_shape",
     "locate_circuit_section",
+)
+PREFLIGHT_TOOL_IDS: Tuple[str, ...] = (
+    *SHARED_PREFLIGHT_TOOL_IDS,
     "split_lap_by_circuit_sections",
     "classify_opponent_interaction",
     "find_nearest_opponent",
 )
-PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
+SHARED_PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
     {
         "tool_id": "query_telemetry.find_trend_runs.expert_time_difference",
         "graph_id": "time_delta",
@@ -62,6 +65,7 @@ PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
         "params": {"column": "speed_difference", "kind": "min"},
     },
 )
+PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = SHARED_PREFLIGHT_QUERY_SPECS
 
 _TAG_KEYS = {
     "annotation_scope",
@@ -113,6 +117,8 @@ def build_preflight_context(
     df,
     start: int,
     end: int,
+    tool_ids: Optional[Sequence[str]] = None,
+    query_specs: Optional[Sequence[Dict[str, Any]]] = None,
     parent_main_labels: Optional[Sequence[str]] = None,
     eligible_behavior_label_ids: Optional[Sequence[str]] = None,
     fixed_label_ids: Optional[Sequence[str]] = None,
@@ -122,9 +128,11 @@ def build_preflight_context(
     if e <= s:
         raise RuntimeError(f"annotation preflight: invalid range [{s}, {e}]")
 
+    selected_tool_ids = tuple(tool_ids or PREFLIGHT_TOOL_IDS)
+    selected_query_specs = tuple(query_specs or PREFLIGHT_QUERY_SPECS)
     tool_outputs = [
-        *_run_tools(df, s, e),
-        *_run_queries(df, s, e),
+        *_run_tools(df, s, e, selected_tool_ids),
+        *_run_queries(df, s, e, selected_query_specs),
     ]
     tags = _dedupe(
         tag
@@ -182,7 +190,10 @@ def build_preflight_context(
             content={
                 "flow": flow,
                 "range": [s, e],
-                "required_tools": _preflight_analysis_ids(),
+                "required_tools": _preflight_analysis_ids(
+                    selected_tool_ids,
+                    selected_query_specs,
+                ),
                 "tool_output_tags": tags,
                 "label_candidate_ids": [c["id"] for c in candidates],
                 "semantic_evidence_text": evidence,
@@ -198,19 +209,27 @@ def build_preflight_context(
     )
 
 
-def _preflight_analysis_ids() -> List[str]:
+def _preflight_analysis_ids(
+    tool_ids: Sequence[str],
+    query_specs: Sequence[Dict[str, Any]],
+) -> List[str]:
     return [
-        *PREFLIGHT_TOOL_IDS,
-        *(str(spec["tool_id"]) for spec in PREFLIGHT_QUERY_SPECS),
+        *tool_ids,
+        *(str(spec["tool_id"]) for spec in query_specs),
     ]
 
 
-def _run_tools(df, start: int, end: int) -> List[Tuple[str, Dict[str, Any]]]:
+def _run_tools(
+    df,
+    start: int,
+    end: int,
+    tool_ids: Sequence[str],
+) -> List[Tuple[str, Dict[str, Any]]]:
     from app.shared.annotation_agent_tools import get_circuit_id, get_pipeline_tool
 
     out: List[Tuple[str, Dict[str, Any]]] = []
     circuit_id: Optional[str] = None
-    for tool_id in PREFLIGHT_TOOL_IDS:
+    for tool_id in tool_ids:
         try:
             if tool_id == "get_circuit_id":
                 attachment = get_circuit_id(df)
@@ -241,11 +260,16 @@ def _run_tools(df, start: int, end: int) -> List[Tuple[str, Dict[str, Any]]]:
     return out
 
 
-def _run_queries(df, start: int, end: int) -> List[Tuple[str, Dict[str, Any]]]:
+def _run_queries(
+    df,
+    start: int,
+    end: int,
+    query_specs: Sequence[Dict[str, Any]],
+) -> List[Tuple[str, Dict[str, Any]]]:
     from app.shared.annotation_agent_tools import build_graph, run_pipeline_query
 
     out: List[Tuple[str, Dict[str, Any]]] = []
-    for spec in PREFLIGHT_QUERY_SPECS:
+    for spec in query_specs:
         tool_id = str(spec["tool_id"])
         graph_id = str(spec["graph_id"])
         query_id = str(spec["query_id"])

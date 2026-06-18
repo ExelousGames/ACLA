@@ -31,7 +31,9 @@ from app.local_annotation_agent.workflow.results import (
     LapAnnotationResult,
     parse_json_response,
 )
-from app.local_annotation_agent.workflow.preflight import build_preflight_context
+from app.local_annotation_agent.workflow.preflight_lap import (
+    build_preflight_context,
+)
 from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
 
@@ -867,7 +869,6 @@ def build_request(
     if preselected_section_id:
         fixed_label_ids.append(preselected_section_id)
     preflight = build_preflight_context(
-        flow="lap",
         df=df,
         start=section_start,
         end=section_end,
