@@ -4,6 +4,7 @@ import { PauseIcon, PlayIcon, ReloadIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from '../../analysis-context';
+import { useAiLabels } from 'contexts/AiLabelsContext';
 import { VisualizationProps } from '../VisualizationRegistry';
 import {
     CarPoint,
@@ -16,9 +17,9 @@ import {
     VisibilitySample
 } from './mapTelemetry';
 import {
-    getActiveSubLabelTexts,
     getSegmentMainLabelText,
-    getSegmentSubLabelTexts,
+    resolveActiveSubLabelTexts,
+    resolveSegmentChildLabelTexts,
     SegmentClassificationSegment
 } from './segmentClassificationDisplay';
 import './MapVisualization.css';
@@ -81,7 +82,7 @@ const getCarColor = (carKey: string, isPlayer: boolean): string => {
 };
 
 const getSegmentColor = (segment: SegmentClassificationSegment, index: number): string => {
-    const key = segment.main_label_id || segment.main_label_name || segment.labels?.join('|') || segment.id || String(index);
+    const key = segment.main_label_id || segment.labels?.join('|') || segment.id || String(index);
     let hash = index;
 
     for (let charIndex = 0; charIndex < key.length; charIndex += 1) {
@@ -175,6 +176,7 @@ const getBounds = (frames: TelemetryFrame[], trackFrames: TelemetryFrame[]) => {
 
 const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height = '100%' }) => {
     const analysisContext = useContext(AnalysisContext);
+    const { getLabelName } = useAiLabels();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
     const recordedCacheRef = useRef<Map<string, TelemetryFrame[]>>(new Map());
@@ -269,10 +271,10 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
         }
 
         return {
-            parentLabel: getSegmentMainLabelText(activeSegment),
-            childLabels: getActiveSubLabelTexts(activeSegment, currentFrame.sourceIndex)
+            parentLabel: getSegmentMainLabelText(activeSegment, getLabelName),
+            childLabels: resolveActiveSubLabelTexts(activeSegment, currentFrame.sourceIndex, getLabelName)
         };
-    }, [currentFrame, segmentClassification]);
+    }, [currentFrame, getLabelName, segmentClassification]);
 
     useEffect(() => {
         currentPlaybackTimeRef.current = currentPlaybackTime;
@@ -823,24 +825,28 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                             )}
                             {segmentLoadState.status === 'ready' && segmentClassification?.segments?.length ? (
                                 <div className="map-visualization__segment-legend">
-                                    {segmentClassification.segments.slice(0, 6).map((segment, index) => (
-                                        <span key={segment.id || `${segment.start_index}-${segment.end_index}`} className="map-visualization__segment-legend-item">
-                                            <span
-                                                className="map-visualization__segment-swatch"
-                                                style={{ backgroundColor: getSegmentColor(segment, index) }}
-                                            />
-                                            <span className="map-visualization__segment-copy">
-                                                <span className="map-visualization__segment-main-label">
-                                                    Parent: {getSegmentMainLabelText(segment)}
-                                                </span>
-                                                {getSegmentSubLabelTexts(segment).length > 0 && (
-                                                    <span className="map-visualization__segment-sub-labels">
-                                                        Child: {getSegmentSubLabelTexts(segment).join(', ')}
+                                    {segmentClassification.segments.slice(0, 6).map((segment, index) => {
+                                        const childLabelTexts = resolveSegmentChildLabelTexts(segment, getLabelName);
+
+                                        return (
+                                            <span key={segment.id || `${segment.start_index}-${segment.end_index}`} className="map-visualization__segment-legend-item">
+                                                <span
+                                                    className="map-visualization__segment-swatch"
+                                                    style={{ backgroundColor: getSegmentColor(segment, index) }}
+                                                />
+                                                <span className="map-visualization__segment-copy">
+                                                    <span className="map-visualization__segment-main-label">
+                                                        Parent: {getSegmentMainLabelText(segment, getLabelName)}
                                                     </span>
-                                                )}
+                                                    {childLabelTexts.length > 0 && (
+                                                        <span className="map-visualization__segment-sub-labels">
+                                                            Child: {childLabelTexts.join(', ')}
+                                                        </span>
+                                                    )}
+                                                </span>
                                             </span>
-                                        </span>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             ) : null}
                         </Flex>

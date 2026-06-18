@@ -77,13 +77,6 @@ def normalize_grouped_label_ids(
     return cleaned, rejected, added_parents
 
 
-def _label_display(label_id: str) -> Dict[str, str]:
-    return {
-        "label_id": label_id,
-        "label_name": LABEL_MAPPING.get(label_id, label_id),
-    }
-
-
 def _dedupe_label_ids(label_ids: List[str]) -> List[str]:
     seen = set()
     deduped = []
@@ -150,10 +143,6 @@ def _analysis_label_ids(label_ids: List[str]) -> List[str]:
         if label_id not in TRACK_PARENT_LABEL_IDS
         and label_id not in CIRCUIT_SECTION_RANGES
     ]
-
-
-def _label_displays(label_ids: List[str]) -> List[Dict[str, str]]:
-    return [_label_display(label_id) for label_id in _dedupe_label_ids(label_ids)]
 
 
 def _track_area_windows(
@@ -232,26 +221,22 @@ def build_track_area_segments(
             child_segments.append({
                 "start_index": child_start,
                 "end_index": child_end,
-                "labels": _label_displays(analysis_labels),
+                "labels": _dedupe_label_ids(analysis_labels),
             })
 
         if not child_segments:
             continue
 
         segment_labels = _dedupe_label_ids([parent_label_id] + child_label_ids)
-        parent_label_name = LABEL_MAPPING.get(parent_label_id, parent_label_id)
         segments.append({
             "id": f"{parent_label_id}:{parent_start}-{parent_end}",
             "labels": segment_labels,
             "parent_segment_id": parent_label_id,
-            "parent_segment_name": parent_label_name,
             "parent_label_id": parent_label_id,
-            "parent_label_name": parent_label_name,
             "main_label_id": parent_label_id,
-            "main_label_name": parent_label_name,
             "start_index": parent_start,
             "end_index": parent_end,
-            "sub_labels": _label_displays(child_label_ids),
+            "sub_labels": _dedupe_label_ids(child_label_ids),
             "sub_segments": child_segments,
             "child_segments": child_segments,
         })
@@ -278,7 +263,7 @@ def build_main_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict[s
         sub_segment = {
             "start_index": start_index,
             "end_index": end_index,
-            "labels": [_label_display(label_id) for label_id in sub_label_ids],
+            "labels": _dedupe_label_ids(sub_label_ids),
         }
 
         previous = segments[-1] if segments else None
@@ -289,10 +274,7 @@ def build_main_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict[s
         ):
             previous["end_index"] = end_index
             previous["labels"] = _dedupe_label_ids(previous["labels"] + cleaned_labels)
-            previous["sub_labels"] = [
-                _label_display(label_id)
-                for label_id in _sub_label_ids(previous["labels"], main_label_id)
-            ]
+            previous["sub_labels"] = _dedupe_label_ids(_sub_label_ids(previous["labels"], main_label_id))
             previous["sub_segments"].append(sub_segment)
             continue
 
@@ -301,10 +283,9 @@ def build_main_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict[s
             "id": raw_segment.get("id"),
             "labels": segment_labels,
             "main_label_id": main_label_id,
-            "main_label_name": LABEL_MAPPING.get(main_label_id, main_label_id),
             "start_index": start_index,
             "end_index": end_index,
-            "sub_labels": [_label_display(label_id) for label_id in sub_label_ids],
+            "sub_labels": _dedupe_label_ids(sub_label_ids),
             "sub_segments": [sub_segment],
         })
 

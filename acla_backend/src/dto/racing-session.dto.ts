@@ -144,26 +144,21 @@ export class SegmentClassificationRequestDto {
     session_id: string;
 }
 
-export class SegmentClassificationLabelDto {
-    label_id: string;
-    label_name: string;
-}
-
 export class SegmentClassificationSubSegmentDto {
     start_index: number;
     end_index: number;
-    labels: SegmentClassificationLabelDto[];
+    labels: string[];
 }
 
 export class SegmentClassificationSegmentDto {
     id?: string;
     labels: string[];
     main_label_id: string;
-    main_label_name: string;
     start_index: number;
     end_index: number;
-    sub_labels: SegmentClassificationLabelDto[];
+    sub_labels: string[];
     sub_segments: SegmentClassificationSubSegmentDto[];
+    child_segments?: SegmentClassificationSubSegmentDto[];
 }
 
 export class SegmentClassificationResponseDto {
