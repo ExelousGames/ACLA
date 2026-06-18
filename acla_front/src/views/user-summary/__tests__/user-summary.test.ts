@@ -71,4 +71,39 @@ describe('buildTrackSummaryViews', () => {
         });
         expect(tracks[0].improvementAreas[0].parentSegmentName).toBe('Druids');
     });
+
+    it('uses AI labels when resolving segment names', () => {
+        const labels: Record<string, string> = {
+            brands_hatch3: 'Druids',
+            MSP2: 'Missed apex',
+        };
+        const tracks = buildTrackSummaryViews({
+            tracks: {
+                brands_hatch: {
+                    trackName: 'Brands Hatch',
+                    sections: {
+                        brands_hatch3: {
+                            sectionName: 'Section 3',
+                            mistakes: 2,
+                            labelCounts: {
+                                MSP2: 2,
+                            },
+                        },
+                    },
+                    improvementAreas: [
+                        {
+                            parentSegmentId: 'brands_hatch3',
+                            childSegmentId: 'MSP2',
+                            count: 2,
+                        },
+                    ],
+                },
+            },
+        }, (labelId) => labels[labelId]);
+
+        expect(tracks[0].parentSegments[0].name).toBe('Druids');
+        expect(tracks[0].parentSegments[0].childSegments[0].name).toBe('Missed apex');
+        expect(tracks[0].improvementAreas[0].parentSegmentName).toBe('Druids');
+        expect(tracks[0].improvementAreas[0].childSegmentName).toBe('Missed apex');
+    });
 });

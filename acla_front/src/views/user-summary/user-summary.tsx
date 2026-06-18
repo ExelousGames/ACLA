@@ -10,6 +10,7 @@ import {
     TextArea
 } from '@radix-ui/themes';
 import { CheckIcon } from '@radix-ui/react-icons';
+import { useAiLabels } from 'contexts/AiLabelsContext';
 import apiService from 'services/api.service';
 import AnalyzeAllSessionsControl from './AnalyzeAllSessionsControl';
 import { asRecord, buildTrackSummaryViews, formatCount, formatNumber } from './user-summary-model';
@@ -20,6 +21,7 @@ type UserSummaryResponse = {
 };
 
 const UserSummary = () => {
+    const { getLabelName } = useAiLabels();
     const [summaryText, setSummaryText] = useState('{}');
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState(false);
@@ -74,8 +76,8 @@ const UserSummary = () => {
     }, [summaryText]);
 
     const trackSummaries = useMemo(
-        () => buildTrackSummaryViews(asRecord(parsedSummary)),
-        [parsedSummary],
+        () => buildTrackSummaryViews(asRecord(parsedSummary), getLabelName),
+        [getLabelName, parsedSummary],
     );
 
     return (
