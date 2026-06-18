@@ -16,6 +16,7 @@ _USAGE_EXHAUSTED_WARNING = (
 )
 
 _BATCH_LAP_NOTE_MAX_CHARS = 4000
+_BATCH_LAP_MIN_SECTION_ILOCS = 5
 
 _ERROR_DETAIL_ATTRS = (
     "result",
@@ -242,6 +243,14 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
         f"provider={config.provider_id}")
 
     existing_annotations = _collect_existing_lap_annotations(int(lap_start), int(lap_end))
+    resume_from_index = None
+    if not clear_session_segments:
+        resume_from_index = _rightmost_annotation_end(existing_annotations)
+        if resume_from_index is not None:
+            log(
+                "Existing annotation(s) found; batch will start from the "
+                f"rightmost annotated end {resume_from_index}."
+            )
     saved_count = 0
     skipped_count = 0
     error_count = 0
@@ -249,22 +258,35 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
     while i < len(segments):
         seg = segments[i]
         sec_id = seg["circuit_section_id"]
-        sec_start = int(seg["start_index"])
+        original_sec_start = int(seg["start_index"])
+        sec_start = original_sec_start
         sec_end = int(seg["end_index"])
         target_suffix = _targeted_car_suffix(seg.get("opponent_interaction"))
-        overlapping_ann = None
-        if not clear_session_segments:
-            overlapping_ann = _find_overlapping_annotation(
-                sec_start, sec_end, existing_annotations,
-            )
-        if overlapping_ann is not None:
+        if resume_from_index is not None and sec_end <= resume_from_index:
             skipped_count += 1
             i += 1
             progress_bar.progress(i / len(segments))
             log(
                 f"Section #{i - 1} `{sec_id}`{target_suffix}: skipped; "
-                f"existing annotation [{overlapping_ann['start_index']}, "
-                f"{overlapping_ann['end_index']}] overlaps [{sec_start}, {sec_end}]."
+                f"it ends at {sec_end}, before resume boundary {resume_from_index}."
+            )
+            continue
+        if resume_from_index is not None and sec_start < resume_from_index:
+            sec_start = resume_from_index
+            log(
+                f"Section #{i} `{sec_id}`{target_suffix}: starting from "
+                f"rightmost annotated end {resume_from_index} -> "
+                f"[{sec_start}, {sec_end}] instead of "
+                f"[{original_sec_start}, {sec_end}]."
+            )
+        if sec_end - sec_start < _BATCH_LAP_MIN_SECTION_ILOCS:
+            skipped_count += 1
+            i += 1
+            progress_bar.progress(i / len(segments))
+            log(
+                f"Section #{i - 1} `{sec_id}`{target_suffix}: skipped; "
+                f"[{sec_start}, {sec_end}] shorter than "
+                f"{_BATCH_LAP_MIN_SECTION_ILOCS} ilocs."
             )
             continue
 
@@ -332,6 +354,12 @@ def render_batch_lap_agent_claude(df, session_id, selected_annotation_key):
             "end_index": int(new_ann.end_index),
             "labels": list(new_ann.labels),
         })
+        if not clear_session_segments:
+            resume_from_index = (
+                int(new_ann.end_index)
+                if resume_from_index is None
+                else max(resume_from_index, int(new_ann.end_index))
+            )
         saved_count += 1
 
         log(f"Section #{i} `{sec_id}`{target_suffix}: saved [{result.start_index}, {result.end_index}] "
@@ -396,18 +424,19 @@ def _compute_interval_coverage(
     return covered, gaps
 
 
-def _find_overlapping_annotation(
-    section_start: int,
-    section_end: int,
+def _rightmost_annotation_end(
     annotations: list[dict],
-) -> dict | None:
+) -> int | None:
+    rightmost_end = None
     for ann in annotations:
         ann_start = int(ann.get("start_index", 0) or 0)
         ann_end = int(ann.get("end_index", 0) or 0)
-        if ann_end <= section_start or ann_start >= section_end:
+        if ann_end <= ann_start:
             continue
-        return ann
-    return None
+        rightmost_end = (
+            ann_end if rightmost_end is None else max(rightmost_end, ann_end)
+        )
+    return rightmost_end
 
 
 def _render_coverage_bar(
