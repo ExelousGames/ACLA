@@ -7,6 +7,7 @@ from app.shared.annotation_agent_tools import (
     measure_segment_shape,
 )
 from app.local_annotation_agent.workflow.preflight import _prompt_block, _run_queries
+from app.local_annotation_agent.workflow import preflight_detailed
 
 
 def _trajectory_df(x: np.ndarray, y: np.ndarray) -> pd.DataFrame:
@@ -83,6 +84,32 @@ def test_preflight_trajectory_offset_queries_repair_reset_segment_index():
         assert "error" not in content
         assert content["params"]["range"] == [1000, 1099]
         assert 1000 <= content["result"]["iloc"] <= 1099
+
+
+def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
+    captured = {}
+    sentinel = object()
+
+    def fake_build_shared_preflight_context(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        preflight_detailed,
+        "build_shared_preflight_context",
+        fake_build_shared_preflight_context,
+    )
+
+    result = preflight_detailed.build_preflight_context(
+        df=pd.DataFrame(),
+        start=0,
+        end=1,
+        parent_main_labels=[],
+        extra_query_terms=[],
+    )
+
+    assert result is sentinel
+    assert "strict_query_errors" not in captured
 
 
 def test_preflight_expert_time_summary_uses_final_window_slope():

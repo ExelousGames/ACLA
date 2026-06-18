@@ -261,7 +261,7 @@ def _expert_kinematics(
     x = np.where(np.isfinite(x), x, np.interp(np.arange(n), np.where(np.isfinite(x))[0], x[np.isfinite(x)])) if np.isnan(x).any() else x
     y = np.where(np.isfinite(y), y, np.interp(np.arange(n), np.where(np.isfinite(y))[0], y[np.isfinite(y)])) if np.isnan(y).any() else y
 
-    window = _odd(max(5, n // 30))
+    window = 1
 
     dx = np.gradient(x)
     dy = np.gradient(y)
@@ -270,7 +270,6 @@ def _expert_kinematics(
     denom = (dx * dx + dy * dy) ** 1.5
     kappa = np.zeros_like(denom, dtype=float)
     np.divide(dx * ddy - dy * ddx, denom, out=kappa, where=denom > 1e-9)
-    kappa = _moving_average(kappa, window)
 
     return x, y, dx, dy, kappa, window
 
@@ -305,7 +304,7 @@ def _detect_expert_phases(
     x_ref, y_ref, dx, dy, kappa, window = kin
     n = len(segment)
 
-    # Mask edge samples — convolution edge bias makes them unreliable for peaks.
+    # Keep the mask structure explicit; smoothing is disabled for expert phases.
     edge = window // 2
     mask = np.zeros(n, dtype=bool)
     mask[edge: n - edge] = True

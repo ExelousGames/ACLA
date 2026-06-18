@@ -187,5 +187,4 @@ def build_preflight_context(
         query_specs=DETAILED_PREFLIGHT_QUERY_SPECS,
         parent_main_labels=parent_main_labels,
         extra_query_terms=extra_query_terms,
-        strict_query_errors=True,
     )
