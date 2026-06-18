@@ -90,7 +90,7 @@ def _preflight_tags_from_request(request: Any) -> list[str]:
         if not isinstance(content, dict):
             continue
         tags = content.get("tool_output_tags") or []
-        return [str(tag) for tag in tags if str(tag).strip()][:40]
+        return [str(tag) for tag in tags if str(tag).strip()][:80]
     return []
 
 

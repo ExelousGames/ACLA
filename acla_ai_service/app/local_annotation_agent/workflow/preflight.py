@@ -89,10 +89,12 @@ _TAG_KEYS = {
     "parent",
     "recommended_label",
     "role",
+    "semantic_tags",
     "segment_type_role",
     "shape_key",
     "significance",
     "starts_near_zero",
+    "tags",
     "total_change_direction",
     "total_change_domain_direction",
     "total_change_is_label_significant",
@@ -123,6 +125,7 @@ def build_preflight_context(
     eligible_behavior_label_ids: Optional[Sequence[str]] = None,
     fixed_label_ids: Optional[Sequence[str]] = None,
     extra_query_terms: Optional[Sequence[str]] = None,
+    strict_query_errors: bool = False,
 ) -> PreflightContext:
     s, e = int(start), int(end)
     if e <= s:
@@ -132,13 +135,13 @@ def build_preflight_context(
     selected_query_specs = tuple(query_specs or PREFLIGHT_QUERY_SPECS)
     tool_outputs = [
         *_run_tools(df, s, e, selected_tool_ids),
-        *_run_queries(df, s, e, selected_query_specs),
+        *_run_queries(df, s, e, selected_query_specs, strict=strict_query_errors),
     ]
     tags = _dedupe(
         tag
         for tool_id, content in tool_outputs
         for tag in [f"tool:{tool_id}", *_tags(content)]
-    )[:80]
+    )[:160]
     evidence = _evidence_text(
         flow=flow,
         start=s,
@@ -265,6 +268,8 @@ def _run_queries(
     start: int,
     end: int,
     query_specs: Sequence[Dict[str, Any]],
+    *,
+    strict: bool = False,
 ) -> List[Tuple[str, Dict[str, Any]]]:
     from app.shared.annotation_agent_tools import build_graph, run_pipeline_query
 
@@ -275,6 +280,11 @@ def _run_queries(
         query_id = str(spec["query_id"])
         table = build_graph(graph_id, df)
         if table is None:
+            if strict:
+                raise RuntimeError(
+                    f"annotation preflight: required query {tool_id!r} cannot "
+                    f"build `{graph_id}` graph table"
+                )
             out.append((
                 tool_id,
                 {
@@ -294,6 +304,11 @@ def _run_queries(
         table = _preflight_query_table(table, start, end)
         query_range = _preflight_query_range(table, start, end)
         if query_range is None:
+            if strict:
+                raise RuntimeError(
+                    f"annotation preflight: required query {tool_id!r} has no "
+                    f"rows overlapping range [{int(start)}, {int(end)}]"
+                )
             out.append((
                 tool_id,
                 {
@@ -320,11 +335,175 @@ def _run_queries(
             "query_id": query_id,
             "params": params,
             "result": payload,
+            "semantic_tags": _query_semantic_tags(spec, payload),
         }
         if error:
+            if strict:
+                raise RuntimeError(
+                    f"annotation preflight: required query {tool_id!r} failed: "
+                    f"{error}"
+                )
             content["error"] = error
         out.append((tool_id, content))
     return out
+
+
+def _query_semantic_tags(
+    spec: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> List[str]:
+    tags: List[str] = [
+        str(tag).strip()
+        for tag in spec.get("tags", [])
+        if str(tag).strip()
+    ]
+    result = payload if isinstance(payload, dict) else {}
+    extra = result.get("extra")
+    if isinstance(extra, dict):
+        for key in (
+            "verdict",
+            "total_change_domain_direction",
+            "end_change_domain_direction",
+            "end_trend_change",
+            "domain_direction",
+            "significance",
+        ):
+            value = extra.get(key)
+            if value is not None:
+                tags.append(str(value))
+        _append_zero_tags(tags, extra.get("near_zero_summary"))
+        _append_zero_tags(tags, extra.get("end_near_zero_summary"))
+
+    query_id = str(spec.get("query_id") or "")
+    params = spec.get("params") if isinstance(spec.get("params"), dict) else {}
+    column = str(params.get("column") or "")
+    if query_id == "find_extremum":
+        tags.extend(_extremum_tags(column, result.get("value")))
+    elif query_id == "compute_slope":
+        tags.extend(_slope_tags(column, extra if isinstance(extra, dict) else {}))
+    elif query_id == "find_threshold_crossing":
+        tags.extend(_threshold_crossing_tags(result.get("samples")))
+    elif query_id == "find_dips_on_main_slope":
+        samples = result.get("samples") or []
+        if isinstance(samples, list) and samples:
+            tags.append("modulation dip")
+            tags.append(f"{column} dip detected".strip())
+
+    return _dedupe(tags)[:24]
+
+
+def _append_zero_tags(tags: List[str], summary: Any) -> None:
+    if not isinstance(summary, dict):
+        return
+    if summary.get("starts_near_zero") is True:
+        tags.append("starts near zero")
+    if summary.get("ends_near_zero") is True:
+        tags.append("ends near zero")
+    if summary.get("moves_toward_zero") is True:
+        tags.append("moves toward zero")
+        tags.append("recovery toward expert line")
+
+
+def _extremum_tags(column: str, value: Any) -> List[str]:
+    if not isinstance(value, (int, float)):
+        return []
+    if column == "trajectory_offset":
+        if value >= 0.5:
+            return ["wider than expert", "trajectory offset positive"]
+        if value <= -0.5:
+            return ["tighter than expert", "trajectory offset negative"]
+    if column == "speed_difference":
+        tags = ["expert faster than player"] if value >= 5 else []
+        if value <= -5:
+            tags.append("player faster than expert")
+        if abs(value) > 20:
+            tags.append("large speed gap over 20")
+        return tags
+    if column == "slip_balance":
+        if value >= 0.02:
+            return ["oversteer", "rear slip dominant"]
+        if value <= -0.02:
+            return ["understeer", "front slip dominant"]
+    if column == "driver_push_to_limit":
+        if value >= 1.0:
+            return ["over-limit spike", "tire sustained over peak grip"]
+        if value <= 0.5:
+            return ["sustained low grip utilisation"]
+    if column in {"Physics_brake", "expert_optimal_brake"}:
+        return ["peak brake pressure"]
+    if column in {"Physics_gas", "expert_optimal_throttle"}:
+        return ["peak throttle pressure"]
+    if column in {"Physics_gear", "expert_optimal_gear"}:
+        return ["gear selection"]
+    return []
+
+
+def _slope_tags(column: str, extra: Dict[str, Any]) -> List[str]:
+    domain = str(extra.get("total_change_domain_direction") or "")
+    tags: List[str] = []
+    if column == "trajectory_offset":
+        if domain == "moving_wider":
+            tags.extend([
+                "moving toward positive",
+                "widening",
+                "trajectory moving wider",
+            ])
+        elif domain == "moving_tighter":
+            tags.extend([
+                "moving toward negative",
+                "tightening",
+                "trajectory moving tighter",
+            ])
+    elif column == "speed_difference":
+        if domain == "speed_gap_decreasing":
+            tags.append("speed gap closing")
+        elif domain == "speed_gap_increasing":
+            tags.append("speed gap growing")
+    elif column in {"Physics_speed_kmh", "expert_optimal_speed"}:
+        if domain == "rising":
+            tags.append("acceleration onset")
+        elif domain == "falling":
+            tags.append("deceleration onset")
+    return tags
+
+
+def _threshold_crossing_tags(samples: Any) -> List[str]:
+    if not isinstance(samples, list):
+        return []
+    by_column = {
+        str(sample.get("column") or ""): sample
+        for sample in samples
+        if isinstance(sample, dict)
+    }
+    pairs = [
+        (
+            "expert_optimal_brake",
+            "Physics_brake",
+            "brake initiation onset",
+        ),
+        (
+            "expert_optimal_throttle",
+            "Physics_gas",
+            "throttle application onset",
+        ),
+    ]
+    tags: List[str] = []
+    for expert_col, player_col, phrase in pairs:
+        expert = by_column.get(expert_col)
+        player = by_column.get(player_col)
+        if not expert or not player:
+            continue
+        expert_iloc = expert.get("iloc")
+        player_iloc = player.get("iloc")
+        if not isinstance(expert_iloc, int) or not isinstance(player_iloc, int):
+            continue
+        if player_iloc < expert_iloc:
+            tags.append(f"{phrase} earlier than expert")
+        elif player_iloc > expert_iloc:
+            tags.append(f"{phrase} later than expert")
+        else:
+            tags.append(f"{phrase} aligned with expert")
+    return tags
 
 
 def _preflight_query_table(table, start: int, end: int):
