@@ -115,9 +115,6 @@ function MapCard({ dataKey, name, session_count }: MapOption) {
         <button className="Button" onClick={mapSelected}>
             <Card >
                 <Flex align="center" gap="3">
-                    <Box asChild width="60px" height="60px">
-                        <img />
-                    </Box>
                     <Box flexGrow="1" width="0">
                         <Text as="div" size="2" truncate>
                             {name}

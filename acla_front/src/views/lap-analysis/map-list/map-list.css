@@ -89,16 +89,6 @@
     color: var(--lp-gray) !important;
 }
 
-/* Placeholder image area — give it a subtle hud look until real images load */
-.MapListScrollAreaRoot .Button img {
-    width: 60px;
-    height: 60px;
-    border-radius: var(--lp-radius-sm);
-    background: var(--lp-green-dim);
-    border: 1px solid var(--lp-border);
-    object-fit: cover;
-}
-
 /* Empty state */
 .MapListEmptyState {
     display: flex;
