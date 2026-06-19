@@ -15,7 +15,7 @@ a single label proposal.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.shared.label_hierarchy import normalize_grouped_label_ids
 from app.shared.labels import LABEL_MAPPING
@@ -102,25 +102,6 @@ def lap_annotation_prompt(session_context: str = "practice") -> str:
     return "\n".join(lines)
 
 
-def _verified_label_ids_from_state(state: Dict[str, Any]) -> List[str]:
-    """Pull verified label IDs out of the attachment pool."""
-    pool = state.get("attachment_pool", {}) or {}
-    out: List[str] = []
-    for name in sorted(pool.keys()):
-        if not name.endswith(".verified_labels"):
-            continue
-        att = pool[name]
-        content = getattr(att, "content", None)
-        if not isinstance(content, list):
-            continue
-        for entry in content:
-            if isinstance(entry, dict):
-                lid = entry.get("label_id")
-                if isinstance(lid, str):
-                    out.append(lid)
-    return out
-
-
 LOGGER = logging.getLogger(__name__)
 
 WHOLE_RANGE_LABEL_RULE = (
@@ -134,7 +115,8 @@ LAP_REASONING_NOTE_RULE = (
     "Write `reasoning` as a longer human annotation note: 4-6 concise "
     "sentences covering the final iloc range, selected label fit, key "
     "telemetry values or trends, deterministic tool verdicts, and why "
-    "competing labels were omitted."
+    "competing labels were omitted. For time-delta prose, say "
+    "`losing time run` and avoid ranking/adjective phrasing."
 )
 
 REQUIRED_BEHAVIOR_PARENT_LABEL_IDS = ("O", "OD", "PS", "RM", "MSP", "MSR")
@@ -241,65 +223,6 @@ def _required_behavior_parent_label_rule(eligible_label_ids: List[str]) -> str:
     )
 
 
-def _planner_opening(session_context: str) -> str:
-    if session_context == "racing":
-        return (
-            "You are a racing telemetry analyst planning the analysis for "
-            "ONE opponent-interaction range of a lap. The deterministic "
-            "splitter handed you a fixed iloc boundary around a close "
-            "engagement. The synthesizer downstream will pick from the "
-            "eligible racing behavior labels by matching telemetry against "
-            "each candidate label's `characteristics` block in the skill. "
-            "Your job here is to plan the steps that gather that evidence."
-        )
-    return (
-        "You are a racing telemetry analyst planning the analysis for "
-        "ONE circuit-section range of a solo/practice lap. The deterministic "
-        "splitter handed you a fixed iloc boundary. The synthesizer "
-        "downstream will pick from the eligible practice behavior labels by "
-        "matching telemetry against each candidate label's `characteristics` "
-        "block in the skill. Your job here is to plan the steps that gather "
-        "that evidence."
-    )
-
-
-def _planner_task_context(session_context: str) -> str:
-    if session_context == "racing":
-        return (
-            "  2. gather full-range opponent context with "
-            "`classify_opponent_interaction` as the mathematical label gate, "
-            "including confidence-aware `label_gates` so low / weak results "
-            "trigger extra opponent-path evidence; use "
-            "`find_nearest_opponent` / `query_opponent_trajectory` when the "
-            "primary slot's detailed path decides the technique, and"
-        )
-    return (
-        "  2. gather technical driving evidence with `trajectory_offset`, "
-        "`expert_time_difference`, brake / throttle / speed, and "
-        "deterministic telemetry queries so time-loss, recovery, or pit "
-        "labels are supported by the whole range, and"
-    )
-
-
-def _synth_opening(session_context: str) -> str:
-    if session_context == "racing":
-        return (
-            "You are a racing telemetry analyst producing the final "
-            "annotation for ONE opponent-interaction lap range. The "
-            "describe_graphs steps captured the evidence below; pick the "
-            "eligible racing parent label by matching the interaction "
-            "window's telemetry against each candidate label's "
-            "`characteristics` block in the skill."
-        )
-    return (
-        "You are a racing telemetry analyst producing the final annotation "
-        "for ONE practice / solo lap range. The describe_graphs steps "
-        "captured the evidence below; pick the eligible practice parent "
-        "label by matching the section's telemetry against each candidate "
-        "label's `characteristics` block in the skill."
-    )
-
-
 def _segment_type_label_rule() -> str:
     return str(
         skills.get("sub_label_annotation.category_guidelines.Segment Type", "")
@@ -333,44 +256,6 @@ def _preselected_interaction_section_id(
         ):
             section_ids.append(section_id)
     return section_ids[0] if len(section_ids) == 1 else None
-
-
-def _range_section_line(
-    *,
-    section_id: str,
-    section_name: str,
-    section_split_basis: Optional[str],
-    opponent_interaction: Optional[dict],
-    for_local_synth: bool = False,
-) -> str:
-    preselected_section_id = _preselected_interaction_section_id(opponent_interaction)
-    if preselected_section_id:
-        preselected_name = LABEL_MAPPING.get(
-            preselected_section_id, preselected_section_id,
-        )
-        prefix = "- circuit_section id" if for_local_synth else "- circuit_section"
-        return (
-            f"{prefix}: `{preselected_section_id}` ({preselected_name}) "
-            "from the splitter's opponent sub-segment context; include it "
-            "in label_ids."
-        )
-    if "interaction" in str(section_split_basis or ""):
-        return (
-            "- circuit_section id: not preselected for this interaction "
-            "window; call `locate_circuit_section` if a named section label "
-            "is needed."
-            if for_local_synth
-            else "- racing interaction window: circuit_section is not "
-            "preselected; use `locate_circuit_section` only as context."
-        )
-    return (
-        f"- circuit_section id: `{section_id}` "
-        "(located by the splitter; include it in label_ids)"
-        if for_local_synth
-        else f"- circuit_section: `{section_id}` ({section_name}) "
-        "— located by the splitter; the synthesizer emits it (with the "
-        "circuit) as a label."
-    )
 
 
 def _interaction_focus_block(
@@ -456,232 +341,6 @@ def _interaction_focus_block(
         "range has pit-lane procedure evidence.\n"
         f"{target_block}"
     )
-
-
-# ---------------------------------------------------------------------------
-# Local-backend planner + synth prompts
-# ---------------------------------------------------------------------------
-
-
-def _local_planner_prompt(
-    *,
-    lap_start: int,
-    lap_end: int,
-    section_id: str,
-    section_start: int,
-    section_end: int,
-    circuit_id: str,
-    section_split_basis: Optional[str],
-    opponent_interaction: Optional[dict],
-) -> str:
-    from app.shared.annotation_agent_tools import (
-        AGENT_GRAPH_DEFINITIONS,
-        PIPELINE_TOOL_DEFINITIONS,
-    )
-
-    section_name = LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
-    session_context = _session_context(section_split_basis, opponent_interaction)
-    eligible_labels = list(_eligible_behavior_label_ids(session_context))
-
-    graph_catalogue = ", ".join(
-        f"`{gdef['id']}` ({gdef['title']})"
-        for gdef in AGENT_GRAPH_DEFINITIONS
-    )
-    tool_catalogue_lines = [
-        f"- `{t['id']}` — {t['label']}: {t['description']}"
-        for t in PIPELINE_TOOL_DEFINITIONS
-    ]
-
-    lap_skill_block = lap_annotation_prompt(session_context)
-    interaction_focus = _interaction_focus_block(
-        section_split_basis, opponent_interaction,
-    )
-
-    parts = [
-        _planner_opening(session_context),
-        "",
-        "#### Lap context",
-        f"- Circuit: {circuit_id}",
-        f"- Lap range: [{lap_start}, {lap_end}] (length {lap_end - lap_start})",
-        "",
-        "#### Range under review",
-        f"- detected session mode: {session_context}",
-        f"- eligible behavior parent labels: {_label_set_text(eligible_labels)}",
-        _range_section_line(
-            section_id=section_id,
-            section_name=section_name,
-            section_split_basis=section_split_basis,
-            opponent_interaction=opponent_interaction,
-        ),
-        f"- split iloc boundary: [{section_start}, {section_end}] "
-        f"(length {section_end - section_start})",
-        f"- split basis: {section_split_basis or 'circuit_section'}",
-        interaction_focus,
-        "",
-        lap_skill_block,
-        "",
-        "#### Available Step-Solver Agents",
-        "The Required Upfront Annotation Preflight block above has already "
-        "run the standard deterministic tools and hybrid semantic label "
-        "search. Plan only graph-description or targeted verifier work "
-        "needed to refine that context.",
-        "Each plan step is dispatched to ONE sub-agent.",
-        "- `describe_graphs` — renders the listed graphs over the split "
-        "boundary and writes one observation paragraph per graph.",
-        "- `label_verifier` — embedding-similarity filter against the "
-        "candidate labels using the describe_graphs observations. End your "
-        "plan with one label_verifier step.",
-        "",
-        "#### Available Graph IDs",
-        graph_catalogue,
-        "",
-        "#### Available Pre-Compute Tools",
-        "The standard tool group already ran in preflight. Add tools here "
-        "only for a concrete gap discovered after reading that package.",
-        *tool_catalogue_lines,
-        "",
-        "#### Task",
-        "Plan describe_graphs steps that start from preflight and gather "
-        "only the remaining evidence needed to:",
-        "  1. score only the eligible behavior parent labels "
-        f"{_label_set_text(eligible_labels)} against "
-        "its `characteristics` block in the skill, and",
-        _planner_task_context(session_context),
-        "  3. optionally identify the base segment shape and corner shape "
-        "if the segment-type picks would be unambiguous, while recording "
-        "entry/apex/exit altitude only as subsegment evidence.",
-        "Keep the plan tight — typically 1-3 describe_graphs steps plus a "
-        "label_verifier. `trajectory_offset` + `time_delta` are the two "
-        "diagnostic graphs called out by the skill; add `altitude_profile` "
-        "and `measure_segment_shape` only when preflight leaves segment "
-        "shape or altitude unresolved. For corner-entry or corner-exit segment "
-        "completeness, include brake / throttle graphs and deterministic "
-        "queries that establish the full driver-vs-expert action bounds "
-        "required by `lap_annotation.global_rules_by_session.common`.",
-        "",
-        "Plan format: JSON object with a single key \"steps\". Each step:",
-        "  - \"step_id\": integer (1, 2, 3, ...).",
-        "  - \"agent\": one of `describe_graphs` or `label_verifier`.",
-        "  - \"description\": short string stating the goal of the step.",
-        "  - \"requested_graphs\": list of graph IDs (describe_graphs only).",
-        "  - \"tools\": list of pre-compute tool IDs (empty `[]` for none).",
-        "",
-        "Example:",
-        "```json",
-        "{",
-        '  "steps": [',
-        '    {"step_id": 1, "agent": "describe_graphs", "description": '
-        '"Confirm boundary + full entry/exit brake/throttle action bounds.", "requested_graphs": '
-        '["trajectory_offset", "brake", "throttle"], "tools": '
-        '["compute_expert_phases"]},',
-        '    {"step_id": 2, "agent": "describe_graphs", "description": '
-        '"Measure trajectory and altitude for segment-type evidence.", "requested_graphs": '
-        '["trajectory_detailed", "altitude_profile"], "tools": '
-        '["measure_segment_shape"]},',
-        '    {"step_id": 3, "agent": "label_verifier", "description": '
-        '"Shortlist labels by similarity to observations.", '
-        '"requested_graphs": [], "tools": []}',
-        "  ]",
-        "}",
-        "```",
-    ]
-    return "\n".join(parts)
-
-
-def _local_synth_prompts(
-    *,
-    lap_start: int,
-    lap_end: int,
-    section_id: str,
-    section_start: int,
-    section_end: int,
-    circuit_id: str,
-    section_split_basis: Optional[str],
-    opponent_interaction: Optional[dict],
-    verified_labels: List[str],
-) -> Tuple[str, str]:
-    session_context = _session_context(section_split_basis, opponent_interaction)
-    eligible_labels = list(_eligible_behavior_label_ids(session_context))
-    required_label_rule = _required_behavior_parent_label_rule(eligible_labels)
-    lap_skill_block = lap_annotation_prompt(session_context)
-    interaction_focus = _interaction_focus_block(
-        section_split_basis, opponent_interaction,
-    )
-    verified_inline = (
-        ", ".join(verified_labels) if verified_labels
-        else "(none — emit an empty label_ids array to drop this range)"
-    )
-
-    intro = "\n".join([
-        _synth_opening(session_context),
-        "",
-        "#### Range under review",
-        f"- detected session mode: {session_context}",
-        f"- eligible behavior parent labels: {_label_set_text(eligible_labels)}",
-        _range_section_line(
-            section_id=section_id,
-            section_name=LABEL_MAPPING.get(section_id, section_id),
-            section_split_basis=section_split_basis,
-            opponent_interaction=opponent_interaction,
-            for_local_synth=True,
-        ),
-        f"- circuit id: `{circuit_id}` "
-        "(from Static_track; include it in label_ids)",
-        f"- split iloc boundary: [{section_start}, {section_end}]",
-        f"- split basis: {section_split_basis or 'circuit_section'}",
-        f"- lap range: [{lap_start}, {lap_end}]",
-        interaction_focus,
-        "",
-        lap_skill_block,
-    ])
-
-    outro = "\n".join([
-        "#### Candidate label IDs",
-        f"The shortlist retrieved for this section is: {verified_inline}. "
-        "Pick the parent label(s) from this shortlist by matching the "
-        "section's telemetry against each candidate's `characteristics` "
-        "block in the skill. Every saved segment must include at least "
-        f"one required behavior parent from {_label_set_text(eligible_labels)}; "
-        "circuit, circuit_section, segment-type, sub-label, and EA labels "
-        "do not satisfy this requirement. Segment-type picks are OPTIONAL — include "
-        "only lap-parent-allowed labels whose base shape or corner-shape "
-        "evidence is unambiguous. Do not include any label whose catalog "
-        "metadata says `lap_parent_allowed: false`. If no required "
-        "behavior parent in the shortlist fits the whole final range, "
-        "return an empty `label_ids` array to drop this range. "
-        f"{_mode_exclusion_rule(session_context)}",
-        "",
-        "#### Whole-range fit rule",
-        WHOLE_RANGE_LABEL_RULE,
-        "",
-        "#### Output format",
-        "Respond with ONE JSON object only — no surrounding prose. Schema:",
-        "```json",
-        "{",
-        '  "label_ids": ["<id>", ...],',
-        '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and range-fit rationale>"',
-        "}",
-        "```",
-        "Hard rules:",
-        f"- The submitted range is fixed to [{section_start}, {section_end}]; "
-        "submit labels only for that exact range.",
-        f"- {required_label_rule}",
-        "- Every main / segment-type / sub label_id must come from the shortlist "
-        "above; additionally include the circuit id. Include a "
-        "circuit_section id only when it was listed under 'Range under "
-        "review' or returned by `locate_circuit_section`.",
-        f"- {WHOLE_RANGE_LABEL_RULE}",
-        "- Apply the segment/action model and segment completeness rules "
-        "from `lap_annotation.action_model` and "
-        "`lap_annotation.global_rules_by_session.common`. Do not treat "
-        "complete action-group evidence as optional sub-label evidence.",
-        f"- {LAP_REASONING_NOTE_RULE}",
-        f"- {_segment_type_label_rule()}",
-        "- An empty label_ids array is the valid 'drop this section' signal, "
-        "not a saved annotation without a required behavior parent.",
-    ])
-
-    return intro, outro
 
 
 # ---------------------------------------------------------------------------
@@ -804,7 +463,7 @@ def _tool_agent_task_prompt(
         f"- {LAP_REASONING_NOTE_RULE}\n" +
         mode_submit_rule +
         "- For time-delta and offset evidence, cite deterministic tool "
-        "verdict fields (unit, label-significance, end-window trend); do not "
+        "verdict fields (unit and end-window trend); do not "
         "create strength judgments from raw numbers.\n"
         f"- {_segment_type_label_rule()}\n"
         "- Sub-labels require their parent main label in `label_ids`.\n"
@@ -836,6 +495,11 @@ def build_request(
     callbacks: Optional[AgentCallbacks] = None,
     session_id: str = "",
 ) -> AgentRequest:
+    if prompt_mode != "tool_agent":
+        raise ValueError(
+            f"lap flow only supports prompt_mode='tool_agent'; got {prompt_mode!r}"
+        )
+
     config = config or ProviderConfig(provider_id=provider_id)
     callbacks = callbacks or NoopCallbacks()
 
@@ -881,58 +545,24 @@ def build_request(
         ],
     )
 
-    # parent_start/end on the request are the section range — sub-agents
-    # like describe_graphs operate over this window.
     parent_start = int(section_start)
     parent_end = int(section_end)
 
-    if prompt_mode == "local_pipeline":
-        planner_prompt = _local_planner_prompt(
-            lap_start=lap_start,
-            lap_end=lap_end,
-            section_id=section_id,
-            section_start=section_start,
-            section_end=section_end,
-            circuit_id=circuit_id,
-            section_split_basis=section_split_basis,
-            opponent_interaction=opponent_interaction,
-        )
-        planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
-        synth_prompt: Callable[[Dict[str, Any]], Tuple[str, str]] = (
-            lambda s: _local_synth_prompts(
-                lap_start=lap_start,
-                lap_end=lap_end,
-                section_id=section_id,
-                section_start=section_start,
-                section_end=section_end,
-                circuit_id=circuit_id,
-                section_split_basis=section_split_basis,
-                opponent_interaction=opponent_interaction,
-                verified_labels=_verified_label_ids_from_state(s),
-            )
-        )
-        extra_state = {
-            "root_agent": "annotation_root",
-            "annotation_session_context": session_context,
-            "eligible_behavior_label_ids": eligible_labels,
-        }
-    else:
-        planner_prompt = _tool_agent_task_prompt(
-            lap_start=lap_start,
-            lap_end=lap_end,
-            section_start=section_start,
-            section_end=section_end,
-            section_split_basis=section_split_basis,
-            opponent_interaction=opponent_interaction,
-        )
-        planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
-        synth_prompt = lambda _state: ("", "")
-        extra_state = {
-            "root_agent": "annotation_root",
-            "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
-            "annotation_session_context": session_context,
-            "eligible_behavior_label_ids": eligible_labels,
-        }
+    planner_prompt = _tool_agent_task_prompt(
+        lap_start=lap_start,
+        lap_end=lap_end,
+        section_start=section_start,
+        section_end=section_end,
+        section_split_basis=section_split_basis,
+        opponent_interaction=opponent_interaction,
+    )
+    planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
+    synth_prompt = lambda _state: ("", "")
+    extra_state = {
+        "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
+        "annotation_session_context": session_context,
+        "eligible_behavior_label_ids": eligible_labels,
+    }
 
     return AgentRequest(
         provider_id=provider_id,
@@ -964,8 +594,7 @@ def parse(
 ) -> LapAnnotationResult:
     """Decode the raw response into a LapAnnotationResult.
 
-    ``prompt_mode="local_pipeline"`` expects the JSON schema with label_ids
-    + reasoning. ``prompt_mode="tool_agent"`` reads the submit payload.
+    ``prompt_mode="tool_agent"`` reads the submitted tool-agent payload.
 
     Returns only what the LLM committed to — including the circuit and
     circuit_section ids the LLM picked via ``get_circuit_id`` /
@@ -974,69 +603,17 @@ def parse(
     session_context = _session_context(section_split_basis, opponent_interaction)
     eligible_labels = list(_eligible_behavior_label_ids(session_context))
 
-    if prompt_mode == "tool_agent":
-        return _parse_claude(
-            response, section_id, section_start, section_end, circuit_id,
-            opponent_interaction, eligible_labels,
+    if prompt_mode != "tool_agent":
+        raise ValueError(
+            f"lap flow only supports prompt_mode='tool_agent'; got {prompt_mode!r}"
         )
-    return _parse_local(
+    return _parse_tool_agent(
         response, section_id, section_start, section_end, circuit_id,
         opponent_interaction, eligible_labels,
     )
 
 
-def _parse_local(
-    response: AgentResponse,
-    section_id: str,
-    section_start: int,
-    section_end: int,
-    circuit_id: Optional[str],
-    opponent_interaction: Optional[dict],
-    eligible_behavior_label_ids: List[str],
-) -> LapAnnotationResult:
-    raw = response.raw_response or ""
-    parsed = parse_json_response(raw)
-    if not parsed:
-        raise RuntimeError(
-            f"lap flow (local): synth response was not valid JSON. "
-            f"First 300 chars: {raw[:300]!r}"
-        )
-    _reject_unknown_output_fields(parsed, "local")
-
-    new_start = int(section_start)
-    new_end = int(section_end)
-    if (new_end - new_start) < 5:
-        raise RuntimeError(
-            f"lap flow (local): split section range too short "
-            f"({new_end - new_start} ilocs) — minimum 5"
-        )
-
-    raw_label_ids = parsed.get("label_ids") or []
-    cleaned, rejected = _clean_label_ids(
-        raw_label_ids,
-        eligible_behavior_label_ids=eligible_behavior_label_ids,
-    )
-    cleaned = _with_preselected_interaction_labels(
-        cleaned, circuit_id, opponent_interaction,
-    )
-
-    reasoning = str(parsed.get("reasoning") or "")
-
-    return LapAnnotationResult(
-        section_id=section_id,
-        start_index=new_start,
-        end_index=new_end,
-        label_ids=cleaned,
-        reasoning=reasoning or raw or "(no reasoning)",
-        submitted=True,
-        rejected_proposals=rejected,
-        rendered_images=list(response.graph_images),
-        transcript=raw,
-        tool_calls=0,
-    )
-
-
-def _parse_claude(
+def _parse_tool_agent(
     response: AgentResponse,
     section_id: str,
     section_start: int,
@@ -1052,7 +629,7 @@ def _parse_claude(
     rejected: List[Dict[str, Any]] = []
     reasoning = ""
     if parsed:
-        _reject_unknown_output_fields(parsed, "claude", extra_allowed_keys={"summary"})
+        _reject_unknown_output_fields(parsed, "tool_agent", extra_allowed_keys={"summary"})
         raw_label_ids = parsed.get("label_ids") or []
         cleaned, rejected = _clean_label_ids(
             raw_label_ids,
@@ -1066,7 +643,7 @@ def _parse_claude(
     new_start, new_end = int(section_start), int(section_end)
     if (new_end - new_start) < 5:
         raise RuntimeError(
-            f"lap flow (claude): split section range too short "
+            f"lap flow (tool_agent): split section range too short "
             f"({new_end - new_start} ilocs) — minimum 5"
         )
 

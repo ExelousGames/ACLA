@@ -52,18 +52,6 @@ SHARED_PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
         "query_id": "find_extremum",
         "params": {"column": "trajectory_offset", "kind": "min"},
     },
-    {
-        "tool_id": "query_telemetry.find_extremum.speed_difference.max",
-        "graph_id": "speed_delta",
-        "query_id": "find_extremum",
-        "params": {"column": "speed_difference", "kind": "max"},
-    },
-    {
-        "tool_id": "query_telemetry.find_extremum.speed_difference.min",
-        "graph_id": "speed_delta",
-        "query_id": "find_extremum",
-        "params": {"column": "speed_difference", "kind": "min"},
-    },
 )
 PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = SHARED_PREFLIGHT_QUERY_SPECS
 
@@ -111,6 +99,119 @@ class PreflightContext:
     prompt_block: str
     attachments: List[Attachment]
     label_candidates: List[Dict[str, Any]]
+
+
+_GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
+    "time_delta": {
+        "target": "time gap to expert",
+        "columns": ("expert_time_difference",),
+        "include_zero_tags": False,
+        "value_tags": {
+            "losing_time_run": ("gap grows", "time loss run"),
+            "recovery_run": ("gap shrinks", "time recovery run"),
+            "losing_time_and_recovery_runs": (
+                "gap grows",
+                "gap shrinks",
+                "time loss and recovery runs",
+            ),
+            "constant_offset_only": ("constant carried time gap",),
+            "no_rate_change": ("gap holds stable",),
+            "losing_time": ("gap grows", "player losing time"),
+            "gaining_time": ("gap shrinks", "player gaining time"),
+            "weakening_at_end": ("time loss rate weakening",),
+            "strengthening_at_end": ("time loss rate strengthening",),
+            "flattening_at_end": ("time gap flattening at end",),
+            "reversing_to_falling_at_end": ("time gap reversing to recovery",),
+            "reversing_to_rising_at_end": ("time gap reversing to loss",),
+        },
+        "extra_keys": (
+            "verdict",
+            "total_change_domain_direction",
+            "end_change_domain_direction",
+            "end_trend_change",
+        ),
+    },
+    "trajectory_offset": {
+        "target": "trajectory offset",
+        "columns": ("trajectory_offset",),
+        "include_zero_tags": True,
+        "value_tags": {
+            "moving_wider": (
+                "moving toward positive",
+                "widening",
+                "trajectory moving wider",
+            ),
+            "moving_tighter": (
+                "moving toward negative",
+                "tightening",
+                "trajectory moving tighter",
+            ),
+            "stable": ("aligned",),
+            "strengthening_at_end": ("trajectory divergence strengthening at end",),
+            "weakening_at_end": ("trajectory divergence weakening at end",),
+            "flattening_at_end": ("trajectory offset flattening at end",),
+            "reversing_to_falling_at_end": ("trajectory offset reversing tighter",),
+            "reversing_to_rising_at_end": ("trajectory offset reversing wider",),
+        },
+        "extra_keys": (
+            "verdict",
+            "total_change_domain_direction",
+            "end_change_domain_direction",
+            "end_trend_change",
+            "domain_direction",
+        ),
+    },
+    "speed_delta": {
+        "target": "speed delta",
+        "columns": ("speed_difference",),
+        "include_zero_tags": True,
+        "value_tags": {
+            "speed_gap_increasing": ("speed gap growing",),
+            "speed_gap_decreasing": ("speed gap closing",),
+            "stable": ("speed match",),
+            "strengthening_at_end": ("speed gap change strengthening at end",),
+            "weakening_at_end": ("speed gap change weakening at end",),
+            "flattening_at_end": ("speed gap flattening at end",),
+        },
+        "extra_keys": (
+            "total_change_domain_direction",
+            "end_change_domain_direction",
+            "end_trend_change",
+            "domain_direction",
+        ),
+    },
+    "speed": {
+        "target": "player speed",
+        "columns": ("Physics_speed_kmh", "expert_optimal_speed"),
+        "include_zero_tags": False,
+        "value_tags": {
+            "rising": ("acceleration onset",),
+            "falling": ("deceleration onset",),
+            "stable": ("speed stable",),
+        },
+        "extra_keys": ("total_change_direction", "end_change_direction"),
+    },
+    "brake": {
+        "target": "brake input",
+        "columns": ("Physics_brake", "expert_optimal_brake"),
+        "include_zero_tags": False,
+    },
+    "throttle": {
+        "target": "throttle input",
+        "columns": ("Physics_gas", "expert_optimal_throttle"),
+        "include_zero_tags": False,
+    },
+    "trajectory_balance": {
+        "target": "slip balance",
+        "columns": ("slip_balance",),
+        "include_zero_tags": False,
+    },
+    "push_limit": {
+        "target": "grip utilisation",
+        "columns": ("driver_push_to_limit",),
+        "include_zero_tags": False,
+    },
+}
 
 
 def build_preflight_context(
@@ -346,6 +447,7 @@ def _run_queries(
             "query_id": query_id,
             "params": params,
             "result": payload,
+            "semantic_target": _query_semantic_target(spec),
             "semantic_tags": _query_semantic_tags(spec, payload),
         }
         if error:
@@ -363,33 +465,30 @@ def _query_semantic_tags(
     spec: Dict[str, Any],
     payload: Dict[str, Any],
 ) -> List[str]:
-    tags: List[str] = [
-        str(tag).strip()
-        for tag in spec.get("tags", [])
-        if str(tag).strip()
-    ]
-    result = payload if isinstance(payload, dict) else {}
-    extra = result.get("extra")
-    if isinstance(extra, dict):
-        for key in (
-            "verdict",
-            "total_change_domain_direction",
-            "end_change_domain_direction",
-            "end_trend_change",
-            "domain_direction",
-            "significance",
-        ):
-            value = extra.get(key)
-            if value is not None:
-                tags.append(str(value))
-        _append_zero_tags(tags, extra.get("near_zero_summary"))
-        _append_zero_tags(tags, extra.get("end_near_zero_summary"))
-
     query_id = str(spec.get("query_id") or "")
     params = spec.get("params") if isinstance(spec.get("params"), dict) else {}
     column = str(params.get("column") or "")
+    graph_profile = _query_semantic_profile(spec)
+    tags: List[str] = _query_static_tags(spec, query_id, graph_profile)
+    result = payload if isinstance(payload, dict) else {}
+    extra = result.get("extra")
+    if isinstance(extra, dict):
+        for key in graph_profile.get("extra_keys", ()):
+            value = extra.get(key)
+            tags.extend(_query_value_tags(graph_profile, value))
+        if graph_profile.get("include_zero_tags"):
+            _append_zero_tags(tags, extra.get("near_zero_summary"))
+            _append_zero_tags(tags, extra.get("end_near_zero_summary"))
+
     if query_id == "find_extremum":
         tags.extend(_extremum_tags(column, result.get("value")))
+    elif query_id == "find_trend_runs":
+        tags.extend(
+            _trend_run_tags(
+                graph_profile,
+                extra if isinstance(extra, dict) else {},
+            )
+        )
     elif query_id == "compute_slope":
         tags.extend(_slope_tags(column, extra if isinstance(extra, dict) else {}))
     elif query_id == "find_threshold_crossing":
@@ -401,6 +500,76 @@ def _query_semantic_tags(
             tags.append(f"{column} dip detected".strip())
 
     return _dedupe(tags)[:24]
+
+
+def _query_semantic_profile(spec: Dict[str, Any]) -> Dict[str, Any]:
+    graph_id = str(spec.get("graph_id") or "")
+    profile = dict(_GRAPH_SEMANTIC_PROFILES.get(graph_id, {}))
+    if profile:
+        return profile
+    return {"target": graph_id or "telemetry", "include_zero_tags": False}
+
+
+def _query_semantic_target(spec: Dict[str, Any]) -> str:
+    return str(_query_semantic_profile(spec).get("target") or "telemetry")
+
+
+def _query_static_tags(
+    spec: Dict[str, Any],
+    query_id: str,
+    profile: Dict[str, Any],
+) -> List[str]:
+    tags = [
+        str(tag).strip()
+        for tag in spec.get("tags", [])
+        if str(tag).strip()
+    ]
+    if query_id == "find_threshold_crossing":
+        return [
+            tag
+            for tag in tags
+            if not any(
+                phrase in tag
+                for phrase in (
+                    " earlier than expert",
+                    " later than expert",
+                    " aligned with expert",
+                )
+            )
+        ]
+    if query_id in {"compute_slope", "find_trend_runs"}:
+        outcome_tags = _profile_value_tag_set(profile)
+        tags = [tag for tag in tags if tag not in outcome_tags]
+    return tags
+
+
+def _profile_value_tag_set(profile: Dict[str, Any]) -> set[str]:
+    return {
+        str(tag)
+        for mapped in profile.get("value_tags", {}).values()
+        for tag in mapped
+    }
+
+
+def _query_value_tags(profile: Dict[str, Any], value: Any) -> List[str]:
+    if value is None:
+        return []
+    mapped = profile.get("value_tags", {}).get(str(value))
+    if mapped:
+        return [str(tag) for tag in mapped]
+    return []
+
+
+def _trend_run_tags(profile: Dict[str, Any], extra: Dict[str, Any]) -> List[str]:
+    runs = extra.get("significant_runs")
+    if not isinstance(runs, list):
+        return []
+    return [
+        tag
+        for run in runs
+        if isinstance(run, dict)
+        for tag in _query_value_tags(profile, run.get("domain_direction"))
+    ]
 
 
 def _append_zero_tags(tags: List[str], summary: Any) -> None:
@@ -834,25 +1003,25 @@ def _preflight_trend_runs_summary(
     if not isinstance(extra, dict):
         return None
     unit = extra.get("unit")
-    strongest_losing = extra.get("strongest_losing_time_run")
-    strongest_recovery = extra.get("strongest_recovery_run")
+    selected_losing = extra.get("selected_losing_time_run")
+    selected_recovery = extra.get("selected_recovery_run")
     parts = [
         f"{tool_id}: verdict={extra.get('verdict')}",
     ]
-    if isinstance(strongest_losing, dict):
+    if isinstance(selected_losing, dict):
         parts.append(
-            "strongest_losing_time_run="
-            f"{strongest_losing.get('start_iloc')}->{strongest_losing.get('end_iloc')} "
-            f"delta={strongest_losing.get('delta_value')} {unit}"
+            "selected_losing_time_run="
+            f"{selected_losing.get('start_iloc')}->{selected_losing.get('end_iloc')} "
+            f"delta={selected_losing.get('delta_value')} {unit}"
         )
-    if isinstance(strongest_recovery, dict):
+    if isinstance(selected_recovery, dict):
         parts.append(
-            "strongest_recovery_run="
-            f"{strongest_recovery.get('start_iloc')}->{strongest_recovery.get('end_iloc')} "
-            f"delta={strongest_recovery.get('delta_value')} {unit}"
+            "selected_recovery_run="
+            f"{selected_recovery.get('start_iloc')}->{selected_recovery.get('end_iloc')} "
+            f"delta={selected_recovery.get('delta_value')} {unit}"
         )
     if len(parts) == 1:
-        parts.append("no label-significant trend run")
+        parts.append("no trend run")
     return "; ".join(parts)
 
 

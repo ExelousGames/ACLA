@@ -3369,10 +3369,22 @@ def _canonical_column(column: str) -> str:
     return column
 
 
+_DERIVED_QUERY_COLUMN_GRAPHS = {
+    "trajectory_offset": "trajectory_offset",
+}
+
+
 def _resolve_column(column: str, segment: pd.DataFrame) -> Optional[np.ndarray]:
     if not column:
         return None
+    column = _canonical_column(column)
     if column not in segment.columns:
+        graph_id = _DERIVED_QUERY_COLUMN_GRAPHS.get(column)
+        builder = globals().get("build_graph")
+        if graph_id and callable(builder):
+            table = builder(graph_id, segment)
+            if table is not None and column in table.columns:
+                return table[column].to_numpy(dtype=float)
         return None
     return segment[column].to_numpy(dtype=float)
 
@@ -3935,7 +3947,7 @@ def _query_find_trend_runs(
         r for r in runs
         if r["direction"] in {"rising", "falling"} and r["is_label_significant"]
     ]
-    strongest = (
+    selected_run = (
         max(significant_runs, key=lambda r: abs(float(r["delta_value"])))
         if significant_runs else None
     )
@@ -3950,15 +3962,15 @@ def _query_find_trend_runs(
         and np.nanmean(np.abs(finite_values)) > float(meta["near_zero_abs"])
     )
     if rising and falling:
-        verdict = "significant_losing_time_and_recovery_runs"
+        verdict = "losing_time_and_recovery_runs"
     elif rising:
-        verdict = "significant_losing_time_run"
+        verdict = "losing_time_run"
     elif falling:
-        verdict = "significant_recovery_run"
+        verdict = "recovery_run"
     elif constant_offset_only:
         verdict = "constant_offset_only"
     else:
-        verdict = "no_significant_rate_change"
+        verdict = "no_rate_change"
 
     samples = [
         {
@@ -3974,8 +3986,8 @@ def _query_find_trend_runs(
     ]
 
     return {
-        "iloc": strongest["end_iloc"] if strongest else None,
-        "value": strongest["end_value"] if strongest else None,
+        "iloc": selected_run["end_iloc"] if selected_run else None,
+        "value": selected_run["end_value"] if selected_run else None,
         "samples": samples,
         "extra": {
             "unit": meta["unit"],
@@ -3985,11 +3997,11 @@ def _query_find_trend_runs(
             "constant_offset_only": constant_offset_only,
             "runs": runs,
             "significant_runs": significant_runs,
-            "strongest_losing_time_run": (
+            "selected_losing_time_run": (
                 max(rising, key=lambda r: abs(float(r["delta_value"])))
                 if rising else None
             ),
-            "strongest_recovery_run": (
+            "selected_recovery_run": (
                 max(falling, key=lambda r: abs(float(r["delta_value"])))
                 if falling else None
             ),
@@ -4165,8 +4177,8 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "description": (
             "Piecewise rising, falling, and flat runs in <column> over "
             "<range>. Use this for `expert_time_difference` mistake/recovery "
-            "localization: rising significant runs are where the player loses "
-            "time, falling significant runs are where the player recovers, and "
+            "localization: rising runs are where the player loses "
+            "time, falling runs are where the player recovers, and "
             "flat positive/negative runs are constant carried gap only."
         ),
         "params_schema": {

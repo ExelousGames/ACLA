@@ -610,8 +610,8 @@ def _render_partials_block(
                         "    deterministic trend-run verdict: "
                         f"{extra.get('verdict')}; "
                         f"constant_offset_only={extra.get('constant_offset_only')}; "
-                        f"strongest_losing_time_run={extra.get('strongest_losing_time_run')}; "
-                        f"strongest_recovery_run={extra.get('strongest_recovery_run')}"
+                        f"selected_losing_time_run={extra.get('selected_losing_time_run')}; "
+                        f"selected_recovery_run={extra.get('selected_recovery_run')}"
                     )
                 extras_str = ", ".join(f"{k}={v!r}" for k, v in extra.items())
                 lines.append(f"    extra: {extras_str}")

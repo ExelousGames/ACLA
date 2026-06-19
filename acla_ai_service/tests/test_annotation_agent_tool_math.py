@@ -5,9 +5,14 @@ from app.shared.annotation_agent_tools import (
     _query_compute_slope,
     locate_circuit_section,
     measure_segment_shape,
+    run_pipeline_query,
 )
-from app.local_annotation_agent.workflow.preflight import _prompt_block, _run_queries
-from app.local_annotation_agent.workflow import preflight_detailed
+from app.local_annotation_agent.workflow.preflight import (
+    _prompt_block,
+    _query_semantic_tags,
+    _run_queries,
+)
+from app.local_annotation_agent.workflow import preflight_detailed, preflight_lap
 
 
 def _trajectory_df(x: np.ndarray, y: np.ndarray) -> pd.DataFrame:
@@ -86,6 +91,24 @@ def test_preflight_trajectory_offset_queries_repair_reset_segment_index():
         assert 1000 <= content["result"]["iloc"] <= 1099
 
 
+def test_query_telemetry_derives_trajectory_offset_from_raw_dataframe():
+    theta = np.linspace(0.0, np.pi / 2.0, 100)
+    radius = 30.0
+    df = _trajectory_df(radius * np.cos(theta), radius * np.sin(theta))
+    df["Graphics_player_pos_x"] = df["Graphics_player_pos_x"] + 0.5
+    df["Graphics_player_pos_y"] = df["Graphics_player_pos_y"] + 0.2
+
+    payload, error = run_pipeline_query(
+        df,
+        "find_extremum",
+        {"range": [0, 99], "column": "trajectory_offset", "kind": "max"},
+    )
+
+    assert error is None
+    assert payload["iloc"] is not None
+    assert payload["value"] is not None
+
+
 def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
     captured = {}
     sentinel = object()
@@ -112,6 +135,38 @@ def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
     assert "strict_query_errors" not in captured
 
 
+def test_lap_preflight_does_not_calculate_speed_delta_for_parent_labels(monkeypatch):
+    captured = {}
+    sentinel = object()
+
+    def fake_build_shared_preflight_context(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        preflight_lap,
+        "build_shared_preflight_context",
+        fake_build_shared_preflight_context,
+    )
+
+    result = preflight_lap.build_preflight_context(
+        df=pd.DataFrame(),
+        start=0,
+        end=1,
+        eligible_behavior_label_ids=["PS", "RM", "MSP"],
+        fixed_label_ids=[],
+        extra_query_terms=[],
+    )
+
+    assert result is sentinel
+    columns = [
+        spec["params"]["column"]
+        for spec in captured["query_specs"]
+        if "column" in spec.get("params", {})
+    ]
+    assert "speed_difference" not in columns
+
+
 def test_preflight_expert_time_summary_uses_final_window_slope():
     df = pd.DataFrame(
         {
@@ -136,6 +191,74 @@ def test_preflight_expert_time_summary_uses_final_window_slope():
     assert "do not decide mistake/recovery from the raw endpoint difference" in prompt
     assert "end_trend_change=reversing_to_falling_at_end" in prompt
     assert "end_moves_toward_zero=True" in prompt
+
+
+def test_preflight_trend_run_summary_uses_neutral_selected_terms():
+    df = pd.DataFrame(
+        {"expert_time_difference": [0.0, 100.0, 250.0, 500.0, 800.0]},
+        index=range(10, 15),
+    )
+
+    results = _run_queries(df, 10, 14)
+    prompt = _prompt_block("lap", 10, 14, results, [], [])
+
+    assert "selected_losing_time_run=" in prompt
+    assert "strong" + "est" not in prompt.lower()
+
+
+def test_preflight_time_delta_tags_do_not_reuse_offset_zero_terms():
+    spec = {
+        "graph_id": "time_delta",
+        "query_id": "compute_slope",
+        "params": {"column": "expert_time_difference"},
+    }
+    payload = {
+        "extra": {
+            "total_change_domain_direction": "losing_time",
+            "near_zero_summary": {
+                "starts_near_zero": True,
+                "ends_near_zero": True,
+                "moves_toward_zero": True,
+            },
+        }
+    }
+
+    tags = _query_semantic_tags(spec, payload)
+
+    assert "gap grows" in tags
+    assert "starts near zero" not in tags
+    assert "ends near zero" not in tags
+    assert "moves toward zero" not in tags
+    assert "recovery toward expert line" not in tags
+
+
+def test_preflight_threshold_tags_keep_only_observed_timing_direction():
+    spec = {
+        "graph_id": "brake",
+        "query_id": "find_threshold_crossing",
+        "params": {
+            "columns": ["expert_optimal_brake", "Physics_brake"],
+            "threshold": 0.05,
+        },
+        "tags": [
+            "brake initiation onset",
+            "brake earlier than expert",
+            "brake later than expert",
+        ],
+    }
+    payload = {
+        "samples": [
+            {"column": "expert_optimal_brake", "iloc": 20},
+            {"column": "Physics_brake", "iloc": 15},
+        ],
+    }
+
+    tags = _query_semantic_tags(spec, payload)
+
+    assert "brake initiation onset" in tags
+    assert "brake initiation onset earlier than expert" in tags
+    assert "brake earlier than expert" not in tags
+    assert "brake later than expert" not in tags
 
 
 def test_straight_segment_shape_does_not_emit_corner_or_altitude_labels():

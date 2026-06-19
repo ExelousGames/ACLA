@@ -41,7 +41,6 @@ def test_lap_tool_agent_request_is_fixed_to_section():
     assert request.parent_start == 10
     assert request.parent_end == 20
     assert set(request.extra_state) == {
-        "root_agent",
         "tool_agent_extra_tools",
         "annotation_session_context",
         "eligible_behavior_label_ids",
@@ -71,7 +70,7 @@ def test_lap_parse_rejects_extra_range_fields():
     with pytest.raises(RuntimeError, match="unsupported output field"):
         lap_flow.parse(
             response,
-            prompt_mode="local_pipeline",
+            prompt_mode="tool_agent",
             lap_start=0,
             lap_end=100,
             section_id="brands_hatch1",
@@ -81,7 +80,7 @@ def test_lap_parse_rejects_extra_range_fields():
         )
 
 
-def test_lap_parse_claude_accepts_summary_field_as_reasoning_fallback():
+def test_lap_parse_tool_agent_accepts_summary_field_as_reasoning_fallback():
     response = AgentResponse(
         raw_response=json.dumps({
             "label_ids": ["MSP"],

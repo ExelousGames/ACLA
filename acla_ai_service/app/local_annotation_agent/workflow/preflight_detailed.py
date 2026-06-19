@@ -114,6 +114,18 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         "tags": ["throttle modulation dip", "release throttle"],
     },
     {
+        "tool_id": "query_telemetry.find_extremum.speed_difference.max",
+        "graph_id": "speed_delta",
+        "query_id": "find_extremum",
+        "params": {"column": "speed_difference", "kind": "max"},
+    },
+    {
+        "tool_id": "query_telemetry.find_extremum.speed_difference.min",
+        "graph_id": "speed_delta",
+        "query_id": "find_extremum",
+        "params": {"column": "speed_difference", "kind": "min"},
+    },
+    {
         "tool_id": "query_telemetry.compute_slope.speed_difference",
         "graph_id": "speed_delta",
         "query_id": "compute_slope",
