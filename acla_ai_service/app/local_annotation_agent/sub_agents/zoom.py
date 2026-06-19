@@ -594,16 +594,12 @@ def _render_partials_block(
             if has_extras:
                 if query == "compute_slope":
                     lines.append(
-                        "    deterministic trend verdict: "
+                        "    deterministic slope-shape verdict: "
                         f"total_change={extra.get('delta_value')} {extra.get('unit')} "
                         f"({extra.get('total_change_direction')}, "
                         f"{extra.get('total_change_significance')}, "
                         f"label_significant={extra.get('total_change_is_label_significant')}); "
-                        f"end_window={extra.get('end_window')} "
-                        f"end_change={extra.get('end_delta_value')} {extra.get('unit')} "
-                        f"({extra.get('end_change_direction')}, "
-                        f"{extra.get('end_change_significance')}); "
-                        f"end_trend_change={extra.get('end_trend_change')}"
+                        f"slope_shape={extra.get('slope_shape')}"
                     )
                 if query == "find_trend_runs":
                     lines.append(

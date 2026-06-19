@@ -54,6 +54,158 @@ def test_time_difference_to_expert_alias_is_not_used():
     assert result is None
 
 
+def test_time_difference_rising_concave_down_is_recovery_trend():
+    df = pd.DataFrame(
+        {
+            "expert_time_difference": [
+                0.0,
+                150.0,
+                280.0,
+                380.0,
+                450.0,
+                500.0,
+                530.0,
+                550.0,
+            ],
+        },
+        index=range(10, 18),
+    )
+
+    result = _query_compute_slope(df, 10, 17, "expert_time_difference")
+
+    assert result is not None
+    assert result["extra"]["total_change_direction"] == "rising"
+    assert result["extra"]["slope_shape"] == "slope_decreasing_over_section"
+
+    tags = _query_semantic_tags(
+        {
+            "graph_id": "time_delta",
+            "query_id": "compute_slope",
+            "params": {"column": "expert_time_difference"},
+        },
+        result,
+    )
+    assert "recovery trend" in tags
+    assert "rate of losing time decreasing" in tags
+
+
+def test_time_difference_rising_concave_up_is_losing_time_accelerating():
+    df = pd.DataFrame(
+        {
+            "expert_time_difference": [
+                0.0,
+                20.0,
+                50.0,
+                90.0,
+                150.0,
+                240.0,
+                360.0,
+                500.0,
+            ],
+        },
+        index=range(20, 28),
+    )
+
+    result = _query_compute_slope(df, 20, 27, "expert_time_difference")
+
+    assert result is not None
+    assert result["extra"]["total_change_direction"] == "rising"
+    assert result["extra"]["slope_shape"] == "slope_increasing_over_section"
+
+    tags = _query_semantic_tags(
+        {
+            "graph_id": "time_delta",
+            "query_id": "compute_slope",
+            "params": {"column": "expert_time_difference"},
+        },
+        result,
+    )
+    assert "losing time accelerating" in tags
+
+
+def test_time_difference_linear_rise_has_steady_slope_shape():
+    df = pd.DataFrame(
+        {"expert_time_difference": [0.0, 100.0, 200.0, 300.0, 400.0]},
+        index=range(30, 35),
+    )
+
+    result = _query_compute_slope(df, 30, 34, "expert_time_difference")
+
+    assert result is not None
+    assert result["extra"]["slope_shape"] == "slope_steady_over_section"
+
+
+def test_time_difference_detects_reversal_to_falling_within_section():
+    df = pd.DataFrame(
+        {
+            "expert_time_difference": [
+                0.0,
+                200.0,
+                400.0,
+                450.0,
+                250.0,
+                50.0,
+            ],
+        },
+        index=range(40, 46),
+    )
+
+    result = _query_compute_slope(df, 40, 45, "expert_time_difference")
+
+    assert result is not None
+    assert (
+        result["extra"]["slope_shape"]
+        == "reversing_to_falling_within_section"
+    )
+
+
+def test_time_difference_detects_reversal_to_rising_within_section():
+    df = pd.DataFrame(
+        {
+            "expert_time_difference": [
+                500.0,
+                300.0,
+                100.0,
+                50.0,
+                250.0,
+                450.0,
+            ],
+        },
+        index=range(50, 56),
+    )
+
+    result = _query_compute_slope(df, 50, 55, "expert_time_difference")
+
+    assert result is not None
+    assert (
+        result["extra"]["slope_shape"]
+        == "reversing_to_rising_within_section"
+    )
+
+
+def test_trajectory_offset_uses_generic_slope_shape_detection():
+    df = pd.DataFrame(
+        {
+            "trajectory_offset": [
+                0.0,
+                0.30,
+                0.55,
+                0.72,
+                0.82,
+                0.88,
+                0.91,
+                0.93,
+            ],
+        },
+        index=range(60, 68),
+    )
+
+    result = _query_compute_slope(df, 60, 67, "trajectory_offset")
+
+    assert result is not None
+    assert result["extra"]["slope_shape"] == "slope_decreasing_over_section"
+
+
 def test_locate_circuit_section_filters_by_circuit_id():
     df = pd.DataFrame(
         {"Graphics_normalized_car_position": [0.95, 0.96, 0.97]},
@@ -188,7 +340,7 @@ def test_lap_preflight_does_not_calculate_speed_delta_for_parent_labels(monkeypa
     )
 
 
-def test_preflight_expert_time_summary_uses_final_window_slope():
+def test_preflight_expert_time_summary_uses_slope_shape():
     df = pd.DataFrame(
         {
             "expert_time_difference": [
@@ -210,8 +362,8 @@ def test_preflight_expert_time_summary_uses_final_window_slope():
     prompt = _prompt_block("lap", 100, 107, results, [], [])
 
     assert "do not decide mistake/recovery from the raw endpoint difference" in prompt
-    assert "end_trend_change=reversing_to_falling_at_end" in prompt
-    assert "end_moves_toward_zero=True" in prompt
+    assert "slope_shape=reversing_to_falling_within_section" in prompt
+    assert "end_moves_toward_zero" not in prompt
 
 
 def test_preflight_trend_run_summary_uses_time_delta_selected_terms():
@@ -271,9 +423,7 @@ def test_preflight_query_outputs_use_generic_analysis_key():
                 "delta_value": 100.0,
                 "total_change_direction": "rising",
                 "total_change_is_label_significant": True,
-                "end_delta_value": 40.0,
-                "end_change_direction": "rising",
-                "end_trend_change": "strengthening_at_end",
+                "slope_shape": "slope_increasing_over_section",
             },
         },
     }
@@ -303,12 +453,7 @@ def test_preflight_formats_non_time_graph_query_analysis():
                 "total_change_direction": "rising",
                 "total_change_domain_direction": "moving_wider",
                 "total_change_is_label_significant": True,
-                "end_window": [20, 30],
-                "end_delta_value": 0.25,
-                "end_change_direction": "rising",
-                "end_change_domain_direction": "moving_wider",
-                "end_change_is_label_significant": True,
-                "end_trend_change": "strengthening_at_end",
+                "slope_shape": "slope_increasing_over_section",
             },
         },
     }
@@ -319,7 +464,7 @@ def test_preflight_formats_non_time_graph_query_analysis():
     )
 
     assert output["analysis"]["total_change"]["domain_direction"] == "moving_wider"
-    assert output["analysis"]["end_change"]["window"] == [20, 30]
+    assert output["analysis"]["slope_shape"] == "slope_increasing_over_section"
     assert "result" not in output
 
 

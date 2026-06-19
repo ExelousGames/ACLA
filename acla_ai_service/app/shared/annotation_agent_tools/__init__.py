@@ -3458,23 +3458,73 @@ def _classify_delta(delta: float, column: str) -> Dict[str, Any]:
     }
 
 
-def _trend_change(overall_slope: float, end_slope: float, column: str) -> str:
-    eps = 1e-9
-    if abs(overall_slope) < eps:
-        return "not_applicable_overall_flat"
-    if abs(end_slope) < eps:
-        return "flattening_at_end"
-    overall_direction = "rising" if overall_slope > 0 else "falling"
-    end_direction = "rising" if end_slope > 0 else "falling"
-    if overall_direction != end_direction:
-        return f"reversing_to_{end_direction}_at_end"
-    overall_abs = abs(float(overall_slope))
-    end_abs = abs(float(end_slope))
-    if overall_abs > 0 and end_abs <= overall_abs * 0.5:
-        return "weakening_at_end"
-    if overall_abs > 0 and end_abs >= overall_abs * 1.5:
-        return "strengthening_at_end"
-    return "steady_at_end"
+def _slope_shape_window(length: int) -> int:
+    if length <= 1:
+        return 1
+    return max(1, min(5, int(np.ceil(length * 0.25))))
+
+
+def _slope_shape_smoothing_window(length: int) -> int:
+    window = _slope_shape_window(length)
+    if window % 2 == 0:
+        window = max(1, window - 1)
+    return window
+
+
+def _slope_shape(arr: np.ndarray, overall_slope: float, column: str) -> str:
+    """Classify whole-section first-derivative shape for a telemetry range."""
+    finite_locs = np.where(np.isfinite(arr))[0]
+    if len(finite_locs) < 3:
+        return "slope_steady_over_section"
+
+    window = _slope_shape_smoothing_window(len(arr))
+    smooth = (
+        pd.Series(arr)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy()
+    )
+
+    finite_locs = np.where(np.isfinite(smooth))[0]
+    if len(finite_locs) < 3:
+        return "slope_steady_over_section"
+
+    values = smooth[finite_locs]
+    delta_i = np.diff(finite_locs.astype(float))
+    valid = delta_i > 0
+    if not np.any(valid):
+        return "slope_steady_over_section"
+
+    local_slopes = np.diff(values)[valid] / delta_i[valid]
+    local_slopes = local_slopes[np.isfinite(local_slopes)]
+    if len(local_slopes) < 2:
+        return "slope_steady_over_section"
+
+    shape_window = _slope_shape_window(len(local_slopes))
+    early_slope = float(np.nanmedian(local_slopes[:shape_window]))
+    late_slope = float(np.nanmedian(local_slopes[-shape_window:]))
+    if not (np.isfinite(early_slope) and np.isfinite(late_slope)):
+        return "slope_steady_over_section"
+
+    meta = _column_semantics(column)
+    range_len = max(float(finite_locs[-1] - finite_locs[0]), 1.0)
+    absolute_guard = float(meta["label_significant_delta_abs"]) / range_len
+    baseline = max(abs(float(overall_slope)), abs(early_slope), abs(late_slope))
+    relative_guard = baseline * 0.25
+    slope_guard = max(absolute_guard, relative_guard, 1e-9)
+
+    if abs(early_slope) > slope_guard and abs(late_slope) > slope_guard:
+        if early_slope > 0 and late_slope < 0:
+            return "reversing_to_falling_within_section"
+        if early_slope < 0 and late_slope > 0:
+            return "reversing_to_rising_within_section"
+
+    slope_change = late_slope - early_slope
+    if abs(slope_change) < slope_guard:
+        return "slope_steady_over_section"
+    if slope_change < 0:
+        return "slope_decreasing_over_section"
+    return "slope_increasing_over_section"
 
 
 def _trend_role(column: str, direction: str) -> str:
@@ -3558,13 +3608,6 @@ def _query_find_extremum(
         "value": float(finite[local]),
         "extra": extra,
     }
-
-
-def _tail_window_start(length: int) -> int:
-    if length <= 3:
-        return 0
-    tail_len = max(3, min(10, int(np.ceil(length * 0.25))))
-    return max(0, length - tail_len)
 
 
 def _query_find_first_match(
@@ -3671,29 +3714,14 @@ def _query_compute_slope(
     delta_v = float(vb - va)
     delta_i = float(b_idx - a_idx)
     slope = delta_v / delta_i
-    tail_start = _tail_window_start(len(arr))
-    if not np.isfinite(arr[tail_start]):
-        finite_tail = np.where(np.isfinite(arr[tail_start:]))[0]
-        if len(finite_tail) == 0:
-            tail_start = 0
-        else:
-            tail_start += int(finite_tail[0])
-    end_va = arr[tail_start]
-    end_delta_i = float((b_idx - a_idx) - tail_start)
-    end_delta_v = float(vb - end_va)
-    end_slope = end_delta_v / end_delta_i if end_delta_i else 0.0
     meta = _column_semantics(column)
     overall_class = _classify_delta(delta_v, column)
-    end_class = _classify_delta(end_delta_v, column)
     zero_context = _series_zero_context(arr, column)
-    end_zero_context = _series_zero_context(arr[tail_start:], column)
-    end_start_iloc = a_idx + tail_start
     return {
         "iloc": b_idx,
         "value": slope,
         "samples": [
             {"iloc": a_idx, "value": float(va)},
-            {"iloc": end_start_iloc, "value": float(end_va), "note": "final-window start"},
             {"iloc": b_idx, "value": float(vb)},
         ],
         "extra": {
@@ -3706,18 +3734,9 @@ def _query_compute_slope(
             "total_change_domain_direction": overall_class["domain_direction"],
             "total_change_significance": overall_class["significance"],
             "total_change_is_label_significant": overall_class["is_label_significant"],
-            "end_window": [end_start_iloc, b_idx],
-            "end_delta_value": end_delta_v,
-            "end_delta_iloc": end_delta_i,
-            "end_slope": end_slope,
-            "end_change_direction": end_class["direction"],
-            "end_change_domain_direction": end_class["domain_direction"],
-            "end_change_significance": end_class["significance"],
-            "end_change_is_label_significant": end_class["is_label_significant"],
-            "end_trend_change": _trend_change(slope, end_slope, column),
+            "slope_shape": _slope_shape(arr, slope, column),
             "thresholds": overall_class["thresholds"],
             "near_zero_summary": zero_context,
-            "end_near_zero_summary": end_zero_context,
         },
     }
 
@@ -4150,7 +4169,8 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "description": (
             "Slope of <column> from the start to the end of <range> "
             "(value-delta / iloc-delta), plus deterministic unit, "
-            "significance, near-zero, and final-window trend verdicts. "
+            "significance, near-zero, and whole-section slope-shape "
+            "verdicts. "
             "For `expert_time_difference`, this answers whether the whole "
             "range loses or gains time; a positive but flat value means the "
             "player is already behind, not that a new mistake happened."

@@ -62,11 +62,6 @@ _TAG_KEYS = {
     "data_available",
     "direction",
     "domain_direction",
-    "end_change_direction",
-    "end_change_domain_direction",
-    "end_change_is_label_significant",
-    "end_change_significance",
-    "end_trend_change",
     "ends_near_zero",
     "is_ambiguous",
     "is_label_significant",
@@ -78,6 +73,7 @@ _TAG_KEYS = {
     "recommended_label",
     "role",
     "semantic_tags",
+    "slope_shape",
     "segment_type_role",
     "shape_key",
     "significance",
@@ -123,17 +119,26 @@ _GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
                 "trajectory moving tighter",
             ),
             "stable": ("aligned",),
-            "strengthening_at_end": ("trajectory divergence strengthening at end",),
-            "weakening_at_end": ("trajectory divergence weakening at end",),
-            "flattening_at_end": ("trajectory offset flattening at end",),
-            "reversing_to_falling_at_end": ("trajectory offset reversing tighter",),
-            "reversing_to_rising_at_end": ("trajectory offset reversing wider",),
+            "slope_decreasing_over_section": (
+                "trajectory offset slope decreasing over section",
+            ),
+            "slope_increasing_over_section": (
+                "trajectory offset slope increasing over section",
+            ),
+            "slope_steady_over_section": (
+                "trajectory offset slope steady over section",
+            ),
+            "reversing_to_falling_within_section": (
+                "trajectory offset reversing tighter within section",
+            ),
+            "reversing_to_rising_within_section": (
+                "trajectory offset reversing wider within section",
+            ),
         },
         "extra_keys": (
             "verdict",
             "total_change_domain_direction",
-            "end_change_domain_direction",
-            "end_trend_change",
+            "slope_shape",
             "domain_direction",
         ),
         "zero_tags": {
@@ -153,14 +158,25 @@ _GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
             "speed_gap_increasing": ("speed gap growing",),
             "speed_gap_decreasing": ("speed gap closing",),
             "stable": ("speed match",),
-            "strengthening_at_end": ("speed gap change strengthening at end",),
-            "weakening_at_end": ("speed gap change weakening at end",),
-            "flattening_at_end": ("speed gap flattening at end",),
+            "slope_decreasing_over_section": (
+                "speed gap slope decreasing over section",
+            ),
+            "slope_increasing_over_section": (
+                "speed gap slope increasing over section",
+            ),
+            "slope_steady_over_section": (
+                "speed gap slope steady over section",
+            ),
+            "reversing_to_falling_within_section": (
+                "speed gap reversing down within section",
+            ),
+            "reversing_to_rising_within_section": (
+                "speed gap reversing up within section",
+            ),
         },
         "extra_keys": (
             "total_change_domain_direction",
-            "end_change_domain_direction",
-            "end_trend_change",
+            "slope_shape",
             "domain_direction",
         ),
         "zero_tags": {
@@ -181,7 +197,7 @@ _GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
             "falling": ("deceleration onset",),
             "stable": ("speed stable",),
         },
-        "extra_keys": ("total_change_direction", "end_change_direction"),
+        "extra_keys": ("total_change_direction",),
     },
     "brake": {
         "target": "brake input",
@@ -478,7 +494,6 @@ def _query_semantic_tags(
             tags.extend(_query_value_tags(graph_profile, value))
         if graph_profile.get("include_zero_tags"):
             _append_zero_tags(tags, extra.get("near_zero_summary"), graph_profile)
-            _append_zero_tags(tags, extra.get("end_near_zero_summary"), graph_profile)
 
     if query_id == "find_extremum":
         tags.extend(_extremum_tags(column, result.get("value")))
@@ -541,15 +556,39 @@ def _time_delta_query_semantic_tags(
                 )
             )
         )
-        tags.extend(
-            _time_delta_gap_tags(
-                _time_delta_gap_direction(
-                    extra.get("end_change_direction"),
-                    extra.get("end_delta_value"),
-                )
-            )
-        )
+        tags.extend(_time_delta_slope_shape_tags(extra))
     return _dedupe(tags)[:24]
+
+
+def _time_delta_slope_shape_tags(extra: Dict[str, Any]) -> List[str]:
+    shape = extra.get("slope_shape")
+    gap_direction = _time_delta_gap_direction(
+        extra.get("total_change_direction"),
+        extra.get("delta_value"),
+    )
+    if shape == "slope_decreasing_over_section":
+        if gap_direction == "time_gap_rising":
+            return [
+                "recovery trend",
+                "rate of losing time decreasing",
+                "time loss decelerating",
+            ]
+        if gap_direction == "time_gap_falling":
+            return ["recovery accelerating", "time gap falling faster"]
+        return ["slope decreasing over section"]
+    if shape == "slope_increasing_over_section":
+        if gap_direction == "time_gap_rising":
+            return ["losing time accelerating", "time gap rising faster"]
+        if gap_direction == "time_gap_falling":
+            return ["recovery easing", "time gap falling slower"]
+        return ["slope increasing over section"]
+    if shape == "slope_steady_over_section":
+        return ["time gap slope steady over section"]
+    if shape == "reversing_to_falling_within_section":
+        return ["time gap reversing to recovery within section"]
+    if shape == "reversing_to_rising_within_section":
+        return ["time gap reversing to loss within section"]
+    return []
 
 
 def _query_semantic_profile(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -1113,12 +1152,8 @@ def _preflight_slope_summary(
     if not isinstance(extra, dict):
         return None
     zero = extra.get("near_zero_summary")
-    end_zero = extra.get("end_near_zero_summary")
     moves_toward_zero = (
         zero.get("moves_toward_zero") if isinstance(zero, dict) else None
-    )
-    end_moves_toward_zero = (
-        end_zero.get("moves_toward_zero") if isinstance(end_zero, dict) else None
     )
     if column == "expert_time_difference":
         return (
@@ -1129,12 +1164,7 @@ def _preflight_slope_summary(
             "total_gap_threshold_state="
             f"{_time_delta_threshold_state(extra.get('total_change_is_label_significant'))}; "
             f"moves_toward_zero={moves_toward_zero}; "
-            f"end_window={extra.get('end_window')}; "
-            f"end_gap_change={extra.get('end_delta_value')} {extra.get('unit')}; "
-            "end_gap_direction="
-            f"{_time_delta_gap_direction(extra.get('end_change_direction'), extra.get('end_delta_value'))}; "
-            f"end_trend_change={extra.get('end_trend_change')}; "
-            f"end_moves_toward_zero={end_moves_toward_zero}; "
+            f"slope_shape={extra.get('slope_shape')}; "
             "do not decide mistake/recovery from the raw endpoint difference"
         )
     return (
@@ -1145,13 +1175,7 @@ def _preflight_slope_summary(
         f"{extra.get('total_change_domain_direction')}; "
         f"total_change_is_label_significant={extra.get('total_change_is_label_significant')}; "
         f"moves_toward_zero={moves_toward_zero}; "
-        f"end_window={extra.get('end_window')}; "
-        f"end_change={extra.get('end_delta_value')} {extra.get('unit')}; "
-        f"end_change_direction={extra.get('end_change_direction')}; "
-        "end_change_domain_direction="
-        f"{extra.get('end_change_domain_direction')}; "
-        f"end_trend_change={extra.get('end_trend_change')}; "
-        f"end_moves_toward_zero={end_moves_toward_zero}"
+        f"slope_shape={extra.get('slope_shape')}"
     )
 
 
@@ -1407,7 +1431,6 @@ def _slope_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     unit = extra.get("unit")
     zero = extra.get("near_zero_summary")
-    end_zero = extra.get("end_near_zero_summary")
     return {
         "unit": unit,
         "total_change": {
@@ -1420,20 +1443,7 @@ def _slope_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
                 zero.get("moves_toward_zero") if isinstance(zero, dict) else None
             ),
         },
-        "end_change": {
-            "value": extra.get("end_delta_value"),
-            "unit": unit,
-            "window": extra.get("end_window"),
-            "direction": extra.get("end_change_direction"),
-            "domain_direction": extra.get("end_change_domain_direction"),
-            "trend_change": extra.get("end_trend_change"),
-            "is_label_significant": extra.get("end_change_is_label_significant"),
-            "moves_toward_zero": (
-                end_zero.get("moves_toward_zero")
-                if isinstance(end_zero, dict)
-                else None
-            ),
-        },
+        "slope_shape": extra.get("slope_shape"),
     }
 
 
@@ -1610,7 +1620,6 @@ def _time_delta_trend_run_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
 def _time_delta_slope_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
     unit = extra.get("unit")
     zero = extra.get("near_zero_summary")
-    end_zero = extra.get("end_near_zero_summary")
     return {
         "unit": unit,
         "total_gap_change": {
@@ -1627,21 +1636,7 @@ def _time_delta_slope_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
                 zero.get("moves_toward_zero") if isinstance(zero, dict) else None
             ),
         },
-        "end_gap_change": {
-            "value": extra.get("end_delta_value"),
-            "unit": unit,
-            "window": extra.get("end_window"),
-            "gap_direction": _time_delta_gap_direction(
-                extra.get("end_change_direction"),
-                extra.get("end_delta_value"),
-            ),
-            "trend_change": extra.get("end_trend_change"),
-            "moves_toward_zero": (
-                end_zero.get("moves_toward_zero")
-                if isinstance(end_zero, dict)
-                else None
-            ),
-        },
+        "slope_shape": extra.get("slope_shape"),
     }
 
 

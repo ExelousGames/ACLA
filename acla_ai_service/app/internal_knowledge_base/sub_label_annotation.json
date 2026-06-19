@@ -83,8 +83,8 @@
     "RM": {
       "name": "Recovery & Merge",
       "type": "main",
-      "description": "Driver recovering from a prior mistake and merging back to the racing line. The trajectory offset shows **recovery** toward the expert line, with speed/throttle consistent with rejoining or accelerating back toward pace. Time delta may show **gap shrinks**, or may still show **gap grows** while `end_trend_change` weakens, flattens, or reverses toward zero near the end. Do not use RM for normal pit exit; pit exit is PS / PS1.\n",
-      "annotation_guideline": "How to identify sublabels for Recovery & Merge: The driver is recovering from a mistake. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; use its deterministic unit and trend-significance fields. A significant falling `total_change_direction` is strong RM evidence, but a significant rising total change can still be RM when `end_trend_change` weakens, flattens, or reverses toward zero at the end and the action evidence shows recovery / merge rather than a new technical mistake. Tiny ms changes are not RM evidence. Step 2: Examine the 'trajectory_offset' graph to identify recovery - look for the offset trending back toward zero from either side after a prior mistake/off-track, using query near-zero/toward-zero fields when available. Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating back toward the expert's speed profile. Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment contains the indices for entry/apex/exit). Do not label pit exit as RM unless it follows a separate driving mistake that requires recovery.\n",
+      "description": "Driver recovering from a prior mistake and merging back to the racing line. The trajectory offset shows **recovery** toward the expert line, with speed/throttle consistent with rejoining or accelerating back toward pace. Time delta may show **gap shrinks**, or may still show **gap grows** while `slope_shape` shows recovery shape. Do not use RM for normal pit exit; pit exit is PS / PS1.\n",
+      "annotation_guideline": "How to identify sublabels for Recovery & Merge: The driver is recovering from a mistake. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; use its deterministic unit and trend-significance fields. A significant falling `total_change_direction` is strong RM evidence, but a significant rising total change can still be RM when `slope_shape` shows recovery shape and the action evidence shows recovery / merge rather than a new technical mistake. Tiny ms changes are not RM evidence. Step 2: Examine the 'trajectory_offset' graph to identify recovery - look for the offset trending back toward zero from either side after a prior mistake/off-track, using query near-zero/toward-zero fields when available. Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating back toward the expert's speed profile. Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment contains the indices for entry/apex/exit). Do not label pit exit as RM unless it follows a separate driving mistake that requires recovery.\n",
       "parent": null,
       "children": [
         "RM1",
@@ -106,7 +106,7 @@
       "name": "Mistake (Practice)",
       "type": "main",
       "description": "Technical driving error causing time loss or vehicle instability, NOT caused by interaction with a close opponent. Time delta shows **gap grows** and the trajectory offset shows a clear deviation from the expert's line (offset **wider than expert** or **tighter than expert**) that does not recover inside the range. If the dominant action is merge/rejoin recovery back toward the expert line, use RM instead even when the absolute time gap is still growing. When `classify_opponent_interaction` returns an adverse racing outcome (`failed_attack` or `broken_defense`), the section is MSR, not MSP.\n",
-      "annotation_guideline": "How to identify sublabels for Practice Mistake: The driver has committed a technical driving error. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; require `total_change_direction: \"rising\"` and `total_change_is_label_significant: true` for time-loss evidence, and cite `end_change_direction` / `end_trend_change` if the loss flattens, weakens, or reverses near the end. Do not describe tiny positive ms changes as strong. Do not use MSP when the trajectory is moving back toward zero and speed/throttle show a merge or rejoin recovery; that is RM even if the time gap still grows overall. Step 2: Examine the differences in 'throttle' between the player and the expert to identify when the driver applied too much or too little throttle, or got on/off the throttle at the wrong time. Step 3: Examine the differences in 'brake' between the player and the expert to identify if the driver braked too hard or too softly, or got on/off the brake at the wrong time. Step 4: Examine the 'trajectory_balance' graph to find understeer (blue / front-slip dominant) or oversteer (red / rear-slip dominant), which could lead to lower speed. Step 5: For entry/apex/exit shape questions, request the 'trajectory_offset' graph and include the 'compute_expert_phases' tool on the same step (it produces a 'phase_indices' attachment contains the phase indices for entry/apex/exit). Step 6: Before committing in opponent-capable data, call `classify_opponent_interaction(start, end)` — if it returns `failed_attack` or `broken_defense`, the section is MSR, not MSP.\n",
+      "annotation_guideline": "How to identify sublabels for Practice Mistake: The driver has committed a technical driving error. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; require `total_change_direction: \"rising\"` and `total_change_is_label_significant: true` for time-loss evidence, and cite `slope_shape` when the loss-rate slope changes over the section. Do not describe tiny positive ms changes as strong. Do not use MSP when the trajectory is moving back toward zero and speed/throttle show a merge or rejoin recovery; that is RM even if the time gap still grows overall. Step 2: Examine the differences in 'throttle' between the player and the expert to identify when the driver applied too much or too little throttle, or got on/off the throttle at the wrong time. Step 3: Examine the differences in 'brake' between the player and the expert to identify if the driver braked too hard or too softly, or got on/off the brake at the wrong time. Step 4: Examine the 'trajectory_balance' graph to find understeer (blue / front-slip dominant) or oversteer (red / rear-slip dominant), which could lead to lower speed. Step 5: For entry/apex/exit shape questions, request the 'trajectory_offset' graph and include the 'compute_expert_phases' tool on the same step (it produces a 'phase_indices' attachment contains the phase indices for entry/apex/exit). Step 6: Before committing in opponent-capable data, call `classify_opponent_interaction(start, end)` — if it returns `failed_attack` or `broken_defense`, the section is MSR, not MSP.\n",
       "parent": null,
       "children": [
         "MSP1",
@@ -192,7 +192,7 @@
     "RM1": {
       "name": "Recover from off-track",
       "type": "sub",
-      "description": "Driver returning to track after an off-track excursion — the trajectory offset peaks far **wider than expert** earlier in the segment (a prior **moving toward positive (widening)** beat), then shows **recovery** (offset trending back toward zero) while the speed trace shows the driver rejoining or accelerating back toward pace. Time delta may show **gap shrinks**, or a still-rising gap whose end trend weakens, flattens, or reverses toward zero.\n",
+      "description": "Driver returning to track after an off-track excursion — the trajectory offset peaks far **wider than expert** earlier in the segment (a prior **moving toward positive (widening)** beat), then shows **recovery** (offset trending back toward zero) while the speed trace shows the driver rejoining or accelerating back toward pace. Time delta may show **gap shrinks**, or a still-rising gap whose `slope_shape` shows recovery shape.\n",
       "parent": "RM",
       "children": [],
       "exclusive_with": [],
@@ -210,7 +210,7 @@
     "RM5": {
       "name": "Recover from speed gap over 20",
       "type": "sub",
-      "description": "Player more than 20 km/h slower than the expert with the speed gap closing — the speed delta shows **expert faster than player** with a **large gap section** (|Δ| > 20 km/h) that trends toward zero across the segment. Time delta may shrink, or may still grow while the end trend weakens, flattens, or reverses toward zero.\n",
+      "description": "Player more than 20 km/h slower than the expert with the speed gap closing — the speed delta shows **expert faster than player** with a **large gap section** (|Δ| > 20 km/h) that trends toward zero across the segment. Time delta may shrink, or may still grow while `slope_shape` shows recovery shape.\n",
       "parent": "RM",
       "children": [],
       "exclusive_with": [
@@ -221,7 +221,7 @@
     "RM6": {
       "name": "Recover from small speed gap under 20",
       "type": "sub",
-      "description": "Player less than 20 km/h slower than the expert with the speed gap closing — the speed delta shows **expert faster than player** without any **large gap section** (|Δ| stays ≤ 20 km/h). Time delta may shrink, or may still grow while the end trend weakens, flattens, or reverses toward zero.\n",
+      "description": "Player less than 20 km/h slower than the expert with the speed gap closing — the speed delta shows **expert faster than player** without any **large gap section** (|Δ| stays ≤ 20 km/h). Time delta may shrink, or may still grow while `slope_shape` shows recovery shape.\n",
       "parent": "RM",
       "children": [],
       "exclusive_with": [
@@ -241,7 +241,7 @@
     "RM8": {
       "name": "Accelerate earlier at exit",
       "type": "sub",
-      "description": "During recovery, the player's throttle **application onset is earlier than** the expert's around **at expert's exit (idx N, phase k)**, with a matching earlier **acceleration onset** on the speed trace. Time delta may shrink, or may still grow while the end trend weakens, flattens, or reverses toward zero.\n",
+      "description": "During recovery, the player's throttle **application onset is earlier than** the expert's around **at expert's exit (idx N, phase k)**, with a matching earlier **acceleration onset** on the speed trace. Time delta may shrink, or may still grow while `slope_shape` shows recovery shape.\n",
       "parent": "RM",
       "children": [],
       "exclusive_with": [
@@ -252,7 +252,7 @@
     "RM9": {
       "name": "Accelerate later at exit",
       "type": "sub",
-      "description": "During recovery, the player's throttle **application onset is later than** the expert's around **at expert's exit (idx N, phase k)**, with a matching later **acceleration onset** on the speed trace. Time delta may shrink, or may still grow while the end trend weakens, flattens, or reverses toward zero.\n",
+      "description": "During recovery, the player's throttle **application onset is later than** the expert's around **at expert's exit (idx N, phase k)**, with a matching later **acceleration onset** on the speed trace. Time delta may shrink, or may still grow while `slope_shape` shows recovery shape.\n",
       "parent": "RM",
       "children": [],
       "exclusive_with": [
@@ -263,7 +263,7 @@
     "RM10": {
       "name": "Brake earlier at entry",
       "type": "sub",
-      "description": "During recovery, the player's brake **initiation onset is earlier than** the expert's around **at expert's entry (idx N, phase k)**, with a matching earlier **deceleration onset** on the speed trace. Time delta may shrink, or may still grow while the end trend weakens, flattens, or reverses toward zero.\n",
+      "description": "During recovery, the player's brake **initiation onset is earlier than** the expert's around **at expert's entry (idx N, phase k)**, with a matching earlier **deceleration onset** on the speed trace. Time delta may shrink, or may still grow while `slope_shape` shows recovery shape.\n",
       "parent": "RM",
       "children": [],
       "exclusive_with": [
@@ -274,7 +274,7 @@
     "RM11": {
       "name": "Brake later at entry",
       "type": "sub",
-      "description": "During recovery, the player's brake **initiation onset is later than** the expert's around **at expert's entry (idx N, phase k)**, with a matching later **deceleration onset** on the speed trace. Time delta may shrink, or may still grow while the end trend weakens, flattens, or reverses toward zero.\n",
+      "description": "During recovery, the player's brake **initiation onset is later than** the expert's around **at expert's entry (idx N, phase k)**, with a matching later **deceleration onset** on the speed trace. Time delta may shrink, or may still grow while `slope_shape` shows recovery shape.\n",
       "parent": "RM",
       "children": [],
       "exclusive_with": [
