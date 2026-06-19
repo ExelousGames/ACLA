@@ -277,6 +277,65 @@ def test_trajectory_offset_builds_for_seven_sample_range():
     assert "trajectory_offset" in table.columns
 
 
+def test_trajectory_offset_projects_player_to_expert_path():
+    theta = np.linspace(0.0, np.pi / 2.0, 80)
+    radius = 30.0
+    x = radius * np.cos(theta)
+    y = radius * np.sin(theta)
+    df = _trajectory_df(x, y)
+    shift = 8
+    df["Graphics_player_pos_x"] = np.concatenate([
+        x[shift:],
+        np.repeat(x[-1], shift),
+    ])
+    df["Graphics_player_pos_y"] = np.concatenate([
+        y[shift:],
+        np.repeat(y[-1], shift),
+    ])
+
+    table = build_graph("trajectory_offset", df)
+
+    assert table is not None
+    offset = table["trajectory_offset"].to_numpy(dtype=float)
+    assert np.nanmax(np.abs(offset)) < 1e-6
+
+
+def test_preflight_trajectory_offset_summary_separates_side_from_distance():
+    df = pd.DataFrame(
+        {"trajectory_offset": [-5.0, -3.0, -1.0]},
+        index=range(3),
+    )
+
+    result = _query_compute_slope(df, 0, 2, "trajectory_offset")
+    content = {
+        "graph_id": "trajectory_offset",
+        "query_id": "compute_slope",
+        "params": {"column": "trajectory_offset"},
+        "semantic_target": "trajectory offset",
+        "semantic_tags": [],
+        "result": result,
+    }
+    prompt = _prompt_block(
+        "lap",
+        0,
+        2,
+        [("query_telemetry.compute_slope.trajectory_offset", content)],
+        [],
+        [],
+    )
+    output = _semantic_tool_output(
+        "query_telemetry.compute_slope.trajectory_offset",
+        content,
+    )
+
+    assert result is not None
+    assert "expert_line_relation=converging_to_expert_line" in prompt
+    assert "absolute_offset_start=5.0 m" in prompt
+    assert "absolute_offset_end=1.0 m" in prompt
+    absolute_offset = output["analysis"]["absolute_offset"]
+    assert absolute_offset["moves_toward_expert_line"] is True
+
+
 def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
     captured = {}
     sentinel = object()

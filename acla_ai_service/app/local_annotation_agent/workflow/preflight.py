@@ -1167,6 +1167,27 @@ def _preflight_slope_summary(
             f"slope_shape={extra.get('slope_shape')}; "
             "do not decide mistake/recovery from the raw endpoint difference"
         )
+    if column == "trajectory_offset":
+        start_abs = zero.get("start_abs") if isinstance(zero, dict) else None
+        end_abs = zero.get("end_abs") if isinstance(zero, dict) else None
+        min_abs = zero.get("min_abs") if isinstance(zero, dict) else None
+        expert_line_relation = (
+            "converging_to_expert_line"
+            if moves_toward_zero is True
+            else "diverging_from_expert_line"
+            if moves_toward_zero is False
+            else "unknown"
+        )
+        return (
+            f"{tool_id} slope verdict: "
+            f"signed_total_change={extra.get('delta_value')} {extra.get('unit')}; "
+            f"signed_side_direction={extra.get('total_change_domain_direction')}; "
+            f"absolute_offset_start={start_abs} {extra.get('unit')}; "
+            f"absolute_offset_end={end_abs} {extra.get('unit')}; "
+            f"absolute_offset_min={min_abs} {extra.get('unit')}; "
+            f"expert_line_relation={expert_line_relation}; "
+            f"slope_shape={extra.get('slope_shape')}"
+        )
     return (
         f"{tool_id} slope verdict: "
         f"total_change={extra.get('delta_value')} {extra.get('unit')}; "
@@ -1360,7 +1381,7 @@ def _query_analysis(content: Dict[str, Any]) -> Dict[str, Any]:
     if query_id == "find_trend_runs":
         return _trend_run_analysis(result)
     if query_id == "compute_slope":
-        return _slope_analysis(result)
+        return _slope_analysis(result, column)
     if query_id == "find_extremum":
         return _extremum_analysis(result, params)
     if query_id == "find_threshold_crossing":
@@ -1425,13 +1446,13 @@ def _generic_trend_run(value: Dict[str, Any], unit: Any) -> Optional[Dict[str, A
     }
 
 
-def _slope_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
+def _slope_analysis(result: Dict[str, Any], column: str = "") -> Dict[str, Any]:
     extra = result.get("extra")
     if not isinstance(extra, dict):
         return {}
     unit = extra.get("unit")
     zero = extra.get("near_zero_summary")
-    return {
+    analysis = {
         "unit": unit,
         "total_change": {
             "value": extra.get("delta_value"),
@@ -1445,6 +1466,15 @@ def _slope_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
         },
         "slope_shape": extra.get("slope_shape"),
     }
+    if column == "trajectory_offset" and isinstance(zero, dict):
+        analysis["absolute_offset"] = {
+            "start": zero.get("start_abs"),
+            "end": zero.get("end_abs"),
+            "min": zero.get("min_abs"),
+            "unit": unit,
+            "moves_toward_expert_line": zero.get("moves_toward_zero"),
+        }
+    return analysis
 
 
 def _extremum_analysis(

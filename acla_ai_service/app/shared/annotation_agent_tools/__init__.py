@@ -4905,24 +4905,29 @@ def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     kin = _expert_kinematics(df)
     if kin is None:
         return None
-    _x_ref, _y_ref, dx, dy, kappa, _w = kin
-
-    tangent_norm = np.sqrt(dx * dx + dy * dy)
-    tangent_norm = np.where(tangent_norm > 1e-9, tangent_norm, 1.0)
-    tx = dx / tangent_norm
-    ty = dy / tangent_norm
+    _x_ref, _y_ref, _dx, _dy, kappa, _w = kin
+    if kappa.size == 0:
+        return None
 
     px = df[px_col].to_numpy(dtype=float)
     py = df[py_col].to_numpy(dtype=float)
     ex = df[ex_col].to_numpy(dtype=float)
     ey = df[ey_col].to_numpy(dtype=float)
-    ox = px - ex
-    oy = py - ey
+    _, lateral_offset, projected_idx = _project_points_to_local_reference_path(
+        px,
+        py,
+        ex,
+        ey,
+        center_indices=np.arange(px.size),
+        search_radius=30,
+    )
+    fallback_idx = np.arange(projected_idx.size)
+    kappa_idx = np.where(projected_idx >= 0, projected_idx, fallback_idx)
+    kappa_idx = np.clip(kappa_idx, 0, max(kappa.size - 1, 0))
 
-    cross = tx * oy - ty * ox
-    sign_flip = -np.sign(kappa)
+    sign_flip = -np.sign(kappa[kappa_idx])
     sign_flip = np.where(sign_flip == 0, 1.0, sign_flip)
-    offset = cross * sign_flip
+    offset = lateral_offset * sign_flip
 
     # Expert positions stay in the table so the renderer's phase detection
     # has the kinematic inputs it needs after the parent's projection.
