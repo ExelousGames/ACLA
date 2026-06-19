@@ -106,30 +106,6 @@ _GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
         "target": "time gap to expert",
         "columns": ("expert_time_difference",),
         "include_zero_tags": False,
-        "value_tags": {
-            "losing_time_run": ("gap grows", "time loss run"),
-            "recovery_run": ("gap shrinks", "time recovery run"),
-            "losing_time_and_recovery_runs": (
-                "gap grows",
-                "gap shrinks",
-                "time loss and recovery runs",
-            ),
-            "constant_offset_only": ("constant carried time gap",),
-            "no_rate_change": ("gap holds stable",),
-            "losing_time": ("gap grows", "player losing time"),
-            "gaining_time": ("gap shrinks", "player gaining time"),
-            "weakening_at_end": ("time loss rate weakening",),
-            "strengthening_at_end": ("time loss rate strengthening",),
-            "flattening_at_end": ("time gap flattening at end",),
-            "reversing_to_falling_at_end": ("time gap reversing to recovery",),
-            "reversing_to_rising_at_end": ("time gap reversing to loss",),
-        },
-        "extra_keys": (
-            "verdict",
-            "total_change_domain_direction",
-            "end_change_domain_direction",
-            "end_trend_change",
-        ),
     },
     "trajectory_offset": {
         "target": "trajectory offset",
@@ -160,6 +136,14 @@ _GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
             "end_trend_change",
             "domain_direction",
         ),
+        "zero_tags": {
+            "starts_near_zero": "trajectory offset starts near expert line",
+            "ends_near_zero": "trajectory offset ends near expert line",
+            "moves_toward_zero": (
+                "trajectory offset moves toward expert line",
+                "trajectory offset recovery toward expert line",
+            ),
+        },
     },
     "speed_delta": {
         "target": "speed delta",
@@ -179,6 +163,14 @@ _GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
             "end_trend_change",
             "domain_direction",
         ),
+        "zero_tags": {
+            "starts_near_zero": "speed delta starts near parity",
+            "ends_near_zero": "speed delta ends near parity",
+            "moves_toward_zero": (
+                "speed delta moves toward parity",
+                "speed delta recovery toward parity",
+            ),
+        },
     },
     "speed": {
         "target": "player speed",
@@ -242,7 +234,7 @@ def build_preflight_context(
     tags = _dedupe(
         tag
         for tool_id, content in tool_outputs
-        for tag in [f"tool:{tool_id}", *_tags(content)]
+        for tag in [f"tool:{tool_id}", *_semantic_tags(tool_id, content)]
     )[:160]
     evidence = _evidence_text(
         flow=flow,
@@ -270,8 +262,8 @@ def build_preflight_context(
             content={
                 "tool_id": tool_id,
                 "range": [s, e],
-                "tags": _tags(content),
-                "result": content,
+                "tags": _semantic_tags(tool_id, content),
+                "result": _semantic_tool_output(tool_id, content),
             },
             content_schema="annotation_preflight_tool",
         )
@@ -471,14 +463,16 @@ def _query_semantic_tags(
     graph_profile = _query_semantic_profile(spec)
     tags: List[str] = _query_static_tags(spec, query_id, graph_profile)
     result = payload if isinstance(payload, dict) else {}
+    if str(spec.get("graph_id") or "") == "time_delta":
+        return _time_delta_query_semantic_tags(tags, query_id, result)
     extra = result.get("extra")
     if isinstance(extra, dict):
         for key in graph_profile.get("extra_keys", ()):
             value = extra.get(key)
             tags.extend(_query_value_tags(graph_profile, value))
         if graph_profile.get("include_zero_tags"):
-            _append_zero_tags(tags, extra.get("near_zero_summary"))
-            _append_zero_tags(tags, extra.get("end_near_zero_summary"))
+            _append_zero_tags(tags, extra.get("near_zero_summary"), graph_profile)
+            _append_zero_tags(tags, extra.get("end_near_zero_summary"), graph_profile)
 
     if query_id == "find_extremum":
         tags.extend(_extremum_tags(column, result.get("value")))
@@ -499,6 +493,56 @@ def _query_semantic_tags(
             tags.append("modulation dip")
             tags.append(f"{column} dip detected".strip())
 
+    return _dedupe(tags)[:24]
+
+
+def _time_delta_query_semantic_tags(
+    tags: List[str],
+    query_id: str,
+    result: Dict[str, Any],
+) -> List[str]:
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return _dedupe(tags)[:24]
+    if query_id == "find_trend_runs":
+        verdict = _time_delta_trend_verdict(extra)
+        if verdict == "time_gap_rising_and_falling_runs":
+            tags.extend([
+                "time gap rising run",
+                "time gap falling run",
+                "mixed time-gap trend",
+            ])
+        elif verdict == "time_gap_rising_run":
+            tags.extend(["time gap rising run", "gap increasing"])
+        elif verdict == "time_gap_falling_run":
+            tags.extend(["time gap falling run", "gap decreasing"])
+        elif verdict == "constant_carried_time_gap":
+            tags.append("constant carried time gap")
+        else:
+            tags.append("gap holds stable")
+        for run in _time_delta_trend_run_analysis(extra).get(
+            "significant_gap_runs",
+            [],
+        ):
+            if isinstance(run, dict):
+                tags.extend(_time_delta_gap_tags(run.get("gap_direction")))
+    elif query_id == "compute_slope":
+        tags.extend(
+            _time_delta_gap_tags(
+                _time_delta_gap_direction(
+                    extra.get("total_change_direction"),
+                    extra.get("delta_value"),
+                )
+            )
+        )
+        tags.extend(
+            _time_delta_gap_tags(
+                _time_delta_gap_direction(
+                    extra.get("end_change_direction"),
+                    extra.get("end_delta_value"),
+                )
+            )
+        )
     return _dedupe(tags)[:24]
 
 
@@ -572,16 +616,40 @@ def _trend_run_tags(profile: Dict[str, Any], extra: Dict[str, Any]) -> List[str]
     ]
 
 
-def _append_zero_tags(tags: List[str], summary: Any) -> None:
+def _append_zero_tags(
+    tags: List[str],
+    summary: Any,
+    profile: Dict[str, Any],
+) -> None:
     if not isinstance(summary, dict):
         return
+    zero_tags = profile.get("zero_tags")
+    zero_tags = zero_tags if isinstance(zero_tags, dict) else {}
     if summary.get("starts_near_zero") is True:
-        tags.append("starts near zero")
+        tags.extend(_zero_tag_values(profile, zero_tags, "starts_near_zero"))
     if summary.get("ends_near_zero") is True:
-        tags.append("ends near zero")
+        tags.extend(_zero_tag_values(profile, zero_tags, "ends_near_zero"))
     if summary.get("moves_toward_zero") is True:
-        tags.append("moves toward zero")
-        tags.append("recovery toward expert line")
+        tags.extend(_zero_tag_values(profile, zero_tags, "moves_toward_zero"))
+
+
+def _zero_tag_values(
+    profile: Dict[str, Any],
+    zero_tags: Dict[str, Any],
+    key: str,
+) -> List[str]:
+    value = zero_tags.get(key)
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(tag) for tag in value if str(tag).strip()]
+    target = str(profile.get("target") or "telemetry").strip() or "telemetry"
+    fallback = {
+        "starts_near_zero": f"{target} starts near zero",
+        "ends_near_zero": f"{target} ends near zero",
+        "moves_toward_zero": f"{target} moves toward zero",
+    }
+    return [fallback[key]]
 
 
 def _extremum_tags(column: str, value: Any) -> List[str]:
@@ -805,7 +873,10 @@ def _evidence_text(
         "eligible_behavior_labels: " + _label_text(eligible_behavior_label_ids),
         "fixed_labels: " + _label_text(fixed_label_ids),
         "extra_terms: " + " ".join(str(term) for term in extra_query_terms),
-        "tool_results_json: " + json.dumps(tool_outputs, default=str),
+        "tool_results_json: " + json.dumps(
+            _semantic_tool_outputs(tool_outputs),
+            default=str,
+        ),
     ]
     return "\n".join(part for part in parts if not part.endswith(": "))[:12000]
 
@@ -847,7 +918,8 @@ def _prompt_block(
         summary = _preflight_tool_summary(tool_id, content)
         if summary:
             lines.append(summary)
-        lines.append(f"##### {tool_id}\n```json\n{_json(content, 2200)}\n```")
+        display_content = _semantic_tool_output(tool_id, content)
+        lines.append(f"##### {tool_id}\n```json\n{_json(display_content, 2200)}\n```")
     return "\n".join(lines)
 
 
@@ -1003,22 +1075,23 @@ def _preflight_trend_runs_summary(
     if not isinstance(extra, dict):
         return None
     unit = extra.get("unit")
-    selected_losing = extra.get("selected_losing_time_run")
-    selected_recovery = extra.get("selected_recovery_run")
+    selected_gap_increase, selected_gap_decrease = _time_delta_selected_runs(extra)
     parts = [
-        f"{tool_id}: verdict={extra.get('verdict')}",
+        f"{tool_id}: verdict={_time_delta_trend_verdict(extra)}",
     ]
-    if isinstance(selected_losing, dict):
+    if isinstance(selected_gap_increase, dict):
         parts.append(
-            "selected_losing_time_run="
-            f"{selected_losing.get('start_iloc')}->{selected_losing.get('end_iloc')} "
-            f"delta={selected_losing.get('delta_value')} {unit}"
+            "selected_gap_increase_run="
+            f"{selected_gap_increase.get('start_iloc')}->"
+            f"{selected_gap_increase.get('end_iloc')} "
+            f"delta={selected_gap_increase.get('gap_change')} {unit}"
         )
-    if isinstance(selected_recovery, dict):
+    if isinstance(selected_gap_decrease, dict):
         parts.append(
-            "selected_recovery_run="
-            f"{selected_recovery.get('start_iloc')}->{selected_recovery.get('end_iloc')} "
-            f"delta={selected_recovery.get('delta_value')} {unit}"
+            "selected_gap_decrease_run="
+            f"{selected_gap_decrease.get('start_iloc')}->"
+            f"{selected_gap_decrease.get('end_iloc')} "
+            f"delta={selected_gap_decrease.get('gap_change')} {unit}"
         )
     if len(parts) == 1:
         parts.append("no trend run")
@@ -1041,25 +1114,38 @@ def _preflight_slope_summary(
     end_moves_toward_zero = (
         end_zero.get("moves_toward_zero") if isinstance(end_zero, dict) else None
     )
-    caution = (
-        "; do not decide mistake/recovery from the raw endpoint difference"
-        if column == "expert_time_difference"
-        else ""
-    )
+    if column == "expert_time_difference":
+        return (
+            f"{tool_id} slope verdict: "
+            f"total_gap_change={extra.get('delta_value')} {extra.get('unit')}; "
+            "total_gap_direction="
+            f"{_time_delta_gap_direction(extra.get('total_change_direction'), extra.get('delta_value'))}; "
+            "total_gap_threshold_state="
+            f"{_time_delta_threshold_state(extra.get('total_change_is_label_significant'))}; "
+            f"moves_toward_zero={moves_toward_zero}; "
+            f"end_window={extra.get('end_window')}; "
+            f"end_gap_change={extra.get('end_delta_value')} {extra.get('unit')}; "
+            "end_gap_direction="
+            f"{_time_delta_gap_direction(extra.get('end_change_direction'), extra.get('end_delta_value'))}; "
+            f"end_trend_change={extra.get('end_trend_change')}; "
+            f"end_moves_toward_zero={end_moves_toward_zero}; "
+            "do not decide mistake/recovery from the raw endpoint difference"
+        )
     return (
         f"{tool_id} slope verdict: "
         f"total_change={extra.get('delta_value')} {extra.get('unit')}; "
         f"total_change_direction={extra.get('total_change_direction')}; "
-        f"total_change_domain_direction={extra.get('total_change_domain_direction')}; "
+        "total_change_domain_direction="
+        f"{extra.get('total_change_domain_direction')}; "
         f"total_change_is_label_significant={extra.get('total_change_is_label_significant')}; "
         f"moves_toward_zero={moves_toward_zero}; "
         f"end_window={extra.get('end_window')}; "
         f"end_change={extra.get('end_delta_value')} {extra.get('unit')}; "
         f"end_change_direction={extra.get('end_change_direction')}; "
-        f"end_change_domain_direction={extra.get('end_change_domain_direction')}; "
+        "end_change_domain_direction="
+        f"{extra.get('end_change_domain_direction')}; "
         f"end_trend_change={extra.get('end_trend_change')}; "
         f"end_moves_toward_zero={end_moves_toward_zero}"
-        f"{caution}"
     )
 
 
@@ -1175,6 +1261,238 @@ def _tags(value: Any) -> List[str]:
 
     walk(value)
     return _dedupe(out)[:80]
+
+
+def _semantic_tags(tool_id: str, content: Dict[str, Any]) -> List[str]:
+    if not _is_time_delta_output(tool_id, content):
+        return _tags(content)
+    analysis = _time_delta_analysis(content)
+    semantic_tags = content.get("semantic_tags")
+    semantic_tags = semantic_tags if isinstance(semantic_tags, list) else []
+    return _dedupe([
+        *(
+            str(tag)
+            for tag in semantic_tags
+            if isinstance(tag, (str, int, float, bool))
+        ),
+        *_tags(analysis),
+    ])[:80]
+
+
+def _semantic_tool_outputs(
+    tool_outputs: List[Tuple[str, Dict[str, Any]]],
+) -> List[Tuple[str, Dict[str, Any]]]:
+    return [
+        (tool_id, _semantic_tool_output(tool_id, content))
+        for tool_id, content in tool_outputs
+    ]
+
+
+def _semantic_tool_output(tool_id: str, content: Dict[str, Any]) -> Dict[str, Any]:
+    if not _is_time_delta_output(tool_id, content):
+        return content
+    out: Dict[str, Any] = {
+        key: content[key]
+        for key in (
+            "graph_id",
+            "query_id",
+            "params",
+            "error",
+            "semantic_target",
+            "semantic_tags",
+        )
+        if key in content
+    }
+    analysis = _time_delta_analysis(content)
+    if analysis:
+        out["time_delta_analysis"] = analysis
+    return out
+
+
+def _is_time_delta_output(tool_id: str, content: Dict[str, Any]) -> bool:
+    return (
+        "expert_time_difference" in tool_id
+        or content.get("graph_id") == "time_delta"
+    )
+
+
+def _time_delta_analysis(content: Dict[str, Any]) -> Dict[str, Any]:
+    result = content.get("result")
+    if not isinstance(result, dict):
+        return {}
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return {}
+
+    query_id = str(content.get("query_id") or "")
+    if query_id == "find_trend_runs":
+        return _time_delta_trend_run_analysis(extra)
+    if query_id == "compute_slope":
+        return _time_delta_slope_analysis(extra)
+    return {}
+
+
+def _time_delta_selected_runs(
+    extra: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    runs = extra.get("significant_runs")
+    if not isinstance(runs, list):
+        return None, None
+    gap_runs = [
+        run
+        for run in (_time_delta_run(item, extra.get("unit")) for item in runs)
+        if run
+    ]
+    increases = [
+        run for run in gap_runs if run.get("gap_direction") == "time_gap_rising"
+    ]
+    decreases = [
+        run for run in gap_runs if run.get("gap_direction") == "time_gap_falling"
+    ]
+    selected_increase = (
+        max(increases, key=_time_delta_run_abs_change) if increases else None
+    )
+    selected_decrease = (
+        max(decreases, key=_time_delta_run_abs_change) if decreases else None
+    )
+    return selected_increase, selected_decrease
+
+
+def _time_delta_trend_verdict(extra: Dict[str, Any]) -> str:
+    selected_increase, selected_decrease = _time_delta_selected_runs(extra)
+    if selected_increase and selected_decrease:
+        return "time_gap_rising_and_falling_runs"
+    if selected_increase:
+        return "time_gap_rising_run"
+    if selected_decrease:
+        return "time_gap_falling_run"
+    if extra.get("constant_offset_only") is True:
+        return "constant_carried_time_gap"
+    return "time_gap_stable"
+
+
+def _time_delta_gap_direction(direction: Any, delta_value: Any = None) -> str:
+    if direction == "rising":
+        return "time_gap_rising"
+    if direction == "falling":
+        return "time_gap_falling"
+    if direction == "stable":
+        return "time_gap_stable"
+    if isinstance(delta_value, (int, float)):
+        if delta_value > 0:
+            return "time_gap_rising"
+        if delta_value < 0:
+            return "time_gap_falling"
+        return "time_gap_stable"
+    return "time_gap_unknown"
+
+
+def _time_delta_gap_tags(gap_direction: Any) -> List[str]:
+    if gap_direction == "time_gap_rising":
+        return ["time gap rising", "gap increasing"]
+    if gap_direction == "time_gap_falling":
+        return ["time gap falling", "gap decreasing"]
+    if gap_direction == "time_gap_stable":
+        return ["gap holds stable"]
+    return []
+
+
+def _time_delta_threshold_state(is_label_significant: Any) -> str:
+    if is_label_significant is True:
+        return "label_threshold_met"
+    if is_label_significant is False:
+        return "below_label_threshold"
+    return "threshold_unknown"
+
+
+def _time_delta_run_abs_change(run: Dict[str, Any]) -> float:
+    value = run.get("gap_change")
+    return abs(float(value)) if isinstance(value, (int, float)) else 0.0
+
+
+def _time_delta_trend_run_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
+    runs = extra.get("significant_runs")
+    gap_runs = (
+        [
+            run
+            for run in (_time_delta_run(item, extra.get("unit")) for item in runs)
+            if run
+        ]
+        if isinstance(runs, list)
+        else []
+    )
+    selected_gap_increase, selected_gap_decrease = _time_delta_selected_runs(extra)
+    analysis: Dict[str, Any] = {
+        "verdict": _time_delta_trend_verdict(extra),
+        "unit": extra.get("unit"),
+        "constant_carried_time_gap": extra.get("constant_offset_only"),
+    }
+    if selected_gap_increase:
+        analysis["selected_gap_increase_run"] = selected_gap_increase
+    if selected_gap_decrease:
+        analysis["selected_gap_decrease_run"] = selected_gap_decrease
+    if gap_runs:
+        analysis["significant_gap_runs"] = gap_runs
+    return analysis
+
+
+def _time_delta_slope_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
+    unit = extra.get("unit")
+    zero = extra.get("near_zero_summary")
+    end_zero = extra.get("end_near_zero_summary")
+    return {
+        "unit": unit,
+        "total_gap_change": {
+            "value": extra.get("delta_value"),
+            "unit": unit,
+            "gap_direction": _time_delta_gap_direction(
+                extra.get("total_change_direction"),
+                extra.get("delta_value"),
+            ),
+            "threshold_state": _time_delta_threshold_state(
+                extra.get("total_change_is_label_significant")
+            ),
+            "moves_toward_expert_line": (
+                zero.get("moves_toward_zero") if isinstance(zero, dict) else None
+            ),
+        },
+        "end_gap_change": {
+            "value": extra.get("end_delta_value"),
+            "unit": unit,
+            "window": extra.get("end_window"),
+            "gap_direction": _time_delta_gap_direction(
+                extra.get("end_change_direction"),
+                extra.get("end_delta_value"),
+            ),
+            "trend_change": extra.get("end_trend_change"),
+            "moves_toward_expert_line": (
+                end_zero.get("moves_toward_zero")
+                if isinstance(end_zero, dict)
+                else None
+            ),
+        },
+    }
+
+
+def _time_delta_run(value: Any, unit: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "start_iloc": value.get("start_iloc"),
+        "end_iloc": value.get("end_iloc"),
+        "start_gap": value.get("start_value"),
+        "end_gap": value.get("end_value"),
+        "gap_change": value.get("delta_value"),
+        "unit": unit,
+        "slope": value.get("slope"),
+        "gap_direction": _time_delta_gap_direction(
+            value.get("direction"),
+            value.get("delta_value"),
+        ),
+        "threshold_state": _time_delta_threshold_state(
+            value.get("is_label_significant")
+        ),
+    }
 
 
 def _tag_values(path: str, value: Any) -> List[str]:

@@ -18,7 +18,20 @@ LAP_PREFLIGHT_TOOL_IDS = (
     "classify_opponent_interaction",
     "find_nearest_opponent",
 )
-LAP_PREFLIGHT_QUERY_SPECS = SHARED_PREFLIGHT_QUERY_SPECS
+LAP_PREFLIGHT_QUERY_SPECS = (
+    *SHARED_PREFLIGHT_QUERY_SPECS,
+    {
+        "tool_id": "query_telemetry.compute_slope.trajectory_offset",
+        "graph_id": "trajectory_offset",
+        "query_id": "compute_slope",
+        "params": {"column": "trajectory_offset"},
+        "tags": [
+            "trajectory recovery",
+            "wider than expert",
+            "tighter than expert",
+        ],
+    },
+)
 
 
 def build_preflight_context(

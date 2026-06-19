@@ -180,6 +180,11 @@ def test_lap_preflight_does_not_calculate_speed_delta_for_parent_labels(monkeypa
         if "column" in spec.get("params", {})
     ]
     assert "speed_difference" not in columns
+    assert columns.count("trajectory_offset") == 3
+    assert any(
+        spec["tool_id"] == "query_telemetry.compute_slope.trajectory_offset"
+        for spec in captured["query_specs"]
+    )
 
 
 def test_preflight_expert_time_summary_uses_final_window_slope():
@@ -208,7 +213,7 @@ def test_preflight_expert_time_summary_uses_final_window_slope():
     assert "end_moves_toward_zero=True" in prompt
 
 
-def test_preflight_trend_run_summary_uses_neutral_selected_terms():
+def test_preflight_trend_run_summary_uses_time_delta_selected_terms():
     df = pd.DataFrame(
         {"expert_time_difference": [0.0, 100.0, 250.0, 500.0, 800.0]},
         index=range(10, 15),
@@ -217,7 +222,10 @@ def test_preflight_trend_run_summary_uses_neutral_selected_terms():
     results = _run_queries(df, 10, 14)
     prompt = _prompt_block("lap", 10, 14, results, [], [])
 
-    assert "selected_losing_time_run=" in prompt
+    assert "selected_gap_increase_run=" in prompt
+    assert "selected_losing_time_run" not in prompt
+    assert "losing_time_run" not in prompt
+    assert "time_gap_rising_run" in prompt
     assert "strong" + "est" not in prompt.lower()
 
 
@@ -229,7 +237,9 @@ def test_preflight_time_delta_tags_do_not_reuse_offset_zero_terms():
     }
     payload = {
         "extra": {
-            "total_change_domain_direction": "losing_time",
+            "delta_value": 300.0,
+            "total_change_direction": "rising",
+            "total_change_is_label_significant": True,
             "near_zero_summary": {
                 "starts_near_zero": True,
                 "ends_near_zero": True,
@@ -240,7 +250,7 @@ def test_preflight_time_delta_tags_do_not_reuse_offset_zero_terms():
 
     tags = _query_semantic_tags(spec, payload)
 
-    assert "gap grows" in tags
+    assert "time gap rising" in tags
     assert "starts near zero" not in tags
     assert "ends near zero" not in tags
     assert "moves toward zero" not in tags
