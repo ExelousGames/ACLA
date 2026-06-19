@@ -245,10 +245,11 @@ def _expert_kinematics(
     smoothed upstream, so this helper does not smooth position samples.
 
     Returns ``(x, y, dx, dy, kappa, window)`` or ``None`` if the
-    segment is too short, missing required columns, or all-NaN.
+    segment is too short for derivative math, missing required columns,
+    or all-NaN.
     """
     n = len(segment)
-    if n < 8:
+    if n < 2:
         return None
     if "expert_optimal_player_pos_x" not in segment.columns or \
        "expert_optimal_player_pos_y" not in segment.columns:

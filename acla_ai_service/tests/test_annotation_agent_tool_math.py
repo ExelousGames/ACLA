@@ -3,6 +3,7 @@ import pandas as pd
 
 from app.shared.annotation_agent_tools import (
     _query_compute_slope,
+    build_graph,
     locate_circuit_section,
     measure_segment_shape,
     run_pipeline_query,
@@ -107,6 +108,20 @@ def test_query_telemetry_derives_trajectory_offset_from_raw_dataframe():
     assert error is None
     assert payload["iloc"] is not None
     assert payload["value"] is not None
+
+
+def test_trajectory_offset_builds_for_seven_sample_range():
+    theta = np.linspace(0.0, np.pi / 8.0, 7)
+    radius = 30.0
+    df = _trajectory_df(radius * np.cos(theta), radius * np.sin(theta))
+    df["Graphics_player_pos_x"] = df["Graphics_player_pos_x"] + 0.5
+    df["Graphics_player_pos_y"] = df["Graphics_player_pos_y"] + 0.2
+
+    table = build_graph("trajectory_offset", df)
+
+    assert table is not None
+    assert len(table) == 7
+    assert "trajectory_offset" in table.columns
 
 
 def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
