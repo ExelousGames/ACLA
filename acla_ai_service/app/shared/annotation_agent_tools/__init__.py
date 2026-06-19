@@ -3370,22 +3370,11 @@ def _canonical_column(column: str) -> str:
     return column
 
 
-_DERIVED_QUERY_COLUMN_GRAPHS = {
-    "trajectory_offset": "trajectory_offset",
-}
-
-
 def _resolve_column(column: str, segment: pd.DataFrame) -> Optional[np.ndarray]:
     if not column:
         return None
     column = _canonical_column(column)
     if column not in segment.columns:
-        graph_id = _DERIVED_QUERY_COLUMN_GRAPHS.get(column)
-        builder = globals().get("build_graph")
-        if graph_id and callable(builder):
-            table = builder(graph_id, segment)
-            if table is not None and column in table.columns:
-                return table[column].to_numpy(dtype=float)
         return None
     return segment[column].to_numpy(dtype=float)
 

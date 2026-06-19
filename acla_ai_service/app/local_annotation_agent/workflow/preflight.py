@@ -371,7 +371,7 @@ def _run_queries(
     df,
     start: int,
     end: int,
-    query_specs: Sequence[Dict[str, Any]],
+    query_specs: Sequence[Dict[str, Any]] = PREFLIGHT_QUERY_SPECS,
     *,
     strict: bool = False,
 ) -> List[Tuple[str, Dict[str, Any]]]:
@@ -440,6 +440,12 @@ def _run_queries(
             "params": params,
             "result": payload,
             "semantic_target": _query_semantic_target(spec),
+            "analysis": _query_analysis({
+                "graph_id": graph_id,
+                "query_id": query_id,
+                "params": params,
+                "result": payload,
+            }),
             "semantic_tags": _query_semantic_tags(spec, payload),
         }
         if error:
@@ -463,7 +469,7 @@ def _query_semantic_tags(
     graph_profile = _query_semantic_profile(spec)
     tags: List[str] = _query_static_tags(spec, query_id, graph_profile)
     result = payload if isinstance(payload, dict) else {}
-    if str(spec.get("graph_id") or "") == "time_delta":
+    if column == "expert_time_difference":
         return _time_delta_query_semantic_tags(tags, query_id, result)
     extra = result.get("extra")
     if isinstance(extra, dict):
@@ -1264,11 +1270,13 @@ def _tags(value: Any) -> List[str]:
 
 
 def _semantic_tags(tool_id: str, content: Dict[str, Any]) -> List[str]:
-    if not _is_time_delta_output(tool_id, content):
+    if not _is_query_output(content):
         return _tags(content)
-    analysis = _time_delta_analysis(content)
     semantic_tags = content.get("semantic_tags")
     semantic_tags = semantic_tags if isinstance(semantic_tags, list) else []
+    analysis = content.get("analysis")
+    if not isinstance(analysis, dict):
+        analysis = _query_analysis(content)
     return _dedupe([
         *(
             str(tag)
@@ -1289,7 +1297,7 @@ def _semantic_tool_outputs(
 
 
 def _semantic_tool_output(tool_id: str, content: Dict[str, Any]) -> Dict[str, Any]:
-    if not _is_time_delta_output(tool_id, content):
+    if not _is_query_output(content):
         return content
     out: Dict[str, Any] = {
         key: content[key]
@@ -1300,20 +1308,183 @@ def _semantic_tool_output(tool_id: str, content: Dict[str, Any]) -> Dict[str, An
             "error",
             "semantic_target",
             "semantic_tags",
+            "analysis",
         )
         if key in content
     }
-    analysis = _time_delta_analysis(content)
-    if analysis:
-        out["time_delta_analysis"] = analysis
+    if "analysis" not in out:
+        analysis = _query_analysis(content)
+        if analysis:
+            out["analysis"] = analysis
     return out
 
 
-def _is_time_delta_output(tool_id: str, content: Dict[str, Any]) -> bool:
-    return (
-        "expert_time_difference" in tool_id
-        or content.get("graph_id") == "time_delta"
-    )
+def _is_query_output(content: Dict[str, Any]) -> bool:
+    return content.get("graph_id") is not None and content.get("query_id") is not None
+
+
+def _query_analysis(content: Dict[str, Any]) -> Dict[str, Any]:
+    result = content.get("result")
+    if not isinstance(result, dict):
+        return {}
+    params = content.get("params") if isinstance(content.get("params"), dict) else {}
+    column = str(params.get("column") or "")
+    if column == "expert_time_difference":
+        return _time_delta_analysis(content)
+
+    query_id = str(content.get("query_id") or "")
+    if query_id == "find_trend_runs":
+        return _trend_run_analysis(result)
+    if query_id == "compute_slope":
+        return _slope_analysis(result)
+    if query_id == "find_extremum":
+        return _extremum_analysis(result, params)
+    if query_id == "find_threshold_crossing":
+        return _threshold_crossing_analysis(result)
+    if query_id == "find_dips_on_main_slope":
+        return _dips_analysis(result)
+    return _compact_query_result(result)
+
+
+def _trend_run_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return {}
+    runs = extra.get("significant_runs")
+    significant_runs = [
+        _generic_trend_run(run, extra.get("unit"))
+        for run in runs
+        if isinstance(run, dict)
+    ] if isinstance(runs, list) else []
+    significant_runs = [run for run in significant_runs if run]
+    analysis: Dict[str, Any] = {
+        "verdict": _generic_trend_verdict(significant_runs),
+        "unit": extra.get("unit"),
+        "constant_offset_only": extra.get("constant_offset_only"),
+    }
+    if significant_runs:
+        analysis["selected_run"] = max(
+            significant_runs,
+            key=lambda run: abs(float(run.get("change") or 0.0)),
+        )
+        analysis["significant_runs"] = significant_runs
+    return analysis
+
+
+def _generic_trend_verdict(runs: List[Dict[str, Any]]) -> str:
+    directions = {
+        str(run.get("direction"))
+        for run in runs
+        if run.get("direction") in {"rising", "falling"}
+    }
+    if directions == {"rising", "falling"}:
+        return "mixed_rising_falling_runs"
+    if directions == {"rising"}:
+        return "rising_run"
+    if directions == {"falling"}:
+        return "falling_run"
+    return "stable"
+
+
+def _generic_trend_run(value: Dict[str, Any], unit: Any) -> Optional[Dict[str, Any]]:
+    return {
+        "start_iloc": value.get("start_iloc"),
+        "end_iloc": value.get("end_iloc"),
+        "start_value": value.get("start_value"),
+        "end_value": value.get("end_value"),
+        "change": value.get("delta_value"),
+        "unit": unit,
+        "slope": value.get("slope"),
+        "direction": value.get("direction"),
+        "domain_direction": value.get("domain_direction"),
+        "is_label_significant": value.get("is_label_significant"),
+    }
+
+
+def _slope_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return {}
+    unit = extra.get("unit")
+    zero = extra.get("near_zero_summary")
+    end_zero = extra.get("end_near_zero_summary")
+    return {
+        "unit": unit,
+        "total_change": {
+            "value": extra.get("delta_value"),
+            "unit": unit,
+            "direction": extra.get("total_change_direction"),
+            "domain_direction": extra.get("total_change_domain_direction"),
+            "is_label_significant": extra.get("total_change_is_label_significant"),
+            "moves_toward_zero": (
+                zero.get("moves_toward_zero") if isinstance(zero, dict) else None
+            ),
+        },
+        "end_change": {
+            "value": extra.get("end_delta_value"),
+            "unit": unit,
+            "window": extra.get("end_window"),
+            "direction": extra.get("end_change_direction"),
+            "domain_direction": extra.get("end_change_domain_direction"),
+            "trend_change": extra.get("end_trend_change"),
+            "is_label_significant": extra.get("end_change_is_label_significant"),
+            "moves_toward_zero": (
+                end_zero.get("moves_toward_zero")
+                if isinstance(end_zero, dict)
+                else None
+            ),
+        },
+    }
+
+
+def _extremum_analysis(
+    result: Dict[str, Any],
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+    analysis: Dict[str, Any] = {
+        "column": params.get("column"),
+        "kind": params.get("kind"),
+        "iloc": result.get("iloc"),
+        "value": result.get("value"),
+        "unit": extra.get("unit"),
+    }
+    for key in ("abs_min", "abs_max", "abs_mean", "peak_abs_iloc", "peak_abs_value"):
+        if key in extra:
+            analysis[key] = extra[key]
+    return analysis
+
+
+def _threshold_crossing_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
+    samples = result.get("samples")
+    if not isinstance(samples, list):
+        return {}
+    rows = [row for row in samples if isinstance(row, dict)]
+    analysis: Dict[str, Any] = {"samples": rows}
+    comparison = _threshold_player_vs_expert(rows)
+    if comparison:
+        analysis["player_vs_expert"] = comparison
+    return analysis
+
+
+def _dips_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
+    samples = result.get("samples")
+    extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+    if not isinstance(samples, list):
+        return {}
+    return {
+        "n_dips": extra.get("n_dips"),
+        "slope_direction": extra.get("slope_direction"),
+        "samples": [sample for sample in samples if isinstance(sample, dict)],
+    }
+
+
+def _compact_query_result(result: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: result[key]
+        for key in ("iloc", "value", "samples")
+        if key in result
+    }
 
 
 def _time_delta_analysis(content: Dict[str, Any]) -> Dict[str, Any]:

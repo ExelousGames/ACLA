@@ -12,6 +12,7 @@ from app.local_annotation_agent.workflow.preflight import (
     _prompt_block,
     _query_semantic_tags,
     _run_queries,
+    _semantic_tool_output,
 )
 from app.local_annotation_agent.workflow import preflight_detailed, preflight_lap
 
@@ -92,7 +93,7 @@ def test_preflight_trajectory_offset_queries_repair_reset_segment_index():
         assert 1000 <= content["result"]["iloc"] <= 1099
 
 
-def test_query_telemetry_derives_trajectory_offset_from_raw_dataframe():
+def test_query_telemetry_does_not_derive_trajectory_offset_from_raw_dataframe():
     theta = np.linspace(0.0, np.pi / 2.0, 100)
     radius = 30.0
     df = _trajectory_df(radius * np.cos(theta), radius * np.sin(theta))
@@ -105,9 +106,9 @@ def test_query_telemetry_derives_trajectory_offset_from_raw_dataframe():
         {"range": [0, 99], "column": "trajectory_offset", "kind": "max"},
     )
 
-    assert error is None
-    assert payload["iloc"] is not None
-    assert payload["value"] is not None
+    assert payload["extra"] is None
+    assert error is not None
+    assert "column 'trajectory_offset' is not in the graph table" in error
 
 
 def test_trajectory_offset_builds_for_seven_sample_range():
@@ -255,6 +256,71 @@ def test_preflight_time_delta_tags_do_not_reuse_offset_zero_terms():
     assert "ends near zero" not in tags
     assert "moves toward zero" not in tags
     assert "recovery toward expert line" not in tags
+
+
+def test_preflight_query_outputs_use_generic_analysis_key():
+    content = {
+        "graph_id": "time_delta",
+        "query_id": "compute_slope",
+        "params": {"column": "expert_time_difference"},
+        "semantic_target": "time gap to expert",
+        "semantic_tags": ["time gap rising"],
+        "result": {
+            "extra": {
+                "unit": "ms",
+                "delta_value": 100.0,
+                "total_change_direction": "rising",
+                "total_change_is_label_significant": True,
+                "end_delta_value": 40.0,
+                "end_change_direction": "rising",
+                "end_trend_change": "strengthening_at_end",
+            },
+        },
+    }
+
+    output = _semantic_tool_output(
+        "query_telemetry.compute_slope.expert_time_difference",
+        content,
+    )
+
+    assert "analysis" in output
+    assert "time_delta_analysis" not in output
+    assert "result" not in output
+    assert output["analysis"]["total_gap_change"]["gap_direction"] == "time_gap_rising"
+
+
+def test_preflight_formats_non_time_graph_query_analysis():
+    content = {
+        "graph_id": "trajectory_offset",
+        "query_id": "compute_slope",
+        "params": {"column": "trajectory_offset"},
+        "semantic_target": "trajectory offset",
+        "semantic_tags": ["trajectory moving wider"],
+        "result": {
+            "extra": {
+                "unit": "m",
+                "delta_value": 0.75,
+                "total_change_direction": "rising",
+                "total_change_domain_direction": "moving_wider",
+                "total_change_is_label_significant": True,
+                "end_window": [20, 30],
+                "end_delta_value": 0.25,
+                "end_change_direction": "rising",
+                "end_change_domain_direction": "moving_wider",
+                "end_change_is_label_significant": True,
+                "end_trend_change": "strengthening_at_end",
+            },
+        },
+    }
+
+    output = _semantic_tool_output(
+        "query_telemetry.compute_slope.trajectory_offset",
+        content,
+    )
+
+    assert output["analysis"]["total_change"]["domain_direction"] == "moving_wider"
+    assert output["analysis"]["end_change"]["window"] == [20, 30]
+    assert "result" not in output
 
 
 def test_preflight_threshold_tags_keep_only_observed_timing_direction():
