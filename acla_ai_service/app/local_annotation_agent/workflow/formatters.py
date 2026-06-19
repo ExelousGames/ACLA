@@ -124,6 +124,10 @@ def _format_preflight_context(content: Any) -> str:
     tags = content.get("tool_output_tags") or []
     if tags:
         lines.append("Tool output tags: " + ", ".join(str(tag) for tag in tags[:40]))
+    summaries = content.get("semantic_summaries") or []
+    if summaries:
+        lines.append("Semantic summaries:")
+        lines.extend(f"- {summary}" for summary in summaries[:20])
     candidate_ids = content.get("label_candidate_ids") or []
     if candidate_ids:
         lines.append("Semantic candidate IDs: " + ", ".join(str(x) for x in candidate_ids))

@@ -156,17 +156,6 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
             "grip utilisation",
         ],
     },
-    {
-        "tool_id": "query_telemetry.find_extremum.gear.player.max",
-        "graph_id": "gear",
-        "query_id": "find_extremum",
-        "params": {"column": "Physics_gear", "kind": "max"},
-        "tags": [
-            "gear selection",
-            "shift up",
-            "shift down",
-        ],
-    },
 )
 
 

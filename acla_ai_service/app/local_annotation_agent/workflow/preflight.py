@@ -137,6 +137,7 @@ def build_preflight_context(
         *_run_tools(df, s, e, selected_tool_ids),
         *_run_queries(df, s, e, selected_query_specs, strict=strict_query_errors),
     ]
+    semantic_summaries = _preflight_semantic_summaries(tool_outputs)
     tags = _dedupe(
         tag
         for tool_id, content in tool_outputs
@@ -148,6 +149,7 @@ def build_preflight_context(
         end=e,
         tool_outputs=tool_outputs,
         tags=tags,
+        semantic_summaries=semantic_summaries,
         parent_main_labels=list(parent_main_labels or []),
         eligible_behavior_label_ids=list(eligible_behavior_label_ids or []),
         fixed_label_ids=list(fixed_label_ids or []),
@@ -198,6 +200,7 @@ def build_preflight_context(
                     selected_query_specs,
                 ),
                 "tool_output_tags": tags,
+                "semantic_summaries": semantic_summaries,
                 "label_candidate_ids": [c["id"] for c in candidates],
                 "semantic_evidence_text": evidence,
             },
@@ -206,7 +209,15 @@ def build_preflight_context(
     ])
 
     return PreflightContext(
-        prompt_block=_prompt_block(flow, s, e, tool_outputs, tags, candidates),
+        prompt_block=_prompt_block(
+            flow,
+            s,
+            e,
+            tool_outputs,
+            tags,
+            candidates,
+            semantic_summaries,
+        ),
         attachments=attachments,
         label_candidates=candidates,
     )
@@ -610,6 +621,7 @@ def _evidence_text(
     end: int,
     tool_outputs: List[Tuple[str, Dict[str, Any]]],
     tags: List[str],
+    semantic_summaries: List[str],
     parent_main_labels: List[str],
     eligible_behavior_label_ids: List[str],
     fixed_label_ids: List[str],
@@ -619,6 +631,7 @@ def _evidence_text(
         f"flow={flow}",
         f"range=[{start},{end}]",
         "tool_output_tags: " + ", ".join(tags),
+        "semantic_summaries: " + " | ".join(semantic_summaries),
         "parent_main_labels: " + _label_text(parent_main_labels),
         "eligible_behavior_labels: " + _label_text(eligible_behavior_label_ids),
         "fixed_labels: " + _label_text(fixed_label_ids),
@@ -635,7 +648,9 @@ def _prompt_block(
     tool_outputs: List[Tuple[str, Dict[str, Any]]],
     tags: List[str],
     candidates: List[Dict[str, Any]],
+    semantic_summaries: Optional[List[str]] = None,
 ) -> str:
+    semantic_summaries = list(semantic_summaries or [])
     lines = [
         "#### Required Upfront Annotation Preflight",
         "The system already ran the required deterministic tool group before this AI step.",
@@ -647,8 +662,16 @@ def _prompt_block(
         "Tool output tags:",
         ", ".join(tags) if tags else "(none)",
         "",
-        "Semantic label candidates from hybrid search:",
+        "Semantic summaries:",
     ]
+    if semantic_summaries:
+        lines.extend(f"- {summary}" for summary in semantic_summaries)
+    else:
+        lines.append("- (none)")
+    lines.extend([
+        "",
+        "Semantic label candidates from hybrid search:",
+    ])
     lines.extend(_candidate_lines(candidates))
     lines.extend(["", "Required tool outputs:"])
     for tool_id, content in tool_outputs:
@@ -659,28 +682,295 @@ def _prompt_block(
     return "\n".join(lines)
 
 
-def _preflight_tool_summary(tool_id: str, content: Dict[str, Any]) -> Optional[str]:
-    if tool_id != "query_telemetry.compute_slope.expert_time_difference":
+def _preflight_semantic_summaries(
+    tool_outputs: List[Tuple[str, Dict[str, Any]]],
+) -> List[str]:
+    summaries = [
+        *_preflight_pair_summaries(tool_outputs),
+        *[
+            summary
+            for tool_id, content in tool_outputs
+            for summary in [_preflight_tool_summary(tool_id, content)]
+            if summary
+        ],
+    ]
+    return _dedupe(summaries)[:40]
+
+
+def _preflight_pair_summaries(
+    tool_outputs: List[Tuple[str, Dict[str, Any]]],
+) -> List[str]:
+    by_tool = {tool_id: content for tool_id, content in tool_outputs}
+    pairs = [
+        (
+            "brake peak comparison",
+            "query_telemetry.find_extremum.brake.player.max",
+            "query_telemetry.find_extremum.brake.expert.max",
+            "player peak brake pressure",
+            "expert peak brake pressure",
+        ),
+        (
+            "throttle peak comparison",
+            "query_telemetry.find_extremum.throttle.player.max",
+            "query_telemetry.find_extremum.throttle.expert.max",
+            "player peak throttle pressure",
+            "expert peak throttle pressure",
+        ),
+    ]
+    out: List[str] = []
+    for label, player_tool, expert_tool, player_phrase, expert_phrase in pairs:
+        player = _query_result(by_tool.get(player_tool))
+        expert = _query_result(by_tool.get(expert_tool))
+        if not player or not expert:
+            continue
+        player_value = player.get("value")
+        expert_value = expert.get("value")
+        if not isinstance(player_value, (int, float)) or not isinstance(
+            expert_value, (int, float)
+        ):
+            continue
+        delta = float(player_value) - float(expert_value)
+        relation = (
+            "higher than" if delta > 0
+            else "lower than" if delta < 0
+            else "aligned with"
+        )
+        out.append(
+            f"{label}: {player_phrase}={player_value} at {player.get('iloc')}; "
+            f"{expert_phrase}={expert_value} at {expert.get('iloc')}; "
+            f"player is {relation} expert by {abs(delta):.3g}"
+        )
+    return out
+
+
+def _query_result(content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(content, dict):
         return None
+    result = content.get("result")
+    return result if isinstance(result, dict) else None
+
+
+def _preflight_tool_summary(tool_id: str, content: Dict[str, Any]) -> Optional[str]:
+    if not tool_id.startswith("query_telemetry."):
+        return _preflight_named_tool_summary(tool_id, content)
+    if content.get("error"):
+        return f"{tool_id}: unavailable ({content.get('error')})"
     result = content.get("result")
     if not isinstance(result, dict):
         return None
+    query_id = str(content.get("query_id") or "")
+    params = content.get("params") if isinstance(content.get("params"), dict) else {}
+    column = str(params.get("column") or "")
+    if query_id == "find_trend_runs":
+        return _preflight_trend_runs_summary(tool_id, result)
+    if query_id == "compute_slope":
+        return _preflight_slope_summary(tool_id, result, column)
+    if query_id == "find_threshold_crossing":
+        return _preflight_threshold_summary(tool_id, result)
+    if query_id == "find_dips_on_main_slope":
+        return _preflight_dips_summary(tool_id, result, column)
+    return None
+
+
+def _preflight_named_tool_summary(
+    tool_id: str,
+    content: Dict[str, Any],
+) -> Optional[str]:
+    if tool_id == "compute_expert_phases":
+        phases = content.get("phases")
+        if isinstance(phases, list) and phases:
+            spans = [
+                f"{p.get('entry')}->{p.get('apex')}->{p.get('exit')}"
+                for p in phases[:4]
+                if isinstance(p, dict)
+            ]
+            return "expert phases: " + "; ".join(spans)
+        return "expert phases: no corner arc detected"
+    if tool_id == "measure_segment_shape":
+        base = content.get("base_segment_shape")
+        if isinstance(base, dict):
+            label_id = base.get("label_id")
+            label_name = base.get("label_name")
+            reason = base.get("reason")
+            return (
+                f"segment shape: {label_id} {label_name}; reason={reason}"
+            )
+    if tool_id == "locate_circuit_section":
+        best = content.get("best_match")
+        if isinstance(best, dict):
+            return (
+                "circuit section: "
+                f"{best.get('label_id')} {best.get('name')} "
+                f"(overlap={best.get('overlap_fraction')})"
+            )
+        if content.get("is_ambiguous"):
+            return "circuit section: ambiguous; inspect top_matches"
+    if tool_id == "classify_opponent_interaction":
+        return (
+            "opponent interaction: "
+            f"outcome={content.get('outcome')}; "
+            f"recommended_label={content.get('recommended_label')}; "
+            f"confidence={content.get('confidence_level')}; "
+            f"primary_slot={content.get('primary_slot_for_role')}; "
+            f"label_gates={content.get('label_gates')}"
+        )
+    if tool_id == "find_nearest_opponent":
+        slot = content.get("slot") or content.get("nearest_slot")
+        distance = content.get("min_distance_m")
+        iloc = content.get("min_distance_iloc")
+        if slot is not None or distance is not None:
+            return (
+                "nearest opponent: "
+                f"slot={slot}; min_distance_m={distance}; iloc={iloc}"
+            )
+    return None
+
+
+def _preflight_trend_runs_summary(
+    tool_id: str,
+    result: Dict[str, Any],
+) -> Optional[str]:
     extra = result.get("extra")
     if not isinstance(extra, dict):
         return None
+    unit = extra.get("unit")
+    strongest_losing = extra.get("strongest_losing_time_run")
+    strongest_recovery = extra.get("strongest_recovery_run")
+    parts = [
+        f"{tool_id}: verdict={extra.get('verdict')}",
+    ]
+    if isinstance(strongest_losing, dict):
+        parts.append(
+            "strongest_losing_time_run="
+            f"{strongest_losing.get('start_iloc')}->{strongest_losing.get('end_iloc')} "
+            f"delta={strongest_losing.get('delta_value')} {unit}"
+        )
+    if isinstance(strongest_recovery, dict):
+        parts.append(
+            "strongest_recovery_run="
+            f"{strongest_recovery.get('start_iloc')}->{strongest_recovery.get('end_iloc')} "
+            f"delta={strongest_recovery.get('delta_value')} {unit}"
+        )
+    if len(parts) == 1:
+        parts.append("no label-significant trend run")
+    return "; ".join(parts)
+
+
+def _preflight_slope_summary(
+    tool_id: str,
+    result: Dict[str, Any],
+    column: str,
+) -> Optional[str]:
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    zero = extra.get("near_zero_summary")
     end_zero = extra.get("end_near_zero_summary")
+    moves_toward_zero = (
+        zero.get("moves_toward_zero") if isinstance(zero, dict) else None
+    )
     end_moves_toward_zero = (
         end_zero.get("moves_toward_zero") if isinstance(end_zero, dict) else None
     )
+    caution = (
+        "; do not decide mistake/recovery from the raw endpoint difference"
+        if column == "expert_time_difference"
+        else ""
+    )
     return (
-        "expert_time_difference slope verdict: "
+        f"{tool_id} slope verdict: "
         f"total_change={extra.get('delta_value')} {extra.get('unit')}; "
         f"total_change_direction={extra.get('total_change_direction')}; "
+        f"total_change_domain_direction={extra.get('total_change_domain_direction')}; "
+        f"total_change_is_label_significant={extra.get('total_change_is_label_significant')}; "
+        f"moves_toward_zero={moves_toward_zero}; "
         f"end_window={extra.get('end_window')}; "
         f"end_change={extra.get('end_delta_value')} {extra.get('unit')}; "
         f"end_change_direction={extra.get('end_change_direction')}; "
+        f"end_change_domain_direction={extra.get('end_change_domain_direction')}; "
         f"end_trend_change={extra.get('end_trend_change')}; "
         f"end_moves_toward_zero={end_moves_toward_zero}"
+        f"{caution}"
+    )
+
+
+def _preflight_threshold_summary(
+    tool_id: str,
+    result: Dict[str, Any],
+) -> Optional[str]:
+    samples = result.get("samples")
+    if not isinstance(samples, list) or not samples:
+        return None
+    rows = [
+        sample
+        for sample in samples
+        if isinstance(sample, dict)
+    ]
+    if not rows:
+        return None
+    with_iloc = [row for row in rows if row.get("iloc") is not None]
+    parts = [
+        f"{row.get('column')} crosses at {row.get('iloc')}"
+        for row in with_iloc
+    ]
+    player_vs_expert = _threshold_player_vs_expert(rows)
+    if player_vs_expert:
+        parts.append(player_vs_expert)
+    missing = [
+        str(row.get("column"))
+        for row in rows
+        if row.get("iloc") is None
+    ]
+    if missing:
+        parts.append("no crossing for " + ", ".join(missing))
+    return f"{tool_id}: " + "; ".join(parts)
+
+
+def _threshold_player_vs_expert(rows: List[Dict[str, Any]]) -> Optional[str]:
+    by_column = {str(row.get("column") or ""): row for row in rows}
+    pairs = [
+        ("Physics_brake", "expert_optimal_brake", "player brake"),
+        ("Physics_gas", "expert_optimal_throttle", "player throttle"),
+    ]
+    for player_col, expert_col, phrase in pairs:
+        player = by_column.get(player_col)
+        expert = by_column.get(expert_col)
+        if not player or not expert:
+            continue
+        player_iloc = player.get("iloc")
+        expert_iloc = expert.get("iloc")
+        if not isinstance(player_iloc, int) or not isinstance(expert_iloc, int):
+            continue
+        delta = player_iloc - expert_iloc
+        relation = (
+            "earlier than" if delta < 0
+            else "later than" if delta > 0
+            else "aligned with"
+        )
+        return f"{phrase} crosses {relation} expert by {abs(delta)} ilocs"
+    return None
+
+
+def _preflight_dips_summary(
+    tool_id: str,
+    result: Dict[str, Any],
+    column: str,
+) -> Optional[str]:
+    samples = result.get("samples")
+    extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+    n_dips = extra.get("n_dips")
+    if not isinstance(samples, list):
+        return None
+    if not samples:
+        return f"{tool_id}: no {column} modulation dip detected"
+    dips = [
+        f"iloc={sample.get('iloc')} depth={sample.get('depth')}"
+        for sample in samples[:4]
+        if isinstance(sample, dict)
+    ]
+    return (
+        f"{tool_id}: {n_dips} {column} modulation dip(s); "
+        + "; ".join(dips)
     )
 
 

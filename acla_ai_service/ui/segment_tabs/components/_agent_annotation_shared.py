@@ -561,7 +561,6 @@ def render_followup_chat() -> None:
     chat: list[dict] = st.session_state.setdefault("agent_annot_followup_chat", [])
 
     st.markdown("---")
-    st.markdown("##### 💬 Ask Claude about these proposals")
     st.caption(
         "Use this to interrogate the just-finished annotation so you can "
         "refine the skill text (label catalog / graph `how_to_analyze` "
