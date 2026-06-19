@@ -1452,7 +1452,7 @@ def _time_delta_slope_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
             "threshold_state": _time_delta_threshold_state(
                 extra.get("total_change_is_label_significant")
             ),
-            "moves_toward_expert_line": (
+            "moves_toward_zero": (
                 zero.get("moves_toward_zero") if isinstance(zero, dict) else None
             ),
         },
@@ -1465,7 +1465,7 @@ def _time_delta_slope_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
                 extra.get("end_delta_value"),
             ),
             "trend_change": extra.get("end_trend_change"),
-            "moves_toward_expert_line": (
+            "moves_toward_zero": (
                 end_zero.get("moves_toward_zero")
                 if isinstance(end_zero, dict)
                 else None
