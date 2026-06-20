@@ -13,7 +13,6 @@ from .shared import (
     save_annotations,
     LABEL_CATEGORIES,
     LABEL_MAPPING,
-    LABEL_NAME_TO_ID,
 )
 from app.local_annotation_agent import ClaudeUsageExhausted
 
@@ -23,22 +22,6 @@ _USAGE_EXHAUSTED_WARNING = (
     "credit balance). Batch halted — try again later."
 )
 _MIN_DISCOVERED_CHILD_LENGTH = 3
-
-
-def _resolve_label_id(label) -> str:
-    key = str(label)
-    if key in LABEL_MAPPING:
-        return key
-    return LABEL_NAME_TO_ID.get(key, key)
-
-
-def _parent_main_label_ids(labels) -> list[str]:
-    main_label_set = set(LABEL_CATEGORIES.get("Main Labels", []))
-    return [
-        label_id
-        for label_id in (_resolve_label_id(label) for label in labels or [])
-        if label_id in main_label_set
-    ]
 
 
 def _render_provider_config(key_prefix: str, *, default_temperature: float, default_max_new_tokens: int):
@@ -64,11 +47,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     for (gs, ge), anns in grouped:
         if ge - gs < _MIN_DISCOVERED_CHILD_LENGTH:
             continue
-        label_ids = [
-            _resolve_label_id(a["label_id"])
-            for a in anns
-            if _resolve_label_id(a.get("label_id")) in LABEL_MAPPING
-        ]
+        label_ids = [a["label_id"] for a in anns if a.get("label_id") in LABEL_MAPPING]
         if not label_ids:
             continue
         notes = "; ".join(a.get("reasoning", "") for a in anns if a.get("reasoning"))
@@ -362,9 +341,10 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         children_by_parent.setdefault(pid, []).append({
             "start_index": ann.start_index,
             "end_index": ann.end_index,
-            "labels": [_resolve_label_id(label) for label in ann.labels],
+            "labels": list(ann.labels),
         })
 
+    main_label_set = set(LABEL_CATEGORIES.get("Main Labels", []))
     st.session_state["batch_agent_stop"] = False
     logs = st.session_state["batch_agent_logs"]
     total = len(process_indices)
@@ -403,7 +383,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
         existing_for_agent = [] if (existing and not skip_with_children) else existing
 
-        parent_main_labels = _parent_main_label_ids(parent.labels)
+        parent_main_labels = [l for l in parent.labels if l in main_label_set]
         p_start = int(parent.start_index) if parent.start_index is not None else 0
         p_end = int(parent.end_index) if parent.end_index is not None else len(df) - 1
 
