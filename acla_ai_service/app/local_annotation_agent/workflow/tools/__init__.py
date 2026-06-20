@@ -83,6 +83,25 @@ def search_labels_handler(_surface, args: Dict[str, Any]) -> str:
 def _preflight_tags_from_request(request: Any) -> list[str]:
     if request is None:
         return []
+    event_terms: list[str] = []
+    for attachment in getattr(request, "initial_attachments", []) or []:
+        if getattr(attachment, "name", "") != "init.detailed_preflight_events":
+            continue
+        content = getattr(attachment, "content", None)
+        if not isinstance(content, dict):
+            continue
+        events = content.get("events") or []
+        if isinstance(events, list):
+            event_terms.extend(
+                str(event.get("event"))
+                for event in events
+                if isinstance(event, dict) and str(event.get("event") or "").strip()
+            )
+        event_text = str(content.get("event_text") or "").strip()
+        if event_text:
+            event_terms.extend(event_text.splitlines())
+        if event_terms:
+            return [term for term in event_terms if term.strip()][:80]
     for attachment in getattr(request, "initial_attachments", []) or []:
         if getattr(attachment, "name", "") != "init.annotation_preflight_context":
             continue

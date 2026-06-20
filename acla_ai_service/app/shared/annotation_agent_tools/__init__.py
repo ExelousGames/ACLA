@@ -513,9 +513,12 @@ def _classify_base_segment_shape(
     apex_frac = apex / max(n_rows - 1, 1)
     exit_frac = exit_ / max(n_rows - 1, 1)
 
-    if entry_frac > 0.25:
+    if entry_frac > 0.25 and apex_frac >= 0.85:
         shape_key = "approach_to_corner"
-        reason = "Segment starts before the detected curvature arc."
+        reason = (
+            "Segment starts before the detected curvature arc and ends "
+            "before the corner apex."
+        )
     elif apex_frac <= 0.35 and exit_frac >= 0.75:
         shape_key = "exit_corner_to_straight"
         reason = (

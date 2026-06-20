@@ -131,6 +131,30 @@ def _format_preflight_context(content: Any) -> str:
     candidate_ids = content.get("label_candidate_ids") or []
     if candidate_ids:
         lines.append("Semantic candidate IDs: " + ", ".join(str(x) for x in candidate_ids))
+    statistical_events = content.get("statistical_events") or []
+    if statistical_events:
+        lines.append("Statistical events: " + ", ".join(str(x) for x in statistical_events[:30]))
+    return "\n".join(lines)
+
+
+def _format_detailed_preflight_events(content: Any) -> str:
+    if not isinstance(content, dict):
+        return str(content)
+    lines = [
+        f"Range: {content.get('range')}",
+        "Events:",
+    ]
+    events = content.get("events") or []
+    if not events:
+        lines.append("- (none)")
+        return "\n".join(lines)
+    for event in events[:40]:
+        if not isinstance(event, dict):
+            continue
+        lines.append(
+            f"- {event.get('event')} | phase={event.get('phase')} "
+            f"| range={event.get('range')} | confidence={event.get('confidence')}"
+        )
     return "\n".join(lines)
 
 
@@ -140,6 +164,7 @@ def register_annotation_formatters() -> None:
     register_structured_formatter("annotation_preflight_tool", _format_preflight_tool)
     register_structured_formatter("annotation_preflight_labels", _format_preflight_labels)
     register_structured_formatter("annotation_preflight_context", _format_preflight_context)
+    register_structured_formatter("detailed_preflight_events", _format_detailed_preflight_events)
 
 
 register_annotation_formatters()

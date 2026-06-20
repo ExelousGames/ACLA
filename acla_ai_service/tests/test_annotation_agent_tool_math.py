@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from app.shared.annotation_agent_tools import (
+    _classify_base_segment_shape,
     _query_compute_slope,
     build_graph,
     locate_circuit_section,
@@ -338,17 +339,41 @@ def test_preflight_trajectory_offset_summary_separates_side_from_distance():
 
 def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
     captured = {}
-    sentinel = object()
 
-    def fake_build_shared_preflight_context(**kwargs):
-        captured.update(kwargs)
-        return sentinel
+    def fake_run_tools(df, start, end, tool_ids):
+        captured["tool_ids"] = tool_ids
+        return [
+            ("compute_expert_phases", {"phases": []}),
+            (
+                "measure_segment_shape",
+                {
+                    "base_segment_shape": {
+                        "label_id": "ST2",
+                        "label_name": "On the straight",
+                    },
+                    "phases": [],
+                },
+            ),
+        ]
 
-    monkeypatch.setattr(
-        preflight_detailed,
-        "build_shared_preflight_context",
-        fake_build_shared_preflight_context,
-    )
+    def fake_run_queries(df, start, end, query_specs):
+        captured["query_specs"] = query_specs
+        return [
+            (
+                "query_telemetry.compute_slope.trajectory_offset",
+                {
+                    "graph_id": "trajectory_offset",
+                    "query_id": "compute_slope",
+                    "params": {"column": "trajectory_offset", "range": [start, end]},
+                    "error": "cannot build `trajectory_offset` graph table",
+                    "analysis": {},
+                    "semantic_tags": [],
+                },
+            )
+        ]
+
+    monkeypatch.setattr(preflight_detailed, "_run_tools", fake_run_tools)
+    monkeypatch.setattr(preflight_detailed, "_run_queries", fake_run_queries)
 
     result = preflight_detailed.build_preflight_context(
         df=pd.DataFrame(),
@@ -358,8 +383,205 @@ def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
         extra_query_terms=[],
     )
 
-    assert result is sentinel
-    assert "strict_query_errors" not in captured
+    assert result.label_candidates == []
+    assert "preflight semantic candidates" not in result.prompt_block.lower()
+    names = [attachment.name for attachment in result.attachments]
+    assert "init.detailed_preflight_events" in names
+    assert "init.preflight_label_candidates" not in names
+    events_attachment = next(
+        attachment
+        for attachment in result.attachments
+        if attachment.name == "init.detailed_preflight_events"
+    )
+    assert events_attachment.content["events"][0]["event"] == "on the straight"
+    assert captured["query_specs"]
+
+
+def test_detailed_preflight_events_capture_late_brake_widening_and_time_loss():
+    events = preflight_detailed._build_detailed_events(
+        pd.DataFrame(),
+        10,
+        30,
+        [
+            (
+                "compute_expert_phases",
+                {"phases": [{"entry": 10, "apex": 20, "exit": 30}]},
+            ),
+            (
+                "query_telemetry.find_threshold_crossing.brake.onset",
+                {
+                    "result": {
+                        "samples": [
+                            {"column": "expert_optimal_brake", "iloc": 12},
+                            {"column": "Physics_brake", "iloc": 18},
+                        ],
+                    },
+                },
+            ),
+            (
+                "query_telemetry.find_extremum.trajectory_offset.max",
+                {"result": {"iloc": 17, "value": 0.85}},
+            ),
+            (
+                "query_telemetry.compute_slope.trajectory_offset",
+                {
+                    "analysis": {
+                        "total_change": {
+                            "value": 0.7,
+                            "domain_direction": "moving_wider",
+                        },
+                    },
+                },
+            ),
+            (
+                "query_telemetry.compute_slope.expert_time_difference",
+                {
+                    "analysis": {
+                        "total_gap_change": {
+                            "value": 350.0,
+                            "gap_direction": "time_gap_rising",
+                            "threshold_state": "label_threshold_met",
+                        },
+                        "slope_shape": "slope_steady_over_section",
+                    },
+                },
+            ),
+        ],
+    )
+
+    event_names = {event["event"] for event in events}
+    assert "brake initiation onset later than expert" in event_names
+    assert "trajectory wider than expert" in event_names
+    assert "moving toward positive" in event_names
+    assert "gap grows" in event_names
+    assert "time loss" in event_names
+
+
+def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
+    events = preflight_detailed._build_detailed_events(
+        pd.DataFrame(),
+        100,
+        130,
+        [
+            (
+                "query_telemetry.compute_slope.trajectory_offset",
+                {
+                    "analysis": {
+                        "total_change": {
+                            "value": -1.2,
+                            "domain_direction": "moving_tighter",
+                        },
+                        "absolute_offset": {
+                            "start": 2.0,
+                            "end": 0.2,
+                            "moves_toward_expert_line": True,
+                        },
+                    },
+                },
+            ),
+            (
+                "query_telemetry.find_extremum.speed_difference.max",
+                {"result": {"iloc": 105, "value": 24.0}},
+            ),
+            (
+                "query_telemetry.compute_slope.speed_difference",
+                {
+                    "analysis": {
+                        "total_change": {
+                            "value": -18.0,
+                            "domain_direction": "speed_gap_decreasing",
+                            "moves_toward_zero": True,
+                        },
+                    },
+                },
+            ),
+        ],
+    )
+
+    event_names = {event["event"] for event in events}
+    assert "recovery toward expert line" in event_names
+    assert "speed gap closing" in event_names
+    assert "large speed gap over 20" in event_names
+    assert "expert faster than player" in event_names
+
+
+def test_detailed_preflight_events_capture_throttle_timing_and_peak():
+    events = preflight_detailed._build_detailed_events(
+        pd.DataFrame(),
+        0,
+        20,
+        [
+            (
+                "query_telemetry.find_threshold_crossing.throttle.onset",
+                {
+                    "result": {
+                        "samples": [
+                            {"column": "expert_optimal_throttle", "iloc": 12},
+                            {"column": "Physics_gas", "iloc": 8},
+                        ],
+                    },
+                },
+            ),
+            (
+                "query_telemetry.find_extremum.throttle.player.max",
+                {"result": {"iloc": 14, "value": 0.95}},
+            ),
+            (
+                "query_telemetry.find_extremum.throttle.expert.max",
+                {"result": {"iloc": 15, "value": 0.72}},
+            ),
+        ],
+    )
+
+    event_names = {event["event"] for event in events}
+    assert "throttle application onset earlier than expert" in event_names
+    assert "peak throttle pressure higher than expert" in event_names
+
+
+def test_detailed_preflight_events_capture_opponent_outcomes():
+    events = preflight_detailed._build_detailed_events(
+        pd.DataFrame(),
+        0,
+        20,
+        [
+            (
+                "classify_opponent_interaction",
+                {
+                    "outcome": "failed_attack",
+                    "confidence_level": "high",
+                    "primary_slot_for_role": 3,
+                    "label_gates": {"MSR": True},
+                },
+            )
+        ],
+    )
+
+    assert events[0]["event"] == "failed attack"
+    assert events[0]["confidence"] == "strong"
+    assert events[0]["measurements"]["primary_slot_for_role"] == 3
+
+
+def test_detailed_preflight_prompt_uses_events_not_candidates():
+    prompt = preflight_detailed._prompt_block(
+        0,
+        10,
+        [],
+        [
+            {
+                "event": "brake initiation onset later than expert",
+                "phase": "entry",
+                "range": [2, 5],
+                "confidence": "strong",
+                "measurements": {},
+                "sources": [],
+            }
+        ],
+        "brake initiation onset later than expert",
+    )
+
+    assert "statistical semantic events" in prompt
+    assert "search_labels" in prompt
+    assert "preflight semantic candidates" not in prompt.lower()
 
 
 def test_lap_preflight_does_not_calculate_speed_delta_for_parent_labels(monkeypatch):
@@ -583,6 +805,24 @@ def test_real_corner_segment_shape_still_emits_corner_phase():
     assert "turn angle" in content["corner_shape_refinement"]["reason"]
     assert content["phases"]
     assert content["phases"][0]["turn_angle_degrees"] >= 10.0
+
+
+def test_approach_to_corner_requires_range_to_end_before_apex():
+    result = _classify_base_segment_shape(
+        [{"entry": 30, "apex": 60, "exit": 90}],
+        100,
+    )
+
+    assert result["label_id"] == "ST1"
+
+
+def test_approach_to_corner_when_range_starts_before_corner_and_ends_near_apex():
+    result = _classify_base_segment_shape(
+        [{"entry": 30, "apex": 96, "exit": 99}],
+        100,
+    )
+
+    assert result["label_id"] == "ST3"
 
 
 def test_short_offset_corner_turn_angle_is_not_edge_inflated_to_hairpin():

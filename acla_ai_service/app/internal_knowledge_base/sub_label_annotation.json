@@ -1032,7 +1032,7 @@
       "segment_type_role": "base_segment_shape",
       "shape_key": "approach_to_corner",
       "lap_parent_allowed": true,
-      "description": "Full segment only covering the braking zone before a corner — starts straight and begins curving.",
+      "description": "Full segment only covering the braking zone before a corner: starts before the detected corner arc and ends before the apex.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1367,6 +1367,6 @@
     }
   },
   "category_guidelines": {
-    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. ST4 means the exit section of the corner itself as it leads toward a straight; it does not mean a range that includes the completed corner plus a substantial portion of the following straight. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. Add a corner-shape refinement only when `measure_segment_shape.corner_shape_refinement.shape_key` matches that label's `deterministic_gate.required_shape_key` for the final range; non-empty `phases` alone is not enough. ST10 requires `measure_segment_shape.corner_shape_refinement` to report the required hairpin gate flag true: `is_near_u_turn`. Entry/apex/exit altitude labels (ST12-ST20) are phase-specific subsegment labels. Do not attach them to a lap parent segment that covers the whole corner; use them only when the annotation range is the matching corner phase subsegment.\n"
+    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. ST3 means the range starts before the detected corner arc and ends before the apex; do not use ST3 for a range that includes the apex or corner exit. ST4 means the exit section of the corner itself as it leads toward a straight; it does not mean a range that includes the completed corner plus a substantial portion of the following straight. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. Add a corner-shape refinement only when `measure_segment_shape.corner_shape_refinement.shape_key` matches that label's `deterministic_gate.required_shape_key` for the final range; non-empty `phases` alone is not enough. ST10 requires `measure_segment_shape.corner_shape_refinement` to report the required hairpin gate flag true: `is_near_u_turn`. Entry/apex/exit altitude labels (ST12-ST20) are phase-specific subsegment labels. Do not attach them to a lap parent segment that covers the whole corner; use them only when the annotation range is the matching corner phase subsegment.\n"
   }
 }
