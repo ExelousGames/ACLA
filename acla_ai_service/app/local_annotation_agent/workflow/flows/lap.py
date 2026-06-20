@@ -352,6 +352,8 @@ def _tool_agent_task_prompt(
     *,
     lap_start: int,
     lap_end: int,
+    circuit_id: str,
+    section_id: str,
     section_start: int,
     section_end: int,
     section_split_basis: Optional[str],
@@ -374,6 +376,21 @@ def _tool_agent_task_prompt(
     interaction_focus = _interaction_focus_block(
         section_split_basis, opponent_interaction,
     )
+    section_name = (
+        LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
+    )
+    circuit_name = (
+        LABEL_MAPPING.get(circuit_id, circuit_id) if circuit_id else circuit_id
+    )
+    splitter_section_block = ""
+    if circuit_id or section_id:
+        splitter_section_block = (
+            "- Splitter context: "
+            f"`{circuit_id}` ({circuit_name}), "
+            f"`{section_id}` ({section_name}). Use this as context, but "
+            "submit the circuit_section ids from `locate_circuit_section`; "
+            "when it is ambiguous, submit all plausible `top_matches` ids.\n"
+        )
     preselected_section_id = _preselected_interaction_section_id(opponent_interaction)
     preselected_section_block = ""
     if preselected_section_id:
@@ -388,7 +405,8 @@ def _tool_agent_task_prompt(
         "Annotate ONE lap range. The deterministic splitter handed you a "
         "fixed split-section boundary; if this is an opponent interaction window, "
         "the boundary is event-shaped and circuit sections are context only. "
-        "Your job is to pick the circuit id, optional circuit_section id, "
+        "Your job is to include the circuit id and all applicable "
+        "circuit_section ids from capability results, "
         "at least one required behavior parent label for any saved segment, optional "
         "lap-parent-allowed segment-type labels, and an optional matching "
         "sub-label.\n"
@@ -401,6 +419,7 @@ def _tool_agent_task_prompt(
         f"- Split section boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})\n"
         f"- Split basis: {section_split_basis or 'circuit_section'}\n"
+        f"{splitter_section_block}"
         f"{preselected_section_block}"
         f"{interaction_focus}"
         "\n"
@@ -440,7 +459,8 @@ def _tool_agent_task_prompt(
         '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and range-fit rationale>"\n'
         "}\n"
         "```\n"
-        "`label_ids` carries the circuit id, optional circuit_section id, "
+        "`label_ids` carries the circuit id, all applicable "
+        "circuit_section ids, "
         "and your main / segment-type / sub picks together. Every saved "
         f"segment must contain at least one of {_label_set_text(eligible_labels)}; "
         "otherwise submit an empty `label_ids` array as the valid "
@@ -453,7 +473,9 @@ def _tool_agent_task_prompt(
         "- Do not invent label IDs; circuit / circuit_section ids must come "
         "from splitter context or capability results, every other id from "
         "preflight semantic candidates or a targeted `search_labels` response.\n"
-        "- Include a circuit_section id only when it is unambiguous.\n"
+        "- When `locate_circuit_section` reports ambiguity, include every "
+        "plausible circuit_section id from `top_matches` in `label_ids`; "
+        "do not choose one and do not omit them.\n"
         f"- {_mode_exclusion_rule(session_context)}\n"
         f"- {WHOLE_RANGE_LABEL_RULE}\n"
         "- Apply the segment/action model and segment completeness rules "
@@ -551,6 +573,8 @@ def build_request(
     planner_prompt = _tool_agent_task_prompt(
         lap_start=lap_start,
         lap_end=lap_end,
+        circuit_id=circuit_id,
+        section_id=section_id,
         section_start=section_start,
         section_end=section_end,
         section_split_basis=section_split_basis,
@@ -596,9 +620,8 @@ def parse(
 
     ``prompt_mode="tool_agent"`` reads the submitted tool-agent payload.
 
-    Returns only what the LLM committed to — including the circuit and
-    circuit_section ids the LLM picked via ``get_circuit_id`` /
-    ``locate_circuit_section``.
+    Returns the LLM-committed labels. Ambiguous circuit sections are
+    represented by multiple circuit_section ids when the LLM submits them.
     """
     session_context = _session_context(section_split_basis, opponent_interaction)
     eligible_labels = list(_eligible_behavior_label_ids(session_context))
@@ -634,9 +657,6 @@ def _parse_tool_agent(
         cleaned, rejected = _clean_label_ids(
             raw_label_ids,
             eligible_behavior_label_ids=eligible_behavior_label_ids,
-        )
-        cleaned = _with_preselected_interaction_labels(
-            cleaned, circuit_id, opponent_interaction,
         )
         reasoning = str(parsed.get("reasoning") or parsed.get("summary") or "")
 
@@ -750,28 +770,3 @@ def _clean_label_ids(
         })
         return [], rejected
     return allowed, rejected
-
-
-def _with_preselected_interaction_labels(
-    label_ids: List[str],
-    circuit_id: Optional[str],
-    opponent_interaction: Optional[dict],
-) -> List[str]:
-    """Add splitter-provided circuit context to non-empty interaction labels."""
-    if not label_ids:
-        return label_ids
-
-    section_id = _preselected_interaction_section_id(opponent_interaction)
-    if not section_id:
-        return label_ids
-
-    prefix: List[str] = []
-    if circuit_id and circuit_id in LABEL_MAPPING:
-        prefix.append(circuit_id)
-    prefix.append(section_id)
-
-    merged: List[str] = []
-    for label_id in [*prefix, *label_ids]:
-        if label_id not in merged:
-            merged.append(label_id)
-    return merged

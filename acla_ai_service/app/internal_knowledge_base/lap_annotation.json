@@ -74,7 +74,7 @@
       "Every saved lap segment must include at least one eligible behavior parent label. Circuit labels, circuit_section labels, segment-type labels, sub-labels, and EA do not satisfy this requirement.",
       "If no eligible behavior parent fits the whole split-section range, submit `label_ids: []` to drop the range; do not save a segment with only circuit / section / segment-type / sub-label / EA labels.",
       "Call `get_circuit_id` and `locate_circuit_section` for circuit context. Include circuit / circuit_section ids only when an eligible behavior parent is also included.",
-      "When `locate_circuit_section` reports `is_ambiguous`, disambiguate from `top_matches` with a second signal (persistent lateral offset, brake pattern, or speed trace) rather than guessing.",
+      "When `locate_circuit_section` reports `is_ambiguous`, include every plausible circuit_section id from `top_matches`; do not choose one and do not omit them.",
       "Whole-range label rule: every behavior, segment-type, and sub-label must describe the final annotation range as a whole. Do not attach a label because it matches only one phase, one apex moment, or a short slice inside the range; omit that label or leave it for detailed child sub-segment annotation.",
       "Segment model: a saved lap parent segment is a group of one or more complete driving actions that together justify the behavior parent label over the final iloc range; it is not an arbitrary graph slice, a single apex moment, or one isolated label symptom.",
       "Action model: each action must be evaluated as the related turning / trajectory, throttle input, and brake input over the same iloc interval. Zero or steady throttle / brake still count as input states when they explain the action.",

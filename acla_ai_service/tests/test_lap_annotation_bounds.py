@@ -40,6 +40,12 @@ def test_lap_tool_agent_request_is_fixed_to_section():
 
     assert request.parent_start == 10
     assert request.parent_end == 20
+    assert "Splitter context" in request.planner_prompt
+    assert "`brands_hatch1`" in request.planner_prompt
+    assert (
+        "include every plausible circuit_section id from `top_matches`"
+        in request.planner_prompt
+    )
     assert set(request.extra_state) == {
         "tool_agent_extra_tools",
         "annotation_session_context",
@@ -101,7 +107,90 @@ def test_lap_parse_tool_agent_accepts_summary_field_as_reasoning_fallback():
     )
 
     assert result.label_ids == ["MSP"]
-    assert result.reasoning == "Observed steady maintenance speed through the full split."
+    assert (
+        result.reasoning
+        == "Observed steady maintenance speed through the full split."
+    )
+
+
+def test_lap_parse_does_not_add_section_when_agent_omits_it():
+    response = AgentResponse(
+        raw_response=json.dumps({
+            "label_ids": ["MSP"],
+            "reasoning": (
+                "Circuit section was ambiguous in locate_circuit_section, "
+                "but the splitter assigned this range to Brabham Straight."
+            ),
+        }),
+        verdict="submitted",
+    )
+
+    result = lap_flow.parse(
+        response,
+        prompt_mode="tool_agent",
+        lap_start=0,
+        lap_end=100,
+        section_id="brands_hatch1",
+        section_start=10,
+        section_end=20,
+        circuit_id="brands_hatch",
+    )
+
+    assert result.label_ids == ["MSP"]
+
+
+def test_lap_parse_preserves_multiple_possible_sections():
+    response = AgentResponse(
+        raw_response=json.dumps({
+            "label_ids": ["brands_hatch1", "brands_hatch17", "MSP"],
+            "reasoning": (
+                "locate_circuit_section was ambiguous between Brabham "
+                "Straight and Pit, so both possible section ids are kept."
+            ),
+        }),
+        verdict="submitted",
+    )
+
+    result = lap_flow.parse(
+        response,
+        prompt_mode="tool_agent",
+        lap_start=0,
+        lap_end=100,
+        section_id="brands_hatch1",
+        section_start=10,
+        section_end=20,
+        circuit_id="brands_hatch",
+    )
+
+    assert result.label_ids == [
+        "brands_hatch",
+        "brands_hatch1",
+        "brands_hatch17",
+        "MSP",
+    ]
+
+
+def test_lap_parse_does_not_add_splitter_section_to_empty_drop():
+    response = AgentResponse(
+        raw_response=json.dumps({
+            "label_ids": [],
+            "reasoning": "No behavior parent label fit the whole range.",
+        }),
+        verdict="submitted",
+    )
+
+    result = lap_flow.parse(
+        response,
+        prompt_mode="tool_agent",
+        lap_start=0,
+        lap_end=100,
+        section_id="brands_hatch1",
+        section_start=10,
+        section_end=20,
+        circuit_id="brands_hatch",
+    )
+
+    assert result.label_ids == []
 
 
 def test_tool_surface_queries_clamp_to_current_working_range():
