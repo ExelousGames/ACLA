@@ -203,7 +203,7 @@ def _mode_exclusion_rule(session_context: str) -> str:
         return (
             "Pick at most one opponent-aware behavior parent from {O, OD, MSR}; "
             "O + OD, O + MSR, and OD + MSR are contradictions. PS is allowed "
-            "only for pit-lane procedure and should not be combined with "
+            "only for Pit-section procedure and should not be combined with "
             "O / OD / MSR."
         )
     return (
@@ -338,7 +338,7 @@ def _interaction_focus_block(
         "threat, submit "
         "`label_ids: []` rather than labeling normal practice-driving "
         "telemetry such as EA / MSP / RM. PS is still valid when the "
-        "range has pit-lane procedure evidence.\n"
+        "range has Pit-section procedure evidence.\n"
         f"{target_block}"
     )
 
@@ -365,7 +365,7 @@ def _tool_agent_task_prompt(
     if session_context == "racing":
         mode_submit_rule = (
             "- In opponent-interaction windows, use O / OD / MSR, or PS "
-            "when pit-lane procedure evidence fits the whole range; submit "
+            "when Pit-section procedure evidence fits the whole range; submit "
             "an empty `label_ids` array to drop the range when none fit.\n"
         )
     else:
@@ -387,9 +387,11 @@ def _tool_agent_task_prompt(
         splitter_section_block = (
             "- Splitter context: "
             f"`{circuit_id}` ({circuit_name}), "
-            f"`{section_id}` ({section_name}). Use this as context, but "
-            "submit the circuit_section ids from `locate_circuit_section`; "
-            "when it is ambiguous, submit all plausible `top_matches` ids.\n"
+            f"`{section_id}` ({section_name}). Use this as the selected "
+            "circuit_section unless Pit-section evidence and PS / PS1 selection "
+            "make the Pit section the better knowledge-base fit. If "
+            "`locate_circuit_section` is ambiguous, use `top_matches` only "
+            "as competing evidence to resolve to one circuit_section id.\n"
         )
     preselected_section_id = _preselected_interaction_section_id(opponent_interaction)
     preselected_section_block = ""
@@ -405,8 +407,8 @@ def _tool_agent_task_prompt(
         "Annotate ONE lap range. The deterministic splitter handed you a "
         "fixed split-section boundary; if this is an opponent interaction window, "
         "the boundary is event-shaped and circuit sections are context only. "
-        "Your job is to include the circuit id and all applicable "
-        "circuit_section ids from capability results, "
+        "Your job is to include the circuit id and one selected "
+        "circuit_section id from splitter context or capability results, "
         "at least one required behavior parent label for any saved segment, optional "
         "lap-parent-allowed segment-type labels, and an optional matching "
         "sub-label.\n"
@@ -459,8 +461,8 @@ def _tool_agent_task_prompt(
         '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and range-fit rationale>"\n'
         "}\n"
         "```\n"
-        "`label_ids` carries the circuit id, all applicable "
-        "circuit_section ids, "
+        "`label_ids` carries the circuit id, one selected "
+        "circuit_section id, "
         "and your main / segment-type / sub picks together. Every saved "
         f"segment must contain at least one of {_label_set_text(eligible_labels)}; "
         "otherwise submit an empty `label_ids` array as the valid "
@@ -473,9 +475,11 @@ def _tool_agent_task_prompt(
         "- Do not invent label IDs; circuit / circuit_section ids must come "
         "from splitter context or capability results, every other id from "
         "preflight semantic candidates or a targeted `search_labels` response.\n"
-        "- When `locate_circuit_section` reports ambiguity, include every "
-        "plausible circuit_section id from `top_matches` in `label_ids`; "
-        "do not choose one and do not omit them.\n"
+        "- When `locate_circuit_section` reports ambiguity, choose exactly "
+        "one circuit_section id using splitter context and behavior evidence. "
+        "For Pit-vs-straight ties, choose Pit only when Pit-section evidence "
+        "supports PS / PS1; otherwise choose the normal racing-surface "
+        "section. Do not include multiple same-range circuit_section ids.\n"
         f"- {_mode_exclusion_rule(session_context)}\n"
         f"- {WHOLE_RANGE_LABEL_RULE}\n"
         "- Apply the segment/action model and segment completeness rules "
@@ -620,8 +624,8 @@ def parse(
 
     ``prompt_mode="tool_agent"`` reads the submitted tool-agent payload.
 
-    Returns the LLM-committed labels. Ambiguous circuit sections are
-    represented by multiple circuit_section ids when the LLM submits them.
+    Returns the LLM-committed labels after normalizing ambiguous same-range
+    circuit_section ids to one selected section.
     """
     session_context = _session_context(section_split_basis, opponent_interaction)
     eligible_labels = list(_eligible_behavior_label_ids(session_context))
@@ -657,6 +661,7 @@ def _parse_tool_agent(
         cleaned, rejected = _clean_label_ids(
             raw_label_ids,
             eligible_behavior_label_ids=eligible_behavior_label_ids,
+            selected_circuit_section_id=section_id,
         )
         reasoning = str(parsed.get("reasoning") or parsed.get("summary") or "")
 
@@ -715,6 +720,7 @@ def _clean_label_ids(
     raw_label_ids: Any,
     *,
     eligible_behavior_label_ids: Optional[List[str]] = None,
+    selected_circuit_section_id: Optional[str] = None,
 ) -> Tuple[List[str], List[Dict[str, Any]]]:
     cleaned, rejected, _ = normalize_grouped_label_ids(raw_label_ids)
     if not cleaned:
@@ -758,6 +764,11 @@ def _clean_label_ids(
             })
             continue
         allowed.append(label_id)
+    allowed = _resolve_same_range_circuit_sections(
+        allowed,
+        rejected,
+        selected_circuit_section_id=selected_circuit_section_id,
+    )
     if allowed and not any(
         label_id in eligible_behavior_label_ids for label_id in allowed
     ):
@@ -770,3 +781,84 @@ def _clean_label_ids(
         })
         return [], rejected
     return allowed, rejected
+
+
+def _resolve_same_range_circuit_sections(
+    label_ids: List[str],
+    rejected: List[Dict[str, Any]],
+    *,
+    selected_circuit_section_id: Optional[str],
+) -> List[str]:
+    from app.internal_knowledge_base.label_lookup import get_label
+
+    section_groups: Dict[Tuple[str, Tuple[float, float]], List[str]] = {}
+    label_docs: Dict[str, Dict[str, Any]] = {}
+    for label_id in label_ids:
+        doc = get_label(label_id)
+        if not doc:
+            continue
+        label_docs[label_id] = doc
+        if doc.get("type") != "circuit_section":
+            continue
+        section_range = doc.get("normalized_position_range")
+        parent_id = doc.get("parent")
+        if not parent_id or section_range is None:
+            continue
+        range_key = tuple(float(v) for v in section_range)
+        if len(range_key) != 2:
+            continue
+        section_groups.setdefault((str(parent_id), range_key), []).append(label_id)
+
+    selected_by_group: Dict[str, str] = {}
+    has_pit_stop_label = any(
+        label_id == "PS" or label_docs.get(label_id, {}).get("parent") == "PS"
+        for label_id in label_ids
+    )
+    for section_ids in section_groups.values():
+        if len(section_ids) <= 1:
+            continue
+        selected_id = _select_same_range_circuit_section(
+            section_ids,
+            has_pit_stop_label=has_pit_stop_label,
+            selected_circuit_section_id=selected_circuit_section_id,
+        )
+        for section_id in section_ids:
+            selected_by_group[section_id] = selected_id
+            if section_id != selected_id:
+                rejected.append({
+                    "value": section_id,
+                    "reason": (
+                        "same-range circuit_section ambiguity resolved to "
+                        f"{selected_id}"
+                    ),
+                })
+
+    if not selected_by_group:
+        return label_ids
+    return [
+        label_id for label_id in label_ids
+        if selected_by_group.get(label_id, label_id) == label_id
+    ]
+
+
+def _select_same_range_circuit_section(
+    section_ids: List[str],
+    *,
+    has_pit_stop_label: bool,
+    selected_circuit_section_id: Optional[str],
+) -> str:
+    pit_sections = [
+        section_id for section_id in section_ids
+        if "pit" in LABEL_MAPPING.get(section_id, section_id).lower()
+    ]
+    non_pit_sections = [
+        section_id for section_id in section_ids
+        if section_id not in pit_sections
+    ]
+    if has_pit_stop_label and pit_sections:
+        return pit_sections[0]
+    if selected_circuit_section_id in section_ids:
+        return str(selected_circuit_section_id)
+    if not has_pit_stop_label and non_pit_sections:
+        return non_pit_sections[0]
+    return section_ids[0]

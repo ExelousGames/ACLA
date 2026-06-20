@@ -3049,8 +3049,8 @@ def locate_circuit_section(
     unknown, all values are non-finite, or no circuit_section in the catalog
     has its range filled in yet. ``best_match`` is set ONLY when the leading
     entry's ``overlap_fraction`` clears the runner-up by ``AMBIGUOUS_MARGIN``;
-    otherwise ``is_ambiguous`` is true and callers should keep all plausible
-    ``top_matches`` section IDs in the final label set.
+    otherwise ``is_ambiguous`` is true and callers should resolve the
+    competing ``top_matches`` against splitter context and pit-lane evidence.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.internal_knowledge_base.label_lookup import find_labels
@@ -3263,8 +3263,9 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "a 'best_match' that is non-null ONLY when the leader clears "
             "the runner-up by a clear margin. When 'is_ambiguous' is true "
             "(e.g. pit lane and the adjacent straight share a normalized "
-            "position range), include every plausible circuit_section id "
-            "from 'top_matches' instead of choosing one. Use whenever you "
+            "position range), resolve the competing 'top_matches' to one "
+            "circuit_section id using splitter context and pit-lane evidence. "
+            "Use whenever you "
             "need to label which "
             "named corner / straight the segment is on — never guess from "
             "telemetry shape alone."

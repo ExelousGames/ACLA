@@ -43,7 +43,7 @@ def test_lap_tool_agent_request_is_fixed_to_section():
     assert "Splitter context" in request.planner_prompt
     assert "`brands_hatch1`" in request.planner_prompt
     assert (
-        "include every plausible circuit_section id from `top_matches`"
+        "resolve to one circuit_section id"
         in request.planner_prompt
     )
     assert set(request.extra_state) == {
@@ -139,13 +139,14 @@ def test_lap_parse_does_not_add_section_when_agent_omits_it():
     assert result.label_ids == ["MSP"]
 
 
-def test_lap_parse_preserves_multiple_possible_sections():
+def test_lap_parse_resolves_same_range_sections_to_racing_surface_without_ps():
     response = AgentResponse(
         raw_response=json.dumps({
             "label_ids": ["brands_hatch1", "brands_hatch17", "MSP"],
             "reasoning": (
                 "locate_circuit_section was ambiguous between Brabham "
-                "Straight and Pit, so both possible section ids are kept."
+                "Straight and Pit, but there is no pit-lane procedure "
+                "evidence."
             ),
         }),
         verdict="submitted",
@@ -165,9 +166,51 @@ def test_lap_parse_preserves_multiple_possible_sections():
     assert result.label_ids == [
         "brands_hatch",
         "brands_hatch1",
-        "brands_hatch17",
         "MSP",
     ]
+    assert result.rejected_proposals == [{
+        "value": "brands_hatch17",
+        "reason": (
+            "same-range circuit_section ambiguity resolved to brands_hatch1"
+        ),
+    }]
+
+
+def test_lap_parse_resolves_same_range_sections_to_pit_with_ps():
+    response = AgentResponse(
+        raw_response=json.dumps({
+            "label_ids": ["brands_hatch1", "brands_hatch17", "PS", "PS1"],
+            "reasoning": (
+                "locate_circuit_section was ambiguous between Brabham "
+                "Straight and Pit, and pit-lane evidence supports PS."
+            ),
+        }),
+        verdict="submitted",
+    )
+
+    result = lap_flow.parse(
+        response,
+        prompt_mode="tool_agent",
+        lap_start=0,
+        lap_end=100,
+        section_id="brands_hatch1",
+        section_start=10,
+        section_end=20,
+        circuit_id="brands_hatch",
+    )
+
+    assert result.label_ids == [
+        "brands_hatch",
+        "brands_hatch17",
+        "PS",
+        "PS1",
+    ]
+    assert result.rejected_proposals == [{
+        "value": "brands_hatch1",
+        "reason": (
+            "same-range circuit_section ambiguity resolved to brands_hatch17"
+        ),
+    }]
 
 
 def test_lap_parse_does_not_add_splitter_section_to_empty_drop():

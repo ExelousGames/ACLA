@@ -1,36 +1,30 @@
 ## Definition
 The car is exiting the pit lane and rejoining the racing surface
-— typically at pit-exit speed, accelerating up to track speed
-under the pit-exit line restrictions. If pit flags are unavailable,
-the segment position must overlap the circuit's known pit-exit corridor.
+from the circuit's known Pit section. If pit flags are unavailable,
+the segment position must overlap the known Pit section.
 
 ## Physics
-Pit exit is governed by the pit-exit white line — usually the car
-must stay inside this line until past pit out. Cold tyres,
-unfamiliar grip, and merging traffic make it the highest-risk
-phase of any stint. The recovery isn't a driving mistake — it's
-a procedural phase.
+Pit exit is identified by merge / recovery back toward the racing line
+while the segment is in the Pit section. The recovery isn't a driving
+mistake; it's a procedural phase.
 
 ## Telemetry signature
-- Segment position is compatible with pit exit.
-- Initial speed at or below pit-lane limit.
-- Throttle climbs from limit-off speed to full as the car exits.
-- Trajectory follows the pit-exit line.
-- Eventually merges into merge back to expert line as the car reaches the expert line.
+- Segment position overlaps the known Pit section.
+- Telemetry shows merge / recovery back toward the racing line.
+- Throttle and speed can rise as the car rejoins, but they are not enough without Pit-section position.
 
 Do not infer pit exit from low speed plus a wide or merging trajectory
 alone when the segment is located in a normal racing section away from
-pit exit.
+Pit.
 
 ## Engineer interpretation
 Cold tyres, cold brakes. Don't ask the car for everything on the
-out-lap — warm into it through the first sector or two. Most
-pit-exit mistakes come from racing too hard before the tyres are
-ready.
+out-lap — warm into it through the first sector or two. Most mistakes
+after leaving Pit come from racing too hard before the tyres are ready.
 
 ## Remedies
 - First lap out: build pace gradually, especially on entry to
   fast corners.
-- Stay inside the pit-exit line until clear.
+- Merge out cleanly from Pit.
 - Watch traffic — drivers exiting the pit are slower than the
   field; expect to be passed.
