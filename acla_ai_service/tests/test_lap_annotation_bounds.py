@@ -63,6 +63,14 @@ def test_lap_annotation_prompt_includes_segment_action_model():
     assert "describe the final annotation range as a whole" in prompt
 
 
+def test_lap_annotation_prompt_does_not_forbid_pit_stop_with_recovery_merge():
+    prompt = lap_flow.lap_annotation_prompt("practice")
+
+    assert "PS is incompatible with MSP / RM" not in prompt
+    assert "do NOT combine with EA / MSP / MSR / RM / O / OD" not in prompt
+    assert "Do NOT attach for normal pit exit" not in prompt
+
+
 def test_lap_parse_rejects_extra_range_fields():
     response = AgentResponse(
         raw_response=json.dumps({
@@ -179,10 +187,11 @@ def test_lap_parse_resolves_same_range_sections_to_racing_surface_without_ps():
 def test_lap_parse_resolves_same_range_sections_to_pit_with_ps():
     response = AgentResponse(
         raw_response=json.dumps({
-            "label_ids": ["brands_hatch1", "brands_hatch17", "PS", "PS1"],
+            "label_ids": ["brands_hatch1", "brands_hatch17", "PS", "RM"],
             "reasoning": (
                 "locate_circuit_section was ambiguous between Brabham "
-                "Straight and Pit, and pit-lane evidence supports PS."
+                "Straight and Pit, and pit-lane evidence supports PS with "
+                "recovery / merge."
             ),
         }),
         verdict="submitted",
@@ -203,7 +212,7 @@ def test_lap_parse_resolves_same_range_sections_to_pit_with_ps():
         "brands_hatch",
         "brands_hatch17",
         "PS",
-        "PS1",
+        "RM",
     ]
     assert result.rejected_proposals == [{
         "value": "brands_hatch1",

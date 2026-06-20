@@ -208,7 +208,7 @@ def _mode_exclusion_rule(session_context: str) -> str:
         )
     return (
         "Pick at most one technical/recovery behavior parent from {MSP, RM}; "
-        "MSP + RM is a contradiction, and PS is incompatible with MSP / RM."
+        "MSP + RM is a contradiction. PS should not be combined with MSP."
     )
 
 
@@ -388,8 +388,8 @@ def _tool_agent_task_prompt(
             "- Splitter context: "
             f"`{circuit_id}` ({circuit_name}), "
             f"`{section_id}` ({section_name}). Use this as the selected "
-            "circuit_section unless Pit-section evidence and PS / PS1 selection "
-            "make the Pit section the better knowledge-base fit. If "
+            "circuit_section unless Pit-section evidence makes the Pit "
+            "section the better knowledge-base fit. If "
             "`locate_circuit_section` is ambiguous, use `top_matches` only "
             "as competing evidence to resolve to one circuit_section id.\n"
         )
@@ -477,8 +477,8 @@ def _tool_agent_task_prompt(
         "preflight semantic candidates or a targeted `search_labels` response.\n"
         "- When `locate_circuit_section` reports ambiguity, choose exactly "
         "one circuit_section id using splitter context and behavior evidence. "
-        "For Pit-vs-straight ties, choose Pit only when Pit-section evidence "
-        "supports PS / PS1; otherwise choose the normal racing-surface "
+        "For Pit-vs-straight ties, choose Pit when Pit-section evidence "
+        "supports pit procedure; otherwise choose the normal racing-surface "
         "section. Do not include multiple same-range circuit_section ids.\n"
         f"- {_mode_exclusion_rule(session_context)}\n"
         f"- {WHOLE_RANGE_LABEL_RULE}\n"
