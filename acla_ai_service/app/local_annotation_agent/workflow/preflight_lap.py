@@ -7,6 +7,7 @@ from typing import Sequence
 from app.local_annotation_agent.workflow.preflight import (
     SHARED_PREFLIGHT_QUERY_SPECS,
     SHARED_PREFLIGHT_TOOL_IDS,
+    SPEED_INVESTIGATION_QUERY_SPECS,
     PreflightContext,
     build_preflight_context as build_shared_preflight_context,
 )
@@ -20,6 +21,7 @@ LAP_PREFLIGHT_TOOL_IDS = (
 )
 LAP_PREFLIGHT_QUERY_SPECS = (
     *SHARED_PREFLIGHT_QUERY_SPECS,
+    *SPEED_INVESTIGATION_QUERY_SPECS,
     {
         "tool_id": "query_telemetry.compute_slope.trajectory_offset",
         "graph_id": "trajectory_offset",

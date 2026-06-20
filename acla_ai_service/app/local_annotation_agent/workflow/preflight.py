@@ -54,6 +54,39 @@ SHARED_PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
     },
 )
 PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = SHARED_PREFLIGHT_QUERY_SPECS
+SPEED_INVESTIGATION_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
+    {
+        "tool_id": "query_telemetry.find_extremum.player_speed.max",
+        "graph_id": "speed",
+        "query_id": "find_extremum",
+        "params": {"column": "Physics_speed_kmh", "kind": "max"},
+        "tags": ["player speed maximum", "top speed"],
+    },
+    {
+        "tool_id": "query_telemetry.find_extremum.player_speed.min",
+        "graph_id": "speed",
+        "query_id": "find_extremum",
+        "params": {"column": "Physics_speed_kmh", "kind": "min"},
+        "tags": ["player speed minimum", "minimum speed"],
+    },
+    {
+        "tool_id": "query_telemetry.find_trend_runs.player_speed",
+        "graph_id": "speed",
+        "query_id": "find_trend_runs",
+        "params": {
+            "column": "Physics_speed_kmh",
+            "smoothing_window": 5,
+        },
+        "tags": ["speed local curve", "player acceleration", "player deceleration"],
+    },
+    {
+        "tool_id": "query_telemetry.compute_slope.player_speed",
+        "graph_id": "speed",
+        "query_id": "compute_slope",
+        "params": {"column": "Physics_speed_kmh"},
+        "tags": ["speed overall trend", "player acceleration", "player deceleration"],
+    },
+)
 
 _TAG_KEYS = {
     "annotation_scope",
@@ -1048,9 +1081,11 @@ def _preflight_tool_summary(tool_id: str, content: Dict[str, Any]) -> Optional[s
     params = content.get("params") if isinstance(content.get("params"), dict) else {}
     column = str(params.get("column") or "")
     if query_id == "find_trend_runs":
-        return _preflight_trend_runs_summary(tool_id, result)
+        return _preflight_trend_runs_summary(tool_id, result, column)
     if query_id == "compute_slope":
         return _preflight_slope_summary(tool_id, result, column)
+    if query_id == "find_extremum":
+        return _preflight_extremum_summary(tool_id, result, column, params)
     if query_id == "find_threshold_crossing":
         return _preflight_threshold_summary(tool_id, result)
     if query_id == "find_dips_on_main_slope":
@@ -1115,10 +1150,13 @@ def _preflight_named_tool_summary(
 def _preflight_trend_runs_summary(
     tool_id: str,
     result: Dict[str, Any],
+    column: str,
 ) -> Optional[str]:
     extra = result.get("extra")
     if not isinstance(extra, dict):
         return None
+    if column != "expert_time_difference":
+        return _preflight_generic_trend_runs_summary(tool_id, extra)
     unit = extra.get("unit")
     selected_gap_increase, selected_gap_decrease = _time_delta_selected_runs(extra)
     parts = [
@@ -1141,6 +1179,60 @@ def _preflight_trend_runs_summary(
     if len(parts) == 1:
         parts.append("no trend run")
     return "; ".join(parts)
+
+
+def _preflight_generic_trend_runs_summary(
+    tool_id: str,
+    extra: Dict[str, Any],
+) -> Optional[str]:
+    unit = extra.get("unit")
+    analysis = _trend_run_analysis({"extra": extra})
+    verdict = analysis.get("local_curve_verdict") or analysis.get("verdict")
+    parts = [
+        f"{tool_id}: verdict={verdict}",
+    ]
+    runs = analysis.get("runs")
+    if isinstance(runs, list) and runs:
+        run_parts = []
+        for run in runs[:6]:
+            if not isinstance(run, dict):
+                continue
+            run_parts.append(
+                f"{run.get('start_iloc')}->{run.get('end_iloc')} "
+                f"{run.get('direction')} delta={run.get('change')} {unit}"
+            )
+        if run_parts:
+            parts.append("local_curve_runs=" + " | ".join(run_parts))
+        if len(runs) > 6:
+            parts.append(f"additional_runs={len(runs) - 6}")
+    else:
+        parts.append("no local curve run")
+    selected = analysis.get("selected_run")
+    if not isinstance(selected, dict):
+        selected = analysis.get("selected_local_run")
+    if isinstance(selected, dict):
+        parts.append(
+            "largest_local_change="
+            f"{selected.get('start_iloc')}->{selected.get('end_iloc')} "
+            f"delta={selected.get('change')} {unit}"
+        )
+    return "; ".join(parts)
+
+
+def _preflight_extremum_summary(
+    tool_id: str,
+    result: Dict[str, Any],
+    column: str,
+    params: Dict[str, Any],
+) -> Optional[str]:
+    if not column:
+        return None
+    kind = params.get("kind")
+    value = result.get("value")
+    iloc = result.get("iloc")
+    extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+    unit = extra.get("unit")
+    return f"{tool_id}: {column} {kind}={value} {unit} at iloc={iloc}"
 
 
 def _preflight_slope_summary(
@@ -1396,6 +1488,13 @@ def _trend_run_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(extra, dict):
         return {}
     runs = extra.get("significant_runs")
+    all_runs = extra.get("runs")
+    local_runs = [
+        _generic_trend_run(run, extra.get("unit"))
+        for run in all_runs
+        if isinstance(run, dict)
+    ] if isinstance(all_runs, list) else []
+    local_runs = [run for run in local_runs if run]
     significant_runs = [
         _generic_trend_run(run, extra.get("unit"))
         for run in runs
@@ -1407,6 +1506,13 @@ def _trend_run_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
         "unit": extra.get("unit"),
         "constant_offset_only": extra.get("constant_offset_only"),
     }
+    if local_runs:
+        analysis["local_curve_verdict"] = _generic_trend_verdict(local_runs)
+        analysis["runs"] = local_runs
+        analysis["selected_local_run"] = max(
+            local_runs,
+            key=lambda run: abs(float(run.get("change") or 0.0)),
+        )
     if significant_runs:
         analysis["selected_run"] = max(
             significant_runs,

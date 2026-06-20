@@ -495,6 +495,61 @@ def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
                     },
                 },
             ),
+            (
+                "query_telemetry.find_extremum.player_speed.max",
+                {"result": {"iloc": 120, "value": 181.0, "extra": {"unit": "km/h"}}},
+            ),
+            (
+                "query_telemetry.find_extremum.player_speed.min",
+                {"result": {"iloc": 101, "value": 96.0, "extra": {"unit": "km/h"}}},
+            ),
+            (
+                "query_telemetry.find_trend_runs.player_speed",
+                {
+                    "analysis": {
+                        "runs": [
+                            {
+                                "start_iloc": 100,
+                                "end_iloc": 112,
+                                "start_value": 96.0,
+                                "end_value": 155.0,
+                                "change": 59.0,
+                                "unit": "km/h",
+                                "slope": 4.9,
+                                "direction": "rising",
+                                "domain_direction": "rising",
+                                "is_label_significant": True,
+                            },
+                            {
+                                "start_iloc": 112,
+                                "end_iloc": 130,
+                                "start_value": 155.0,
+                                "end_value": 140.0,
+                                "change": -15.0,
+                                "unit": "km/h",
+                                "slope": -0.8,
+                                "direction": "falling",
+                                "domain_direction": "falling",
+                                "is_label_significant": True,
+                            },
+                        ],
+                    },
+                },
+            ),
+            (
+                "query_telemetry.compute_slope.player_speed",
+                {
+                    "analysis": {
+                        "total_change": {
+                            "value": 44.0,
+                            "direction": "rising",
+                            "domain_direction": "rising",
+                            "is_label_significant": True,
+                        },
+                        "slope_shape": "reversing_to_falling_within_section",
+                    },
+                },
+            ),
         ],
     )
 
@@ -503,6 +558,11 @@ def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
     assert "speed gap closing" in event_names
     assert "large speed gap over 20" in event_names
     assert "expert faster than player" in event_names
+    assert "player speed maximum" in event_names
+    assert "player speed minimum" in event_names
+    assert "speed local curve rising" in event_names
+    assert "speed local curve falling" in event_names
+    assert "speed overall trend rising" in event_names
 
 
 def test_detailed_preflight_events_capture_throttle_timing_and_peak():
@@ -584,7 +644,7 @@ def test_detailed_preflight_prompt_uses_events_not_candidates():
     assert "preflight semantic candidates" not in prompt.lower()
 
 
-def test_lap_preflight_does_not_calculate_speed_delta_for_parent_labels(monkeypatch):
+def test_lap_preflight_calculates_player_speed_investigation(monkeypatch):
     captured = {}
     sentinel = object()
 
@@ -614,7 +674,24 @@ def test_lap_preflight_does_not_calculate_speed_delta_for_parent_labels(monkeypa
         if "column" in spec.get("params", {})
     ]
     assert "speed_difference" not in columns
+    assert columns.count("Physics_speed_kmh") == 4
     assert columns.count("trajectory_offset") == 3
+    assert any(
+        spec["tool_id"] == "query_telemetry.find_extremum.player_speed.max"
+        for spec in captured["query_specs"]
+    )
+    assert any(
+        spec["tool_id"] == "query_telemetry.find_extremum.player_speed.min"
+        for spec in captured["query_specs"]
+    )
+    assert any(
+        spec["tool_id"] == "query_telemetry.find_trend_runs.player_speed"
+        for spec in captured["query_specs"]
+    )
+    assert any(
+        spec["tool_id"] == "query_telemetry.compute_slope.player_speed"
+        for spec in captured["query_specs"]
+    )
     assert any(
         spec["tool_id"] == "query_telemetry.compute_slope.trajectory_offset"
         for spec in captured["query_specs"]

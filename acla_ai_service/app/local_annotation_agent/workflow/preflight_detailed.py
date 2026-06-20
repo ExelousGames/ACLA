@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from app.local_annotation_agent.workflow.preflight import (
     SHARED_PREFLIGHT_QUERY_SPECS,
     SHARED_PREFLIGHT_TOOL_IDS,
+    SPEED_INVESTIGATION_QUERY_SPECS,
     PreflightContext,
     _json,
     _preflight_analysis_ids,
@@ -28,6 +29,7 @@ DETAILED_PREFLIGHT_TOOL_IDS = (
 )
 DETAILED_PREFLIGHT_QUERY_SPECS = (
     *SHARED_PREFLIGHT_QUERY_SPECS,
+    *SPEED_INVESTIGATION_QUERY_SPECS,
     {
         "tool_id": "query_telemetry.compute_slope.trajectory_offset",
         "graph_id": "trajectory_offset",
@@ -144,13 +146,6 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
             "speed gap growing",
             "large speed gap over 20",
         ],
-    },
-    {
-        "tool_id": "query_telemetry.compute_slope.player_speed",
-        "graph_id": "speed",
-        "query_id": "compute_slope",
-        "params": {"column": "Physics_speed_kmh"},
-        "tags": ["player acceleration", "player deceleration"],
     },
     {
         "tool_id": "query_telemetry.find_extremum.trajectory_balance.max",
@@ -282,7 +277,7 @@ def _build_detailed_events(
     _extend(events, _local_input_shape_events(df, start, end, phases))
     _extend(events, _time_delta_events(start, end, by_tool))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
-    _extend(events, _speed_events(by_tool, phases))
+    _extend(events, _speed_events(start, end, by_tool, phases))
     _extend(events, _balance_and_grip_events(by_tool, phases))
 
     return _dedupe_events(events)
@@ -774,10 +769,15 @@ def _trajectory_phase_side_events(
 
 
 def _speed_events(
+    start: int,
+    end: int,
     by_tool: Dict[str, Dict[str, Any]],
     phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
+    events.extend(_player_speed_extremum_events(by_tool, phases))
+    events.extend(_player_speed_local_curve_events(by_tool, phases))
+
     max_result = _query_result(
         by_tool.get("query_telemetry.find_extremum.speed_difference.max")
     )
@@ -857,15 +857,41 @@ def _speed_events(
     player_speed = _query_analysis(
         by_tool.get("query_telemetry.compute_slope.player_speed")
     )
-    speed_total = player_speed.get("total_change") if isinstance(player_speed, dict) else {}
+    speed_total = (
+        player_speed.get("total_change")
+        if isinstance(player_speed, dict)
+        else {}
+    )
     if isinstance(speed_total, dict):
         domain = speed_total.get("domain_direction")
+        direction = speed_total.get("direction")
+        if domain in {"rising", "falling", "stable"}:
+            events.append(_event(
+                f"speed overall trend {domain}",
+                "whole_range",
+                [start, end],
+                {
+                    "change": speed_total.get("value"),
+                    "direction": direction,
+                    "domain_direction": domain,
+                    "slope_shape": player_speed.get("slope_shape"),
+                },
+                (
+                    "strong"
+                    if speed_total.get("is_label_significant") is True
+                    else "moderate"
+                ),
+                ["query_telemetry.compute_slope.player_speed"],
+            ))
         if domain == "rising":
             events.append(_event(
                 "acceleration onset",
                 "whole_range",
-                None,
-                {"change": speed_total.get("value")},
+                [start, end],
+                {
+                    "change": speed_total.get("value"),
+                    "slope_shape": player_speed.get("slope_shape"),
+                },
                 "moderate",
                 ["query_telemetry.compute_slope.player_speed"],
             ))
@@ -873,11 +899,95 @@ def _speed_events(
             events.append(_event(
                 "deceleration onset",
                 "whole_range",
-                None,
-                {"change": speed_total.get("value")},
+                [start, end],
+                {
+                    "change": speed_total.get("value"),
+                    "slope_shape": player_speed.get("slope_shape"),
+                },
                 "moderate",
                 ["query_telemetry.compute_slope.player_speed"],
             ))
+    return events
+
+
+def _player_speed_extremum_events(
+    by_tool: Dict[str, Dict[str, Any]],
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for tool_id, event_name in (
+        ("query_telemetry.find_extremum.player_speed.max", "player speed maximum"),
+        ("query_telemetry.find_extremum.player_speed.min", "player speed minimum"),
+    ):
+        result = _query_result(by_tool.get(tool_id))
+        if not result:
+            continue
+        value = result.get("value")
+        if not isinstance(value, (int, float)):
+            continue
+        iloc = result.get("iloc")
+        extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+        events.append(_event(
+            event_name,
+            _phase_for_iloc(iloc, phases) if isinstance(iloc, int) else "unknown",
+            [iloc, iloc] if isinstance(iloc, int) else None,
+            {"value": value, "unit": extra.get("unit"), "iloc": iloc},
+            "strong",
+            [tool_id],
+        ))
+    return events
+
+
+def _player_speed_local_curve_events(
+    by_tool: Dict[str, Dict[str, Any]],
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    trend = _query_analysis(
+        by_tool.get("query_telemetry.find_trend_runs.player_speed")
+    )
+    runs = trend.get("runs") if isinstance(trend, dict) else None
+    if not isinstance(runs, list):
+        return []
+
+    events: List[Dict[str, Any]] = []
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        direction = run.get("direction")
+        if direction not in {"rising", "falling", "flat"}:
+            continue
+        event_name = (
+            "speed local curve stable"
+            if direction == "flat"
+            else f"speed local curve {direction}"
+        )
+        start_iloc = run.get("start_iloc")
+        end_iloc = run.get("end_iloc")
+        phase_iloc = (
+            int((start_iloc + end_iloc) / 2)
+            if isinstance(start_iloc, int) and isinstance(end_iloc, int)
+            else None
+        )
+        events.append(_event(
+            event_name,
+            (
+                _phase_for_iloc(phase_iloc, phases)
+                if phase_iloc is not None
+                else "unknown"
+            ),
+            _range_from_values(start_iloc, end_iloc),
+            {
+                "start_value": run.get("start_value"),
+                "end_value": run.get("end_value"),
+                "change": run.get("change"),
+                "unit": run.get("unit"),
+                "slope": run.get("slope"),
+                "domain_direction": run.get("domain_direction"),
+                "is_label_significant": run.get("is_label_significant"),
+            },
+            "strong" if run.get("is_label_significant") is True else "moderate",
+            ["query_telemetry.find_trend_runs.player_speed"],
+        ))
     return events
 
 
