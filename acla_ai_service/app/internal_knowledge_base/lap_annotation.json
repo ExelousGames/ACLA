@@ -39,7 +39,7 @@
     },
     "PS": {
       "name": "Pit Stop",
-      "characteristics": "Player is in the circuit's Pit section. Pit procedure is PS even when the car is accelerating out and returning toward the racing surface.\n  - Require available pit evidence from a `locate_circuit_section` result that overlaps the circuit's known Pit section.\n  - Do not label PS from speed rise, low speed, trajectory offset, or acceleration back toward track speed alone when the range is in a normal racing section away from Pit.\n  - Use PS1 when the range is in the Pit section and the telemetry shows merge / recovery back toward the racing line.\nCompatible with the circuit label. Do NOT combine with EA / MSP / MSR / O / OD.\n"
+      "characteristics": "Player is in the circuit's Pit section. Pit procedure is PS even when the car is accelerating out and returning toward the racing surface.\n  - Require pit evidence from a `locate_circuit_section` result that overlaps the circuit's known Pit section.\n  - When `locate_circuit_section` is ambiguous between Pit and the adjacent straight because they share a normalized range, a sustained pit-lane-style trajectory offset plus large player/expert speed separation or slow pit-exit acceleration is sufficient Pit-section procedure evidence.\n  - Do not label PS from speed rise, low speed, trajectory offset, or acceleration back toward track speed alone when the range is in a normal racing section away from Pit.\nCompatible with the circuit label. Do NOT combine with EA / MSP / MSR / O / OD.\n"
     },
     "O": {
       "name": "Successful Overtake",

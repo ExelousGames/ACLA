@@ -5,9 +5,12 @@ technique.
 
 ## When this applies
 Segments inside the circuit's known Pit section. Stationary time during a
-stop is also a pit stop. If direct pit flags are missing, the segment
-position must still overlap the known Pit section; speed and trajectory
-shape alone are not enough.
+stop is also a pit stop. The segment position must overlap the known Pit
+section. When Pit and the adjacent straight share the same normalized
+range, sustained pit-lane trajectory offset plus large player/expert
+speed separation or slow pit-exit acceleration can resolve that
+ambiguity as Pit. Speed and trajectory shape alone are not enough when
+the position is away from the known Pit range.
 
 ## How to read pit-stop segments
 Most analysis is not useful here because the pit speed limit and

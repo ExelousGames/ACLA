@@ -71,6 +71,24 @@ def test_lap_annotation_prompt_does_not_forbid_pit_stop_with_recovery_merge():
     assert "Do NOT attach for normal pit exit" not in prompt
 
 
+def test_lap_tool_agent_prompt_allows_pit_evidence_without_direct_flags():
+    request = lap_flow.build_request(
+        provider_id="test",
+        prompt_mode="tool_agent",
+        df=pd.DataFrame({"metric": range(100)}),
+        lap_start=0,
+        lap_end=100,
+        section_id="brands_hatch1",
+        section_start=10,
+        section_end=20,
+        circuit_id="brands_hatch",
+    )
+
+    assert "A Pit-vs-adjacent-straight ambiguity" in request.planner_prompt
+    assert "sustained pit-lane-style trajectory offset" in request.planner_prompt
+    assert "large player/expert speed separation" in request.planner_prompt
+
+
 def test_lap_parse_rejects_extra_range_fields():
     response = AgentResponse(
         raw_response=json.dumps({

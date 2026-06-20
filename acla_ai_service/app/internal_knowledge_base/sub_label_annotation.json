@@ -69,8 +69,8 @@
     "PS": {
       "name": "Pit Stop",
       "type": "main",
-      "description": "Driver is in the circuit's Pit section. Require available pit evidence from position evidence that the segment overlaps the circuit's known Pit section. Do not label PS from dramatic speed reduction, trajectory deviation, or acceleration back toward track speed alone.\n",
-      "annotation_guideline": "How to identify the sublabels for Pit Stop: The driver is in the circuit's Pit section. Use PS for Pit-section procedure. First verify the segment position overlaps the Pit section. Add PS1 when the segment is in the Pit section and the telemetry shows merge / recovery back toward the racing line.\n",
+      "description": "Driver is in the circuit's Pit section. Require pit evidence from position evidence that the segment overlaps the circuit's known Pit section. When Pit and the adjacent straight share the same normalized range, sustained pit-lane-style trajectory offset plus large player/expert speed separation or slow pit-exit acceleration can supply Pit-section procedure evidence. Do not label PS from dramatic speed reduction, trajectory deviation, or acceleration back toward track speed alone when the segment is away from the known Pit range.\n",
+      "annotation_guideline": "How to identify the sublabels for Pit Stop: Use PS for Pit-section procedure. First verify the segment position overlaps the Pit section, either directly or through a Pit-vs-adjacent-straight ambiguity supported by sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration. Add PS1 only when the PS segment specifically shows pit-exit / rejoin behavior: accelerating out of Pit and merging back toward the racing line.\n",
       "parent": null,
       "children": [
         "PS1"
@@ -201,7 +201,7 @@
     "PS1": {
       "name": "Exit pit lane",
       "type": "sub",
-      "description": "Driver re-joining the track from the Pit section - the segment position overlaps the circuit's known Pit section, and telemetry shows merge / recovery back toward the racing line. This is pit procedure, not recovery from a mistake. Do not infer PS1 from low speed plus wide trajectory alone when the position is a normal racing section away from Pit.\n",
+      "description": "Driver re-joining the track from the Pit section - the segment position overlaps the circuit's known Pit section, and telemetry shows merge / recovery back toward the racing line. A Pit-vs-adjacent-straight ambiguity can count as Pit-section position when sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration support pit procedure. This is pit procedure, not recovery from a mistake. Do not infer PS1 from low speed plus wide trajectory alone when the position is a normal racing section away from Pit.\n",
       "parent": "PS",
       "children": [],
       "exclusive_with": [],
