@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.local_annotation_agent.workflow.preflight import (
     SHARED_PREFLIGHT_QUERY_SPECS,
@@ -148,20 +148,6 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         ],
     },
     {
-        "tool_id": "query_telemetry.find_extremum.trajectory_balance.max",
-        "graph_id": "trajectory_balance",
-        "query_id": "find_extremum",
-        "params": {"column": "slip_balance", "kind": "max"},
-        "tags": ["oversteer", "rear slip dominant"],
-    },
-    {
-        "tool_id": "query_telemetry.find_extremum.trajectory_balance.min",
-        "graph_id": "trajectory_balance",
-        "query_id": "find_extremum",
-        "params": {"column": "slip_balance", "kind": "min"},
-        "tags": ["understeer", "front slip dominant"],
-    },
-    {
         "tool_id": "query_telemetry.find_extremum.push_limit.max",
         "graph_id": "push_limit",
         "query_id": "find_extremum",
@@ -278,7 +264,7 @@ def _build_detailed_events(
     _extend(events, _time_delta_events(start, end, by_tool))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
     _extend(events, _speed_events(start, end, by_tool, phases))
-    _extend(events, _balance_and_grip_events(by_tool, phases))
+    _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
 
     return _dedupe_events(events)
 
@@ -992,37 +978,14 @@ def _player_speed_local_curve_events(
 
 
 def _balance_and_grip_events(
+    df,
+    start: int,
+    end: int,
     by_tool: Dict[str, Dict[str, Any]],
     phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    for tool_id, event_name, predicate in (
-        (
-            "query_telemetry.find_extremum.trajectory_balance.max",
-            "oversteer",
-            lambda value: value >= 0.02,
-        ),
-        (
-            "query_telemetry.find_extremum.trajectory_balance.min",
-            "understeer",
-            lambda value: value <= -0.02,
-        ),
-    ):
-        result = _query_result(by_tool.get(tool_id))
-        if not result:
-            continue
-        value = result.get("value")
-        if not isinstance(value, (int, float)) or not predicate(float(value)):
-            continue
-        iloc = result.get("iloc")
-        events.append(_event(
-            event_name,
-            _phase_for_iloc(iloc, phases) if isinstance(iloc, int) else "unknown",
-            [iloc, iloc] if isinstance(iloc, int) else None,
-            {"value": value, "iloc": iloc},
-            "strong" if abs(float(value)) >= 0.05 else "moderate",
-            [tool_id],
-        ))
+    events.extend(_slip_balance_run_events(df, start, end, phases))
 
     push = _query_result(by_tool.get("query_telemetry.find_extremum.push_limit.max"))
     if push:
@@ -1047,6 +1010,68 @@ def _balance_and_grip_events(
                 ["query_telemetry.find_extremum.push_limit.max"],
             ))
     return events
+
+
+def _slip_balance_run_events(
+    df,
+    start: int,
+    end: int,
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    values = _series_values(df, start, end, "slip_balance", graph_id="trajectory_balance")
+    if not values:
+        return []
+
+    events: List[Dict[str, Any]] = []
+    for event_name, predicate, peak_selector in (
+        (
+            "oversteer",
+            lambda value: value >= 0.02,
+            lambda run: max(run, key=lambda item: item[1]),
+        ),
+        (
+            "understeer",
+            lambda value: value <= -0.02,
+            lambda run: min(run, key=lambda item: item[1]),
+        ),
+    ):
+        for run in _value_runs(values, predicate):
+            start_iloc = run[0][0]
+            end_iloc = run[-1][0]
+            peak_iloc, peak_value = peak_selector(run)
+            phase_iloc = int((start_iloc + end_iloc) / 2)
+            events.append(_event(
+                event_name,
+                _phase_for_iloc(phase_iloc, phases),
+                [start_iloc, end_iloc],
+                {
+                    "start_value": run[0][1],
+                    "end_value": run[-1][1],
+                    "peak_value": peak_value,
+                    "peak_iloc": peak_iloc,
+                    "threshold": 0.02 if event_name == "oversteer" else -0.02,
+                },
+                "strong" if abs(float(peak_value)) >= 0.05 else "moderate",
+                ["derived.slip_balance_threshold_runs"],
+            ))
+    return events
+
+
+def _value_runs(
+    values: Sequence[Tuple[int, float]],
+    predicate: Callable[[float], bool],
+) -> List[List[Tuple[int, float]]]:
+    runs: List[List[Tuple[int, float]]] = []
+    current: List[Tuple[int, float]] = []
+    for iloc, value in values:
+        if predicate(value):
+            current.append((iloc, value))
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    return runs
 
 
 def _overlap_events(df, start: int, end: int) -> List[Dict[str, Any]]:

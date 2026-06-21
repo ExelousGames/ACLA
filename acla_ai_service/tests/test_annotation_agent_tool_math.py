@@ -598,6 +598,59 @@ def test_detailed_preflight_events_capture_throttle_timing_and_peak():
     assert "peak throttle pressure higher than expert" in event_names
 
 
+def test_detailed_preflight_events_capture_multiple_slip_balance_runs():
+    df = pd.DataFrame(
+        {
+            "slip_balance": [
+                0.0,
+                0.03,
+                0.04,
+                0.01,
+                0.03,
+                0.06,
+                0.01,
+                -0.03,
+                -0.04,
+                -0.01,
+                0.0,
+            ],
+        },
+        index=list(range(10, 21)),
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        10,
+        20,
+        [
+            (
+                "query_telemetry.find_extremum.trajectory_balance.max",
+                {"result": {"iloc": 15, "value": 0.06}},
+            ),
+            (
+                "query_telemetry.find_extremum.trajectory_balance.min",
+                {"result": {"iloc": 18, "value": -0.04}},
+            ),
+        ],
+    )
+
+    oversteer_ranges = [
+        event["range"]
+        for event in events
+        if event["event"] == "oversteer"
+    ]
+    understeer_ranges = [
+        event["range"]
+        for event in events
+        if event["event"] == "understeer"
+    ]
+    assert [11, 12] in oversteer_ranges
+    assert [14, 15] in oversteer_ranges
+    assert [17, 18] in understeer_ranges
+    assert [15, 15] not in oversteer_ranges
+    assert [18, 18] not in understeer_ranges
+
+
 def test_detailed_preflight_events_capture_opponent_outcomes():
     events = preflight_detailed._build_detailed_events(
         pd.DataFrame(),
