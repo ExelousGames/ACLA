@@ -53,15 +53,16 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         ],
     },
     {
-        "tool_id": "query_telemetry.measure_trajectory_similarity.trajectory_offset",
-        "graph_id": "trajectory_offset",
+        "tool_id": "query_telemetry.measure_trajectory_similarity.driver_expert_path",
+        "graph_id": "trajectory_detailed",
         "query_id": "measure_trajectory_similarity",
         "params": {
-            "column": "trajectory_offset",
             "smoothing_window": 5,
         },
         "tags": [
             "trajectory similarity",
+            "driver expert path comparison",
+            "line separation",
         ],
     },
     {

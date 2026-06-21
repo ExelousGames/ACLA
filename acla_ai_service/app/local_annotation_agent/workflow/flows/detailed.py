@@ -143,7 +143,7 @@ def _tool_agent_task_prompt(
         "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
         "- Only propose label_ids from the Upfront Detailed Embedding Label "
         "Candidates block. The AI does not search for labels in this flow.\n"
-        "- For time-delta and offset evidence, cite deterministic tool "
+        "- For time-delta and trajectory evidence, cite deterministic tool "
         "verdict fields (unit, label-significance, whole-section "
         "slope-shape trend); do not "
         "create strength judgments from raw numbers.\n"

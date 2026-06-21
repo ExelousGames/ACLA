@@ -1,7 +1,7 @@
 {
   "_skill": {
     "name": "graph_analysis",
-    "description": "Per-graph description instructions for the VLM (brake, speed, throttle, speed_delta, trajectory_detailed, trajectory_gas_brake, trajectory_offset, altitude_profile, trajectory_balance, push_limit, time_delta). Each entry tells the VLM how to read the graph precisely — what axes mean, what colours encode, what shapes/predicates to call out. Also carries cross-graph guidelines (triggered when specific graph combinations are present) and a trajectory shape vocabulary.\n",
+    "description": "Per-graph description instructions for the VLM (brake, speed, throttle, speed_delta, trajectory_detailed, trajectory_gas_brake, trajectory_lateral_deviation, altitude_profile, trajectory_balance, push_limit, time_delta). Each entry tells the VLM how to read the graph precisely — what axes mean, what colours encode, what shapes/predicates to call out. Also carries cross-graph guidelines (triggered when specific graph combinations are present) and a trajectory shape vocabulary.\n",
     "when_to_use": [
       "Injecting graph-specific checklists into the describe_graphs VLM prompt.",
       "Looking up axis/colour conventions for a single graph id.",
@@ -358,7 +358,7 @@
         "Do NOT forget to describe the trajectory POSITION (closer to inside / closer to outside) in addition to the colours"
       ]
     },
-    "trajectory_offset": {
+    "trajectory_lateral_deviation": {
       "title": "Trajectory Offset (signed)",
       "graph_type": "feature_plot",
       "axes": {

@@ -12,11 +12,12 @@ track (entry trajectory too wide). The recovery (recover from off-track) takes t
 get back.
 
 ## Telemetry signature
-- Use the preflight/query result from `measure_trajectory_similarity`
-  over the proposed entry span.
-- The deciding evidence is player/expert trajectory similarity from
-  `trajectory_offset`: the offset keeps rising into positive /
-  wider-than-expert values across approach-to-entry or entry.
+- Use the trajectory similarity evidence over the proposed entry span.
+- The deciding evidence is driver/expert path comparison: the driver
+  line becomes less similar to the expert racing line across
+  approach-to-entry or entry.
+- Prefer off-track-specific cues: outside white line, entry kerb or runoff,
+  grass/dirt excursion, racing-surface departure, and rejoin pressure.
 - recover from off-track typically follows.
 
 ## Engineer interpretation

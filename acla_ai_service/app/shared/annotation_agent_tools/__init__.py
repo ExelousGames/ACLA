@@ -3958,9 +3958,9 @@ def _query_find_trend_runs(
 
 def _query_measure_trajectory_similarity(
     df: pd.DataFrame, start_index: int, end_index: int,
-    column: str, smoothing_window: int,
+    smoothing_window: int,
 ) -> Optional[Dict[str, Any]]:
-    """Measure trajectory similarity from an existing trajectory-offset trace."""
+    """Measure player/expert trajectory similarity from x-y traces."""
     try:
         window = int(smoothing_window)
     except (TypeError, ValueError):
@@ -3969,12 +3969,35 @@ def _query_measure_trajectory_similarity(
         return None
 
     segment = df.loc[int(start_index): int(end_index)]
-    arr_raw = _resolve_column(column, segment)
-    if arr_raw is None or len(arr_raw) < 2:
+    track = _resolve_track_config(segment)
+    if not all(
+        track.get(k)
+        for k in ("player_x", "player_y", "expert_x", "expert_y")
+    ):
+        return None
+    px_col, py_col = track["player_x"], track["player_y"]
+    ex_col, ey_col = track["expert_x"], track["expert_y"]
+    if any(c not in segment.columns for c in (px_col, py_col, ex_col, ey_col)):
+        return None
+    if len(segment) < 2:
         return None
 
+    px = segment[px_col].to_numpy(dtype=float)
+    py = segment[py_col].to_numpy(dtype=float)
+    ex = segment[ex_col].to_numpy(dtype=float)
+    ey = segment[ey_col].to_numpy(dtype=float)
+    _, lateral_distance, _ = _project_points_to_local_reference_path(
+        px,
+        py,
+        ex,
+        ey,
+        center_indices=np.arange(px.size),
+        search_radius=30,
+    )
+    separation_raw = np.abs(lateral_distance)
+
     clean = (
-        pd.Series(arr_raw)
+        pd.Series(separation_raw)
         .rolling(window=window, center=True, min_periods=1)
         .median()
         .to_numpy()
@@ -3984,80 +4007,61 @@ def _query_measure_trajectory_similarity(
         return None
 
     values = clean[finite_locs]
-    ilocs = [int(start_index) + int(local) for local in finite_locs]
+    segment_ilocs = segment.index.to_numpy()
+    ilocs = [int(segment_ilocs[int(local)]) for local in finite_locs]
     deltas = np.diff(values)
-    positive_steps = int(np.sum(deltas > 1e-9))
-    rising_fraction = float(positive_steps / max(1, len(deltas)))
-    offset_delta = float(values[-1] - values[0])
-    abs_values = np.abs(values)
-    mean_abs_offset = float(np.mean(abs_values))
-    max_abs_local = int(np.argmax(abs_values))
-    max_positive_local = int(np.argmax(values))
+    widening_steps = int(np.sum(deltas > 1e-9))
+    widening_fraction = float(widening_steps / max(1, len(deltas)))
+    separation_gain = float(values[-1] - values[0])
+    mean_separation = float(np.mean(values))
+    peak_local = int(np.argmax(values))
+    peak_separation = float(values[peak_local])
 
-    longest_rising_run = 0
+    longest_widening_run = 0
     current_run = 0
     for delta in deltas:
         if float(delta) > 1e-9:
             current_run += 1
-            longest_rising_run = max(longest_rising_run, current_run)
+            longest_widening_run = max(longest_widening_run, current_run)
         else:
             current_run = 0
 
-    ends_positive = bool(float(values[-1]) > 0.5)
-    meaningful_rise = bool(offset_delta > 0.5)
-    persistently_rising = bool(
-        rising_fraction >= 0.75
-        and longest_rising_run >= max(1, len(deltas) // 2)
-    )
-    off_track_like = bool(ends_positive and meaningful_rise and persistently_rising)
-    similarity_score = float(max(0.0, min(1.0, 1.0 / (1.0 + mean_abs_offset))))
-    verdict = (
-        "offset_keeps_rising_positive_off_track_like"
-        if off_track_like
-        else "trajectory_not_persistently_rising_positive"
-    )
+    similarity_score = float(max(0.0, min(1.0, 1.0 / (1.0 + mean_separation))))
 
     return {
-        "iloc": int(ilocs[max_positive_local]),
+        "iloc": int(ilocs[peak_local]),
         "value": similarity_score,
         "samples": [
-            {"iloc": ilocs[0], "value": float(values[0]), "note": "offset_start"},
-            {"iloc": ilocs[-1], "value": float(values[-1]), "note": "offset_end"},
             {
-                "iloc": int(ilocs[max_positive_local]),
-                "value": float(values[max_positive_local]),
-                "note": "max_positive_offset",
+                "iloc": ilocs[0],
+                "value": float(values[0]),
+                "note": "start_line_separation",
             },
             {
-                "iloc": int(ilocs[max_abs_local]),
-                "value": float(values[max_abs_local]),
-                "note": "max_absolute_offset",
+                "iloc": ilocs[-1],
+                "value": float(values[-1]),
+                "note": "end_line_separation",
+            },
+            {
+                "iloc": int(ilocs[peak_local]),
+                "value": peak_separation,
+                "note": "peak_line_separation",
             },
         ],
         "extra": {
             "unit": "m",
             "smoothing_window": window,
             "similarity_score": similarity_score,
-            "offset_start_m": float(values[0]),
-            "offset_end_m": float(values[-1]),
-            "offset_delta_m": offset_delta,
-            "min_offset_m": float(np.min(values)),
-            "max_offset_m": float(np.max(values)),
-            "mean_absolute_offset_m": mean_abs_offset,
-            "max_absolute_offset": {
-                "iloc": int(ilocs[max_abs_local]),
-                "value_m": float(values[max_abs_local]),
+            "line_separation_start_m": float(values[0]),
+            "line_separation_end_m": float(values[-1]),
+            "line_separation_gain_m": separation_gain,
+            "mean_line_separation_m": mean_separation,
+            "peak_line_separation": {
+                "iloc": int(ilocs[peak_local]),
+                "value_m": peak_separation,
             },
-            "max_positive_offset": {
-                "iloc": int(ilocs[max_positive_local]),
-                "value_m": float(values[max_positive_local]),
-            },
-            "rising_fraction": rising_fraction,
-            "longest_rising_run_steps": int(longest_rising_run),
-            "off_track_trend": {
-                "is_off_track_like": off_track_like,
-                "verdict": verdict,
-            },
+            "widening_fraction": widening_fraction,
+            "longest_widening_run_steps": int(longest_widening_run),
         },
     }
 
@@ -4258,16 +4262,14 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
     },
     {
         "id": "measure_trajectory_similarity",
-        "label": "Trajectory similarity from offset",
+        "label": "Driver/expert trajectory similarity",
         "description": (
-            "Measure player/expert trajectory similarity from an existing "
-            "`trajectory_offset` trace over <range>. Returns a similarity "
-            "score plus an off-track trend verdict when the offset keeps "
-            "rising into positive/wider values."
+            "Compare driver and expert x-y trajectories over <range>. Returns "
+            "a trajectory similarity score plus line-separation evidence "
+            "from the driver path relative to the expert racing line."
         ),
         "params_schema": {
             "range": _RANGE_PARAM_DESC,
-            "column": "DataFrame column name, usually trajectory_offset",
             "smoothing_window": (
                 "int >= 1 - rolling-median width "
                 "(1=off, 5=light, 11=heavy)"
@@ -4347,6 +4349,9 @@ _GRAPH_GUIDELINE_TRIGGERS: Dict[str, Dict[str, Any]] = {
 }
 
 _TRAJECTORY_IDS = {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset"}
+_GRAPH_ANALYSIS_SKILL_ALIASES = {
+    "trajectory_offset": "trajectory_lateral_deviation",
+}
 
 
 def _render_graph_section(key: str, value: Any, indent: str = "  ") -> List[str]:
@@ -4386,7 +4391,8 @@ def graph_analysis_prompt(graph_ids: List[str]) -> str:
     requested = list(graph_ids)
     paired: List[tuple] = []
     for gid in requested:
-        entry = skills.get(f"graph_analysis.graphs.{gid}")
+        skill_gid = _GRAPH_ANALYSIS_SKILL_ALIASES.get(gid, gid)
+        entry = skills.get(f"graph_analysis.graphs.{skill_gid}")
         if entry:
             paired.append((gid, entry))
     if not paired:

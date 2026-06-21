@@ -1264,52 +1264,46 @@ def test_detailed_build_request_adds_embedding_candidates_to_prompt(monkeypatch)
     assert request.extra_state.get("tool_agent_extra_tools") is None
 
 
-def test_trajectory_similarity_query_flags_persistent_positive_offset_rise():
+def test_trajectory_similarity_query_measures_driver_expert_path_divergence():
+    x = np.arange(5, dtype=float)
+    df = _trajectory_df(x, np.zeros_like(x))
+    df["Graphics_player_pos_y"] = [0.0, 0.3, 0.8, 1.4, 2.0]
+
     payload, error = run_pipeline_query(
-        pd.DataFrame(
-            {"trajectory_offset": [0.0, 0.2, 0.6, 1.1, 1.7]},
-            index=range(5),
-        ),
+        df,
         "measure_trajectory_similarity",
         {
             "range": [0, 4],
-            "column": "trajectory_offset",
             "smoothing_window": 1,
         },
     )
 
     assert error is None
     extra = payload["extra"]
-    assert extra["off_track_trend"]["is_off_track_like"] is True
-    assert (
-        extra["off_track_trend"]["verdict"]
-        == "offset_keeps_rising_positive_off_track_like"
-    )
-    assert extra["offset_delta_m"] > 0.5
-    assert extra["rising_fraction"] == 1.0
+    assert 0.0 < extra["similarity_score"] < 1.0
+    assert extra["line_separation_gain_m"] > 0.5
+    assert extra["widening_fraction"] == 1.0
+    assert extra["peak_line_separation"]["value_m"] >= 1.25
 
 
-def test_trajectory_similarity_query_does_not_flag_recovery_toward_zero():
+def test_trajectory_similarity_query_scores_close_driver_expert_path_highly():
+    x = np.arange(5, dtype=float)
+    df = _trajectory_df(x, np.zeros_like(x))
+    df["Graphics_player_pos_y"] = [0.0, 0.05, 0.1, 0.05, 0.0]
+
     payload, error = run_pipeline_query(
-        pd.DataFrame(
-            {"trajectory_offset": [-3.0, -2.2, -1.5, -0.8, -0.2]},
-            index=range(5),
-        ),
+        df,
         "measure_trajectory_similarity",
         {
             "range": [0, 4],
-            "column": "trajectory_offset",
             "smoothing_window": 1,
         },
     )
 
     assert error is None
     extra = payload["extra"]
-    assert extra["off_track_trend"]["is_off_track_like"] is False
-    assert (
-        extra["off_track_trend"]["verdict"]
-        == "trajectory_not_persistently_rising_positive"
-    )
+    assert extra["similarity_score"] > 0.9
+    assert extra["mean_line_separation_m"] < 0.1
 
 
 def test_detailed_preflight_runs_trajectory_similarity_query():
@@ -1319,7 +1313,7 @@ def test_detailed_preflight_runs_trajectory_similarity_query():
     }
 
     assert (
-        "query_telemetry.measure_trajectory_similarity.trajectory_offset"
+        "query_telemetry.measure_trajectory_similarity.driver_expert_path"
         in tool_ids
     )
 

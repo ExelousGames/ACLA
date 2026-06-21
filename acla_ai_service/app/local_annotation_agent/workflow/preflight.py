@@ -135,6 +135,10 @@ _GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
         "columns": ("expert_time_difference",),
         "include_zero_tags": False,
     },
+    "trajectory_detailed": {
+        "target": "driver/expert trajectory",
+        "include_zero_tags": False,
+    },
     "trajectory_offset": {
         "target": "trajectory offset",
         "columns": ("trajectory_offset",),
@@ -797,18 +801,18 @@ def _slope_tags(column: str, extra: Dict[str, Any]) -> List[str]:
 
 
 def _trajectory_similarity_tags(extra: Dict[str, Any]) -> List[str]:
-    off_track = extra.get("off_track_trend")
-    if not isinstance(off_track, dict):
-        return []
-    if off_track.get("is_off_track_like") is not True:
-        return []
-    return [
-        "trajectory offset keeps rising",
-        "persistent positive trajectory offset",
-        "offset rising positive",
-        "trajectory similarity drops",
-        "off track trend",
+    separation_gain = extra.get("line_separation_gain_m")
+    mean_separation = extra.get("mean_line_separation_m")
+    tags = [
+        "trajectory similarity",
+        "driver expert path comparison",
+        "driver path separates from expert line",
     ]
+    if isinstance(separation_gain, (int, float)) and float(separation_gain) > 0.5:
+        tags.extend(["line separation increasing", "trajectory divergence"])
+    if isinstance(mean_separation, (int, float)) and float(mean_separation) <= 0.5:
+        tags.append("driver path closely follows expert")
+    return tags
 
 
 def _threshold_crossing_tags(samples: Any) -> List[str]:
@@ -1398,16 +1402,14 @@ def _preflight_trajectory_similarity_summary(
     extra = result.get("extra")
     if not isinstance(extra, dict):
         return None
-    trend = extra.get("off_track_trend")
-    if not isinstance(trend, dict):
-        trend = {}
+    peak = extra.get("peak_line_separation")
+    peak = peak if isinstance(peak, dict) else {}
     return (
-        f"{tool_id}: verdict={trend.get('verdict')}; "
-        f"is_off_track_like={trend.get('is_off_track_like')}; "
-        f"similarity_score={extra.get('similarity_score')}; "
-        f"offset_delta_m={extra.get('offset_delta_m')}; "
-        f"rising_fraction={extra.get('rising_fraction')}; "
-        f"longest_rising_run_steps={extra.get('longest_rising_run_steps')}"
+        f"{tool_id}: similarity_score={extra.get('similarity_score')}; "
+        f"line_separation_gain_m={extra.get('line_separation_gain_m')}; "
+        f"peak_line_separation_m={peak.get('value_m')} at iloc={peak.get('iloc')}; "
+        f"mean_line_separation_m={extra.get('mean_line_separation_m')}; "
+        f"longest_widening_run_steps={extra.get('longest_widening_run_steps')}"
     )
 
 
@@ -1672,14 +1674,13 @@ def _trajectory_similarity_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     return {
         "similarity_score": extra.get("similarity_score"),
-        "offset_start_m": extra.get("offset_start_m"),
-        "offset_end_m": extra.get("offset_end_m"),
-        "offset_delta_m": extra.get("offset_delta_m"),
-        "rising_fraction": extra.get("rising_fraction"),
-        "longest_rising_run_steps": extra.get("longest_rising_run_steps"),
-        "off_track_trend": extra.get("off_track_trend"),
-        "max_positive_offset": extra.get("max_positive_offset"),
-        "max_absolute_offset": extra.get("max_absolute_offset"),
+        "line_separation_start_m": extra.get("line_separation_start_m"),
+        "line_separation_end_m": extra.get("line_separation_end_m"),
+        "line_separation_gain_m": extra.get("line_separation_gain_m"),
+        "mean_line_separation_m": extra.get("mean_line_separation_m"),
+        "widening_fraction": extra.get("widening_fraction"),
+        "longest_widening_run_steps": extra.get("longest_widening_run_steps"),
+        "peak_line_separation": extra.get("peak_line_separation"),
     }
 
 
