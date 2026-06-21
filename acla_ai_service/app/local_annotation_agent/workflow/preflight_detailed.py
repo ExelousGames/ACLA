@@ -256,8 +256,6 @@ def _build_detailed_events(
 
     _extend(events, _shape_events(start, end, by_tool, phases))
     _extend(events, _opponent_events(start, end, by_tool))
-    _extend(events, _input_onset_events(by_tool, phases, "brake"))
-    _extend(events, _input_onset_events(by_tool, phases, "throttle"))
     _extend(events, _peak_comparison_events(by_tool, phases, "brake"))
     _extend(events, _peak_comparison_events(by_tool, phases, "throttle"))
     _extend(events, _local_input_shape_events(df, start, end, phases))
@@ -363,57 +361,6 @@ def _opponent_events(
     )]
 
 
-def _input_onset_events(
-    by_tool: Dict[str, Dict[str, Any]],
-    phases: List[Dict[str, int]],
-    kind: str,
-) -> List[Dict[str, Any]]:
-    if kind == "brake":
-        tool_id = "query_telemetry.find_threshold_crossing.brake.onset"
-        player_col = "Physics_brake"
-        expert_col = "expert_optimal_brake"
-        phrase = "brake initiation onset"
-    else:
-        tool_id = "query_telemetry.find_threshold_crossing.throttle.onset"
-        player_col = "Physics_gas"
-        expert_col = "expert_optimal_throttle"
-        phrase = "throttle application onset"
-    result = _query_result(by_tool.get(tool_id))
-    samples = result.get("samples") if isinstance(result, dict) else None
-    if not isinstance(samples, list):
-        return []
-    by_column = {
-        str(sample.get("column") or ""): sample
-        for sample in samples
-        if isinstance(sample, dict)
-    }
-    player = by_column.get(player_col)
-    expert = by_column.get(expert_col)
-    if not player or not expert:
-        return []
-    player_iloc = player.get("iloc")
-    expert_iloc = expert.get("iloc")
-    if not isinstance(player_iloc, int) or not isinstance(expert_iloc, int):
-        return []
-    delta = player_iloc - expert_iloc
-    if delta == 0:
-        event_name = f"{phrase} aligned with expert"
-    else:
-        event_name = f"{phrase} {'earlier' if delta < 0 else 'later'} than expert"
-    return [_event(
-        event_name,
-        _phase_for_iloc(player_iloc, phases),
-        [min(player_iloc, expert_iloc), max(player_iloc, expert_iloc)],
-        {
-            "player_iloc": player_iloc,
-            "expert_iloc": expert_iloc,
-            "delta_iloc": delta,
-        },
-        _timing_confidence(delta),
-        [tool_id],
-    )]
-
-
 def _peak_comparison_events(
     by_tool: Dict[str, Dict[str, Any]],
     phases: List[Dict[str, int]],
@@ -469,80 +416,109 @@ def _local_input_shape_events(
         ("brake", "Physics_brake", "expert_optimal_brake", "brake"),
         ("throttle", "Physics_gas", "expert_optimal_throttle", "throttle"),
     ):
-        player = _input_profile(df, start, end, player_col)
-        expert = _input_profile(df, start, end, expert_col)
-        if not player or not expert:
-            continue
-        events.extend(_duration_events(kind, noun, player, expert, phases))
+        source = f"local_{kind}_shape_statistics"
+        application_timing = (
+            "brake initiation" if kind == "brake" else "throttle application"
+        )
+        for direction, timing_phrase, speed_phrase in (
+            ("increase", application_timing, f"{noun} applied"),
+            ("decrease", f"{noun} release", f"{noun} release"),
+        ):
+            player = _action_profile(df, start, end, player_col, direction)
+            expert = _action_profile(df, start, end, expert_col, direction)
+            if not player or not expert:
+                continue
+            timing = _compare_action_timing(player, expert)
+            if timing:
+                events.append(_action_timing_event(
+                    timing_phrase,
+                    player,
+                    expert,
+                    timing,
+                    phases,
+                    source,
+                ))
+            speed = _compare_action_speed(player, expert)
+            if speed:
+                events.append(_action_speed_event(
+                    speed_phrase,
+                    player,
+                    expert,
+                    speed,
+                    phases,
+                    source,
+                ))
     events.extend(_overlap_events(df, start, end))
     return events
 
 
-def _duration_events(
-    kind: str,
-    noun: str,
+def _action_timing_event(
+    phrase: str,
     player: Dict[str, Any],
     expert: Dict[str, Any],
+    comparison: Dict[str, Any],
     phases: List[Dict[str, int]],
-) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    source = f"local_{kind}_shape_statistics"
-    rise = _duration_delta(player, expert, "rise_duration")
-    if rise is not None:
-        event = (
-            f"{noun} applied too quickly"
-            if rise < 0
-            else f"{noun} applied too slowly"
-        )
-        events.append(_event(
-            event,
-            _phase_for_iloc(player.get("peak_iloc"), phases),
-            _range_from_values(player.get("onset_iloc"), player.get("peak_iloc")),
-            {
-                "player_rise_duration": player.get("rise_duration"),
-                "expert_rise_duration": expert.get("rise_duration"),
-                "delta_iloc": rise,
-            },
-            _timing_confidence(rise),
-            [source],
-        ))
-    release_onset = _timing_delta(player, expert, "release_onset_iloc")
-    if release_onset is not None:
-        events.append(_event(
-            f"{noun} release onset {'earlier' if release_onset < 0 else 'later'} than expert",
-            _phase_for_iloc(player.get("release_onset_iloc"), phases),
-            _range_from_values(
-                player.get("release_onset_iloc"),
-                expert.get("release_onset_iloc"),
-            ),
-            {
-                "player_release_onset_iloc": player.get("release_onset_iloc"),
-                "expert_release_onset_iloc": expert.get("release_onset_iloc"),
-                "delta_iloc": release_onset,
-            },
-            _timing_confidence(release_onset),
-            [source],
-        ))
-    release = _duration_delta(player, expert, "release_duration")
-    if release is not None:
-        event = (
-            f"{noun} release too quickly"
-            if release < 0
-            else f"{noun} release too slowly"
-        )
-        events.append(_event(
-            event,
-            _phase_for_iloc(player.get("release_onset_iloc"), phases),
-            _range_from_values(player.get("peak_iloc"), player.get("off_iloc")),
-            {
-                "player_release_duration": player.get("release_duration"),
-                "expert_release_duration": expert.get("release_duration"),
-                "delta_iloc": release,
-            },
-            _timing_confidence(release),
-            [source],
-        ))
-    return events
+    source: str,
+) -> Dict[str, Any]:
+    delta = comparison["start_delta_iloc"]
+    return _event(
+        f"{phrase} onset {'earlier' if delta < 0 else 'later'} than expert",
+        _phase_for_iloc(player.get("start_index"), phases),
+        _range_from_values(player.get("start_index"), expert.get("start_index")),
+        {
+            "player_start_index": player.get("start_index"),
+            "expert_start_index": expert.get("start_index"),
+            "start_delta_iloc": delta,
+            "player_start_band": player.get("start_band"),
+            "expert_start_band": expert.get("start_band"),
+            "boundary_uncertainty_iloc": comparison.get("boundary_uncertainty_iloc"),
+            "decision_basis": "fuzzy_change_speed_comparison",
+        },
+        comparison["confidence"],
+        [source],
+    )
+
+
+def _action_speed_event(
+    phrase: str,
+    player: Dict[str, Any],
+    expert: Dict[str, Any],
+    comparison: Dict[str, Any],
+    phases: List[Dict[str, int]],
+    source: str,
+) -> Dict[str, Any]:
+    verdict = comparison["verdict"]
+    return _event(
+        f"{phrase} too {verdict}",
+        _phase_for_iloc(player.get("start_index"), phases),
+        _range_from_values(player.get("start_index"), player.get("end_index")),
+        {
+            "player_duration": player.get("duration"),
+            "expert_duration": expert.get("duration"),
+            "duration_delta_iloc": comparison.get("duration_delta_iloc"),
+            "player_median_raw_slope": player.get("median_raw_slope"),
+            "expert_median_raw_slope": expert.get("median_raw_slope"),
+            "player_median_normalized_slope": player.get("median_normalized_slope"),
+            "expert_median_normalized_slope": expert.get("median_normalized_slope"),
+            "slope_ratio": comparison.get("slope_ratio"),
+            "player_start_index": player.get("start_index"),
+            "player_end_index": player.get("end_index"),
+            "expert_start_index": expert.get("start_index"),
+            "expert_end_index": expert.get("end_index"),
+            "player_start_band": player.get("start_band"),
+            "player_end_band": player.get("end_band"),
+            "expert_start_band": expert.get("start_band"),
+            "expert_end_band": expert.get("end_band"),
+            "player_total_movement": player.get("total_movement"),
+            "expert_total_movement": expert.get("total_movement"),
+            "player_noise_floor": player.get("noise_floor"),
+            "expert_noise_floor": expert.get("noise_floor"),
+            "direction": player.get("direction"),
+            "decision_basis": "fuzzy_change_speed_comparison",
+        },
+        comparison["confidence"],
+        [source],
+    )
 
 
 def _trajectory_events(
@@ -1100,46 +1076,233 @@ def _overlap_events(df, start: int, end: int) -> List[Dict[str, Any]]:
     )]
 
 
-def _input_profile(
+def _action_profile(
     df,
     start: int,
     end: int,
     column: str,
+    direction: str,
     *,
-    threshold: float = 0.05,
     smoothing_window: int = 5,
 ) -> Optional[Dict[str, Any]]:
     values = _series_values(df, start, end, column)
-    if len(values) < 3:
+    if len(values) < 4:
         return None
     ilocs = [iloc for iloc, _ in values]
     arr = _rolling_median([value for _, value in values], smoothing_window)
     finite = [(iloc, value) for iloc, value in zip(ilocs, arr) if _is_number(value)]
-    if len(finite) < 3:
+    episodes = _change_episodes(finite, direction)
+    if not episodes:
         return None
-    above = [(iloc, value) for iloc, value in finite if value >= threshold]
-    if not above:
+    return max(
+        episodes,
+        key=lambda episode: (
+            float(episode.get("total_movement") or 0.0),
+            int(episode.get("duration") or 0),
+        ),
+    )
+
+
+def _change_episodes(
+    values: Sequence[Tuple[int, float]],
+    direction: str,
+) -> List[Dict[str, Any]]:
+    if len(values) < 4:
+        return []
+    sign = 1.0 if direction == "increase" else -1.0
+    diffs: List[Dict[str, float]] = []
+    for pos in range(1, len(values)):
+        prev_iloc, prev_value = values[pos - 1]
+        iloc, value = values[pos]
+        iloc_delta = max(1, iloc - prev_iloc)
+        raw_slope = (float(value) - float(prev_value)) / iloc_delta
+        diffs.append({
+            "pos": float(pos),
+            "raw_slope": raw_slope,
+            "signed_slope": raw_slope * sign,
+        })
+    if not diffs:
+        return []
+
+    abs_diffs = [abs(diff["raw_slope"]) for diff in diffs]
+    noise_floor = float(_median(abs_diffs) or 0.0)
+    local_values = [float(value) for _, value in values]
+    local_range = max(local_values) - min(local_values)
+    total_iloc_span = max(1, values[-1][0] - values[0][0])
+    average_range_step = local_range / total_iloc_span
+    slope_gate = max(noise_floor * 0.5, average_range_step * 0.25)
+    movement_gate = max(noise_floor * 4.0, local_range * 0.2)
+    if slope_gate <= 0.0 or movement_gate <= 0.0:
+        return []
+
+    episodes: List[Dict[str, Any]] = []
+    start_pos: Optional[int] = None
+    first_active_pos: Optional[int] = None
+    last_active_pos: Optional[int] = None
+    last_pos: Optional[int] = None
+    active_count = 0
+    stall_count = 0
+    max_stall = 1
+
+    def finish_current() -> None:
+        nonlocal start_pos, first_active_pos, last_active_pos, last_pos
+        nonlocal active_count, stall_count
+        if (
+            start_pos is None
+            or first_active_pos is None
+            or last_active_pos is None
+            or last_pos is None
+            or active_count < 2
+        ):
+            start_pos = first_active_pos = last_active_pos = last_pos = None
+            active_count = 0
+            stall_count = 0
+            return
+        if last_pos <= start_pos:
+            start_pos = first_active_pos = last_active_pos = last_pos = None
+            active_count = 0
+            stall_count = 0
+            return
+
+        start_iloc, start_value = values[start_pos]
+        end_iloc, end_value = values[last_pos]
+        duration = end_iloc - start_iloc
+        total_movement = (float(end_value) - float(start_value)) * sign
+        if duration <= 0 or total_movement < movement_gate:
+            start_pos = first_active_pos = last_active_pos = last_pos = None
+            active_count = 0
+            stall_count = 0
+            return
+
+        raw_slopes: List[float] = []
+        normalized_slopes: List[float] = []
+        for pos in range(start_pos + 1, last_pos + 1):
+            prev_iloc, prev_value = values[pos - 1]
+            iloc, value = values[pos]
+            iloc_delta = max(1, iloc - prev_iloc)
+            raw_slope = (float(value) - float(prev_value)) / iloc_delta
+            signed_slope = raw_slope * sign
+            if signed_slope > 0.0:
+                raw_slopes.append(raw_slope)
+                normalized_slopes.append(signed_slope / total_movement)
+
+        episodes.append({
+            "start_index": start_iloc,
+            "end_index": end_iloc,
+            "start_band": [values[start_pos][0], values[first_active_pos][0]],
+            "end_band": [values[last_active_pos][0], values[last_pos][0]],
+            "duration": duration,
+            "total_movement": total_movement,
+            "noise_floor": noise_floor,
+            "direction": direction,
+            "median_raw_slope": _median(raw_slopes),
+            "median_normalized_slope": _median(normalized_slopes),
+            "active_step_count": active_count,
+            "movement_gate": movement_gate,
+            "slope_gate": slope_gate,
+        })
+        start_pos = first_active_pos = last_active_pos = last_pos = None
+        active_count = 0
+        stall_count = 0
+
+    for diff in diffs:
+        pos = int(diff["pos"])
+        signed_slope = diff["signed_slope"]
+        if signed_slope > slope_gate:
+            if start_pos is None:
+                start_pos = pos - 1
+                first_active_pos = pos
+            active_count += 1
+            last_active_pos = pos
+            last_pos = pos
+            stall_count = 0
+        elif start_pos is not None and abs(signed_slope) <= slope_gate and stall_count < max_stall:
+            last_pos = pos
+            stall_count += 1
+        else:
+            finish_current()
+    finish_current()
+    return episodes
+
+
+def _compare_action_timing(
+    player: Dict[str, Any],
+    expert: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    player_start = player.get("start_index")
+    expert_start = expert.get("start_index")
+    if not isinstance(player_start, int) or not isinstance(expert_start, int):
         return None
-    onset_iloc = above[0][0]
-    peak_iloc, peak_value = max(finite, key=lambda item: float(item[1]))
-    after_peak = [(iloc, value) for iloc, value in finite if iloc > peak_iloc]
-    off = next((iloc for iloc, value in after_peak if value <= threshold), None)
-    release_onset = None
-    for iloc, value in after_peak:
-        if value < float(peak_value) - 0.05:
-            release_onset = iloc
-            break
-    out = {
-        "onset_iloc": onset_iloc,
-        "peak_iloc": peak_iloc,
-        "peak_value": peak_value,
-        "release_onset_iloc": release_onset,
-        "off_iloc": off,
-        "rise_duration": peak_iloc - onset_iloc,
+    delta = player_start - expert_start
+    if delta == 0:
+        return None
+    player_band = player.get("start_band")
+    expert_band = expert.get("start_band")
+    if _bands_overlap(player_band, expert_band):
+        return None
+    uncertainty = max(_band_width(player_band), _band_width(expert_band))
+    return {
+        "start_delta_iloc": delta,
+        "boundary_uncertainty_iloc": uncertainty,
+        "confidence": "strong" if abs(delta) > max(1, uncertainty) else "moderate",
     }
-    if release_onset is not None and off is not None and off >= release_onset:
-        out["release_duration"] = off - release_onset
-    return out
+
+
+def _compare_action_speed(
+    player: Dict[str, Any],
+    expert: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    player_duration = player.get("duration")
+    expert_duration = expert.get("duration")
+    player_slope = player.get("median_normalized_slope")
+    expert_slope = expert.get("median_normalized_slope")
+    if not isinstance(player_duration, int) or not isinstance(expert_duration, int):
+        return None
+    if not isinstance(player_slope, (int, float)) or not isinstance(expert_slope, (int, float)):
+        return None
+    if float(expert_slope) <= 0.0:
+        return None
+    duration_delta = player_duration - expert_duration
+    if abs(duration_delta) < 2:
+        return None
+    slope_ratio = float(player_slope) / float(expert_slope)
+    verdict: Optional[str] = None
+    if slope_ratio >= 1.25 and duration_delta <= -2:
+        verdict = "quickly"
+    elif slope_ratio <= 0.8 and duration_delta >= 2:
+        verdict = "slowly"
+    if verdict is None:
+        return None
+    strong_ratio = slope_ratio >= 1.5 if verdict == "quickly" else slope_ratio <= (2.0 / 3.0)
+    return {
+        "verdict": verdict,
+        "duration_delta_iloc": duration_delta,
+        "slope_ratio": slope_ratio,
+        "confidence": "strong" if abs(duration_delta) >= 5 and strong_ratio else "moderate",
+    }
+
+
+def _bands_overlap(a: Any, b: Any) -> bool:
+    if not (
+        isinstance(a, list)
+        and isinstance(b, list)
+        and len(a) == 2
+        and len(b) == 2
+        and all(isinstance(v, int) for v in [*a, *b])
+    ):
+        return False
+    return max(a[0], b[0]) <= min(a[1], b[1])
+
+
+def _band_width(value: Any) -> int:
+    if (
+        isinstance(value, list)
+        and len(value) == 2
+        and isinstance(value[0], int)
+        and isinstance(value[1], int)
+    ):
+        return max(0, value[1] - value[0])
+    return 0
 
 
 def _series_values(
@@ -1364,27 +1527,6 @@ def _dedupe(values: Iterable[Any]) -> List[str]:
             seen.add(text)
             out.append(text)
     return out
-
-
-def _timing_delta(
-    player: Dict[str, Any],
-    expert: Dict[str, Any],
-    key: str,
-) -> Optional[int]:
-    player_value = player.get(key)
-    expert_value = expert.get(key)
-    if not isinstance(player_value, int) or not isinstance(expert_value, int):
-        return None
-    delta = player_value - expert_value
-    return delta if delta != 0 else None
-
-
-def _duration_delta(
-    player: Dict[str, Any],
-    expert: Dict[str, Any],
-    key: str,
-) -> Optional[int]:
-    return _timing_delta(player, expert, key)
 
 
 def _range_from_values(a: Any, b: Any) -> Optional[List[int]]:

@@ -398,8 +398,60 @@ def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
 
 
 def test_detailed_preflight_events_capture_late_brake_widening_and_time_loss():
+    df = pd.DataFrame(
+        {
+            "Physics_brake": [
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.18,
+                0.30,
+                0.42,
+                0.54,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+            ],
+            "expert_optimal_brake": [
+                0.10,
+                0.10,
+                0.18,
+                0.30,
+                0.42,
+                0.54,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+                0.62,
+            ],
+        },
+        index=list(range(10, 31)),
+    )
+
     events = preflight_detailed._build_detailed_events(
-        pd.DataFrame(),
+        df,
         10,
         30,
         [
@@ -566,8 +618,59 @@ def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
 
 
 def test_detailed_preflight_events_capture_throttle_timing_and_peak():
+    df = pd.DataFrame(
+        {
+            "Physics_gas": [
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.20,
+                0.35,
+                0.50,
+                0.65,
+                0.80,
+                0.80,
+                0.80,
+                0.80,
+                0.80,
+                0.80,
+                0.80,
+                0.80,
+                0.80,
+            ],
+            "expert_optimal_throttle": [
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.20,
+                0.35,
+                0.50,
+                0.65,
+                0.80,
+                0.80,
+                0.80,
+                0.80,
+                0.80,
+            ],
+        }
+    )
+
     events = preflight_detailed._build_detailed_events(
-        pd.DataFrame(),
+        df,
         0,
         20,
         [
@@ -596,6 +699,298 @@ def test_detailed_preflight_events_capture_throttle_timing_and_peak():
     event_names = {event["event"] for event in events}
     assert "throttle application onset earlier than expert" in event_names
     assert "peak throttle pressure higher than expert" in event_names
+
+
+def test_detailed_preflight_detects_fuzzy_brake_release_too_quickly():
+    df = pd.DataFrame(
+        {
+            "Physics_brake": [
+                0.76,
+                0.76,
+                0.76,
+                0.72,
+                0.62,
+                0.52,
+                0.42,
+                0.32,
+                0.31,
+                0.31,
+                0.31,
+                0.31,
+            ],
+            "expert_optimal_brake": [
+                0.76,
+                0.76,
+                0.76,
+                0.72,
+                0.67,
+                0.62,
+                0.57,
+                0.52,
+                0.47,
+                0.42,
+                0.37,
+                0.32,
+            ],
+        }
+    )
+
+    events = preflight_detailed._build_detailed_events(df, 0, 11, [])
+
+    release = next(
+        event
+        for event in events
+        if event["event"] == "brake release too quickly"
+    )
+    assert release["measurements"]["decision_basis"] == "fuzzy_change_speed_comparison"
+    assert release["measurements"]["duration_delta_iloc"] <= -2
+    assert release["measurements"]["slope_ratio"] >= 1.25
+
+
+def test_detailed_preflight_ignores_old_thresholds_when_release_shape_matches():
+    df = pd.DataFrame(
+        {
+            "Physics_brake": [
+                0.10,
+                0.10,
+                0.09,
+                0.08,
+                0.07,
+                0.06,
+                0.05,
+                0.04,
+                0.03,
+                0.02,
+                0.01,
+                0.00,
+            ],
+            "expert_optimal_brake": [
+                0.80,
+                0.80,
+                0.72,
+                0.64,
+                0.56,
+                0.48,
+                0.40,
+                0.32,
+                0.24,
+                0.16,
+                0.08,
+                0.00,
+            ],
+        }
+    )
+
+    events = preflight_detailed._build_detailed_events(df, 0, 11, [])
+    event_names = {event["event"] for event in events}
+
+    assert "brake release too quickly" not in event_names
+    assert "brake release too slowly" not in event_names
+
+
+def test_detailed_preflight_separates_early_timing_from_speed():
+    df = pd.DataFrame(
+        {
+            "Physics_brake": [
+                0.10,
+                0.10,
+                0.20,
+                0.30,
+                0.40,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+            ],
+            "expert_optimal_brake": [
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.10,
+                0.20,
+                0.30,
+                0.40,
+                0.50,
+                0.50,
+                0.50,
+            ],
+        }
+    )
+
+    events = preflight_detailed._build_detailed_events(df, 0, 11, [])
+    event_names = {event["event"] for event in events}
+
+    assert "brake initiation onset earlier than expert" in event_names
+    assert "brake applied too quickly" not in event_names
+    assert "brake applied too slowly" not in event_names
+
+
+def test_detailed_preflight_separates_speed_from_aligned_timing():
+    df = pd.DataFrame(
+        {
+            "Physics_brake": [
+                0.10,
+                0.10,
+                0.20,
+                0.35,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+            ],
+            "expert_optimal_brake": [
+                0.10,
+                0.10,
+                0.18,
+                0.26,
+                0.34,
+                0.42,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+            ],
+        }
+    )
+
+    events = preflight_detailed._build_detailed_events(df, 0, 9, [])
+    event_names = {event["event"] for event in events}
+
+    assert "brake applied too quickly" in event_names
+    assert "brake initiation onset earlier than expert" not in event_names
+    assert "brake initiation onset later than expert" not in event_names
+
+
+def test_detailed_preflight_separates_throttle_speed_from_aligned_timing():
+    df = pd.DataFrame(
+        {
+            "Physics_gas": [
+                0.10,
+                0.10,
+                0.20,
+                0.35,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+            ],
+            "expert_optimal_throttle": [
+                0.10,
+                0.10,
+                0.18,
+                0.26,
+                0.34,
+                0.42,
+                0.50,
+                0.50,
+                0.50,
+                0.50,
+            ],
+        }
+    )
+
+    events = preflight_detailed._build_detailed_events(df, 0, 9, [])
+    event_names = {event["event"] for event in events}
+
+    assert "throttle applied too quickly" in event_names
+    assert "throttle application onset earlier than expert" not in event_names
+    assert "throttle application onset later than expert" not in event_names
+
+
+def test_detailed_preflight_ignores_noisy_small_wiggles_as_actions():
+    df = pd.DataFrame(
+        {
+            "Physics_brake": [
+                0.50,
+                0.51,
+                0.49,
+                0.50,
+                0.51,
+                0.50,
+                0.49,
+                0.50,
+            ],
+            "expert_optimal_brake": [
+                0.50,
+                0.49,
+                0.50,
+                0.51,
+                0.50,
+                0.49,
+                0.50,
+                0.50,
+            ],
+        }
+    )
+
+    events = preflight_detailed._build_detailed_events(df, 0, 7, [])
+    event_names = {event["event"] for event in events}
+
+    assert not any("brake initiation onset" in event for event in event_names)
+    assert not any("brake release onset" in event for event in event_names)
+    assert "brake applied too quickly" not in event_names
+    assert "brake applied too slowly" not in event_names
+    assert "brake release too quickly" not in event_names
+    assert "brake release too slowly" not in event_names
+
+
+def test_action_speed_requires_two_ilocs_of_duration_difference():
+    player = max(
+        preflight_detailed._change_episodes(
+            [(0, 0.80), (1, 0.80), (2, 0.70), (3, 0.60), (4, 0.50), (5, 0.40)],
+            "decrease",
+        ),
+        key=lambda episode: episode["total_movement"],
+    )
+    one_iloc_longer_expert = max(
+        preflight_detailed._change_episodes(
+            [
+                (0, 0.80),
+                (1, 0.80),
+                (2, 0.72),
+                (3, 0.64),
+                (4, 0.56),
+                (5, 0.48),
+                (6, 0.40),
+            ],
+            "decrease",
+        ),
+        key=lambda episode: episode["total_movement"],
+    )
+    two_ilocs_longer_expert = max(
+        preflight_detailed._change_episodes(
+            [
+                (0, 0.80),
+                (1, 0.80),
+                (2, 0.7333),
+                (3, 0.6667),
+                (4, 0.60),
+                (5, 0.5333),
+                (6, 0.4667),
+                (7, 0.40),
+            ],
+            "decrease",
+        ),
+        key=lambda episode: episode["total_movement"],
+    )
+
+    assert preflight_detailed._compare_action_speed(
+        player,
+        one_iloc_longer_expert,
+    ) is None
+    assert preflight_detailed._compare_action_speed(
+        player,
+        two_ilocs_longer_expert,
+    )["verdict"] == "quickly"
 
 
 def test_detailed_preflight_events_capture_multiple_slip_balance_runs():
