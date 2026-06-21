@@ -1265,6 +1265,66 @@ def test_detailed_build_request_adds_embedding_candidates_to_prompt(monkeypatch)
     assert request.extra_state.get("tool_agent_extra_tools") is None
 
 
+def test_trajectory_similarity_query_flags_persistent_positive_offset_rise():
+    payload, error = run_pipeline_query(
+        pd.DataFrame(
+            {"trajectory_offset": [0.0, 0.2, 0.6, 1.1, 1.7]},
+            index=range(5),
+        ),
+        "measure_trajectory_similarity",
+        {
+            "range": [0, 4],
+            "column": "trajectory_offset",
+            "smoothing_window": 1,
+        },
+    )
+
+    assert error is None
+    extra = payload["extra"]
+    assert extra["off_track_trend"]["is_off_track_like"] is True
+    assert (
+        extra["off_track_trend"]["verdict"]
+        == "offset_keeps_rising_positive_off_track_like"
+    )
+    assert extra["offset_delta_m"] > 0.5
+    assert extra["rising_fraction"] == 1.0
+
+
+def test_trajectory_similarity_query_does_not_flag_recovery_toward_zero():
+    payload, error = run_pipeline_query(
+        pd.DataFrame(
+            {"trajectory_offset": [-3.0, -2.2, -1.5, -0.8, -0.2]},
+            index=range(5),
+        ),
+        "measure_trajectory_similarity",
+        {
+            "range": [0, 4],
+            "column": "trajectory_offset",
+            "smoothing_window": 1,
+        },
+    )
+
+    assert error is None
+    extra = payload["extra"]
+    assert extra["off_track_trend"]["is_off_track_like"] is False
+    assert (
+        extra["off_track_trend"]["verdict"]
+        == "trajectory_not_persistently_rising_positive"
+    )
+
+
+def test_detailed_preflight_runs_trajectory_similarity_query():
+    tool_ids = {
+        spec["tool_id"]
+        for spec in preflight_detailed.DETAILED_PREFLIGHT_QUERY_SPECS
+    }
+
+    assert (
+        "query_telemetry.measure_trajectory_similarity.trajectory_offset"
+        in tool_ids
+    )
+
+
 def test_lap_preflight_calculates_player_speed_investigation(monkeypatch):
     captured = {}
     sentinel = object()

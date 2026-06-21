@@ -11,10 +11,11 @@ too wide a line that runs out of track (exit trajectory too wide). Triggering
 condition is usually too much throttle for the line.
 
 ## Telemetry signature
-- Lateral track position outside the exit kerb.
-- Throttle position often at or near 100% just before the off.
-- Driven-axle slip elevated or lateral G plateauing then
-  dropping.
+- Use the preflight/query result from `measure_trajectory_similarity`
+  over the proposed exit span.
+- The deciding evidence is player/expert trajectory similarity from
+  `trajectory_offset`: the offset keeps rising into positive /
+  wider-than-expert values across apex-to-exit or post-exit.
 - recover from off-track (recover from off-track) follows.
 
 ## Engineer interpretation

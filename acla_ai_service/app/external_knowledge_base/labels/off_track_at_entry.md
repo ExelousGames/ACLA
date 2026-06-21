@@ -12,10 +12,11 @@ track (entry trajectory too wide). The recovery (recover from off-track) takes t
 get back.
 
 ## Telemetry signature
-- Lateral track position outside the track edge during entry.
-- Wheels-on-track count drops below threshold.
-- Yaw rate and lateral G erratic (the car is on a lower-grip
-  surface).
+- Use the preflight/query result from `measure_trajectory_similarity`
+  over the proposed entry span.
+- The deciding evidence is player/expert trajectory similarity from
+  `trajectory_offset`: the offset keeps rising into positive /
+  wider-than-expert values across approach-to-entry or entry.
 - recover from off-track typically follows.
 
 ## Engineer interpretation

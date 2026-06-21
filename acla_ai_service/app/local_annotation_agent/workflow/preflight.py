@@ -538,6 +538,10 @@ def _query_semantic_tags(
         )
     elif query_id == "compute_slope":
         tags.extend(_slope_tags(column, extra if isinstance(extra, dict) else {}))
+    elif query_id == "measure_trajectory_similarity":
+        tags.extend(
+            _trajectory_similarity_tags(extra if isinstance(extra, dict) else {})
+        )
     elif query_id == "find_threshold_crossing":
         tags.extend(_threshold_crossing_tags(result.get("samples")))
     elif query_id == "find_dips_on_main_slope":
@@ -790,6 +794,21 @@ def _slope_tags(column: str, extra: Dict[str, Any]) -> List[str]:
         elif domain == "falling":
             tags.append("deceleration onset")
     return tags
+
+
+def _trajectory_similarity_tags(extra: Dict[str, Any]) -> List[str]:
+    off_track = extra.get("off_track_trend")
+    if not isinstance(off_track, dict):
+        return []
+    if off_track.get("is_off_track_like") is not True:
+        return []
+    return [
+        "trajectory offset keeps rising",
+        "persistent positive trajectory offset",
+        "offset rising positive",
+        "trajectory similarity drops",
+        "off track trend",
+    ]
 
 
 def _threshold_crossing_tags(samples: Any) -> List[str]:
@@ -1089,6 +1108,8 @@ def _preflight_tool_summary(tool_id: str, content: Dict[str, Any]) -> Optional[s
         return _preflight_threshold_summary(tool_id, result)
     if query_id == "find_dips_on_main_slope":
         return _preflight_dips_summary(tool_id, result, column)
+    if query_id == "measure_trajectory_similarity":
+        return _preflight_trajectory_similarity_summary(tool_id, result)
     return None
 
 
@@ -1370,6 +1391,26 @@ def _preflight_dips_summary(
     )
 
 
+def _preflight_trajectory_similarity_summary(
+    tool_id: str,
+    result: Dict[str, Any],
+) -> Optional[str]:
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    trend = extra.get("off_track_trend")
+    if not isinstance(trend, dict):
+        trend = {}
+    return (
+        f"{tool_id}: verdict={trend.get('verdict')}; "
+        f"is_off_track_like={trend.get('is_off_track_like')}; "
+        f"similarity_score={extra.get('similarity_score')}; "
+        f"offset_delta_m={extra.get('offset_delta_m')}; "
+        f"rising_fraction={extra.get('rising_fraction')}; "
+        f"longest_rising_run_steps={extra.get('longest_rising_run_steps')}"
+    )
+
+
 def _candidate_lines(candidates: List[Dict[str, Any]]) -> List[str]:
     if not candidates:
         return ["- (no semantic candidates found)"]
@@ -1478,6 +1519,8 @@ def _query_analysis(content: Dict[str, Any]) -> Dict[str, Any]:
         return _threshold_crossing_analysis(result)
     if query_id == "find_dips_on_main_slope":
         return _dips_analysis(result)
+    if query_id == "measure_trajectory_similarity":
+        return _trajectory_similarity_analysis(result)
     return _compact_query_result(result)
 
 
@@ -1620,6 +1663,23 @@ def _dips_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
         "n_dips": extra.get("n_dips"),
         "slope_direction": extra.get("slope_direction"),
         "samples": [sample for sample in samples if isinstance(sample, dict)],
+    }
+
+
+def _trajectory_similarity_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return {}
+    return {
+        "similarity_score": extra.get("similarity_score"),
+        "offset_start_m": extra.get("offset_start_m"),
+        "offset_end_m": extra.get("offset_end_m"),
+        "offset_delta_m": extra.get("offset_delta_m"),
+        "rising_fraction": extra.get("rising_fraction"),
+        "longest_rising_run_steps": extra.get("longest_rising_run_steps"),
+        "off_track_trend": extra.get("off_track_trend"),
+        "max_positive_offset": extra.get("max_positive_offset"),
+        "max_absolute_offset": extra.get("max_absolute_offset"),
     }
 
 

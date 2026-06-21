@@ -56,6 +56,18 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         ],
     },
     {
+        "tool_id": "query_telemetry.measure_trajectory_similarity.trajectory_offset",
+        "graph_id": "trajectory_offset",
+        "query_id": "measure_trajectory_similarity",
+        "params": {
+            "column": "trajectory_offset",
+            "smoothing_window": 5,
+        },
+        "tags": [
+            "trajectory similarity",
+        ],
+    },
+    {
         "tool_id": "query_telemetry.find_threshold_crossing.brake.onset",
         "graph_id": "brake",
         "query_id": "find_threshold_crossing",

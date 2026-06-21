@@ -651,20 +651,20 @@
     "MSP50": {
       "name": "Off track at entry",
       "type": "sub",
-      "description": "Player goes off track at corner entry — the trajectory offset peaks far **wider than expert** at corner entry with the offset **moving toward positive (widening)** across the **approach-to-entry** span, often co-occurring with an **over-limit spike** in grip utilisation.\n",
+      "description": "Player goes off track at corner entry — use the preflight/query result from `measure_trajectory_similarity` over the proposed entry child span. The player/expert trajectory similarity drops because `trajectory_offset` keeps rising into positive / wider-than-expert values across the approach-to-entry or entry span.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [],
-      "search_tags": "MSP50; Off track at entry; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; off track at entry; trajectory wider than expert; wider than expert; moving toward positive; over-limit spike; grip utilisation; off track; entry"
+      "search_tags": "MSP50; Off track at entry; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; off track at entry; trajectory similarity; trajectory offset keeps rising; persistent positive trajectory offset; offset rising positive; wider than expert; off track; entry"
     },
     "MSP51": {
       "name": "Off track at exit",
       "type": "sub",
-      "description": "Player goes off track at corner exit — the trajectory offset peaks far **wider than expert** at corner exit with the offset **moving toward positive (widening)** across the **apex-to-exit** or **post-exit** span, often co-occurring with an **over-limit spike** in grip utilisation.\n",
+      "description": "Player goes off track at corner exit — use the preflight/query result from `measure_trajectory_similarity` over the proposed exit child span. The player/expert trajectory similarity drops because `trajectory_offset` keeps rising into positive / wider-than-expert values across the apex-to-exit or post-exit span.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [],
-      "search_tags": "MSP51; Off track at exit; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; off track at exit; trajectory wider than expert; wider than expert; moving toward positive; over-limit spike; grip utilisation; off track; apex; exit"
+      "search_tags": "MSP51; Off track at exit; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; off track at exit; trajectory similarity; trajectory offset keeps rising; persistent positive trajectory offset; offset rising positive; wider than expert; off track; apex; exit"
     },
     "MSP52": {
       "name": "Off track in the straight",

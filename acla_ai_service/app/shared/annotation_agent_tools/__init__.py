@@ -3956,6 +3956,112 @@ def _query_find_trend_runs(
     }
 
 
+def _query_measure_trajectory_similarity(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, smoothing_window: int,
+) -> Optional[Dict[str, Any]]:
+    """Measure trajectory similarity from an existing trajectory-offset trace."""
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+
+    segment = df.loc[int(start_index): int(end_index)]
+    arr_raw = _resolve_column(column, segment)
+    if arr_raw is None or len(arr_raw) < 2:
+        return None
+
+    clean = (
+        pd.Series(arr_raw)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy()
+    )
+    finite_locs = np.where(np.isfinite(clean))[0]
+    if len(finite_locs) < 2:
+        return None
+
+    values = clean[finite_locs]
+    ilocs = [int(start_index) + int(local) for local in finite_locs]
+    deltas = np.diff(values)
+    positive_steps = int(np.sum(deltas > 1e-9))
+    rising_fraction = float(positive_steps / max(1, len(deltas)))
+    offset_delta = float(values[-1] - values[0])
+    abs_values = np.abs(values)
+    mean_abs_offset = float(np.mean(abs_values))
+    max_abs_local = int(np.argmax(abs_values))
+    max_positive_local = int(np.argmax(values))
+
+    longest_rising_run = 0
+    current_run = 0
+    for delta in deltas:
+        if float(delta) > 1e-9:
+            current_run += 1
+            longest_rising_run = max(longest_rising_run, current_run)
+        else:
+            current_run = 0
+
+    ends_positive = bool(float(values[-1]) > 0.5)
+    meaningful_rise = bool(offset_delta > 0.5)
+    persistently_rising = bool(
+        rising_fraction >= 0.75
+        and longest_rising_run >= max(1, len(deltas) // 2)
+    )
+    off_track_like = bool(ends_positive and meaningful_rise and persistently_rising)
+    similarity_score = float(max(0.0, min(1.0, 1.0 / (1.0 + mean_abs_offset))))
+    verdict = (
+        "offset_keeps_rising_positive_off_track_like"
+        if off_track_like
+        else "trajectory_not_persistently_rising_positive"
+    )
+
+    return {
+        "iloc": int(ilocs[max_positive_local]),
+        "value": similarity_score,
+        "samples": [
+            {"iloc": ilocs[0], "value": float(values[0]), "note": "offset_start"},
+            {"iloc": ilocs[-1], "value": float(values[-1]), "note": "offset_end"},
+            {
+                "iloc": int(ilocs[max_positive_local]),
+                "value": float(values[max_positive_local]),
+                "note": "max_positive_offset",
+            },
+            {
+                "iloc": int(ilocs[max_abs_local]),
+                "value": float(values[max_abs_local]),
+                "note": "max_absolute_offset",
+            },
+        ],
+        "extra": {
+            "unit": "m",
+            "smoothing_window": window,
+            "similarity_score": similarity_score,
+            "offset_start_m": float(values[0]),
+            "offset_end_m": float(values[-1]),
+            "offset_delta_m": offset_delta,
+            "min_offset_m": float(np.min(values)),
+            "max_offset_m": float(np.max(values)),
+            "mean_absolute_offset_m": mean_abs_offset,
+            "max_absolute_offset": {
+                "iloc": int(ilocs[max_abs_local]),
+                "value_m": float(values[max_abs_local]),
+            },
+            "max_positive_offset": {
+                "iloc": int(ilocs[max_positive_local]),
+                "value_m": float(values[max_positive_local]),
+            },
+            "rising_fraction": rising_fraction,
+            "longest_rising_run_steps": int(longest_rising_run),
+            "off_track_trend": {
+                "is_off_track_like": off_track_like,
+                "verdict": verdict,
+            },
+        },
+    }
+
+
 def _query_find_threshold_crossing(
     df: pd.DataFrame, start_index: int, end_index: int,
     columns: List[str], threshold: float, smoothing_window: int,
@@ -4149,6 +4255,25 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
             "min_dip_depth": "float — minimum dip depth in signal units (e.g. ~0.05 for brake/throttle 0–1, ~5 for speed in km/h)",
         },
         "callable": _query_find_dips_on_main_slope,
+    },
+    {
+        "id": "measure_trajectory_similarity",
+        "label": "Trajectory similarity from offset",
+        "description": (
+            "Measure player/expert trajectory similarity from an existing "
+            "`trajectory_offset` trace over <range>. Returns a similarity "
+            "score plus an off-track trend verdict when the offset keeps "
+            "rising into positive/wider values."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "column": "DataFrame column name, usually trajectory_offset",
+            "smoothing_window": (
+                "int >= 1 - rolling-median width "
+                "(1=off, 5=light, 11=heavy)"
+            ),
+        },
+        "callable": _query_measure_trajectory_similarity,
     },
     {
         "id": "find_threshold_crossing",
