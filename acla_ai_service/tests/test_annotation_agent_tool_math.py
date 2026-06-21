@@ -1147,6 +1147,8 @@ def test_detailed_preflight_maps_shape_keys_to_evidence_sentences():
                             "start_iloc": 1,
                             "end_iloc": 8,
                             "trend": "uphill",
+                            "slope_angle_degrees": 3.2,
+                            "horizontal_distance_units": 26.8,
                             "delta_m": 1.5,
                         },
                     },
@@ -1162,7 +1164,9 @@ def test_detailed_preflight_maps_shape_keys_to_evidence_sentences():
     assert "constant-radius corner" in semantic_search_text
     assert "smooth steady curvature" in semantic_search_text
     assert "entry altitude uphill" in semantic_search_text
-    assert "altitude changed by 1.5 m" in semantic_search_text
+    assert "slope angle was 3.2 degrees" in semantic_search_text
+    assert "horizontal path distance was 26.8 telemetry units" in semantic_search_text
+    assert "altitude changed by 1.5 m for citation only" in semantic_search_text
     assert "label_id" not in semantic_search_text
 
 
@@ -1558,6 +1562,24 @@ def test_real_corner_segment_shape_still_emits_corner_phase():
     assert "turn angle" in content["corner_shape_refinement"]["reason"]
     assert content["phases"]
     assert content["phases"][0]["turn_angle_degrees"] >= 10.0
+
+
+def test_altitude_labels_use_slope_angle_not_raw_delta():
+    x = np.linspace(0.0, 40.0, 100)
+    y = np.zeros(100)
+    df = _trajectory_df(x, y)
+    df["expert_optimal_player_pos_y"] = 18.0 * np.sin(np.linspace(0.0, np.pi, 100))
+    df["Graphics_player_pos_y"] = df["expert_optimal_player_pos_y"]
+    df["expert_optimal_player_pos_z"] = np.linspace(0.0, 0.1, 100)
+    df["Graphics_player_pos_z"] = df["expert_optimal_player_pos_z"]
+
+    attachment = measure_segment_shape(df, 0, len(df))
+    entry = attachment.content["altitude"]["entry"]
+
+    assert entry["delta_m"] > 0.0
+    assert entry["slope_angle_degrees"] < 1.0
+    assert entry["trend"] == "level"
+    assert "horizontal_distance_units" in entry
 
 
 def test_approach_to_corner_requires_range_to_end_before_apex():

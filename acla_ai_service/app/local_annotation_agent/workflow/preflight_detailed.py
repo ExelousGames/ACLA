@@ -229,29 +229,29 @@ _CORNER_REFINEMENT_WORDS = {
 
 _ALTITUDE_WORDS = {
     ("entry", "uphill"): (
-        "entry altitude uphill; corner entry rises uphill across the entry phase"
+        "entry altitude uphill; corner entry has uphill slope angle across the entry phase"
     ),
     ("entry", "level"): (
-        "entry altitude level; corner entry stays broadly level across the entry phase"
+        "entry altitude level; corner entry has near-level slope angle across the entry phase"
     ),
     ("entry", "downhill"): (
-        "entry altitude downhill; corner entry falls downhill across the entry phase"
+        "entry altitude downhill; corner entry has downhill slope angle across the entry phase"
     ),
-    ("apex", "uphill"): "apex altitude uphill; altitude rises through the apex window",
+    ("apex", "uphill"): "apex altitude uphill; uphill slope angle through the apex window",
     ("apex", "level"): (
-        "apex altitude level; altitude stays broadly level through the apex window"
+        "apex altitude level; near-level slope angle through the apex window"
     ),
     ("apex", "downhill"): (
-        "apex altitude downhill; altitude falls through the apex window"
+        "apex altitude downhill; downhill slope angle through the apex window"
     ),
     ("exit", "uphill"): (
-        "exit altitude uphill; corner exit rises uphill through the exit phase"
+        "exit altitude uphill; corner exit has uphill slope angle through the exit phase"
     ),
     ("exit", "level"): (
-        "exit altitude level; corner exit stays broadly level through the exit phase"
+        "exit altitude level; corner exit has near-level slope angle through the exit phase"
     ),
     ("exit", "downhill"): (
-        "exit altitude downhill; corner exit falls downhill through the exit phase"
+        "exit altitude downhill; corner exit has downhill slope angle through the exit phase"
     ),
 }
 
@@ -466,6 +466,10 @@ def _shape_events(
                 [summary.get("start_iloc"), summary.get("end_iloc")],
                 {
                     "trend": trend,
+                    "slope_angle_degrees": summary.get("slope_angle_degrees"),
+                    "horizontal_distance_units": summary.get(
+                        "horizontal_distance_units"
+                    ),
                     "delta_m": summary.get("delta_m"),
                     "start_altitude_m": summary.get("start_altitude_m"),
                     "end_altitude_m": summary.get("end_altitude_m"),
@@ -1873,9 +1877,21 @@ def _measurement_sentence_fragments(
         return fragments
 
     if "altitude" in event_name:
+        angle = measurements.get("slope_angle_degrees")
+        if angle is not None:
+            fragments.append(
+                f"slope angle was {_format_value(angle)} degrees"
+            )
+        distance = measurements.get("horizontal_distance_units")
+        if distance is not None:
+            fragments.append(
+                f"horizontal path distance was {_format_value(distance)} telemetry units"
+            )
         delta = measurements.get("delta_m")
         if delta is not None:
-            fragments.append(f"altitude changed by {_format_value(delta)} m")
+            fragments.append(
+                f"altitude changed by {_format_value(delta)} m for citation only"
+            )
         return fragments
 
     for key in (

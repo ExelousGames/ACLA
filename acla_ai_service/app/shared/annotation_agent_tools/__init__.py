@@ -36,6 +36,8 @@ from app.internal_knowledge_base import skills
 
 LOGGER = logging.getLogger(__name__)
 
+_HAIRPIN_NEAR_U_TURN_MIN_DEGREES = 130.0
+
 
 def _absolute_iloc_slice(
     df: pd.DataFrame,
@@ -572,24 +574,6 @@ def _arc_path_length_m(x: np.ndarray, y: np.ndarray, entry: int, exit_: int) -> 
     return float(np.sqrt(dx[finite] * dx[finite] + dy[finite] * dy[finite]).sum())
 
 
-def _hairpin_gate_config() -> Dict[str, float]:
-    doc = _segment_type_label(
-        segment_type_role="corner_shape_refinement",
-        shape_key="hairpin",
-    )
-    gate = doc.get("deterministic_gate")
-    if not isinstance(gate, dict):
-        raise RuntimeError("ST10 knowledge label must declare deterministic_gate")
-    required = ("near_u_turn_min_degrees",)
-    missing = [key for key in required if key not in gate]
-    if missing:
-        raise RuntimeError(
-            "ST10 deterministic_gate missing required fields: "
-            + ", ".join(missing)
-        )
-    return {key: float(gate[key]) for key in required}
-
-
 def _hairpin_shape_metrics(
     x: np.ndarray,
     y: np.ndarray,
@@ -601,8 +585,7 @@ def _hairpin_shape_metrics(
 ) -> Dict[str, Any]:
     arc_length_m = _arc_path_length_m(x, y, entry, exit_)
 
-    gate = _hairpin_gate_config()
-    is_near_u_turn = turn_deg >= gate["near_u_turn_min_degrees"]
+    is_near_u_turn = turn_deg >= _HAIRPIN_NEAR_U_TURN_MIN_DEGREES
     return {
         "turn_angle_degrees": float(turn_deg),
         "arc_length_m": float(arc_length_m),
@@ -703,36 +686,64 @@ def _altitude_columns(df: pd.DataFrame) -> List[str]:
     return cols
 
 
-def _classify_altitude_delta(delta_m: float) -> str:
-    threshold = 0.25
-    if delta_m > threshold:
+def _position_columns_for_altitude(altitude_col: str) -> Optional[Tuple[str, str]]:
+    if altitude_col == "expert_optimal_player_pos_z":
+        return ("expert_optimal_player_pos_x", "expert_optimal_player_pos_y")
+    if altitude_col == "Graphics_player_pos_z":
+        return ("Graphics_player_pos_x", "Graphics_player_pos_y")
+    return None
+
+
+def _classify_altitude_angle(angle_degrees: float) -> str:
+    threshold_degrees = 1.0
+    if angle_degrees > threshold_degrees:
         return "uphill"
-    if delta_m < -threshold:
+    if angle_degrees < -threshold_degrees:
         return "downhill"
     return "level"
 
 
 def _altitude_phase_summary(
     values: np.ndarray,
+    x_values: np.ndarray,
+    y_values: np.ndarray,
     start: int,
     end: int,
 ) -> Optional[Dict[str, Any]]:
     lo = max(0, min(int(start), values.size - 1))
     hi = max(lo + 1, min(int(end), values.size))
     span = values[lo:hi]
-    finite_idx = np.where(np.isfinite(span))[0]
+    x_span = x_values[lo:hi]
+    y_span = y_values[lo:hi]
+    finite_idx = np.where(
+        np.isfinite(span) & np.isfinite(x_span) & np.isfinite(y_span)
+    )[0]
     if finite_idx.size < 2:
         return None
     first_i = lo + int(finite_idx[0])
     last_i = lo + int(finite_idx[-1])
     delta = float(values[last_i] - values[first_i])
+    path_x = x_values[first_i:last_i + 1]
+    path_y = y_values[first_i:last_i + 1]
+    finite_path = np.isfinite(path_x) & np.isfinite(path_y)
+    if int(np.sum(finite_path)) < 2:
+        return None
+    path_x = path_x[finite_path]
+    path_y = path_y[finite_path]
+    step_distances = np.hypot(np.diff(path_x), np.diff(path_y))
+    horizontal_distance = float(np.sum(step_distances[np.isfinite(step_distances)]))
+    if horizontal_distance <= 0.0:
+        return None
+    angle_degrees = float(np.degrees(np.arctan2(delta, horizontal_distance)))
     return {
         "start_offset": first_i,
         "end_offset": last_i,
         "start_altitude_m": float(values[first_i]),
         "end_altitude_m": float(values[last_i]),
         "delta_m": delta,
-        "trend": _classify_altitude_delta(delta),
+        "horizontal_distance_units": horizontal_distance,
+        "slope_angle_degrees": angle_degrees,
+        "trend": _classify_altitude_angle(angle_degrees),
     }
 
 
@@ -742,7 +753,7 @@ def measure_segment_shape(
     """Tool — deterministic shape and altitude summary for a segment.
 
     Uses expert-anchored curvature phases for base shape and corner-shape
-    refinements, then reads z-position trends over entry / apex / exit windows.
+    refinements, then reads z-position angle over entry / apex / exit windows.
     It reports shape keys and measurements only; preflight performs any
     label-catalog wording or retrieval.
     """
@@ -786,7 +797,17 @@ def measure_segment_shape(
     alt_cols = _altitude_columns(segment)
     if phases and alt_cols:
         alt_col = alt_cols[0]
+        xy_cols = _position_columns_for_altitude(alt_col)
+        if xy_cols is None or any(col not in segment.columns for col in xy_cols):
+            return PipelineAttachment(
+                name="segment_shape_measurement",
+                kind="structured",
+                label="Segment Shape Measurement",
+                content=_round_floats(shape),
+            )
         alt = segment[alt_col].to_numpy(dtype=float)
+        x_values = segment[xy_cols[0]].to_numpy(dtype=float)
+        y_values = segment[xy_cols[1]].to_numpy(dtype=float)
         primary = max(phases, key=lambda p: abs(float(p.get("kappa_peak", 0.0))))
         entry_phase = phases[0]
         exit_phase = phases[-1]
@@ -799,7 +820,7 @@ def measure_segment_shape(
         }
         shape["altitude"]["source_column"] = alt_col
         for phase_name, (lo, hi) in spans.items():
-            summary = _altitude_phase_summary(alt, lo, hi)
+            summary = _altitude_phase_summary(alt, x_values, y_values, lo, hi)
             if summary is None:
                 continue
             summary["start_iloc"] = int(summary.pop("start_offset")) + start
@@ -3171,16 +3192,18 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     },
     {
         "id": "measure_segment_shape",
-        "label": "Segment shape + altitude measurement",
+        "label": "Segment shape + altitude angle measurement",
         "description": (
             "Measures expert-anchored curvature and z-position over the "
             "segment. Produces a "
             "'segment_shape_measurement' attachment with `base_segment_shape` "
             "and optional `corner_shape_refinement` shape keys, plus entry / "
-            "apex / exit altitude summaries. It does not output labels; "
+            "apex / exit altitude slope-angle summaries. It does not output "
+            "labels; "
             "preflight or label search maps shape keys to annotation wording. "
             "Use this whenever deciding segment shape or reading corner "
-            "altitude trends."
+            "altitude trends; uphill, level, and downhill are classified from "
+            "slope angle, not raw height difference."
         ),
         "callable": measure_segment_shape,
     },
