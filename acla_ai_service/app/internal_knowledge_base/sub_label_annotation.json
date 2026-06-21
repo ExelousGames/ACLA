@@ -318,13 +318,13 @@
     "MSP22": {
       "name": "Highest brake pressure too high",
       "type": "sub",
-      "description": "The player's **peak brake pressure is higher than** the expert's across the braking phase. Player often **moving toward positive  (widening)** in the trajectory offset.\n",
+      "description": "The player's **peak brake pressure is higher than** the expert's across the braking phase, or is **about the same as the expert despite the player being materially slower** at that point. In the slower-driver case, the same peak is still too much brake for the actual speed; an earlier release can be a consequence of realizing the car is already too slow, not the primary mistake. Player often **moving toward positive  (widening)** in the trajectory offset.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
         "MSP13"
       ],
-      "search_tags": "MSP22; Highest brake pressure too high; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; peak brake pressure higher than expert; peak brake pressure; moving toward positive; higher than expert"
+      "search_tags": "MSP22; Highest brake pressure too high; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; peak brake pressure higher than expert; peak brake pressure about same as expert while player slower than expert; same brake pressure despite slower speed; excessive brake for lower entry speed; driver released earlier because already too slow; moving toward positive; higher than expert"
     },
     "MSP14": {
       "name": "Brake applied too quickly",

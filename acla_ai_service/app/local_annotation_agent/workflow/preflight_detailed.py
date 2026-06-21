@@ -397,8 +397,8 @@ def _build_detailed_events(
 
     _extend(events, _shape_events(start, end, by_tool, phases))
     _extend(events, _opponent_events(start, end, by_tool))
-    _extend(events, _peak_comparison_events(by_tool, phases, "brake"))
-    _extend(events, _peak_comparison_events(by_tool, phases, "throttle"))
+    _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "brake"))
+    _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "throttle"))
     _extend(events, _local_input_shape_events(df, start, end, phases))
     _extend(events, _time_delta_events(start, end, by_tool))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
@@ -541,6 +541,9 @@ def _opponent_events(
 
 
 def _peak_comparison_events(
+    df,
+    start: int,
+    end: int,
     by_tool: Dict[str, Dict[str, Any]],
     phases: List[Dict[str, int]],
     kind: str,
@@ -564,21 +567,40 @@ def _peak_comparison_events(
     ):
         return []
     delta = float(player_value) - float(expert_value)
-    if abs(delta) < 0.05:
-        return []
     player_iloc = player.get("iloc")
     phase = _phase_for_iloc(player_iloc, phases) if isinstance(player_iloc, int) else "unknown"
+    measurements = {
+        "player_value": player_value,
+        "expert_value": expert_value,
+        "delta": delta,
+        "player_iloc": player_iloc,
+        "expert_iloc": expert.get("iloc"),
+    }
+    if kind == "brake" and isinstance(player_iloc, int):
+        speed_gap = _value_at_iloc(
+            df,
+            start,
+            end,
+            "speed_difference",
+            player_iloc,
+            graph_id="speed_delta",
+        )
+        if speed_gap is not None:
+            measurements["speed_gap_at_player_peak"] = speed_gap
+    if abs(delta) < 0.05:
+        return [_event(
+            f"{phrase} about same as expert",
+            phase,
+            [player_iloc, player_iloc] if isinstance(player_iloc, int) else None,
+            measurements,
+            "strong" if abs(delta) <= 0.02 else "moderate",
+            [player_tool, expert_tool],
+        )]
     return [_event(
         f"{phrase} {'higher' if delta > 0 else 'lower'} than expert",
         phase,
         [player_iloc, player_iloc] if isinstance(player_iloc, int) else None,
-        {
-            "player_value": player_value,
-            "expert_value": expert_value,
-            "delta": delta,
-            "player_iloc": player_iloc,
-            "expert_iloc": expert.get("iloc"),
-        },
+        measurements,
         "strong" if abs(delta) >= 0.15 else "moderate",
         [player_tool, expert_tool],
     )]
@@ -1518,6 +1540,27 @@ def _series_values(
     return out
 
 
+def _value_at_iloc(
+    df,
+    start: int,
+    end: int,
+    column: str,
+    iloc: int,
+    *,
+    graph_id: Optional[str] = None,
+) -> Optional[float]:
+    for row_iloc, value in _series_values(
+        df,
+        start,
+        end,
+        column,
+        graph_id=graph_id,
+    ):
+        if row_iloc == iloc:
+            return value
+    return None
+
+
 def _rolling_median(values: List[float], window: int) -> List[float]:
     if window <= 1:
         return values
@@ -1749,6 +1792,20 @@ def _measurement_sentence_fragments(
                 f"the player peak was {_format_value(player)} versus "
                 f"expert peak {_format_value(expert)}"
             )
+        speed_gap = measurements.get("speed_gap_at_player_peak")
+        speed_gap_number = _as_float(speed_gap)
+        if speed_gap_number is not None:
+            if speed_gap_number > 0:
+                fragments.append(
+                    "the player was "
+                    f"{_format_value(speed_gap_number)} km/h slower than expert "
+                    "at the player peak"
+                )
+            elif speed_gap_number < 0:
+                fragments.append(
+                    "the player was "
+                    f"{_format_value(abs(speed_gap_number))} km/h faster at the player peak"
+                )
         iloc = measurements.get("player_iloc")
         if iloc is not None:
             fragments.append(f"the player peak occurred at iloc {iloc}")
