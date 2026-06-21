@@ -33,7 +33,7 @@ from app.local_annotation_agent.workflow.results import (
 from app.local_annotation_agent.workflow.preflight_detailed import (
     build_preflight_context,
 )
-from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
+from app.local_annotation_agent.workflow.tools import shape_label_doc_for_llm
 
 
 WHOLE_CHILD_RANGE_LABEL_RULE = (
@@ -105,10 +105,10 @@ def _tool_agent_task_prompt(
         "as the primary evidence package. It contains deterministic tool "
         "outputs plus statistical semantic events designed to match the "
         "annotation knowledge vocabulary.\n"
-        "2. Use `search_labels` with the event phrases that describe the "
-        "observed telemetry. Use `parent_id` for sub-labels under the "
-        "relevant parent label, and use `types=\"segment_type\"` for "
-        "segment-shape labels.\n"
+        "2. Review the Upfront Detailed Embedding Label Candidates block. "
+        "Those candidates come from hybrid embedding search over the "
+        "annotation knowledge base using the preflight semantic search "
+        "words.\n"
         "3. Call additional data tools only to resolve a concrete missing "
         "detail, not to rediscover the basic analysis path already covered "
         "by preflight.\n"
@@ -126,7 +126,7 @@ def _tool_agent_task_prompt(
         "{\n"
         '  "proposals": [\n'
         '    {\n'
-        '      "label_id": "<a label_id returned by search_labels>",\n'
+        '      "label_id": "<a label_id from the upfront embedding candidates>",\n'
         f'      "start_index": <int in [{parent_start}, {parent_end}]>,\n'
         f'      "end_index": <int in [{parent_start}, {parent_end}]>,\n'
         '      "reasoning": "<2-4 sentence human-readable evidence note citing ilocs, values, trends, and tool verdicts>"\n'
@@ -140,10 +140,9 @@ def _tool_agent_task_prompt(
         f"- Every proposed range must satisfy {parent_start} <= start_index < end_index <= {parent_end}.\n"
         f"- A proposed range must not be identical to the parent range [{parent_start}, {parent_end}].\n"
         f"- {WHOLE_CHILD_RANGE_LABEL_RULE}\n"
-        "- `ST3` / Approach to corner applies only when the proposed range starts before the detected corner arc and ends before the apex; do not use it for a range that includes the apex or corner exit.\n"
         "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
-        "- Only propose label_ids returned by a targeted `search_labels` "
-        "call. Preflight does not preselect label IDs.\n"
+        "- Only propose label_ids from the Upfront Detailed Embedding Label "
+        "Candidates block. The AI does not search for labels in this flow.\n"
         "- For time-delta and offset evidence, cite deterministic tool "
         "verdict fields (unit, label-significance, whole-section "
         "slope-shape trend); do not "
@@ -155,6 +154,100 @@ def _tool_agent_task_prompt(
         "- Do not propose ranges that exactly match an already-discovered sub-segment.\n"
         "- After `submit_result` returns `ok: true`, stop calling tools."
     )
+
+
+def _preflight_semantic_search_text(preflight) -> str:
+    for attachment in getattr(preflight, "attachments", []) or []:
+        if getattr(attachment, "name", "") != "init.annotation_preflight_context":
+            continue
+        content = getattr(attachment, "content", None)
+        if not isinstance(content, dict):
+            continue
+        evidence = str(
+            content.get("semantic_search_text")
+            or content.get("semantic_evidence_text")
+            or ""
+        ).strip()
+        if evidence:
+            return evidence
+    return ""
+
+
+def _embedding_label_candidates(
+    *,
+    evidence_text: str,
+    parent_main_labels: List[str],
+) -> List[Dict[str, Any]]:
+    """Hybrid-search candidate labels for detailed annotation.
+
+    Detailed preflight only prepares semantic search words; this flow-level
+    step performs the embedding retrieval before the AI chooses ranges.
+    """
+    from app.internal_knowledge_base.label_search import get_doc, search
+
+    query = (evidence_text or "").strip()
+    if not query:
+        return []
+
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    def add(docs: List[Dict[str, Any]]) -> None:
+        for doc in docs:
+            shaped = shape_label_doc_for_llm(doc)
+            current = merged.get(shaped["id"])
+            if current is None or shaped.get("score", 0.0) > current.get("score", 0.0):
+                merged[shaped["id"]] = shaped
+
+    main_parents = [
+        label_id
+        for label_id in parent_main_labels
+        if (get_doc(label_id) or {}).get("type") == "main"
+    ]
+
+    add(search(query, filters={"type": "segment_type"}, top_k=12))
+    if main_parents:
+        for parent_id in main_parents:
+            add(search(query, filters={"parent": parent_id}, top_k=12))
+    else:
+        add(search(query, filters={"type": "main"}, top_k=12))
+
+    return sorted(
+        merged.values(),
+        key=lambda item: float(item.get("score", 0.0)),
+        reverse=True,
+    )[:16]
+
+
+def _embedding_candidates_prompt_block(candidates: List[Dict[str, Any]]) -> str:
+    lines = [
+        "#### Upfront Detailed Embedding Label Candidates",
+        "The detailed flow already ran hybrid embedding search over "
+        "annotation knowledge using the preflight semantic search words.",
+        "These are candidate labels, not final labels; attach one only "
+        "when its definition fits the whole proposed child range.",
+        "Candidate labels:",
+    ]
+    if not candidates:
+        lines.append(
+            "- (none found; submit an empty proposals list unless the "
+            "evidence supports no strict child label)"
+        )
+        return "\n".join(lines)
+
+    for entry in candidates:
+        desc = str(entry.get("description") or "").strip()
+        if len(desc) > 300:
+            desc = desc[:297] + "..."
+        row = (
+            f"- `{entry.get('id')}` ({entry.get('name', '')}) "
+            f"| type={entry.get('type')} | score={entry.get('score')}"
+        )
+        if entry.get("parent"):
+            row += f" | parent={entry.get('parent')}"
+        if desc:
+            row += f" — {desc}"
+        lines.append(row)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +314,10 @@ def build_request(
             for label_id in parent_main_labels
         ],
     )
+    embedding_candidates = _embedding_label_candidates(
+        evidence_text=_preflight_semantic_search_text(preflight),
+        parent_main_labels=parent_main_labels,
+    )
 
     planner_prompt = _tool_agent_task_prompt(
         parent_start=parent_start,
@@ -228,14 +325,14 @@ def build_request(
         parent_main_labels=parent_main_labels,
         existing_children=existing_children,
     )
-    planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
-    # Not used by tool-agent runners — kept as a no-op callable so the
-    # contract holds.
+    planner_prompt = "\n\n".join([
+        preflight.prompt_block,
+        _embedding_candidates_prompt_block(embedding_candidates),
+        planner_prompt,
+    ])
     synth_prompt = lambda _state: ("", "")
 
-    extra_state: Dict[str, Any] = {
-        "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
-    }
+    extra_state: Dict[str, Any] = {}
 
     return AgentRequest(
         provider_id=provider_id,

@@ -179,6 +179,11 @@ def build_preflight_context(
     ]
     events = _build_detailed_events(df, s, e, tool_outputs)
     event_text = _event_text(events, parent_main_labels, extra_query_terms)
+    semantic_search_text = _semantic_search_text(
+        events,
+        parent_main_labels,
+        extra_query_terms,
+    )
     source_tool_ids = _dedupe(
         source
         for event in events
@@ -214,6 +219,7 @@ def build_preflight_context(
                 "range": [s, e],
                 "events": events,
                 "event_text": event_text,
+                "semantic_search_text": semantic_search_text,
                 "source_tool_ids": source_tool_ids,
             },
             content_schema="detailed_preflight_events",
@@ -232,13 +238,21 @@ def build_preflight_context(
                 "tool_output_tags": tags,
                 "statistical_events": [event["event"] for event in events],
                 "semantic_evidence_text": event_text,
+                "semantic_search_text": semantic_search_text,
             },
             content_schema="annotation_preflight_context",
         ),
     ])
 
     return PreflightContext(
-        prompt_block=_prompt_block(s, e, tool_outputs, events, event_text),
+        prompt_block=_prompt_block(
+            s,
+            e,
+            tool_outputs,
+            events,
+            event_text,
+            semantic_search_text,
+        ),
         attachments=attachments,
         label_candidates=[],
     )
@@ -1453,18 +1467,45 @@ def _event_text(
     return "\n".join(lines)[:12000]
 
 
+def _semantic_search_text(
+    events: Sequence[Dict[str, Any]],
+    parent_main_labels: Sequence[str],
+    extra_query_terms: Sequence[str],
+) -> str:
+    """Embedding query text: label-catalog vocabulary, not raw measurements."""
+    lines = [
+        "detailed semantic label search words",
+        "parent_main_labels: " + " ".join(str(label) for label in parent_main_labels),
+        "extra_terms: " + " ".join(str(term) for term in extra_query_terms),
+    ]
+    for event in events:
+        event_name = str(event.get("event") or "").strip()
+        if not event_name:
+            continue
+        parts = [event_name]
+        phase = str(event.get("phase") or "").strip()
+        if phase and phase != "unknown":
+            parts.append(phase)
+        confidence = str(event.get("confidence") or "").strip()
+        if confidence:
+            parts.append(confidence)
+        lines.append(" ".join(parts))
+    return "\n".join(line for line in lines if line.strip())[:12000]
+
+
 def _prompt_block(
     start: int,
     end: int,
     tool_outputs: Sequence[Tuple[str, Dict[str, Any]]],
     events: Sequence[Dict[str, Any]],
     event_text: str,
+    semantic_search_text: Optional[str] = None,
 ) -> str:
     lines = [
         "#### Required Upfront Detailed Statistical Preflight",
         "The system already ran deterministic tools and converted their results into statistical semantic events.",
-        "Use these events as the primary evidence package for querying annotation knowledge.",
-        "No label IDs are preselected by preflight; call `search_labels` with event phrases and the relevant `parent_id` before submitting any label.",
+        "Use these events as the primary evidence package. The flow also prepared embedding search words that match the annotation vocabulary.",
+        "Label IDs are provided separately by the detailed-flow embedding candidate step; this preflight does not run label search.",
         f"Flow: detailed",
         f"Range: [{start}, {end}]",
         "",
@@ -1483,7 +1524,10 @@ def _prompt_block(
         lines.append("- (none)")
     lines.extend([
         "",
-        "Event text for search_labels:",
+        "Embedding search words:",
+        semantic_search_text or event_text or "(none)",
+        "",
+        "Detailed event evidence:",
         event_text or "(none)",
         "",
         "Required tool outputs:",

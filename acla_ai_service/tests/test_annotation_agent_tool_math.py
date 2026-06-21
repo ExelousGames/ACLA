@@ -10,12 +10,15 @@ from app.shared.annotation_agent_tools import (
     run_pipeline_query,
 )
 from app.local_annotation_agent.workflow.preflight import (
+    PreflightContext,
     _prompt_block,
     _query_semantic_tags,
     _run_queries,
     _semantic_tool_output,
 )
 from app.local_annotation_agent.workflow import preflight_detailed, preflight_lap
+from app.local_annotation_agent.workflow.flows import detailed as detailed_flow
+from app.shared.contracts import Attachment
 
 
 def _trajectory_df(x: np.ndarray, y: np.ndarray) -> pd.DataFrame:
@@ -1069,7 +1072,29 @@ def test_detailed_preflight_events_capture_opponent_outcomes():
     assert events[0]["measurements"]["primary_slot_for_role"] == 3
 
 
-def test_detailed_preflight_prompt_uses_events_not_candidates():
+def test_detailed_preflight_outputs_semantic_search_words_without_label_tool():
+    semantic_search_text = preflight_detailed._semantic_search_text(
+        [
+            {
+                "event": "brake initiation onset later than expert",
+                "phase": "entry",
+                "range": [2, 5],
+                "confidence": "strong",
+                "measurements": {"start_delta_iloc": 4},
+                "sources": [],
+            },
+            {
+                "event": "trajectory wider than expert",
+                "phase": "entry",
+                "range": [4, 4],
+                "confidence": "moderate",
+                "measurements": {"value": 0.8},
+                "sources": [],
+            },
+        ],
+        ["MSP"],
+        ["Mistake (Practice)"],
+    )
     prompt = preflight_detailed._prompt_block(
         0,
         10,
@@ -1085,11 +1110,113 @@ def test_detailed_preflight_prompt_uses_events_not_candidates():
             }
         ],
         "brake initiation onset later than expert",
+        semantic_search_text,
     )
 
+    assert "brake initiation onset later than expert" in semantic_search_text
+    assert "trajectory wider than expert" in semantic_search_text
+    assert "start_delta_iloc" not in semantic_search_text
+    assert "Embedding search words" in prompt
     assert "statistical semantic events" in prompt
-    assert "search_labels" in prompt
+    assert "search_labels" not in prompt
     assert "preflight semantic candidates" not in prompt.lower()
+
+
+def test_detailed_embedding_candidates_searches_parent_scoped_labels(monkeypatch):
+    from app.internal_knowledge_base import label_search
+
+    calls = []
+
+    def fake_get_doc(label_id):
+        return {"type": "main"} if label_id == "MSP" else {}
+
+    def fake_search(query, *, top_k=8, min_score=0.0, filters=None):
+        calls.append((query, top_k, filters))
+        if filters == {"type": "segment_type"}:
+            return [{
+                "id": "ST3",
+                "name": "Approach to corner",
+                "type": "segment_type",
+                "description": "Approach phase",
+                "score": 0.7,
+            }]
+        if filters == {"parent": "MSP"}:
+            return [{
+                "id": "MSP2",
+                "name": "Initiate the turn too late",
+                "type": "sub",
+                "parent": "MSP",
+                "description": "Late turn-in",
+                "score": 0.9,
+            }]
+        return []
+
+    monkeypatch.setattr(label_search, "get_doc", fake_get_doc)
+    monkeypatch.setattr(label_search, "search", fake_search)
+
+    candidates = detailed_flow._embedding_label_candidates(
+        evidence_text="brake initiation onset later than expert",
+        parent_main_labels=["MSP"],
+    )
+
+    assert [candidate["id"] for candidate in candidates] == ["MSP2", "ST3"]
+    assert calls == [
+        ("brake initiation onset later than expert", 12, {"type": "segment_type"}),
+        ("brake initiation onset later than expert", 12, {"parent": "MSP"}),
+    ]
+
+
+def test_detailed_build_request_adds_embedding_candidates_to_prompt(monkeypatch):
+    preflight_attachment = Attachment(
+        name="init.annotation_preflight_context",
+        kind="structured",
+        label="Annotation Preflight Context",
+        content={
+            "semantic_search_text": "brake initiation onset later than expert",
+            "semantic_evidence_text": "raw evidence fallback",
+            "tool_output_tags": ["brake later than expert"],
+        },
+        content_schema="annotation_preflight_context",
+    )
+
+    def fake_preflight(**_kwargs):
+        return PreflightContext(
+            prompt_block="#### Required Upfront Detailed Statistical Preflight",
+            attachments=[preflight_attachment],
+            label_candidates=[],
+        )
+
+    def fake_candidates(*, evidence_text, parent_main_labels):
+        assert evidence_text == "brake initiation onset later than expert"
+        assert parent_main_labels == ["MSP"]
+        return [{
+            "id": "MSP2",
+            "name": "Initiate the turn too late",
+            "type": "sub",
+            "parent": "MSP",
+            "description": "Late turn-in",
+            "score": 0.9,
+        }]
+
+    monkeypatch.setattr(detailed_flow, "build_preflight_context", fake_preflight)
+    monkeypatch.setattr(detailed_flow, "_embedding_label_candidates", fake_candidates)
+
+    request = detailed_flow.build_request(
+        provider_id="claude_cli",
+        prompt_mode="tool_agent",
+        df=pd.DataFrame(index=range(10)),
+        parent_start=0,
+        parent_end=10,
+        parent_main_labels=["MSP"],
+    )
+
+    attachment_names = [attachment.name for attachment in request.initial_attachments]
+    assert "init.preflight_label_candidates" not in attachment_names
+    assert "Upfront Detailed Embedding Label Candidates" in request.planner_prompt
+    assert "`MSP2`" in request.planner_prompt
+    assert "not final labels" in request.planner_prompt
+    assert "search_labels" not in request.planner_prompt
+    assert request.extra_state.get("tool_agent_extra_tools") is None
 
 
 def test_lap_preflight_calculates_player_speed_investigation(monkeypatch):
