@@ -102,9 +102,9 @@ def _tool_agent_task_prompt(
         "\n"
         "### How to work\n"
         "1. Use the Required Upfront Detailed Statistical Preflight block "
-        "as the primary evidence package. It contains deterministic tool "
-        "outputs plus statistical semantic events designed to match the "
-        "annotation knowledge vocabulary.\n"
+        "as the primary evidence package. It contains sentence evidence "
+        "from deterministic tools, written with annotation knowledge "
+        "vocabulary.\n"
         "2. Review the Upfront Detailed Embedding Label Candidates block. "
         "Those candidates come from hybrid embedding search over the "
         "annotation knowledge base using the preflight semantic search "
@@ -180,7 +180,7 @@ def _embedding_label_candidates(
 ) -> List[Dict[str, Any]]:
     """Hybrid-search candidate labels for detailed annotation.
 
-    Detailed preflight only prepares semantic search words; this flow-level
+    Detailed preflight only prepares semantic evidence sentences; this flow-level
     step performs the embedding retrieval before the AI chooses ranges.
     """
     from app.internal_knowledge_base.label_search import get_doc, search
@@ -222,7 +222,7 @@ def _embedding_candidates_prompt_block(candidates: List[Dict[str, Any]]) -> str:
     lines = [
         "#### Upfront Detailed Embedding Label Candidates",
         "The detailed flow already ran hybrid embedding search over "
-        "annotation knowledge using the preflight semantic search words.",
+        "annotation knowledge using the preflight semantic evidence sentences.",
         "These are candidate labels, not final labels; attach one only "
         "when its definition fits the whole proposed child range.",
         "Candidate labels:",

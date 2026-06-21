@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.local_annotation_agent.workflow.preflight import (
@@ -10,10 +9,8 @@ from app.local_annotation_agent.workflow.preflight import (
     SHARED_PREFLIGHT_TOOL_IDS,
     SPEED_INVESTIGATION_QUERY_SPECS,
     PreflightContext,
-    _json,
     _preflight_analysis_ids,
     _preflight_query_table,
-    _preflight_tool_summary,
     _run_queries,
     _run_tools,
     _semantic_tags,
@@ -380,10 +377,7 @@ def build_preflight_context(
         prompt_block=_prompt_block(
             s,
             e,
-            tool_outputs,
-            events,
             event_text,
-            semantic_search_text,
         ),
         attachments=attachments,
         label_candidates=[],
@@ -1618,23 +1612,7 @@ def _event_text(
     parent_main_labels: Sequence[str],
     extra_query_terms: Sequence[str],
 ) -> str:
-    lines = [
-        "detailed statistical semantic events",
-        "parent_main_labels: " + ", ".join(str(label) for label in parent_main_labels),
-        "extra_terms: " + " ".join(str(term) for term in extra_query_terms),
-    ]
-    for event in events:
-        parts = [
-            str(event.get("event") or ""),
-            f"phase={event.get('phase')}",
-            f"range={event.get('range')}",
-            f"confidence={event.get('confidence')}",
-        ]
-        measurements = event.get("measurements")
-        if isinstance(measurements, dict) and measurements:
-            parts.append("measurements=" + json.dumps(measurements, sort_keys=True, default=str))
-        lines.append("; ".join(part for part in parts if part))
-    return "\n".join(lines)[:12000]
+    return _sentence_evidence_text(events, parent_main_labels, extra_query_terms)
 
 
 def _semantic_search_text(
@@ -1642,75 +1620,260 @@ def _semantic_search_text(
     parent_main_labels: Sequence[str],
     extra_query_terms: Sequence[str],
 ) -> str:
-    """Embedding query text: label-catalog vocabulary, not raw measurements."""
-    lines = [
-        "detailed semantic label search words",
-        "parent_main_labels: " + " ".join(str(label) for label in parent_main_labels),
-        "extra_terms: " + " ".join(str(term) for term in extra_query_terms),
-    ]
+    """Embedding query text: sentence-only evidence with label vocabulary."""
+    return _sentence_evidence_text(events, parent_main_labels, extra_query_terms)
+
+
+def _sentence_evidence_text(
+    events: Sequence[Dict[str, Any]],
+    parent_main_labels: Sequence[str],
+    extra_query_terms: Sequence[str],
+) -> str:
+    lines: List[str] = []
+    context_terms = _dedupe(
+        str(term).strip()
+        for term in [*parent_main_labels, *extra_query_terms]
+        if str(term).strip()
+    )
+    if context_terms:
+        lines.append(
+            "Parent context for detailed label search includes "
+            + ", ".join(context_terms)
+            + "."
+        )
     for event in events:
-        event_name = str(event.get("event") or "").strip()
-        if not event_name:
-            continue
-        parts = [event_name]
-        phase = str(event.get("phase") or "").strip()
-        if phase and phase != "unknown":
-            parts.append(phase)
-        confidence = str(event.get("confidence") or "").strip()
-        if confidence:
-            parts.append(confidence)
-        lines.append(" ".join(parts))
+        sentence = _event_sentence(event)
+        if sentence:
+            lines.append(sentence)
         terms = event.get("semantic_search_terms")
         if isinstance(terms, list):
-            lines.extend(str(term) for term in terms if str(term).strip())
+            event_name = str(event.get("event") or "").strip()
+            for term in terms:
+                term_text = str(term).strip()
+                if term_text:
+                    lines.append(
+                        f"The {event_name} evidence also matches label "
+                        f"vocabulary for {term_text}."
+                    )
     return "\n".join(line for line in lines if line.strip())[:12000]
+
+
+def _event_sentence(event: Dict[str, Any]) -> str:
+    event_name = str(event.get("event") or "").strip()
+    if not event_name:
+        return ""
+
+    phase = _phase_sentence_prefix(str(event.get("phase") or ""))
+    range_text = _range_sentence_fragment(event.get("range"))
+    measurements = event.get("measurements")
+    if not isinstance(measurements, dict):
+        measurements = {}
+
+    fragments = _measurement_sentence_fragments(event_name, measurements)
+    confidence = str(event.get("confidence") or "").strip()
+    confidence_text = f"with {confidence} confidence" if confidence else ""
+
+    parts = [part for part in [range_text, *fragments, confidence_text] if part]
+    detail = ": " + "; ".join(parts) if parts else ""
+    return f"{phase}{event_name}{detail}."
+
+
+def _phase_sentence_prefix(phase: str) -> str:
+    if phase in {"entry", "apex", "exit", "straight"}:
+        return f"During {phase}, "
+    if phase == "whole_range":
+        return "Across the whole range, "
+    return ""
+
+
+def _range_sentence_fragment(range_: Any) -> str:
+    if (
+        isinstance(range_, list)
+        and len(range_) == 2
+        and isinstance(range_[0], int)
+        and isinstance(range_[1], int)
+    ):
+        if range_[0] == range_[1]:
+            return f"detected at iloc {range_[0]}"
+        return f"detected from iloc {range_[0]} to {range_[1]}"
+    return ""
+
+
+def _measurement_sentence_fragments(
+    event_name: str,
+    measurements: Dict[str, Any],
+) -> List[str]:
+    fragments: List[str] = []
+
+    if (
+        "onset earlier than expert" in event_name
+        or "onset later than expert" in event_name
+    ):
+        player = measurements.get("player_start_index")
+        expert = measurements.get("expert_start_index")
+        delta = measurements.get("start_delta_iloc")
+        if player is not None and expert is not None:
+            fragments.append(
+                f"the player began at iloc {player} while the expert began at iloc {expert}"
+            )
+        if delta is not None:
+            delta_number = _as_float(delta)
+            if delta_number is not None:
+                direction = "later" if delta_number > 0 else "earlier"
+                fragments.append(
+                    "the player timing was "
+                    f"{_format_value(abs(delta_number))} ilocs {direction}"
+                )
+        return fragments
+
+    if "too quickly" in event_name or "too slowly" in event_name:
+        player_duration = measurements.get("player_duration")
+        expert_duration = measurements.get("expert_duration")
+        if player_duration is not None and expert_duration is not None:
+            fragments.append(
+                "the player action lasted "
+                f"{player_duration} ilocs versus {expert_duration} ilocs "
+                "for the expert"
+            )
+        ratio = measurements.get("slope_ratio")
+        if ratio is not None:
+            fragments.append(f"the input change-rate ratio was {_format_value(ratio)}")
+        return fragments
+
+    if "peak brake pressure" in event_name or "peak throttle pressure" in event_name:
+        player = measurements.get("player_value")
+        expert = measurements.get("expert_value")
+        if player is not None and expert is not None:
+            fragments.append(
+                f"the player peak was {_format_value(player)} versus "
+                f"expert peak {_format_value(expert)}"
+            )
+        iloc = measurements.get("player_iloc")
+        if iloc is not None:
+            fragments.append(f"the player peak occurred at iloc {iloc}")
+        return fragments
+
+    if "trajectory" in event_name or "moving toward" in event_name or "expert line" in event_name:
+        value = measurements.get("value")
+        median = measurements.get("median_offset")
+        change = measurements.get("change")
+        if value is not None:
+            fragments.append(f"the trajectory offset was {_format_value(value)} m")
+        if median is not None:
+            fragments.append(f"the median trajectory offset was {_format_value(median)} m")
+        if change is not None:
+            fragments.append(f"the trajectory offset changed by {_format_value(change)} m")
+        if measurements.get("moves_toward_expert_line") is True:
+            start = measurements.get("start")
+            end = measurements.get("end")
+            if start is not None and end is not None:
+                fragments.append(
+                    "the absolute offset moved from "
+                    f"{_format_value(start)} m to {_format_value(end)} m "
+                    "toward the expert line"
+                )
+            else:
+                fragments.append("the offset moved toward the expert line")
+        return fragments
+
+    if event_name in {
+        "gap grows",
+        "gap shrinks",
+        "time loss",
+        "time gap rising run",
+        "time gap falling run",
+    }:
+        change = measurements.get("change")
+        if change is not None:
+            fragments.append(f"the time gap changed by {_format_value(change)} ms")
+        threshold = measurements.get("threshold_state")
+        if threshold:
+            fragments.append(_humanize_token(str(threshold)))
+        slope_shape = measurements.get("slope_shape")
+        if slope_shape:
+            fragments.append(_humanize_token(str(slope_shape)))
+        return fragments
+
+    if "speed" in event_name or "acceleration" in event_name or "deceleration" in event_name:
+        value = measurements.get("value")
+        unit = measurements.get("unit") or "km/h"
+        change = measurements.get("change")
+        if value is not None:
+            fragments.append(f"the speed value was {_format_value(value)} {unit}")
+        if change is not None:
+            fragments.append(f"the speed changed by {_format_value(change)} {unit}")
+        return fragments
+
+    if event_name in {"oversteer", "understeer"}:
+        peak = measurements.get("peak_value")
+        peak_iloc = measurements.get("peak_iloc")
+        if peak is not None:
+            text = f"the peak slip-balance value was {_format_value(peak)}"
+            if peak_iloc is not None:
+                text += f" at iloc {peak_iloc}"
+            fragments.append(text)
+        return fragments
+
+    if "altitude" in event_name:
+        delta = measurements.get("delta_m")
+        if delta is not None:
+            fragments.append(f"altitude changed by {_format_value(delta)} m")
+        return fragments
+
+    for key in (
+        "outcome",
+        "confidence_level",
+        "primary_slot_for_role",
+        "min_distance_m",
+        "side_by_side_iloc_count",
+        "overlap_iloc_count",
+        "max_value",
+    ):
+        if key in measurements:
+            fragments.append(
+                f"{_humanize_token(key)} was {_format_value(measurements[key])}"
+            )
+    return fragments
+
+
+def _as_float(value: Any) -> Optional[float]:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_value(value: Any) -> str:
+    number = _as_float(value)
+    if number is None:
+        return str(value)
+    text = f"{number:.3f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _humanize_token(value: str) -> str:
+    return value.replace("_", " ")
 
 
 def _prompt_block(
     start: int,
     end: int,
-    tool_outputs: Sequence[Tuple[str, Dict[str, Any]]],
-    events: Sequence[Dict[str, Any]],
     event_text: str,
-    semantic_search_text: Optional[str] = None,
 ) -> str:
     lines = [
         "#### Required Upfront Detailed Statistical Preflight",
-        "The system already ran deterministic tools and converted their results into statistical semantic events.",
-        "Use these events as the primary evidence package. The flow also prepared embedding search words that match the annotation vocabulary.",
-        "Label IDs are provided separately by the detailed-flow embedding candidate step; this preflight does not run label search.",
-        f"Flow: detailed",
-        f"Range: [{start}, {end}]",
+        "The system already ran deterministic tools and converted their "
+        "results into evidence sentences.",
+        "Use only these preflight evidence sentences and the upfront searched "
+        "labels for initial detailed-label reasoning.",
+        f"The detailed parent range is [{start}, {end}].",
         "",
-        "Statistical semantic events:",
+        "Preflight evidence sentences:",
     ]
-    if events:
-        for event in events:
-            lines.append(
-                "- "
-                + str(event.get("event"))
-                + f" | phase={event.get('phase')}"
-                + f" | range={event.get('range')}"
-                + f" | confidence={event.get('confidence')}"
-            )
+    if event_text:
+        lines.extend(f"- {line}" for line in event_text.splitlines() if line.strip())
     else:
         lines.append("- (none)")
-    lines.extend([
-        "",
-        "Embedding search words:",
-        semantic_search_text or event_text or "(none)",
-        "",
-        "Detailed event evidence:",
-        event_text or "(none)",
-        "",
-        "Required tool outputs:",
-    ])
-    for tool_id, content in tool_outputs:
-        summary = _preflight_tool_summary(tool_id, content)
-        if summary:
-            lines.append(summary)
-        display_content = _semantic_tool_output(tool_id, content)
-        lines.append(f"##### {tool_id}\n```json\n{_json(display_content, 2200)}\n```")
     return "\n".join(lines)
 
 

@@ -1075,7 +1075,7 @@ def test_detailed_preflight_events_capture_opponent_outcomes():
     assert "MSR" not in semantic_search_text
 
 
-def test_detailed_preflight_outputs_semantic_search_words_without_label_tool():
+def test_detailed_preflight_outputs_sentence_evidence_without_label_tool():
     semantic_search_text = preflight_detailed._semantic_search_text(
         [
             {
@@ -1083,7 +1083,11 @@ def test_detailed_preflight_outputs_semantic_search_words_without_label_tool():
                 "phase": "entry",
                 "range": [2, 5],
                 "confidence": "strong",
-                "measurements": {"start_delta_iloc": 4},
+                "measurements": {
+                    "player_start_index": 6,
+                    "expert_start_index": 2,
+                    "start_delta_iloc": 4,
+                },
                 "sources": [],
             },
             {
@@ -1101,31 +1105,24 @@ def test_detailed_preflight_outputs_semantic_search_words_without_label_tool():
     prompt = preflight_detailed._prompt_block(
         0,
         10,
-        [],
-        [
-            {
-                "event": "brake initiation onset later than expert",
-                "phase": "entry",
-                "range": [2, 5],
-                "confidence": "strong",
-                "measurements": {},
-                "sources": [],
-            }
-        ],
-        "brake initiation onset later than expert",
         semantic_search_text,
     )
 
     assert "brake initiation onset later than expert" in semantic_search_text
+    assert "the player began at iloc 6 while the expert began at iloc 2" in semantic_search_text
     assert "trajectory wider than expert" in semantic_search_text
+    assert "the trajectory offset was 0.8 m" in semantic_search_text
     assert "start_delta_iloc" not in semantic_search_text
-    assert "Embedding search words" in prompt
-    assert "statistical semantic events" in prompt
+    assert "measurements=" not in semantic_search_text
+    assert "{" not in semantic_search_text
+    assert "Preflight evidence sentences" in prompt
+    assert "Embedding search words" not in prompt
+    assert "Required tool outputs" not in prompt
     assert "search_labels" not in prompt
     assert "preflight semantic candidates" not in prompt.lower()
 
 
-def test_detailed_preflight_maps_shape_keys_to_label_search_words():
+def test_detailed_preflight_maps_shape_keys_to_evidence_sentences():
     events = preflight_detailed._build_detailed_events(
         pd.DataFrame(),
         0,
@@ -1165,6 +1162,7 @@ def test_detailed_preflight_maps_shape_keys_to_label_search_words():
     assert "constant-radius corner" in semantic_search_text
     assert "smooth steady curvature" in semantic_search_text
     assert "entry altitude uphill" in semantic_search_text
+    assert "altitude changed by 1.5 m" in semantic_search_text
     assert "label_id" not in semantic_search_text
 
 
@@ -1261,6 +1259,7 @@ def test_detailed_build_request_adds_embedding_candidates_to_prompt(monkeypatch)
     assert "Upfront Detailed Embedding Label Candidates" in request.planner_prompt
     assert "`MSP2`" in request.planner_prompt
     assert "not final labels" in request.planner_prompt
+    assert "Required tool outputs" not in request.planner_prompt
     assert "search_labels" not in request.planner_prompt
     assert request.extra_state.get("tool_agent_extra_tools") is None
 
