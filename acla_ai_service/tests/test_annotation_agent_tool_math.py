@@ -351,8 +351,8 @@ def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
                 "measure_segment_shape",
                 {
                     "base_segment_shape": {
-                        "label_id": "ST2",
-                        "label_name": "On the straight",
+                        "segment_type_role": "base_segment_shape",
+                        "shape_key": "straight",
                     },
                     "phases": [],
                 },
@@ -396,7 +396,7 @@ def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
         for attachment in result.attachments
         if attachment.name == "init.detailed_preflight_events"
     )
-    assert events_attachment.content["events"][0]["event"] == "on the straight"
+    assert events_attachment.content["events"][0]["event"].startswith("on the straight")
     assert captured["query_specs"]
 
 
@@ -1061,7 +1061,6 @@ def test_detailed_preflight_events_capture_opponent_outcomes():
                     "outcome": "failed_attack",
                     "confidence_level": "high",
                     "primary_slot_for_role": 3,
-                    "label_gates": {"MSR": True},
                 },
             )
         ],
@@ -1070,6 +1069,10 @@ def test_detailed_preflight_events_capture_opponent_outcomes():
     assert events[0]["event"] == "failed attack"
     assert events[0]["confidence"] == "strong"
     assert events[0]["measurements"]["primary_slot_for_role"] == 3
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+    assert "failed overtake attempt" in semantic_search_text
+    assert "close opponent caused position or time loss" in semantic_search_text
+    assert "MSR" not in semantic_search_text
 
 
 def test_detailed_preflight_outputs_semantic_search_words_without_label_tool():
@@ -1120,6 +1123,49 @@ def test_detailed_preflight_outputs_semantic_search_words_without_label_tool():
     assert "statistical semantic events" in prompt
     assert "search_labels" not in prompt
     assert "preflight semantic candidates" not in prompt.lower()
+
+
+def test_detailed_preflight_maps_shape_keys_to_label_search_words():
+    events = preflight_detailed._build_detailed_events(
+        pd.DataFrame(),
+        0,
+        20,
+        [
+            (
+                "measure_segment_shape",
+                {
+                    "base_segment_shape": {
+                        "segment_type_role": "base_segment_shape",
+                        "shape_key": "in_corner",
+                        "reason": "One curvature arc spans most of the segment.",
+                    },
+                    "corner_shape_refinement": {
+                        "segment_type_role": "corner_shape_refinement",
+                        "shape_key": "constant_radius",
+                        "reason": "Curvature stays broadly steady.",
+                    },
+                    "altitude": {
+                        "source_column": "expert_optimal_player_pos_z",
+                        "entry": {
+                            "start_iloc": 1,
+                            "end_iloc": 8,
+                            "trend": "uphill",
+                            "delta_m": 1.5,
+                        },
+                    },
+                    "phases": [],
+                },
+            ),
+        ],
+    )
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+
+    assert "in the corner" in semantic_search_text
+    assert "full segment covers entire corner" in semantic_search_text
+    assert "constant-radius corner" in semantic_search_text
+    assert "smooth steady curvature" in semantic_search_text
+    assert "entry altitude uphill" in semantic_search_text
+    assert "label_id" not in semantic_search_text
 
 
 def test_detailed_embedding_candidates_searches_parent_scoped_labels(monkeypatch):
@@ -1438,9 +1484,11 @@ def test_straight_segment_shape_does_not_emit_corner_or_altitude_labels():
     attachment = measure_segment_shape(df, 0, len(df))
     content = attachment.content
 
-    assert content["base_segment_shape"]["label_id"] == "ST2"
+    assert content["base_segment_shape"]["shape_key"] == "straight"
+    assert "label_id" not in content["base_segment_shape"]
     assert content["corner_shape_refinement"] is None
-    assert content["altitude"]["labels"] == []
+    assert "labels" not in content["altitude"]
+    assert "subsegment_label_candidates" not in content["altitude"]
     assert content["phases"] == []
 
 
@@ -1452,7 +1500,7 @@ def test_real_corner_segment_shape_still_emits_corner_phase():
     attachment = measure_segment_shape(df, 0, len(df))
     content = attachment.content
 
-    assert content["base_segment_shape"]["label_id"] == "ST1"
+    assert content["base_segment_shape"]["shape_key"] == "in_corner"
     assert content["corner_shape_refinement"] is not None
     assert "turn angle" in content["corner_shape_refinement"]["reason"]
     assert content["phases"]
@@ -1465,7 +1513,7 @@ def test_approach_to_corner_requires_range_to_end_before_apex():
         100,
     )
 
-    assert result["label_id"] == "ST1"
+    assert result["shape_key"] == "in_corner"
 
 
 def test_approach_to_corner_when_range_starts_before_corner_and_ends_near_apex():
@@ -1474,7 +1522,7 @@ def test_approach_to_corner_when_range_starts_before_corner_and_ends_near_apex()
         100,
     )
 
-    assert result["label_id"] == "ST3"
+    assert result["shape_key"] == "approach_to_corner"
 
 
 def test_short_offset_corner_turn_angle_is_not_edge_inflated_to_hairpin():
@@ -1490,7 +1538,7 @@ def test_short_offset_corner_turn_angle_is_not_edge_inflated_to_hairpin():
 
     assert refinement is not None
     assert refinement["turn_angle_degrees"] < 90.0
-    assert refinement["label_id"] != "ST10"
+    assert refinement["shape_key"] != "hairpin"
     assert refinement["is_near_u_turn"] is False
 
 
@@ -1502,7 +1550,8 @@ def test_hairpin_shape_uses_turn_angle_without_radius_gate():
     attachment = measure_segment_shape(df, 0, len(df))
     refinement = attachment.content["corner_shape_refinement"]
 
-    assert refinement["label_id"] == "ST10"
+    assert refinement["shape_key"] == "hairpin"
+    assert "label_id" not in refinement
     assert refinement["is_near_u_turn"] is True
     assert "is_tight" not in refinement
     assert "average_radius_m" not in refinement
@@ -1516,5 +1565,5 @@ def test_hairpin_shape_accepts_130_degree_turn_angle_gate():
     attachment = measure_segment_shape(df, 0, len(df))
     refinement = attachment.content["corner_shape_refinement"]
 
-    assert refinement["label_id"] == "ST10"
+    assert refinement["shape_key"] == "hairpin"
     assert refinement["is_near_u_turn"] is True

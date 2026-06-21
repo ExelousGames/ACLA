@@ -160,6 +160,126 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
     },
 )
 
+_BASE_SEGMENT_SHAPE_WORDS = {
+    "in_corner": (
+        "In the corner",
+        "Full segment covers entire corner; driver turning throughout; "
+        "single curve hairpin continuous arc",
+    ),
+    "straight": (
+        "On the straight",
+        "Full segment on a straight section; minimal steering; full throttle; "
+        "minimal curvature",
+    ),
+    "approach_to_corner": (
+        "Approach to corner",
+        "Braking zone before a corner; starts before detected corner arc and "
+        "ends before apex",
+    ),
+    "exit_corner_to_straight": (
+        "Exit corner leading to straight",
+        "Corner exit section leading onto a straight; steering unwinding and "
+        "throttle increasing",
+    ),
+    "between_consecutive_corners": (
+        "Between consecutive corners",
+        "Short transition between two corners; brief connection not a full straight",
+    ),
+    "consecutive_corners_no_straight": (
+        "Consecutive corners with no straight in between",
+        "Multiple corners with no intervening straight; S-shape chicane esses",
+    ),
+}
+
+_CORNER_REFINEMENT_WORDS = {
+    "constant_radius": (
+        "Constant-radius corner",
+        "Corner keeps a consistent radius from entry through apex to exit; "
+        "smooth steady curvature",
+    ),
+    "increasing_radius": (
+        "Increasing-radius corner",
+        "Corner opens up after entry or apex; curvature decreases and radius "
+        "increases toward exit",
+    ),
+    "decreasing_radius": (
+        "Decreasing-radius corner",
+        "Corner tightens from entry toward apex or exit; curvature increases "
+        "and radius decreases",
+    ),
+    "hairpin": (
+        "Hairpin corner",
+        "Near-180 U-turn identified by detected turn angle",
+    ),
+    "chicane_or_esses": (
+        "Chicane or esses",
+        "Linked left-right or right-left direction changes; chicanes esses S-bends",
+    ),
+}
+
+_ALTITUDE_WORDS = {
+    ("entry", "uphill"): (
+        "entry altitude uphill; corner entry rises uphill across the entry phase"
+    ),
+    ("entry", "level"): (
+        "entry altitude level; corner entry stays broadly level across the entry phase"
+    ),
+    ("entry", "downhill"): (
+        "entry altitude downhill; corner entry falls downhill across the entry phase"
+    ),
+    ("apex", "uphill"): "apex altitude uphill; altitude rises through the apex window",
+    ("apex", "level"): (
+        "apex altitude level; altitude stays broadly level through the apex window"
+    ),
+    ("apex", "downhill"): (
+        "apex altitude downhill; altitude falls through the apex window"
+    ),
+    ("exit", "uphill"): (
+        "exit altitude uphill; corner exit rises uphill through the exit phase"
+    ),
+    ("exit", "level"): (
+        "exit altitude level; corner exit stays broadly level through the exit phase"
+    ),
+    ("exit", "downhill"): (
+        "exit altitude downhill; corner exit falls downhill through the exit phase"
+    ),
+}
+
+_OPPONENT_OUTCOME_SEARCH_WORDS = {
+    "pass_completed": [
+        "successful overtake player gained a position on a close opponent",
+        "pass completed opponent starts ahead and ends behind the player",
+        "late-brake attack at corner entry brake initiation later than expert trajectory tightening",
+        "outside-line sweep trajectory wider than expert through entry-to-apex",
+        "switchback line cross from wider entry to tighter exit earlier throttle pickup",
+        "slipstream draft on straight speed greater than expert with throttle at or below expert",
+    ],
+    "held_defense": [
+        "successful defense player held position against a close opponent",
+        "held defense opponent threatened from behind or alongside but did not get ahead by exit",
+        "inside cover at corner entry brake initiation earlier than expert trajectory tighter than expert",
+        "defensive lift on straight throttle drops below expert with no matching brake onset",
+    ],
+    "failed_attack": [
+        "racing mistake failed overtake attempt close opponent caused position or time loss",
+        "failed attack player closed or went side-by-side but pass did not complete",
+        "failed late-brake attack brake initiation later than expert trajectory tightening but no pass",
+        "failed outside-line sweep trajectory wider than expert but no pass",
+        "failed switchback line cross attempt but pass did not complete",
+        "failed slipstream gain speed greater than expert with throttle at or below expert but no pass",
+    ],
+    "broken_defense": [
+        "racing mistake broken defense opponent got through by exit",
+        "defense broken player tried to hold position but opponent passed",
+        "broken inside cover brake initiation earlier than expert trajectory tighter than expert",
+        "broken defensive lift throttle drops below expert on straight but opponent got through",
+    ],
+    "close_following": [
+        "close-following target-car context opponent in line without decisive attack or defense outcome",
+        "draft pressure signed longitudinal gap shrinks but no completed pass",
+    ],
+}
+
 
 def build_preflight_context(
     *,
@@ -291,16 +411,59 @@ def _shape_events(
     shape = by_tool.get("measure_segment_shape") or {}
     base = shape.get("base_segment_shape")
     if isinstance(base, dict):
-        name = str(base.get("label_name") or "").strip()
-        role = str(base.get("segment_type_role") or base.get("shape_key") or "")
-        event = _shape_event_name(name, role)
+        shape_key = str(base.get("shape_key") or "").strip()
+        event = _shape_event_name(shape_key, _BASE_SEGMENT_SHAPE_WORDS)
         if event:
             events.append(_event(
                 event,
-                "straight" if event == "on the straight" else "whole_range",
+                "straight" if shape_key == "straight" else "whole_range",
                 [start, end],
-                {"label_id": base.get("label_id"), "reason": base.get("reason")},
+                {"shape_key": shape_key, "reason": base.get("reason")},
                 "strong",
+                ["measure_segment_shape"],
+            ))
+    refinement = shape.get("corner_shape_refinement")
+    if isinstance(refinement, dict):
+        shape_key = str(refinement.get("shape_key") or "").strip()
+        event = _shape_event_name(shape_key, _CORNER_REFINEMENT_WORDS)
+        if event:
+            events.append(_event(
+                event,
+                "whole_range",
+                [start, end],
+                {
+                    "shape_key": shape_key,
+                    "reason": refinement.get("reason"),
+                    "turn_angle_degrees": refinement.get("turn_angle_degrees"),
+                    "is_near_u_turn": refinement.get("is_near_u_turn"),
+                    "relative_curvature_change": refinement.get(
+                        "relative_curvature_change"
+                    ),
+                },
+                "strong",
+                ["measure_segment_shape"],
+            ))
+    altitude = shape.get("altitude")
+    if isinstance(altitude, dict):
+        for phase_name in ("entry", "apex", "exit"):
+            summary = altitude.get(phase_name)
+            if not isinstance(summary, dict):
+                continue
+            trend = str(summary.get("trend") or "").strip()
+            event = _ALTITUDE_WORDS.get((phase_name, trend))
+            if not event:
+                continue
+            events.append(_event(
+                event,
+                phase_name,
+                [summary.get("start_iloc"), summary.get("end_iloc")],
+                {
+                    "trend": trend,
+                    "delta_m": summary.get("delta_m"),
+                    "start_altitude_m": summary.get("start_altitude_m"),
+                    "end_altitude_m": summary.get("end_altitude_m"),
+                },
+                "moderate",
                 ["measure_segment_shape"],
             ))
     for phase in phases:
@@ -318,19 +481,14 @@ def _shape_events(
     return events
 
 
-def _shape_event_name(name: str, role: str) -> Optional[str]:
-    lowered = name.lower()
-    if lowered:
-        return lowered
-    by_role = {
-        "corner": "in the corner",
-        "straight": "on the straight",
-        "approach_to_corner": "approach to corner",
-        "exit_corner_to_straight": "exit corner leading to straight",
-        "between_consecutive_corners": "between consecutive corners",
-        "consecutive_corners_no_straight": "consecutive corners with no straight in between",
-    }
-    return by_role.get(role)
+def _shape_event_name(
+    shape_key: str,
+    vocabulary: Dict[str, Tuple[str, str]],
+) -> Optional[str]:
+    words = vocabulary.get(shape_key)
+    if not words:
+        return None
+    return "; ".join(words).lower()
 
 
 def _opponent_events(
@@ -352,7 +510,6 @@ def _opponent_events(
         key: content.get(key)
         for key in (
             "outcome",
-            "recommended_label",
             "confidence",
             "confidence_level",
             "primary_slot_for_role",
@@ -361,18 +518,19 @@ def _opponent_events(
             "min_distance_m",
             "min_lateral_offset_m",
             "side_by_side_iloc_count",
-            "label_gates",
         )
         if key in content
     }
-    return [_event(
+    event = _event(
         mapped,
         "whole_range",
         [start, end],
         measurements,
         _confidence_from_level(content.get("confidence_level")),
         ["classify_opponent_interaction"],
-    )]
+    )
+    event["semantic_search_terms"] = _OPPONENT_OUTCOME_SEARCH_WORDS.get(outcome, [])
+    return [event]
 
 
 def _peak_comparison_events(
@@ -1490,6 +1648,9 @@ def _semantic_search_text(
         if confidence:
             parts.append(confidence)
         lines.append(" ".join(parts))
+        terms = event.get("semantic_search_terms")
+        if isinstance(terms, list):
+            lines.extend(str(term) for term in terms if str(term).strip())
     return "\n".join(line for line in lines if line.strip())[:12000]
 
 

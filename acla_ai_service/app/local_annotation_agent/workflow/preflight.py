@@ -103,7 +103,6 @@ _TAG_KEYS = {
     "moves_toward_zero",
     "outcome",
     "parent",
-    "recommended_label",
     "role",
     "semantic_tags",
     "slope_shape",
@@ -1110,11 +1109,12 @@ def _preflight_named_tool_summary(
     if tool_id == "measure_segment_shape":
         base = content.get("base_segment_shape")
         if isinstance(base, dict):
-            label_id = base.get("label_id")
-            label_name = base.get("label_name")
+            role = base.get("segment_type_role")
+            shape_key = base.get("shape_key")
             reason = base.get("reason")
             return (
-                f"segment shape: {label_id} {label_name}; reason={reason}"
+                f"segment shape: role={role}; shape_key={shape_key}; "
+                f"reason={reason}"
             )
     if tool_id == "locate_circuit_section":
         best = content.get("best_match")
@@ -1130,10 +1130,8 @@ def _preflight_named_tool_summary(
         return (
             "opponent interaction: "
             f"outcome={content.get('outcome')}; "
-            f"recommended_label={content.get('recommended_label')}; "
             f"confidence={content.get('confidence_level')}; "
-            f"primary_slot={content.get('primary_slot_for_role')}; "
-            f"label_gates={content.get('label_gates')}"
+            f"primary_slot={content.get('primary_slot_for_role')}"
         )
     if tool_id == "find_nearest_opponent":
         slot = content.get("slot") or content.get("nearest_slot")
@@ -1801,7 +1799,7 @@ def _tag_values(path: str, value: Any) -> List[str]:
     if isinstance(value, dict):
         return [
             f"{path}.{key}:{value[key]}"
-            for key in ("label_id", "label_name", "shape_key", "recommended_label", "outcome", "role")
+            for key in ("label_id", "label_name", "shape_key", "outcome", "role")
             if value.get(key) is not None
         ]
     if isinstance(value, list):

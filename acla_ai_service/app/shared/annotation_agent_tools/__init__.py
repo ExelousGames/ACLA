@@ -396,28 +396,21 @@ def _segment_type_label(**filters: Any) -> Dict[str, Any]:
     return doc
 
 
-def _segment_type_label_result(
+def _segment_shape_result(
     *,
+    segment_type_role: str,
+    shape_key: str,
     reason: str,
-    **filters: Any,
+    annotation_scope: Optional[str] = None,
 ) -> Dict[str, Any]:
-    doc = _segment_type_label(**filters)
     out = {
-        "label_id": doc["id"],
-        "label_name": doc["name"],
+        "segment_type_role": segment_type_role,
+        "shape_key": shape_key,
         "reason": reason,
     }
-    for key in ("segment_type_role", "shape_key", "annotation_scope"):
-        if doc.get(key) is not None:
-            out[key] = doc[key]
+    if annotation_scope is not None:
+        out["annotation_scope"] = annotation_scope
     return out
-
-
-def _segment_type_label_selection_rules() -> List[str]:
-    rule = str(
-        skills.get("sub_label_annotation.category_guidelines.Segment Type", "")
-    ).strip()
-    return [rule] if rule else []
 
 
 def compute_expert_phases(
@@ -479,7 +472,7 @@ def _classify_base_segment_shape(
     n_rows: int,
 ) -> Dict[str, Any]:
     if not phases:
-        return _segment_type_label_result(
+        return _segment_shape_result(
             segment_type_role="base_segment_shape",
             shape_key="straight",
             reason="No expert curvature arc cleared the corner threshold.",
@@ -496,7 +489,7 @@ def _classify_base_segment_shape(
             if gaps and max(gaps) <= close_gap
             else "between_consecutive_corners"
         )
-        return _segment_type_label_result(
+        return _segment_shape_result(
             segment_type_role="base_segment_shape",
             shape_key=shape_key,
             reason=(
@@ -539,7 +532,7 @@ def _classify_base_segment_shape(
         shape_key = "in_corner"
         reason = "One curvature arc dominates the segment."
 
-    return _segment_type_label_result(
+    return _segment_shape_result(
         segment_type_role="base_segment_shape",
         shape_key=shape_key,
         reason=reason,
@@ -632,7 +625,7 @@ def _classify_corner_shape_refinement(
     if len(phases) >= 2:
         directions = {str(p.get("direction")) for p in phases}
         if len(directions) >= 2:
-            return _segment_type_label_result(
+            return _segment_shape_result(
                 segment_type_role="corner_shape_refinement",
                 shape_key="chicane_or_esses",
                 reason="Multiple expert curvature arcs with direction change.",
@@ -647,7 +640,7 @@ def _classify_corner_shape_refinement(
     turn_deg = _turn_angle_degrees(x, y, entry, exit_)
     hairpin_metrics = _hairpin_shape_metrics(x, y, dx, dy, entry, exit_, turn_deg)
     if hairpin_metrics["is_hairpin"]:
-        out = _segment_type_label_result(
+        out = _segment_shape_result(
             segment_type_role="corner_shape_refinement",
             shape_key="hairpin",
             reason=(
@@ -687,7 +680,7 @@ def _classify_corner_shape_refinement(
             f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
         )
 
-    out = _segment_type_label_result(
+    out = _segment_shape_result(
         segment_type_role="corner_shape_refinement",
         shape_key=shape_key,
         reason=reason,
@@ -746,11 +739,12 @@ def _altitude_phase_summary(
 def measure_segment_shape(
     df: pd.DataFrame, start_index: int, end_index: int,
 ):
-    """Tool — deterministic ST shape and altitude summary for a segment.
+    """Tool — deterministic shape and altitude summary for a segment.
 
     Uses expert-anchored curvature phases for base shape and corner-shape
-    refinements, then reads z-position trends over entry / apex / exit
-    windows to expose subsegment-only altitude label candidates.
+    refinements, then reads z-position trends over entry / apex / exit windows.
+    It reports shape keys and measurements only; preflight performs any
+    label-catalog wording or retrieval.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
 
@@ -770,10 +764,7 @@ def measure_segment_shape(
             "entry": None,
             "apex": None,
             "exit": None,
-            "labels": [],
-            "subsegment_label_candidates": [],
         },
-        "label_selection_rules": _segment_type_label_selection_rules(),
         "phases": [],
     }
 
@@ -813,28 +804,7 @@ def measure_segment_shape(
                 continue
             summary["start_iloc"] = int(summary.pop("start_offset")) + start
             summary["end_iloc"] = int(summary.pop("end_offset")) + start
-            trend = str(summary["trend"])
-            label_doc = _segment_type_label(
-                segment_type_role="corner_altitude",
-                corner_phase=phase_name,
-                altitude_trend=trend,
-            )
-            if label_doc.get("lap_parent_allowed") is not False:
-                raise RuntimeError(
-                    "corner_altitude knowledge label must declare "
-                    "lap_parent_allowed=false"
-                )
-            candidate = {
-                "label_id": label_doc["id"],
-                "label_name": label_doc["name"],
-                "phase": phase_name,
-                "trend": trend,
-                "annotation_scope": label_doc.get("annotation_scope"),
-                "lap_parent_allowed": label_doc["lap_parent_allowed"],
-            }
-            summary["subsegment_label_candidate"] = candidate
             shape["altitude"][phase_name] = summary
-            shape["altitude"]["subsegment_label_candidates"].append(candidate)
 
     return PipelineAttachment(
         name="segment_shape_measurement",
@@ -1179,7 +1149,7 @@ def find_nearest_opponent(
     are dropped. Remaining slots are ranked by minimum 2D distance; the
     top ``max_candidates`` are returned as ``candidates``. This is a
     supporting-detail tool; use ``classify_opponent_interaction`` for the
-    role-aware primary slot and O / OD / MSR gate.
+    role-aware primary slot and interaction outcome.
 
     Produces an ``opponent_context`` attachment::
 
@@ -1528,13 +1498,9 @@ def classify_opponent_interaction(
     """Tool — deterministic O / OD / MSR interaction classifier.
 
     Computes opponent-relative position math over ``[start_index, end_index)``
-    and returns a verdict the LLM can use as the gate for opponent-aware
-    labels:
-
-      * ``pass_completed`` -> O
-      * ``held_defense`` -> OD
-      * ``failed_attack`` or ``broken_defense`` -> MSR
-      * ``close_following`` -> target-car context only; no O / OD / MSR gate
+    and returns the opponent interaction outcome and evidence. Mapping that
+    outcome to annotation labels is handled by the annotation preflight / label
+    search layer, not by this tool.
 
     Signed longitudinal and lateral gaps are computed in an expert-path
     projection frame when expert positions are available; otherwise the
@@ -1561,7 +1527,7 @@ def classify_opponent_interaction(
         return PipelineAttachment(
             name="opponent_interaction_classification",
             kind="structured",
-            label="Opponent Interaction Classification (O / OD / MSR gate)",
+            label="Opponent Interaction Classification",
             content=_round_floats(content),
         )
 
@@ -1609,18 +1575,15 @@ def classify_opponent_interaction(
         "data_available": False,
         "role": "unknown",
         "outcome": "no_data",
-        "recommended_label": None,
         "confidence": 0.0,
         "confidence_level": "weak",
         "primary_slot_for_role": None,
-        "gates": {"O": False, "OD": False, "MSR": False},
-        "label_gates": {"O": False, "OD": False, "MSR": False},
         "candidates": [],
         "confidence_policy": {
-            "high": "strong deterministic evidence; use as label gate when player-trace evidence agrees",
+            "high": "strong deterministic interaction evidence; use for label search/range evidence when player-trace evidence agrees",
             "medium": "usable deterministic evidence; cite supporting graph/query evidence",
-            "low": "weak label evidence; refine range or inspect opponent trajectory before labeling",
-            "weak": "do not label from classifier alone",
+            "low": "weak interaction evidence; refine range or inspect opponent trajectory before using it",
+            "weak": "do not use classifier outcome alone",
         },
     }
 
@@ -1806,32 +1769,26 @@ def classify_opponent_interaction(
         if passed_by_player:
             role = "attack"
             outcome = "pass_completed"
-            recommended = "O"
             reason = "opponent starts ahead and ends behind the player"
         elif got_passed_by_opponent:
             role = "defense"
             outcome = "broken_defense"
-            recommended = "MSR"
             reason = "opponent starts behind and ends ahead of the player"
         elif attack_pressure:
             role = "attack"
             outcome = "failed_attack"
-            recommended = "MSR"
             reason = "opponent remained ahead, but the player closed or went side-by-side"
         elif defense_pressure:
             role = "defense"
             outcome = "held_defense"
-            recommended = "OD"
             reason = "opponent threatened from behind/alongside but did not get ahead by exit"
         elif close_enough and sustained_overlap:
             role = "side_by_side"
             outcome = "side_by_side"
-            recommended = None
             reason = "cars were close/alongside without a clear attack or defense outcome"
         elif close_following_count > 0:
             role = "following"
             outcome = "close_following"
-            recommended = None
             if trailing_pressure_count > 0:
                 reason = "opponent was close-following behind without a decisive held-defense pattern"
             elif leading_draft_count > 0:
@@ -1841,13 +1798,11 @@ def classify_opponent_interaction(
         elif close_enough:
             role = "incidental"
             outcome = "incidental"
-            recommended = None
             reason = "nearby car did not create a clear position-change or pressure pattern"
         else:
             role = "none"
             outcome = "no_close_interaction"
-            recommended = None
-            reason = "opponent was not close enough to gate O / OD / MSR"
+            reason = "opponent was not close enough for a decisive interaction outcome"
 
         confidence = _confidence(
             outcome=outcome,
@@ -1860,7 +1815,6 @@ def classify_opponent_interaction(
             "slot": int(slot),
             "role": role,
             "outcome": outcome,
-            "recommended_label": recommended,
             "confidence": confidence,
             "confidence_level": _confidence_level(confidence),
             "reason": reason,
@@ -1928,14 +1882,12 @@ def classify_opponent_interaction(
             "message": "No active opponent slot met the active-fraction threshold.",
         })
 
-    confidence_ok = top["confidence_level"] in {"high", "medium"}
     return _attach({
         "range": [s, e],
         "data_available": True,
         "n_active_slots": n_active_slots,
         "role": top["role"],
         "outcome": top["outcome"],
-        "recommended_label": top["recommended_label"],
         "confidence": top["confidence"],
         "confidence_level": top["confidence_level"],
         "primary_slot_for_role": top["slot"],
@@ -1944,16 +1896,6 @@ def classify_opponent_interaction(
         "coordinate_frame": top["coordinate_frame"],
         "reason": top["reason"],
         "confidence_policy": base_payload["confidence_policy"],
-        "gates": {
-            "O": top["outcome"] == "pass_completed",
-            "OD": top["outcome"] == "held_defense",
-            "MSR": top["outcome"] in {"failed_attack", "broken_defense"},
-        },
-        "label_gates": {
-            "O": top["outcome"] == "pass_completed" and confidence_ok,
-            "OD": top["outcome"] == "held_defense" and confidence_ok,
-            "MSR": top["outcome"] in {"failed_attack", "broken_defense"} and confidence_ok,
-        },
         "candidates": candidates[:max_candidates],
     })
 
@@ -2493,9 +2435,6 @@ def _align_interaction_windows_with_classifier(
                     out["event_outcome"] = selected_outcome
                 out["classifier_role"] = content.get("role")
                 out["classifier_outcome"] = content.get("outcome")
-                out["recommended_label"] = (
-                    None if preserve_following else selected.get("recommended_label")
-                )
                 for key in (
                     "entry_signed_long_gap_m",
                     "exit_signed_long_gap_m",
@@ -2544,11 +2483,7 @@ def _is_following_only_interaction_window(window: Dict[str, Any]) -> bool:
     """True for close-following context that should not become an LLM work unit."""
     role = str(window.get("event_role") or window.get("role") or "")
     outcome = str(window.get("event_outcome") or window.get("outcome") or "")
-    recommended = window.get("recommended_label")
-    return (
-        role == "following"
-        or outcome == "close_following"
-    ) and not recommended
+    return role == "following" or outcome == "close_following"
 
 
 def get_opponent_splitter_rule_signature() -> str:
@@ -3239,14 +3174,13 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Segment shape + altitude measurement",
         "description": (
             "Measures expert-anchored curvature and z-position over the "
-            "segment to suggest segment-type labels. Produces a "
+            "segment. Produces a "
             "'segment_shape_measurement' attachment with `base_segment_shape` "
-            "and optional `corner_shape_refinement` resolved from the "
-            "internal knowledge base, plus entry / apex / exit altitude "
-            "summaries. Altitude entries expose subsegment-only candidates "
-            "from the knowledge base; do not attach them to lap parent "
-            "segments. Use this whenever deciding segment shape or reading "
-            "corner altitude trends."
+            "and optional `corner_shape_refinement` shape keys, plus entry / "
+            "apex / exit altitude summaries. It does not output labels; "
+            "preflight or label search maps shape keys to annotation wording. "
+            "Use this whenever deciding segment shape or reading corner "
+            "altitude trends."
         ),
         "callable": measure_segment_shape,
     },
@@ -3314,7 +3248,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     },
     {
         "id": "classify_opponent_interaction",
-        "label": "Classify opponent interaction outcome (O / OD / MSR gate)",
+        "label": "Classify opponent interaction outcome",
         "description": (
             "Deterministically classifies the opponent-relative position "
             "pattern over the iloc range, preferring projection onto "
@@ -3324,15 +3258,14 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "'opponent_interaction_classification' attachment with "
             "`role` (attack / defense / following / side_by_side / incidental), "
             "`outcome` (pass_completed, held_defense, failed_attack, "
-            "broken_defense, close_following, etc.), `recommended_label` (O / OD / MSR / "
-            "null), numeric `confidence`, readable `confidence_level`, "
-            "primary opponent slot, per-slot evidence, raw outcome `gates`, "
-            "and confidence-aware `label_gates`. Inline close-following "
+            "broken_defense, close_following, etc.), numeric `confidence`, "
+            "readable `confidence_level`, primary opponent slot, "
+            "and per-slot evidence. Inline close-following "
             "cars can be relevant even when they never become side-by-side, "
-            "but `close_following` does not gate O / OD / MSR by itself. "
-            "Use this as the "
-            "mathematical source of truth for O / OD / MSR eligibility "
-            "before choosing labels."
+            "but `close_following` does not imply an overtake or defense "
+            "outcome by itself. Use this as deterministic interaction "
+            "evidence; annotation preflight/search maps outcomes to label "
+            "vocabulary."
         ),
         "callable": classify_opponent_interaction,
     },
