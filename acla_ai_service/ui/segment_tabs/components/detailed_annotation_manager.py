@@ -1,12 +1,12 @@
 import streamlit as st
-import pandas as pd
+from ._agent_annotation_shared import clear_agent_annotation_review_state
 from .opponent_interaction import (
     format_opponent_interaction_summary,
     get_selected_opponent_interaction,
 )
 from ..shared import (
     save_annotations, get_display_labels,
-    LABEL_MAPPING, LABEL_NAME_TO_ID, AnnotatedSegment,
+    LABEL_MAPPING, LABEL_NAME_TO_ID,
     LABEL_CATEGORIES
 )
 
@@ -56,6 +56,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
             for k in keys_to_clear:
                 del st.session_state[k]
+            clear_agent_annotation_review_state()
                 
             if isinstance(sel, int) and sel < len(st.session_state.current_annotations):
                 ann_sel = st.session_state.current_annotations[sel]
@@ -200,6 +201,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
             for k in keys_to_clear:
                 del st.session_state[k]
+            clear_agent_annotation_review_state()
                 
             if isinstance(next_selection_key, int) and next_selection_key < len(st.session_state.current_annotations):
                 ann_sel = st.session_state.current_annotations[next_selection_key]

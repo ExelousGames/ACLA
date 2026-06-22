@@ -27,6 +27,26 @@ from ..shared import (
 )
 
 from app.shared.segment import AnnotatedSegment
+
+_AGENT_STAGED_REVIEW_PREFIX = "agent_staged_"
+
+
+def _clear_agent_staged_review_state() -> None:
+    for key in list(st.session_state.keys()):
+        if key.startswith(_AGENT_STAGED_REVIEW_PREFIX):
+            st.session_state.pop(key, None)
+
+
+def clear_agent_annotation_review_state() -> None:
+    for key in (
+        "agent_annot_result",
+        "agent_annot_followup_ctx",
+        "agent_annot_followup_chat",
+    ):
+        st.session_state.pop(key, None)
+    _clear_agent_staged_review_state()
+
+
 _NODE_ICONS = {
     "planner": "🧠",
     "step_solver": "🛠️",
@@ -444,6 +464,22 @@ def render_staged_review(
 
     result = st.session_state["agent_annot_result"]
     grouped = group_proposals_by_range(result)
+    min_index = int(form_start)
+    max_index = int(form_end)
+    if min_index > max_index:
+        st.warning("Parent segment start must be less than or equal to end.")
+        return
+
+    review_context = (
+        id(result),
+        parent_id,
+        min_index,
+        max_index,
+        tuple((int(gs), int(ge), len(anns)) for (gs, ge), anns in grouped),
+    )
+    if st.session_state.get("agent_staged_review_context") != review_context:
+        _clear_agent_staged_review_state()
+        st.session_state["agent_staged_review_context"] = review_context
 
     st.info(
         f"Pending {len(grouped)} sub-segment(s) "
@@ -462,24 +498,36 @@ def render_staged_review(
     parent_label_ids = get_parent_label_ids(parent_id)
     staged_segments: list[dict] = []
     for i, ((gs, ge), anns) in enumerate(grouped):
+        start_key = f"agent_staged_start_{i}"
+        end_key = f"agent_staged_end_{i}"
+        default_start = min(max(int(gs), min_index), max_index)
+        default_end = min(max(int(ge), min_index), max_index)
+        if start_key in st.session_state:
+            st.session_state[start_key] = min(
+                max(int(st.session_state[start_key]), min_index), max_index
+            )
+        if end_key in st.session_state:
+            st.session_state[end_key] = min(
+                max(int(st.session_state[end_key]), min_index), max_index
+            )
         with st.container(border=True):
             st.markdown(f"**Sub-segment {i + 1}**")
             col_r1, col_r2 = st.columns(2)
             with col_r1:
                 seg_start = st.number_input(
                     "Start",
-                    min_value=int(form_start),
-                    max_value=int(form_end),
-                    value=int(gs),
-                    key=f"agent_staged_start_{i}",
+                    min_value=min_index,
+                    max_value=max_index,
+                    value=default_start,
+                    key=start_key,
                 )
             with col_r2:
                 seg_end = st.number_input(
                     "End",
-                    min_value=int(form_start),
-                    max_value=int(form_end),
-                    value=int(ge),
-                    key=f"agent_staged_end_{i}",
+                    min_value=min_index,
+                    max_value=max_index,
+                    value=default_end,
+                    key=end_key,
                 )
 
             default_label_ids = with_parent_label_ids(
@@ -534,9 +582,7 @@ def render_staged_review(
             "❌ Discard Proposals",
             key="agent_annot_discard",
         ):
-            del st.session_state["agent_annot_result"]
-            st.session_state.pop("agent_annot_followup_ctx", None)
-            st.session_state.pop("agent_annot_followup_chat", None)
+            clear_agent_annotation_review_state()
             st.rerun()
 
 
@@ -754,10 +800,7 @@ def _persist_staged_subsegments(
 
     save_annotations(session_id, annotations, selected_annotation_key)
 
-    if "agent_annot_result" in st.session_state:
-        del st.session_state["agent_annot_result"]
-    st.session_state.pop("agent_annot_followup_ctx", None)
-    st.session_state.pop("agent_annot_followup_chat", None)
+    clear_agent_annotation_review_state()
 
     st.success(f"Saved {len(new_children)} sub-segment(s).")
     st.rerun()
