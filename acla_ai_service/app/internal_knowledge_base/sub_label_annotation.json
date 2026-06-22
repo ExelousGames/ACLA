@@ -1,7 +1,7 @@
 {
   "_skill": {
     "name": "sub_label_annotation",
-    "description": "LLM-facing label catalog (main, sub, segment_type only). Per-label description, hierarchy (parent/children), exclusive_with constraints, annotation_guideline, and search_tags. Descriptions and search_tags carry inline VLM / deterministic preflight predicates so hybrid (vector + BM25) similarity over observation text shortlists the matching labels. Circuit and circuit_section labels are NOT in this catalog — the LLM picks them via the `get_circuit_id` / `locate_circuit_section` tools (geometry from app/shared/circuit_sections.py), not by search.\n",
+    "description": "LLM-facing label catalog (main, sub, segment_type only). Per-label description, hierarchy (parent/children), exclusive_with constraints, and annotation_guideline. Descriptions carry inline VLM / deterministic preflight predicates so hybrid (vector + BM25) similarity over observation text shortlists the matching labels. Circuit and circuit_section labels are NOT in this catalog — the LLM picks them via the `get_circuit_id` / `locate_circuit_section` tools (geometry from app/shared/circuit_sections.py), not by search.\n",
     "when_to_use": [
       "Drilling into a parent-labelled section to pick sub-labels (detailed flow).",
       "Hybrid-similarity shortlist of candidate labels from VLM observations.",
@@ -32,8 +32,7 @@
       "exclusive_with": [
         "OD",
         "PS"
-      ],
-      "search_tags": "O; Successful Overtake; type main; successful overtake; opponent interaction; pass completed"
+      ]
     },
     "OD": {
       "name": "Successful Defense",
@@ -48,8 +47,7 @@
       "exclusive_with": [
         "O",
         "PS"
-      ],
-      "search_tags": "OD; Successful Defense; type main; successful defense; opponent interaction; held defense"
+      ]
     },
     "EA": {
       "name": "Expert Adherence (Training)",
@@ -63,8 +61,7 @@
         "MSR",
         "RM",
         "PS"
-      ],
-      "search_tags": "EA; Expert Adherence (Training); type main; entry; exit"
+      ]
     },
     "PS": {
       "name": "Pit Stop",
@@ -77,8 +74,7 @@
       ],
       "exclusive_with": [
         "O"
-      ],
-      "search_tags": "PS; Pit Stop; type main; pit stop; pit exit; entry; exit"
+      ]
     },
     "RM": {
       "name": "Recovery & Merge",
@@ -99,8 +95,7 @@
       "exclusive_with": [
         "EA",
         "PS"
-      ],
-      "search_tags": "RM; Recovery & Merge; type main; recovery; merge; moves toward zero; recovery toward expert line; pit exit; exit"
+      ]
     },
     "MSP": {
       "name": "Mistake (Practice)",
@@ -163,8 +158,7 @@
         "EA",
         "PS",
         "MSR"
-      ],
-      "search_tags": "MSP; Mistake (Practice); type main; technical mistake; gap grows; time loss; sub-label calculation; wider than expert; tighter than expert"
+      ]
     },
     "MSR": {
       "name": "Mistake (Racing)",
@@ -186,8 +180,7 @@
         "EA",
         "PS",
         "MSP"
-      ],
-      "search_tags": "MSR; Mistake (Racing); type main; racing mistake; opponent interaction; failed attack; broken defense"
+      ]
     },
     "RM1": {
       "name": "Recover from off-track",
@@ -195,8 +188,7 @@
       "description": "Driver returning to track after an off-track excursion — the trajectory offset peaks far **wider than expert** earlier in the segment (a prior **moving toward positive (widening)** beat), then shows **recovery** (offset trending back toward zero) while the speed trace shows the driver rejoining or accelerating back toward pace. Time delta may show **gap shrinks**, or a still-rising gap whose `slope_shape` shows recovery shape.\n",
       "parent": "RM",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "RM1; Recover from off-track; type sub; parent RM; recovery; merge; moves toward zero; recovery toward expert line; wider than expert; moving toward positive"
+      "exclusive_with": []
     },
     "PS1": {
       "name": "Exit pit lane",
@@ -204,8 +196,7 @@
       "description": "Driver re-joining the track from the Pit section - the segment position overlaps the circuit's known Pit section, and telemetry shows merge / recovery back toward the racing line. A Pit-vs-adjacent-straight ambiguity can count as Pit-section position when sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration support pit procedure. This is pit procedure, not recovery from a mistake. Do not infer PS1 from low speed plus wide trajectory alone when the position is a normal racing section away from Pit.\n",
       "parent": "PS",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "PS1; Exit pit lane; type sub; parent PS; pit stop; pit exit; acceleration onset; exit"
+      "exclusive_with": []
     },
     "RM5": {
       "name": "Recover from speed gap over 20",
@@ -215,8 +206,7 @@
       "children": [],
       "exclusive_with": [
         "RM6"
-      ],
-      "search_tags": "RM5; Recover from speed gap over 20; type sub; parent RM; recovery; merge; moves toward zero; recovery toward expert line; large speed gap over 20; speed gap closing; expert faster than player"
+      ]
     },
     "RM6": {
       "name": "Recover from small speed gap under 20",
@@ -226,8 +216,7 @@
       "children": [],
       "exclusive_with": [
         "RM5"
-      ],
-      "search_tags": "RM6; Recover from small speed gap under 20; type sub; parent RM; recovery; merge; moves toward zero; recovery toward expert line; small speed gap under 20; speed gap closing; expert faster than player"
+      ]
     },
     "RM7": {
       "name": "Merge back to expert line",
@@ -235,8 +224,7 @@
       "description": "Player trajectory converging toward the expert line — the trajectory offset shows **recovery** (trending back toward zero from either side), typically across the **post-exit** span of a corner phase.\n",
       "parent": "RM",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "RM7; Merge back to expert line; type sub; parent RM; recovery; merge; moves toward zero; recovery toward expert line; merge back to expert line; exit"
+      "exclusive_with": []
     },
     "RM8": {
       "name": "Accelerate earlier at exit",
@@ -246,8 +234,7 @@
       "children": [],
       "exclusive_with": [
         "RM9"
-      ],
-      "search_tags": "RM8; Accelerate earlier at exit; type sub; parent RM; recovery; merge; moves toward zero; recovery toward expert line; throttle application onset earlier than expert; acceleration onset; exit; earlier than expert"
+      ]
     },
     "RM9": {
       "name": "Accelerate later at exit",
@@ -257,8 +244,7 @@
       "children": [],
       "exclusive_with": [
         "RM8"
-      ],
-      "search_tags": "RM9; Accelerate later at exit; type sub; parent RM; recovery; merge; moves toward zero; recovery toward expert line; throttle application onset later than expert; acceleration onset; exit; later than expert"
+      ]
     },
     "RM10": {
       "name": "Brake earlier at entry",
@@ -268,8 +254,7 @@
       "children": [],
       "exclusive_with": [
         "RM11"
-      ],
-      "search_tags": "RM10; Brake earlier at entry; type sub; parent RM; recovery; merge; moves toward zero; recovery toward expert line; brake initiation onset earlier than expert; deceleration onset; entry; earlier than expert"
+      ]
     },
     "RM11": {
       "name": "Brake later at entry",
@@ -279,8 +264,7 @@
       "children": [],
       "exclusive_with": [
         "RM10"
-      ],
-      "search_tags": "RM11; Brake later at entry; type sub; parent RM; recovery; merge; moves toward zero; recovery toward expert line; brake initiation onset later than expert; deceleration onset; entry; later than expert"
+      ]
     },
     "MSP1": {
       "name": "Initiate brake too late",
@@ -290,8 +274,7 @@
       "children": [],
       "exclusive_with": [
         "MSP5"
-      ],
-      "search_tags": "MSP1; Initiate brake too late; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake initiation onset later than expert; moving toward positive; entry; apex; later than expert; too late"
+      ]
     },
     "MSP5": {
       "name": "Initiate brake too early",
@@ -301,8 +284,7 @@
       "children": [],
       "exclusive_with": [
         "MSP1"
-      ],
-      "search_tags": "MSP5; Initiate brake too early; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake initiation onset earlier than expert; entry; earlier than expert; too early"
+      ]
     },
     "MSP13": {
       "name": "Highest brake pressure too low",
@@ -312,8 +294,7 @@
       "children": [],
       "exclusive_with": [
         "MSP22"
-      ],
-      "search_tags": "MSP13; Highest brake pressure too low; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; peak brake pressure lower than expert; peak brake pressure; moving toward positive; lower than expert"
+      ]
     },
     "MSP22": {
       "name": "Highest brake pressure too high",
@@ -323,8 +304,7 @@
       "children": [],
       "exclusive_with": [
         "MSP13"
-      ],
-      "search_tags": "MSP22; Highest brake pressure too high; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; peak brake pressure higher than expert; peak brake pressure about same as expert while player slower than expert; same brake pressure despite slower speed; excessive brake for lower entry speed; driver released earlier because already too slow; moving toward positive; higher than expert"
+      ]
     },
     "MSP14": {
       "name": "Brake applied too quickly",
@@ -334,8 +314,7 @@
       "children": [],
       "exclusive_with": [
         "MSP24"
-      ],
-      "search_tags": "MSP14; Brake applied too quickly; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake applied too quickly; abrupt brake rise; moving toward positive; oversteer; too quickly"
+      ]
     },
     "MSP24": {
       "name": "Brake applied too slowly",
@@ -345,8 +324,7 @@
       "children": [],
       "exclusive_with": [
         "MSP14"
-      ],
-      "search_tags": "MSP24; Brake applied too slowly; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake applied too slowly; gradual brake rise; moving toward positive; too slowly"
+      ]
     },
     "MSP17": {
       "name": "Release brake too quickly",
@@ -356,8 +334,7 @@
       "children": [],
       "exclusive_with": [
         "MSP18"
-      ],
-      "search_tags": "MSP17; Release brake too quickly; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake release too quickly; abrupt brake release; moving toward positive; exit; too quickly"
+      ]
     },
     "MSP18": {
       "name": "Release brake too slowly",
@@ -367,8 +344,7 @@
       "children": [],
       "exclusive_with": [
         "MSP17"
-      ],
-      "search_tags": "MSP18; Release brake too slowly; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake release too slowly; trail braking; too slowly"
+      ]
     },
     "MSP27": {
       "name": "Initiate brake release too late",
@@ -378,8 +354,7 @@
       "children": [],
       "exclusive_with": [
         "MSP28"
-      ],
-      "search_tags": "MSP27; Initiate brake release too late; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake release onset later than expert; apex; too late"
+      ]
     },
     "MSP28": {
       "name": "Initiate brake release too early",
@@ -389,8 +364,7 @@
       "children": [],
       "exclusive_with": [
         "MSP27"
-      ],
-      "search_tags": "MSP28; Initiate brake release too early; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake release onset earlier than expert; apex; too early"
+      ]
     },
     "MSP31": {
       "name": "Highest brake length too short",
@@ -400,8 +374,7 @@
       "children": [],
       "exclusive_with": [
         "MSP32"
-      ],
-      "search_tags": "MSP31; Highest brake length too short; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; peak brake length too short; peak brake pressure"
+      ]
     },
     "MSP32": {
       "name": "Highest brake length too long",
@@ -411,8 +384,7 @@
       "children": [],
       "exclusive_with": [
         "MSP31"
-      ],
-      "search_tags": "MSP32; Highest brake length too long; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; peak brake length too long; peak brake pressure"
+      ]
     },
     "MSP34": {
       "name": "Throttle and brake applied at the same time for too long",
@@ -420,8 +392,7 @@
       "description": "The player **applies throttle and brake simultaneously** across a span where the expert shows no overlap.\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP34; Throttle and brake applied at the same time for too long; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; brake and throttle overlap"
+      "exclusive_with": []
     },
     "MSP15": {
       "name": "Throttle applied too quickly",
@@ -431,8 +402,7 @@
       "children": [],
       "exclusive_with": [
         "MSP25"
-      ],
-      "search_tags": "MSP15; Throttle applied too quickly; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; throttle applied too quickly; abrupt throttle rise; oversteer; understeer; modulation dip; too quickly"
+      ]
     },
     "MSP25": {
       "name": "Throttle applied too slowly",
@@ -442,8 +412,7 @@
       "children": [],
       "exclusive_with": [
         "MSP15"
-      ],
-      "search_tags": "MSP25; Throttle applied too slowly; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; throttle applied too slowly; gradual throttle rise; too slowly"
+      ]
     },
     "MSP19": {
       "name": "Highest throttle pressure too low",
@@ -453,8 +422,7 @@
       "children": [],
       "exclusive_with": [
         "MSP26"
-      ],
-      "search_tags": "MSP19; Highest throttle pressure too low; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; peak throttle pressure lower than expert; lower than expert"
+      ]
     },
     "MSP26": {
       "name": "Highest throttle pressure too high",
@@ -464,8 +432,7 @@
       "children": [],
       "exclusive_with": [
         "MSP19"
-      ],
-      "search_tags": "MSP26; Highest throttle pressure too high; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; peak throttle pressure higher than expert; oversteer; understeer; modulation dip; higher than expert"
+      ]
     },
     "MSP20": {
       "name": "Initiate throttle too early",
@@ -475,8 +442,7 @@
       "children": [],
       "exclusive_with": [
         "MSP21"
-      ],
-      "search_tags": "MSP20; Initiate throttle too early; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; throttle application onset earlier than expert; exit; earlier than expert; too early"
+      ]
     },
     "MSP21": {
       "name": "Initiate throttle too late",
@@ -486,8 +452,7 @@
       "children": [],
       "exclusive_with": [
         "MSP20"
-      ],
-      "search_tags": "MSP21; Initiate throttle too late; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; throttle application onset later than expert; exit; later than expert; too late"
+      ]
     },
     "MSP23": {
       "name": "Release throttle too quickly",
@@ -495,8 +460,7 @@
       "description": "The player's **throttle release** is more abrupt than the expert's — the drop from peak to zero spans fewer indices.\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP23; Release throttle too quickly; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; throttle release too quickly; too quickly"
+      "exclusive_with": []
     },
     "MSP29": {
       "name": "Initiate throttle release too late",
@@ -506,8 +470,7 @@
       "children": [],
       "exclusive_with": [
         "MSP30"
-      ],
-      "search_tags": "MSP29; Initiate throttle release too late; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; throttle release onset later than expert; entry; later than expert; too late"
+      ]
     },
     "MSP30": {
       "name": "Initiate throttle release too early",
@@ -517,8 +480,7 @@
       "children": [],
       "exclusive_with": [
         "MSP29"
-      ],
-      "search_tags": "MSP30; Initiate throttle release too early; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; throttle release onset earlier than expert; entry; earlier than expert; too early"
+      ]
     },
     "MSP2": {
       "name": "Initiate the turn too late",
@@ -528,8 +490,7 @@
       "children": [],
       "exclusive_with": [
         "MSP6"
-      ],
-      "search_tags": "MSP2; Initiate the turn too late; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; turn initiation later than expert; wider than expert; entry; apex; later than expert; too late"
+      ]
     },
     "MSP6": {
       "name": "Initiate the turn too early",
@@ -539,8 +500,7 @@
       "children": [],
       "exclusive_with": [
         "MSP2"
-      ],
-      "search_tags": "MSP6; Initiate the turn too early; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; turn initiation earlier than expert; tighter than expert; entry; apex; earlier than expert; too early"
+      ]
     },
     "MSP3": {
       "name": "Too late compared to expert Apex",
@@ -550,8 +510,7 @@
       "children": [],
       "exclusive_with": [
         "MSP7"
-      ],
-      "search_tags": "MSP3; Too late compared to expert Apex; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; apex later than expert; apex; later than expert; too late"
+      ]
     },
     "MSP7": {
       "name": "Too early compared to expert Apex",
@@ -561,8 +520,7 @@
       "children": [],
       "exclusive_with": [
         "MSP3"
-      ],
-      "search_tags": "MSP7; Too early compared to expert Apex; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; apex earlier than expert; apex; earlier than expert; too early"
+      ]
     },
     "MSP4": {
       "name": "Time to exit too early",
@@ -572,8 +530,7 @@
       "children": [],
       "exclusive_with": [
         "MSP8"
-      ],
-      "search_tags": "MSP4; Time to exit too early; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; exit timing earlier than expert; exit; earlier than expert; too early"
+      ]
     },
     "MSP8": {
       "name": "Time to exit too late",
@@ -583,8 +540,7 @@
       "children": [],
       "exclusive_with": [
         "MSP4"
-      ],
-      "search_tags": "MSP8; Time to exit too late; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; exit timing later than expert; exit; later than expert; too late"
+      ]
     },
     "MSP9": {
       "name": "Entry trajectory too tight",
@@ -594,8 +550,7 @@
       "children": [],
       "exclusive_with": [
         "MSP33"
-      ],
-      "search_tags": "MSP9; Entry trajectory too tight; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; entry trajectory tighter than expert; tighter than expert; entry; apex"
+      ]
     },
     "MSP33": {
       "name": "Entry trajectory too wide",
@@ -605,8 +560,7 @@
       "children": [],
       "exclusive_with": [
         "MSP9"
-      ],
-      "search_tags": "MSP33; Entry trajectory too wide; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; entry trajectory wider than expert; wider than expert; entry; apex"
+      ]
     },
     "MSP10": {
       "name": "Apex too wide",
@@ -614,8 +568,7 @@
       "description": "The player's apex is **closer to outside** than the expert's at the expert's apex index, with offset **wider than expert**.\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP10; Apex too wide; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; apex wider than expert; wider than expert; apex"
+      "exclusive_with": []
     },
     "MSP11": {
       "name": "Exit trajectory too narrow",
@@ -625,8 +578,7 @@
       "children": [],
       "exclusive_with": [
         "MSP16"
-      ],
-      "search_tags": "MSP11; Exit trajectory too narrow; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; exit trajectory tighter than expert; tighter than expert; apex; exit"
+      ]
     },
     "MSP16": {
       "name": "Exit trajectory too wide",
@@ -636,8 +588,7 @@
       "children": [],
       "exclusive_with": [
         "MSP11"
-      ],
-      "search_tags": "MSP16; Exit trajectory too wide; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; exit trajectory wider than expert; wider than expert; apex; exit"
+      ]
     },
     "MSP41": {
       "name": "Cutting the line",
@@ -645,8 +596,7 @@
       "description": "The player's trajectory **cuts inside** the expert's line across the corner (offset is **tighter than expert** at multiple phases).\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP41; Cutting the line; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; cutting the line; tighter than expert"
+      "exclusive_with": []
     },
     "MSP50": {
       "name": "Off track at entry",
@@ -654,8 +604,7 @@
       "description": "Player goes off track at corner entry — trajectory similarity drops as the driver line separates from the expert racing line on approach or entry. Look for the driver line becoming less similar to the expert path, running beyond the outside white line or onto kerb/runoff, followed by time loss or rejoin pressure.\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP50; Off track at entry; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; off track at entry; trajectory similarity; low trajectory similarity; leaves racing surface; outside white line; entry runoff; kerb excursion; driver path separates from expert line; racing line departure; sustained path divergence; wide runoff trajectory; rejoin pressure; entry"
+      "exclusive_with": []
     },
     "MSP51": {
       "name": "Off track at exit",
@@ -663,8 +612,7 @@
       "description": "Player goes off track at corner exit — trajectory similarity drops as the car runs out past the outside exit boundary. Look for the driver line becoming less similar to the expert racing line after apex, crossing onto exit kerb/runoff or beyond the white line, followed by throttle correction, speed loss, or rejoin pressure.\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP51; Off track at exit; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; off track at exit; trajectory similarity; low trajectory similarity; leaves racing surface; outside white line; exit runoff; exit kerb excursion; driver path separates from expert line; racing line departure; sustained path divergence; wide runoff trajectory; rejoin pressure; apex; exit"
+      "exclusive_with": []
     },
     "MSP52": {
       "name": "Off track in the straight",
@@ -672,8 +620,7 @@
       "description": "Player goes off track on a straight section — trajectory similarity drops on a non-corner span where both lines should remain nearly parallel. Look for a sudden or sustained racing-surface departure, wide runoff travel, kerb/grass excursion, or rejoin pressure without entry/apex/exit corner phase evidence.\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP52; Off track in the straight; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; off track on straight; trajectory similarity; low trajectory similarity; leaves racing surface; outside white line; straight runoff; kerb excursion; grass excursion; driver path separates from expert line; sustained path divergence; racing line departure; rejoin pressure"
+      "exclusive_with": []
     },
     "MSP42": {
       "name": "Inefficient grip utilization at entry",
@@ -681,8 +628,7 @@
       "description": "Grip utilisation at corner entry deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears across the index range where braking is active and speed is decreasing (the entry phase, cross-referenced with the trajectory or speed trace).\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP42; Inefficient grip utilization at entry; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; grip utilisation at entry; over-limit spike; sustained over-limit; sustained low; grip utilisation; entry"
+      "exclusive_with": []
     },
     "MSP43": {
       "name": "Inefficient grip utilization at exit",
@@ -690,8 +636,7 @@
       "description": "Grip utilisation at corner exit deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears across the index range where throttle is being applied and speed is increasing (the exit phase, cross-referenced with the trajectory or speed trace).\n",
       "parent": "MSP",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "MSP43; Inefficient grip utilization at exit; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; grip utilisation at exit; over-limit spike; sustained over-limit; sustained low; grip utilisation; exit"
+      "exclusive_with": []
     },
     "MSP44": {
       "name": "Oversteering at entry",
@@ -701,8 +646,7 @@
       "children": [],
       "exclusive_with": [
         "MSP45"
-      ],
-      "search_tags": "MSP44; Oversteering at entry; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; oversteer at entry; oversteer; entry"
+      ]
     },
     "MSP45": {
       "name": "Understeering at entry",
@@ -712,8 +656,7 @@
       "children": [],
       "exclusive_with": [
         "MSP44"
-      ],
-      "search_tags": "MSP45; Understeering at entry; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; understeer at entry; understeer; entry"
+      ]
     },
     "MSP46": {
       "name": "Oversteering at exit",
@@ -723,8 +666,7 @@
       "children": [],
       "exclusive_with": [
         "MSP47"
-      ],
-      "search_tags": "MSP46; Oversteering at exit; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; oversteer at exit; oversteer; exit"
+      ]
     },
     "MSP47": {
       "name": "Understeering at exit",
@@ -734,8 +676,7 @@
       "children": [],
       "exclusive_with": [
         "MSP46"
-      ],
-      "search_tags": "MSP47; Understeering at exit; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; understeer at exit; understeer; exit"
+      ]
     },
     "MSP35": {
       "name": "Shift up too early",
@@ -745,8 +686,7 @@
       "children": [],
       "exclusive_with": [
         "MSP36"
-      ],
-      "search_tags": "MSP35; Shift up too early; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; shift up too early; shift up; too early"
+      ]
     },
     "MSP36": {
       "name": "Shift up too late",
@@ -756,8 +696,7 @@
       "children": [],
       "exclusive_with": [
         "MSP35"
-      ],
-      "search_tags": "MSP36; Shift up too late; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; shift up too late; shift up; too late"
+      ]
     },
     "MSP37": {
       "name": "Shift down too early",
@@ -767,8 +706,7 @@
       "children": [],
       "exclusive_with": [
         "MSP38"
-      ],
-      "search_tags": "MSP37; Shift down too early; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; shift down too early; shift down; too early"
+      ]
     },
     "MSP38": {
       "name": "Shift down too late",
@@ -778,8 +716,7 @@
       "children": [],
       "exclusive_with": [
         "MSP37"
-      ],
-      "search_tags": "MSP38; Shift down too late; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; shift down too late; shift down; too late"
+      ]
     },
     "MSP48": {
       "name": "Gear too low when accelerating",
@@ -789,8 +726,7 @@
       "children": [],
       "exclusive_with": [
         "MSP49"
-      ],
-      "search_tags": "MSP48; Gear too low when accelerating; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; gear too low while accelerating"
+      ]
     },
     "MSP49": {
       "name": "Gear too high when accelerating",
@@ -800,8 +736,7 @@
       "children": [],
       "exclusive_with": [
         "MSP48"
-      ],
-      "search_tags": "MSP49; Gear too high when accelerating; type sub; parent MSP; technical mistake; gap grows; time loss; sub-label calculation; gear too high while accelerating"
+      ]
     },
     "MSR1": {
       "name": "Failed overtake attempt (type unclear)",
@@ -817,8 +752,7 @@
         "MSR6",
         "MSR7",
         "MSR8"
-      ],
-      "search_tags": "MSR1; Failed overtake attempt (type unclear); type sub; parent MSR; racing mistake; opponent interaction; failed attack; broken defense"
+      ]
     },
     "MSR2": {
       "name": "Defense broken (type unclear)",
@@ -834,8 +768,7 @@
         "MSR6",
         "MSR7",
         "MSR8"
-      ],
-      "search_tags": "MSR2; Defense broken (type unclear); type sub; parent MSR; racing mistake; opponent interaction; failed attack; broken defense; held defense"
+      ]
     },
     "MSR3": {
       "name": "Failed late-brake attack at entry",
@@ -849,8 +782,7 @@
         "MSR5",
         "MSR7",
         "MSR8"
-      ],
-      "search_tags": "MSR3; Failed late-brake attack at entry; type sub; parent MSR; racing mistake; opponent interaction; failed attack; broken defense; failed late-brake attack; brake initiation onset later than expert; peak brake pressure; moving toward negative; over-limit spike; entry; apex; later than expert; higher than expert"
+      ]
     },
     "MSR4": {
       "name": "Failed outside-line sweep",
@@ -864,8 +796,7 @@
         "MSR5",
         "MSR7",
         "MSR8"
-      ],
-      "search_tags": "MSR4; Failed outside-line sweep; type sub; parent MSR; racing mistake; opponent interaction; failed attack; broken defense; failed outside-line sweep; trajectory wider than expert; wider than expert; outside-line; entry; apex"
+      ]
     },
     "MSR5": {
       "name": "Failed switchback",
@@ -880,8 +811,7 @@
         "MSR4",
         "MSR7",
         "MSR8"
-      ],
-      "search_tags": "MSR5; Failed switchback; type sub; parent MSR; racing mistake; opponent interaction; failed attack; broken defense; failed switchback; trajectory crosses line; wider than expert; tighter than expert; switchback; entry; exit; earlier than expert"
+      ]
     },
     "MSR6": {
       "name": "Failed slipstream gain on straight",
@@ -894,8 +824,7 @@
         "MSR2",
         "MSR7",
         "MSR8"
-      ],
-      "search_tags": "MSR6; Failed slipstream gain on straight; type sub; parent MSR; racing mistake; opponent interaction; failed attack; broken defense; failed slipstream; player faster than expert; slipstream; too late"
+      ]
     },
     "MSR7": {
       "name": "Inside cover broken (early-brake defense)",
@@ -910,8 +839,7 @@
         "MSR4",
         "MSR5",
         "MSR6"
-      ],
-      "search_tags": "MSR7; Inside cover broken (early-brake defense); type sub; parent MSR; racing mistake; opponent interaction; failed attack; broken defense; inside cover broken; brake initiation onset earlier than expert; tighter than expert; moving toward positive; inside cover; entry; apex; exit; earlier than expert"
+      ]
     },
     "MSR8": {
       "name": "Defensive lift broken on straight",
@@ -926,8 +854,7 @@
         "MSR4",
         "MSR5",
         "MSR6"
-      ],
-      "search_tags": "MSR8; Defensive lift broken on straight; type sub; parent MSR; racing mistake; opponent interaction; failed attack; broken defense; defensive lift broken; throttle below expert; defensive lift"
+      ]
     },
     "O1": {
       "name": "Late-brake attack at entry",
@@ -937,8 +864,7 @@
       "children": [],
       "exclusive_with": [
         "O4"
-      ],
-      "search_tags": "O1; Late-brake attack at entry; type sub; parent O; successful overtake; opponent interaction; pass completed; brake initiation onset later than expert; late brake attack; peak brake pressure; moving toward negative; entry; apex; later than expert; higher than expert"
+      ]
     },
     "O3": {
       "name": "Outside-line sweep",
@@ -948,8 +874,7 @@
       "children": [],
       "exclusive_with": [
         "O4"
-      ],
-      "search_tags": "O3; Outside-line sweep; type sub; parent O; successful overtake; opponent interaction; pass completed; outside-line sweep; trajectory wider than expert; wider than expert; outside-line; entry; apex; exit"
+      ]
     },
     "O4": {
       "name": "Switchback",
@@ -960,8 +885,7 @@
       "exclusive_with": [
         "O1",
         "O3"
-      ],
-      "search_tags": "O4; Switchback; type sub; parent O; successful overtake; opponent interaction; pass completed; switchback; trajectory crosses line; throttle application onset earlier than expert; wider than expert; tighter than expert; entry; apex; exit; earlier than expert"
+      ]
     },
     "O5": {
       "name": "Slipstream gain on straight",
@@ -969,8 +893,7 @@
       "description": "On a straight section: speed delta shows **player faster than expert** while the player's throttle stays **at or below** the expert's level — the speed gain is from draft, not extra input. Time delta shows **gap shrinks** across the straight. Opponent cue: `classify_opponent_interaction` returns `outcome: pass_completed`; primary opponent starts directly ahead in draft range, and `query_opponent_trajectory` shows the signed longitudinal gap shrinking monotonically across the straight.\n",
       "parent": "O",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "O5; Slipstream gain on straight; type sub; parent O; successful overtake; opponent interaction; pass completed; slipstream; player faster than expert"
+      "exclusive_with": []
     },
     "OD1": {
       "name": "Inside cover (early-brake defense)",
@@ -978,8 +901,7 @@
       "description": "Player's brake **initiation onset is earlier than** the expert's AND/OR trajectory offset held **tighter than expert** across entry-to-apex by a sustained margin — closing the inside line. Distinguished from MSP by the **absence of a continuously growing time gap** — the inside line is a tactical choice, not a slow mistake. Opponent cue: `classify_opponent_interaction` returns `outcome: held_defense`; the primary opponent is close-trailing or alongside on the outside, and `query_opponent_trajectory` shows the opponent not getting ahead by exit.\n",
       "parent": "OD",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "OD1; Inside cover (early-brake defense); type sub; parent OD; successful defense; opponent interaction; held defense; inside cover; brake initiation onset earlier than expert; tighter than expert; entry; apex; exit; earlier than expert"
+      "exclusive_with": []
     },
     "OD2": {
       "name": "Defensive lift on straight",
@@ -987,8 +909,7 @@
       "description": "On a straight section: player's throttle drops **below expert** with NO matching brake onset (outside any braking zone), causing a brief speed dip not explained by track geometry — a lift to manage position or check the mirrors. Time delta typically shows **gap grows** briefly during the lift. Opponent cue: `classify_opponent_interaction` returns `outcome: held_defense`; primary opponent is close behind, and `query_opponent_trajectory` shows the gap closing during the lift without the opponent getting ahead by exit.\n",
       "parent": "OD",
       "children": [],
-      "exclusive_with": [],
-      "search_tags": "OD2; Defensive lift on straight; type sub; parent OD; successful defense; opponent interaction; held defense; defensive lift; throttle below expert; exit"
+      "exclusive_with": []
     },
     "ST1": {
       "name": "In the corner",
@@ -1005,8 +926,7 @@
         "ST4",
         "ST5",
         "ST6"
-      ],
-      "search_tags": "ST1; In the corner; type segment_type"
+      ]
     },
     "ST2": {
       "name": "On the straight",
@@ -1023,8 +943,7 @@
         "ST4",
         "ST5",
         "ST6"
-      ],
-      "search_tags": "ST2; On the straight; type segment_type"
+      ]
     },
     "ST3": {
       "name": "Approach to corner",
@@ -1041,8 +960,7 @@
         "ST4",
         "ST5",
         "ST6"
-      ],
-      "search_tags": "ST3; Approach to corner; type segment_type"
+      ]
     },
     "ST4": {
       "name": "Exit corner leading to straight",
@@ -1059,8 +977,7 @@
         "ST3",
         "ST5",
         "ST6"
-      ],
-      "search_tags": "ST4; Exit corner leading to straight; type segment_type; exit"
+      ]
     },
     "ST5": {
       "name": "Between consecutive corners",
@@ -1077,8 +994,7 @@
         "ST3",
         "ST4",
         "ST6"
-      ],
-      "search_tags": "ST5; Between consecutive corners; type segment_type"
+      ]
     },
     "ST6": {
       "name": "Consecutive corners with no straight in between",
@@ -1095,8 +1011,7 @@
         "ST3",
         "ST4",
         "ST5"
-      ],
-      "search_tags": "ST6; Consecutive corners with no straight in between; type segment_type"
+      ]
     },
     "ST7": {
       "name": "Constant-radius corner",
@@ -1112,8 +1027,7 @@
         "ST9",
         "ST10",
         "ST11"
-      ],
-      "search_tags": "ST7; Constant-radius corner; type segment_type; entry; apex; exit"
+      ]
     },
     "ST8": {
       "name": "Increasing-radius corner",
@@ -1129,8 +1043,7 @@
         "ST9",
         "ST10",
         "ST11"
-      ],
-      "search_tags": "ST8; Increasing-radius corner; type segment_type; entry; apex; exit"
+      ]
     },
     "ST9": {
       "name": "Decreasing-radius corner",
@@ -1146,8 +1059,7 @@
         "ST8",
         "ST10",
         "ST11"
-      ],
-      "search_tags": "ST9; Decreasing-radius corner; type segment_type; entry; apex; exit"
+      ]
     },
     "ST10": {
       "name": "Hairpin corner",
@@ -1163,8 +1075,7 @@
         "ST8",
         "ST9",
         "ST11"
-      ],
-      "search_tags": "ST10; Hairpin corner; type segment_type"
+      ]
     },
     "ST11": {
       "name": "Chicane or esses",
@@ -1180,8 +1091,7 @@
         "ST8",
         "ST9",
         "ST10"
-      ],
-      "search_tags": "ST11; Chicane or esses; type segment_type"
+      ]
     },
     "ST12": {
       "name": "Entry altitude uphill",
@@ -1197,8 +1107,7 @@
       "exclusive_with": [
         "ST13",
         "ST14"
-      ],
-      "search_tags": "ST12; Entry altitude uphill; type segment_type; entry"
+      ]
     },
     "ST13": {
       "name": "Entry altitude level",
@@ -1214,8 +1123,7 @@
       "exclusive_with": [
         "ST12",
         "ST14"
-      ],
-      "search_tags": "ST13; Entry altitude level; type segment_type; entry"
+      ]
     },
     "ST14": {
       "name": "Entry altitude downhill",
@@ -1231,8 +1139,7 @@
       "exclusive_with": [
         "ST12",
         "ST13"
-      ],
-      "search_tags": "ST14; Entry altitude downhill; type segment_type; entry"
+      ]
     },
     "ST15": {
       "name": "Apex altitude uphill",
@@ -1248,8 +1155,7 @@
       "exclusive_with": [
         "ST16",
         "ST17"
-      ],
-      "search_tags": "ST15; Apex altitude uphill; type segment_type; apex"
+      ]
     },
     "ST16": {
       "name": "Apex altitude level",
@@ -1265,8 +1171,7 @@
       "exclusive_with": [
         "ST15",
         "ST17"
-      ],
-      "search_tags": "ST16; Apex altitude level; type segment_type; apex"
+      ]
     },
     "ST17": {
       "name": "Apex altitude downhill",
@@ -1282,8 +1187,7 @@
       "exclusive_with": [
         "ST15",
         "ST16"
-      ],
-      "search_tags": "ST17; Apex altitude downhill; type segment_type; apex"
+      ]
     },
     "ST18": {
       "name": "Exit altitude uphill",
@@ -1299,8 +1203,7 @@
       "exclusive_with": [
         "ST19",
         "ST20"
-      ],
-      "search_tags": "ST18; Exit altitude uphill; type segment_type; exit"
+      ]
     },
     "ST19": {
       "name": "Exit altitude level",
@@ -1316,8 +1219,7 @@
       "exclusive_with": [
         "ST18",
         "ST20"
-      ],
-      "search_tags": "ST19; Exit altitude level; type segment_type; exit"
+      ]
     },
     "ST20": {
       "name": "Exit altitude downhill",
@@ -1333,8 +1235,7 @@
       "exclusive_with": [
         "ST18",
         "ST19"
-      ],
-      "search_tags": "ST20; Exit altitude downhill; type segment_type; exit"
+      ]
     }
   },
   "category_guidelines": {
