@@ -66,21 +66,6 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         ],
     },
     {
-        "tool_id": "query_telemetry.find_threshold_crossing.brake.onset",
-        "graph_id": "brake",
-        "query_id": "find_threshold_crossing",
-        "params": {
-            "columns": ["expert_optimal_brake", "Physics_brake"],
-            "threshold": 0.05,
-            "smoothing_window": 5,
-        },
-        "tags": [
-            "brake initiation onset",
-            "brake earlier than expert",
-            "brake later than expert",
-        ],
-    },
-    {
         "tool_id": "query_telemetry.find_extremum.brake.player.max",
         "graph_id": "brake",
         "query_id": "find_extremum",
@@ -93,21 +78,6 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         "query_id": "find_extremum",
         "params": {"column": "expert_optimal_brake", "kind": "max"},
         "tags": ["expert peak brake pressure"],
-    },
-    {
-        "tool_id": "query_telemetry.find_threshold_crossing.throttle.onset",
-        "graph_id": "throttle",
-        "query_id": "find_threshold_crossing",
-        "params": {
-            "columns": ["expert_optimal_throttle", "Physics_gas"],
-            "threshold": 0.05,
-            "smoothing_window": 5,
-        },
-        "tags": [
-            "throttle application onset",
-            "throttle earlier than expert",
-            "throttle later than expert",
-        ],
     },
     {
         "tool_id": "query_telemetry.find_extremum.throttle.player.max",
@@ -400,6 +370,7 @@ def _build_detailed_events(
     _extend(events, _opponent_events(start, end, by_tool))
     _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "brake"))
     _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "throttle"))
+    _extend(events, _input_timing_comparison_events(df, start, end, phases))
     _extend(events, _local_input_shape_events(df, start, end, phases))
     _extend(events, _time_delta_events(start, end, by_tool))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
@@ -621,6 +592,93 @@ def _peak_comparison_events(
         "strong" if abs(delta) >= 0.15 else "moderate",
         [player_tool, expert_tool],
     )]
+
+
+def _input_timing_comparison_events(
+    df,
+    start: int,
+    end: int,
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for player_col, expert_col, direction, phrase in (
+        (
+            "Physics_brake",
+            "expert_optimal_brake",
+            "increase",
+            "brake initiation",
+        ),
+        (
+            "Physics_brake",
+            "expert_optimal_brake",
+            "decrease",
+            "brake release",
+        ),
+        (
+            "Physics_gas",
+            "expert_optimal_throttle",
+            "increase",
+            "throttle application",
+        ),
+        (
+            "Physics_gas",
+            "expert_optimal_throttle",
+            "decrease",
+            "throttle release",
+        ),
+    ):
+        player = _action_profile(df, start, end, player_col, direction)
+        expert = _action_profile(df, start, end, expert_col, direction)
+        source = f"local_{phrase.replace(' ', '_')}_shape_comparison"
+        if not player or not expert:
+            events.append(_event(
+                f"{phrase} onset comparison unavailable",
+                "unknown",
+                None,
+                {
+                    "player_action_detected": bool(player),
+                    "expert_action_detected": bool(expert),
+                    "direction": direction,
+                    "decision_basis": "shape_change_comparison",
+                },
+                "weak",
+                [source],
+            ))
+            continue
+        player_iloc = player.get("start_index")
+        expert_iloc = expert.get("start_index")
+        if not isinstance(player_iloc, int) or not isinstance(expert_iloc, int):
+            continue
+        delta = player_iloc - expert_iloc
+        relation = (
+            "earlier" if delta < 0
+            else "later" if delta > 0
+            else "aligned with"
+        )
+        event_name = (
+            f"{phrase} onset {relation} expert"
+            if relation == "aligned with"
+            else f"{phrase} onset {relation} than expert"
+        )
+        events.append(_event(
+            event_name,
+            _phase_for_iloc(player_iloc, phases),
+            _range_from_values(player_iloc, expert_iloc),
+            {
+                "player_start_index": player_iloc,
+                "expert_start_index": expert_iloc,
+                "start_delta_iloc": delta,
+                "player_start_band": player.get("start_band"),
+                "expert_start_band": expert.get("start_band"),
+                "player_total_movement": player.get("total_movement"),
+                "expert_total_movement": expert.get("total_movement"),
+                "direction": direction,
+                "decision_basis": "shape_change_comparison",
+            },
+            "strong" if abs(delta) >= 2 else "moderate",
+            [source],
+        ))
+    return events
 
 
 def _local_input_shape_events(
@@ -1370,7 +1428,6 @@ def _change_episodes(
             or first_active_pos is None
             or last_active_pos is None
             or last_pos is None
-            or active_count < 2
         ):
             start_pos = first_active_pos = last_active_pos = last_pos = None
             active_count = 0
@@ -1387,6 +1444,11 @@ def _change_episodes(
         duration = end_iloc - start_iloc
         total_movement = (float(end_value) - float(start_value)) * sign
         if duration <= 0 or total_movement < movement_gate:
+            start_pos = first_active_pos = last_active_pos = last_pos = None
+            active_count = 0
+            stall_count = 0
+            return
+        if active_count < 2 and total_movement < movement_gate * 3.0:
             start_pos = first_active_pos = last_active_pos = last_pos = None
             active_count = 0
             stall_count = 0
@@ -1804,6 +1866,7 @@ def _measurement_sentence_fragments(
     if (
         "onset earlier than expert" in event_name
         or "onset later than expert" in event_name
+        or "onset aligned with expert" in event_name
     ):
         player = measurements.get("player_start_index")
         expert = measurements.get("expert_start_index")
@@ -1815,11 +1878,32 @@ def _measurement_sentence_fragments(
         if delta is not None:
             delta_number = _as_float(delta)
             if delta_number is not None:
-                direction = "later" if delta_number > 0 else "earlier"
-                fragments.append(
-                    "the player timing was "
-                    f"{_format_value(abs(delta_number))} ilocs {direction}"
+                if delta_number == 0:
+                    fragments.append("the player timing was aligned with expert")
+                else:
+                    direction = "later" if delta_number > 0 else "earlier"
+                    fragments.append(
+                        "the player timing was "
+                        f"{_format_value(abs(delta_number))} ilocs {direction}"
                 )
+        return fragments
+
+    if "onset comparison unavailable" in event_name:
+        player_detected = measurements.get("player_action_detected")
+        expert_detected = measurements.get("expert_action_detected")
+        if player_detected is False and expert_detected is False:
+            fragments.append("neither player nor expert had a clear input-change episode")
+        elif player_detected is False:
+            fragments.append("the player did not have a clear input-change episode")
+        elif expert_detected is False:
+            fragments.append("the expert did not have a clear input-change episode")
+        direction = measurements.get("direction")
+        if direction:
+            direction_text = {
+                "increase": "rising",
+                "decrease": "falling",
+            }.get(str(direction), _humanize_token(str(direction)))
+            fragments.append(f"searched for a {direction_text} episode")
         return fragments
 
     if "too quickly" in event_name or "too slowly" in event_name:

@@ -16,7 +16,11 @@ from app.local_annotation_agent.workflow.preflight import (
     _run_queries,
     _semantic_tool_output,
 )
-from app.local_annotation_agent.workflow import preflight_detailed, preflight_lap
+from app.local_annotation_agent.workflow import (
+    formatters,
+    preflight_detailed,
+    preflight_lap,
+)
 from app.local_annotation_agent.workflow.flows import detailed as detailed_flow
 from app.shared.contracts import Attachment
 
@@ -463,17 +467,6 @@ def test_detailed_preflight_events_capture_late_brake_widening_and_time_loss():
                 {"phases": [{"entry": 10, "apex": 20, "exit": 30}]},
             ),
             (
-                "query_telemetry.find_threshold_crossing.brake.onset",
-                {
-                    "result": {
-                        "samples": [
-                            {"column": "expert_optimal_brake", "iloc": 12},
-                            {"column": "Physics_brake", "iloc": 18},
-                        ],
-                    },
-                },
-            ),
-            (
                 "query_telemetry.find_extremum.trajectory_offset.max",
                 {"result": {"iloc": 17, "value": 0.85}},
             ),
@@ -711,17 +704,6 @@ def test_detailed_preflight_events_capture_throttle_timing_and_peak():
         0,
         20,
         [
-            (
-                "query_telemetry.find_threshold_crossing.throttle.onset",
-                {
-                    "result": {
-                        "samples": [
-                            {"column": "expert_optimal_throttle", "iloc": 12},
-                            {"column": "Physics_gas", "iloc": 8},
-                        ],
-                    },
-                },
-            ),
             (
                 "query_telemetry.find_extremum.throttle.player.max",
                 {"result": {"iloc": 14, "value": 0.95}},
@@ -972,8 +954,10 @@ def test_detailed_preflight_ignores_noisy_small_wiggles_as_actions():
     events = preflight_detailed._build_detailed_events(df, 0, 7, [])
     event_names = {event["event"] for event in events}
 
-    assert not any("brake initiation onset" in event for event in event_names)
-    assert not any("brake release onset" in event for event in event_names)
+    assert "brake initiation onset earlier than expert" not in event_names
+    assert "brake initiation onset later than expert" not in event_names
+    assert "brake release onset earlier than expert" not in event_names
+    assert "brake release onset later than expert" not in event_names
     assert "brake applied too quickly" not in event_names
     assert "brake applied too slowly" not in event_names
     assert "brake release too quickly" not in event_names
@@ -1361,6 +1345,116 @@ def test_detailed_preflight_runs_trajectory_similarity_query():
         "query_telemetry.measure_trajectory_similarity.driver_expert_path"
         in tool_ids
     )
+
+
+def test_detailed_preflight_does_not_use_fixed_threshold_for_input_timing():
+    tool_ids = {
+        spec["tool_id"]
+        for spec in preflight_detailed.DETAILED_PREFLIGHT_QUERY_SPECS
+    }
+
+    assert "query_telemetry.find_threshold_crossing.brake.onset" not in tool_ids
+    assert "query_telemetry.find_threshold_crossing.brake.release" not in tool_ids
+    assert "query_telemetry.find_threshold_crossing.throttle.onset" not in tool_ids
+    assert "query_telemetry.find_threshold_crossing.throttle.release" not in tool_ids
+
+
+def test_detailed_preflight_shape_comparison_outputs_all_input_timing_events():
+    df = pd.DataFrame(
+        {
+            "expert_optimal_brake": [
+                0.0, 0.0, 0.0, 0.15, 0.45, 0.75, 0.75, 0.75, 0.60,
+                0.40, 0.20, 0.0, 0.0, 0.0, 0.0,
+            ],
+            "Physics_brake": [
+                0.0, 0.0, 0.0, 0.0, 0.15, 0.45, 0.75, 0.75, 0.75,
+                0.60, 0.40, 0.20, 0.0, 0.0, 0.0,
+            ],
+            "expert_optimal_throttle": [
+                1.0, 1.0, 1.0, 0.85, 0.65, 0.45, 0.25, 0.20, 0.35,
+                0.55, 0.75, 0.95, 1.0, 1.0, 1.0,
+            ],
+            "Physics_gas": [
+                1.0, 1.0, 1.0, 1.0, 0.85, 0.60, 0.35, 0.10, 0.0,
+                0.20, 0.45, 0.70, 0.95, 1.0, 1.0,
+            ],
+        }
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        0,
+        14,
+        [],
+    )
+
+    event_names = {event["event"] for event in events}
+
+    assert "brake initiation onset later than expert" in event_names
+    assert "brake release onset later than expert" in event_names
+    assert "throttle application onset later than expert" in event_names
+    assert "throttle release onset later than expert" in event_names
+
+
+def test_detailed_preflight_detects_short_brake_initiation_after_smoothing():
+    df = pd.DataFrame(
+        {
+            "expert_optimal_brake": [
+                0.0, 0.0, 0.33, 0.83, 0.79, 0.25, 0.02, 0.0, 0.0,
+            ],
+            "Physics_brake": [
+                0.0, 0.0, 0.0, 0.86, 1.0, 0.60, 0.19, 0.0, 0.0,
+            ],
+        },
+        index=range(342, 351),
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        342,
+        350,
+        [],
+    )
+
+    event_names = {event["event"] for event in events}
+
+    assert "brake initiation onset comparison unavailable" not in event_names
+    assert "brake initiation onset later than expert" in event_names
+
+
+def test_detailed_preflight_keeps_shape_categories_when_action_missing():
+    events = preflight_detailed._build_detailed_events(
+        pd.DataFrame(),
+        0,
+        20,
+        [],
+    )
+
+    event_names = [event["event"] for event in events]
+    evidence_text = preflight_detailed._event_text(events, [], [])
+
+    assert "brake initiation onset comparison unavailable" in event_names
+    assert "brake release onset comparison unavailable" in event_names
+    assert "throttle application onset comparison unavailable" in event_names
+    assert "throttle release onset comparison unavailable" in event_names
+    assert "searched for a rising episode" in evidence_text
+    assert "searched for a falling episode" in evidence_text
+
+
+def test_preflight_context_formatter_displays_evidence_sentences():
+    rendered = formatters._format_preflight_context({
+        "flow": "detailed",
+        "range": [1, 2],
+        "required_tools": [],
+        "semantic_evidence_text": (
+            "The evidence shows brake initiation onset comparison unavailable.\n"
+            "The evidence shows throttle release onset later than expert."
+        ),
+    })
+
+    assert "Evidence sentences:" in rendered
+    assert "brake initiation onset comparison unavailable" in rendered
+    assert "throttle release onset later than expert" in rendered
 
 
 def test_lap_preflight_calculates_player_speed_investigation(monkeypatch):

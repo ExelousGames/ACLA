@@ -134,6 +134,11 @@ def _format_preflight_context(content: Any) -> str:
     statistical_events = content.get("statistical_events") or []
     if statistical_events:
         lines.append("Statistical events: " + ", ".join(str(x) for x in statistical_events[:30]))
+    evidence_text = str(content.get("semantic_evidence_text") or "").strip()
+    if evidence_text:
+        evidence_lines = [line for line in evidence_text.splitlines() if line.strip()]
+        lines.append("Evidence sentences:")
+        lines.extend(f"- {line}" for line in evidence_lines[:40])
     return "\n".join(lines)
 
 
