@@ -512,6 +512,40 @@ def test_detailed_preflight_events_capture_late_brake_widening_and_time_loss():
     assert "time loss" in event_names
 
 
+def test_detailed_preflight_outputs_corner_phase_boundaries_for_range_selection():
+    events = preflight_detailed._build_detailed_events(
+        pd.DataFrame(),
+        10,
+        30,
+        [
+            (
+                "compute_expert_phases",
+                {"phases": [{"entry": 10, "apex": 20, "exit": 30}]},
+            ),
+        ],
+    )
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+
+    assert events == [
+        {
+            "event": "corner phase markers",
+            "phase": "whole_range",
+            "range": [10, 30],
+            "measurements": {
+                "entry_start_iloc": 10,
+                "apex_iloc": 20,
+                "exit_end_iloc": 30,
+            },
+            "confidence": "strong",
+            "sources": ["compute_expert_phases"],
+        }
+    ]
+    assert "entry starts at iloc 10" in semantic_search_text
+    assert "apex is at iloc 20" in semantic_search_text
+    assert "exit ends at iloc 30" in semantic_search_text
+    assert "entry phase detected" not in semantic_search_text
+
+
 def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
     events = preflight_detailed._build_detailed_events(
         pd.DataFrame(),

@@ -151,10 +151,20 @@ def _format_detailed_preflight_events(content: Any) -> str:
     for event in events[:40]:
         if not isinstance(event, dict):
             continue
-        lines.append(
+        line = (
             f"- {event.get('event')} | phase={event.get('phase')} "
             f"| range={event.get('range')} | confidence={event.get('confidence')}"
         )
+        measurements = event.get("measurements")
+        if event.get("event") == "corner phase markers" and isinstance(
+            measurements, dict
+        ):
+            line += (
+                f" | entry_start={measurements.get('entry_start_iloc')}"
+                f" | apex={measurements.get('apex_iloc')}"
+                f" | exit_end={measurements.get('exit_end_iloc')}"
+            )
+        lines.append(line)
     return "\n".join(lines)
 
 

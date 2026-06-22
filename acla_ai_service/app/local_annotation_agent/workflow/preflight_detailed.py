@@ -395,6 +395,7 @@ def _build_detailed_events(
     phases = _phase_windows(by_tool)
     events: List[Dict[str, Any]] = []
 
+    _extend(events, _phase_marker_events(phases))
     _extend(events, _shape_events(start, end, by_tool, phases))
     _extend(events, _opponent_events(start, end, by_tool))
     _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "brake"))
@@ -406,6 +407,30 @@ def _build_detailed_events(
     _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
 
     return _dedupe_events(events)
+
+
+def _phase_marker_events(phases: List[Dict[str, int]]) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for phase in phases:
+        entry = phase.get("entry")
+        apex = phase.get("apex")
+        exit_ = phase.get("exit")
+        if not all(isinstance(value, int) for value in (entry, apex, exit_)):
+            continue
+        events.append(_event(
+            "corner phase markers",
+            "whole_range",
+            [entry, exit_],
+            {
+                "entry_start_iloc": entry,
+                "apex_iloc": apex,
+                "exit_end_iloc": exit_,
+                "direction": phase.get("direction"),
+            },
+            "strong",
+            ["compute_expert_phases"],
+        ))
+    return events
 
 
 def _shape_events(
@@ -477,18 +502,6 @@ def _shape_events(
                 "moderate",
                 ["measure_segment_shape"],
             ))
-    for phase in phases:
-        for phase_name in ("entry", "apex", "exit"):
-            iloc = phase.get(phase_name)
-            if isinstance(iloc, int):
-                events.append(_event(
-                    f"{phase_name} phase detected",
-                    phase_name,
-                    [iloc, iloc],
-                    {"direction": phase.get("direction")},
-                    "strong",
-                    ["compute_expert_phases"],
-                ))
     return events
 
 
@@ -1911,6 +1924,21 @@ def _measurement_sentence_fragments(
             fragments.append(text)
         return fragments
 
+    if event_name == "corner phase markers":
+        entry = measurements.get("entry_start_iloc")
+        apex = measurements.get("apex_iloc")
+        exit_ = measurements.get("exit_end_iloc")
+        if entry is not None:
+            fragments.append(f"entry starts at iloc {entry}")
+        if apex is not None:
+            fragments.append(f"apex is at iloc {apex}")
+        if exit_ is not None:
+            fragments.append(f"exit ends at iloc {exit_}")
+        direction = measurements.get("direction")
+        if direction:
+            fragments.append(f"corner direction was {direction}")
+        return fragments
+
     if "altitude" in event_name:
         angle = measurements.get("slope_angle_degrees")
         if angle is not None:
@@ -1921,11 +1949,6 @@ def _measurement_sentence_fragments(
         if distance is not None:
             fragments.append(
                 f"horizontal path distance was {_format_value(distance)} telemetry units"
-            )
-        delta = measurements.get("delta_m")
-        if delta is not None:
-            fragments.append(
-                f"altitude changed by {_format_value(delta)} m for citation only"
             )
         return fragments
 
