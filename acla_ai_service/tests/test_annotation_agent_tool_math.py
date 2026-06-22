@@ -1159,6 +1159,13 @@ def test_detailed_preflight_maps_shape_keys_to_evidence_sentences():
     )
     semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
 
+    assert (
+        "the segment is in the corner, detected from iloc 0 to 20; "
+        "this matches label vocabulary for full segment covers entire corner, "
+        "driver turning throughout, and single curve hairpin continuous arc, "
+        "with strong confidence"
+    ) in semantic_search_text
+    assert "in the corner; full segment covers entire corner" not in semantic_search_text
     assert "in the corner" in semantic_search_text
     assert "full segment covers entire corner" in semantic_search_text
     assert "constant-radius corner" in semantic_search_text

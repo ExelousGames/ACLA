@@ -1721,9 +1721,44 @@ def _event_sentence(event: Dict[str, Any]) -> str:
     confidence = str(event.get("confidence") or "").strip()
     confidence_text = f"with {confidence} confidence" if confidence else ""
 
+    shape_terms = _event_label_vocabulary_terms(event_name)
+    if shape_terms:
+        primary, *vocabulary_terms = shape_terms
+        subject = _event_label_subject(phase, primary)
+        parts = [part for part in [range_text, *fragments] if part]
+        sentence = subject
+        if parts:
+            sentence += ", " + "; ".join(parts)
+        if vocabulary_terms:
+            sentence += (
+                "; this matches label vocabulary for "
+                + _join_sentence_list(vocabulary_terms)
+            )
+        if confidence_text:
+            sentence += f", {confidence_text}"
+        return sentence + "."
+
     parts = [part for part in [range_text, *fragments, confidence_text] if part]
-    detail = ": " + "; ".join(parts) if parts else ""
-    return f"{phase}{event_name}{detail}."
+    detail = ", " + "; ".join(parts) if parts else ""
+    return f"{phase}the evidence shows {event_name}{detail}."
+
+
+def _event_label_vocabulary_terms(event_name: str) -> List[str]:
+    terms = [term.strip() for term in event_name.split(";") if term.strip()]
+    return terms if len(terms) > 1 else []
+
+
+def _event_label_subject(phase_prefix: str, primary_term: str) -> str:
+    if primary_term.startswith(("in ", "on ")):
+        return f"{phase_prefix}the segment is {primary_term}"
+    return f"{phase_prefix}the segment is classified as {primary_term}"
+
+
+def _join_sentence_list(items: Sequence[str]) -> str:
+    clean = [item for item in items if item]
+    if len(clean) <= 1:
+        return "".join(clean)
+    return ", ".join(clean[:-1]) + f", and {clean[-1]}"
 
 
 def _phase_sentence_prefix(phase: str) -> str:
