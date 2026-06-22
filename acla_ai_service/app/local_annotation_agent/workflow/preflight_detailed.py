@@ -1448,12 +1448,6 @@ def _change_episodes(
             active_count = 0
             stall_count = 0
             return
-        if active_count < 2 and total_movement < movement_gate * 3.0:
-            start_pos = first_active_pos = last_active_pos = last_pos = None
-            active_count = 0
-            stall_count = 0
-            return
-
         raw_slopes: List[float] = []
         normalized_slopes: List[float] = []
         for pos in range(start_pos + 1, last_pos + 1):
