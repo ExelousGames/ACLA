@@ -647,7 +647,7 @@ def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
     assert "speed overall trend rising" in event_names
 
 
-def test_detailed_preflight_events_capture_throttle_timing_and_peak():
+def test_detailed_preflight_events_capture_throttle_timing_and_lowest_pressure():
     df = pd.DataFrame(
         {
             "Physics_gas": [
@@ -705,19 +705,27 @@ def test_detailed_preflight_events_capture_throttle_timing_and_peak():
         20,
         [
             (
-                "query_telemetry.find_extremum.throttle.player.max",
-                {"result": {"iloc": 14, "value": 0.95}},
+                "query_telemetry.find_extremum.throttle.player.min",
+                {"result": {"iloc": 1, "value": 0.10}},
             ),
             (
-                "query_telemetry.find_extremum.throttle.expert.max",
-                {"result": {"iloc": 15, "value": 0.72}},
+                "query_telemetry.find_extremum.throttle.expert.min",
+                {"result": {"iloc": 1, "value": 0.10}},
             ),
         ],
     )
 
     event_names = {event["event"] for event in events}
     assert "throttle application onset earlier than expert" in event_names
-    assert "peak throttle pressure higher than expert" in event_names
+    assert "lowest throttle pressure about same as expert" in event_names
+    throttle_event = next(
+        event
+        for event in events
+        if event["event"] == "lowest throttle pressure about same as expert"
+    )
+    sentence = preflight_detailed._event_sentence(throttle_event)
+    assert "the player lowest was 0.1 versus expert lowest 0.1" in sentence
+    assert "player peak" not in sentence
 
 
 def test_detailed_preflight_detects_fuzzy_brake_release_too_quickly():

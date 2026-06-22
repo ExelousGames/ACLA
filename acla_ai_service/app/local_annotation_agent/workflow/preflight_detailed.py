@@ -80,18 +80,18 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         "tags": ["expert peak brake pressure"],
     },
     {
-        "tool_id": "query_telemetry.find_extremum.throttle.player.max",
+        "tool_id": "query_telemetry.find_extremum.throttle.player.min",
         "graph_id": "throttle",
         "query_id": "find_extremum",
-        "params": {"column": "Physics_gas", "kind": "max"},
-        "tags": ["player peak throttle pressure"],
+        "params": {"column": "Physics_gas", "kind": "min"},
+        "tags": ["player lowest throttle pressure"],
     },
     {
-        "tool_id": "query_telemetry.find_extremum.throttle.expert.max",
+        "tool_id": "query_telemetry.find_extremum.throttle.expert.min",
         "graph_id": "throttle",
         "query_id": "find_extremum",
-        "params": {"column": "expert_optimal_throttle", "kind": "max"},
-        "tags": ["expert peak throttle pressure"],
+        "params": {"column": "expert_optimal_throttle", "kind": "min"},
+        "tags": ["expert lowest throttle pressure"],
     },
     {
         "tool_id": "query_telemetry.find_dips_on_main_slope.throttle",
@@ -541,9 +541,9 @@ def _peak_comparison_events(
         expert_tool = "query_telemetry.find_extremum.brake.expert.max"
         phrase = "peak brake pressure"
     else:
-        player_tool = "query_telemetry.find_extremum.throttle.player.max"
-        expert_tool = "query_telemetry.find_extremum.throttle.expert.max"
-        phrase = "peak throttle pressure"
+        player_tool = "query_telemetry.find_extremum.throttle.player.min"
+        expert_tool = "query_telemetry.find_extremum.throttle.expert.min"
+        phrase = "lowest throttle pressure"
     player = _query_result(by_tool.get(player_tool))
     expert = _query_result(by_tool.get(expert_tool))
     if not player or not expert:
@@ -1914,31 +1914,41 @@ def _measurement_sentence_fragments(
             fragments.append(f"the input change-rate ratio was {_format_value(ratio)}")
         return fragments
 
-    if "peak brake pressure" in event_name or "peak throttle pressure" in event_name:
+    if "peak brake pressure" in event_name or "lowest throttle pressure" in event_name:
         player = measurements.get("player_value")
         expert = measurements.get("expert_value")
         if player is not None and expert is not None:
-            fragments.append(
-                f"the player peak was {_format_value(player)} versus "
-                f"expert peak {_format_value(expert)}"
-            )
-        speed_gap = measurements.get("speed_gap_at_player_peak")
-        speed_gap_number = _as_float(speed_gap)
-        if speed_gap_number is not None:
-            if speed_gap_number > 0:
+            if "lowest throttle pressure" in event_name:
                 fragments.append(
-                    "the player was "
-                    f"{_format_value(speed_gap_number)} km/h slower than expert "
-                    "at the player peak"
+                    f"the player lowest was {_format_value(player)} versus "
+                    f"expert lowest {_format_value(expert)}"
                 )
-            elif speed_gap_number < 0:
+            else:
                 fragments.append(
-                    "the player was "
-                    f"{_format_value(abs(speed_gap_number))} km/h faster at the player peak"
+                    f"the player peak was {_format_value(player)} versus "
+                    f"expert peak {_format_value(expert)}"
                 )
+        if "peak brake pressure" in event_name:
+            speed_gap = measurements.get("speed_gap_at_player_peak")
+            speed_gap_number = _as_float(speed_gap)
+            if speed_gap_number is not None:
+                if speed_gap_number > 0:
+                    fragments.append(
+                        "the player was "
+                        f"{_format_value(speed_gap_number)} km/h slower than expert "
+                        "at the player peak"
+                    )
+                elif speed_gap_number < 0:
+                    fragments.append(
+                        "the player was "
+                        f"{_format_value(abs(speed_gap_number))} km/h faster at the player peak"
+                    )
         iloc = measurements.get("player_iloc")
         if iloc is not None:
-            fragments.append(f"the player peak occurred at iloc {iloc}")
+            if "lowest throttle pressure" in event_name:
+                fragments.append(f"the player lowest occurred at iloc {iloc}")
+            else:
+                fragments.append(f"the player peak occurred at iloc {iloc}")
         return fragments
 
     if "trajectory" in event_name or "moving toward" in event_name or "expert line" in event_name:
