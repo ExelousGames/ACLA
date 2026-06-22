@@ -1191,7 +1191,7 @@
       "altitude_trend": "uphill",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the corner entry has an uphill slope angle across the entry phase. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: entry altitude uphill; the corner entry has an uphill slope angle across the entry phase. Match preflight slope-angle evidence for the entry phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1208,7 +1208,7 @@
       "altitude_trend": "level",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the corner entry has a near-level slope angle across the entry phase. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: entry altitude level; the corner entry has a near-level slope angle across the entry phase. Match preflight slope-angle evidence for the entry phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1225,7 +1225,7 @@
       "altitude_trend": "downhill",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the corner entry has a downhill slope angle across the entry phase. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: entry altitude downhill; the corner entry has a downhill slope angle across the entry phase. Match preflight slope-angle evidence for the entry phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1242,7 +1242,7 @@
       "altitude_trend": "uphill",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the apex phase has an uphill slope angle through the apex window. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: apex altitude uphill; the apex phase has an uphill slope angle through the apex window. Match preflight slope-angle evidence for the apex phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1259,7 +1259,7 @@
       "altitude_trend": "level",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the apex phase has a near-level slope angle through the apex window. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: apex altitude level; the apex phase has a near-level slope angle through the apex window. Match preflight slope-angle evidence for the apex phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1276,7 +1276,7 @@
       "altitude_trend": "downhill",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the apex phase has a downhill slope angle through the apex window. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: apex altitude downhill; the apex phase has a downhill slope angle through the apex window. Match preflight slope-angle evidence for the apex phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1293,7 +1293,7 @@
       "altitude_trend": "uphill",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the corner exit has an uphill slope angle across the exit phase. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: exit altitude uphill; the corner exit has an uphill slope angle through the exit phase. Match preflight slope-angle evidence for the exit phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1310,7 +1310,7 @@
       "altitude_trend": "level",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the corner exit has a near-level slope angle across the exit phase. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: exit altitude level; the corner exit has a near-level slope angle through the exit phase. Match preflight slope-angle evidence for the exit phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1327,7 +1327,7 @@
       "altitude_trend": "downhill",
       "annotation_scope": "subsegment_only",
       "lap_parent_allowed": false,
-      "description": "Altitude refinement: the corner exit has a downhill slope angle across the exit phase. Use the measure_segment_shape angle verdict; do not choose this from raw height difference alone.",
+      "description": "Altitude refinement: exit altitude downhill; the corner exit has a downhill slope angle through the exit phase. Match preflight slope-angle evidence for the exit phase; do not choose this from raw height difference alone.",
       "parent": null,
       "children": [],
       "exclusive_with": [
@@ -1338,6 +1338,6 @@
     }
   },
   "category_guidelines": {
-    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. ST3 means the range starts before the detected corner arc and ends before the apex; do not use ST3 for a range that includes the apex or corner exit. ST4 means the exit section of the corner itself as it leads toward a straight; it does not mean a range that includes the completed corner plus a substantial portion of the following straight. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. Add a corner-shape refinement only when `measure_segment_shape.corner_shape_refinement.shape_key` matches that label's `shape_key` for the final range; non-empty `phases` alone is not enough. ST10 requires `measure_segment_shape.corner_shape_refinement` to report the hairpin flag true: `is_near_u_turn`. Entry/apex/exit altitude labels (ST12-ST20) are phase-specific subsegment labels gated by `measure_segment_shape.altitude.<phase>.trend` and `slope_angle_degrees`; do not choose them from raw height difference alone. Do not attach them to a lap parent segment that covers the whole corner; use them only when the annotation range is the matching corner phase subsegment.\n"
+    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. ST3 means the range starts before the detected corner arc and ends before the apex; do not use ST3 for a range that includes the apex or corner exit. ST4 means the exit section of the corner itself as it leads toward a straight; it does not mean a range that includes the completed corner plus a substantial portion of the following straight. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. Add a corner-shape refinement only when preflight corner-shape refinement reports the matching shape_key for the final range; non-empty phases alone are not enough. ST10 requires preflight corner-shape refinement to report the hairpin flag true: is_near_u_turn. Entry/apex/exit altitude labels (ST12-ST20) are phase-specific subsegment labels gated by preflight altitude trend and slope_angle_degrees for the matching phase; do not choose them from raw height difference alone. Do not attach them to a lap parent segment that covers the whole corner; use them only when the annotation range is the matching corner phase subsegment.\n"
   }
 }
