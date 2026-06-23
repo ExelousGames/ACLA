@@ -539,6 +539,61 @@ def test_detailed_preflight_outputs_corner_phase_boundaries_for_range_selection(
     assert "entry phase detected" not in semantic_search_text
 
 
+def test_detailed_preflight_phases_time_gap_runs_at_corner_entry_or_exit():
+    events = preflight_detailed._build_detailed_events(
+        pd.DataFrame(),
+        10,
+        30,
+        [
+            (
+                "compute_expert_phases",
+                {
+                    "phases": [
+                        {
+                            "entry": 10,
+                            "apex": 20,
+                            "exit": 30,
+                            "direction": "right",
+                        }
+                    ]
+                },
+            ),
+            (
+                "query_telemetry.find_trend_runs.expert_time_difference",
+                {
+                    "analysis": {
+                        "selected_gap_increase_run": {
+                            "start_iloc": 12,
+                            "end_iloc": 18,
+                            "change": 220.0,
+                            "threshold_state": "label_threshold_met",
+                        },
+                        "selected_gap_decrease_run": {
+                            "start_iloc": 22,
+                            "end_iloc": 29,
+                            "change": -180.0,
+                            "threshold_state": "label_threshold_met",
+                        },
+                    },
+                },
+            ),
+        ],
+    )
+
+    rising_run = next(
+        event for event in events if event["event"] == "time gap rising at entry"
+    )
+    falling_run = next(
+        event for event in events if event["event"] == "time gap falling at exit"
+    )
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+
+    assert rising_run["phase"] == "entry"
+    assert falling_run["phase"] == "exit"
+    assert "the evidence shows time gap rising at entry" in semantic_search_text
+    assert "the evidence shows time gap falling at exit" in semantic_search_text
+
+
 def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
     events = preflight_detailed._build_detailed_events(
         pd.DataFrame(),
@@ -642,8 +697,8 @@ def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
     assert "expert faster than player" in event_names
     assert "player speed maximum" in event_names
     assert "player speed minimum" in event_names
-    assert "speed local curve rising" in event_names
-    assert "speed local curve falling" in event_names
+    assert "player accelerating" in event_names
+    assert "player decelerating" in event_names
     assert "speed overall trend rising" in event_names
 
 
@@ -726,52 +781,6 @@ def test_detailed_preflight_events_capture_throttle_timing_and_lowest_pressure()
     sentence = preflight_detailed._event_sentence(throttle_event)
     assert "the player lowest was 0.1 versus expert lowest 0.1" in sentence
     assert "player peak" not in sentence
-
-
-def test_detailed_preflight_detects_fuzzy_brake_release_too_quickly():
-    df = pd.DataFrame(
-        {
-            "Physics_brake": [
-                0.76,
-                0.76,
-                0.76,
-                0.72,
-                0.62,
-                0.52,
-                0.42,
-                0.32,
-                0.31,
-                0.31,
-                0.31,
-                0.31,
-            ],
-            "expert_optimal_brake": [
-                0.76,
-                0.76,
-                0.76,
-                0.72,
-                0.67,
-                0.62,
-                0.57,
-                0.52,
-                0.47,
-                0.42,
-                0.37,
-                0.32,
-            ],
-        }
-    )
-
-    events = preflight_detailed._build_detailed_events(df, 0, 11, [])
-
-    release = next(
-        event
-        for event in events
-        if event["event"] == "brake release too quickly"
-    )
-    assert release["measurements"]["decision_basis"] == "fuzzy_change_speed_comparison"
-    assert release["measurements"]["duration_delta_iloc"] <= -2
-    assert release["measurements"]["slope_ratio"] >= 1.25
 
 
 def test_detailed_preflight_ignores_old_thresholds_when_release_shape_matches():
@@ -857,45 +866,7 @@ def test_detailed_preflight_separates_early_timing_from_speed():
     assert "brake applied too slowly" not in event_names
 
 
-def test_detailed_preflight_separates_speed_from_aligned_timing():
-    df = pd.DataFrame(
-        {
-            "Physics_brake": [
-                0.10,
-                0.10,
-                0.20,
-                0.35,
-                0.50,
-                0.50,
-                0.50,
-                0.50,
-                0.50,
-                0.50,
-            ],
-            "expert_optimal_brake": [
-                0.10,
-                0.10,
-                0.18,
-                0.26,
-                0.34,
-                0.42,
-                0.50,
-                0.50,
-                0.50,
-                0.50,
-            ],
-        }
-    )
-
-    events = preflight_detailed._build_detailed_events(df, 0, 9, [])
-    event_names = {event["event"] for event in events}
-
-    assert "brake applied too quickly" in event_names
-    assert "brake initiation onset earlier than expert" not in event_names
-    assert "brake initiation onset later than expert" not in event_names
-
-
-def test_detailed_preflight_separates_throttle_speed_from_aligned_timing():
+def test_detailed_preflight_reports_throttle_boundaries_instead_of_speed_verdict():
     df = pd.DataFrame(
         {
             "Physics_gas": [
@@ -928,7 +899,10 @@ def test_detailed_preflight_separates_throttle_speed_from_aligned_timing():
     events = preflight_detailed._build_detailed_events(df, 0, 9, [])
     event_names = {event["event"] for event in events}
 
-    assert "throttle applied too quickly" in event_names
+    assert "throttle applied too quickly" not in event_names
+    assert "throttle applied too slowly" not in event_names
+    assert "throttle application onset aligned with expert" in event_names
+    assert "throttle application end earlier than expert" in event_names
     assert "throttle application onset earlier than expert" not in event_names
     assert "throttle application onset later than expert" not in event_names
 
@@ -970,56 +944,6 @@ def test_detailed_preflight_ignores_noisy_small_wiggles_as_actions():
     assert "brake applied too slowly" not in event_names
     assert "brake release too quickly" not in event_names
     assert "brake release too slowly" not in event_names
-
-
-def test_action_speed_requires_two_ilocs_of_duration_difference():
-    player = max(
-        preflight_detailed._change_episodes(
-            [(0, 0.80), (1, 0.80), (2, 0.70), (3, 0.60), (4, 0.50), (5, 0.40)],
-            "decrease",
-        ),
-        key=lambda episode: episode["total_movement"],
-    )
-    one_iloc_longer_expert = max(
-        preflight_detailed._change_episodes(
-            [
-                (0, 0.80),
-                (1, 0.80),
-                (2, 0.72),
-                (3, 0.64),
-                (4, 0.56),
-                (5, 0.48),
-                (6, 0.40),
-            ],
-            "decrease",
-        ),
-        key=lambda episode: episode["total_movement"],
-    )
-    two_ilocs_longer_expert = max(
-        preflight_detailed._change_episodes(
-            [
-                (0, 0.80),
-                (1, 0.80),
-                (2, 0.7333),
-                (3, 0.6667),
-                (4, 0.60),
-                (5, 0.5333),
-                (6, 0.4667),
-                (7, 0.40),
-            ],
-            "decrease",
-        ),
-        key=lambda episode: episode["total_movement"],
-    )
-
-    assert preflight_detailed._compare_action_speed(
-        player,
-        one_iloc_longer_expert,
-    ) is None
-    assert preflight_detailed._compare_action_speed(
-        player,
-        two_ilocs_longer_expert,
-    )["verdict"] == "quickly"
 
 
 def test_detailed_preflight_events_capture_multiple_slip_balance_runs():
@@ -1135,7 +1059,10 @@ def test_detailed_preflight_outputs_sentence_evidence_without_label_tool():
     )
 
     assert "brake initiation onset later than expert" in semantic_search_text
-    assert "the player began at iloc 6 while the expert began at iloc 2" in semantic_search_text
+    assert (
+        "the player onset was at iloc 6 while the expert onset was at iloc 2"
+        in semantic_search_text
+    )
     assert "trajectory wider than expert" in semantic_search_text
     assert "the trajectory offset was 0.8 m" in semantic_search_text
     assert "start_delta_iloc" not in semantic_search_text
@@ -1402,6 +1329,8 @@ def test_detailed_preflight_shape_comparison_outputs_all_input_timing_events():
     assert "brake release onset later than expert" in event_names
     assert "throttle application onset later than expert" in event_names
     assert "throttle release onset later than expert" in event_names
+    assert "throttle application end aligned with expert" in event_names
+    assert "throttle release end later than expert" in event_names
 
 
 def test_detailed_preflight_detects_short_brake_initiation_after_smoothing():
@@ -1445,6 +1374,8 @@ def test_detailed_preflight_keeps_shape_categories_when_action_missing():
     assert "brake release onset comparison unavailable" in event_names
     assert "throttle application onset comparison unavailable" in event_names
     assert "throttle release onset comparison unavailable" in event_names
+    assert "throttle application end comparison unavailable" in event_names
+    assert "throttle release end comparison unavailable" in event_names
     assert "searched for a rising episode" in evidence_text
     assert "searched for a falling episode" in evidence_text
 
@@ -1557,7 +1488,8 @@ def test_preflight_trend_run_summary_uses_time_delta_selected_terms():
     assert "selected_gap_increase_run=" in prompt
     assert "selected_losing_time_run" not in prompt
     assert "losing_time_run" not in prompt
-    assert "time_gap_rising_run" in prompt
+    assert "verdict=time_gap_rising" in prompt
+    assert "time_gap_rising_run" not in prompt
     assert "strong" + "est" not in prompt.lower()
 
 

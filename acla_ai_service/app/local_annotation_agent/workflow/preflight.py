@@ -77,7 +77,11 @@ SPEED_INVESTIGATION_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
             "column": "Physics_speed_kmh",
             "smoothing_window": 5,
         },
-        "tags": ["speed local curve", "player acceleration", "player deceleration"],
+        "tags": [
+            "player speed trend run",
+            "player acceleration",
+            "player deceleration",
+        ],
     },
     {
         "tool_id": "query_telemetry.compute_slope.player_speed",
@@ -567,16 +571,16 @@ def _time_delta_query_semantic_tags(
         return _dedupe(tags)[:24]
     if query_id == "find_trend_runs":
         verdict = _time_delta_trend_verdict(extra)
-        if verdict == "time_gap_rising_and_falling_runs":
+        if verdict == "time_gap_rising_and_falling":
             tags.extend([
-                "time gap rising run",
-                "time gap falling run",
+                "time gap rising",
+                "time gap falling",
                 "mixed time-gap trend",
             ])
-        elif verdict == "time_gap_rising_run":
-            tags.extend(["time gap rising run", "gap increasing"])
-        elif verdict == "time_gap_falling_run":
-            tags.extend(["time gap falling run", "gap decreasing"])
+        elif verdict == "time_gap_rising":
+            tags.extend(["time gap rising", "gap increasing"])
+        elif verdict == "time_gap_falling":
+            tags.extend(["time gap falling", "gap decreasing"])
         elif verdict == "constant_carried_time_gap":
             tags.append("constant carried time gap")
         else:
@@ -1737,11 +1741,11 @@ def _time_delta_selected_runs(
 def _time_delta_trend_verdict(extra: Dict[str, Any]) -> str:
     selected_increase, selected_decrease = _time_delta_selected_runs(extra)
     if selected_increase and selected_decrease:
-        return "time_gap_rising_and_falling_runs"
+        return "time_gap_rising_and_falling"
     if selected_increase:
-        return "time_gap_rising_run"
+        return "time_gap_rising"
     if selected_decrease:
-        return "time_gap_falling_run"
+        return "time_gap_falling"
     if extra.get("constant_offset_only") is True:
         return "constant_carried_time_gap"
     return "time_gap_stable"

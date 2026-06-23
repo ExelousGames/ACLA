@@ -372,7 +372,7 @@ def _build_detailed_events(
     _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "throttle"))
     _extend(events, _input_timing_comparison_events(df, start, end, phases))
     _extend(events, _local_input_shape_events(df, start, end, phases))
-    _extend(events, _time_delta_events(start, end, by_tool))
+    _extend(events, _time_delta_events(start, end, by_tool, phases))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
     _extend(events, _speed_events(start, end, by_tool, phases))
     _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
@@ -631,22 +631,40 @@ def _input_timing_comparison_events(
         expert = _action_profile(df, start, end, expert_col, direction)
         source = f"local_{phrase.replace(' ', '_')}_shape_comparison"
         if not player or not expert:
-            events.append(_event(
-                f"{phrase} onset comparison unavailable",
-                "unknown",
-                None,
-                {
-                    "player_action_detected": bool(player),
-                    "expert_action_detected": bool(expert),
-                    "direction": direction,
-                    "decision_basis": "shape_change_comparison",
-                },
-                "weak",
-                [source],
-            ))
+            for boundary in ("onset", "end"):
+                events.append(_event(
+                    f"{phrase} {boundary} comparison unavailable",
+                    "unknown",
+                    None,
+                    {
+                        "player_action_detected": bool(player),
+                        "expert_action_detected": bool(expert),
+                        "direction": direction,
+                        "boundary": boundary,
+                        "decision_basis": "shape_change_comparison",
+                    },
+                    "weak",
+                    [source],
+                ))
             continue
-        player_iloc = player.get("start_index")
-        expert_iloc = expert.get("start_index")
+        events.extend(_action_boundary_events(phrase, player, expert, phases, source))
+    return events
+
+
+def _action_boundary_events(
+    phrase: str,
+    player: Dict[str, Any],
+    expert: Dict[str, Any],
+    phases: List[Dict[str, int]],
+    source: str,
+) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for boundary, key, delta_key, band_key in (
+        ("onset", "start_index", "start_delta_iloc", "start_band"),
+        ("end", "end_index", "end_delta_iloc", "end_band"),
+    ):
+        player_iloc = player.get(key)
+        expert_iloc = expert.get(key)
         if not isinstance(player_iloc, int) or not isinstance(expert_iloc, int):
             continue
         delta = player_iloc - expert_iloc
@@ -656,23 +674,38 @@ def _input_timing_comparison_events(
             else "aligned with"
         )
         event_name = (
-            f"{phrase} onset {relation} expert"
+            f"{phrase} {boundary} {relation} expert"
             if relation == "aligned with"
-            else f"{phrase} onset {relation} than expert"
+            else f"{phrase} {boundary} {relation} than expert"
         )
         events.append(_event(
             event_name,
             _phase_for_iloc(player_iloc, phases),
             _range_from_values(player_iloc, expert_iloc),
             {
-                "player_start_index": player_iloc,
-                "expert_start_index": expert_iloc,
-                "start_delta_iloc": delta,
-                "player_start_band": player.get("start_band"),
-                "expert_start_band": expert.get("start_band"),
+                "player_start_index": player.get("start_index"),
+                "expert_start_index": expert.get("start_index"),
+                "start_delta_iloc": (
+                    player.get("start_index") - expert.get("start_index")
+                    if isinstance(player.get("start_index"), int)
+                    and isinstance(expert.get("start_index"), int)
+                    else None
+                ),
+                "player_end_index": player.get("end_index"),
+                "expert_end_index": expert.get("end_index"),
+                "end_delta_iloc": (
+                    player.get("end_index") - expert.get("end_index")
+                    if isinstance(player.get("end_index"), int)
+                    and isinstance(expert.get("end_index"), int)
+                    else None
+                ),
+                delta_key: delta,
+                f"player_{band_key}": player.get(band_key),
+                f"expert_{band_key}": expert.get(band_key),
                 "player_total_movement": player.get("total_movement"),
                 "expert_total_movement": expert.get("total_movement"),
-                "direction": direction,
+                "direction": player.get("direction"),
+                "boundary": boundary,
                 "decision_basis": "shape_change_comparison",
             },
             "strong" if abs(delta) >= 2 else "moderate",
@@ -696,9 +729,9 @@ def _local_input_shape_events(
         application_timing = (
             "brake initiation" if kind == "brake" else "throttle application"
         )
-        for direction, timing_phrase, speed_phrase in (
-            ("increase", application_timing, f"{noun} applied"),
-            ("decrease", f"{noun} release", f"{noun} release"),
+        for direction, timing_phrase in (
+            ("increase", application_timing),
+            ("decrease", f"{noun} release"),
         ):
             player = _action_profile(df, start, end, player_col, direction)
             expert = _action_profile(df, start, end, expert_col, direction)
@@ -711,16 +744,6 @@ def _local_input_shape_events(
                     player,
                     expert,
                     timing,
-                    phases,
-                    source,
-                ))
-            speed = _compare_action_speed(player, expert)
-            if speed:
-                events.append(_action_speed_event(
-                    speed_phrase,
-                    player,
-                    expert,
-                    speed,
                     phases,
                     source,
                 ))
@@ -748,48 +771,6 @@ def _action_timing_event(
             "player_start_band": player.get("start_band"),
             "expert_start_band": expert.get("start_band"),
             "boundary_uncertainty_iloc": comparison.get("boundary_uncertainty_iloc"),
-            "decision_basis": "fuzzy_change_speed_comparison",
-        },
-        comparison["confidence"],
-        [source],
-    )
-
-
-def _action_speed_event(
-    phrase: str,
-    player: Dict[str, Any],
-    expert: Dict[str, Any],
-    comparison: Dict[str, Any],
-    phases: List[Dict[str, int]],
-    source: str,
-) -> Dict[str, Any]:
-    verdict = comparison["verdict"]
-    return _event(
-        f"{phrase} too {verdict}",
-        _phase_for_iloc(player.get("start_index"), phases),
-        _range_from_values(player.get("start_index"), player.get("end_index")),
-        {
-            "player_duration": player.get("duration"),
-            "expert_duration": expert.get("duration"),
-            "duration_delta_iloc": comparison.get("duration_delta_iloc"),
-            "player_median_raw_slope": player.get("median_raw_slope"),
-            "expert_median_raw_slope": expert.get("median_raw_slope"),
-            "player_median_normalized_slope": player.get("median_normalized_slope"),
-            "expert_median_normalized_slope": expert.get("median_normalized_slope"),
-            "slope_ratio": comparison.get("slope_ratio"),
-            "player_start_index": player.get("start_index"),
-            "player_end_index": player.get("end_index"),
-            "expert_start_index": expert.get("start_index"),
-            "expert_end_index": expert.get("end_index"),
-            "player_start_band": player.get("start_band"),
-            "player_end_band": player.get("end_band"),
-            "expert_start_band": expert.get("start_band"),
-            "expert_end_band": expert.get("end_band"),
-            "player_total_movement": player.get("total_movement"),
-            "expert_total_movement": expert.get("total_movement"),
-            "player_noise_floor": player.get("noise_floor"),
-            "expert_noise_floor": expert.get("noise_floor"),
-            "direction": player.get("direction"),
             "decision_basis": "fuzzy_change_speed_comparison",
         },
         comparison["confidence"],
@@ -894,6 +875,7 @@ def _time_delta_events(
     start: int,
     end: int,
     by_tool: Dict[str, Dict[str, Any]],
+    phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     slope = _query_analysis(
@@ -943,25 +925,29 @@ def _time_delta_events(
         increase = trend.get("selected_gap_increase_run")
         decrease = trend.get("selected_gap_decrease_run")
         if isinstance(increase, dict):
+            run_range = _range_from_values(
+                increase.get("start_iloc"),
+                increase.get("end_iloc"),
+            )
+            phase = _time_gap_phase(run_range, phases)
             events.append(_event(
-                "time gap rising run",
-                "whole_range",
-                _range_from_values(
-                    increase.get("start_iloc"),
-                    increase.get("end_iloc"),
-                ),
+                _time_gap_event_name("rising", phase),
+                phase,
+                run_range,
                 increase,
                 "strong" if increase.get("threshold_state") == "label_threshold_met" else "moderate",
                 ["query_telemetry.find_trend_runs.expert_time_difference"],
             ))
         if isinstance(decrease, dict):
+            run_range = _range_from_values(
+                decrease.get("start_iloc"),
+                decrease.get("end_iloc"),
+            )
+            phase = _time_gap_phase(run_range, phases)
             events.append(_event(
-                "time gap falling run",
-                "whole_range",
-                _range_from_values(
-                    decrease.get("start_iloc"),
-                    decrease.get("end_iloc"),
-                ),
+                _time_gap_event_name("falling", phase),
+                phase,
+                run_range,
                 decrease,
                 "strong" if decrease.get("threshold_state") == "label_threshold_met" else "moderate",
                 ["query_telemetry.find_trend_runs.expert_time_difference"],
@@ -1194,11 +1180,11 @@ def _player_speed_local_curve_events(
         direction = run.get("direction")
         if direction not in {"rising", "falling", "flat"}:
             continue
-        event_name = (
-            "speed local curve stable"
-            if direction == "flat"
-            else f"speed local curve {direction}"
-        )
+        event_name = {
+            "rising": "player accelerating",
+            "falling": "player decelerating",
+            "flat": "player maintaining steady speed",
+        }[direction]
         start_iloc = run.get("start_iloc")
         end_iloc = run.get("end_iloc")
         phase_iloc = (
@@ -1522,40 +1508,6 @@ def _compare_action_timing(
     }
 
 
-def _compare_action_speed(
-    player: Dict[str, Any],
-    expert: Dict[str, Any],
-) -> Optional[Dict[str, Any]]:
-    player_duration = player.get("duration")
-    expert_duration = expert.get("duration")
-    player_slope = player.get("median_normalized_slope")
-    expert_slope = expert.get("median_normalized_slope")
-    if not isinstance(player_duration, int) or not isinstance(expert_duration, int):
-        return None
-    if not isinstance(player_slope, (int, float)) or not isinstance(expert_slope, (int, float)):
-        return None
-    if float(expert_slope) <= 0.0:
-        return None
-    duration_delta = player_duration - expert_duration
-    if abs(duration_delta) < 2:
-        return None
-    slope_ratio = float(player_slope) / float(expert_slope)
-    verdict: Optional[str] = None
-    if slope_ratio >= 1.25 and duration_delta <= -2:
-        verdict = "quickly"
-    elif slope_ratio <= 0.8 and duration_delta >= 2:
-        verdict = "slowly"
-    if verdict is None:
-        return None
-    strong_ratio = slope_ratio >= 1.5 if verdict == "quickly" else slope_ratio <= (2.0 / 3.0)
-    return {
-        "verdict": verdict,
-        "duration_delta_iloc": duration_delta,
-        "slope_ratio": slope_ratio,
-        "confidence": "strong" if abs(duration_delta) >= 5 and strong_ratio else "moderate",
-    }
-
-
 def _bands_overlap(a: Any, b: Any) -> bool:
     if not (
         isinstance(a, list)
@@ -1688,6 +1640,54 @@ def _phase_for_iloc(iloc: Any, phases: List[Dict[str, int]]) -> str:
     return "unknown"
 
 
+def _time_gap_phase(
+    range_: Optional[List[int]],
+    phases: List[Dict[str, int]],
+) -> str:
+    if (
+        not isinstance(range_, list)
+        or len(range_) != 2
+        or not isinstance(range_[0], int)
+        or not isinstance(range_[1], int)
+    ):
+        return "whole_range"
+    lo, hi = range_
+    if hi < lo:
+        lo, hi = hi, lo
+    best_phase = "whole_range"
+    best_overlap = 0
+    for phase in phases:
+        entry = phase.get("entry")
+        apex = phase.get("apex")
+        exit_ = phase.get("exit")
+        if not all(isinstance(value, int) for value in (entry, apex, exit_)):
+            continue
+        entry_overlap = _overlap_count(lo, hi, entry, apex)
+        exit_overlap = _overlap_count(lo, hi, apex + 1, exit_)
+        if entry_overlap > best_overlap:
+            best_phase = "entry"
+            best_overlap = entry_overlap
+        if exit_overlap > best_overlap:
+            best_phase = "exit"
+            best_overlap = exit_overlap
+    return best_phase
+
+
+def _time_gap_event_name(direction: str, phase: str) -> str:
+    base = f"time gap {direction}"
+    if phase in {"entry", "exit"}:
+        return f"{base} at {phase}"
+    return base
+
+
+def _overlap_count(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
+    lo = max(a_start, b_start)
+    hi = min(a_end, b_end)
+    if hi < lo:
+        return 0
+    return hi - lo + 1
+
+
 def _query_result(content: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(content, dict):
         return {}
@@ -1781,6 +1781,8 @@ def _event_sentence(event: Dict[str, Any]) -> str:
         return ""
 
     phase = _phase_sentence_prefix(str(event.get("phase") or ""))
+    if _time_gap_event_has_phase(event_name):
+        phase = ""
     range_text = _range_sentence_fragment(event.get("range"))
     measurements = event.get("measurements")
     if not isinstance(measurements, dict):
@@ -1838,6 +1840,12 @@ def _phase_sentence_prefix(phase: str) -> str:
     return ""
 
 
+def _time_gap_event_has_phase(event_name: str) -> bool:
+    return event_name.startswith("time gap ") and (
+        event_name.endswith(" at entry") or event_name.endswith(" at exit")
+    )
+
+
 def _range_sentence_fragment(range_: Any) -> str:
     if (
         isinstance(range_, list)
@@ -1857,32 +1865,65 @@ def _measurement_sentence_fragments(
 ) -> List[str]:
     fragments: List[str] = []
 
+    boundary = None
     if (
         "onset earlier than expert" in event_name
         or "onset later than expert" in event_name
         or "onset aligned with expert" in event_name
     ):
+        boundary = "onset"
         player = measurements.get("player_start_index")
         expert = measurements.get("expert_start_index")
         delta = measurements.get("start_delta_iloc")
+    elif (
+        "end earlier than expert" in event_name
+        or "end later than expert" in event_name
+        or "end aligned with expert" in event_name
+    ):
+        boundary = "end"
+        player = measurements.get("player_end_index")
+        expert = measurements.get("expert_end_index")
+        delta = measurements.get("end_delta_iloc")
+    if boundary:
+        player_start = measurements.get("player_start_index")
+        player_end = measurements.get("player_end_index")
+        expert_start = measurements.get("expert_start_index")
+        expert_end = measurements.get("expert_end_index")
+        if (
+            player_start is not None
+            and player_end is not None
+            and expert_start is not None
+            and expert_end is not None
+        ):
+            fragments.append(
+                "the player episode spans iloc "
+                f"{player_start} to {player_end} while the expert episode "
+                f"spans iloc {expert_start} to {expert_end}"
+            )
         if player is not None and expert is not None:
             fragments.append(
-                f"the player began at iloc {player} while the expert began at iloc {expert}"
+                f"the player {boundary} was at iloc {player} while the "
+                f"expert {boundary} was at iloc {expert}"
             )
         if delta is not None:
             delta_number = _as_float(delta)
             if delta_number is not None:
                 if delta_number == 0:
-                    fragments.append("the player timing was aligned with expert")
+                    fragments.append(
+                        f"the player {boundary} timing was aligned with expert"
+                    )
                 else:
                     direction = "later" if delta_number > 0 else "earlier"
                     fragments.append(
-                        "the player timing was "
+                        f"the player {boundary} timing was "
                         f"{_format_value(abs(delta_number))} ilocs {direction}"
-                )
+                    )
         return fragments
 
-    if "onset comparison unavailable" in event_name:
+    if (
+        "onset comparison unavailable" in event_name
+        or "end comparison unavailable" in event_name
+    ):
         player_detected = measurements.get("player_action_detected")
         expert_detected = measurements.get("expert_action_detected")
         if player_detected is False and expert_detected is False:
@@ -1978,9 +2019,7 @@ def _measurement_sentence_fragments(
         "gap grows",
         "gap shrinks",
         "time loss",
-        "time gap rising run",
-        "time gap falling run",
-    }:
+    } or event_name.startswith(("time gap rising", "time gap falling")):
         change = measurements.get("change")
         if change is not None:
             fragments.append(f"the time gap changed by {_format_value(change)} ms")

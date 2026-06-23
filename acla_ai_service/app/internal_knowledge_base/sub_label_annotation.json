@@ -269,7 +269,7 @@
     "MSP1": {
       "name": "Initiate brake too late",
       "type": "sub",
-      "description": "The player's brake **initiation onset is later than** the expert's at corner entry, alongside the time **gap grows**. Player often **moving toward positive (widening)** in the trajectory offset across the **entry-to-apex** span as they brake later, with the **entry trajectory bulges outside** the expert's line.\n",
+      "description": "The player's **brake initiation onset is later than** the expert's at corner entry, alongside the time **gap grows**. Player often **entry trajectory wider than expert** as they brake later.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -279,7 +279,7 @@
     "MSP5": {
       "name": "Initiate brake too early",
       "type": "sub",
-      "description": "The player's brake **initiation onset is earlier than** the expert's at corner entry, alongside the time **gap grows**\n",
+      "description": "The player's **brake initiation onset is earlier than** the expert's at corner entry, alongside the time **gap grows**\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -289,7 +289,7 @@
     "MSP13": {
       "name": "Highest brake pressure too low",
       "type": "sub",
-      "description": "The player's **peak brake pressure is lower than** the expert's across the braking phase. Player often **moving toward positive  (widening)** in the trajectory offset.\n",
+      "description": "The player's **peak brake pressure is lower than** the expert. Player's entry trajectory wider than expert.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -299,7 +299,7 @@
     "MSP22": {
       "name": "Highest brake pressure too high",
       "type": "sub",
-      "description": "The player's **peak brake pressure is higher than** the expert's across the braking phase, or is **about the same as the expert despite the player being materially slower** at that point. In the slower-driver case, the same peak is still too much brake for the actual speed; an earlier release can be a consequence of realizing the car is already too slow, not the primary mistake. Player often **moving toward positive  (widening)** in the trajectory offset.\n",
+      "description": "The player's **peak brake pressure is higher than** the expert's across the braking phase, often leading to **speed gap growing** later,  **trajectory wider than expert ** later\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -309,7 +309,7 @@
     "MSP14": {
       "name": "Brake applied too quickly",
       "type": "sub",
-      "description": "The player's **brake initiation is more abrupt than** the expert's — the rise from zero to peak spans fewer indices. Player often **moving toward positive (widening)** in the trajectory offset.  An **oversteer** section (as a **primary slide** or **standalone event**) may co-occur on the slip balance.\n",
+      "description": "The player's **brake initiation onset aligned with expert**, but **brake initiation end earlier than expert**. Player often **entry trajectory wider than expert**.  \n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -319,7 +319,7 @@
     "MSP24": {
       "name": "Brake applied too slowly",
       "type": "sub",
-      "description": "The player's **brake initiation is more gradual than** the expert's — the rise from zero to peak spans more indices. Player often **moving toward positive (widening)** in the  trajectory offset.\n",
+      "description": "The player's **brake initiation onset aligned with expert**, but **brake initiation end later than expert**. Player often **entry trajectory wider than expert**.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -329,7 +329,7 @@
     "MSP17": {
       "name": "Release brake too quickly",
       "type": "sub",
-      "description": "The player's **brake release** is an **abrupt drop** to zero — the drop from peak to zero spans fewer indices than the expert's (a non-trail-braking release).  Player often **moving toward positive (widening)** in the trajectory offset across the exit phase as they release earlier, with the **exit trajectory bulges outside** the expert's line.\n",
+      "description": "The player's **brake release onset aligned with expert**, but **brake release end earlier than expert**.  Player often **exit trajectory wider than expert** and **time gap grows** at exit.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -339,7 +339,7 @@
     "MSP18": {
       "name": "Release brake too slowly",
       "type": "sub",
-      "description": "The player's **brake release** is more gradual than the expert's — the drop from peak to zero spans more indices, consistent with **trail braking**.\n",
+      "description": "The player's **brake release onset aligned with expert**, but **brake release end later than expert**.  Player often **exit trajectory wider than expert** and **time gap grows** at exit.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -349,7 +349,7 @@
     "MSP27": {
       "name": "Initiate brake release too late",
       "type": "sub",
-      "description": "The player's brake has later **release onset** than the expert's around **Reach apex**.\n",
+      "description": "The player's brake **release onset** later than the expert. causing **apex trajectory wider than expert**\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -359,7 +359,7 @@
     "MSP28": {
       "name": "Initiate brake release too early",
       "type": "sub",
-      "description": "The player's brake has earlier **release onset** than the expert's during **Reach apex**.\n",
+      "description": "The player's brake **release onset** earlier than the expert. causing **apex trajectory wider than expert** \n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -437,7 +437,7 @@
     "MSP20": {
       "name": "Initiate throttle too early",
       "type": "sub",
-      "description": "The player's throttle **application onset** is earlier than the expert's at corner exit.\n",
+      "description": "The player's throttle **application onset** earlier than the expert. understeer or oversteer occur which results in time loss and trajectory wider than expert\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -447,7 +447,7 @@
     "MSP21": {
       "name": "Initiate throttle too late",
       "type": "sub",
-      "description": "The player's throttle **application onset** is later than the expert's at corner exit.\n",
+      "description": "The player's throttle **application onset** later than the expert. no understeer or oversteer, which indicate poor utilization of grip which result in time loss\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -457,7 +457,7 @@
     "MSP23": {
       "name": "Release throttle too quickly",
       "type": "sub",
-      "description": "The player's **throttle release** is more abrupt than the expert's — the drop from peak to zero spans fewer indices.\n",
+      "description": "The player's throttle **release onset** aligned with expert, but player's throttle **release end** is earlier than the expert's.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": []
