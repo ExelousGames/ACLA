@@ -525,7 +525,7 @@
     "MSP4": {
       "name": "Time to exit too early",
       "type": "sub",
-      "description": "The player **times the exit earlier than** the expert's exit index — begins unwinding the line upstream of the expert.\n",
+      "description": "The player **apex trajectory aligned with expert**, but **exit trajectory wider than expert**\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -535,7 +535,7 @@
     "MSP8": {
       "name": "Time to exit too late",
       "type": "sub",
-      "description": "The player **times the exit later than** the expert's exit index — begins unwinding the line downstream of the expert.\n",
+      "description": "The player **apex trajectory aligned with expert**, but **exit trajectory wider than expert**\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -545,7 +545,7 @@
     "MSP9": {
       "name": "Entry trajectory too tight",
       "type": "sub",
-      "description": "The player's **entry trajectory cuts inside** the expert's line (offset is **tighter than expert**) between entry and apex.\n",
+      "description": "The player's **entry trajectory tighter than expert** the expert.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -555,7 +555,7 @@
     "MSP33": {
       "name": "Entry trajectory too wide",
       "type": "sub",
-      "description": "The player's **entry trajectory bulges outside** the expert's line (offset is **wider than expert**) between entry and apex.\n",
+      "description": "The player's **entry trajectory wider than expert**.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -573,7 +573,7 @@
     "MSP11": {
       "name": "Exit trajectory too narrow",
       "type": "sub",
-      "description": "The player's **exit trajectory cuts inside** the expert's line (offset is **tighter than expert**) between apex and exit.\n",
+      "description": "The player's **exit trajectory tighter than expert** the expert.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -583,7 +583,7 @@
     "MSP16": {
       "name": "Exit trajectory too wide",
       "type": "sub",
-      "description": "The player's **exit trajectory bulges outside** the expert's line (offset is **wider than expert**) between apex and exit.\n",
+      "description": "The player's **exit trajectory wider than expert** the expert.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [

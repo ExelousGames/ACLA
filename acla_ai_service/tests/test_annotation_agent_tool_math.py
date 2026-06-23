@@ -539,6 +539,98 @@ def test_detailed_preflight_outputs_corner_phase_boundaries_for_range_selection(
     assert "entry phase detected" not in semantic_search_text
 
 
+def test_detailed_preflight_compares_player_apex_to_expert_apex():
+    local = np.arange(21, dtype=float)
+    df = pd.DataFrame(
+        {
+            "expert_optimal_player_pos_x": local,
+            "expert_optimal_player_pos_y": 0.05 * (local - 10.0) ** 2,
+            "Graphics_player_pos_x": local,
+            "Graphics_player_pos_y": 0.05 * (local - 16.0) ** 2,
+        },
+        index=range(10, 31),
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        10,
+        30,
+        [
+            (
+                "compute_expert_phases",
+                {"phases": [{"entry": 10, "apex": 20, "exit": 30}]},
+            ),
+        ],
+    )
+
+    apex_event = next(
+        event
+        for event in events
+        if event["event"] == "player reaches apex later than expert"
+    )
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+
+    assert apex_event["phase"] == "apex"
+    assert apex_event["measurements"]["expert_apex_iloc"] == 20
+    assert apex_event["measurements"]["player_apex_iloc"] == 26
+    assert apex_event["measurements"]["apex_delta_iloc"] == 6
+    assert apex_event["measurements"]["expert_apex_range"] == [18, 22]
+    assert apex_event["measurements"]["player_apex_range"] == [24, 28]
+    assert apex_event["measurements"]["apex_boundary_gap_iloc"] == 2
+    assert (
+        "the player apex range was iloc 24 to 28 while the expert apex "
+        "range was iloc 18 to 22"
+        in semantic_search_text
+    )
+    assert "too late compared to expert apex" in semantic_search_text
+
+
+def test_detailed_preflight_marks_similar_trajectory_phases_aligned():
+    df = pd.DataFrame(
+        {"trajectory_offset": np.full(21, 0.2)},
+        index=range(10, 31),
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        10,
+        30,
+        [
+            (
+                "compute_expert_phases",
+                {"phases": [{"entry": 10, "apex": 20, "exit": 30}]},
+            ),
+            (
+                "query_telemetry.measure_trajectory_similarity.driver_expert_path",
+                {"result": {"extra": {"similarity_score": 0.8}}},
+            ),
+        ],
+    )
+
+    aligned_events = {
+        event["event"]: event
+        for event in events
+        if "trajectory aligned with expert" in event["event"]
+    }
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+
+    assert set(aligned_events) == {
+        "entry trajectory aligned with expert",
+        "apex trajectory aligned with expert",
+        "exit trajectory aligned with expert",
+    }
+    assert aligned_events["entry trajectory aligned with expert"]["phase"] == "entry"
+    assert aligned_events["apex trajectory aligned with expert"]["phase"] == "apex"
+    assert aligned_events["exit trajectory aligned with expert"]["phase"] == "exit"
+    assert (
+        aligned_events["entry trajectory aligned with expert"]["measurements"][
+            "similarity_score"
+        ]
+        == 0.8
+    )
+    assert "entry trajectory aligned with expert" in semantic_search_text
+
+
 def test_detailed_preflight_phases_time_gap_slope_changes_at_corner_entry_or_exit():
     df = pd.DataFrame(
         {

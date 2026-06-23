@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.local_annotation_agent.workflow.preflight import (
@@ -17,6 +18,9 @@ from app.local_annotation_agent.workflow.preflight import (
     _semantic_tool_output,
 )
 from app.shared.contracts import Attachment
+
+
+TRAJECTORY_ALIGNED_SIMILARITY_THRESHOLD = 0.8
 
 
 DETAILED_PREFLIGHT_TOOL_IDS = (
@@ -867,7 +871,23 @@ def _trajectory_events(
             ["query_telemetry.compute_slope.trajectory_offset"],
         ))
 
-    events.extend(_trajectory_phase_side_events(df, start, end, phases))
+    events.extend(_trajectory_apex_timing_events(df, phases))
+    similarity = _query_result(
+        by_tool.get("query_telemetry.measure_trajectory_similarity.driver_expert_path")
+    )
+    similarity_extra = similarity.get("extra") if isinstance(similarity, dict) else {}
+    similarity_score = (
+        similarity_extra.get("similarity_score")
+        if isinstance(similarity_extra, dict)
+        else None
+    )
+    events.extend(_trajectory_phase_side_events(
+        df,
+        start,
+        end,
+        phases,
+        similarity_score=similarity_score,
+    ))
     return events
 
 
@@ -1064,16 +1084,178 @@ def _time_gap_slope_change(
     }
 
 
+def _trajectory_apex_timing_events(
+    df,
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    if df is None or not phases:
+        return []
+    required = (
+        "Graphics_player_pos_x",
+        "Graphics_player_pos_y",
+        "expert_optimal_player_pos_x",
+        "expert_optimal_player_pos_y",
+    )
+    if any(column not in getattr(df, "columns", []) for column in required):
+        return []
+
+    events: List[Dict[str, Any]] = []
+    for phase in phases:
+        entry = phase.get("entry")
+        expert_apex = phase.get("apex")
+        exit_ = phase.get("exit")
+        if not all(isinstance(value, int) for value in (entry, expert_apex, exit_)):
+            continue
+        player_apex = _curve_apex_iloc(
+            df,
+            entry,
+            exit_,
+            "Graphics_player_pos_x",
+            "Graphics_player_pos_y",
+        )
+        if player_apex is None:
+            continue
+        expert_range = _apex_range(expert_apex, entry, exit_)
+        player_range = _apex_range(player_apex, entry, exit_)
+        delta = player_apex - expert_apex
+        if player_range[1] < expert_range[0]:
+            relation = "earlier"
+            boundary_gap = expert_range[0] - player_range[1]
+        elif player_range[0] > expert_range[1]:
+            relation = "later"
+            boundary_gap = player_range[0] - expert_range[1]
+        else:
+            continue
+
+        event = _event(
+            f"player reaches apex {relation} than expert",
+            "apex",
+            [
+                min(player_range[0], expert_range[0]),
+                max(player_range[1], expert_range[1]),
+            ],
+            {
+                "player_apex_iloc": player_apex,
+                "expert_apex_iloc": expert_apex,
+                "apex_delta_iloc": delta,
+                "player_apex_range": player_range,
+                "expert_apex_range": expert_range,
+                "apex_boundary_gap_iloc": boundary_gap,
+                "player_apex_x": _value_at_iloc(
+                    df,
+                    entry,
+                    exit_,
+                    "Graphics_player_pos_x",
+                    player_apex,
+                ),
+                "player_apex_y": _value_at_iloc(
+                    df,
+                    entry,
+                    exit_,
+                    "Graphics_player_pos_y",
+                    player_apex,
+                ),
+                "expert_apex_x": _value_at_iloc(
+                    df,
+                    entry,
+                    exit_,
+                    "expert_optimal_player_pos_x",
+                    expert_apex,
+                ),
+                "expert_apex_y": _value_at_iloc(
+                    df,
+                    entry,
+                    exit_,
+                    "expert_optimal_player_pos_y",
+                    expert_apex,
+                ),
+                "decision_basis": "player_curvature_peak_vs_expert_phase_apex",
+            },
+            "strong" if boundary_gap >= 2 else "moderate",
+            ["local_player_expert_apex_curvature_comparison"],
+        )
+        event["semantic_search_terms"] = [
+            (
+                "too early compared to expert apex"
+                if relation == "earlier"
+                else "too late compared to expert apex"
+            )
+        ]
+        events.append(event)
+    return events
+
+
+def _apex_range(apex_iloc: int, entry: int, exit_: int) -> List[int]:
+    half_window = max(2, int(0.05 * max(exit_ - entry + 1, 1)))
+    return [
+        max(entry, int(apex_iloc) - half_window),
+        min(exit_, int(apex_iloc) + half_window),
+    ]
+
+
+def _curve_apex_iloc(
+    df,
+    start: int,
+    end: int,
+    x_column: str,
+    y_column: str,
+) -> Optional[int]:
+    try:
+        segment = df.loc[int(start): int(end), [x_column, y_column]]
+    except Exception:  # noqa: BLE001
+        return None
+    if len(segment) < 5:
+        return None
+
+    points: List[Tuple[int, float, float]] = []
+    for iloc, row in segment.iterrows():
+        try:
+            x = float(row[x_column])
+            y = float(row[y_column])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            points.append((int(iloc), x, y))
+    if len(points) < 5:
+        return None
+
+    best: Optional[Tuple[float, int]] = None
+    for pos in range(1, len(points) - 1):
+        _, prev_x, prev_y = points[pos - 1]
+        iloc, x, y = points[pos]
+        _, next_x, next_y = points[pos + 1]
+        dx = (next_x - prev_x) / 2.0
+        dy = (next_y - prev_y) / 2.0
+        ddx = next_x - (2.0 * x) + prev_x
+        ddy = next_y - (2.0 * y) + prev_y
+        denom = (dx * dx + dy * dy) ** 1.5
+        if denom <= 1e-9:
+            continue
+        curvature = abs((dx * ddy - dy * ddx) / denom)
+        if best is None or curvature > best[0]:
+            best = (curvature, iloc)
+    if best is None or best[0] <= 0.0:
+        return None
+    return best[1]
+
+
 def _trajectory_phase_side_events(
     df,
     start: int,
     end: int,
     phases: List[Dict[str, int]],
+    *,
+    similarity_score: Any = None,
 ) -> List[Dict[str, Any]]:
     values = _series_values(df, start, end, "trajectory_offset", graph_id="trajectory_offset")
     if not values:
         return []
     events: List[Dict[str, Any]] = []
+    similarity = _as_float(similarity_score)
+    is_aligned_trajectory = (
+        similarity is not None
+        and similarity >= TRAJECTORY_ALIGNED_SIMILARITY_THRESHOLD
+    )
     for phase in phases:
         spans = (
             ("entry", phase.get("entry"), phase.get("apex")),
@@ -1088,13 +1270,34 @@ def _trajectory_phase_side_events(
                 for iloc, value in values
                 if lo <= iloc <= hi and isinstance(value, (int, float))
             ])
-            if median is None or abs(median) < 0.5:
+            if median is None:
+                continue
+            if is_aligned_trajectory:
+                events.append(_event(
+                    f"{phase_name} trajectory aligned with expert",
+                    phase_name,
+                    [lo, hi],
+                    {
+                        "median_offset": median,
+                        "similarity_score": similarity,
+                    },
+                    "strong",
+                    [
+                        "trajectory_offset_phase_statistics",
+                        "query_telemetry.measure_trajectory_similarity.driver_expert_path",
+                    ],
+                ))
+                continue
+            if abs(median) < 0.5:
                 continue
             events.append(_event(
                 f"{phase_name} trajectory {'wider' if median > 0 else 'tighter'} than expert",
                 phase_name,
                 [lo, hi],
-                {"median_offset": median},
+                {
+                    "median_offset": median,
+                    "similarity_score": similarity,
+                },
                 "strong" if abs(median) >= 1.0 else "moderate",
                 ["trajectory_offset_phase_statistics"],
             ))
@@ -2001,6 +2204,61 @@ def _measurement_sentence_fragments(
                         f"the player {boundary} timing was "
                         f"{_format_value(abs(delta_number))} ilocs {direction}"
                     )
+        return fragments
+
+    if "player reaches apex" in event_name:
+        player = measurements.get("player_apex_iloc")
+        expert = measurements.get("expert_apex_iloc")
+        delta = measurements.get("apex_delta_iloc")
+        player_range = measurements.get("player_apex_range")
+        expert_range = measurements.get("expert_apex_range")
+        boundary_gap = measurements.get("apex_boundary_gap_iloc")
+        if player is not None and expert is not None:
+            fragments.append(
+                f"the player apex was at iloc {player} while the expert apex "
+                f"was at iloc {expert}"
+            )
+        if (
+            isinstance(player_range, list)
+            and isinstance(expert_range, list)
+            and len(player_range) == 2
+            and len(expert_range) == 2
+        ):
+            fragments.append(
+                "the player apex range was iloc "
+                f"{player_range[0]} to {player_range[1]} while the expert "
+                f"apex range was iloc {expert_range[0]} to {expert_range[1]}"
+            )
+        delta_number = _as_float(delta)
+        if delta_number is not None:
+            if delta_number == 0:
+                fragments.append("the player apex timing was aligned with expert")
+            else:
+                direction = "later" if delta_number > 0 else "earlier"
+                fragments.append(
+                    "the player apex timing was "
+                    f"{_format_value(abs(delta_number))} ilocs {direction}"
+                )
+        boundary_gap_number = _as_float(boundary_gap)
+        if boundary_gap_number is not None:
+            fragments.append(
+                "the apex ranges were separated by "
+                f"{_format_value(boundary_gap_number)} ilocs"
+            )
+        player_x = measurements.get("player_apex_x")
+        player_y = measurements.get("player_apex_y")
+        expert_x = measurements.get("expert_apex_x")
+        expert_y = measurements.get("expert_apex_y")
+        if all(
+            value is not None
+            for value in (player_x, player_y, expert_x, expert_y)
+        ):
+            fragments.append(
+                "player apex position was "
+                f"({_format_value(player_x)}, {_format_value(player_y)}) and "
+                "expert apex position was "
+                f"({_format_value(expert_x)}, {_format_value(expert_y)})"
+            )
         return fragments
 
     if (
