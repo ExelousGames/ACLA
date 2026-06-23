@@ -309,7 +309,7 @@
     "MSP14": {
       "name": "Brake applied too quickly",
       "type": "sub",
-      "description": "The player's **brake initiation onset aligned with expert**, but **brake initiation end earlier than expert**. Player often **entry trajectory wider than expert**.  \n",
+      "description": "The player's **brake initiation onset aligned with expert**, but **brake initiation end earlier than expert**. Player **apex trajectory wider than expert** often.  \n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -319,7 +319,7 @@
     "MSP24": {
       "name": "Brake applied too slowly",
       "type": "sub",
-      "description": "The player's **brake initiation onset aligned with expert**, but **brake initiation end later than expert**. Player often **entry trajectory wider than expert**.\n",
+      "description": "The player's **brake initiation onset aligned with expert**, but **brake initiation end later than expert**. Player **apex trajectory wider than expert** often.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -339,7 +339,7 @@
     "MSP18": {
       "name": "Release brake too slowly",
       "type": "sub",
-      "description": "The player's **brake release onset aligned with expert**, but **brake release end later than expert**.  Player often **exit trajectory wider than expert** and **time gap grows** at exit.\n",
+      "description": "The player's **brake release onset aligned with expert**, but **brake release end later than expert**.  Player often **time gap grows** at exit.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -349,7 +349,7 @@
     "MSP27": {
       "name": "Initiate brake release too late",
       "type": "sub",
-      "description": "The player's brake **release onset** later than the expert. causing **apex trajectory wider than expert**\n",
+      "description": "The player's brake **release onset** later than the expert. causing **time gap grows** at exit.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -359,7 +359,7 @@
     "MSP28": {
       "name": "Initiate brake release too early",
       "type": "sub",
-      "description": "The player's brake **release onset** earlier than the expert. causing **apex trajectory wider than expert** \n",
+      "description": "The player's brake **release onset** earlier than the expert. causing **apex trajectory wider than expert** and **time gap grows** at exit.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
