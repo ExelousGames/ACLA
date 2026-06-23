@@ -63,9 +63,16 @@ _USAGE_EXHAUSTED_PATTERNS = (
 )
 
 
+_SUCCESS_RESULT_ERROR = "claude code returned an error result: success"
+
+
 def _is_usage_exhausted_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return any(p in msg for p in _USAGE_EXHAUSTED_PATTERNS)
+
+
+def _is_success_result_error(exc: BaseException) -> bool:
+    return _SUCCESS_RESULT_ERROR in str(exc).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +226,15 @@ def run_claude(request: AgentRequest) -> AgentResponse:
     except Exception as exc:
         if _is_usage_exhausted_error(exc):
             raise ClaudeUsageExhausted(str(exc)) from exc
-        raise
+        if _is_success_result_error(exc):
+            cb = request.callbacks
+            if cb.progress:
+                cb.progress(
+                    _CLAUDE_NODE,
+                    "session ended after Claude Code returned success",
+                )
+        else:
+            raise
 
     response = tool_agent_response(capture, request)
     if capture.submit_summary:
