@@ -372,7 +372,7 @@ def _build_detailed_events(
     _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "throttle"))
     _extend(events, _input_timing_comparison_events(df, start, end, phases))
     _extend(events, _local_input_shape_events(df, start, end, phases))
-    _extend(events, _time_delta_events(start, end, by_tool, phases))
+    _extend(events, _time_delta_events(df, start, end, by_tool, phases))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
     _extend(events, _speed_events(start, end, by_tool, phases))
     _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
@@ -872,6 +872,7 @@ def _trajectory_events(
 
 
 def _time_delta_events(
+    df,
     start: int,
     end: int,
     by_tool: Dict[str, Dict[str, Any]],
@@ -918,41 +919,149 @@ def _time_delta_events(
                 "strong" if total.get("threshold_state") == "label_threshold_met" else "moderate",
                 ["query_telemetry.compute_slope.expert_time_difference"],
             ))
-    trend = _query_analysis(
-        by_tool.get("query_telemetry.find_trend_runs.expert_time_difference")
-    )
-    if isinstance(trend, dict):
-        increase = trend.get("selected_gap_increase_run")
-        decrease = trend.get("selected_gap_decrease_run")
-        if isinstance(increase, dict):
-            run_range = _range_from_values(
-                increase.get("start_iloc"),
-                increase.get("end_iloc"),
-            )
-            phase = _time_gap_phase(run_range, phases)
-            events.append(_event(
-                _time_gap_event_name("rising", phase),
-                phase,
-                run_range,
-                increase,
-                "strong" if increase.get("threshold_state") == "label_threshold_met" else "moderate",
-                ["query_telemetry.find_trend_runs.expert_time_difference"],
-            ))
-        if isinstance(decrease, dict):
-            run_range = _range_from_values(
-                decrease.get("start_iloc"),
-                decrease.get("end_iloc"),
-            )
-            phase = _time_gap_phase(run_range, phases)
-            events.append(_event(
-                _time_gap_event_name("falling", phase),
-                phase,
-                run_range,
-                decrease,
-                "strong" if decrease.get("threshold_state") == "label_threshold_met" else "moderate",
-                ["query_telemetry.find_trend_runs.expert_time_difference"],
-            ))
+    events.extend(_time_gap_slope_change_events(df, start, end, phases))
     return events
+
+
+def _time_gap_slope_change_events(
+    df,
+    start: int,
+    end: int,
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for phase, range_ in _time_gap_slope_ranges(start, end, phases):
+        values = _series_values(
+            df,
+            range_[0],
+            range_[1],
+            "expert_time_difference",
+            graph_id="time_delta",
+        )
+        analysis = _time_gap_slope_change(values)
+        if not analysis:
+            continue
+        direction = analysis["direction"]
+        slope_change = abs(float(analysis.get("slope_change") or 0.0))
+        slope_guard = abs(float(analysis.get("slope_guard") or 0.0))
+        events.append(_event(
+            _time_gap_event_name(direction, phase),
+            phase,
+            range_,
+            analysis,
+            "strong" if slope_change >= slope_guard * 2.0 else "moderate",
+            ["local_expert_time_difference_slope_shape"],
+        ))
+    return events
+
+
+def _time_gap_slope_ranges(
+    start: int,
+    end: int,
+    phases: List[Dict[str, int]],
+) -> List[Tuple[str, List[int]]]:
+    ranges: List[Tuple[str, List[int]]] = []
+    for phase in phases:
+        entry = phase.get("entry")
+        apex = phase.get("apex")
+        exit_ = phase.get("exit")
+        if not all(isinstance(value, int) for value in (entry, apex, exit_)):
+            continue
+        entry_range = [max(start, entry), min(end, apex)]
+        if entry_range[1] > entry_range[0]:
+            ranges.append(("entry", entry_range))
+        apex_half_window = max(2, int(0.05 * max(end - start + 1, 1)))
+        apex_range = [
+            max(start, apex - apex_half_window),
+            min(end, apex + apex_half_window),
+        ]
+        if apex_range[1] > apex_range[0]:
+            ranges.append(("apex", apex_range))
+        exit_range = [max(start, apex + 1), min(end, exit_)]
+        if exit_range[1] > exit_range[0]:
+            ranges.append(("exit", exit_range))
+    if ranges:
+        return ranges
+    return [("whole_range", [start, end])]
+
+
+def _time_gap_slope_change(
+    values: Sequence[Tuple[int, float]],
+) -> Optional[Dict[str, Any]]:
+    if len(values) < 3:
+        return None
+    ilocs = [iloc for iloc, _ in values]
+    smooth = _rolling_median(
+        [value for _, value in values],
+        _slope_shape_smoothing_window(len(values)),
+    )
+    finite = [
+        (iloc, value)
+        for iloc, value in zip(ilocs, smooth)
+        if _is_number(value)
+    ]
+    if len(finite) < 3:
+        return None
+    local_slopes: List[float] = []
+    for pos in range(1, len(finite)):
+        prev_iloc, prev_value = finite[pos - 1]
+        iloc, value = finite[pos]
+        iloc_delta = iloc - prev_iloc
+        if iloc_delta <= 0:
+            continue
+        local_slopes.append((float(value) - float(prev_value)) / float(iloc_delta))
+    if len(local_slopes) < 2:
+        return None
+
+    shape_window = _slope_shape_window(len(local_slopes))
+    early_slope = _median(local_slopes[:shape_window])
+    late_slope = _median(local_slopes[-shape_window:])
+    if early_slope is None or late_slope is None:
+        return None
+
+    range_len = max(float(finite[-1][0] - finite[0][0]), 1.0)
+    overall_slope = (float(finite[-1][1]) - float(finite[0][1])) / range_len
+    absolute_guard = 150.0 / range_len
+    baseline = max(abs(overall_slope), abs(float(early_slope)), abs(float(late_slope)))
+    slope_guard = max(absolute_guard, baseline * 0.25, 1e-9)
+
+    slope_shape: str
+    direction: Optional[str] = None
+    if abs(float(early_slope)) > slope_guard and abs(float(late_slope)) > slope_guard:
+        if float(early_slope) > 0 and float(late_slope) < 0:
+            slope_shape = "reversing_to_falling_within_section"
+            direction = "falling"
+        elif float(early_slope) < 0 and float(late_slope) > 0:
+            slope_shape = "reversing_to_rising_within_section"
+            direction = "rising"
+        else:
+            slope_shape = ""
+    else:
+        slope_shape = ""
+
+    slope_change = float(late_slope) - float(early_slope)
+    if direction is None:
+        if abs(slope_change) < slope_guard:
+            return None
+        if slope_change < 0:
+            slope_shape = "slope_decreasing_over_section"
+            direction = "falling"
+        else:
+            slope_shape = "slope_increasing_over_section"
+            direction = "rising"
+
+    return {
+        "direction": direction,
+        "change": float(finite[-1][1]) - float(finite[0][1]),
+        "start_value": float(finite[0][1]),
+        "end_value": float(finite[-1][1]),
+        "early_slope": float(early_slope),
+        "late_slope": float(late_slope),
+        "slope_change": slope_change,
+        "slope_guard": slope_guard,
+        "slope_shape": slope_shape,
+        "threshold_state": "label_threshold_met",
+    }
 
 
 def _trajectory_phase_side_events(
@@ -1599,6 +1708,19 @@ def _rolling_median(values: List[float], window: int) -> List[float]:
     return out
 
 
+def _slope_shape_window(length: int) -> int:
+    if length <= 1:
+        return 1
+    return max(1, min(5, (length + 3) // 4))
+
+
+def _slope_shape_smoothing_window(length: int) -> int:
+    window = _slope_shape_window(length)
+    if window % 2 == 0:
+        window = max(1, window - 1)
+    return window
+
+
 def _phase_windows(by_tool: Dict[str, Dict[str, Any]]) -> List[Dict[str, int]]:
     content = by_tool.get("compute_expert_phases") or {}
     phases = content.get("phases")
@@ -1640,52 +1762,11 @@ def _phase_for_iloc(iloc: Any, phases: List[Dict[str, int]]) -> str:
     return "unknown"
 
 
-def _time_gap_phase(
-    range_: Optional[List[int]],
-    phases: List[Dict[str, int]],
-) -> str:
-    if (
-        not isinstance(range_, list)
-        or len(range_) != 2
-        or not isinstance(range_[0], int)
-        or not isinstance(range_[1], int)
-    ):
-        return "whole_range"
-    lo, hi = range_
-    if hi < lo:
-        lo, hi = hi, lo
-    best_phase = "whole_range"
-    best_overlap = 0
-    for phase in phases:
-        entry = phase.get("entry")
-        apex = phase.get("apex")
-        exit_ = phase.get("exit")
-        if not all(isinstance(value, int) for value in (entry, apex, exit_)):
-            continue
-        entry_overlap = _overlap_count(lo, hi, entry, apex)
-        exit_overlap = _overlap_count(lo, hi, apex + 1, exit_)
-        if entry_overlap > best_overlap:
-            best_phase = "entry"
-            best_overlap = entry_overlap
-        if exit_overlap > best_overlap:
-            best_phase = "exit"
-            best_overlap = exit_overlap
-    return best_phase
-
-
 def _time_gap_event_name(direction: str, phase: str) -> str:
     base = f"time gap {direction}"
-    if phase in {"entry", "exit"}:
+    if phase in {"entry", "apex", "exit"}:
         return f"{base} at {phase}"
     return base
-
-
-def _overlap_count(a_start: int, a_end: int, b_start: int, b_end: int) -> int:
-    lo = max(a_start, b_start)
-    hi = min(a_end, b_end)
-    if hi < lo:
-        return 0
-    return hi - lo + 1
 
 
 def _query_result(content: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1842,7 +1923,9 @@ def _phase_sentence_prefix(phase: str) -> str:
 
 def _time_gap_event_has_phase(event_name: str) -> bool:
     return event_name.startswith("time gap ") and (
-        event_name.endswith(" at entry") or event_name.endswith(" at exit")
+        event_name.endswith(" at entry")
+        or event_name.endswith(" at apex")
+        or event_name.endswith(" at exit")
     )
 
 
@@ -2023,6 +2106,14 @@ def _measurement_sentence_fragments(
         change = measurements.get("change")
         if change is not None:
             fragments.append(f"the time gap changed by {_format_value(change)} ms")
+        early_slope = measurements.get("early_slope")
+        late_slope = measurements.get("late_slope")
+        if early_slope is not None and late_slope is not None:
+            fragments.append(
+                "the time-gap slope changed from "
+                f"{_format_value(early_slope)} ms/iloc to "
+                f"{_format_value(late_slope)} ms/iloc"
+            )
         threshold = measurements.get("threshold_state")
         if threshold:
             fragments.append(_humanize_token(str(threshold)))

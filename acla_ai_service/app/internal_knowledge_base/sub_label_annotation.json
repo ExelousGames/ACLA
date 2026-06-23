@@ -397,7 +397,7 @@
     "MSP15": {
       "name": "Throttle applied too quickly",
       "type": "sub",
-      "description": "The player's **throttle application** is more abrupt than the expert's — the rise from zero to peak spans fewer indices, often co-occurring with **oversteer** or **understeer** in the slip balance, and a **modulation dip** shortly after in the same **throttle application**.\n",
+      "description": "The player's **throttle application onset aligned with expert**, but **throttle application end earlier than expert**, often co-occurring with **oversteer** or **understeer**.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -407,7 +407,7 @@
     "MSP25": {
       "name": "Throttle applied too slowly",
       "type": "sub",
-      "description": "The player's **throttle application** is more gradual than the expert's — the rise from zero to peak spans more indices, often co-occurring with **gap grows** in the time delta.\n",
+      "description": "The player's **throttle application onset aligned with expert**, but **throttle application end later than expert**, often co-occurring with **gap grows** in the time delta.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -417,7 +417,7 @@
     "MSP19": {
       "name": "Highest throttle pressure too low",
       "type": "sub",
-      "description": "The player's **peak throttle** is lower than the expert's across the **throttle application** phase for more than 3 indices.\n",
+      "description": "depreacated.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -427,7 +427,7 @@
     "MSP26": {
       "name": "Highest throttle pressure too high",
       "type": "sub",
-      "description": "The player's **peak throttle** is higher than the expert's across the **throttle application** phase, often co-occurring with **oversteer** or **understeer** in the slip balance, and a **modulation dip** shortly after in the same **throttle application**.\n",
+      "description": "depreacated.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -457,7 +457,7 @@
     "MSP23": {
       "name": "Release throttle too quickly",
       "type": "sub",
-      "description": "The player's throttle **release onset** aligned with expert, but player's throttle **release end** is earlier than the expert's.\n",
+      "description": "The player's throttle **release onset** aligned with expert, but player's throttle **release end** is earlier than the expert.  player's **brake initiation end** is earlier than the expert's. trajectory wider than expert at entry or apex\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": []
@@ -465,7 +465,7 @@
     "MSP29": {
       "name": "Initiate throttle release too late",
       "type": "sub",
-      "description": "The player's throttle **release onset** is later than the expert's approaching corner entry.\n",
+      "description": "The player's throttle **release onset** is later than the expert, and player's brake **initiation end** is later than the expert's. time gap rising at entry\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -475,7 +475,7 @@
     "MSP30": {
       "name": "Initiate throttle release too early",
       "type": "sub",
-      "description": "The player's throttle **release onset** is earlier than the expert's approaching corner entry.\n",
+      "description": "The player's throttle **release onset** is earlier than the expert's approaching corner entry, time gap rising at entry\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -485,7 +485,7 @@
     "MSP2": {
       "name": "Initiate the turn too late",
       "type": "sub",
-      "description": "The player **initiates the turn later than** the expert's entry index, and the player's **entry trajectory bulges outside** the expert's line (offset is **wider than expert**) between entry and apex.\n",
+      "description": "The player **entry trajectory wider than expert** the expert's line. this causes **time gap rising at exit**\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -495,7 +495,7 @@
     "MSP6": {
       "name": "Initiate the turn too early",
       "type": "sub",
-      "description": "The player **initiates the turn earlier than** the expert's entry index, and the player's **entry trajectory cuts inside** the expert's line (offset is **tighter than expert**) between entry and apex.\n",
+      "description": "The player **entry trajectory tighter than expert** the expert. this causes **apex trajectory tighter than expert**, **time gap rising at exit** and **time gap rising at apex**\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [

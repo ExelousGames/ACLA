@@ -539,9 +539,38 @@ def test_detailed_preflight_outputs_corner_phase_boundaries_for_range_selection(
     assert "entry phase detected" not in semantic_search_text
 
 
-def test_detailed_preflight_phases_time_gap_runs_at_corner_entry_or_exit():
+def test_detailed_preflight_phases_time_gap_slope_changes_at_corner_entry_or_exit():
+    df = pd.DataFrame(
+        {
+            "expert_time_difference": [
+                0.0,
+                5.0,
+                10.0,
+                15.0,
+                20.0,
+                60.0,
+                100.0,
+                140.0,
+                180.0,
+                220.0,
+                260.0,
+                300.0,
+                340.0,
+                380.0,
+                420.0,
+                425.0,
+                430.0,
+                435.0,
+                440.0,
+                445.0,
+                450.0,
+            ],
+        },
+        index=range(10, 31),
+    )
+
     events = preflight_detailed._build_detailed_events(
-        pd.DataFrame(),
+        df,
         10,
         30,
         [
@@ -558,40 +587,86 @@ def test_detailed_preflight_phases_time_gap_runs_at_corner_entry_or_exit():
                     ]
                 },
             ),
+        ],
+    )
+
+    rising = next(
+        event for event in events if event["event"] == "time gap rising at entry"
+    )
+    falling = next(
+        event for event in events if event["event"] == "time gap falling at exit"
+    )
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+
+    assert rising["phase"] == "entry"
+    assert rising["measurements"]["slope_shape"] == "slope_increasing_over_section"
+    assert falling["phase"] == "exit"
+    assert falling["measurements"]["slope_shape"] == "slope_decreasing_over_section"
+    assert "the evidence shows time gap rising at entry" in semantic_search_text
+    assert "the evidence shows time gap falling at exit" in semantic_search_text
+    assert "the time-gap slope changed from" in semantic_search_text
+
+
+def test_detailed_preflight_phases_time_gap_slope_changes_at_corner_apex():
+    df = pd.DataFrame(
+        {
+            "expert_time_difference": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                200.0,
+                400.0,
+                400.0,
+                400.0,
+                400.0,
+                400.0,
+                400.0,
+                400.0,
+                400.0,
+                400.0,
+            ],
+        },
+        index=range(10, 31),
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        10,
+        30,
+        [
             (
-                "query_telemetry.find_trend_runs.expert_time_difference",
+                "compute_expert_phases",
                 {
-                    "analysis": {
-                        "selected_gap_increase_run": {
-                            "start_iloc": 12,
-                            "end_iloc": 18,
-                            "change": 220.0,
-                            "threshold_state": "label_threshold_met",
-                        },
-                        "selected_gap_decrease_run": {
-                            "start_iloc": 22,
-                            "end_iloc": 29,
-                            "change": -180.0,
-                            "threshold_state": "label_threshold_met",
-                        },
-                    },
+                    "phases": [
+                        {
+                            "entry": 10,
+                            "apex": 20,
+                            "exit": 30,
+                            "direction": "right",
+                        }
+                    ]
                 },
             ),
         ],
     )
 
-    rising_run = next(
-        event for event in events if event["event"] == "time gap rising at entry"
-    )
-    falling_run = next(
-        event for event in events if event["event"] == "time gap falling at exit"
+    apex = next(
+        event for event in events if event["event"] == "time gap rising at apex"
     )
     semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
 
-    assert rising_run["phase"] == "entry"
-    assert falling_run["phase"] == "exit"
-    assert "the evidence shows time gap rising at entry" in semantic_search_text
-    assert "the evidence shows time gap falling at exit" in semantic_search_text
+    assert apex["phase"] == "apex"
+    assert apex["range"] == [18, 22]
+    assert apex["measurements"]["slope_shape"] == "slope_increasing_over_section"
+    assert "the evidence shows time gap rising at apex" in semantic_search_text
 
 
 def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
