@@ -379,6 +379,7 @@ def _build_detailed_events(
     _extend(events, _time_delta_events(df, start, end, by_tool, phases))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
     _extend(events, _speed_events(start, end, by_tool, phases))
+    _extend(events, _gear_and_rpm_events(df, start, end, phases))
     _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
 
     return _dedupe_events(events)
@@ -1527,6 +1528,231 @@ def _player_speed_local_curve_events(
     return events
 
 
+def _gear_and_rpm_events(
+    df,
+    start: int,
+    end: int,
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    return [
+        *_shift_timing_events(df, start, end, phases),
+        *_exit_gear_mismatch_events(df, start, end, phases),
+    ]
+
+
+def _shift_timing_events(
+    df,
+    start: int,
+    end: int,
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    player_shifts = _gear_shifts(df, start, end, "Physics_gear")
+    expert_shifts = _gear_shifts(df, start, end, "expert_optimal_gear")
+    if not player_shifts or not expert_shifts:
+        return []
+
+    events: List[Dict[str, Any]] = []
+    used_experts: set[int] = set()
+    for player_shift in player_shifts:
+        expert_pos = _matching_shift_pos(player_shift, expert_shifts, used_experts)
+        if expert_pos is None:
+            continue
+        used_experts.add(expert_pos)
+        expert_shift = expert_shifts[expert_pos]
+        delta = int(player_shift["iloc"]) - int(expert_shift["iloc"])
+        direction = str(player_shift["direction"])
+        if direction == "up":
+            event_name = (
+                "player upshift earlier than expert"
+                if delta < 0
+                else "player upshift later than expert"
+                if delta > 0
+                else "player upshift aligned with expert"
+            )
+        else:
+            event_name = (
+                "player downshift earlier than expert"
+                if delta < 0
+                else "player downshift later than expert"
+                if delta > 0
+                else "player downshift aligned with expert"
+            )
+
+        player_iloc = int(player_shift["iloc"])
+        rpm_context = _rpm_context(df, start, end, player_iloc)
+        event = _event(
+            event_name,
+            _phase_for_iloc(player_iloc, phases),
+            _range_from_values(player_iloc, expert_shift.get("iloc")),
+            {
+                "player_shift_iloc": player_iloc,
+                "expert_shift_iloc": expert_shift.get("iloc"),
+                "shift_delta_iloc": delta,
+                "shift_offset_iloc": abs(delta),
+                "player_from_gear": player_shift.get("from_gear"),
+                "player_to_gear": player_shift.get("to_gear"),
+                "expert_from_gear": expert_shift.get("from_gear"),
+                "expert_to_gear": expert_shift.get("to_gear"),
+                "player_rpm_at_shift": rpm_context.get("rpm"),
+            },
+            _timing_confidence(delta),
+            ["local_gear_shift_rpm_statistics"],
+        )
+        if delta != 0:
+            event["semantic_search_terms"] = _gear_shift_search_terms(event_name)
+        events.append(event)
+    return events
+
+
+def _exit_gear_mismatch_events(
+    df,
+    start: int,
+    end: int,
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    player_gear = {
+        iloc: int(round(value))
+        for iloc, value in _series_values(df, start, end, "Physics_gear")
+    }
+    expert_gear = {
+        iloc: int(round(value))
+        for iloc, value in _series_values(df, start, end, "expert_optimal_gear")
+    }
+    if not player_gear or not expert_gear or not phases:
+        return []
+
+    events: List[Dict[str, Any]] = []
+    for phase in phases:
+        exit_iloc = phase.get("exit")
+        if not isinstance(exit_iloc, int):
+            continue
+        if exit_iloc not in player_gear or exit_iloc not in expert_gear:
+            continue
+        player = player_gear[exit_iloc]
+        expert = expert_gear[exit_iloc]
+        diff = player - expert
+        if diff == 0:
+            continue
+        event_name = (
+            "player gear low at exit"
+            if player < expert
+            else "player gear high at exit"
+        )
+        rpm_context = _rpm_context(df, start, end, exit_iloc)
+        event = _event(
+            event_name,
+            "exit",
+            [exit_iloc, exit_iloc],
+            {
+                "exit_iloc": exit_iloc,
+                "player_gear": player,
+                "expert_gear": expert,
+                "gear_delta": diff,
+                "player_rpm_at_exit": rpm_context.get("rpm"),
+            },
+            "strong",
+            ["local_exit_gear_rpm_statistics"],
+        )
+        event["semantic_search_terms"] = _exit_gear_search_terms(event_name)
+        events.append(event)
+    return events
+
+
+def _gear_shifts(
+    df,
+    start: int,
+    end: int,
+    column: str,
+) -> List[Dict[str, Any]]:
+    values = [
+        (iloc, int(round(value)))
+        for iloc, value in _series_values(df, start, end, column)
+    ]
+    shifts: List[Dict[str, Any]] = []
+    previous: Optional[Tuple[int, int]] = None
+    for iloc, gear in values:
+        if previous is None:
+            previous = (iloc, gear)
+            continue
+        previous_iloc, previous_gear = previous
+        if gear != previous_gear:
+            shifts.append({
+                "iloc": iloc,
+                "previous_iloc": previous_iloc,
+                "from_gear": previous_gear,
+                "to_gear": gear,
+                "direction": "up" if gear > previous_gear else "down",
+            })
+        previous = (iloc, gear)
+    return shifts
+
+
+def _matching_shift_pos(
+    player_shift: Dict[str, Any],
+    expert_shifts: Sequence[Dict[str, Any]],
+    used_experts: set[int],
+) -> Optional[int]:
+    direction = player_shift.get("direction")
+    exact_candidates: List[Tuple[int, int]] = []
+    fallback_candidates: List[Tuple[int, int]] = []
+    player_iloc = int(player_shift.get("iloc", 0))
+    for pos, expert_shift in enumerate(expert_shifts):
+        if pos in used_experts or expert_shift.get("direction") != direction:
+            continue
+        distance = abs(player_iloc - int(expert_shift.get("iloc", player_iloc)))
+        fallback_candidates.append((distance, pos))
+        if (
+            expert_shift.get("from_gear") == player_shift.get("from_gear")
+            and expert_shift.get("to_gear") == player_shift.get("to_gear")
+        ):
+            exact_candidates.append((distance, pos))
+    candidates = exact_candidates or fallback_candidates
+    if not candidates:
+        return None
+    return sorted(candidates)[0][1]
+
+
+def _rpm_context(df, start: int, end: int, iloc: int) -> Dict[str, Any]:
+    rpm = _value_at_iloc(df, start, end, "Physics_rpm", iloc)
+    return {"rpm": rpm}
+
+
+def _gear_shift_search_terms(event_name: str) -> List[str]:
+    return {
+        "player upshift earlier than expert": [
+            "upshift before expert",
+            "player upshift earlier than expert",
+        ],
+        "player upshift later than expert": [
+            "upshift after expert",
+            "player upshift later than expert",
+        ],
+        "player downshift earlier than expert": [
+            "downshift before expert",
+            "player downshift earlier than expert",
+        ],
+        "player downshift later than expert": [
+            "downshift after expert",
+            "player downshift later than expert",
+        ],
+    }.get(event_name, [])
+
+
+def _exit_gear_search_terms(event_name: str) -> List[str]:
+    return {
+        "player gear low at exit": [
+            "gear too low when accelerating",
+            "player gear low at exit",
+            "player gear lower than expert gear at corner exit",
+        ],
+        "player gear high at exit": [
+            "gear too high when accelerating",
+            "player gear high at exit",
+            "player gear higher than expert gear at corner exit",
+        ],
+    }.get(event_name, [])
+
+
 def _balance_and_grip_events(
     df,
     start: int,
@@ -2206,6 +2432,41 @@ def _measurement_sentence_fragments(
                     )
         return fragments
 
+    if event_name.startswith("player upshift") or event_name.startswith(
+        "player downshift"
+    ):
+        player = measurements.get("player_shift_iloc")
+        expert = measurements.get("expert_shift_iloc")
+        delta = measurements.get("shift_delta_iloc")
+        if player is not None and expert is not None:
+            fragments.append(
+                f"the player shifted at iloc {player} while the expert "
+                f"shifted at iloc {expert}"
+            )
+        player_from = measurements.get("player_from_gear")
+        player_to = measurements.get("player_to_gear")
+        expert_from = measurements.get("expert_from_gear")
+        expert_to = measurements.get("expert_to_gear")
+        if player_from is not None and player_to is not None:
+            fragments.append(f"the player gear change was {player_from}->{player_to}")
+        if expert_from is not None and expert_to is not None:
+            fragments.append(f"the expert gear change was {expert_from}->{expert_to}")
+        delta_number = _as_float(delta)
+        if delta_number is not None:
+            if delta_number == 0:
+                fragments.append("the shift timing was aligned with expert")
+            else:
+                direction = "later" if delta_number > 0 else "earlier"
+                fragments.append(
+                    "the player shift timing was "
+                    f"{_format_value(abs(delta_number))} ilocs {direction} "
+                    "than expert"
+                )
+        rpm = measurements.get("player_rpm_at_shift")
+        if rpm is not None:
+            fragments.append(f"player RPM at shift was {_format_value(rpm)}")
+        return fragments
+
     if "player reaches apex" in event_name:
         player = measurements.get("player_apex_iloc")
         expert = measurements.get("expert_apex_iloc")
@@ -2378,6 +2639,24 @@ def _measurement_sentence_fragments(
         slope_shape = measurements.get("slope_shape")
         if slope_shape:
             fragments.append(_humanize_token(str(slope_shape)))
+        return fragments
+
+    if event_name in {
+        "player gear low at exit",
+        "player gear high at exit",
+    }:
+        player_gear = measurements.get("player_gear")
+        expert_gear = measurements.get("expert_gear")
+        if player_gear is not None and expert_gear is not None:
+            fragments.append(
+                f"the player was in gear {player_gear} while the expert was "
+                f"in gear {expert_gear} at corner exit"
+            )
+        rpm = measurements.get("player_rpm_at_exit")
+        if rpm is not None:
+            fragments.append(
+                f"player RPM at exit was {_format_value(rpm)}"
+            )
         return fragments
 
     if "speed" in event_name or "acceleration" in event_name or "deceleration" in event_name:

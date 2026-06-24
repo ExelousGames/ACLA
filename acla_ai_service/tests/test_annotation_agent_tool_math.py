@@ -1166,6 +1166,46 @@ def test_detailed_preflight_events_capture_multiple_slip_balance_runs():
     assert [18, 18] not in understeer_ranges
 
 
+def test_detailed_preflight_outputs_exit_gear_verdict():
+    df = pd.DataFrame(
+        {
+            "Physics_gear": [3, 3, 3, 3, 3, 4],
+            "expert_optimal_gear": [3, 3, 3, 3, 3, 5],
+            "Physics_rpm": [7000, 7100, 7200, 7300, 7400, 7600],
+        },
+        index=range(10, 16),
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        10,
+        15,
+        [
+            (
+                "compute_expert_phases",
+                {"phases": [{"entry": 10, "apex": 12, "exit": 15}]},
+            ),
+        ],
+    )
+
+    exit_gear_events = [
+        event
+        for event in events
+        if event["event"] in {"player gear low at exit", "player gear high at exit"}
+    ]
+    assert len(exit_gear_events) == 1
+    event = exit_gear_events[0]
+    assert event["event"] == "player gear low at exit"
+    assert event["phase"] == "exit"
+    assert event["range"] == [15, 15]
+    assert event["measurements"]["player_gear"] == 4
+    assert event["measurements"]["expert_gear"] == 5
+
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+    assert "player gear low at exit" in semantic_search_text
+    assert "gear too low when accelerating" in semantic_search_text
+
+
 def test_detailed_preflight_events_capture_opponent_outcomes():
     events = preflight_detailed._build_detailed_events(
         pd.DataFrame(),
