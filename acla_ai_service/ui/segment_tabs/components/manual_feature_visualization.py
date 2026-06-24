@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from ..shared import get_display_labels, GRAPH_CONFIGS
+from ..shared import get_display_labels, get_parent_label_ids, GRAPH_CONFIGS
 from .track_sections import add_track_section_bands, track_sections_available
 
 def render_feature_visualization(df: pd.DataFrame, numeric_cols: list, viz_start_idx: int, viz_end_idx: int, session_id: str):
@@ -96,8 +96,7 @@ def render_feature_visualization(df: pd.DataFrame, numeric_cols: list, viz_start
                         if end <= viz_start_idx or start >= viz_end_idx:
                             continue
 
-                    labels = ann.labels
-                    display_labels = get_display_labels(labels)
+                    display_labels = get_display_labels(get_parent_label_ids(ann.labels))
                     label_str = ", ".join(display_labels)
                     
                     if start is not None and end is not None:

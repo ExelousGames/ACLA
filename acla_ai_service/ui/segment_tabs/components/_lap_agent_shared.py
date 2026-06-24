@@ -24,9 +24,9 @@ import streamlit as st
 from PIL import Image
 
 from ..shared import (
-    LABEL_MAPPING, LABEL_NAME_TO_ID, build_segment, save_annotations,
+    LABEL_CATEGORIES, LABEL_MAPPING, LABEL_NAME_TO_ID, build_segment,
+    get_parent_label_ids, save_annotations,
 )
-from app.shared.label_hierarchy import normalize_grouped_label_ids
 from .opponent_interaction import OUTCOME_LABELS, ROLE_LABELS, format_targeted_car
 
 
@@ -41,6 +41,8 @@ KEY_LAP_CURSOR = "lap_agent_cursor"              # index of the "next" section i
 KEY_LAP_STAGED = "lap_agent_staged_result"       # LapAnnotationResult-ish dict awaiting review
 KEY_LAP_LIVE = "lap_agent_live_output"           # last live-output snapshot for re-render
 KEY_LAP_SPLIT_META = "lap_agent_split_meta"      # last split_lap_sections content
+
+MAIN_LABEL_IDS = set(LABEL_CATEGORIES.get("Main Labels", []))
 
 
 def _rough_interaction_summary(seg: Dict[str, Any]) -> str:
@@ -221,8 +223,6 @@ def execute_lap_agent_run(
         "end_index": int(result.end_index),
         "label_ids": list(result.label_ids),
         "reasoning": result.reasoning,
-        "submitted": bool(result.submitted),
-        "rejected": list(result.rejected_proposals),
         "rendered_images": list(result.rendered_images),
         "tool_calls": int(result.tool_calls),
         "opponent_interaction": head_segment.get("opponent_interaction"),
@@ -440,11 +440,6 @@ def render_lap_staged_review(
 
     st.markdown("---")
     st.markdown("##### Review & Edit Before Saving")
-    if staged.get("rejected"):
-        st.caption(
-            f"⚠️ {len(staged['rejected'])} label_id(s) rejected by the runner: "
-            + ", ".join(str(r.get("value")) for r in staged["rejected"])
-        )
 
     with st.container(border=True):
         col_r1, col_r2 = st.columns(2)
@@ -459,16 +454,18 @@ def render_lap_staged_review(
                 value=int(staged["end_index"]), key="lap_staged_end",
             )
 
-        all_label_options = sorted(LABEL_MAPPING.values())
+        parent_label_options = [
+            LABEL_MAPPING[lid]
+            for lid in LABEL_CATEGORIES.get("Main Labels", [])
+            if lid in LABEL_MAPPING
+        ]
         default_labels = [
-            LABEL_MAPPING.get(l, l) for l in staged["label_ids"] if l in LABEL_MAPPING
+            LABEL_MAPPING[lid]
+            for lid in get_parent_label_ids(staged["label_ids"])
+            if lid in LABEL_MAPPING
         ]
         seg_labels = st.multiselect(
-            "Labels", options=all_label_options, default=default_labels,
-            help=(
-                "Sub-labels are allowed when the whole segment fits them; "
-                "their parent label is kept for grouping."
-            ),
+            "Parent Labels", options=parent_label_options, default=default_labels,
             key="lap_staged_labels",
         )
         seg_notes = st.text_area(
@@ -523,21 +520,13 @@ def _persist_lap_annotation(
     if start >= end:
         st.error("Start must be less than end.")
         return
-    raw_label_ids = [LABEL_NAME_TO_ID[n] for n in label_names if n in LABEL_NAME_TO_ID]
-    label_ids, rejected, added_parents = normalize_grouped_label_ids(raw_label_ids)
-    if rejected:
-        st.warning(
-            "Ignored invalid label(s): "
-            + ", ".join(str(r.get("value")) for r in rejected)
-        )
-    if added_parents:
-        notes = (
-            (notes.rstrip() + "\n\n") if notes.strip() else ""
-        ) + "Auto-added parent label(s): " + ", ".join(
-            LABEL_MAPPING.get(lid, lid) for lid in added_parents
-        )
+    label_ids = [
+        LABEL_NAME_TO_ID[n]
+        for n in label_names
+        if n in LABEL_NAME_TO_ID and LABEL_NAME_TO_ID[n] in MAIN_LABEL_IDS
+    ]
     if not label_ids:
-        st.error("No valid labels resolved.")
+        st.error("Select at least one parent label.")
         return
 
     new_ann = build_segment(
