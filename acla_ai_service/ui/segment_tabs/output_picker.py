@@ -160,6 +160,9 @@ def render_output_picker(
                 for k in ("active_view", "pipeline_routed_view",
                           "pipeline_active_node_id"):
                     st.session_state.pop(k, None)
+                for k in ("view", "node"):
+                    if k in st.query_params:
+                        del st.query_params[k]
                 st.rerun()
 
     if "output_key" in result_box:

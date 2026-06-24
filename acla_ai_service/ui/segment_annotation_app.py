@@ -86,11 +86,72 @@ _SESSION_GATED_ROUTES = {
 _TRAINING_ROUTES = set(TRAINING_ROUTES)
 
 _ALL_ROUTES = set(_SESSION_GATED_ROUTES) | _TRAINING_ROUTES
+_ROUTE_QUERY_KEYS = ("view", "node")
+
+
+def _query_param(name: str) -> str | None:
+    value = st.query_params.get(name)
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def _clear_route_query() -> None:
+    for key in _ROUTE_QUERY_KEYS:
+        if key in st.query_params:
+            del st.query_params[key]
 
 
 def _go_back_to_pipeline() -> None:
-    for k in ("active_view", "pipeline_routed_view", "pipeline_active_node_id"):
+    for k in (
+        "active_view",
+        "pipeline_routed_view",
+        "pipeline_active_node_id",
+        "pipeline_training_node",
+    ):
         st.session_state.pop(k, None)
+    _clear_route_query()
+
+
+def _restore_route_from_query(pipeline) -> None:
+    view = _query_param("view")
+    if view not in _ALL_ROUTES:
+        return
+
+    node_id = _query_param("node")
+    st.session_state["active_view"] = view
+
+    if not node_id:
+        return
+
+    if view in _TRAINING_ROUTES:
+        try:
+            node = pipeline.training(node_id)
+        except KeyError:
+            _go_back_to_pipeline()
+            st.warning("The linked training component no longer exists.")
+            return
+        st.session_state["pipeline_active_node_id"] = None
+        st.session_state["pipeline_training_node"] = node.id
+        st.session_state["pipeline_annotation_key"] = (
+            pipeline.resolve_source_key(node.input_ref) or ""
+        )
+        return
+
+    try:
+        node = pipeline.annotation(node_id)
+    except KeyError:
+        _go_back_to_pipeline()
+        st.warning("The linked annotation component no longer exists.")
+        return
+
+    st.session_state["pipeline_active_node_id"] = node.id
+    st.session_state["pipeline_annotation_key"] = (
+        pipeline.effective_output_key(node) or ""
+    )
+    st.session_state["pipeline_session_key"] = (
+        pipeline.effective_input_key(node) or ""
+    )
 
 
 def _sync_pipeline_dir_map(pipeline) -> None:
@@ -254,6 +315,7 @@ def main() -> None:
     # route reads/writes to the right Lance store, even when one node
     # references another's output as a sibling source.
     _sync_pipeline_dir_map(pipeline)
+    _restore_route_from_query(pipeline)
 
     # ── Resolve routing: a node may have asked us to switch tab ─────────
     routed = st.session_state.pop("pipeline_routed_view", None)

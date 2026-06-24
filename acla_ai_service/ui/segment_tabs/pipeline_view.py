@@ -192,7 +192,8 @@ def _render_mode_picker(current: str, key_prefix: str) -> Optional[str]:
 
 def _route(view: str, *, annotation_key: Optional[str] = None,
            session_key: Optional[str] = None, training_node: Optional[str] = None,
-           node_id: Optional[str] = None) -> None:
+           node_id: Optional[str] = None,
+           pipeline_id: Optional[str] = None) -> None:
     st.session_state["pipeline_routed_view"] = view
     # Always update the active node — None clears it so the popup logic
     # in segment_annotation_app can tell a stale route from a fresh one.
@@ -204,6 +205,14 @@ def _route(view: str, *, annotation_key: Optional[str] = None,
         st.session_state["pipeline_session_key"] = session_key
     if training_node is not None:
         st.session_state["pipeline_training_node"] = training_node
+    if pipeline_id:
+        st.query_params["pipeline"] = pipeline_id
+    st.query_params["view"] = view
+    route_node = node_id or training_node
+    if route_node:
+        st.query_params["node"] = route_node
+    elif "node" in st.query_params:
+        del st.query_params["node"]
     st.rerun()
 
 
@@ -1091,7 +1100,8 @@ def _render_annotation_card(
                 _route(spec.ui_route,
                        annotation_key=pipeline.effective_output_key(node),
                        session_key=effective,
-                       node_id=node.id)
+                       node_id=node.id,
+                       pipeline_id=pipeline.id)
         with btn_cols[3]:
             if st.button("🗑", key=f"del_ann_{node.id}",
                          width="stretch",
@@ -1274,7 +1284,8 @@ def _render_training_card(pipeline: Pipeline, node: TrainingNode, store: Any) ->
                      width="stretch"):
             _route(spec.ui_route,
                    annotation_key=input_key or None,
-                   training_node=node.id)
+                   training_node=node.id,
+                   pipeline_id=pipeline.id)
     with btn_cols[1]:
         if st.button("🗑", key=f"del_tr_{node.id}",
                      width="stretch",
