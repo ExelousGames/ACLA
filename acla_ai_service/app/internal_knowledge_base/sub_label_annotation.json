@@ -545,7 +545,7 @@
     "MSP9": {
       "name": "Entry trajectory too tight",
       "type": "sub",
-      "description": "The player's **entry trajectory tighter than expert** the expert.\n",
+      "description": "The player's **entry trajectory tighter than expert** the expert. usually **brake initation onset eariler than expert**\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -555,7 +555,7 @@
     "MSP33": {
       "name": "Entry trajectory too wide",
       "type": "sub",
-      "description": "The player's **entry trajectory wider than expert**.\n",
+      "description": "The player's **entry trajectory wider than expert**. usually **brake initiation onset later than expert** which causes understeer at the entry. \n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
