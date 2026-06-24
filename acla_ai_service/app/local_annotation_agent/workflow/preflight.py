@@ -31,7 +31,7 @@ SHARED_PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
         "query_id": "find_trend_runs",
         "params": {
             "column": "expert_time_difference",
-            "smoothing_window": 5,
+            "smoothing_window": 1,
         },
     },
     {
@@ -75,7 +75,7 @@ SPEED_INVESTIGATION_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
         "query_id": "find_trend_runs",
         "params": {
             "column": "Physics_speed_kmh",
-            "smoothing_window": 5,
+            "smoothing_window": 1,
         },
         "tags": [
             "player speed trend run",

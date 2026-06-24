@@ -49,7 +49,7 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         "query_id": "find_trend_runs",
         "params": {
             "column": "trajectory_offset",
-            "smoothing_window": 5,
+            "smoothing_window": 3,
         },
         "tags": [
             "trajectory offset trend",
@@ -62,7 +62,7 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         "graph_id": "trajectory_detailed",
         "query_id": "measure_trajectory_similarity",
         "params": {
-            "smoothing_window": 5,
+            "smoothing_window": 3,
         },
         "tags": [
             "trajectory similarity",
@@ -104,7 +104,7 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         "query_id": "find_dips_on_main_slope",
         "params": {
             "column": "Physics_gas",
-            "smoothing_window": 5,
+            "smoothing_window": 3,
             "min_dip_depth": 0.08,
         },
         "tags": ["throttle modulation dip", "release throttle"],
@@ -2296,7 +2296,7 @@ def _action_profile(
     column: str,
     direction: str,
     *,
-    smoothing_window: int = 5,
+    smoothing_window: int = 3,
 ) -> Optional[Dict[str, Any]]:
     values = _series_values(df, start, end, column)
     if len(values) < 4:

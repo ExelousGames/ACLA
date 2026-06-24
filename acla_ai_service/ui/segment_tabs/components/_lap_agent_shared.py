@@ -104,6 +104,19 @@ def run_split(
 # Live-output panel (light version of _agent_annotation_shared.LiveVlmOutput)
 # ---------------------------------------------------------------------------
 
+def _extract_preflight_output(prompt: str) -> str:
+    header = "#### Required Upfront Annotation Preflight"
+    start = prompt.find(header)
+    if start < 0:
+        return ""
+    prompt = prompt[start:]
+    task_marker = "\n\nAnnotate ONE lap range."
+    end = prompt.find(task_marker)
+    if end < 0:
+        return ""
+    return prompt[:end].rstrip()
+
+
 class LapLiveOutput:
     """Compact streaming-output renderer for the lap flow.
 
@@ -117,9 +130,11 @@ class LapLiveOutput:
         self.start_time = time.time()
         self.header = st.empty()
         self.tool_chip_area = st.empty()
+        self.preflight_area = st.empty()
         self.text_area = st.empty()
         self.thinking_area = st.empty()
         self.tool_events: List[str] = []
+        self.preflight_output = ""
         self.text_chunks: List[str] = []
         self.thinking_chunks: List[str] = []
         self._render()
@@ -129,6 +144,9 @@ class LapLiveOutput:
         self.header.markdown(f"**Lap agent run** _(elapsed {elapsed:.1f}s)_")
         if self.tool_events:
             self.tool_chip_area.caption(" · ".join(self.tool_events[-8:]))
+        if self.preflight_output:
+            with self.preflight_area.expander("Preflight output", expanded=False):
+                st.code(self.preflight_output, language="text")
         if self.thinking_chunks:
             self.thinking_area.markdown(
                 f"_💭 Thinking:_\n\n{''.join(self.thinking_chunks)}"
@@ -137,7 +155,7 @@ class LapLiveOutput:
             self.text_area.markdown(f"_Response:_\n\n{''.join(self.text_chunks)}")
 
     def on_prompt(self, prompt: str, stage: Dict[str, Any]) -> None:  # noqa: ARG002
-        # Prompt is large; show only that we started.
+        self.preflight_output = _extract_preflight_output(prompt)
         self.tool_events.append("🟢 prompt sent")
         self._render()
 
