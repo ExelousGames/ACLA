@@ -10,7 +10,6 @@ from ._lap_agent_shared import (
     render_lap_panel, render_lap_staged_review, track_name_to_circuit_id,
 )
 from .annotation_provider_controls import render_annotation_provider_config
-from ..shared import get_parent_label_ids
 from app.local_annotation_agent.workflow import run_annotation
 
 
@@ -89,6 +88,6 @@ def _collect_existing_lap_annotations():
         out.append({
             "start_index": s,
             "end_index": e,
-            "labels": get_parent_label_ids(getattr(ann, "labels", [])),
+            "labels": list(getattr(ann, "labels", [])),
         })
     return out

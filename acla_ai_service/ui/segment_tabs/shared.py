@@ -89,29 +89,6 @@ def get_display_labels(labels):
             display_labels.append(key)
     return display_labels
 
-def get_parent_label_ids(labels):
-    """Return only parent label IDs, mapping child labels to parents."""
-    if not isinstance(labels, list):
-        labels = [labels]
-
-    main_label_ids = set(LABEL_CATEGORIES.get("Main Labels", []))
-    parent_ids = []
-    for label in labels:
-        label_id = str(label)
-        if label_id in main_label_ids and label_id not in parent_ids:
-            parent_ids.append(label_id)
-            continue
-
-        for parent_id, child_ids in LABEL_CATEGORIES.items():
-            if (
-                parent_id in main_label_ids
-                and label_id in child_ids
-                and parent_id not in parent_ids
-            ):
-                parent_ids.append(parent_id)
-                break
-    return parent_ids
-
 def _run_async(func, *args, **kwargs):
     """Execute an async function from a synchronous context."""
     try:

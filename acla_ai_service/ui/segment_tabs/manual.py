@@ -15,6 +15,10 @@ from .components.manual_track_map import render_manual_track_map
 from .components.manual_annotation_manager import render_manual_annotation_manager
 from .components.manual_lap_agent import render_manual_lap_agent
 
+def _parent_segments(annotations):
+    return [ann for ann in annotations if not getattr(ann, "parent_id", None)]
+
+
 def render_manual_annotation(selected_annotation_key, selected_session_key, available_sessions):
     """
     Renders the Telemetry Segment Annotation tab.
@@ -56,7 +60,9 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
             "last_annotation_key" not in st.session_state or
             st.session_state.last_annotation_key != selected_annotation_key):
             
-                st.session_state.current_annotations = load_annotations(session_id, selected_annotation_key)
+                st.session_state.current_annotations = _parent_segments(
+                    load_annotations(session_id, selected_annotation_key)
+                )
                 st.session_state.last_session_id = session_id
                 st.session_state.last_annotation_key = selected_annotation_key
     
