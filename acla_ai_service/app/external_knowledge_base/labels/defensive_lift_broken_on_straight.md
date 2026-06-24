@@ -1,9 +1,8 @@
 ## Definition
 On a straight section, the player attempted a defensive lift / feint
-against a close trailing opponent — throttle drops below the expert
-with no matching brake, outside any braking zone — but the opponent's
-draft-close kept coming and they got through. The failure-mirror of
-defensive lift on straight.
+against a close trailing opponent, but the gap to the opponent kept
+shrinking and they got through. The failure-mirror of defensive lift
+on straight.
 
 ## Physics
 A defensive lift breaks the trailing car's slipstream rhythm. By
@@ -23,12 +22,10 @@ zone.
   the straight and the gap closes to zero across the straight (the
   opponent gets through).
 - The opponent completed the pass on the player.
-- Player throttle drops **below expert** with NO matching brake
-  onset, outside any braking zone. The dip is short — often a single
-  beat on the throttle trace.
-- Speed delta shows the player slowing briefly, then recovering as
-  the throttle returns.
-- Time difference to the expert grows during and just after the lift.
+- Gap to the opponent shrank on the straight.
+- The driver slowed more than the opponent or accelerated worse while
+  trying to hold position.
+- The gap flipped from driver ahead to opponent ahead.
 
 ## Engineer interpretation
 The lift either wasn't big enough to break the tow or was timed

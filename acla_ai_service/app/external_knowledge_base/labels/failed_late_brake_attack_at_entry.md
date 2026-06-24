@@ -1,8 +1,8 @@
 ## Definition
 Player committed to a late-brake attack at corner entry against a
-close opponent — braked deliberately later than the expert reference,
-on a tightening line aimed at the inside — but the pass did not stick
-and the opponent didn't pass back either. The failure-mirror of late-brake attack at entry.
+close opponent. The driver drew alongside the opponent under braking,
+but the driver did not end ahead of the opponent. The failure-mirror
+of late-brake attack at entry.
 
 ## Physics
 A late-brake attack converts straight-line distance into corner-entry
@@ -18,16 +18,11 @@ lost). All three outcomes cost time on top of giving the position
 back.
 
 ## Telemetry signature
-- A close opponent runs side-by-side with the player across the
-  braking-to-apex window.
-- Neither the player nor the opponent completed the pass — positions
-  are unchanged at the section boundary.
-- Brake **initiation onset is later than** the expert's at entry, with
-  **peak brake pressure higher than** expert across the braking phase.
-- Trajectory often shows **moving toward the inside (tightening)** into
-  the apex (player aimed for the inside), sometimes followed by the
-  **entry trajectory bulging outside** when grip ran out.
-- Time difference to the expert grows across the attempt.
+- The opponent started ahead of the driver.
+- The driver drew alongside the opponent under braking.
+- The opponent was on the driver's left/right side near corner entry.
+- The driver did not end ahead of the opponent.
+- The gap did not flip from opponent ahead to driver ahead.
 - An **over-limit spike** on grip utilisation often co-occurs with
   the brake / turn-in phase.
 
@@ -38,7 +33,7 @@ inside-line entries) or the commitment level (alongside *at* the
 brake board instead of *before* it). A late brake from a half-car
 length back is gambling the corner against a position that wasn't
 yours yet. Separate which of the two failed: was the player already
-overlapped at the brake reference, or trying to *create* the overlap
+overlapped before the brake zone, or trying to create the overlap
 inside the brake zone?
 
 ## Remedies

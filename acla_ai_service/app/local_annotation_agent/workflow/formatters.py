@@ -147,8 +147,16 @@ def _format_detailed_preflight_events(content: Any) -> str:
         return str(content)
     lines = [
         f"Range: {content.get('range')}",
-        "Events:",
+        "Preflight fact sentences:",
     ]
+    event_text = str(content.get("event_text") or "").strip()
+    if event_text:
+        lines.extend(
+            f"- {line}"
+            for line in event_text.splitlines()[:40]
+            if line.strip()
+        )
+        return "\n".join(lines)
     events = content.get("events") or []
     if not events:
         lines.append("- (none)")

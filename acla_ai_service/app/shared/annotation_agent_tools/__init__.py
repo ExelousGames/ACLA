@@ -1156,15 +1156,13 @@ def find_nearest_opponent(
 ):
     """Tool — identify the most relevant opponent(s) inside an iloc range.
 
-    Reads ``Graphics_player_pos_{x,y}``, ``expert_optimal_player_pos_{x,y}``
-    when available, and ``Car_{1..MAX_CARS}_pos_{x,y}`` over
+    Reads ``Graphics_player_pos_{x,y}`` and ``Car_{1..MAX_CARS}_pos_{x,y}`` over
     ``[start_index, end_index)``. Empty opponent slots (where both x and y
     are exactly ``0.0`` — the flattening default in ``telemetry.py``) are
     skipped per row. For each slot with active data, computes per-iloc 2D
-    distance, signed longitudinal gap, and lateral offset. The signed gap
-    prefers projection onto the expert path (positive ⇒ opponent further
-    along the expert trace); without expert positions it falls back to the
-    player's instantaneous heading frame.
+    distance, signed longitudinal gap, and lateral offset from the driver's
+    local path / heading. Positive signed gap means the opponent is ahead of
+    the driver; negative means the driver is ahead of the opponent.
 
     Slots whose active-iloc fraction is below ``min_active_fraction``
     are dropped. Remaining slots are ranked by minimum 2D distance; the
@@ -1523,12 +1521,10 @@ def classify_opponent_interaction(
     outcome to annotation labels is handled by the annotation preflight / label
     search layer, not by this tool.
 
-    Signed longitudinal and lateral gaps are computed in an expert-path
-    projection frame when expert positions are available; otherwise the
-    classifier falls back to the player's instantaneous heading frame. The
-    classifier intentionally reads only positional relationship and outcome.
-    Player trace technique (late brake, inside cover, switchback, defensive
-    lift) still comes from the normal graphs / queries.
+    Signed longitudinal and lateral gaps are computed from the driver's local
+    path / heading. The classifier intentionally reads only positional
+    relationship and outcome; label selection maps those facts to racing
+    sub-labels later.
 
     Side-by-side is deliberately tighter than general close-following:
     the opponent must be near the player's longitudinal position and offset
@@ -3274,10 +3270,8 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Classify opponent interaction outcome",
         "description": (
             "Deterministically classifies the opponent-relative position "
-            "pattern over the iloc range, preferring projection onto "
-            "the expert trajectory for signed longitudinal/lateral gaps "
-            "and falling back to player heading when expert positions are "
-            "missing. Returns a structured "
+            "pattern over the iloc range using the driver's local path / "
+            "heading for signed longitudinal/lateral gaps. Returns a structured "
             "'opponent_interaction_classification' attachment with "
             "`role` (attack / defense / following / side_by_side / incidental), "
             "`outcome` (pass_completed, held_defense, failed_attack, "

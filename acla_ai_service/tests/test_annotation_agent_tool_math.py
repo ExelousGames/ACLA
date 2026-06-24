@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -36,6 +39,18 @@ def _trajectory_df(x: np.ndarray, y: np.ndarray) -> pd.DataFrame:
         "expert_optimal_speed": np.full(len(x), 80.0),
         "expert_optimal_steering": np.zeros(len(x)),
     })
+
+
+RACING_DOCS = [
+    "failed_late_brake_attack_at_entry.md",
+    "failed_outside_line_sweep.md",
+    "failed_switchback.md",
+    "failed_slipstream_gain_on_straight.md",
+    "inside_cover_broken_early_brake_defense.md",
+    "defensive_lift_broken_on_straight.md",
+    "failed_overtake_attempt_type_unclear.md",
+    "defense_broken_type_unclear.md",
+]
 
 
 def test_time_difference_uses_exact_expert_time_difference_column():
@@ -1206,30 +1221,155 @@ def test_detailed_preflight_outputs_exit_gear_verdict():
     assert "gear too low when accelerating" in semantic_search_text
 
 
-def test_detailed_preflight_events_capture_opponent_outcomes():
+def test_racing_detailed_preflight_outputs_indexed_opponent_facts():
+    df = pd.DataFrame(
+        {
+            "Graphics_player_pos_x": [0.0, 1.0, 2.5, 4.5, 7.0, 10.0],
+            "Graphics_player_pos_y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "Car_3_pos_x": [5.0, 5.8, 6.4, 6.8, 7.0, 7.1],
+            "Car_3_pos_y": [0.0, 2.0, 2.0, 2.0, 1.5, 0.0],
+        },
+        index=range(100, 106),
+    )
+
     events = preflight_detailed._build_detailed_events(
-        pd.DataFrame(),
-        0,
-        20,
+        df,
+        100,
+        105,
         [
             (
                 "classify_opponent_interaction",
                 {
-                    "outcome": "failed_attack",
+                    "outcome": "pass_completed",
                     "confidence_level": "high",
                     "primary_slot_for_role": 3,
                 },
             )
         ],
+        parent_main_labels=["O"],
+    )
+    text = preflight_detailed._semantic_search_text(events, ["O"], [])
+
+    assert "the opponent started ahead of the driver, against opponent slot 3; at index 100" in text
+    assert "the driver ended ahead of the opponent, against opponent slot 3; at index 105" in text
+    assert "the gap flipped from opponent ahead to driver ahead" in text
+    assert "the driver drew alongside the opponent, against opponent slot 3; from index" in text
+    assert "the opponent was on the driver's left side" in text
+    assert "the gap to the opponent shrank from" in text
+    assert "the driver gained relative speed" in text
+    assert "the driver accelerated better than the opponent" in text
+    assert "wider than expert" not in text
+    assert "later than expert" not in text
+    assert "expert_time_difference" not in text
+
+
+def test_racing_detailed_preflight_outputs_broken_defense_motion_facts():
+    df = pd.DataFrame(
+        {
+            "Graphics_player_pos_x": [0.0, 4.0, 7.0, 9.0, 10.0, 10.5],
+            "Graphics_player_pos_y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "Car_4_pos_x": [-5.0, -1.0, 3.0, 7.0, 10.0, 13.0],
+            "Car_4_pos_y": [0.0, 2.0, 2.0, 2.0, 1.5, 0.0],
+        },
+        index=range(200, 206),
     )
 
-    assert events[0]["event"] == "failed attack"
-    assert events[0]["confidence"] == "strong"
-    assert events[0]["measurements"]["primary_slot_for_role"] == 3
-    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
-    assert "failed overtake attempt" in semantic_search_text
-    assert "close opponent caused position or time loss" in semantic_search_text
-    assert "MSR" not in semantic_search_text
+    events = preflight_detailed._build_detailed_events(
+        df,
+        200,
+        205,
+        [
+            (
+                "classify_opponent_interaction",
+                {
+                    "outcome": "broken_defense",
+                    "confidence_level": "high",
+                    "primary_slot_for_role": 4,
+                },
+            )
+        ],
+        parent_main_labels=["MSR"],
+    )
+    text = preflight_detailed._semantic_search_text(events, ["MSR"], [])
+
+    assert "the driver started ahead of the opponent, against opponent slot 4; at index 200" in text
+    assert "the opponent ended ahead of the driver, against opponent slot 4; at index 205" in text
+    assert "the gap flipped from driver ahead to opponent ahead" in text
+    assert "the opponent drew alongside the driver, against opponent slot 4; from index" in text
+    assert "the driver slowed more than the opponent" in text
+    assert "tighter than expert" not in text
+    assert "earlier than expert" not in text
+    assert "expert_time_difference" not in text
+
+
+def test_racing_label_catalog_and_docs_use_reusable_opponent_phrases():
+    root = Path(__file__).resolve().parents[1]
+    catalog = json.loads(
+        (root / "app/internal_knowledge_base/sub_label_annotation.json").read_text()
+    )
+    labels = catalog["labels"]
+    racing_ids = [
+        "O",
+        "OD",
+        "MSR",
+        "O1",
+        "O3",
+        "O4",
+        "O5",
+        "OD1",
+        "OD2",
+        "MSR1",
+        "MSR2",
+        "MSR3",
+        "MSR4",
+        "MSR5",
+        "MSR6",
+        "MSR7",
+        "MSR8",
+    ]
+    racing_text = "\n".join(
+        str(labels[label_id].get("description", ""))
+        + "\n"
+        + str(labels[label_id].get("annotation_guideline", ""))
+        for label_id in racing_ids
+    )
+
+    for phrase in (
+        "opponent started ahead of the driver",
+        "driver ended ahead of the opponent",
+        "driver drew alongside the opponent",
+        "opponent drew alongside the driver",
+        "opponent was on the driver's left/right side",
+        "gap to the opponent shrank",
+        "gap flipped from opponent ahead to driver ahead",
+        "gap flipped from driver ahead to opponent ahead",
+        "driver gained relative speed",
+        "driver accelerated better than the opponent",
+        "driver slowed more/less than the opponent",
+    ):
+        assert phrase in racing_text
+
+    for forbidden in (
+        "wider than expert",
+        "tighter than expert",
+        "expert_time_difference",
+        "later than expert",
+        "earlier than expert",
+        "reference-lap",
+    ):
+        assert forbidden not in racing_text
+
+    docs_root = root / "app/external_knowledge_base/labels"
+    docs_text = "\n".join((docs_root / name).read_text() for name in RACING_DOCS)
+    for forbidden in (
+        "wider than expert",
+        "tighter than expert",
+        "expert_time_difference",
+        "time difference to the expert",
+        "at or below expert",
+        "expert reference",
+    ):
+        assert forbidden not in docs_text
 
 
 def test_detailed_preflight_outputs_sentence_evidence_without_label_tool():

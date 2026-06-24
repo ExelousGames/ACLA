@@ -21,6 +21,7 @@ from app.shared.contracts import Attachment
 
 
 TRAJECTORY_ALIGNED_SIMILARITY_THRESHOLD = 0.8
+RACING_PARENT_LABELS = {"O", "OD", "MSR"}
 
 
 DETAILED_PREFLIGHT_TOOL_IDS = (
@@ -229,42 +230,6 @@ _ALTITUDE_WORDS = {
     ),
 }
 
-_OPPONENT_OUTCOME_SEARCH_WORDS = {
-    "pass_completed": [
-        "successful overtake player gained a position on a close opponent",
-        "pass completed opponent starts ahead and ends behind the player",
-        "late-brake attack at corner entry brake initiation later than expert trajectory tightening",
-        "outside-line sweep trajectory wider than expert through entry-to-apex",
-        "switchback line cross from wider entry to tighter exit earlier throttle pickup",
-        "slipstream draft on straight speed greater than expert with throttle at or below expert",
-    ],
-    "held_defense": [
-        "successful defense player held position against a close opponent",
-        "held defense opponent threatened from behind or alongside but did not get ahead by exit",
-        "inside cover at corner entry brake initiation earlier than expert trajectory tighter than expert",
-        "defensive lift on straight throttle drops below expert with no matching brake onset",
-    ],
-    "failed_attack": [
-        "racing mistake failed overtake attempt close opponent caused position or time loss",
-        "failed attack player closed or went side-by-side but pass did not complete",
-        "failed late-brake attack brake initiation later than expert trajectory tightening but no pass",
-        "failed outside-line sweep trajectory wider than expert but no pass",
-        "failed switchback line cross attempt but pass did not complete",
-        "failed slipstream gain speed greater than expert with throttle at or below expert but no pass",
-    ],
-    "broken_defense": [
-        "racing mistake broken defense opponent got through by exit",
-        "defense broken player tried to hold position but opponent passed",
-        "broken inside cover brake initiation earlier than expert trajectory tighter than expert",
-        "broken defensive lift throttle drops below expert on straight but opponent got through",
-    ],
-    "close_following": [
-        "close-following target-car context opponent in line without decisive attack or defense outcome",
-        "draft pressure signed longitudinal gap shrinks but no completed pass",
-    ],
-}
-
-
 def build_preflight_context(
     *,
     df,
@@ -281,7 +246,13 @@ def build_preflight_context(
         *_run_tools(df, s, e, DETAILED_PREFLIGHT_TOOL_IDS),
         *_run_queries(df, s, e, DETAILED_PREFLIGHT_QUERY_SPECS),
     ]
-    events = _build_detailed_events(df, s, e, tool_outputs)
+    events = _build_detailed_events(
+        df,
+        s,
+        e,
+        tool_outputs,
+        parent_main_labels=parent_main_labels,
+    )
     event_text = _event_text(events, parent_main_labels, extra_query_terms)
     semantic_search_text = _semantic_search_text(
         events,
@@ -364,14 +335,20 @@ def _build_detailed_events(
     start: int,
     end: int,
     tool_outputs: Sequence[Tuple[str, Dict[str, Any]]],
+    parent_main_labels: Sequence[str] = (),
 ) -> List[Dict[str, Any]]:
     by_tool = {tool_id: content for tool_id, content in tool_outputs}
     phases = _phase_windows(by_tool)
+    racing_context = _is_racing_parent_context(parent_main_labels)
     events: List[Dict[str, Any]] = []
 
     _extend(events, _phase_marker_events(phases))
     _extend(events, _shape_events(start, end, by_tool, phases))
-    _extend(events, _opponent_events(start, end, by_tool))
+    if racing_context:
+        _extend(events, _opponent_relative_motion_events(df, start, end, by_tool))
+        _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
+        return _dedupe_events(events)
+
     _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "brake"))
     _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "throttle"))
     _extend(events, _input_timing_comparison_events(df, start, end, phases))
@@ -383,6 +360,10 @@ def _build_detailed_events(
     _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
 
     return _dedupe_events(events)
+
+
+def _is_racing_parent_context(parent_main_labels: Sequence[str]) -> bool:
+    return any(str(label_id) in RACING_PARENT_LABELS for label_id in parent_main_labels)
 
 
 def _phase_marker_events(phases: List[Dict[str, int]]) -> List[Dict[str, Any]]:
@@ -491,46 +472,478 @@ def _shape_event_name(
     return "; ".join(words).lower()
 
 
-def _opponent_events(
+def _opponent_relative_motion_events(
+    df,
     start: int,
     end: int,
     by_tool: Dict[str, Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    content = by_tool.get("classify_opponent_interaction") or {}
-    outcome = str(content.get("outcome") or "")
-    mapped = {
-        "pass_completed": "pass completed",
-        "held_defense": "held defense",
-        "failed_attack": "failed attack",
-        "broken_defense": "broken defense",
-    }.get(outcome)
-    if not mapped:
+    slot = _primary_opponent_slot(by_tool)
+    if slot is None:
         return []
-    measurements = {
-        key: content.get(key)
-        for key in (
-            "outcome",
-            "confidence",
-            "confidence_level",
-            "primary_slot_for_role",
-            "entry_signed_long_gap_m",
-            "exit_signed_long_gap_m",
-            "min_distance_m",
-            "min_lateral_offset_m",
-            "side_by_side_iloc_count",
-        )
-        if key in content
-    }
-    event = _event(
-        mapped,
-        "whole_range",
-        [start, end],
-        measurements,
-        _confidence_from_level(content.get("confidence_level")),
-        ["classify_opponent_interaction"],
+
+    motion = _opponent_relative_motion(df, start, end, slot)
+    if not motion:
+        return []
+
+    ilocs = motion["ilocs"]
+    signed_long = motion["signed_long_gap_m"]
+    lateral = motion["lateral_offset_m"]
+    distance = motion["distance_m"]
+    events: List[Dict[str, Any]] = []
+
+    start_iloc = int(ilocs[0])
+    end_iloc = int(ilocs[-1])
+    start_gap = float(signed_long[0])
+    end_gap = float(signed_long[-1])
+    closest_pos = _min_index(distance)
+    closest_iloc = int(ilocs[closest_pos])
+
+    start_name = (
+        "opponent started ahead of the driver"
+        if start_gap > 1.5
+        else "driver started ahead of the opponent"
+        if start_gap < -1.5
+        else "driver and opponent started nearly level"
     )
-    event["semantic_search_terms"] = _OPPONENT_OUTCOME_SEARCH_WORDS.get(outcome, [])
-    return [event]
+    events.append(_event(
+        start_name,
+        "whole_range",
+        [start_iloc, start_iloc],
+        {
+            "index": start_iloc,
+            "signed_gap_m": start_gap,
+            "slot": slot,
+        },
+        "strong",
+        ["local_opponent_relative_position"],
+    ))
+
+    end_name = (
+        "opponent ended ahead of the driver"
+        if end_gap > 1.5
+        else "driver ended ahead of the opponent"
+        if end_gap < -1.5
+        else "driver and opponent ended nearly level"
+    )
+    events.append(_event(
+        end_name,
+        "whole_range",
+        [end_iloc, end_iloc],
+        {
+            "index": end_iloc,
+            "signed_gap_m": end_gap,
+            "slot": slot,
+        },
+        "strong",
+        ["local_opponent_relative_position"],
+    ))
+
+    if start_gap > 1.5 and end_gap < -1.5:
+        events.append(_event(
+            "gap flipped from opponent ahead to driver ahead",
+            "whole_range",
+            [start_iloc, end_iloc],
+            {
+                "start_index": start_iloc,
+                "end_index": end_iloc,
+                "start_gap_m": start_gap,
+                "end_gap_m": end_gap,
+                "slot": slot,
+            },
+            "strong",
+            ["local_opponent_relative_position"],
+        ))
+    elif start_gap < -1.5 and end_gap > 1.5:
+        events.append(_event(
+            "gap flipped from driver ahead to opponent ahead",
+            "whole_range",
+            [start_iloc, end_iloc],
+            {
+                "start_index": start_iloc,
+                "end_index": end_iloc,
+                "start_gap_m": start_gap,
+                "end_gap_m": end_gap,
+                "slot": slot,
+            },
+            "strong",
+            ["local_opponent_relative_position"],
+        ))
+
+    if abs(end_gap) < abs(start_gap) - max(1.0, abs(start_gap) * 0.1):
+        events.append(_event(
+            "gap to the opponent shrank",
+            "whole_range",
+            [start_iloc, end_iloc],
+            {
+                "start_index": start_iloc,
+                "end_index": end_iloc,
+                "start_gap_m": abs(start_gap),
+                "end_gap_m": abs(end_gap),
+                "slot": slot,
+            },
+            "strong",
+            ["local_opponent_relative_position"],
+        ))
+
+    side = "left" if float(lateral[closest_pos]) > 0.0 else "right"
+    events.append(_event(
+        f"opponent was on the driver's {side} side",
+        "whole_range",
+        [closest_iloc, closest_iloc],
+        {
+            "index": closest_iloc,
+            "lateral_offset_m": float(lateral[closest_pos]),
+            "distance_m": float(distance[closest_pos]),
+            "slot": slot,
+        },
+        "strong",
+        ["local_opponent_relative_position"],
+    ))
+
+    for run_start, run_end in _alongside_runs(ilocs, signed_long, lateral):
+        first = int(run_start)
+        last = int(run_end)
+        local_start = _index_position(ilocs, first)
+        if local_start is None:
+            continue
+        actor = (
+            "driver"
+            if float(signed_long[local_start]) >= 0.0
+            else "opponent"
+        )
+        event_name = (
+            "driver drew alongside the opponent"
+            if actor == "driver"
+            else "opponent drew alongside the driver"
+        )
+        events.append(_event(
+            event_name,
+            "whole_range",
+            [first, last],
+            {
+                "start_index": first,
+                "end_index": last,
+                "slot": slot,
+            },
+            "strong" if last > first else "moderate",
+            ["local_opponent_relative_position"],
+        ))
+        break
+
+    relative_speed = motion.get("relative_speed")
+    speed_indices = motion.get("speed_indices")
+    if relative_speed and speed_indices and len(relative_speed) >= 2:
+        speed_change = float(relative_speed[-1]) - float(relative_speed[0])
+        if speed_change > _motion_change_guard(relative_speed, 0.25):
+            events.append(_event(
+                "driver gained relative speed",
+                "whole_range",
+                [int(speed_indices[0]), int(speed_indices[-1])],
+                {
+                    "start_index": int(speed_indices[0]),
+                    "end_index": int(speed_indices[-1]),
+                    "start_relative_speed": float(relative_speed[0]),
+                    "end_relative_speed": float(relative_speed[-1]),
+                    "speed_units": motion.get("speed_units"),
+                    "slot": slot,
+                },
+                "strong",
+                ["local_opponent_relative_speed"],
+            ))
+
+    acceleration_diff = motion.get("acceleration_diff")
+    accel_indices = motion.get("acceleration_indices")
+    if acceleration_diff and accel_indices:
+        median_accel = _median(acceleration_diff)
+        if median_accel is not None and median_accel > _motion_change_guard(acceleration_diff, 0.05):
+            events.append(_event(
+                "driver accelerated better than the opponent",
+                "whole_range",
+                [int(accel_indices[0]), int(accel_indices[-1])],
+                {
+                    "start_index": int(accel_indices[0]),
+                    "end_index": int(accel_indices[-1]),
+                    "median_acceleration_advantage": median_accel,
+                    "acceleration_units": motion.get("acceleration_units"),
+                    "slot": slot,
+                },
+                "strong",
+                ["local_opponent_relative_acceleration"],
+            ))
+
+    deceleration_diff = motion.get("deceleration_diff")
+    decel_indices = motion.get("deceleration_indices")
+    if deceleration_diff and decel_indices:
+        median_decel = _median(deceleration_diff)
+        guard = _motion_change_guard(deceleration_diff, 0.05)
+        if median_decel is not None and abs(median_decel) > guard:
+            event_name = (
+                "driver slowed more than the opponent"
+                if median_decel > 0
+                else "driver slowed less than the opponent"
+            )
+            events.append(_event(
+                event_name,
+                "whole_range",
+                [int(decel_indices[0]), int(decel_indices[-1])],
+                {
+                    "start_index": int(decel_indices[0]),
+                    "end_index": int(decel_indices[-1]),
+                    "median_deceleration_difference": median_decel,
+                    "acceleration_units": motion.get("acceleration_units"),
+                    "slot": slot,
+                },
+                "strong",
+                ["local_opponent_relative_deceleration"],
+            ))
+
+    return events
+
+
+def _primary_opponent_slot(by_tool: Dict[str, Dict[str, Any]]) -> Optional[int]:
+    interaction = by_tool.get("classify_opponent_interaction") or {}
+    for key in ("primary_slot_for_role", "targeted_car_slot"):
+        value = interaction.get(key)
+        if isinstance(value, int):
+            return value
+    nearest = by_tool.get("find_nearest_opponent") or {}
+    candidates = nearest.get("candidates")
+    if isinstance(candidates, list):
+        for candidate in candidates:
+            if isinstance(candidate, dict) and isinstance(candidate.get("slot"), int):
+                return int(candidate["slot"])
+    return None
+
+
+def _opponent_relative_motion(
+    df,
+    start: int,
+    end: int,
+    slot: int,
+) -> Optional[Dict[str, Any]]:
+    if df is None:
+        return None
+    required = {
+        "Graphics_player_pos_x",
+        "Graphics_player_pos_y",
+        f"Car_{slot}_pos_x",
+        f"Car_{slot}_pos_y",
+    }
+    if not required.issubset(set(getattr(df, "columns", []))):
+        return None
+
+    try:
+        seg = df.loc[int(start): int(end)]
+    except Exception:  # noqa: BLE001
+        return None
+    if len(seg) < 2:
+        return None
+
+    try:
+        import numpy as np
+        from app.shared.annotation_agent_tools import (
+            _active_opponent_mask,
+            _relative_position_frame,
+        )
+
+        player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+        player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+        opponent_x = seg[f"Car_{slot}_pos_x"].to_numpy(dtype=float)
+        opponent_y = seg[f"Car_{slot}_pos_y"].to_numpy(dtype=float)
+        active = _active_opponent_mask(
+            seg,
+            int(slot),
+            opponent_x,
+            opponent_y,
+            player_x,
+            player_y,
+        )
+        signed_long, lateral, _player_s, _player_d, frame_name = (
+            _relative_position_frame(seg, player_x, player_y, opponent_x, opponent_y)
+        )
+        distance = np.sqrt((opponent_x - player_x) ** 2 + (opponent_y - player_y) ** 2)
+        finite = (
+            active
+            & np.isfinite(signed_long)
+            & np.isfinite(lateral)
+            & np.isfinite(distance)
+        )
+        positions = np.where(finite)[0]
+    except Exception:  # noqa: BLE001
+        return None
+
+    if positions.size < 2:
+        return None
+
+    iloc_index = [int(value) for value in seg.index.to_list()]
+    ilocs = [iloc_index[int(pos)] for pos in positions]
+    motion: Dict[str, Any] = {
+        "slot": int(slot),
+        "coordinate_frame": frame_name,
+        "ilocs": ilocs,
+        "signed_long_gap_m": [float(signed_long[int(pos)]) for pos in positions],
+        "lateral_offset_m": [float(lateral[int(pos)]) for pos in positions],
+        "distance_m": [float(distance[int(pos)]) for pos in positions],
+    }
+
+    speed = _player_opponent_speed_motion(
+        seg,
+        player_x,
+        player_y,
+        opponent_x,
+        opponent_y,
+        finite,
+    )
+    motion.update(speed)
+    return motion
+
+
+def _player_opponent_speed_motion(
+    seg,
+    player_x,
+    player_y,
+    opponent_x,
+    opponent_y,
+    finite,
+) -> Dict[str, Any]:
+    try:
+        import numpy as np
+    except Exception:  # noqa: BLE001
+        return {}
+    if len(seg) < 3:
+        return {}
+
+    dt = np.ones(len(seg) - 1, dtype=float)
+    speed_units = "m/sample"
+    acceleration_units = "m/sample^2"
+    if "Graphics_current_time" in getattr(seg, "columns", []):
+        time_ms = seg["Graphics_current_time"].to_numpy(dtype=float)
+        raw_dt = (time_ms[1:] - time_ms[:-1]) / 1000.0
+        if np.isfinite(raw_dt).any() and np.nanmedian(raw_dt) > 1e-6:
+            dt = raw_dt
+            speed_units = "m/s"
+            acceleration_units = "m/s^2"
+
+    valid_step = finite[1:] & finite[:-1] & np.isfinite(dt) & (dt > 1e-9)
+    player_step = np.sqrt((player_x[1:] - player_x[:-1]) ** 2 + (player_y[1:] - player_y[:-1]) ** 2)
+    opponent_step = np.sqrt((opponent_x[1:] - opponent_x[:-1]) ** 2 + (opponent_y[1:] - opponent_y[:-1]) ** 2)
+    player_speed = np.full(len(seg) - 1, np.nan, dtype=float)
+    opponent_speed = np.full(len(seg) - 1, np.nan, dtype=float)
+    np.divide(player_step, dt, out=player_speed, where=valid_step)
+    np.divide(opponent_step, dt, out=opponent_speed, where=valid_step)
+    relative_speed = player_speed - opponent_speed
+    speed_positions = np.where(valid_step & np.isfinite(relative_speed))[0] + 1
+    iloc_index = [int(value) for value in seg.index.to_list()]
+
+    out: Dict[str, Any] = {
+        "speed_units": speed_units,
+        "acceleration_units": acceleration_units,
+    }
+    if speed_positions.size:
+        out["speed_indices"] = [iloc_index[int(pos)] for pos in speed_positions]
+        out["relative_speed"] = [
+            float(relative_speed[int(pos) - 1])
+            for pos in speed_positions
+        ]
+
+    if relative_speed.size < 2:
+        return out
+
+    accel_dt = dt[1:]
+    valid_accel = (
+        valid_step[1:]
+        & valid_step[:-1]
+        & np.isfinite(accel_dt)
+        & (accel_dt > 1e-9)
+    )
+    player_accel = np.full(relative_speed.size - 1, np.nan, dtype=float)
+    opponent_accel = np.full(relative_speed.size - 1, np.nan, dtype=float)
+    np.divide(
+        player_speed[1:] - player_speed[:-1],
+        accel_dt,
+        out=player_accel,
+        where=valid_accel,
+    )
+    np.divide(
+        opponent_speed[1:] - opponent_speed[:-1],
+        accel_dt,
+        out=opponent_accel,
+        where=valid_accel,
+    )
+    accel_diff = player_accel - opponent_accel
+    accel_positions = np.where(valid_accel & np.isfinite(accel_diff))[0] + 2
+    if accel_positions.size:
+        out["acceleration_indices"] = [
+            iloc_index[int(pos)]
+            for pos in accel_positions
+        ]
+        out["acceleration_diff"] = [
+            float(accel_diff[int(pos) - 2])
+            for pos in accel_positions
+        ]
+
+    player_decel = np.where(player_accel < 0.0, -player_accel, 0.0)
+    opponent_decel = np.where(opponent_accel < 0.0, -opponent_accel, 0.0)
+    decel_diff = player_decel - opponent_decel
+    decel_mask = valid_accel & np.isfinite(decel_diff) & (
+        (player_decel > 0.0) | (opponent_decel > 0.0)
+    )
+    decel_positions = np.where(decel_mask)[0] + 2
+    if decel_positions.size:
+        out["deceleration_indices"] = [
+            iloc_index[int(pos)]
+            for pos in decel_positions
+        ]
+        out["deceleration_diff"] = [
+            float(decel_diff[int(pos) - 2])
+            for pos in decel_positions
+        ]
+    return out
+
+
+def _alongside_runs(
+    ilocs: Sequence[int],
+    signed_long: Sequence[float],
+    lateral: Sequence[float],
+) -> List[Tuple[int, int]]:
+    mask = [
+        abs(float(long_gap)) <= 6.0
+        and 1.25 <= abs(float(side_gap)) <= 6.0
+        for long_gap, side_gap in zip(signed_long, lateral)
+    ]
+    runs: List[Tuple[int, int]] = []
+    start: Optional[int] = None
+    last: Optional[int] = None
+    for iloc, active in zip(ilocs, mask):
+        if active and start is None:
+            start = int(iloc)
+        if active:
+            last = int(iloc)
+            continue
+        if start is not None and last is not None:
+            runs.append((start, last))
+        start = last = None
+    if start is not None and last is not None:
+        runs.append((start, last))
+    return sorted(runs, key=lambda item: item[1] - item[0], reverse=True)
+
+
+def _index_position(values: Sequence[int], target: int) -> Optional[int]:
+    for pos, value in enumerate(values):
+        if int(value) == int(target):
+            return pos
+    return None
+
+
+def _min_index(values: Sequence[float]) -> int:
+    return min(range(len(values)), key=lambda pos: float(values[pos]))
+
+
+def _motion_change_guard(values: Sequence[float], floor: float) -> float:
+    finite = [abs(float(value)) for value in values if _is_number(value)]
+    baseline = float(_median(finite) or 0.0)
+    return max(float(floor), baseline * 0.25)
 
 
 def _peak_comparison_events(
@@ -2302,6 +2715,14 @@ def _event_sentence(event: Dict[str, Any]) -> str:
     confidence = str(event.get("confidence") or "").strip()
     confidence_text = f"with {confidence} confidence" if confidence else ""
 
+    if _is_opponent_relative_fact(event_name):
+        subject = event_name
+        if subject.startswith(("opponent", "driver", "gap")):
+            subject = "the " + subject
+        parts = [part for part in [*fragments, confidence_text] if part]
+        detail = ", " + "; ".join(parts) if parts else ""
+        return f"{phase}{subject}{detail}."
+
     shape_terms = _event_label_vocabulary_terms(event_name)
     if shape_terms:
         primary, *vocabulary_terms = shape_terms
@@ -2322,6 +2743,17 @@ def _event_sentence(event: Dict[str, Any]) -> str:
     parts = [part for part in [range_text, *fragments, confidence_text] if part]
     detail = ", " + "; ".join(parts) if parts else ""
     return f"{phase}the evidence shows {event_name}{detail}."
+
+
+def _is_opponent_relative_fact(event_name: str) -> bool:
+    return (
+        event_name.startswith("opponent ")
+        or event_name.startswith("driver ")
+        or event_name.startswith("gap ")
+    ) and (
+        "opponent" in event_name
+        or "driver" in event_name
+    )
 
 
 def _event_label_vocabulary_terms(event_name: str) -> List[str]:
@@ -2376,6 +2808,67 @@ def _measurement_sentence_fragments(
     measurements: Dict[str, Any],
 ) -> List[str]:
     fragments: List[str] = []
+
+    if _is_opponent_relative_fact(event_name):
+        index = measurements.get("index")
+        start_index = measurements.get("start_index")
+        end_index = measurements.get("end_index")
+        signed_gap = measurements.get("signed_gap_m")
+        start_gap = measurements.get("start_gap_m")
+        end_gap = measurements.get("end_gap_m")
+        lateral = measurements.get("lateral_offset_m")
+        distance = measurements.get("distance_m")
+        slot = measurements.get("slot")
+        if slot is not None:
+            fragments.append(f"against opponent slot {slot}")
+        if index is not None:
+            fragments.append(f"at index {index}")
+        elif start_index is not None and end_index is not None:
+            fragments.append(f"from index {start_index} to {end_index}")
+        if signed_gap is not None:
+            fragments.append(
+                f"signed ahead/behind gap was {_format_value(signed_gap)} m"
+            )
+        if event_name == "gap to the opponent shrank" and start_gap is not None and end_gap is not None:
+            fragments.append(
+                "gap to the opponent shrank from "
+                f"{_format_value(start_gap)} m to {_format_value(end_gap)} m"
+            )
+        elif event_name.startswith("gap flipped") and start_gap is not None and end_gap is not None:
+            fragments.append(
+                "signed ahead/behind gap changed from "
+                f"{_format_value(start_gap)} m to {_format_value(end_gap)} m"
+            )
+        if lateral is not None:
+            fragments.append(f"side offset was {_format_value(lateral)} m")
+        if distance is not None:
+            fragments.append(f"car-to-car distance was {_format_value(distance)} m")
+        start_speed = measurements.get("start_relative_speed")
+        end_speed = measurements.get("end_relative_speed")
+        speed_units = measurements.get("speed_units")
+        if start_speed is not None and end_speed is not None:
+            unit_text = f" {speed_units}" if speed_units else ""
+            fragments.append(
+                "driver-minus-opponent speed changed from "
+                f"{_format_value(start_speed)} to {_format_value(end_speed)} "
+                f"{unit_text}"
+            )
+        accel = measurements.get("median_acceleration_advantage")
+        accel_units = measurements.get("acceleration_units")
+        if accel is not None:
+            unit_text = f" {accel_units}" if accel_units else ""
+            fragments.append(
+                "median acceleration advantage was "
+                f"{_format_value(accel)}{unit_text}"
+            )
+        decel = measurements.get("median_deceleration_difference")
+        if decel is not None:
+            unit_text = f" {accel_units}" if accel_units else ""
+            fragments.append(
+                "median deceleration difference was "
+                f"{_format_value(decel)}{unit_text}"
+            )
+        return fragments
 
     boundary = None
     if (
@@ -2750,12 +3243,16 @@ def _prompt_block(
     lines = [
         "#### Required Upfront Detailed Statistical Preflight",
         "The system already ran deterministic tools and converted their "
-        "results into evidence sentences.",
-        "Use only these preflight evidence sentences and the upfront searched "
-        "labels for initial detailed-label reasoning.",
+        "results into human-readable fact sentences.",
+        "These preflight sentences do not identify labels. They only provide "
+        "facts with indices and values when available. The sub-label catalog "
+        "is the only place that judges which label fits.",
+        "Use only these preflight fact sentences and the upfront searched "
+        "labels for initial detailed-label reasoning. Reuse the same fact "
+        "phrases in the final reasoning when they apply.",
         f"The detailed parent range is [{start}, {end}].",
         "",
-        "Preflight evidence sentences:",
+        "Preflight fact sentences:",
     ]
     if event_text:
         lines.extend(f"- {line}" for line in event_text.splitlines() if line.strip())
@@ -2811,15 +3308,6 @@ def _timing_confidence(delta: Any) -> str:
     if abs_delta >= 2:
         return "moderate"
     return "weak"
-
-
-def _confidence_from_level(value: Any) -> str:
-    text = str(value or "").lower()
-    if text in {"high", "strong"}:
-        return "strong"
-    if text in {"medium", "moderate"}:
-        return "moderate"
-    return "weak" if text else "moderate"
 
 
 def _is_number(value: Any) -> bool:

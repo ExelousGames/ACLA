@@ -19,13 +19,11 @@ enough to stay ahead onto the next braking zone.
 - A close opponent runs alongside the player from entry to exit; the
   lateral offset starts to cross but the positions never flip.
 - Neither the player nor the opponent completed the pass.
-- Brake **initiation onset is earlier than** the expert's; trajectory
-  offset goes from **wider than expert** at entry to **tighter than
-  expert** at exit (the cross-over shape).
-- Throttle **application onset is earlier than** expert around the
-  exit.
-- Time difference to the expert grows across the section — the
-  sacrificed entry cost more than the exit recovered.
+- Opponent and driver swapped sides through the corner, or the side
+  swap started.
+- The gap did not flip from opponent ahead to driver ahead.
+- Driver may gain relative speed at exit, but not enough to complete
+  the pass.
 
 ## Engineer interpretation
 The shape was right but the run-out was wrong. A switchback only

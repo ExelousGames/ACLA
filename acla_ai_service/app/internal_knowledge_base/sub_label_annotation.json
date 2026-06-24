@@ -21,7 +21,7 @@
       "name": "Successful Overtake",
       "type": "main",
       "description": "Player gained a position on a specific opponent inside the section. Required classifier evidence: `classify_opponent_interaction(start, end)` must return `outcome: pass_completed` with medium/high confidence. Low / weak confidence requires opponent-trajectory inspection or omitting the label. The classifier's primary slot is the opponent to cite. A close opponent with `outcome: failed_attack` is MSR, not O. Defensive holds are OD; failed defenses are MSR.\n",
-      "annotation_guideline": "How to identify the sublabels for Successful Overtake: Step 1 — Confirm the pass. Call `classify_opponent_interaction(start, end)`. The result MUST have `outcome: pass_completed` with medium/high confidence. If not, do NOT propose any O sub-label — use the classifier outcome to decide OD, MSR, or no-O. Quote `primary_slot_for_role`, `outcome`, `confidence`, `confidence_level`, `entry_signed_long_gap_m`, `exit_signed_long_gap_m`, `min_distance_m`, `min_lateral_offset_m`, and `side_by_side_iloc_count` from the classifier / nearest-opponent evidence. Step 2 — Pick the technique sub-label by where the pass happened and how the player's own trace diverges from the expert:\n  - O1 (late-brake attack at corner entry): player's brake\n    initiation later than expert + tightening trajectory.\n  - O3 (outside-line sweep through a corner): trajectory wider\n    than expert through entry-to-apex.\n  - O4 (switchback): offset crosses outside-at-entry to\n    inside-at-exit, earlier throttle on exit.\n  - O5 (slipstream on a straight): speed > expert with throttle\n    ≤ expert; gap closed smoothly. Confirm with\n    `query_opponent_trajectory(start, end, slot, n_samples)`.\n",
+      "annotation_guideline": "How to identify the sublabels for Successful Overtake: Step 1 — Confirm the pass. Call `classify_opponent_interaction(start, end)`. The result MUST have `outcome: pass_completed` with medium/high confidence. If not, do NOT propose any O sub-label — use the classifier outcome to decide OD, MSR, or no-O. Quote opponent-relative preflight phrases when available, such as opponent started ahead of the driver, driver ended ahead of the opponent, gap flipped from opponent ahead to driver ahead, driver drew alongside the opponent, opponent was on the driver's left/right side, gap to the opponent shrank, driver gained relative speed, driver accelerated better than the opponent, and driver slowed less than the opponent. Step 2 — Pick the technique sub-label from opponent/player position facts, not solo-lap comparisons:\n  - O1 (late-brake attack at corner entry): driver drew alongside the opponent under braking and ended ahead.\n  - O3 (outside-line sweep through a corner): opponent was on the driver's inside side while the driver stayed outside and ended ahead.\n  - O4 (switchback): opponent and driver swapped sides through the corner and the gap flipped from opponent ahead to driver ahead.\n  - O5 (slipstream on a straight): gap to the opponent shrank on the straight, driver gained relative speed, and the gap flipped from opponent ahead to driver ahead.\n",
       "parent": null,
       "children": [
         "O1",
@@ -38,7 +38,7 @@
       "name": "Successful Defense",
       "type": "main",
       "description": "Player held position against a real, close opponent inside the section. Required classifier evidence: `classify_opponent_interaction(start, end)` must return `outcome: held_defense` with medium/high confidence. Low / weak confidence requires opponent-trajectory inspection or omitting the label. A merely close opponent with no held-defense outcome is not OD; a player who lost the position is MSR (`broken_defense`), not OD.\n",
-      "annotation_guideline": "How to identify the sublabels for Successful Defense: Step 1 — Confirm the defense. Call `classify_opponent_interaction(start, end)`. Require `outcome: held_defense` with medium/high confidence. If the classifier does not return held defense with enough confidence, the section is not OD. Quote the same classifier / opponent fields as for O in reasoning. Step 2 — Pick the technique sub-label by where the defense happened:\n  - OD1 (inside cover at corner entry): player's brake\n    initiation earlier than expert and/or trajectory tighter\n    than expert through entry-to-apex; opponent close on the\n    outside / behind.\n  - OD2 (defensive lift on a straight): player's throttle drops\n    below expert with no matching brake; opponent close behind,\n    gap shrinks during the lift without flipping past the\n    player. Confirm with `query_opponent_trajectory`.\n",
+      "annotation_guideline": "How to identify the sublabels for Successful Defense: Step 1 — Confirm the defense. Call `classify_opponent_interaction(start, end)`. Require `outcome: held_defense` with medium/high confidence. If the classifier does not return held defense with enough confidence, the section is not OD. Quote opponent-relative preflight phrases when available, such as driver started ahead of the opponent, driver ended ahead of the opponent, opponent drew alongside the driver, opponent was on the driver's left/right side, gap to the opponent shrank, driver gained relative speed, driver accelerated better than the opponent, and driver slowed more/less than the opponent. Step 2 — Pick the technique sub-label by how the opponent/player positions evolved, not solo-lap comparisons:\n  - OD1 (inside cover at corner entry): opponent drew alongside the driver near the corner, but driver ended ahead of the opponent.\n  - OD2 (defensive lift on a straight): gap to the opponent shrank on the straight, but the driver still ended ahead of the opponent.\n",
       "parent": null,
       "children": [
         "OD1",
@@ -164,7 +164,7 @@
       "name": "Mistake (Racing)",
       "type": "main",
       "description": "Time / position loss caused by an interaction with a close opponent. Required interaction evidence: `outcome: failed_attack` or `outcome: broken_defense` with medium/high confidence. Low / weak confidence requires opponent-trajectory inspection or omitting the label. If the evidence does not support an adverse racing outcome, this is not MSR.\n",
-      "annotation_guideline": "How to identify sublabels for Racing Mistake: Step 1 — Confirm the adverse racing outcome. Require `outcome: failed_attack` or `outcome: broken_defense` with medium/high confidence. If not, the section is not MSR. Step 2 — Pick the outcome family from the interaction evidence:\n  - Failed overtake attempt: `outcome: failed_attack` — the player attacked but the pass did not complete.\n  - Defense broken: `outcome: broken_defense` — the opponent got through by exit.\nStep 3 — Pick the specific subtype by the player's trace. The MSR subtypes mirror the O / OD subtypes (same telemetry shape, opposite outcome). Prefer a specific subtype over the generic label when the trace lets you identify the attempt type:\n  - MSR3 (failed O1 late-brake attack at entry): brake\n    **initiation onset later than** expert + entry trajectory\n    tightening, but no pass.\n  - MSR4 (failed O3 outside-line sweep): trajectory **wider\n    than expert** through entry-to-apex, but no pass.\n  - MSR5 (failed O4 switchback): offset crosses outside-at-entry\n    to inside-at-exit (or the reverse intent), but no pass.\n  - MSR6 (failed O5 slipstream gain): on a straight, the opponent\n    gap closes but does not flip into a completed pass.\n  - MSR7 (broken OD1 inside cover): brake earlier than expert\n    and/or trajectory tighter, but opponent got through.\n  - MSR8 (broken OD2 defensive lift): throttle drops below\n    expert on a straight, but opponent got through.\n  - MSR1 / MSR2: only when the attempt-type signature cannot\n    be identified from the trace.\n",
+      "annotation_guideline": "How to identify sublabels for Racing Mistake: Step 1 — Confirm the adverse racing outcome. Require `outcome: failed_attack` or `outcome: broken_defense` with medium/high confidence. If not, the section is not MSR. Step 2 — Pick the outcome family from opponent-relative facts:\n  - Failed overtake attempt: opponent started ahead of the driver, the driver attacked or drew alongside the opponent, and the driver did not end ahead.\n  - Defense broken: driver started ahead of the opponent, the opponent drew alongside the driver, and the gap flipped from driver ahead to opponent ahead.\nStep 3 — Pick the specific subtype from opponent/player position and motion facts. Prefer a specific subtype over the generic label when the facts identify the attempt type:\n  - MSR3 (failed O1 late-brake attack at entry): driver drew alongside the opponent under braking but did not end ahead.\n  - MSR4 (failed O3 outside-line sweep): opponent was on the driver's inside side while the driver stayed outside, but the driver did not end ahead.\n  - MSR5 (failed O4 switchback): opponent and driver swapped sides through the corner, but the gap did not flip to driver ahead.\n  - MSR6 (failed O5 slipstream gain): gap to the opponent shrank on a straight and driver gained relative speed, but the gap did not flip to driver ahead.\n  - MSR7 (broken OD1 inside cover): opponent drew alongside the driver near the corner and the gap flipped from driver ahead to opponent ahead.\n  - MSR8 (broken OD2 defensive lift): gap to the opponent shrank on a straight and the gap flipped from driver ahead to opponent ahead.\n  - MSR1 / MSR2: only when the attempt-type signature cannot be identified from the opponent-relative facts.\n",
       "parent": null,
       "children": [
         "MSR1",
@@ -773,7 +773,7 @@
     "MSR3": {
       "name": "Failed late-brake attack at entry",
       "type": "sub",
-      "description": "Failure-mirror of O1. Player's brake **initiation onset is later than** the expert's at corner entry with **peak brake pressure higher than** the expert — a deliberate over-commit to pull alongside before the apex — but the pass did NOT stick. Often paired with **moving toward negative (tightening)** in the trajectory offset into the apex, an MSP-style entry overshoot (e.g. **entry trajectory bulges outside**), or a grip **over-limit spike** as the late brake exceeded grip. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O1 by the missing pass-completed outcome; distinguished from MSR1 by the identifiable late-brake signature.\n",
+      "description": "Failure-mirror of O1. Driver drew alongside the opponent under braking, often with the opponent on the driver's left/right side near corner entry, but the driver did not end ahead of the opponent. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O1 by the missing pass-completed outcome; distinguished from MSR1 by the identifiable under-braking alongside attempt.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -787,7 +787,7 @@
     "MSR4": {
       "name": "Failed outside-line sweep",
       "type": "sub",
-      "description": "Failure-mirror of O3. Trajectory offset **wider than expert** across entry-to-apex by a sustained margin — going around the outside — but the pass did NOT complete. Required interaction outcome: `failed_attack` with medium/high confidence; `query_opponent_trajectory` shows the opponent on the inside throughout the braking-to-apex window. Distinguished from O3 by the missing pass-completed outcome; from MSR1 by the identifiable outside-line signature; from MSP33 (entry too wide) by the close opponent being the cause.\n",
+      "description": "Failure-mirror of O3. Opponent was on the driver's inside side through the corner while the driver stayed outside, but the driver did not end ahead of the opponent. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O3 by the missing pass-completed outcome; from MSR1 by the identifiable outside-line opponent position; from MSP33 by the close opponent being the cause.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -801,7 +801,7 @@
     "MSR5": {
       "name": "Failed switchback",
       "type": "sub",
-      "description": "Failure-mirror of O4. Player attempted a concede-entry / reclaim-exit switchback — brake **initiation onset earlier than** expert, trajectory crossing from **wider than expert** at entry to **tighter than expert** at exit (or the reverse intent), and earlier throttle pickup on exit — but the pass did NOT complete by section end. Required interaction outcome: `failed_attack` with medium/high confidence; `query_opponent_trajectory` shows the opponent's lateral-offset crossing started but the signed longitudinal gap never produced a pass-completed outcome. Distinguished from O4 by the missing pass-completed outcome; from MSR1 by the identifiable cross-line signature.\n",
+      "description": "Failure-mirror of O4. Opponent and driver swapped sides through the corner, or the side swap started, but the gap did not flip from opponent ahead to driver ahead by section end. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O4 by the missing pass-completed outcome; from MSR1 by the identifiable side-swap / cross-line signature.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -816,7 +816,7 @@
     "MSR6": {
       "name": "Failed slipstream gain on straight",
       "type": "sub",
-      "description": "Failure-mirror of O5. On a straight section, the player closes on the opponent in the tow, but the pass does NOT complete. Required interaction outcome: `failed_attack` with medium/high confidence; `query_opponent_trajectory` shows the signed longitudinal gap shrinking but not crossing into a pass-completed outcome. Typically the straight ran out, the player pulled out too late, or peeled into a side-by-side at the brake zone that didn't stick. Distinguished from O5 by the missing pass-completed outcome; from MSR1 by the identifiable slipstream-closure signature.\n",
+      "description": "Failure-mirror of O5. On a straight section, gap to the opponent shrank and the driver gained relative speed, but the gap did not flip from opponent ahead to driver ahead. Required interaction outcome: `failed_attack` with medium/high confidence. Typically the straight ran out, the driver pulled out too late, or drew alongside the opponent too late for the pass to stick. Distinguished from O5 by the missing pass-completed outcome; from MSR1 by the identifiable straight-line closing signature.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -829,7 +829,7 @@
     "MSR7": {
       "name": "Inside cover broken (early-brake defense)",
       "type": "sub",
-      "description": "Failure-mirror of OD1. Player's brake **initiation onset is earlier than** expert AND/OR trajectory offset held **tighter than expert** across entry-to-apex — closing the inside line — but the primary opponent got through anyway. Often paired with a wide exit (offset **moving toward positive (widening)** post-apex) as the tight defensive entry forced a compromised exit. Required interaction outcome: `broken_defense` with medium/high confidence. Distinguished from OD1 by the broken-defense outcome; from MSR2 by the identifiable inside-cover signature.\n",
+      "description": "Failure-mirror of OD1. Opponent drew alongside the driver near the corner and the gap flipped from driver ahead to opponent ahead. The opponent was often on the driver's left/right side while the driver tried to hold the inside. Required interaction outcome: `broken_defense` with medium/high confidence. Distinguished from OD1 by the broken-defense outcome; from MSR2 by the identifiable corner-defense position change.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -844,7 +844,7 @@
     "MSR8": {
       "name": "Defensive lift broken on straight",
       "type": "sub",
-      "description": "Failure-mirror of OD2. On a straight: player's throttle drops **below expert** with NO matching brake (outside any braking zone) — an attempted defensive lift / feint — but the opponent's gap kept closing and they got through. Required interaction outcome: `broken_defense` with medium/high confidence; `query_opponent_trajectory` shows the signed longitudinal gap crossing across the straight. Distinguished from OD2 by the broken-defense outcome; from MSR2 by the identifiable lift signature; from MSP25 (throttle too slow) by the close opponent being the cause.\n",
+      "description": "Failure-mirror of OD2. On a straight, gap to the opponent shrank while the driver tried to hold position, and the gap flipped from driver ahead to opponent ahead. The driver may have slowed more than the opponent or accelerated worse after the lift. Required interaction outcome: `broken_defense` with medium/high confidence. Distinguished from OD2 by the broken-defense outcome; from MSR2 by the identifiable straight-line defense failure; from MSP25 by the close opponent being the cause.\n",
       "parent": "MSR",
       "children": [],
       "exclusive_with": [
@@ -859,7 +859,7 @@
     "O1": {
       "name": "Late-brake attack at entry",
       "type": "sub",
-      "description": "Player's brake **initiation onset is later than** the expert's at corner entry, with **peak brake pressure higher than** the expert across the braking phase — a deliberate over-commit to pull alongside before the apex. Trajectory often **moving toward negative (tightening)** into the apex as the player aims for the inside. Opponent cue: `classify_opponent_interaction` returns `outcome: pass_completed` with side-by-side pressure through the braking-to-apex window.\n",
+      "description": "Driver drew alongside the opponent under braking near corner entry and the gap flipped from opponent ahead to driver ahead. Use this when the opponent started ahead of the driver, the driver drew alongside the opponent before or during the braking phase, and the driver ended ahead of the opponent.\n",
       "parent": "O",
       "children": [],
       "exclusive_with": [
@@ -869,7 +869,7 @@
     "O3": {
       "name": "Outside-line sweep",
       "type": "sub",
-      "description": "Trajectory offset **wider than expert** across entry-to-apex by a sustained margin, **without a continuously growing time delta** — going around the outside on purpose. Often paired with an earlier throttle pickup on exit as the wider arc allows it. Opponent cue: `classify_opponent_interaction` returns `outcome: pass_completed`, with the primary opponent alongside on the inside through the braking-to-apex window; `query_opponent_trajectory` lateral-offset samples show the opponent on the opposite side of the player's heading from the player's offset.\n",
+      "description": "Opponent was on the driver's inside side through the corner while the driver stayed outside, and the driver ended ahead of the opponent. Use this when the outside position against the opponent is the reason the pass works, not when the driver merely runs wide without a close opponent.\n",
       "parent": "O",
       "children": [],
       "exclusive_with": [
@@ -879,7 +879,7 @@
     "O4": {
       "name": "Switchback",
       "type": "sub",
-      "description": "Player concedes the entry and recovers it on exit — brake **initiation onset is earlier than** the expert's, the trajectory offset crosses from **wider than expert** at entry to **tighter than expert** at exit, and throttle **application onset is earlier than** the expert's around the corner exit. Time delta typically shows **gap shrinks** late in the section. Opponent cue: `classify_opponent_interaction` returns `outcome: pass_completed`, with `query_opponent_trajectory` lateral-offset samples crossing zero around apex (line cross).\n",
+      "description": "Opponent and driver swapped sides through the corner, then the gap flipped from opponent ahead to driver ahead on exit. Use this when the driver gives up one side early, crosses back to the other side, and exits ahead of the opponent.\n",
       "parent": "O",
       "children": [],
       "exclusive_with": [
@@ -890,7 +890,7 @@
     "O5": {
       "name": "Slipstream gain on straight",
       "type": "sub",
-      "description": "On a straight section: speed delta shows **player faster than expert** while the player's throttle stays **at or below** the expert's level — the speed gain is from draft, not extra input. Time delta shows **gap shrinks** across the straight. Opponent cue: `classify_opponent_interaction` returns `outcome: pass_completed`; primary opponent starts directly ahead in draft range, and `query_opponent_trajectory` shows the signed longitudinal gap shrinking monotonically across the straight.\n",
+      "description": "On a straight section, opponent started ahead of the driver, gap to the opponent shrank, driver gained relative speed, and the gap flipped from opponent ahead to driver ahead. Use this for straight-line draft / tow passes where the position change comes from opponent-relative speed.\n",
       "parent": "O",
       "children": [],
       "exclusive_with": []
@@ -898,7 +898,7 @@
     "OD1": {
       "name": "Inside cover (early-brake defense)",
       "type": "sub",
-      "description": "Player's brake **initiation onset is earlier than** the expert's AND/OR trajectory offset held **tighter than expert** across entry-to-apex by a sustained margin — closing the inside line. Distinguished from MSP by the **absence of a continuously growing time gap** — the inside line is a tactical choice, not a slow mistake. Opponent cue: `classify_opponent_interaction` returns `outcome: held_defense`; the primary opponent is close-trailing or alongside on the outside, and `query_opponent_trajectory` shows the opponent not getting ahead by exit.\n",
+      "description": "Opponent drew alongside the driver near the corner, but the driver ended ahead of the opponent. Use this when the driver's position denied the opponent's corner attack; the label is decided from opponent/player position facts.\n",
       "parent": "OD",
       "children": [],
       "exclusive_with": []
@@ -906,7 +906,7 @@
     "OD2": {
       "name": "Defensive lift on straight",
       "type": "sub",
-      "description": "On a straight section: player's throttle drops **below expert** with NO matching brake onset (outside any braking zone), causing a brief speed dip not explained by track geometry — a lift to manage position or check the mirrors. Time delta typically shows **gap grows** briefly during the lift. Opponent cue: `classify_opponent_interaction` returns `outcome: held_defense`; primary opponent is close behind, and `query_opponent_trajectory` shows the gap closing during the lift without the opponent getting ahead by exit.\n",
+      "description": "On a straight section, gap to the opponent shrank while the opponent attacked from behind, but the driver still ended ahead of the opponent. Use this when the driver holds position despite the opponent gaining relative speed or drawing alongside.\n",
       "parent": "OD",
       "children": [],
       "exclusive_with": []

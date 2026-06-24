@@ -1,8 +1,7 @@
 ## Definition
-Player ran an inside-cover defense at corner entry — brake earlier
-than the expert and/or trajectory tighter than the expert through
-entry-to-apex, closing the inside line — but the close opponent got
-through anyway. The failure-mirror of inside cover (early-brake defense).
+Player ran an inside-cover defense at corner entry, but the close
+opponent drew alongside the driver and got through anyway. The
+failure-mirror of inside cover (early-brake defense).
 
 ## Physics
 An inside cover is a compromised line by design: the player brakes
@@ -23,11 +22,10 @@ trail-brake that became an over-limit spike.
   entry-to-apex window; the opponent transitions from behind the
   player to ahead across the section.
 - The opponent completed the pass on the player.
-- Brake **initiation onset is earlier than** expert AND/OR
-  trajectory offset is **tighter than expert** through entry-to-apex.
-- Trajectory often shows offset **moving wider** post-apex — the
-  compromised entry forced a wide exit.
-- Time difference to the expert grows across the section.
+- Opponent drew alongside the driver near the corner.
+- The gap flipped from driver ahead to opponent ahead.
+- Opponent was on the driver's left/right side while the driver tried
+  to hold the inside.
 - An understeer signature sometimes co-occurs with the tight entry.
 
 ## Engineer interpretation

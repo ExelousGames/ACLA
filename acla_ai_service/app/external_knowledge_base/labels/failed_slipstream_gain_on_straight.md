@@ -1,7 +1,7 @@
 ## Definition
 On a straight section, the player was in a close opponent's slipstream
-— speed gain from draft, throttle at or below expert — and the gap
-closed but did not flip by the end of the straight. The failure-mirror
+— gap to the opponent shrank and the driver gained relative speed —
+but the gap did not flip by the end of the straight. The failure-mirror
 of slipstream gain on straight.
 
 ## Physics
@@ -24,9 +24,7 @@ becomes failed late-brake attack at entry — a failed late-brake).
 - Neither the player nor the opponent completed the pass.
 - The longitudinal gap shrinks monotonically across the straight but
   **never crosses zero**.
-- Player speed delta shows **player faster than expert** with
-  throttle **at or below expert** — the speed gain is draft, not
-  input.
+- Driver gained relative speed while following the opponent.
 - Sometimes followed by a failed late-brake attack into the next brake
   zone (panic late-brake when the straight runs out).
 
@@ -47,6 +45,6 @@ pulling out under the brake board is too late.
   set up the next-corner attack instead.
 - Pull out late but committed — feet ahead of the opponent's rear
   wheel, not a side-by-side dive at the brake board.
-- If the straight runs out and the pass isn't there, brake on the
-  expert reference. A clean exit from the brake zone usually beats a
-  desperate late-brake that becomes failed late-brake attack at entry.
+- If the straight runs out and the pass isn't there, reset for the
+  next braking zone. A clean exit usually beats a desperate late-brake
+  that becomes failed late-brake attack at entry.

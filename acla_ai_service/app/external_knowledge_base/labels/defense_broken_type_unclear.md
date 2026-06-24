@@ -21,11 +21,11 @@ react to it inside the corner.
   section.
 - The opponent completed the pass on the player — positions flip
   across the section.
-- Player trace typically shows an early-lift / cover-brake (often
-  paired with a late initial brake) and a defensive inside line that
-  produced a tight apex and wide exit.
-- Time difference to the expert usually grows across the section — the
-  cover line cost time and didn't keep the place.
+- Opponent drew alongside the driver.
+- The gap flipped from driver ahead to opponent ahead.
+- Use a specific broken-defense subtype when the opponent-relative
+  facts show a corner inside-cover fight or a straight-line defense
+  where gap to the opponent shrank.
 
 ## Engineer interpretation
 Two things to separate. First, was the defense the right call here at

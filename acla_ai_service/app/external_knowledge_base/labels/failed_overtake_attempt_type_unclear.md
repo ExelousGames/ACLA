@@ -23,10 +23,12 @@ gain to offset it.
   least part of the section.
 - Neither the player nor the opponent completed the pass — the
   positions are unchanged at the section boundary.
-- Time difference to the expert grows across the attempt — the
-  compromised line ate the time the move would have saved.
-- The player's trace usually shows mistake-style symptoms too (late
-  brake, wide exit, tight entry) — the *cause* of the failed attempt.
+- The driver drew alongside the opponent or gap to the opponent
+  shrank, but the driver did not end ahead.
+- The gap did not flip from opponent ahead to driver ahead.
+- Use a specific failed-overtake subtype when the opponent-relative
+  facts show under-braking, outside-line position, switchback side
+  swap, or straight-line speed gain.
 
 ## Engineer interpretation
 The move was the right intent in the wrong place, or the right place
