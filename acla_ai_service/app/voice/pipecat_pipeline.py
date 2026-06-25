@@ -66,30 +66,6 @@ _VOICE_COACH_PROMPT_TEMPLATE = """You are a race engineer speaking to your drive
 Voice: short radio sentences, 1-3 per turn unless asked to elaborate.
 No markdown, no bullets, no headings. Racing terms freely (apex,
 trail-brake, kerb, slip, weight transfer, etc.).
-
-Tool use:
-- Use the native tool call channel only. Never write XML tags, function tags,
-  JSON, or tool names as spoken text.
-- Only call a tool when the question needs data you don't have.
-- General concept questions ("what is trail braking?") — answer in 2-3
-  sentences, no tool.
-- Don't offer to do things — either call the tool now, or say you can't
-  and stop. No "would you like…", no "shall I…", no pivoting to a
-  different track or topic the driver didn't ask about.
-- Use start_overtake_agent only when the driver explicitly asks to open,
-  enable, watch, monitor, or plan with overtake agent mode. Do not start it
-  for one-off questions like "when can I overtake?" If they ask a one-off
-  timing question, say that live timing needs overtake agent mode opened.
-- Use stop_overtake_agent when the driver asks to stop, disable, cancel, or
-  close overtake agent mode.
-- When analyze_telemetry returns labels with definitions and remedies,
-  pick the 1-2 that matter most and weave them into a natural comment.
-  Don't read the whole catalog aloud.
-
-Output rules:
-- If a tool errors or telemetry is down, say so plainly ("can't see your
-  telemetry right now"). Never fabricate numbers or label names.
-- Translate label codes to natural English before speaking.
 """
 
 
@@ -117,8 +93,8 @@ class VoiceSessionConfig:
 # sees these in a "tool box" while the LLM is calling the function — they
 # should read like a brief status line, not the raw function name.
 #
-# Frontend-tool titles arrive over the WS handshake; this map is the
-# server-side fallback for the server-implemented tools only.
+# External KB tool docs are the title source of truth; this map is the
+# server-side fallback for server-implemented tools only.
 _SERVER_TOOL_TITLES: Dict[str, str] = {
     "analyze_telemetry": "Analyzing telemetry",
     "explain_label": "Looking up the term",
@@ -131,18 +107,64 @@ def _prettify(name: str) -> str:
     return name.replace("_", " ").strip().capitalize()
 
 
+def _tool_doc(name: str) -> Dict[str, Any]:
+    from app.external_knowledge_base import tool as _tool_knowledge
+
+    doc = _tool_knowledge(name)
+    return doc if isinstance(doc, dict) else {}
+
+
+def _tool_description(name: str) -> str:
+    description = _tool_doc(name).get("description")
+    return str(description).strip() if description else ""
+
+
+def _tool_title(name: str) -> str:
+    title = _tool_doc(name).get("title")
+    return str(title).strip() if title else (_SERVER_TOOL_TITLES.get(name) or _prettify(name))
+
+
+def _with_parameter_docs(tool_name: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+    """Overlay parameter descriptions from external KB tool docs."""
+    doc = _tool_doc(tool_name)
+    params = doc.get("parameters")
+    if not isinstance(params, dict):
+        return properties
+
+    out: Dict[str, Any] = {}
+    for name, schema in properties.items():
+        if not isinstance(schema, dict):
+            out[name] = schema
+            continue
+
+        next_schema = dict(schema)
+        param_doc = params.get(name)
+        if isinstance(param_doc, str):
+            description = param_doc.strip()
+        elif isinstance(param_doc, dict):
+            raw_description = param_doc.get("description")
+            description = str(raw_description).strip() if raw_description else ""
+        else:
+            description = ""
+
+        if description and "description" not in next_schema:
+            next_schema["description"] = description
+        out[name] = next_schema
+    return out
+
+
 def _build_server_tool_schemas(query_scope_schema: Optional[Dict[str, Any]]):
     """Pipecat FunctionSchemas for the server-implemented tools only.
 
-    Frontend tools come in over the WS handshake (see :mod:`app.api.voice`)
-    and are built in :func:`_build_frontend_tool_schemas`. Together they
-    form the LLM's tool surface. Deferred import — only loaded when a voice
-    session is actually built.
+    Frontend executable capability shapes come in over the WS handshake
+    (see :mod:`app.api.voice`) and are built in
+    :func:`_build_frontend_tool_schemas`. Tool-use text for both server and
+    frontend tools comes from the external knowledge base.
 
-    ``query_scope_schema`` is the frontend-owned JSON Schema for QueryScope;
-    server-side tools whose params reference a scope (``analyze_telemetry``)
-    consume it from the handshake — the AI service must NOT declare its own
-    copy. Missing → hard error (no silent fallback to a Python-defined shape).
+    ``query_scope_schema`` is the frontend-owned JSON Schema shape for
+    QueryScope; server-side tools whose params reference a scope
+    (``analyze_telemetry``) consume it from the handshake. Missing is a hard
+    error, with no silent fallback to a Python-defined shape.
     """
     if not query_scope_schema:
         raise ValueError(
@@ -155,57 +177,40 @@ def _build_server_tool_schemas(query_scope_schema: Optional[Dict[str, Any]]):
     return [
         FunctionSchema(
             name="analyze_telemetry",
-            description=(
-                "Classify driving actions over a scope; returns engineer "
-                "labels with definitions and remedies. Use for 'what just "
-                "happened', 'why X', 'how was lap N'."
-            ),
-            properties={"scope": query_scope_schema},
+            description=_tool_description("analyze_telemetry"),
+            properties=_with_parameter_docs("analyze_telemetry", {"scope": query_scope_schema}),
             required=["scope"],
         ),
         FunctionSchema(
             name="explain_label",
-            description="Definition, interpretation, and remedies for one action label.",
-            properties={
+            description=_tool_description("explain_label"),
+            properties=_with_parameter_docs("explain_label", {
                 "label_id": {
                     "type": "string",
-                    "description": "Label id ('MS44') or natural name ('Oversteering at entry').",
                 },
-            },
+            }),
             required=["label_id"],
         ),
         FunctionSchema(
             name="get_track_knowledge",
-            description=(
-                "Per-track curated notes (overview + corner-by-corner). "
-                "Omit `corner` to get the overview plus the list of corner "
-                "names; pass a corner name to get just that section."
-            ),
-            properties={
+            description=_tool_description("get_track_knowledge"),
+            properties=_with_parameter_docs("get_track_knowledge", {
                 "track": {
                     "type": "string",
-                    "description": "Track id (e.g. 'spa', 'silverstone').",
                 },
                 "corner": {
                     "type": "string",
-                    "description": "Optional corner name (e.g. 'Eau Rouge').",
                 },
-            },
+            }),
             required=["track"],
         ),
         FunctionSchema(
             name="search_racing_knowledge",
-            description=(
-                "Semantic search over driver transcripts, race reports, and "
-                "theory notes. Use for cross-cutting questions where the right "
-                "doc isn't obvious ('what do drivers say about wet setup', "
-                "'where do most cars lose time under braking'). Returns top-k "
-                "matching snippets."
-            ),
-            properties={
-                "query": {"type": "string", "description": "Free-text question or topic."},
-                "top_k": {"type": "integer", "description": "Snippets to return (default 5)."},
-            },
+            description=_tool_description("search_racing_knowledge"),
+            properties=_with_parameter_docs("search_racing_knowledge", {
+                "query": {"type": "string"},
+                "top_k": {"type": "integer"},
+            }),
             required=["query"],
         ),
     ]
@@ -214,8 +219,9 @@ def _build_server_tool_schemas(query_scope_schema: Optional[Dict[str, Any]]):
 def _build_frontend_tool_schemas(frontend_tools: Iterable[Dict[str, Any]]) -> List[Any]:
     """Convert the frontend's tool descriptors into Pipecat FunctionSchemas.
 
-    Each ``frontend_tools`` entry is a plain dict with ``name``, ``description``,
-    ``properties`` and ``required`` (mirrors FunctionSchema's constructor).
+    Each ``frontend_tools`` entry is a plain dict with ``name``, ``properties``
+    and ``required`` (mirrors FunctionSchema's constructor). LLM-facing text is
+    loaded from ``external_knowledge_base/tools`` by tool name.
     Entries missing ``name`` are skipped with a warning — defensive against
     a misbehaving frontend, since this is an untrusted boundary.
     """
@@ -229,21 +235,20 @@ def _build_frontend_tool_schemas(frontend_tools: Iterable[Dict[str, Any]]) -> Li
             continue
         schemas.append(FunctionSchema(
             name=name,
-            description=str(tool.get("description") or ""),
-            properties=dict(tool.get("properties") or {}),
+            description=_tool_description(name),
+            properties=_with_parameter_docs(name, dict(tool.get("properties") or {})),
             required=list(tool.get("required") or []),
         ))
     return schemas
 
 
 def _build_title_map(frontend_tools: Iterable[Dict[str, Any]]) -> Dict[str, str]:
-    """Merge server-tool titles with frontend-supplied titles."""
-    titles = dict(_SERVER_TOOL_TITLES)
+    """Build tool-event titles from knowledge-base tool docs."""
+    titles = {name: _tool_title(name) for name in _SERVER_TOOL_TITLES}
     for tool in frontend_tools:
         name = tool.get("name")
-        title = tool.get("title")
-        if isinstance(name, str) and name and isinstance(title, str) and title:
-            titles[name] = title
+        if isinstance(name, str) and name:
+            titles[name] = _tool_title(name)
     return titles
 
 
@@ -860,14 +865,13 @@ async def build_voice_pipeline_task(
 
     # --- Tool calling (Phase 3b) ---
     # The LLM's tool surface is the union of:
-    #   * server-side tools (analyze_telemetry, explain_label) — schemas
-    #     live in Python next to their executor.
-    #   * frontend-side tools — schemas arrive over the WS handshake from
-    #     api/voice.py (see :func:`_await_frontend_info`). Frontend owns
-    #     the schema definitions so there's a single source of truth.
-    # The handler dispatches by name: frontend names go through the WS
-    # tool relay; everything else goes through ``tool_executor`` (typically
-    # AIService._execute_function, bound by api/voice.py).
+    #   * server-side tools, whose executable schemas live in Python next to
+    #     their executor.
+    #   * frontend-side tools, whose executable capability shapes arrive over
+    #     the WS handshake from api/voice.py.
+    # Tool-use instructions for both buckets come from the AI service external
+    # knowledge base. The handler dispatches by name: frontend names go through
+    # the WS tool relay; everything else goes through ``tool_executor``.
     fe_tools = frontend_tools or []
     frontend_tool_names = frozenset(
         t["name"] for t in fe_tools if isinstance(t.get("name"), str)
@@ -892,7 +896,7 @@ async def build_voice_pipeline_task(
     # live in editable .md files, not in Python code.
     from app.external_knowledge_base import behavior as _skill_behavior
     system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
-    for _behavior_name in ("emotion", "transcript_resilience"):
+    for _behavior_name in ("tool_use", "emotion", "transcript_resilience"):
         _skill = _skill_behavior(_behavior_name)
         _section = _skill.get("_raw_body", "") if _skill else ""
         if _section:

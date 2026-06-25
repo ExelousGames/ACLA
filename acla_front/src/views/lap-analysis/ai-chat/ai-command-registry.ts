@@ -2,7 +2,6 @@ import apiService from 'services/api.service';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
-import { FIELD_GROUPS } from 'views/lap-analysis/session-intelligence/telemetry-query';
 import { asRecord, buildPracticeTrackSummaryViews } from 'views/user-summary/user-summary-model';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 
@@ -33,14 +32,9 @@ export interface OpportunityAgentState {
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
 
-// Single source of truth for the frontend-implemented tool surface exposed
-// to the voice LLM. Sent to the AI service over the WS on session start
-// (see use-voice-conversation.ts) so the backend doesn't carry a duplicate
-// copy. Server-implemented tools (analyze_telemetry, explain_label) stay
-// in Python.
-//
-// `title` is the human-readable label the chat UI renders in the "tool box"
-// while a call is in flight.
+// Frontend-implemented tool capabilities. This file owns executable browser
+// handlers and JSON parameter shapes only; LLM-facing tool instructions live
+// in the AI service external knowledge base.
 // JSON-Schema for QueryScope (see session-intelligence/types.ts). Shared
 // shape between `query_telemetry_metric` (frontend) and `analyze_telemetry`
 // (server).
@@ -75,7 +69,6 @@ export const QUERY_SCOPE_SCHEMA = {
     additionalProperties: false,
 } as const;
 
-const _FIELD_GROUP_NAMES = Object.keys(FIELD_GROUPS).join(', ');
 const DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS = 5;
 const OVERTAKE_AGENT_MIN_INTERVAL_SECONDS = 2;
 const OVERTAKE_AGENT_MAX_INTERVAL_SECONDS = 15;
@@ -304,78 +297,50 @@ const searchUserSummaryMapLevel = (
 export const frontendToolSchemas: FrontendToolSchema[] = [
     {
         name: 'start_per_turn_coaching',
-        title: 'Starting track guide agent',
-        description:
-            'Activate the background track guide agent. Use when the driver asks for AI guiding, ' +
-            'track guidance, or corner-by-corner coaching during a practice session.',
         properties: {},
         required: [],
     },
     {
         name: 'stop_per_turn_coaching',
-        title: 'Stopping per-turn coaching',
-        description: 'Stop per-corner coaching. Use when driver asks to be left alone.',
         properties: {},
         required: [],
     },
     {
         name: 'start_overtake_agent',
-        title: 'Starting overtake agent',
-        description:
-            'Open continuous overtake agent mode. Use only when the driver explicitly asks to open, enable, watch, ' +
-            'monitor, or plan attack/defense overtake agent mode. Do not use for one-off questions like "when can I overtake". ' +
-            'The agent uses live car coordinates to detect attack windows and defense threats until stopped.',
         properties: {
             interval_seconds: {
                 type: 'number',
-                description: 'How often to check while agent mode is active. Default 5; clamped to 2-15.',
             },
         },
         required: [],
     },
     {
         name: 'stop_overtake_agent',
-        title: 'Stopping overtake agent',
-        description:
-            'Stop background overtake planning. Use when the driver asks you to stop watching for passes or leave them alone.',
         properties: {},
         required: [],
     },
     {
         name: 'get_next_corner',
-        title: 'Looking up next corner',
-        description:
-            'Name and normalized distance of the next corner ahead.',
         properties: {},
         required: [],
     },
     {
         name: 'query_telemetry_metric',
-        title: 'Querying telemetry',
-        description: 'Read a telemetry metric over a scope.',
         properties: {
             fields: {
                 type: 'array',
                 items: { type: 'string' },
-                description:
-                    'Field group names (preferred) or raw Physics_* names. ' +
-                    `Available groups: ${_FIELD_GROUP_NAMES}.`,
             },
             scope: QUERY_SCOPE_SCHEMA,
             reduce: {
                 type: 'string',
                 enum: ['avg', 'min', 'max', 'stats'],
-                description: 'stats = {avg,min,max,stddev}.',
             },
         },
         required: ['fields', 'scope', 'reduce'],
     },
     {
         name: 'get_event_log',
-        title: 'Searching event log',
-        description:
-            'List racing events with their sample-index ranges. Use to find when ' +
-            'something happened before querying telemetry around it.',
         properties: {
             eventType: {
                 type: 'string',
@@ -387,58 +352,32 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
             },
             n: {
                 type: 'integer',
-                description: 'For last_n: how many events.',
             },
         },
         required: ['eventType', 'scope'],
     },
     {
         name: 'get_user_summary_map_level',
-        title: 'Reading user summary by map',
-        description:
-            'Retrieve the already-loaded user summary aggregated at the map/track level. ' +
-            'Use for questions about one specific map only when map_id is known, or for explicit all-map comparisons. ' +
-            'If the driver asks a map-specific question but does not say which map, first call get_available_user_summary_maps ' +
-            'and ask the driver which map to inspect. ' +
-            'This returns aggregate map rows and top sections, not raw telemetry.',
         properties: {
             map_id: {
                 type: 'string',
-                description:
-                    'Optional map/track id or exact map name to filter to one map. Omit to retrieve every summarized map.',
             },
         },
         required: [],
     },
     {
         name: 'get_available_user_summary_maps',
-        title: 'Listing user summary maps',
-        description:
-            'List maps/tracks available in the already-loaded user summary. ' +
-            'Use this when the driver asks a summary question that needs a specific map but does not name one; ' +
-            'after retrieving the list, read out the available maps from response_text and ask the driver which map to inspect. ' +
-            'This returns compact map choices and a ready-to-say map list.',
         properties: {},
         required: [],
     },
     {
         name: 'search_user_summary_map_level',
-        title: 'Searching user summary maps',
-        description:
-            'Search the already-loaded user summary at the map/track aggregate level. ' +
-            'Use when the driver asks which maps match a track name, map id, top mistake section, ' +
-            'or top expert-adherence section. If the user asks a map-specific question without naming a map, ' +
-            'call get_available_user_summary_maps and ask which map instead of searching all maps. ' +
-            'This searches summary aggregates only, not raw telemetry.',
         properties: {
             query: {
                 type: 'string',
-                description:
-                    'Search text, such as a map name/id or a top section/mistake/adherence phrase.',
             },
             limit: {
                 type: 'integer',
-                description: 'Maximum number of matching maps to return. Default 5; max 10.',
             },
         },
         required: ['query'],

@@ -38,14 +38,11 @@ export type FrontendToolHandler = (
     ctx: ToolHandlerContext,
 ) => Promise<unknown> | unknown;
 
-/** Schema for one frontend-implemented tool. Sent to the AI service on
- *  WS open so the LLM's tool surface is sourced from a single place
- *  (the frontend) instead of being duplicated in Python. */
+/** Capability shape for one frontend-implemented tool. Sent to the AI
+ *  service on WS open so it can merge executable frontend parameter shapes
+ *  with LLM-facing instructions from its external knowledge base. */
 export interface FrontendToolSchema {
     name: string;
-    /** UI label shown in the chat's "tool box" while the call is in flight. */
-    title: string;
-    description: string;
     /** JSON-Schema-style `properties` object. */
     properties: Record<string, unknown>;
     required: string[];
@@ -79,14 +76,13 @@ export interface VoiceConversationOptions {
      *  hook over the WS via a `tool_call` text frame; we dispatch by
      *  name. Missing handler → automatic `tool_error`. */
     toolHandlers?: Record<string, FrontendToolHandler>;
-    /** Schemas for the frontend-implemented tools. Sent to the AI service
-     *  as the first text frame on WS open so the backend has a single
-     *  source of truth for the LLM's frontend tool surface. */
+    /** Capabilities for frontend-implemented tools. Sent to the AI service
+     *  as the first text frame on WS open; the service supplies tool-use
+     *  instructions from its external knowledge base. */
     frontendTools?: FrontendToolSchema[];
-    /** QueryScope JSON Schema, owned by the frontend. Backend tools whose
-     *  parameters reference a query scope (e.g. analyze_telemetry) consume
-     *  this from the WS handshake instead of re-declaring the shape in
-     *  Python — single source of truth on the frontend. */
+    /** QueryScope JSON Schema shape. Backend tools whose parameters reference
+     *  a query scope (e.g. analyze_telemetry) consume this executable data
+     *  shape from the WS handshake instead of re-declaring it in Python. */
     querySchemaScope?: object;
     /** Fires for each transcript / tool event the backend sends. The
      *  caller is responsible for appending to its own message list. */
@@ -281,10 +277,10 @@ export function useVoiceConversation(
 
             ws.onopen = () => {
                 // First text frame on every voice session: hand the AI
-                // service the list of frontend-implemented tool schemas.
+                // service the frontend-implemented tool capability shapes.
                 // The backend blocks the pipeline build until this arrives,
-                // so the LLM's tool surface is sourced here, not duplicated
-                // in Python. Audio frames start flowing after this.
+                // then enriches them with external knowledge-base tool
+                // instructions before exposing them to the LLM.
                 try {
                     ws.send(JSON.stringify({
                         type: 'frontend_info',

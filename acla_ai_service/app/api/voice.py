@@ -189,11 +189,12 @@ async def voice_stream(
         user_id=user_id,
     )
 
-    # ── Handshake: frontend declares its tool surface ─────────────────────
+    # ── Handshake: frontend declares executable tool capabilities ─────────
     # The first text frame on every voice session must be
-    # ``{"type": "frontend_info", "tools": [...]}``. The frontend owns the
-    # frontend-tool schemas (single source of truth); the AI service merges
-    # them with its server-tool schemas to build the LLM's tool surface.
+    # ``{"type": "frontend_info", "tools": [...]}``. The frontend owns
+    # browser-side executable capability shapes; the AI service enriches them
+    # with external knowledge-base tool instructions before building the LLM's
+    # tool surface.
     # Audio frames before the handshake are dropped (we haven't built the
     # pipeline yet anyway).
     try:
@@ -260,7 +261,7 @@ async def _await_frontend_info(
     """Receive and parse the first text frame as ``frontend_info``.
 
     Returns ``(tools, query_scope_schema)``. ``tools`` is the (possibly
-    empty) list of frontend tool schemas. ``query_scope_schema`` is the
+    empty) list of frontend tool capability schemas. ``query_scope_schema`` is the
     frontend-owned JSON Schema for QueryScope (consumed by server-side
     tools whose params reference a scope, e.g. ``analyze_telemetry``); may
     be ``None`` if the frontend didn't send one. Raises

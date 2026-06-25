@@ -2,12 +2,12 @@
 
 Walks every ``.md`` under ``app/skills/external/racing_engineer/`` (recursively
 across ``labels/``, ``main_labels/``, ``features/``, ``behaviors/``,
-``tracks/``, ``knowledge/``), chunks each file by ``## Heading`` (or by
+``tracks/``, ``tools/``, ``knowledge/``), chunks each file by ``## Heading`` (or by
 blank-line paragraphs if a file has no headings), and serves hybrid
 (vector + BM25) search via LlamaIndex.
 
 The folder a file lives in becomes its ``kind`` (``label`` / ``feature``
-/ ``track`` / ``behavior`` / ``main_label`` / ``knowledge``). Frontmatter
+/ ``track`` / ``tool`` / ``behavior`` / ``main_label`` / ``knowledge``). Frontmatter
 ``name`` is preserved as the human-readable subject. Internal routing
 fields like ``id`` / ``family`` / ``common_co_labels`` are stripped —
 they're never LLM-visible.
