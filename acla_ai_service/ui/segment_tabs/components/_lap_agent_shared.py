@@ -42,6 +42,35 @@ KEY_LAP_STAGED = "lap_agent_staged_result"       # LapAnnotationResult-ish dict 
 KEY_LAP_LIVE = "lap_agent_live_output"           # last live-output snapshot for re-render
 KEY_LAP_SPLIT_META = "lap_agent_split_meta"      # last split_lap_sections content
 
+_LAP_AGENT_DERIVED_STATE_KEYS = (
+    KEY_LAP_RANGE,
+    KEY_LAP_SEGMENTS,
+    KEY_LAP_CIRCUIT,
+    KEY_LAP_CURSOR,
+    KEY_LAP_STAGED,
+    KEY_LAP_LIVE,
+    KEY_LAP_SPLIT_META,
+    "lap_agent_lap_start",
+    "lap_agent_lap_end",
+    "lap_agent_split_key",
+    "lap_agent_rebuild_from_iloc",
+    "lap_agent_split_version",
+    "lap_staged_start",
+    "lap_staged_end",
+    "lap_staged_labels",
+    "lap_staged_notes",
+)
+
+
+def reset_lap_agent_state_for_context(context: Any) -> None:
+    """Clear derived lap-agent state when the source session changes."""
+    key = "lap_agent_context"
+    if st.session_state.get(key) == context:
+        return
+    for state_key in _LAP_AGENT_DERIVED_STATE_KEYS:
+        st.session_state.pop(state_key, None)
+    st.session_state[key] = context
+
 
 def _rough_interaction_summary(seg: Dict[str, Any]) -> str:
     interaction = seg.get("opponent_interaction")
@@ -251,7 +280,11 @@ def execute_lap_agent_run(
 # Lap panel (range picker + split + array view)
 # ---------------------------------------------------------------------------
 
-def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
+def render_lap_panel(
+    df,
+    circuit_id: Optional[str],
+    session_context: Optional[Any] = None,
+) -> Optional[Dict[str, Any]]:
     """Render the lap-range picker + array view.
 
     The split runs automatically: once when the user first sets the range
@@ -317,6 +350,7 @@ def render_lap_panel(df, circuit_id: Optional[str]) -> Optional[Dict[str, Any]]:
         return None
 
     desired_key = (
+        session_context,
         int(lap_start),
         int(lap_end),
         circuit_id,

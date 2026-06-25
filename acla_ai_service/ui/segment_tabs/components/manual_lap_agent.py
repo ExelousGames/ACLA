@@ -7,14 +7,20 @@ import streamlit as st
 from ._lap_agent_shared import (
     KEY_LAP_RANGE, KEY_LAP_CIRCUIT,
     execute_lap_agent_run,
-    render_lap_panel, render_lap_staged_review, track_name_to_circuit_id,
+    render_lap_panel, render_lap_staged_review,
+    reset_lap_agent_state_for_context, track_name_to_circuit_id,
 )
 from .annotation_provider_controls import render_annotation_provider_config
 from app.local_annotation_agent.workflow import run_annotation
 
 
-def render_manual_lap_agent(df, session_id, selected_annotation_key):
+def render_manual_lap_agent(
+    df, session_id, selected_annotation_key, selected_session_key=None,
+):
     """Render the lap-to-segment excerpter section."""
+    session_context = (selected_session_key, selected_annotation_key, session_id)
+    reset_lap_agent_state_for_context(session_context)
+
     st.markdown("---")
     st.subheader("Lap-to-Segment Excerpter (AI Agent)")
     st.caption(
@@ -33,7 +39,7 @@ def render_manual_lap_agent(df, session_id, selected_annotation_key):
 
     # Lap range picker + rough split + current-section view render ONCE here
     # so the provider panel uses one widget key namespace.
-    head = render_lap_panel(df, circuit_id)
+    head = render_lap_panel(df, circuit_id, session_context=session_context)
 
     with st.expander("AI Lap-to-Segment Excerpter"):
         config = render_annotation_provider_config(

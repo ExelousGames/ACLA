@@ -8,6 +8,7 @@ from app.shared.annotation_agent_tools import (
     _classify_base_segment_shape,
     _query_compute_slope,
     build_graph,
+    classify_opponent_interaction,
     locate_circuit_section,
     measure_segment_shape,
     run_pipeline_query,
@@ -1550,6 +1551,40 @@ def test_racing_detailed_preflight_outputs_broken_defense_motion_facts():
     assert "tighter than expert" not in text
     assert "earlier than expert" not in text
     assert "expert_time_difference" not in text
+
+
+def test_opponent_classifier_rejects_marginal_lateral_nose_ahead_as_broken_defense():
+    df = pd.DataFrame(
+        {
+            "Graphics_player_pos_x": [0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
+            "Graphics_player_pos_y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "Car_7_pos_x": [-5.3, 5.0, 15.0, 25.0, 35.0, 53.1],
+            "Car_7_pos_y": [2.8, 3.0, 4.0, 5.0, 6.0, -6.3],
+        },
+        index=range(69, 75),
+    )
+
+    result = classify_opponent_interaction(df, 69, 74).content
+
+    assert result["outcome"] != "broken_defense"
+    assert result["candidates"][0]["exit_signed_long_gap_m"] == 3.1
+
+
+def test_opponent_classifier_keeps_clear_completed_pass_as_broken_defense():
+    df = pd.DataFrame(
+        {
+            "Graphics_player_pos_x": [0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
+            "Graphics_player_pos_y": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "Car_7_pos_x": [-5.3, 5.0, 15.0, 25.0, 35.0, 55.0],
+            "Car_7_pos_y": [2.8, 3.0, 4.0, 5.0, 4.0, 2.0],
+        },
+        index=range(69, 75),
+    )
+
+    result = classify_opponent_interaction(df, 69, 74).content
+
+    assert result["outcome"] == "broken_defense"
+    assert result["candidates"][0]["exit_signed_long_gap_m"] == 5.0
 
 
 def test_racing_label_catalog_and_docs_use_reusable_opponent_phrases():

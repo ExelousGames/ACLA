@@ -1729,6 +1729,7 @@ def classify_opponent_interaction(
             or side_count > 0
             or close_following_count > 0
         )
+        pass_completion_margin_m = max(float(pass_margin_m), float(min_role_gain_m))
         pass_crossing_close = bool(
             float(distance[min_d_local]) <= close_distance_m
             and abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
@@ -1737,13 +1738,13 @@ def classify_opponent_interaction(
         passed_by_player = bool(
             pass_crossing_close
             and entry_long >= -pass_margin_m
-            and exit_long < -pass_margin_m
+            and exit_long < -pass_completion_margin_m
             and max_long > pass_margin_m
         )
         got_passed_by_opponent = bool(
             pass_crossing_close
             and entry_long <= pass_margin_m
-            and exit_long > pass_margin_m
+            and exit_long > pass_completion_margin_m
             and min_long <= pass_margin_m
         )
         attack_pressure = bool(
@@ -2106,6 +2107,7 @@ def _detect_opponent_interaction_windows(
         max_long = float(np.nanmax(gaps))
         min_run_distance = float(np.nanmin(distance[local_indices]))
         min_abs_long = float(np.nanmin(np.abs(gaps)))
+        pass_completion_margin_m = max(float(pass_margin_m), float(min_role_gain_m))
         pass_crossing_close = bool(
             min_run_distance <= close_distance_m
             and min_abs_long <= longitudinal_window_m
@@ -2113,13 +2115,13 @@ def _detect_opponent_interaction_windows(
         passed_by_player = bool(
             pass_crossing_close
             and entry_long >= -pass_margin_m
-            and exit_long < -pass_margin_m
+            and exit_long < -pass_completion_margin_m
             and max_long > pass_margin_m
         )
         got_passed_by_opponent = bool(
             pass_crossing_close
             and entry_long <= pass_margin_m
-            and exit_long > pass_margin_m
+            and exit_long > pass_completion_margin_m
             and min_long <= pass_margin_m
         )
         attack_velocity = _nan_percentile_or_none(relative_velocity[local_indices], 25)
@@ -2325,6 +2327,7 @@ def _detect_opponent_interaction_windows(
                     float(distance[min_d_idx]) <= close_distance_m
                     and abs(float(signed_long[min_abs_long_idx])) <= longitudinal_window_m
                 )
+                pass_completion_margin_m = max(float(pass_margin_m), float(min_role_gain_m))
                 windows.append({
                     "start_index": int(s + padded_start),
                     "end_index": int(s + padded_end),
@@ -2346,8 +2349,16 @@ def _detect_opponent_interaction_windows(
                     "relative_velocity_units": velocity_units,
                     "coordinate_frame": frame_name,
                     "pass_crossing_close": pass_crossing_close,
-                    "passed_by_player": bool(pass_crossing_close and entry_long > 0 and exit_long < 0),
-                    "got_passed_by_opponent": bool(pass_crossing_close and entry_long < 0 and exit_long > 0),
+                    "passed_by_player": bool(
+                        pass_crossing_close
+                        and entry_long > 0
+                        and exit_long < -pass_completion_margin_m
+                    ),
+                    "got_passed_by_opponent": bool(
+                        pass_crossing_close
+                        and entry_long < 0
+                        and exit_long > pass_completion_margin_m
+                    ),
                 })
 
     # Merge overlapping windows, keeping the closest-slot summary as the

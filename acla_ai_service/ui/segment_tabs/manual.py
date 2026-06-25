@@ -136,4 +136,6 @@ def render_manual_annotation(selected_annotation_key, selected_session_key, avai
     render_manual_annotation_manager(df, numeric_cols, session_id, selected_annotation_key)
 
     # --- Lap-to-Segment Excerpter (AI Agent) ---
-    render_manual_lap_agent(df, session_id, selected_annotation_key)
+    render_manual_lap_agent(
+        df, session_id, selected_annotation_key, selected_session_key,
+    )
