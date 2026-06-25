@@ -573,7 +573,7 @@
     "MSP11": {
       "name": "Exit trajectory too narrow",
       "type": "sub",
-      "description": "The player's **exit trajectory tighter than expert** the expert.\n",
+      "description": "The player's **exit trajectory tighter than expert** the expert. **speed gap grow** at exit\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -601,7 +601,7 @@
     "MSP50": {
       "name": "Off track at entry",
       "type": "sub",
-      "description": "Player goes off track at corner entry — trajectory similarity drops as the driver line separates from the expert racing line on approach or entry. Look for the driver line becoming less similar to the expert path, running beyond the outside white line or onto kerb/runoff, followed by time loss or rejoin pressure.\n",
+      "description": "depreacated.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": []
@@ -609,7 +609,7 @@
     "MSP51": {
       "name": "Off track at exit",
       "type": "sub",
-      "description": "Player goes off track at corner exit — trajectory similarity drops as the car runs out past the outside exit boundary. Look for the driver line becoming less similar to the expert racing line after apex, crossing onto exit kerb/runoff or beyond the white line, followed by throttle correction, speed loss, or rejoin pressure.\n",
+      "description": "depreacated.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": []
@@ -617,7 +617,7 @@
     "MSP52": {
       "name": "Off track in the straight",
       "type": "sub",
-      "description": "Player goes off track on a straight section — trajectory similarity drops on a non-corner span where both lines should remain nearly parallel. Look for a sudden or sustained racing-surface departure, wide runoff travel, kerb/grass excursion, or rejoin pressure without entry/apex/exit corner phase evidence.\n",
+      "description": "depreacated.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": []
@@ -641,7 +641,7 @@
     "MSP44": {
       "name": "Oversteering at entry",
       "type": "sub",
-      "description": "The player's slip balance shows **oversteer** (as the **primary slide** or a **standalone event** with peak above +0.02 rad) across an index range that overlaps the corner-entry phase.\n",
+      "description": "The player shows **oversteer** at the corner-entry phase.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -651,7 +651,7 @@
     "MSP45": {
       "name": "Understeering at entry",
       "type": "sub",
-      "description": "The player's slip balance shows **understeer** (as the **primary slide** or a **standalone event** with trough below −0.02 rad) across an index range that overlaps the corner-entry phase.\n",
+      "description": "The player shows **understeer** at the corner-entry phase.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -661,7 +661,7 @@
     "MSP46": {
       "name": "Oversteering at exit",
       "type": "sub",
-      "description": "The player's slip balance shows **oversteer** (as the **primary slide** or a **standalone event** with peak above +0.02 rad) across an index range that overlaps the corner-exit phase.\n",
+      "description": "The player shows **oversteer** that at the corner-exit phase.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -671,7 +671,7 @@
     "MSP47": {
       "name": "Understeering at exit",
       "type": "sub",
-      "description": "The player's slip balance shows **understeer** (as the **primary slide** or a **standalone event** with trough below −0.02 rad) across an index range that overlaps the corner-exit phase.\n",
+      "description": "The player shows **understeer** at the corner-exit phase.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -681,7 +681,7 @@
     "MSP35": {
       "name": "Shift up too early",
       "type": "sub",
-      "description": "Use when the player's **upshift** occurs at an earlier index than the expert's matching upshift: player shift iloc < expert shift iloc, with matching upshift direction/gear transition where possible. Player RPM at shift is supporting context only, not the rule that decides early/late. Use the label only on the child range that covers the premature upshift and its immediate effect; do not use it for a lower gear held later without a detected upshift timing difference.\n",
+      "description": "Use when the player's **upshift** occurs at 2 or more index earlier than the expert's matching upshift.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -691,7 +691,7 @@
     "MSP36": {
       "name": "Shift up too late",
       "type": "sub",
-      "description": "Use when the player's **upshift** occurs at a later index than the expert's matching upshift: player shift iloc > expert shift iloc, with matching upshift direction/gear transition where possible. Player RPM at shift is supporting context only, not the rule that decides early/late. Use the label only on the child range that covers the late upshift or the over-held gear before it; do not use it when the driver is merely in a lower gear during acceleration without a late upshift event.\n",
+      "description": "The player's **upshift** occurs at a 2 or more index later  than the expert's matching upshift.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -701,7 +701,7 @@
     "MSP37": {
       "name": "Shift down too early",
       "type": "sub",
-      "description": "Use when the player's **downshift** occurs at an earlier index than the expert's matching downshift: player shift iloc < expert shift iloc, with matching downshift direction/gear transition where possible. Player RPM at/after the shift is supporting context only, not the rule that decides early/late. Use the label on the premature downshift range, especially in entry/braking; do not use it for a low gear held on exit unless the downshift itself is early.\n",
+      "description": "the player's **downshift** occurs at an 2 or more index earlier  than the expert's matching downshift at then entry\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -711,7 +711,7 @@
     "MSP38": {
       "name": "Shift down too late",
       "type": "sub",
-      "description": "Use when the player's **downshift** occurs at a later index than the expert's matching downshift: player shift iloc > expert shift iloc, with matching downshift direction/gear transition where possible, leaving the player in a higher gear than the expert for longer. RPM context is supporting evidence only. Use the label on the delayed downshift range; if no downshift timing difference is detected but the player holds a higher gear while accelerating, prefer MSP49.\n",
+      "description": "the player's **downshift** occurs at an 2 or more index later  than the expert's matching downshift at then entry\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [

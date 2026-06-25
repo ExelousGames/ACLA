@@ -29,8 +29,13 @@ DETAILED_PREFLIGHT_TOOL_IDS = (
     "classify_opponent_interaction",
     "find_nearest_opponent",
 )
+_DETAILED_SHARED_PREFLIGHT_QUERY_SPECS = tuple(
+    spec
+    for spec in SHARED_PREFLIGHT_QUERY_SPECS
+    if (spec.get("params") or {}).get("column") != "expert_time_difference"
+)
 DETAILED_PREFLIGHT_QUERY_SPECS = (
-    *SHARED_PREFLIGHT_QUERY_SPECS,
+    *_DETAILED_SHARED_PREFLIGHT_QUERY_SPECS,
     *SPEED_INVESTIGATION_QUERY_SPECS,
     {
         "tool_id": "query_telemetry.compute_slope.trajectory_offset",
@@ -120,17 +125,6 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         "graph_id": "speed_delta",
         "query_id": "find_extremum",
         "params": {"column": "speed_difference", "kind": "min"},
-    },
-    {
-        "tool_id": "query_telemetry.compute_slope.speed_difference",
-        "graph_id": "speed_delta",
-        "query_id": "compute_slope",
-        "params": {"column": "speed_difference"},
-        "tags": [
-            "speed gap closing",
-            "speed gap growing",
-            "large speed gap over 20",
-        ],
     },
     {
         "tool_id": "query_telemetry.find_extremum.push_limit.max",
@@ -355,7 +349,7 @@ def _build_detailed_events(
     _extend(events, _local_input_shape_events(df, start, end, phases))
     _extend(events, _time_delta_events(df, start, end, by_tool, phases))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
-    _extend(events, _speed_events(start, end, by_tool, phases))
+    _extend(events, _speed_events(df, start, end, by_tool, phases))
     _extend(events, _gear_and_rpm_events(df, start, end, phases))
     _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
 
@@ -983,16 +977,15 @@ def _peak_comparison_events(
         "expert_iloc": expert.get("iloc"),
     }
     if kind == "brake" and isinstance(player_iloc, int):
-        speed_gap = _value_at_iloc(
-            df,
-            start,
-            end,
-            "speed_difference",
-            player_iloc,
-            graph_id="speed_delta",
+        speed_gap_percent = dict(_speed_gap_percent_values(df, start, end)).get(
+            player_iloc
         )
-        if speed_gap is not None:
-            measurements["speed_gap_at_player_peak"] = speed_gap
+        if speed_gap_percent is not None:
+            measurements["speed_gap_percent_at_player_peak"] = speed_gap_percent
+            measurements["speed_gap_relation_at_player_peak"] = _gap_percent_relation(
+                "speed",
+                speed_gap_percent,
+            )
     if abs(delta) < 0.05:
         return [_event(
             f"{phrase} about same as expert",
@@ -1309,83 +1302,57 @@ def _time_delta_events(
     df,
     start: int,
     end: int,
-    by_tool: Dict[str, Dict[str, Any]],
+    _by_tool: Dict[str, Dict[str, Any]],
     phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    slope = _query_analysis(
-        by_tool.get("query_telemetry.compute_slope.expert_time_difference")
-    )
-    total = slope.get("total_gap_change") if isinstance(slope, dict) else {}
-    if isinstance(total, dict):
-        direction = total.get("gap_direction")
-        if direction == "time_gap_rising":
-            events.append(_event(
-                "gap grows",
-                "whole_range",
-                [start, end],
-                {
-                    "change": total.get("value"),
-                    "threshold_state": total.get("threshold_state"),
-                    "slope_shape": slope.get("slope_shape"),
-                },
-                "strong" if total.get("threshold_state") == "label_threshold_met" else "moderate",
-                ["query_telemetry.compute_slope.expert_time_difference"],
-            ))
-            events.append(_event(
-                "time loss",
-                "whole_range",
-                [start, end],
-                {"change": total.get("value")},
-                "moderate",
-                ["query_telemetry.compute_slope.expert_time_difference"],
-            ))
-        elif direction == "time_gap_falling":
-            events.append(_event(
-                "gap shrinks",
-                "whole_range",
-                [start, end],
-                {
-                    "change": total.get("value"),
-                    "threshold_state": total.get("threshold_state"),
-                    "slope_shape": slope.get("slope_shape"),
-                },
-                "strong" if total.get("threshold_state") == "label_threshold_met" else "moderate",
-                ["query_telemetry.compute_slope.expert_time_difference"],
-            ))
-    events.extend(_time_gap_slope_change_events(df, start, end, phases))
+    events.extend(_time_gap_percent_events(df, start, end, phases))
     return events
 
 
-def _time_gap_slope_change_events(
+def _time_gap_percent_events(
     df,
     start: int,
     end: int,
     phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    for phase, range_ in _time_gap_slope_ranges(start, end, phases):
-        values = _series_values(
-            df,
-            range_[0],
-            range_[1],
-            "expert_time_difference",
-            graph_id="time_delta",
-        )
-        analysis = _time_gap_slope_change(values)
+    for phase, range_ in [
+        ("whole_range", [start, end]),
+        *_time_gap_slope_ranges(start, end, phases),
+    ]:
+        values = _time_gap_percent_values(df, range_[0], range_[1])
+        analysis = _gap_percent_change(values, kind="time")
         if not analysis:
             continue
-        direction = analysis["direction"]
-        slope_change = abs(float(analysis.get("slope_change") or 0.0))
-        slope_guard = abs(float(analysis.get("slope_guard") or 0.0))
+        if phase == "whole_range":
+            if analysis["relative_gain_percent"] < 0.0:
+                event_name = "gap grows"
+            else:
+                event_name = "gap shrinks"
+        else:
+            event_name = _time_gap_event_name(analysis["direction"], phase)
         events.append(_event(
-            _time_gap_event_name(direction, phase),
+            event_name,
             phase,
             range_,
             analysis,
-            "strong" if slope_change >= slope_guard * 2.0 else "moderate",
-            ["local_expert_time_difference_slope_shape"],
+            (
+                "strong"
+                if analysis.get("threshold_state") == "label_threshold_met"
+                else "moderate"
+            ),
+            ["local_expert_time_difference_percent_gap"],
         ))
+        if phase == "whole_range" and analysis["relative_gain_percent"] < 0.0:
+            events.append(_event(
+                "time loss",
+                "whole_range",
+                [start, end],
+                analysis,
+                "moderate",
+                ["local_expert_time_difference_percent_gap"],
+            ))
     return events
 
 
@@ -1417,85 +1384,6 @@ def _time_gap_slope_ranges(
     if ranges:
         return ranges
     return [("whole_range", [start, end])]
-
-
-def _time_gap_slope_change(
-    values: Sequence[Tuple[int, float]],
-) -> Optional[Dict[str, Any]]:
-    if len(values) < 3:
-        return None
-    ilocs = [iloc for iloc, _ in values]
-    smooth = _rolling_median(
-        [value for _, value in values],
-        _slope_shape_smoothing_window(len(values)),
-    )
-    finite = [
-        (iloc, value)
-        for iloc, value in zip(ilocs, smooth)
-        if _is_number(value)
-    ]
-    if len(finite) < 3:
-        return None
-    local_slopes: List[float] = []
-    for pos in range(1, len(finite)):
-        prev_iloc, prev_value = finite[pos - 1]
-        iloc, value = finite[pos]
-        iloc_delta = iloc - prev_iloc
-        if iloc_delta <= 0:
-            continue
-        local_slopes.append((float(value) - float(prev_value)) / float(iloc_delta))
-    if len(local_slopes) < 2:
-        return None
-
-    shape_window = _slope_shape_window(len(local_slopes))
-    early_slope = _median(local_slopes[:shape_window])
-    late_slope = _median(local_slopes[-shape_window:])
-    if early_slope is None or late_slope is None:
-        return None
-
-    range_len = max(float(finite[-1][0] - finite[0][0]), 1.0)
-    overall_slope = (float(finite[-1][1]) - float(finite[0][1])) / range_len
-    absolute_guard = 150.0 / range_len
-    baseline = max(abs(overall_slope), abs(float(early_slope)), abs(float(late_slope)))
-    slope_guard = max(absolute_guard, baseline * 0.25, 1e-9)
-
-    slope_shape: str
-    direction: Optional[str] = None
-    if abs(float(early_slope)) > slope_guard and abs(float(late_slope)) > slope_guard:
-        if float(early_slope) > 0 and float(late_slope) < 0:
-            slope_shape = "reversing_to_falling_within_section"
-            direction = "falling"
-        elif float(early_slope) < 0 and float(late_slope) > 0:
-            slope_shape = "reversing_to_rising_within_section"
-            direction = "rising"
-        else:
-            slope_shape = ""
-    else:
-        slope_shape = ""
-
-    slope_change = float(late_slope) - float(early_slope)
-    if direction is None:
-        if abs(slope_change) < slope_guard:
-            return None
-        if slope_change < 0:
-            slope_shape = "slope_decreasing_over_section"
-            direction = "falling"
-        else:
-            slope_shape = "slope_increasing_over_section"
-            direction = "rising"
-
-    return {
-        "direction": direction,
-        "change": float(finite[-1][1]) - float(finite[0][1]),
-        "start_value": float(finite[0][1]),
-        "end_value": float(finite[-1][1]),
-        "early_slope": float(early_slope),
-        "late_slope": float(late_slope),
-        "slope_change": slope_change,
-        "slope_guard": slope_guard,
-        "slope_shape": slope_shape,
-        "threshold_state": "label_threshold_met",
-    }
 
 
 def _trajectory_apex_timing_events(
@@ -1719,6 +1607,7 @@ def _trajectory_phase_side_events(
 
 
 def _speed_events(
+    df,
     start: int,
     end: int,
     by_tool: Dict[str, Dict[str, Any]],
@@ -1734,75 +1623,79 @@ def _speed_events(
     min_result = _query_result(
         by_tool.get("query_telemetry.find_extremum.speed_difference.min")
     )
+    percent_by_iloc = dict(_speed_gap_percent_values(df, start, end))
     for result, event_name, threshold, source in (
         (
             max_result,
             "expert faster than player",
-            5.0,
+            -2.0,
             "query_telemetry.find_extremum.speed_difference.max",
         ),
         (
             min_result,
             "player faster than expert",
-            -5.0,
+            2.0,
             "query_telemetry.find_extremum.speed_difference.min",
         ),
     ):
         if not isinstance(result, dict):
             continue
-        value = result.get("value")
+        iloc = result.get("iloc")
+        gap_percent = percent_by_iloc.get(iloc) if isinstance(iloc, int) else None
         if (
             event_name.startswith("expert")
-            and isinstance(value, (int, float))
-            and value >= threshold
+            and isinstance(gap_percent, (int, float))
+            and gap_percent <= threshold
         ) or (
             event_name.startswith("player")
-            and isinstance(value, (int, float))
-            and value <= threshold
+            and isinstance(gap_percent, (int, float))
+            and gap_percent >= threshold
         ):
-            iloc = result.get("iloc")
             events.append(_event(
                 event_name,
                 _phase_for_iloc(iloc, phases) if isinstance(iloc, int) else "unknown",
                 [iloc, iloc] if isinstance(iloc, int) else None,
-                {"value": value, "iloc": iloc},
-                "strong" if abs(float(value)) >= 20.0 else "moderate",
+                {
+                    "gap_percent": gap_percent,
+                    "gap_relation": _gap_percent_relation("speed", gap_percent),
+                    "iloc": iloc,
+                },
+                "strong" if abs(float(gap_percent)) >= 10.0 else "moderate",
                 [source],
             ))
-            if abs(float(value)) > 20.0:
+            if abs(float(gap_percent)) >= 10.0:
                 events.append(_event(
-                    "large speed gap over 20",
+                    "large speed percentage gap",
                     _phase_for_iloc(iloc, phases) if isinstance(iloc, int) else "unknown",
                     [iloc, iloc] if isinstance(iloc, int) else None,
-                    {"value": value, "iloc": iloc},
+                    {
+                        "gap_percent": gap_percent,
+                        "gap_relation": _gap_percent_relation("speed", gap_percent),
+                        "iloc": iloc,
+                    },
                     "strong",
                     [source],
                 ))
 
-    slope = _query_analysis(
-        by_tool.get("query_telemetry.compute_slope.speed_difference")
+    whole_gap = _gap_percent_change(
+        _speed_gap_percent_values(df, start, end),
+        kind="speed",
     )
-    total = slope.get("total_change") if isinstance(slope, dict) else {}
-    if isinstance(total, dict):
-        domain = total.get("domain_direction")
-        if domain == "speed_gap_decreasing" or total.get("moves_toward_zero") is True:
-            events.append(_event(
-                "speed gap closing",
-                "whole_range",
-                None,
-                {"change": total.get("value"), "domain_direction": domain},
-                "strong",
-                ["query_telemetry.compute_slope.speed_difference"],
-            ))
-        elif domain == "speed_gap_increasing":
-            events.append(_event(
-                "speed gap growing",
-                "whole_range",
-                None,
-                {"change": total.get("value"), "domain_direction": domain},
-                "moderate",
-                ["query_telemetry.compute_slope.speed_difference"],
-            ))
+    if whole_gap:
+        events.append(_event(
+            _speed_gap_event_name(whole_gap["direction"], "whole_range"),
+            "whole_range",
+            [start, end],
+            whole_gap,
+            (
+                "strong"
+                if whole_gap.get("threshold_state") == "label_threshold_met"
+                else "moderate"
+            ),
+            ["local_speed_difference_percent_gap"],
+        ))
+
+    events.extend(_speed_gap_phase_events(df, start, end, phases))
 
     player_speed = _query_analysis(
         by_tool.get("query_telemetry.compute_slope.player_speed")
@@ -1858,6 +1751,246 @@ def _speed_events(
                 ["query_telemetry.compute_slope.player_speed"],
             ))
     return events
+
+
+def _speed_gap_phase_events(
+    df,
+    start: int,
+    end: int,
+    phases: List[Dict[str, int]],
+) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for phase, range_ in _time_gap_slope_ranges(start, end, phases):
+        analysis = _gap_percent_change(
+            _speed_gap_percent_values(df, range_[0], range_[1]),
+            kind="speed",
+        )
+        if not analysis:
+            continue
+        direction = analysis["direction"]
+        events.append(_event(
+            _speed_gap_event_name(direction, phase),
+            phase,
+            range_,
+            analysis,
+            (
+                "strong"
+                if analysis.get("threshold_state") == "label_threshold_met"
+                else "moderate"
+            ),
+            ["local_speed_difference_percent_gap"],
+        ))
+    return events
+
+
+def _time_gap_percent_values(
+    df,
+    start: int,
+    end: int,
+) -> List[Tuple[int, float]]:
+    if df is None:
+        return []
+    if "Graphics_current_time" in getattr(df, "columns", []) and (
+        "expert_time_difference" in getattr(df, "columns", [])
+    ):
+        rows = _paired_series_values(
+            df,
+            start,
+            end,
+            "Graphics_current_time",
+            "expert_time_difference",
+        )
+        out: List[Tuple[int, float]] = []
+        for iloc, player_time, time_gap in rows:
+            expert_time = player_time - time_gap
+            percent = _percent_gap(player_time, expert_time)
+            if percent is not None:
+                out.append((iloc, percent))
+        return out
+    if "Graphics_current_time" in getattr(df, "columns", []) and (
+        "expert_optimal_time" in getattr(df, "columns", [])
+    ):
+        rows = _paired_series_values(
+            df,
+            start,
+            end,
+            "Graphics_current_time",
+            "expert_optimal_time",
+        )
+        return [
+            (iloc, percent)
+            for iloc, player_time, expert_time in rows
+            for percent in [_percent_gap(player_time, expert_time)]
+            if percent is not None
+        ]
+    return []
+
+
+def _speed_gap_percent_values(
+    df,
+    start: int,
+    end: int,
+) -> List[Tuple[int, float]]:
+    if df is None:
+        return []
+    columns = getattr(df, "columns", [])
+    if (
+        "Physics_speed_kmh" in columns
+        and "expert_optimal_speed" in columns
+    ):
+        rows = _paired_series_values(
+            df,
+            start,
+            end,
+            "Physics_speed_kmh",
+            "expert_optimal_speed",
+        )
+        return [
+            (iloc, percent)
+            for iloc, player_speed, expert_speed in rows
+            for percent in [_percent_gap(player_speed, expert_speed)]
+            if percent is not None
+        ]
+    if "expert_optimal_speed" in columns and "speed_difference" in columns:
+        rows = _paired_series_values(
+            df,
+            start,
+            end,
+            "expert_optimal_speed",
+            "speed_difference",
+        )
+        return [
+            (iloc, percent)
+            for iloc, expert_speed, speed_difference in rows
+            for percent in [
+                _percent_gap(expert_speed - speed_difference, expert_speed)
+            ]
+            if percent is not None
+        ]
+    if "Physics_speed_kmh" in columns and "speed_difference" in columns:
+        rows = _paired_series_values(
+            df,
+            start,
+            end,
+            "Physics_speed_kmh",
+            "speed_difference",
+        )
+        return [
+            (iloc, percent)
+            for iloc, player_speed, speed_difference in rows
+            for percent in [
+                _percent_gap(player_speed, player_speed + speed_difference)
+            ]
+            if percent is not None
+        ]
+    return []
+
+
+def _gap_percent_change(
+    values: Sequence[Tuple[int, float]],
+    *,
+    kind: str,
+) -> Optional[Dict[str, Any]]:
+    if len(values) < 2:
+        return None
+    finite = [
+        (iloc, value)
+        for iloc, value in values
+        if _is_number(value)
+    ]
+    if len(finite) < 2:
+        return None
+
+    start_percent = float(finite[0][1])
+    end_percent = float(finite[-1][1])
+    gap_percent_change = end_percent - start_percent
+    relative_gain_percent = (
+        -gap_percent_change
+        if kind == "time"
+        else gap_percent_change
+    )
+    if abs(relative_gain_percent) < 2.0:
+        return None
+
+    iloc_delta = max(float(finite[-1][0] - finite[0][0]), 1.0)
+    abs_values = [abs(float(value)) for _, value in finite]
+    abs_gap_percent_change = abs_values[-1] - abs_values[0]
+    threshold_state = (
+        "label_threshold_met"
+        if abs(relative_gain_percent) >= 5.0
+        else "below_label_threshold"
+    )
+    return {
+        "direction": _gap_percent_direction(kind, gap_percent_change, abs_gap_percent_change),
+        "start_gap_percent": start_percent,
+        "end_gap_percent": end_percent,
+        "gap_percent_change": gap_percent_change,
+        "relative_gain_percent": relative_gain_percent,
+        "start_gap_relation": _gap_percent_relation(kind, start_percent),
+        "end_gap_relation": _gap_percent_relation(kind, end_percent),
+        "start_abs_gap_percent": abs_values[0],
+        "end_abs_gap_percent": abs_values[-1],
+        "abs_gap_percent_change": abs_gap_percent_change,
+        "min_abs_gap_percent": min(abs_values),
+        "max_abs_gap_percent": max(abs_values),
+        "percent_slope": gap_percent_change / iloc_delta,
+        "threshold_state": threshold_state,
+    }
+
+
+def _gap_percent_direction(
+    kind: str,
+    gap_percent_change: float,
+    abs_gap_percent_change: float,
+) -> str:
+    if kind == "time":
+        return "rising" if gap_percent_change > 0.0 else "falling"
+    return "growing" if abs_gap_percent_change > 0.0 else "closing"
+
+
+def _gap_percent_relation(kind: str, value: float) -> str:
+    if abs(value) < 0.05:
+        return "even"
+    if kind == "time":
+        return "slower" if value > 0.0 else "faster"
+    return "faster" if value > 0.0 else "slower"
+
+
+def _percent_gap(player_value: float, expert_value: float) -> Optional[float]:
+    if not _is_number(player_value) or not _is_number(expert_value):
+        return None
+    denominator = abs(float(expert_value))
+    if denominator <= 1e-9:
+        return None
+    return ((float(player_value) - float(expert_value)) / denominator) * 100.0
+
+
+def _paired_series_values(
+    df,
+    start: int,
+    end: int,
+    left_column: str,
+    right_column: str,
+) -> List[Tuple[int, float, float]]:
+    if df is None:
+        return []
+    if left_column not in getattr(df, "columns", []) or right_column not in getattr(
+        df,
+        "columns",
+        [],
+    ):
+        return []
+    try:
+        segment = df.loc[int(start): int(end), [left_column, right_column]]
+    except Exception:  # noqa: BLE001
+        return []
+    out: List[Tuple[int, float, float]] = []
+    for iloc, row in segment.iterrows():
+        left = row[left_column]
+        right = row[right_column]
+        if _is_number(left) and _is_number(right):
+            out.append((int(iloc), float(left), float(right)))
+    return out
 
 
 def _player_speed_extremum_events(
@@ -2611,6 +2744,13 @@ def _time_gap_event_name(direction: str, phase: str) -> str:
     return base
 
 
+def _speed_gap_event_name(direction: str, phase: str) -> str:
+    base = f"speed gap {direction}"
+    if phase in {"entry", "apex", "exit"}:
+        return f"{base} at {phase}"
+    return base
+
+
 def _query_result(content: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(content, dict):
         return {}
@@ -2660,7 +2800,7 @@ def _semantic_search_text(
     parent_main_labels: Sequence[str],
     extra_query_terms: Sequence[str],
 ) -> str:
-    """Embedding query text: sentence-only evidence with label vocabulary."""
+    """Embedding query text: sentence-only evidence."""
     return _sentence_evidence_text(events, parent_main_labels, extra_query_terms)
 
 
@@ -2685,16 +2825,6 @@ def _sentence_evidence_text(
         sentence = _event_sentence(event)
         if sentence:
             lines.append(sentence)
-        terms = event.get("semantic_search_terms")
-        if isinstance(terms, list):
-            event_name = str(event.get("event") or "").strip()
-            for term in terms:
-                term_text = str(term).strip()
-                if term_text:
-                    lines.append(
-                        f"The {event_name} evidence also matches label "
-                        f"vocabulary for {term_text}."
-                    )
     return "\n".join(line for line in lines if line.strip())[:12000]
 
 
@@ -2704,7 +2834,7 @@ def _event_sentence(event: Dict[str, Any]) -> str:
         return ""
 
     phase = _phase_sentence_prefix(str(event.get("phase") or ""))
-    if _time_gap_event_has_phase(event_name):
+    if _gap_event_has_phase(event_name):
         phase = ""
     range_text = _range_sentence_fragment(event.get("range"))
     measurements = event.get("measurements")
@@ -2782,8 +2912,8 @@ def _phase_sentence_prefix(phase: str) -> str:
     return ""
 
 
-def _time_gap_event_has_phase(event_name: str) -> bool:
-    return event_name.startswith("time gap ") and (
+def _gap_event_has_phase(event_name: str) -> bool:
+    return event_name.startswith(("time gap ", "speed gap ")) and (
         event_name.endswith(" at entry")
         or event_name.endswith(" at apex")
         or event_name.endswith(" at exit")
@@ -3065,26 +3195,37 @@ def _measurement_sentence_fragments(
                     f"expert peak {_format_value(expert)}"
                 )
         if "peak brake pressure" in event_name:
-            speed_gap = measurements.get("speed_gap_at_player_peak")
-            speed_gap_number = _as_float(speed_gap)
-            if speed_gap_number is not None:
-                if speed_gap_number > 0:
-                    fragments.append(
-                        "the player was "
-                        f"{_format_value(speed_gap_number)} km/h slower than expert "
-                        "at the player peak"
-                    )
-                elif speed_gap_number < 0:
-                    fragments.append(
-                        "the player was "
-                        f"{_format_value(abs(speed_gap_number))} km/h faster at the player peak"
-                    )
+            speed_gap = _as_float(measurements.get("speed_gap_percent_at_player_peak"))
+            relation = measurements.get("speed_gap_relation_at_player_peak")
+            if speed_gap is not None and relation is not None:
+                fragments.append(
+                    "the player was "
+                    f"{_gap_percent_relation_text(speed_gap, relation)} "
+                    "at the player peak"
+                )
         iloc = measurements.get("player_iloc")
         if iloc is not None:
             if "lowest throttle pressure" in event_name:
                 fragments.append(f"the player lowest occurred at iloc {iloc}")
             else:
                 fragments.append(f"the player peak occurred at iloc {iloc}")
+        return fragments
+
+    if event_name in {
+        "expert faster than player",
+        "player faster than expert",
+        "large speed percentage gap",
+    }:
+        gap_percent = measurements.get("gap_percent")
+        relation = measurements.get("gap_relation")
+        if gap_percent is not None and relation is not None:
+            fragments.append(
+                "the player was "
+                + _gap_percent_relation_text(gap_percent, relation)
+            )
+        iloc = measurements.get("iloc")
+        if iloc is not None:
+            fragments.append(f"detected at iloc {iloc}")
         return fragments
 
     if "trajectory" in event_name or "moving toward" in event_name or "expert line" in event_name:
@@ -3111,21 +3252,21 @@ def _measurement_sentence_fragments(
         return fragments
 
     if event_name in {
+        "speed gap closing",
+        "speed gap growing",
+    } or event_name.startswith(("speed gap closing at", "speed gap growing at")):
+        fragments.extend(_gap_percent_sentence_fragments(measurements, "speed"))
+        threshold = measurements.get("threshold_state")
+        if threshold:
+            fragments.append(_humanize_token(str(threshold)))
+        return fragments
+
+    if event_name in {
         "gap grows",
         "gap shrinks",
         "time loss",
     } or event_name.startswith(("time gap rising", "time gap falling")):
-        change = measurements.get("change")
-        if change is not None:
-            fragments.append(f"the time gap changed by {_format_value(change)} ms")
-        early_slope = measurements.get("early_slope")
-        late_slope = measurements.get("late_slope")
-        if early_slope is not None and late_slope is not None:
-            fragments.append(
-                "the time-gap slope changed from "
-                f"{_format_value(early_slope)} ms/iloc to "
-                f"{_format_value(late_slope)} ms/iloc"
-            )
+        fragments.extend(_gap_percent_sentence_fragments(measurements, "time"))
         threshold = measurements.get("threshold_state")
         if threshold:
             fragments.append(_humanize_token(str(threshold)))
@@ -3214,6 +3355,48 @@ def _measurement_sentence_fragments(
                 f"{_humanize_token(key)} was {_format_value(measurements[key])}"
             )
     return fragments
+
+
+def _gap_percent_sentence_fragments(
+    measurements: Dict[str, Any],
+    kind: str,
+) -> List[str]:
+    start_percent = _as_float(measurements.get("start_gap_percent"))
+    end_percent = _as_float(measurements.get("end_gap_percent"))
+    start_relation = measurements.get("start_gap_relation")
+    end_relation = measurements.get("end_gap_relation")
+    if (
+        start_percent is None
+        or end_percent is None
+        or start_relation is None
+        or end_relation is None
+    ):
+        return []
+
+    subject = "time gap" if kind == "time" else "speed gap"
+    fragments = [
+        "the player "
+        f"{subject} moved from "
+        f"{_gap_percent_relation_text(start_percent, start_relation)} to "
+        f"{_gap_percent_relation_text(end_percent, end_relation)}"
+    ]
+    gain = _as_float(measurements.get("relative_gain_percent"))
+    if gain is not None:
+        outcome = "gained" if gain > 0.0 else "lost" if gain < 0.0 else "held even"
+        fragments.append(
+            "net relative change was "
+            f"{_format_value(abs(gain))} percentage points {outcome}"
+        )
+    return fragments
+
+
+def _gap_percent_relation_text(value: Any, relation: Any) -> str:
+    number = _as_float(value)
+    if number is None:
+        return str(value)
+    if relation == "even":
+        return "even with expert"
+    return f"{_format_value(abs(number))}% {relation} than expert"
 
 
 def _as_float(value: Any) -> Optional[float]:

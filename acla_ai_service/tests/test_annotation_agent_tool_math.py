@@ -468,6 +468,55 @@ def test_detailed_preflight_events_capture_late_brake_widening_and_time_loss():
                 0.62,
                 0.62,
             ],
+            "Graphics_current_time": [
+                1000.0 + value
+                for value in [
+                    0.0,
+                    20.0,
+                    40.0,
+                    60.0,
+                    80.0,
+                    100.0,
+                    120.0,
+                    140.0,
+                    160.0,
+                    180.0,
+                    200.0,
+                    220.0,
+                    240.0,
+                    260.0,
+                    280.0,
+                    300.0,
+                    320.0,
+                    340.0,
+                    360.0,
+                    380.0,
+                    400.0,
+                ]
+            ],
+            "expert_time_difference": [
+                0.0,
+                20.0,
+                40.0,
+                60.0,
+                80.0,
+                100.0,
+                120.0,
+                140.0,
+                160.0,
+                180.0,
+                200.0,
+                220.0,
+                240.0,
+                260.0,
+                280.0,
+                300.0,
+                320.0,
+                340.0,
+                360.0,
+                380.0,
+                400.0,
+            ],
         },
         index=list(range(10, 31)),
     )
@@ -493,19 +542,6 @@ def test_detailed_preflight_events_capture_late_brake_widening_and_time_loss():
                             "value": 0.7,
                             "domain_direction": "moving_wider",
                         },
-                    },
-                },
-            ),
-            (
-                "query_telemetry.compute_slope.expert_time_difference",
-                {
-                    "analysis": {
-                        "total_gap_change": {
-                            "value": 350.0,
-                            "gap_direction": "time_gap_rising",
-                            "threshold_state": "label_threshold_met",
-                        },
-                        "slope_shape": "slope_steady_over_section",
                     },
                 },
             ),
@@ -646,32 +682,34 @@ def test_detailed_preflight_marks_similar_trajectory_phases_aligned():
     assert "entry trajectory aligned with expert" in semantic_search_text
 
 
-def test_detailed_preflight_phases_time_gap_slope_changes_at_corner_entry_or_exit():
+def test_detailed_preflight_phases_time_gap_percent_changes_at_corner_entry_or_exit():
+    time_gap = [
+        200.0,
+        220.0,
+        240.0,
+        260.0,
+        280.0,
+        300.0,
+        320.0,
+        340.0,
+        360.0,
+        380.0,
+        400.0,
+        380.0,
+        360.0,
+        340.0,
+        320.0,
+        300.0,
+        280.0,
+        260.0,
+        240.0,
+        220.0,
+        200.0,
+    ]
     df = pd.DataFrame(
         {
-            "expert_time_difference": [
-                0.0,
-                5.0,
-                10.0,
-                15.0,
-                20.0,
-                60.0,
-                100.0,
-                140.0,
-                180.0,
-                220.0,
-                260.0,
-                300.0,
-                340.0,
-                380.0,
-                420.0,
-                425.0,
-                430.0,
-                435.0,
-                440.0,
-                445.0,
-                450.0,
-            ],
+            "Graphics_current_time": [1000.0 + value for value in time_gap],
+            "expert_time_difference": time_gap,
         },
         index=range(10, 31),
     )
@@ -706,15 +744,15 @@ def test_detailed_preflight_phases_time_gap_slope_changes_at_corner_entry_or_exi
     semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
 
     assert rising["phase"] == "entry"
-    assert rising["measurements"]["slope_shape"] == "slope_increasing_over_section"
+    assert rising["measurements"]["relative_gain_percent"] < 0.0
     assert falling["phase"] == "exit"
-    assert falling["measurements"]["slope_shape"] == "slope_decreasing_over_section"
+    assert falling["measurements"]["relative_gain_percent"] > 0.0
     assert "the evidence shows time gap rising at entry" in semantic_search_text
     assert "the evidence shows time gap falling at exit" in semantic_search_text
-    assert "the time-gap slope changed from" in semantic_search_text
+    assert "percentage points gained" in semantic_search_text
 
 
-def test_detailed_preflight_phases_time_gap_slope_changes_at_corner_apex():
+def test_detailed_preflight_phases_time_gap_percent_changes_at_corner_apex():
     df = pd.DataFrame(
         {
             "expert_time_difference": [
@@ -739,6 +777,32 @@ def test_detailed_preflight_phases_time_gap_slope_changes_at_corner_apex():
                 400.0,
                 400.0,
                 400.0,
+            ],
+            "Graphics_current_time": [
+                1000.0 + value
+                for value in [
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    200.0,
+                    400.0,
+                    400.0,
+                    400.0,
+                    400.0,
+                    400.0,
+                    400.0,
+                    400.0,
+                    400.0,
+                    400.0,
+                ]
             ],
         },
         index=range(10, 31),
@@ -772,13 +836,211 @@ def test_detailed_preflight_phases_time_gap_slope_changes_at_corner_apex():
 
     assert apex["phase"] == "apex"
     assert apex["range"] == [18, 22]
-    assert apex["measurements"]["slope_shape"] == "slope_increasing_over_section"
+    assert apex["measurements"]["relative_gain_percent"] < 0.0
+    assert apex["measurements"]["threshold_state"] == "label_threshold_met"
     assert "the evidence shows time gap rising at apex" in semantic_search_text
 
 
-def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
+def test_detailed_preflight_phases_speed_gap_percent_changes_at_corner_entry_or_exit():
+    speed_difference = [
+        20.0,
+        19.0,
+        18.0,
+        17.0,
+        16.0,
+        15.0,
+        14.0,
+        13.0,
+        12.0,
+        11.0,
+        10.0,
+        11.0,
+        12.0,
+        14.0,
+        16.0,
+        18.0,
+        20.0,
+        22.0,
+        24.0,
+        26.0,
+        28.0,
+    ]
+    df = pd.DataFrame(
+        {
+            "speed_difference": speed_difference,
+            "expert_optimal_speed": [100.0] * len(speed_difference),
+            "Physics_speed_kmh": [
+                100.0 - value for value in speed_difference
+            ],
+        },
+        index=range(10, 31),
+    )
+
     events = preflight_detailed._build_detailed_events(
-        pd.DataFrame(),
+        df,
+        10,
+        30,
+        [
+            (
+                "compute_expert_phases",
+                {
+                    "phases": [
+                        {
+                            "entry": 10,
+                            "apex": 20,
+                            "exit": 30,
+                            "direction": "right",
+                        }
+                    ]
+                },
+            ),
+        ],
+    )
+
+    closing = next(
+        event for event in events if event["event"] == "speed gap closing at entry"
+    )
+    growing = next(
+        event for event in events if event["event"] == "speed gap growing at exit"
+    )
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+
+    assert closing["phase"] == "entry"
+    assert (
+        closing["measurements"]["start_abs_gap_percent"]
+        > closing["measurements"]["end_abs_gap_percent"]
+    )
+    assert closing["measurements"]["relative_gain_percent"] > 0.0
+    assert growing["phase"] == "exit"
+    assert (
+        growing["measurements"]["end_abs_gap_percent"]
+        > growing["measurements"]["start_abs_gap_percent"]
+    )
+    assert growing["measurements"]["relative_gain_percent"] < 0.0
+    assert "the evidence shows speed gap closing at entry" in semantic_search_text
+    assert "the evidence shows speed gap growing at exit" in semantic_search_text
+    assert "percentage points gained" in semantic_search_text
+
+
+def test_detailed_preflight_phases_speed_gap_percent_changes_at_corner_apex():
+    speed_difference = [
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        2.0,
+        4.0,
+        6.0,
+        8.0,
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+        10.0,
+    ]
+    df = pd.DataFrame(
+        {
+            "speed_difference": speed_difference,
+            "expert_optimal_speed": [100.0] * len(speed_difference),
+            "Physics_speed_kmh": [
+                100.0 - value for value in speed_difference
+            ],
+        },
+        index=range(10, 31),
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        10,
+        30,
+        [
+            (
+                "compute_expert_phases",
+                {
+                    "phases": [
+                        {
+                            "entry": 10,
+                            "apex": 20,
+                            "exit": 30,
+                            "direction": "right",
+                        }
+                    ]
+                },
+            ),
+        ],
+    )
+
+    apex = next(
+        event for event in events if event["event"] == "speed gap growing at apex"
+    )
+    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
+
+    assert apex["phase"] == "apex"
+    assert apex["range"] == [18, 22]
+    assert apex["measurements"]["threshold_state"] == "label_threshold_met"
+    assert "the evidence shows speed gap growing at apex" in semantic_search_text
+
+
+def test_detailed_preflight_does_not_treat_carried_speed_gap_as_local_change():
+    df = pd.DataFrame(
+        {
+            "speed_difference": [18.0] * 21,
+            "expert_optimal_speed": [100.0] * 21,
+            "Physics_speed_kmh": [82.0] * 21,
+        },
+        index=range(10, 31),
+    )
+
+    events = preflight_detailed._build_detailed_events(
+        df,
+        10,
+        30,
+        [
+            (
+                "compute_expert_phases",
+                {
+                    "phases": [
+                        {
+                            "entry": 10,
+                            "apex": 20,
+                            "exit": 30,
+                            "direction": "right",
+                        }
+                    ]
+                },
+            ),
+        ],
+    )
+
+    speed_gap_events = [
+        event
+        for event in events
+        if event["event"].startswith(("speed gap closing", "speed gap growing"))
+    ]
+
+    assert speed_gap_events == []
+
+
+def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
+    speed_difference = np.linspace(24.0, 4.0, 31)
+    df = pd.DataFrame(
+        {
+            "speed_difference": speed_difference,
+            "expert_optimal_speed": np.full(31, 100.0),
+            "Physics_speed_kmh": 100.0 - speed_difference,
+        },
+        index=range(100, 131),
+    )
+    events = preflight_detailed._build_detailed_events(
+        df,
         100,
         130,
         [
@@ -801,18 +1063,6 @@ def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
             (
                 "query_telemetry.find_extremum.speed_difference.max",
                 {"result": {"iloc": 105, "value": 24.0}},
-            ),
-            (
-                "query_telemetry.compute_slope.speed_difference",
-                {
-                    "analysis": {
-                        "total_change": {
-                            "value": -18.0,
-                            "domain_direction": "speed_gap_decreasing",
-                            "moves_toward_zero": True,
-                        },
-                    },
-                },
             ),
             (
                 "query_telemetry.find_extremum.player_speed.max",
@@ -875,7 +1125,7 @@ def test_detailed_preflight_events_capture_recovery_and_speed_gap_closing():
     event_names = {event["event"] for event in events}
     assert "recovery toward expert line" in event_names
     assert "speed gap closing" in event_names
-    assert "large speed gap over 20" in event_names
+    assert "large speed percentage gap" in event_names
     assert "expert faster than player" in event_names
     assert "player speed maximum" in event_names
     assert "player speed minimum" in event_names
