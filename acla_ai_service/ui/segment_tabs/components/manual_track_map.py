@@ -4,7 +4,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 from app.shared.telemetry import MAX_CARS
-from .opponent_interaction import add_interaction_overlay, render_opponent_interaction_panel
+from .opponent_interaction import (
+    add_interaction_overlay,
+    render_opponent_interaction_panel,
+    render_targeted_car_positions_table,
+)
 from .track_sections import add_track_section_trajectory, track_sections_available
 
 def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
@@ -361,6 +365,7 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                 
                 fig_map.update_layout(uirevision=session_id, height=800)
                 st.plotly_chart(fig_map, width='stretch')
+                render_targeted_car_positions_table(interaction)
             else:
                 st.info("No active cars found at this timestamp.")
         else:

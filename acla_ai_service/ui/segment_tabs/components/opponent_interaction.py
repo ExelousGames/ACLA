@@ -160,6 +160,13 @@ def format_targeted_car(metadata: Any) -> str:
     if label:
         return str(label)
 
+    slot = _targeted_car_slot(metadata)
+    return f"Car {slot}" if slot is not None else ""
+
+
+def _targeted_car_slot(metadata: Any) -> Any:
+    if not isinstance(metadata, dict):
+        return None
     slot = metadata.get("targeted_car_slot") or metadata.get("slot")
     if slot is None:
         windows = metadata.get("windows")
@@ -168,7 +175,26 @@ def format_targeted_car(metadata: Any) -> str:
                 if isinstance(window, dict) and window.get("slot") is not None:
                     slot = window.get("slot")
                     break
-    return f"Car {slot}" if slot is not None else ""
+    return slot
+
+
+def _fmt_coord(value: Any) -> str:
+    try:
+        if value is None or not np.isfinite(float(value)):
+            return "-"
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def _target_position_text(row: pd.Series, separator: str = ", ") -> str:
+    parts = [
+        f"x={_fmt_coord(row.get('opponent_x'))}",
+        f"y={_fmt_coord(row.get('opponent_y'))}",
+    ]
+    if "opponent_z" in row:
+        parts.append(f"z={_fmt_coord(row.get('opponent_z'))}")
+    return separator.join(parts)
 
 
 def format_opponent_interaction_summary(metadata: Any) -> str:
@@ -381,16 +407,27 @@ def add_interaction_overlay(
             x=active["opponent_x"],
             y=active["opponent_y"],
             z=active["opponent_z"],
-            customdata=active[["iloc", "distance_m", "signed_long_gap_m", "lateral_offset_m"]],
+            customdata=active[[
+                "iloc",
+                "opponent_x",
+                "opponent_y",
+                "opponent_z",
+                "distance_m",
+                "signed_long_gap_m",
+                "lateral_offset_m",
+            ]],
             hovertemplate=(
+                f"Target Car {slot}<br>"
                 "Index: %{customdata[0]}<br>"
-                "Distance: %{customdata[1]:.1f} m<br>"
-                "Long gap: %{customdata[2]:.1f} m<br>"
-                "Lateral: %{customdata[3]:.1f} m<extra></extra>"
+                "Position: x=%{customdata[1]:.2f}, y=%{customdata[2]:.2f}, z=%{customdata[3]:.2f}<br>"
+                "Distance: %{customdata[4]:.1f} m<br>"
+                "Long gap: %{customdata[5]:.1f} m<br>"
+                "Lateral: %{customdata[6]:.1f} m<extra></extra>"
             ),
-            mode="lines",
+            mode="lines+markers",
             name=line_name,
             line=dict(color=color, width=9),
+            marker=dict(size=5, color=color),
             opacity=1.0,
             showlegend=True,
         ))
@@ -398,16 +435,26 @@ def add_interaction_overlay(
         fig.add_trace(go.Scatter(
             x=active["opponent_x"],
             y=active["opponent_y"],
-            customdata=active[["iloc", "distance_m", "signed_long_gap_m", "lateral_offset_m"]],
+            customdata=active[[
+                "iloc",
+                "opponent_x",
+                "opponent_y",
+                "distance_m",
+                "signed_long_gap_m",
+                "lateral_offset_m",
+            ]],
             hovertemplate=(
+                f"Target Car {slot}<br>"
                 "Index: %{customdata[0]}<br>"
-                "Distance: %{customdata[1]:.1f} m<br>"
-                "Long gap: %{customdata[2]:.1f} m<br>"
-                "Lateral: %{customdata[3]:.1f} m<extra></extra>"
+                "Position: x=%{customdata[1]:.2f}, y=%{customdata[2]:.2f}<br>"
+                "Distance: %{customdata[3]:.1f} m<br>"
+                "Long gap: %{customdata[4]:.1f} m<br>"
+                "Lateral: %{customdata[5]:.1f} m<extra></extra>"
             ),
-            mode="lines",
+            mode="lines+markers",
             name=line_name,
             line=dict(color=color, width=4),
+            marker=dict(size=7, color=color),
             opacity=1.0,
             showlegend=True,
         ))
@@ -416,6 +463,41 @@ def add_interaction_overlay(
     for label, row in marker_rows:
         _add_target_marker(fig, row, label, slot=slot, color=color, use_3d=use_3d, has_z=has_z)
         _add_player_opponent_link(fig, row, label, color=color, use_3d=use_3d, has_z=has_z)
+
+
+def render_targeted_car_positions_table(interaction: Optional[dict[str, Any]]) -> None:
+    if not interaction:
+        return
+
+    trace = interaction.get("trace")
+    if not isinstance(trace, pd.DataFrame) or trace.empty or "active" not in trace:
+        return
+
+    active = trace[trace["active"]].copy()
+    if active.empty:
+        return
+
+    slot = interaction.get("slot", "?")
+    columns = [
+        ("iloc", "Index"),
+        ("opponent_x", "Target X"),
+        ("opponent_y", "Target Y"),
+    ]
+    if "opponent_z" in active.columns:
+        columns.append(("opponent_z", "Target Z"))
+    columns.extend([
+        ("distance_m", "Distance (m)"),
+        ("signed_long_gap_m", "Long Gap (m)"),
+        ("lateral_offset_m", "Lateral (m)"),
+    ])
+
+    table = active[[source for source, _ in columns]].rename(columns=dict(columns))
+    for col in table.columns:
+        if col != "Index":
+            table[col] = pd.to_numeric(table[col], errors="coerce").round(2)
+
+    with st.expander(f"Targeted Car {slot} Positions by Index", expanded=True):
+        st.dataframe(table.set_index("Index"), width="stretch", height=260)
 
 
 def _interaction_marker_rows(active: pd.DataFrame) -> list[tuple[str, pd.Series]]:
@@ -447,14 +529,16 @@ def _add_target_marker(
     use_3d: bool,
     has_z: bool,
 ) -> None:
+    position = _target_position_text(row)
     hover = (
         f"{label}: Target Car {slot}<br>"
         f"Index: {int(row['iloc'])}<br>"
+        f"Position: {position}<br>"
         f"Distance: {float(row['distance_m']):.1f} m<br>"
         f"Long gap: {float(row['signed_long_gap_m']):.1f} m<br>"
         f"Lateral: {float(row['lateral_offset_m']):.1f} m"
     )
-    text = f"{label}: Car {slot}"
+    text = f"{label}: Car {slot}<br>idx {int(row['iloc'])}<br>{position}"
     if use_3d and has_z and "opponent_z" in row:
         fig.add_trace(go.Scatter3d(
             x=[row["opponent_x"]],
@@ -465,7 +549,7 @@ def _add_target_marker(
             text=[text],
             textposition="top center",
             hovertemplate=hover + "<extra></extra>",
-            marker=dict(size=8, color=color, symbol="diamond"),
+            marker=dict(size=9, color=color, symbol="diamond"),
             showlegend=False,
         ))
     else:
@@ -477,7 +561,7 @@ def _add_target_marker(
             text=[text],
             textposition="top center",
             hovertemplate=hover + "<extra></extra>",
-            marker=dict(size=13, color=color, symbol="diamond"),
+            marker=dict(size=14, color=color, symbol="diamond"),
             showlegend=False,
         ))
 
