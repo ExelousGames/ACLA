@@ -5,6 +5,20 @@ import plotly.graph_objects as go
 from ..shared import LABEL_CATEGORIES, LABEL_MAPPING
 from .track_sections import add_track_section_bands, track_sections_available
 
+
+def _smooth_display_columns(df: pd.DataFrame, columns: list[str], window: int) -> pd.DataFrame:
+    if window <= 1:
+        return df
+
+    display_df = df.copy()
+    display_df[columns] = display_df[columns].rolling(
+        window=window,
+        center=True,
+        min_periods=1,
+    ).mean()
+    return display_df
+
+
 def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, numeric_cols, default_cols):
     # Feature selection for visualization
     if "detailed_graph_ids" not in st.session_state:
@@ -28,7 +42,7 @@ def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, num
     graphs_to_remove = []
 
     for graph_id in st.session_state.detailed_graph_ids:
-        col_viz, col_btn = st.columns([6, 1])
+        col_viz, col_smooth, col_btn = st.columns([5, 1.4, 1])
         
         with col_viz:
             # Default selection logic
@@ -58,6 +72,18 @@ def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, num
                 default=current_default,
                 key=f"detailed_viz_cols_{graph_id}"
             )
+
+        with col_smooth:
+            st.markdown("<br>", unsafe_allow_html=True)
+            smooth_window = st.slider(
+                "Smooth",
+                min_value=1,
+                max_value=101,
+                value=st.session_state.get(f"detailed_viz_smooth_{graph_id}", 1),
+                step=2,
+                help="Display-only rolling window for this graph.",
+                key=f"detailed_viz_smooth_{graph_id}",
+            )
         
         with col_btn:
             st.markdown("<br>", unsafe_allow_html=True) # Spacing
@@ -71,9 +97,13 @@ def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, num
 
             # Apply range filter (include end index)
             sliced_df = df.iloc[plot_start:min(plot_end + 1, len(df))]
+            display_df = _smooth_display_columns(sliced_df, viz_cols, smooth_window)
 
             # Plot without downsampling
-            fig = px.line(sliced_df, x=sliced_df.index, y=viz_cols, title=f"Telemetry Data - Graph {graph_id}")
+            title = f"Telemetry Data - Graph {graph_id}"
+            if smooth_window > 1:
+                title += f" (Smooth: {smooth_window})"
+            fig = px.line(display_df, x=display_df.index, y=viz_cols, title=title)
 
             # Enhance hover with detailed stats (Index & Delta) for all points to match Manual UI capabilities
             if viz_cols and not sliced_df.empty:
@@ -166,12 +196,16 @@ def render_feature_visualization(df, viz_start_idx, viz_end_idx, session_id, num
                                  # Anchor to the first visualized column
                                  anchor_col = viz_cols[0]
                                  # Extract path
-                                 x_path = df.index[s_safe : e_safe+1]
-                                 y_path = df[anchor_col].iloc[s_safe : e_safe+1]
+                                 visible_start = max(s_safe, plot_start)
+                                 visible_end = min(e_safe, plot_end)
+                                 if visible_start > visible_end:
+                                     continue
+                                 x_path = df.index[visible_start : visible_end+1]
+                                 y_path = display_df[anchor_col].reindex(x_path)
                                  
                                  # Generate per-point hover text
                                  segment_hover_texts = []
-                                 for i in range(s_safe, e_safe + 1):
+                                 for i in range(visible_start, visible_end + 1):
                                      point_lines = hover_summary.copy()
                                      point_lines.append(f"<b>Index: {i}</b>")
                                      
