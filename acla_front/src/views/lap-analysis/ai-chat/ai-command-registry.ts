@@ -102,6 +102,18 @@ const getTacticalAlertKey = (result: any): string => {
 
 const hasSummaryContent = (summary: Record<string, any>): boolean => Object.keys(summary).length > 0;
 
+const normalizeSummarySearchText = (value: unknown): string => String(value ?? '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const getSearchLimit = (value: unknown): number => {
+    const parsed = Math.floor(Number(value));
+    if (!Number.isFinite(parsed) || parsed <= 0) return 5;
+    return Math.min(parsed, 10);
+};
+
 const buildUserSummaryMapLevel = (
     summary: Record<string, any>,
     args: Record<string, any>,
@@ -169,6 +181,123 @@ const buildUserSummaryMapLevel = (
                     })),
             };
         }),
+    };
+};
+
+type UserSummaryMapLevelResult = ReturnType<typeof buildUserSummaryMapLevel>;
+type UserSummaryMapRow = UserSummaryMapLevelResult['maps'][number];
+
+const buildAvailableUserSummaryMaps = (mapLevel: UserSummaryMapLevelResult) => {
+    const maps = mapLevel.maps.map((map) => ({
+        id: map.id,
+        name: map.name,
+        analyzed_session_count: map.analyzed_session_count,
+        total_analyzed_time_count: map.total_analyzed_time_count,
+        section_count: map.section_count,
+    }));
+    const mapOptions = maps.map((map) => (
+        `${map.name} (${map.id}) - ${map.analyzed_session_count} analyzed session${map.analyzed_session_count === 1 ? '' : 's'}`
+    ));
+
+    return {
+        status: 'ready',
+        map_count: mapLevel.map_count,
+        maps,
+        map_options: mapOptions,
+        response_text: mapOptions.length > 0
+            ? `Available maps in your summary:\n${mapOptions.map((option) => `- ${option}`).join('\n')}\nWhich map should I inspect?`
+            : 'I do not see any maps in your user summary yet.',
+    };
+};
+
+const searchUserSummaryMapLevel = (
+    mapLevel: UserSummaryMapLevelResult,
+    args: Record<string, any>,
+) => {
+    const query = normalizeSummarySearchText(args.query);
+    const terms = Array.from(new Set(query.split(' ').filter(Boolean)));
+    const limit = getSearchLimit(args.limit);
+
+    if (terms.length === 0) {
+        return {
+            status: 'invalid_query',
+            error: 'query_required',
+            query,
+            match_count: 0,
+            map_count: mapLevel.map_count,
+            maps: [],
+        };
+    }
+
+    const matches = mapLevel.maps
+        .map((map) => {
+            const searchFields: Array<{ name: string; value: unknown; weight: number }> = [
+                { name: 'map_name', value: map.name, weight: 8 },
+                { name: 'map_id', value: map.id, weight: 6 },
+            ];
+
+            map.top_mistake_sections.forEach((section) => {
+                searchFields.push({ name: 'top_mistake_section', value: section.name, weight: 5 });
+                searchFields.push({ name: 'top_mistake_section_id', value: section.id, weight: 3 });
+            });
+            map.top_expert_adherence_sections.forEach((section) => {
+                searchFields.push({ name: 'top_expert_adherence_section', value: section.name, weight: 4 });
+                searchFields.push({ name: 'top_expert_adherence_section_id', value: section.id, weight: 3 });
+            });
+            if (map.mistake_count > 0) {
+                searchFields.push({ name: 'aggregate_kind', value: 'mistake mistakes weakness weak section', weight: 2 });
+            }
+            if (map.expert_adherence_count > 0) {
+                searchFields.push({ name: 'aggregate_kind', value: 'expert adherence strength strong section', weight: 2 });
+            }
+
+            const matchedTerms = new Set<string>();
+            const matchedFields = new Set<string>();
+            let score = 0;
+
+            searchFields.forEach((field) => {
+                const value = normalizeSummarySearchText(field.value);
+                if (!value) return;
+
+                if (value.includes(query)) {
+                    score += field.weight * 2;
+                    matchedFields.add(field.name);
+                }
+
+                terms.forEach((term) => {
+                    if (value.includes(term)) {
+                        matchedTerms.add(term);
+                        matchedFields.add(field.name);
+                        score += field.weight;
+                    }
+                });
+            });
+
+            if (matchedTerms.size !== terms.length) return null;
+
+            return {
+                map,
+                search_score: score,
+                matched_fields: Array.from(matchedFields),
+            };
+        })
+        .filter((match): match is { map: UserSummaryMapRow; search_score: number; matched_fields: string[] } => Boolean(match))
+        .sort((a, b) => (
+            b.search_score - a.search_score
+            || b.map.analyzed_session_count - a.map.analyzed_session_count
+            || a.map.name.localeCompare(b.map.name)
+        ));
+
+    return {
+        status: 'ready',
+        query,
+        match_count: matches.length,
+        map_count: mapLevel.map_count,
+        maps: matches.slice(0, limit).map((match) => ({
+            ...match.map,
+            search_score: match.search_score,
+            matched_fields: match.matched_fields,
+        })),
     };
 };
 
@@ -268,7 +397,9 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         title: 'Reading user summary by map',
         description:
             'Retrieve the already-loaded user summary aggregated at the map/track level. ' +
-            'Use for questions about the driver\'s overall practice history, strengths, mistakes, or progress by map. ' +
+            'Use for questions about one specific map only when map_id is known, or for explicit all-map comparisons. ' +
+            'If the driver asks a map-specific question but does not say which map, first call get_available_user_summary_maps ' +
+            'and ask the driver which map to inspect. ' +
             'This returns aggregate map rows and top sections, not raw telemetry.',
         properties: {
             map_id: {
@@ -278,6 +409,39 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
             },
         },
         required: [],
+    },
+    {
+        name: 'get_available_user_summary_maps',
+        title: 'Listing user summary maps',
+        description:
+            'List maps/tracks available in the already-loaded user summary. ' +
+            'Use this when the driver asks a summary question that needs a specific map but does not name one; ' +
+            'after retrieving the list, read out the available maps from response_text and ask the driver which map to inspect. ' +
+            'This returns compact map choices and a ready-to-say map list.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'search_user_summary_map_level',
+        title: 'Searching user summary maps',
+        description:
+            'Search the already-loaded user summary at the map/track aggregate level. ' +
+            'Use when the driver asks which maps match a track name, map id, top mistake section, ' +
+            'or top expert-adherence section. If the user asks a map-specific question without naming a map, ' +
+            'call get_available_user_summary_maps and ask which map instead of searching all maps. ' +
+            'This searches summary aggregates only, not raw telemetry.',
+        properties: {
+            query: {
+                type: 'string',
+                description:
+                    'Search text, such as a map name/id or a top section/mistake/adherence phrase.',
+            },
+            limit: {
+                type: 'integer',
+                description: 'Maximum number of matching maps to return. Default 5; max 10.',
+            },
+        },
+        required: ['query'],
     },
 ];
 
@@ -363,6 +527,43 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         }
 
         return buildUserSummaryMapLevel(summary, args, context);
+    },
+
+    async get_available_user_summary_maps() {
+        if (context.userSummaryLoading) {
+            return { status: 'loading', maps: [] };
+        }
+        if (context.userSummaryError) {
+            return { status: 'error', error: context.userSummaryError, maps: [] };
+        }
+
+        const summary = asRecord(context.userSummary);
+        if (!hasSummaryContent(summary)) {
+            return { status: 'empty', maps: [] };
+        }
+
+        return buildAvailableUserSummaryMaps(
+            buildUserSummaryMapLevel(summary, {}, context),
+        );
+    },
+
+    async search_user_summary_map_level(args) {
+        if (context.userSummaryLoading) {
+            return { status: 'loading', maps: [] };
+        }
+        if (context.userSummaryError) {
+            return { status: 'error', error: context.userSummaryError, maps: [] };
+        }
+
+        const summary = asRecord(context.userSummary);
+        if (!hasSummaryContent(summary)) {
+            return { status: 'empty', maps: [] };
+        }
+
+        return searchUserSummaryMapLevel(
+            buildUserSummaryMapLevel(summary, {}, context),
+            args,
+        );
     },
 
     async get_next_corner() {
