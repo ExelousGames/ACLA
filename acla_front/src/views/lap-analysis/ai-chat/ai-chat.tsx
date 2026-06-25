@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useContext, useMemo, useCallback } from 'react';
 import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
+import { useAiLabels } from 'contexts/AiLabelsContext';
+import { useUserSummary } from 'contexts/UserSummaryContext';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
 import apiService from 'services/api.service';
@@ -183,6 +185,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     // would otherwise see a stale state value.
     const neuralTtsDisabledRef = useRef<boolean>(false);
     const analysisContext = useContext(AnalysisContext);
+    const {
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+    } = useUserSummary();
+    const {
+        getLabelName,
+        getCategoryLabels,
+    } = useAiLabels();
     const opportunityForecastRowsRef = useRef<Record<string, any>[]>([]);
     const opportunityAgentStateRef = useRef<OpportunityAgentState>({
         intervalId: null,
@@ -383,6 +394,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             setTrackGuideEnabled: setTrackGuideAgentEnabled,
             setAgentTagActive: setAgentTag,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
+            userSummary,
+            userSummaryLoading,
+            userSummaryError,
+            getLabelName,
+            getCategoryLabels,
         }),
     });
 

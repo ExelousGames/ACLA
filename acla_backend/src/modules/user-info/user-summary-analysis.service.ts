@@ -10,6 +10,7 @@ import { UserInfoService } from './user-info.service';
 
 @Injectable()
 export class UserSummaryAnalysisService implements OnModuleInit {
+    private static readonly USER_SUMMARY_SESSION_LIMIT = 10;
     private readonly logger = new Logger(UserSummaryAnalysisService.name);
     private isProcessing = false;
 
@@ -32,7 +33,17 @@ export class UserSummaryAnalysisService implements OnModuleInit {
         void this.processNextJob();
     }
 
-    async enqueue(userId: string): Promise<Record<string, any>> {
+    async enqueue(
+        userId: string,
+        sessionLimit = UserSummaryAnalysisService.USER_SUMMARY_SESSION_LIMIT,
+    ): Promise<Record<string, any>> {
+        const normalizedSessionLimit = Math.max(
+            1,
+            Math.min(
+                Math.floor(Number(sessionLimit) || UserSummaryAnalysisService.USER_SUMMARY_SESSION_LIMIT),
+                UserSummaryAnalysisService.USER_SUMMARY_SESSION_LIMIT,
+            ),
+        );
         const existing = await this.jobModel
             .findOne({ userId, status: { $in: ['queued', 'running'] } })
             .sort({ createdAt: -1 })
@@ -47,6 +58,7 @@ export class UserSummaryAnalysisService implements OnModuleInit {
                 userId,
                 status: 'queued',
                 progress: { message: 'Queued' },
+                sessionLimit: normalizedSessionLimit,
                 result: null,
                 error: null,
                 createdAt: new Date(),
@@ -113,7 +125,10 @@ export class UserSummaryAnalysisService implements OnModuleInit {
 
     private async runJob(job: UserSummaryAnalysisJobDocument): Promise<void> {
         try {
-            const response = await this.aiServiceClient.analyzeUserSessions({ user_id: job.userId });
+            const response = await this.aiServiceClient.analyzeUserSessions({
+                user_id: job.userId,
+                session_limit: job.sessionLimit || UserSummaryAnalysisService.USER_SUMMARY_SESSION_LIMIT,
+            });
             const sessionAnalysis = response.sessionAnalysis || {};
             const existingSummary = await this.userInfoService.getUserSummary(job.userId);
             const mergedSummary = {
@@ -158,6 +173,7 @@ export class UserSummaryAnalysisService implements OnModuleInit {
             userId: job.userId,
             status: job.status,
             progress: job.progress || {},
+            sessionLimit: job.sessionLimit || UserSummaryAnalysisService.USER_SUMMARY_SESSION_LIMIT,
             result: job.result || null,
             error: job.error || null,
             createdAt: job.createdAt,

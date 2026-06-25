@@ -171,6 +171,7 @@ export interface AiLabelsResponse {
 // Phase 2 — text-to-speech via Kokoro
 export interface AnalyzeUserSessionsRequest {
     user_id: string;
+    session_limit?: number;
 }
 
 export interface AnalyzeUserSessionsResponse {

@@ -53,9 +53,10 @@ describe('RacingSessionController', () => {
     await expect(
       controller.initializeUserSessionsAnalysis(
         { user: { userId: 'service-user', username: 'ai@example.com' } },
-        { userId: 'user-1' },
+        { userId: 'user-1', sessionLimit: 10 },
       ),
     ).resolves.toEqual({ userId: 'user-1', totalSessions: 0, sessions: [] });
+    expect(racingSessionService.listUserSessionsForAnalysis).toHaveBeenCalledWith('user-1', 10);
   });
 
   it('loads and forwards a saved session for segment classification', async () => {

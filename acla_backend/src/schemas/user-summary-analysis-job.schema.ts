@@ -16,6 +16,9 @@ export class UserSummaryAnalysisJob {
     @Prop({ type: Object, default: {} })
     progress: Record<string, any>;
 
+    @Prop({ type: Number, default: 10 })
+    sessionLimit: number;
+
     @Prop({ type: Object, default: null })
     result: Record<string, any> | null;
 

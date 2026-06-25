@@ -57,7 +57,11 @@ describe('UserSummaryAnalysisService', () => {
       id: 'job-1',
       userId: 'user-1',
       status: 'queued',
+      sessionLimit: 10,
     });
+    expect(jobModel.create).toHaveBeenCalledWith(expect.objectContaining({
+      sessionLimit: 10,
+    }));
   });
 
   it('denies duplicate active jobs for the same user', async () => {
@@ -95,6 +99,10 @@ describe('UserSummaryAnalysisService', () => {
 
     await service.processNextJob();
 
+    expect(aiServiceClient.analyzeUserSessions).toHaveBeenCalledWith({
+      user_id: 'user-1',
+      session_limit: 10,
+    });
     expect(userInfoService.updateUserSummary).toHaveBeenCalledWith('user-1', {
       manual: true,
       sessionAnalysis: { sessionsAnalyzed: 2, sessionsSkipped: 1, totalTelemetryRows: 50 },

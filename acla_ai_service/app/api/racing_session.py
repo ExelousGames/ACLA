@@ -82,6 +82,7 @@ TRACK_CORNER_UNSUPPORTED_MESSAGE = "Track guide doesn't support the current trac
 
 class AnalyzeUserSessionsRequest(BaseModel):
     user_id: str
+    session_limit: Optional[int] = 10
 
 class SegmentClassificationRequest(BaseModel):
     session_id: Optional[str] = None
@@ -244,7 +245,7 @@ async def analyze_all_user_sessions(request: AnalyzeUserSessionsRequest) -> Dict
         if not request.user_id:
             raise HTTPException(status_code=400, detail="user_id is required")
 
-        session_analysis = await analyze_user_sessions(request.user_id)
+        session_analysis = await analyze_user_sessions(request.user_id, request.session_limit or 10)
         return {
             "status": "success",
             "sessionAnalysis": session_analysis,

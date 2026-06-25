@@ -188,11 +188,11 @@ class BackendService:
             logger.error(f"Backend request to {endpoint} failed: {str(e)}")
             raise Exception(f"Backend function call failed: {str(e)}\n")
 
-    async def get_user_analysis_sessions(self, user_id: str) -> Dict[str, Any]:
+    async def get_user_analysis_sessions(self, user_id: str, session_limit: int = 10) -> Dict[str, Any]:
         response = await self.call_backend_function(
             "racing-session/analysis/user-sessions/init",
             "POST",
-            {"userId": user_id},
+            {"userId": user_id, "sessionLimit": session_limit},
             timeout_seconds=120.0,
         )
         if response.get("error"):

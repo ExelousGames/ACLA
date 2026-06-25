@@ -327,7 +327,7 @@ export class RacingSessionService {
         };
     }
 
-    async listUserSessionsForAnalysis(userId: string): Promise<Array<{
+    async listUserSessionsForAnalysis(userId: string, sessionLimit = 10): Promise<Array<{
         sessionId: string;
         session_name: string;
         map: string;
@@ -337,8 +337,11 @@ export class RacingSessionService {
         totalChunks: number;
         chunkSize: number;
     }>> {
+        const limit = Math.max(1, Math.min(Math.floor(Number(sessionLimit) || 10), 10));
         const sessions = await this.racingSession.find({ user_id: userId })
             .select('session_name map car_name user_id totalDataPoints totalChunks chunkSize dataChunkFileIds')
+            .sort({ created_date: -1, _id: -1 })
+            .limit(limit)
             .exec();
 
         return sessions.map((session) => ({

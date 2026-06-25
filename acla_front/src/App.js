@@ -9,6 +9,7 @@ import MainDashboard from 'views/dashboard/MainDashboard'
 import UserProfile from 'views/user-profile/user-profile'
 import EnvironmentProvider from 'contexts/EnvironmentContext'
 import AiLabelsProvider from 'contexts/AiLabelsContext'
+import UserSummaryProvider from 'contexts/UserSummaryContext'
 import LandingPage from 'views/landing-page/LandingPage'
 import FloatingChat from 'views/floating-chat/FloatingChat'
 import { useAuth } from 'hooks/AuthProvider'
@@ -22,7 +23,9 @@ const PublicRoute = ({ children }) => {
 
 const PostLoginProviders = () => (
   <AiLabelsProvider>
-    <Outlet />
+    <UserSummaryProvider>
+      <Outlet />
+    </UserSummaryProvider>
   </AiLabelsProvider>
 );
 

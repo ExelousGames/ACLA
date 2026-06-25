@@ -15,6 +15,7 @@ type AnalyzeAllSessionsControlProps = {
 };
 
 const ACTIVE_STATUSES = new Set(['queued', 'running']);
+const USER_SUMMARY_SESSION_LIMIT = 10;
 
 const AnalyzeAllSessionsControl = ({ onCompleted }: AnalyzeAllSessionsControlProps) => {
     const [job, setJob] = useState<AnalysisJob | null>(null);
@@ -56,7 +57,7 @@ const AnalyzeAllSessionsControl = ({ onCompleted }: AnalyzeAllSessionsControlPro
         }
 
         completedJobRef.current = job.id;
-        setMessage('Analysis completed');
+        setMessage('Analysis completed and saved');
         void onCompleted().catch(() => {
             setError('Analysis completed, but summary reload failed');
         });
@@ -66,7 +67,9 @@ const AnalyzeAllSessionsControl = ({ onCompleted }: AnalyzeAllSessionsControlPro
         setMessage('');
         setError('');
         try {
-            const response = await apiService.post<AnalysisJob>('/userinfo/summary/analyze-all');
+            const response = await apiService.post<AnalysisJob>('/userinfo/summary/analyze-all', {
+                sessionLimit: USER_SUMMARY_SESSION_LIMIT,
+            });
             setJob(response.data);
             setMessage('Analysis queued');
         } catch (requestError: any) {
@@ -87,7 +90,7 @@ const AnalyzeAllSessionsControl = ({ onCompleted }: AnalyzeAllSessionsControlPro
         <Flex direction="column" gap="2" className="user-summary-analysis-control">
             <Button onClick={handleAnalyze} disabled={isActive}>
                 {isActive ? <Spinner size="1" /> : <UpdateIcon />}
-                {isActive ? 'Analyzing' : 'Analyze All Sessions'}
+                {isActive ? 'Analyzing' : 'Analyze Recent Sessions'}
             </Button>
             <Text size="2" color={error ? 'red' : 'gray'}>
                 {error || message || statusText}

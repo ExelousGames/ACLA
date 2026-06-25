@@ -38,9 +38,9 @@ describe('AnalyzeAllSessionsControl', () => {
 
         render(<AnalyzeAllSessionsControl onCompleted={jest.fn()} />);
 
-        await userEvent.click(await screen.findByRole('button', { name: /analyze all sessions/i }));
+        await userEvent.click(await screen.findByRole('button', { name: /analyze recent sessions/i }));
 
-        expect(mockedApi.post).toHaveBeenCalledWith('/userinfo/summary/analyze-all');
+        expect(mockedApi.post).toHaveBeenCalledWith('/userinfo/summary/analyze-all', { sessionLimit: 10 });
         expect(await screen.findByText('Analysis queued')).toBeInTheDocument();
     });
 
@@ -55,7 +55,7 @@ describe('AnalyzeAllSessionsControl', () => {
         render(<AnalyzeAllSessionsControl onCompleted={jest.fn()} />);
 
         await waitFor(() => expect(mockedApi.get).toHaveBeenCalled());
-        await userEvent.click(screen.getByRole('button', { name: /analyze all sessions/i }));
+        await userEvent.click(screen.getByRole('button', { name: /analyze recent sessions/i }));
 
         expect(await screen.findByText('Analysis is already queued or running for this user')).toBeInTheDocument();
     });

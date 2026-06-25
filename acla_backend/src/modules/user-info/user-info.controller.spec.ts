@@ -78,11 +78,13 @@ describe('UserInfoController', () => {
   it('queues analysis for the authenticated user', async () => {
     userSummaryAnalysisService.enqueue.mockResolvedValue({ id: 'job-1', status: 'queued' });
 
-    await expect(controller.analyzeAllUserSessions({ user: { userId: 'user-1' } })).resolves.toEqual({
+    await expect(
+      controller.analyzeAllUserSessions({ user: { userId: 'user-1' } }, { sessionLimit: 10 }),
+    ).resolves.toEqual({
       id: 'job-1',
       status: 'queued',
     });
-    expect(userSummaryAnalysisService.enqueue).toHaveBeenCalledWith('user-1');
+    expect(userSummaryAnalysisService.enqueue).toHaveBeenCalledWith('user-1', 10);
   });
 
   it('gets analysis status for the authenticated user', async () => {

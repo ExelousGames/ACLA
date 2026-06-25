@@ -170,8 +170,11 @@ export class UserInfoController {
 
     @JwtAuth()
     @Post('summary/analyze-all')
-    async analyzeAllUserSessions(@Request() req): Promise<Record<string, any>> {
-        return this.userSummaryAnalysisService.enqueue(req.user.userId);
+    async analyzeAllUserSessions(
+        @Request() req,
+        @Body() body: { sessionLimit?: number } = {},
+    ): Promise<Record<string, any>> {
+        return this.userSummaryAnalysisService.enqueue(req.user.userId, body.sessionLimit);
     }
 
     @JwtAuth()

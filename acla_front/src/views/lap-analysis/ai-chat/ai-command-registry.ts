@@ -3,6 +3,7 @@ import { visualizationController } from 'views/lap-analysis/visualization/Visual
 import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import { FIELD_GROUPS } from 'views/lap-analysis/session-intelligence/telemetry-query';
+import { asRecord, buildPracticeTrackSummaryViews } from 'views/user-summary/user-summary-model';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 
 export interface AiCommandRegistryContext {
@@ -16,6 +17,11 @@ export interface AiCommandRegistryContext {
     setTrackGuideEnabled: (enabled: boolean) => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     getOpportunityTelemetryRows: () => Record<string, any>[];
+    userSummary?: Record<string, any>;
+    userSummaryLoading?: boolean;
+    userSummaryError?: string;
+    getLabelName?: (labelId: string) => string | undefined;
+    getCategoryLabels?: (category: string) => string[];
 }
 
 export interface OpportunityAgentState {
@@ -92,6 +98,78 @@ const getTacticalAlertKey = (result: any): string => {
     const section = result.projected_section || result.next_corner?.name || 'unknown-section';
     const opponent = result.opponent_id ?? result.opponent_slot ?? 'unknown-opponent';
     return `${result.event}:${opponent}:${section}`;
+};
+
+const hasSummaryContent = (summary: Record<string, any>): boolean => Object.keys(summary).length > 0;
+
+const buildUserSummaryMapLevel = (
+    summary: Record<string, any>,
+    args: Record<string, any>,
+    context: AiCommandRegistryContext,
+) => {
+    const tracks = buildPracticeTrackSummaryViews(
+        summary,
+        context.getLabelName,
+        context.getCategoryLabels,
+    );
+    const requestedMapId = typeof args.map_id === 'string' && args.map_id.trim()
+        ? args.map_id.trim()
+        : undefined;
+    const filteredTracks = requestedMapId
+        ? tracks.filter((track) => (
+            track.id === requestedMapId
+            || track.name.toLowerCase() === requestedMapId.toLowerCase()
+        ))
+        : tracks;
+
+    return {
+        status: 'ready',
+        map_count: filteredTracks.length,
+        maps: filteredTracks.map((track) => {
+            const mistakeCount = track.sections.reduce((sum, section) => sum + section.mistakeCount, 0);
+            const expertAdherenceCount = track.sections.reduce((sum, section) => sum + section.expertAdherenceCount, 0);
+            const totalAnalyzedTimeCount = track.totalAnalyzedTimeCount
+                || track.sections.reduce((sum, section) => sum + section.analyzedTimeCount, 0);
+
+            return {
+                id: track.id,
+                name: track.name,
+                analyzed_session_count: track.analyzedSessionCount,
+                skipped_session_count: track.skippedSessionCount,
+                failed_session_count: track.failedSessionCount,
+                total_analyzed_time_count: totalAnalyzedTimeCount,
+                section_count: track.sections.length,
+                mistake_count: mistakeCount,
+                expert_adherence_count: expertAdherenceCount,
+                mistake_percent: totalAnalyzedTimeCount > 0
+                    ? (mistakeCount / totalAnalyzedTimeCount) * 100
+                    : 0,
+                expert_adherence_percent: totalAnalyzedTimeCount > 0
+                    ? (expertAdherenceCount / totalAnalyzedTimeCount) * 100
+                    : 0,
+                top_mistake_sections: track.sections
+                    .filter((section) => section.mistakeCount > 0)
+                    .sort((a, b) => b.mistakeCount - a.mistakeCount || a.name.localeCompare(b.name))
+                    .slice(0, 3)
+                    .map((section) => ({
+                        id: section.id,
+                        name: section.name,
+                        mistake_count: section.mistakeCount,
+                        mistake_percent: section.mistakePercent,
+                    })),
+                top_expert_adherence_sections: track.sections
+                    .filter((section) => section.expertAdherenceCount > 0)
+                    .sort((a, b) => b.expertAdherenceCount - a.expertAdherenceCount || a.name.localeCompare(b.name))
+                    .slice(0, 3)
+                    .map((section) => ({
+                        id: section.id,
+                        name: section.name,
+                        expert_adherence_count: section.expertAdherenceCount,
+                        expert_adherence_percent: section.expertAdherencePercent,
+                    })),
+            };
+        }),
+    };
 };
 
 export const frontendToolSchemas: FrontendToolSchema[] = [
@@ -185,6 +263,22 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         },
         required: ['eventType', 'scope'],
     },
+    {
+        name: 'get_user_summary_map_level',
+        title: 'Reading user summary by map',
+        description:
+            'Retrieve the already-loaded user summary aggregated at the map/track level. ' +
+            'Use for questions about the driver\'s overall practice history, strengths, mistakes, or progress by map. ' +
+            'This returns aggregate map rows and top sections, not raw telemetry.',
+        properties: {
+            map_id: {
+                type: 'string',
+                description:
+                    'Optional map/track id or exact map name to filter to one map. Omit to retrieve every summarized map.',
+            },
+        },
+        required: [],
+    },
 ];
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
@@ -253,6 +347,22 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         return { events: si.findEvents(args as any) };
+    },
+
+    async get_user_summary_map_level(args) {
+        if (context.userSummaryLoading) {
+            return { status: 'loading', maps: [] };
+        }
+        if (context.userSummaryError) {
+            return { status: 'error', error: context.userSummaryError, maps: [] };
+        }
+
+        const summary = asRecord(context.userSummary);
+        if (!hasSummaryContent(summary)) {
+            return { status: 'empty', maps: [] };
+        }
+
+        return buildUserSummaryMapLevel(summary, args, context);
     },
 
     async get_next_corner() {

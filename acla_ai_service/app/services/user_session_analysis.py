@@ -274,7 +274,7 @@ def _scan_window(
             _increment_label(section_summary, label)
 
 
-async def analyze_user_sessions(user_id: str) -> Dict[str, Any]:
+async def analyze_user_sessions(user_id: str, session_limit: int = 10) -> Dict[str, Any]:
     summary: Dict[str, Any] = {
         "version": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -287,7 +287,8 @@ async def analyze_user_sessions(user_id: str) -> Dict[str, Any]:
         "tracks": {},
     }
 
-    init_response = await backend_service.get_user_analysis_sessions(user_id)
+    session_limit = max(1, min(int(session_limit or 10), 10))
+    init_response = await backend_service.get_user_analysis_sessions(user_id, session_limit)
     sessions = init_response.get("sessions", [])
     if not isinstance(sessions, list):
         sessions = []

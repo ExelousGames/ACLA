@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
     Box,
-    Button,
     Card,
     Flex,
     Heading,
@@ -9,63 +8,80 @@ import {
     Text,
     TextArea
 } from '@radix-ui/themes';
-import { CheckIcon } from '@radix-ui/react-icons';
 import { useAiLabels } from 'contexts/AiLabelsContext';
-import apiService from 'services/api.service';
+import { useUserSummary } from 'contexts/UserSummaryContext';
 import AnalyzeAllSessionsControl from './AnalyzeAllSessionsControl';
-import { asRecord, buildTrackSummaryViews, formatCount, formatNumber } from './user-summary-model';
+import {
+    asRecord,
+    buildPracticeTrackSummaryViews,
+    formatCount,
+    formatNumber,
+    formatPercent,
+    PracticeParentSegmentView
+} from './user-summary-model';
 import './user-summary.css';
 
-type UserSummaryResponse = {
-    summary: Record<string, any>;
+type SegmentGroupProps = {
+    title: string;
+    emptyText: string;
+    segments: PracticeParentSegmentView[];
+    variant: 'mistake' | 'expert' | 'recovery';
 };
 
-const UserSummary = () => {
-    const { getLabelName } = useAiLabels();
-    const [summaryText, setSummaryText] = useState('{}');
-    const [isLoading, setIsLoading] = useState(true);
-    const [isSaving, setIsSaving] = useState(false);
-    const [message, setMessage] = useState('');
-    const [error, setError] = useState('');
+const SegmentGroup = ({ title, emptyText, segments, variant }: SegmentGroupProps) => (
+    <section className="user-summary-segment-group">
+        <Text className="user-summary-section-title">{title}</Text>
+        {segments.length > 0 ? (
+            segments.map((segment) => (
+                <div className={`user-summary-parent-segment user-summary-parent-segment--${variant}`} key={segment.id}>
+                    <div className="user-summary-parent-heading">
+                        <span>{segment.name}</span>
+                        <span>{formatCount(segment.count)}</span>
+                    </div>
+                    <div className="user-summary-child-list">
+                        {segment.childSegments.length > 0 ? (
+                            segment.childSegments.map((childSegment) => (
+                                <span
+                                    className={`user-summary-child-pill user-summary-child-pill--${variant}`}
+                                    key={`${segment.id}-${childSegment.id}-${childSegment.startIndex ?? 'start'}-${childSegment.endIndex ?? 'end'}`}
+                                >
+                                    {childSegment.name}
+                                    <strong>{formatNumber(childSegment.count)}</strong>
+                                    {childSegment.startIndex !== undefined && childSegment.endIndex !== undefined && (
+                                        <em>{childSegment.startIndex}-{childSegment.endIndex}</em>
+                                    )}
+                                </span>
+                            ))
+                        ) : (
+                            <Text size="2" color="gray">No child segments recorded.</Text>
+                        )}
+                    </div>
+                </div>
+            ))
+        ) : (
+            <Text size="2" color="gray">{emptyText}</Text>
+        )}
+    </section>
+);
 
-    const loadSummary = useCallback(async () => {
-        try {
-            const response = await apiService.get<UserSummaryResponse>('/userinfo/summary');
-            setSummaryText(JSON.stringify(response.data.summary || {}, null, 2));
-        } catch (error) {
-            setError('Unable to load user summary');
-        } finally {
-            setIsLoading(false);
-        }
-    }, []);
+const UserSummary = () => {
+    const {
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+        loadUserSummary
+    } = useUserSummary();
+    const {
+        getLabelName,
+        getCategoryLabels,
+        loading: labelsLoading,
+        error: labelsError
+    } = useAiLabels();
+    const [summaryText, setSummaryText] = useState('{}');
 
     useEffect(() => {
-        void loadSummary();
-    }, [loadSummary]);
-
-    const handleSave = async () => {
-        setError('');
-        setMessage('');
-
-        let summary: Record<string, any>;
-        try {
-            summary = JSON.parse(summaryText);
-        } catch (error) {
-            setError('Summary must be valid JSON');
-            return;
-        }
-
-        setIsSaving(true);
-        try {
-            const response = await apiService.put<UserSummaryResponse>('/userinfo/summary', { summary });
-            setSummaryText(JSON.stringify(response.data.summary || {}, null, 2));
-            setMessage('Saved');
-        } catch (error) {
-            setError('Unable to save user summary');
-        } finally {
-            setIsSaving(false);
-        }
-    };
+        setSummaryText(JSON.stringify(userSummary || {}, null, 2));
+    }, [userSummary]);
 
     const parsedSummary = useMemo(() => {
         try {
@@ -76,8 +92,8 @@ const UserSummary = () => {
     }, [summaryText]);
 
     const trackSummaries = useMemo(
-        () => buildTrackSummaryViews(asRecord(parsedSummary), getLabelName),
-        [getLabelName, parsedSummary],
+        () => buildPracticeTrackSummaryViews(asRecord(parsedSummary), getLabelName, getCategoryLabels),
+        [getCategoryLabels, getLabelName, parsedSummary],
     );
 
     return (
@@ -87,92 +103,98 @@ const UserSummary = () => {
                     <Flex justify="between" align="center" gap="3" wrap="wrap">
                         <Box>
                             <Heading size="6">User Summary</Heading>
-                            <Text size="2" color="gray">Track performance summary</Text>
+                            <Text size="2" color="gray">Most recent 10 practice sessions by track section</Text>
                         </Box>
                         <Flex gap="3" align="start" wrap="wrap">
-                            <AnalyzeAllSessionsControl onCompleted={loadSummary} />
-                            <Button onClick={handleSave} disabled={isLoading || isSaving}>
-                                <CheckIcon />
-                                {isSaving ? 'Saving' : 'Save JSON'}
-                            </Button>
+                            <AnalyzeAllSessionsControl onCompleted={loadUserSummary} />
                         </Flex>
                     </Flex>
 
                     <Separator />
 
                     <Box className="user-summary-display">
-                        {isLoading ? (
+                        {userSummaryLoading ? (
                             <Text size="2" color="gray">Loading summary</Text>
                         ) : !parsedSummary ? (
                             <Text size="2" color="red">Preview unavailable until JSON is valid.</Text>
+                        ) : labelsLoading ? (
+                            <Text size="2" color="gray">Loading AI track sections</Text>
+                        ) : labelsError ? (
+                            <Text size="2" color="red">Unable to load AI track sections.</Text>
                         ) : trackSummaries.length === 0 ? (
-                            <Text size="2" color="gray">No track summary available yet.</Text>
+                            <Text size="2" color="gray">No practice session summary available yet.</Text>
                         ) : (
                             trackSummaries.map((track) => (
                                 <article className="user-summary-track" key={track.id}>
                                     <header className="user-summary-track-header">
                                         <Box>
-                                            <Text className="user-summary-kicker">Track</Text>
+                                            <Text className="user-summary-kicker">Practice Track</Text>
                                             <Heading size="5">{track.name}</Heading>
                                         </Box>
                                         <div className="user-summary-stats">
-                                            <span>{formatNumber(track.sessionsAnalyzed)} analyzed</span>
-                                            <span>{formatNumber(track.totalTelemetryRows)} rows</span>
-                                            <span>{formatNumber(track.parentSegments.length)} areas</span>
+                                            <span>{formatNumber(track.analyzedSessionCount)} analyzed</span>
+                                            <span>{formatCount(track.totalAnalyzedTimeCount)} analyzed time</span>
+                                            <span>{formatNumber(track.sections.length)} sections</span>
+                                            {track.skippedSessionCount > 0 && (
+                                                <span>{formatNumber(track.skippedSessionCount)} skipped</span>
+                                            )}
+                                            {track.failedSessionCount > 0 && (
+                                                <span>{formatNumber(track.failedSessionCount)} failed</span>
+                                            )}
                                         </div>
                                     </header>
 
-                                    <div className="user-summary-track-body">
-                                        <section className="user-summary-highlight-group">
-                                            <Text className="user-summary-section-title">Did Well</Text>
-                                            {track.strengths.length > 0 ? (
-                                                track.strengths.map((item) => (
-                                                    <div className="user-summary-highlight" key={`${item.parentSegmentId}-${item.childSegmentId}`}>
-                                                        <span className="user-summary-highlight-name">{item.childSegmentName}</span>
-                                                        <span className="user-summary-highlight-meta">{item.parentSegmentName} - {formatCount(item.count)}</span>
+                                    <section className="user-summary-section-list">
+                                        {track.sections.length > 0 ? (
+                                            track.sections.map((section) => (
+                                                <div className="user-summary-track-section" key={section.id}>
+                                                    <div className="user-summary-section-heading">
+                                                        <Box>
+                                                            <Text className="user-summary-kicker">Section</Text>
+                                                            <Heading size="4">{section.name}</Heading>
+                                                        </Box>
+                                                        <div className="user-summary-section-metrics">
+                                                            <span className="user-summary-section-metric user-summary-section-metric--mistake">
+                                                                <strong>{formatPercent(section.mistakePercent)}</strong>
+                                                                mistakes
+                                                                <em>{formatCount(section.mistakeCount)}</em>
+                                                            </span>
+                                                            <span className="user-summary-section-metric user-summary-section-metric--expert">
+                                                                <strong>{formatPercent(section.expertAdherencePercent)}</strong>
+                                                                expert adherence
+                                                                <em>{formatCount(section.expertAdherenceCount)}</em>
+                                                            </span>
+                                                            <span className="user-summary-section-metric">
+                                                                <strong>{formatNumber(section.analyzedTimeCount)}</strong>
+                                                                analyzed
+                                                            </span>
+                                                        </div>
                                                     </div>
-                                                ))
-                                            ) : (
-                                                <Text size="2" color="gray">No strengths detected yet.</Text>
-                                            )}
-                                        </section>
-
-                                        <section className="user-summary-highlight-group">
-                                            <Text className="user-summary-section-title">Needs Work</Text>
-                                            {track.improvementAreas.length > 0 ? (
-                                                track.improvementAreas.map((item) => (
-                                                    <div className="user-summary-highlight" key={`${item.parentSegmentId}-${item.childSegmentId}`}>
-                                                        <span className="user-summary-highlight-name">{item.childSegmentName}</span>
-                                                        <span className="user-summary-highlight-meta">{item.parentSegmentName} - {formatCount(item.count)}</span>
+                                                    <div className="user-summary-section-body">
+                                                        <SegmentGroup
+                                                            title="Mistakes"
+                                                            emptyText="No mistakes recorded for this section."
+                                                            segments={section.mistakeSegments}
+                                                            variant="mistake"
+                                                        />
+                                                        <SegmentGroup
+                                                            title="Recovery & Merge"
+                                                            emptyText="No recovery or merge events recorded for this section."
+                                                            segments={section.recoveryMergeSegments}
+                                                            variant="recovery"
+                                                        />
+                                                        <SegmentGroup
+                                                            title="Expert Adherence"
+                                                            emptyText="No expert adherence recorded for this section."
+                                                            segments={section.expertAdherenceSegments}
+                                                            variant="expert"
+                                                        />
                                                     </div>
-                                                ))
-                                            ) : (
-                                                <Text size="2" color="gray">No problem areas detected yet.</Text>
-                                            )}
-                                        </section>
-                                    </div>
-
-                                    <section className="user-summary-parent-list">
-                                        <Text className="user-summary-section-title">Track Areas</Text>
-                                        {track.parentSegments.map((parentSegment) => (
-                                            <div className="user-summary-parent-segment" key={parentSegment.id}>
-                                                <div className="user-summary-parent-heading">
-                                                    <span>{parentSegment.name}</span>
-                                                    <span>{formatNumber(parentSegment.expertLevelTurns)} good / {formatNumber(parentSegment.mistakes)} issues</span>
                                                 </div>
-                                                <div className="user-summary-child-list">
-                                                    {parentSegment.childSegments.map((childSegment) => (
-                                                        <span
-                                                            className={`user-summary-child-pill user-summary-child-pill--${childSegment.kind}`}
-                                                            key={childSegment.id}
-                                                        >
-                                                            {childSegment.name}
-                                                            <strong>{formatNumber(childSegment.count)}</strong>
-                                                        </span>
-                                                    ))}
-                                                </div>
-                                            </div>
-                                        ))}
+                                            ))
+                                        ) : (
+                                            <Text size="2" color="gray">No AI track sections available for this track.</Text>
+                                        )}
                                     </section>
                                 </article>
                             ))
@@ -184,15 +206,15 @@ const UserSummary = () => {
                         <TextArea
                             className="user-summary-editor"
                             value={summaryText}
-                            onChange={(event) => setSummaryText(event.target.value)}
-                            disabled={isLoading}
+                            readOnly
+                            disabled={userSummaryLoading}
                             spellCheck={false}
                         />
                     </details>
 
-                    {(message || error) && (
-                        <Text size="2" color={error ? 'red' : 'green'}>
-                            {error || message}
+                    {userSummaryError && (
+                        <Text size="2" color="red">
+                            {userSummaryError}
                         </Text>
                     )}
                 </Flex>

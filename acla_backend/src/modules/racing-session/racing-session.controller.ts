@@ -176,7 +176,7 @@ export class RacingSessionController {
     @Post('analysis/user-sessions/init')
     async initializeUserSessionsAnalysis(
         @Request() req,
-        @Body() body: { userId?: string }
+        @Body() body: { userId?: string; sessionLimit?: number }
     ) {
         const targetUserId = body.userId;
         if (!targetUserId) {
@@ -184,7 +184,7 @@ export class RacingSessionController {
         }
         this.assertCanAccessAnalysisTarget(req, targetUserId);
 
-        const sessions = await this.racingSessionService.listUserSessionsForAnalysis(targetUserId);
+        const sessions = await this.racingSessionService.listUserSessionsForAnalysis(targetUserId, body.sessionLimit);
         return {
             userId: targetUserId,
             totalSessions: sessions.length,

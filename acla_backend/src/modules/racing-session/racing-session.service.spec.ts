@@ -37,22 +37,24 @@ describe('RacingSessionService', () => {
   });
 
   it('lists only sessions for the requested user for analysis', async () => {
+    const exec = jest.fn().mockResolvedValue([
+      {
+        _id: { toString: () => 'session-1' },
+        session_name: 'Race 1',
+        map: 'Brands Hatch',
+        car_name: 'BMW',
+        user_id: 'user-1',
+        totalDataPoints: 100,
+        totalChunks: 2,
+        chunkSize: 50,
+        dataChunkFileIds: ['file-1', 'file-2'],
+      },
+    ]);
+    const limit = jest.fn().mockReturnValue({ exec });
+    const sort = jest.fn().mockReturnValue({ limit });
+    const select = jest.fn().mockReturnValue({ sort });
     racingSessionModel.find.mockReturnValue({
-      select: jest.fn().mockReturnValue({
-        exec: jest.fn().mockResolvedValue([
-          {
-            _id: { toString: () => 'session-1' },
-            session_name: 'Race 1',
-            map: 'Brands Hatch',
-            car_name: 'BMW',
-            user_id: 'user-1',
-            totalDataPoints: 100,
-            totalChunks: 2,
-            chunkSize: 50,
-            dataChunkFileIds: ['file-1', 'file-2'],
-          },
-        ]),
-      }),
+      select,
     });
 
     await expect(service.listUserSessionsForAnalysis('user-1')).resolves.toEqual([
@@ -68,6 +70,8 @@ describe('RacingSessionService', () => {
       },
     ]);
     expect(racingSessionModel.find).toHaveBeenCalledWith({ user_id: 'user-1' });
+    expect(sort).toHaveBeenCalledWith({ created_date: -1, _id: -1 });
+    expect(limit).toHaveBeenCalledWith(10);
   });
 
   it('initializes download for only the requested session when sessionId is provided', async () => {
