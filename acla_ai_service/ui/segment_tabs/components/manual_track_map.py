@@ -99,7 +99,7 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                 map_data.append(p_start)
 
             # Add Expert Position
-            if has_expert_pos:
+            if has_expert_pos and not focus_interaction:
                 # End Position
                 e_data = {
                     "x": current_row["expert_optimal_player_pos_x"],
@@ -274,7 +274,7 @@ def render_manual_track_map(df, viz_start_idx, viz_end_idx, session_id):
                         ))
 
                 # Expert
-                if has_expert_pos:
+                if has_expert_pos and not focus_interaction:
                     if use_3d and has_expert_pos_z:
                         fig_map.add_trace(go.Scatter3d(
                             x=map_plot_df["expert_optimal_player_pos_x"], 
