@@ -27,6 +27,7 @@ import { MainMenuOptions } from 'data/MainMenuOptions';
 import HeaderMenu from 'views/header-menu/header-menu';
 import { SessionAnalysisAssistant, SessionAnalysisProvider } from 'views/lap-analysis/session-analysis';
 import { useEnvironment } from 'contexts/EnvironmentContext';
+import LiveAnalysisSessionRecording from 'views/lap-analysis/liveAnalysisSessionRecording';
 
 
 const MainMenuOptionSelectionContext = createContext();
@@ -50,6 +51,7 @@ const MainDashboard = ({ onTaskCreated }) => {
                             <SideMainMenu />
                         </div>
                         <SessionAnalysisAssistant />
+                        {environment === 'electron' ? <LiveAnalysisSessionRecording /> : ''}
                     </div>
                 </div>
             </SessionAnalysisProvider>

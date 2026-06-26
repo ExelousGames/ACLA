@@ -5,6 +5,7 @@ import { Box, Text, Flex, Container, Button } from "@radix-ui/themes";
 import SessionAnalysis from "views/lap-analysis/session-analysis";
 import ProtectedComponent from "components/ProtectedComponent";
 import UserSummary from "views/user-summary/user-summary";
+import CircuitMaps from "views/circuit-maps/circuit-maps";
 
 const SideMainMenu = () => (
     <Tabs.Root className="TabsRoot" defaultValue="analysis">
@@ -16,6 +17,7 @@ const SideMainMenu = () => (
                 <Tabs.List className="TabsList">
                     <Tabs.Trigger className="TabsTrigger" value="analysis">Analysis</Tabs.Trigger>
                     <Tabs.Trigger className="TabsTrigger" value="userSummary">User Summary</Tabs.Trigger>
+                    <Tabs.Trigger className="TabsTrigger" value="circuitMaps">Circuit Maps</Tabs.Trigger>
                 </Tabs.List>
             </ScrollArea.Viewport>
             <ScrollArea.Scrollbar className="ScrollAreaScrollbar" orientation="vertical">
@@ -34,6 +36,10 @@ const SideMainMenu = () => (
 
             <Tabs.Content className="TabsContent" value="userSummary">
                 <UserSummary />
+            </Tabs.Content>
+
+            <Tabs.Content className="TabsContent" value="circuitMaps">
+                <CircuitMaps />
             </Tabs.Content>
 
             <Tabs.Content className="TabsContent" value="adminPanel">

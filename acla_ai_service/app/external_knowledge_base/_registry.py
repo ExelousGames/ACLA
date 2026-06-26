@@ -1,6 +1,6 @@
 """Racing-engineer knowledge-base RAG index.
 
-Walks every ``.md`` under ``app/skills/external/racing_engineer/`` (recursively
+Walks every ``.md`` under ``app/external_knowledge_base/`` (recursively
 across ``labels/``, ``main_labels/``, ``features/``, ``behaviors/``,
 ``tracks/``, ``tools/``, ``knowledge/``), chunks each file by ``## Heading`` (or by
 blank-line paragraphs if a file has no headings), and serves hybrid

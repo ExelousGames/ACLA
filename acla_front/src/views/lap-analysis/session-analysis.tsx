@@ -12,7 +12,6 @@ import React, { useContext, useEffect, useState, useRef, useCallback } from 'rea
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { useEnvironment } from 'contexts/EnvironmentContext';
-import LiveAnalysisSessionRecording from './liveAnalysisSessionRecording';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
 import { PythonShellOptions } from 'services/pythonService';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
@@ -525,7 +524,6 @@ const SessionAnalysis = () => {
                     </Tabs.Content>
                 </Box >
             </Tabs.Root>
-            {environment == 'electron' ? <LiveAnalysisSessionRecording></LiveAnalysisSessionRecording> : ''}
         </>
     );
 };

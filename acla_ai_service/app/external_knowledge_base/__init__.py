@@ -7,7 +7,7 @@ per main-label family, or per telemetry feature.
 
 Layout::
 
-    app/skills/external/racing_engineer/
+    app/external_knowledge_base/
       __init__.py                  (this module — loader)
       README.md                    (format spec for human authors)
       labels/<slugged_name>.md     (one per sub-label, e.g. oversteering_at_entry.md)
@@ -146,9 +146,8 @@ def _shape_section(lines: List[str]) -> object:
     continuations folded). Anything else is prose; return the trimmed
     block as a single string.
 
-    Tools that read structured fields like ``remedies`` / ``telemetry_signature``
-    benefit from real lists; prose sections like ``definition`` /
-    ``engineer_interpretation`` stay as strings. Keeps the corpus author-
+    Tools that read structured fields like ``solution`` benefit from real lists;
+    prose sections like ``definition`` stay as strings. Keeps the corpus author-
     friendly (just write Markdown bullets) and the runtime payload clean.
     """
     text = "\n".join(lines).strip()
@@ -179,11 +178,10 @@ def _shape_section(lines: List[str]) -> object:
 
 
 def _load_category(name: str) -> Dict[str, dict]:
-    """Lazy-load every .md under app/skills/external/racing_engineer/<name>/.
+    """Lazy-load every .md under app/external_knowledge_base/<name>/.
 
     Thread-safe. Missing directories return an empty dict (no error) so
-    Phase 2 can ship category-by-category without empty folders being
-    fatal.
+    optional corpus categories can be absent without being fatal.
     """
     with _CACHE_LOCK:
         cached = _CACHE.get(name)

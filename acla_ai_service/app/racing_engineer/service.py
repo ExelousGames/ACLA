@@ -202,7 +202,7 @@ class AIService:
         Accepts either a raw id ("MSP44") — typically classifier output —
         or a natural name ("Oversteering at entry"). Internally resolves to
         the canonical human name via ``LABEL_MAPPING`` and looks up the
-        slugged file under ``app/skills/external/racing_engineer/labels/``. Ids are
+        slugged file under ``app/external_knowledge_base/labels/``. Ids are
         never used to address files.
         """
         from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
@@ -226,18 +226,20 @@ class AIService:
             return {
                 "name": name,
                 "definition": (
-                    "Concept doc not authored yet — racing-engineer corpus "
-                    "ships in Phase 2. Rely on your base-model knowledge of "
+                    "Concept doc not authored yet. Racing-engineer corpus "
+                    "does not have this label. Rely on your base-model knowledge of "
                     f"'{name}' for now."
                 ),
             }
 
-        return {
+        result = {
             "name": entry.get("name", name),
             "definition": entry.get("definition", ""),
-            "engineer_interpretation": entry.get("engineer_interpretation", ""),
-            "remedies": entry.get("remedies", []),
         }
+        solution = entry.get("solution")
+        if solution:
+            result["solution"] = solution
+        return result
 
     async def _get_track_knowledge_impl(
         self, track: str, corner: Optional[str] = None,
@@ -362,8 +364,7 @@ class AIService:
             labels_out.append({
                 "name": entry.get("name", name),
                 "definition": entry.get("definition", ""),
-                "engineer_interpretation": entry.get("engineer_interpretation", ""),
-                "remedies": entry.get("remedies", []),
+                **({"solution": entry["solution"]} if entry.get("solution") else {}),
             })
 
         return {

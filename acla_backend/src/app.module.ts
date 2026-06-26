@@ -12,6 +12,7 @@ import { AiModelModule } from './modules/ai-model/ai-model.module';
 import { ChunkModule } from './shared/chunk-service/chunk.module';
 import { SeedModule } from './shared/seed/seed.module';
 import { VoiceModule } from './voice/voice.module';
+import { CircuitMapModule } from './modules/circuit-map/circuit-map.module';
 
 @Module({
 
@@ -29,7 +30,8 @@ import { VoiceModule } from './voice/voice.module';
     RacingSessionModule,
     UserSessionAiModelModule,
     AiModelModule,
-    VoiceModule
+    VoiceModule,
+    CircuitMapModule
   ],
   controllers: [AppController],
   providers: [AppService],
