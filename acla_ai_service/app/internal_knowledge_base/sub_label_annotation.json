@@ -385,7 +385,7 @@
     "MSP32": {
       "name": "Highest brake length too long",
       "type": "sub",
-      "description": "During entry across the braking range, the player's interval between **brake initiation** end and **release onset** is longer than the expert's — **peak brake pressure** is held for too long.\n",
+      "description": "During entry or apex, the player's interval between **brake initiation** end and **release onset** is longer than the expert's — causing speed gap increases.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [

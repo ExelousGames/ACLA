@@ -2102,7 +2102,21 @@ def test_detailed_build_request_adds_embedding_candidates_to_prompt(monkeypatch)
     )
 
     attachment_names = [attachment.name for attachment in request.initial_attachments]
-    assert "init.preflight_label_candidates" not in attachment_names
+    assert "init.preflight_label_candidates" in attachment_names
+    candidate_attachment = next(
+        attachment
+        for attachment in request.initial_attachments
+        if attachment.name == "init.preflight_label_candidates"
+    )
+    assert candidate_attachment.label == "Upfront Detailed Embedding Label Candidates"
+    assert candidate_attachment.content_schema == "annotation_preflight_labels"
+    assert candidate_attachment.content["candidates"][0]["id"] == "MSP2"
+    context_attachment = next(
+        attachment
+        for attachment in request.initial_attachments
+        if attachment.name == "init.annotation_preflight_context"
+    )
+    assert context_attachment.content["label_candidate_ids"] == ["MSP2"]
     assert "Upfront Detailed Embedding Label Candidates" in request.planner_prompt
     assert "`MSP2`" in request.planner_prompt
     assert "not final labels" in request.planner_prompt

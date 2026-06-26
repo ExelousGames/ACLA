@@ -347,6 +347,15 @@ def build_request(
         evidence_text=_preflight_semantic_search_text(preflight),
         parent_main_labels=parent_main_labels,
     )
+    for attachment in preflight.attachments:
+        if attachment.name == "init.annotation_preflight_context" and isinstance(
+            attachment.content,
+            dict,
+        ):
+            attachment.content["label_candidate_ids"] = [
+                c["id"] for c in embedding_candidates if c.get("id")
+            ]
+            break
 
     planner_prompt = _tool_agent_task_prompt(
         parent_start=parent_start,
@@ -371,7 +380,20 @@ def build_request(
         df_ref=df,
         parent_start=int(parent_start),
         parent_end=int(parent_end),
-        initial_attachments=[parent_segment, *preflight.attachments],
+        initial_attachments=[
+            parent_segment,
+            *preflight.attachments,
+            Attachment(
+                name="init.preflight_label_candidates",
+                kind="structured",
+                label="Upfront Detailed Embedding Label Candidates",
+                content={
+                    "range": [int(parent_start), int(parent_end)],
+                    "candidates": embedding_candidates,
+                },
+                content_schema="annotation_preflight_labels",
+            ),
+        ],
         callbacks=callbacks,
         session_id=session_id,
         extra_state=extra_state,
