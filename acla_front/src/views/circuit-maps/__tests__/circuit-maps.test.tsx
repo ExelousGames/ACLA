@@ -6,6 +6,9 @@ import apiService from 'services/api.service';
 import { AnalysisContext, AnalysisContextType } from 'views/lap-analysis/analysis-context';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 
+const mockRefreshCircuitMaps = jest.fn();
+const mockUpsertCachedCircuitMap = jest.fn();
+
 jest.mock('@radix-ui/themes', () => ({
     Badge: ({ children, ...props }: any) => <span {...props}>{children}</span>,
     Box: require('react').forwardRef(({ children, ...props }: any, ref: any) => <div ref={ref} {...props}>{children}</div>),
@@ -50,6 +53,13 @@ jest.mock('services/api.service', () => ({
     },
 }));
 
+jest.mock('contexts/CircuitMapsContext', () => ({
+    useCircuitMaps: () => ({
+        refreshCircuitMaps: mockRefreshCircuitMaps,
+        upsertCachedCircuitMap: mockUpsertCachedCircuitMap,
+    }),
+}));
+
 const mockedApi = apiService as jest.Mocked<typeof apiService>;
 
 const baseContext: AnalysisContextType = {
@@ -92,6 +102,7 @@ describe('CircuitMaps', () => {
         mockedApi.get.mockResolvedValue({ data: { list: [] }, status: 200 } as any);
         mockedApi.post.mockResolvedValue({ data: { id: 'map-1' }, status: 201 } as any);
         mockedApi.put.mockResolvedValue({ data: {}, status: 200 } as any);
+        mockRefreshCircuitMaps.mockResolvedValue([]);
 
         (global as any).ResizeObserver = class {
             observe = jest.fn();
@@ -144,6 +155,13 @@ describe('CircuitMaps', () => {
             resolution: 1000,
         });
         expect(JSON.stringify(payload)).not.toContain('user_id');
+        expect(mockUpsertCachedCircuitMap).toHaveBeenCalledWith(expect.objectContaining({
+            id: 'map-1',
+            game: 'acc',
+            circuit_name: 'Global Test Circuit',
+            resolution: 1000,
+        }));
+        expect(mockRefreshCircuitMaps).toHaveBeenCalledWith('acc');
     });
 
     it('captures pit lane samples as an active circuit map mode', async () => {

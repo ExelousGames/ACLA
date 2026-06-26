@@ -2,14 +2,15 @@ import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } 
 import { Badge, Box, Button, Flex, Heading, Select, Spinner, Text, TextField } from '@radix-ui/themes';
 import { CheckIcon, Cross2Icon, PauseIcon, PlayIcon, PlusIcon, ReloadIcon, TrashIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
+import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
 import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
+import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CIRCUIT_MAP_GAMES,
     CircuitMapBinSample,
     CircuitMapCaptureMode,
-    CircuitMapDto,
     CircuitMapGame,
     CircuitMapSamplesByMode,
     CircuitMapSummaryDto
@@ -41,45 +42,6 @@ const EMPTY_SAMPLES: CircuitMapSamplesByMode = {
     pit_lane: []
 };
 
-const normalizeMapList = (data: any): CircuitMapSummaryDto[] => {
-    const rows = Array.isArray(data) ? data : Array.isArray(data?.list) ? data.list : [];
-    return rows
-        .map((row: any): CircuitMapSummaryDto | null => {
-            const id = String(row.id ?? row.map_id ?? row.MapId ?? '');
-            const circuitName = String(row.circuit_name ?? row.name ?? row.map_name ?? '');
-            const game = row.game === 'other' ? 'other' : 'acc';
-            if (!id || !circuitName) return null;
-
-            return {
-                id,
-                game,
-                circuit_name: circuitName,
-                source_track_key: row.source_track_key ?? null,
-                updated_at: row.updated_at ?? null,
-                sample_count: Number(row.sample_count ?? 0)
-            };
-        })
-        .filter((row: CircuitMapSummaryDto | null): row is CircuitMapSummaryDto => row !== null);
-};
-
-const normalizeMap = (data: any, fallbackGame: CircuitMapGame): CircuitMapDto => {
-    const rawSamples = data?.samples || {};
-    return {
-        id: String(data?.id ?? data?.map_id ?? ''),
-        game: data?.game === 'other' ? 'other' : fallbackGame,
-        circuit_name: String(data?.circuit_name ?? data?.name ?? ''),
-        source_track_key: data?.source_track_key ?? null,
-        updated_at: data?.updated_at ?? null,
-        sample_count: Number(data?.sample_count ?? countCircuitMapSamples(rawSamples)),
-        resolution: Number(data?.resolution ?? CIRCUIT_MAP_BIN_RESOLUTION),
-        samples: {
-            left_boundary: Array.isArray(rawSamples.left_boundary) ? rawSamples.left_boundary : [],
-            right_boundary: Array.isArray(rawSamples.right_boundary) ? rawSamples.right_boundary : [],
-            pit_lane: Array.isArray(rawSamples.pit_lane) ? rawSamples.pit_lane : []
-        }
-    };
-};
-
 const getAccTrackKey = (liveData: any, staticData: any): string | null => (
     liveData?.Static_track
     || liveData?.Static?.track
@@ -107,6 +69,7 @@ const getSamplesForMode = (samplesByMode: CircuitMapSamplesByMode, mode: Circuit
 
 const CircuitMaps = () => {
     const analysisContext = useContext(AnalysisContext);
+    const { refreshCircuitMaps, upsertCachedCircuitMap } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
     const projectedPointsRef = useRef<ProjectedPoint[]>([]);
@@ -146,8 +109,7 @@ const CircuitMaps = () => {
         setError(null);
 
         try {
-            const response = await apiService.get<any>('/circuit-map/list', { game: nextGame });
-            setMapList(normalizeMapList(response.data));
+            setMapList(await fetchCircuitMapList(nextGame));
             setListState('ready');
         } catch (loadError: any) {
             setMapList([]);
@@ -217,15 +179,15 @@ const CircuitMaps = () => {
         setSelectedPoint(null);
 
         try {
-            const response = await apiService.get<any>(`/circuit-map/${encodeURIComponent(mapId)}`);
-            const map = normalizeMap(response.data, game);
+            const map = await fetchCircuitMapById(mapId, game);
             setCircuitName(map.circuit_name);
             setSourceTrackKey(map.source_track_key || null);
             setSamplesByMode(cloneSamplesByMode(map.samples));
+            upsertCachedCircuitMap(map);
         } catch (loadError: any) {
             setError(loadError?.data?.message || loadError?.message || 'Unable to load circuit map.');
         }
-    }, [game]);
+    }, [game, upsertCachedCircuitMap]);
 
     const resetForNewMap = useCallback(() => {
         setSelectedMapId(null);
@@ -260,22 +222,45 @@ const CircuitMaps = () => {
         setError(null);
 
         try {
+            let savedMapId = selectedMapId;
             if (selectedMapId) {
                 await apiService.put(`/circuit-map/${encodeURIComponent(selectedMapId)}`, payload);
             } else {
                 const response = await apiService.post<any>('/circuit-map', payload);
                 const nextId = String(response.data?.id ?? response.data?.map_id ?? '');
                 if (nextId) {
+                    savedMapId = nextId;
                     setSelectedMapId(nextId);
                 }
             }
+
+            if (savedMapId) {
+                upsertCachedCircuitMap(normalizeCircuitMap({
+                    id: savedMapId,
+                    ...payload,
+                    sample_count: sampleCount
+                }, game));
+            }
+
+            await refreshCircuitMaps(game);
             await loadMapList(game);
         } catch (saveError: any) {
             setError(saveError?.data?.message || saveError?.message || 'Unable to save circuit map.');
         } finally {
             setIsSaving(false);
         }
-    }, [circuitName, game, isAcc, loadMapList, samplesByMode, selectedMapId, sourceTrackKey]);
+    }, [
+        circuitName,
+        game,
+        isAcc,
+        loadMapList,
+        refreshCircuitMaps,
+        sampleCount,
+        samplesByMode,
+        selectedMapId,
+        sourceTrackKey,
+        upsertCachedCircuitMap
+    ]);
 
     const setSelectedSample = useCallback((updater: (sample: CircuitMapBinSample) => CircuitMapBinSample | null) => {
         if (!selectedPoint) return;
