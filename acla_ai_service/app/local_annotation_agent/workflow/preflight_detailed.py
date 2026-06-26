@@ -343,10 +343,10 @@ def _build_detailed_events(
         _extend(events, _balance_and_grip_events(df, start, end, by_tool, phases))
         return _dedupe_events(events)
 
-    _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "brake"))
-    _extend(events, _peak_comparison_events(df, start, end, by_tool, phases, "throttle"))
-    _extend(events, _input_timing_comparison_events(df, start, end, phases))
-    _extend(events, _local_input_shape_events(df, start, end, phases))
+    _extend(events, _peak_comparison_events(df, start, end, by_tool, "brake"))
+    _extend(events, _peak_comparison_events(df, start, end, by_tool, "throttle"))
+    _extend(events, _input_timing_comparison_events(df, start, end))
+    _extend(events, _local_input_shape_events(df, start, end))
     _extend(events, _time_delta_events(df, start, end, by_tool, phases))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
     _extend(events, _speed_events(df, start, end, by_tool, phases))
@@ -945,7 +945,6 @@ def _peak_comparison_events(
     start: int,
     end: int,
     by_tool: Dict[str, Dict[str, Any]],
-    phases: List[Dict[str, int]],
     kind: str,
 ) -> List[Dict[str, Any]]:
     if kind == "brake":
@@ -968,7 +967,6 @@ def _peak_comparison_events(
         return []
     delta = float(player_value) - float(expert_value)
     player_iloc = player.get("iloc")
-    phase = _phase_for_iloc(player_iloc, phases) if isinstance(player_iloc, int) else "unknown"
     measurements = {
         "player_value": player_value,
         "expert_value": expert_value,
@@ -989,7 +987,7 @@ def _peak_comparison_events(
     if abs(delta) < 0.05:
         return [_event(
             f"{phrase} about same as expert",
-            phase,
+            "unknown",
             [player_iloc, player_iloc] if isinstance(player_iloc, int) else None,
             measurements,
             "strong" if abs(delta) <= 0.02 else "moderate",
@@ -997,7 +995,7 @@ def _peak_comparison_events(
         )]
     return [_event(
         f"{phrase} {'higher' if delta > 0 else 'lower'} than expert",
-        phase,
+        "unknown",
         [player_iloc, player_iloc] if isinstance(player_iloc, int) else None,
         measurements,
         "strong" if abs(delta) >= 0.15 else "moderate",
@@ -1009,7 +1007,6 @@ def _input_timing_comparison_events(
     df,
     start: int,
     end: int,
-    phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     for player_col, expert_col, direction, phrase in (
@@ -1058,7 +1055,7 @@ def _input_timing_comparison_events(
                     [source],
                 ))
             continue
-        events.extend(_action_boundary_events(phrase, player, expert, phases, source))
+        events.extend(_action_boundary_events(phrase, player, expert, source))
     return events
 
 
@@ -1066,7 +1063,6 @@ def _action_boundary_events(
     phrase: str,
     player: Dict[str, Any],
     expert: Dict[str, Any],
-    phases: List[Dict[str, int]],
     source: str,
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
@@ -1091,7 +1087,7 @@ def _action_boundary_events(
         )
         events.append(_event(
             event_name,
-            _phase_for_iloc(player_iloc, phases),
+            "unknown",
             _range_from_values(player_iloc, expert_iloc),
             {
                 "player_start_index": player.get("start_index"),
@@ -1129,7 +1125,6 @@ def _local_input_shape_events(
     df,
     start: int,
     end: int,
-    phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
     for kind, player_col, expert_col, noun in (
@@ -1155,7 +1150,6 @@ def _local_input_shape_events(
                     player,
                     expert,
                     timing,
-                    phases,
                     source,
                 ))
     events.extend(_overlap_events(df, start, end))
@@ -1167,13 +1161,12 @@ def _action_timing_event(
     player: Dict[str, Any],
     expert: Dict[str, Any],
     comparison: Dict[str, Any],
-    phases: List[Dict[str, int]],
     source: str,
 ) -> Dict[str, Any]:
     delta = comparison["start_delta_iloc"]
     return _event(
         f"{phrase} onset {'earlier' if delta < 0 else 'later'} than expert",
-        _phase_for_iloc(player.get("start_index"), phases),
+        "unknown",
         _range_from_values(player.get("start_index"), expert.get("start_index")),
         {
             "player_start_index": player.get("start_index"),
@@ -3020,21 +3013,6 @@ def _measurement_sentence_fragments(
         expert = measurements.get("expert_end_index")
         delta = measurements.get("end_delta_iloc")
     if boundary:
-        player_start = measurements.get("player_start_index")
-        player_end = measurements.get("player_end_index")
-        expert_start = measurements.get("expert_start_index")
-        expert_end = measurements.get("expert_end_index")
-        if (
-            player_start is not None
-            and player_end is not None
-            and expert_start is not None
-            and expert_end is not None
-        ):
-            fragments.append(
-                "the player episode spans iloc "
-                f"{player_start} to {player_end} while the expert episode "
-                f"spans iloc {expert_start} to {expert_end}"
-            )
         if player is not None and expert is not None:
             fragments.append(
                 f"the player {boundary} was at iloc {player} while the "

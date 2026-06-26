@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from app.internal_knowledge_base import skills
 from app.shared.labels import LABEL_MAPPING
 from app.shared.contracts import (
     AgentCallbacks,
@@ -34,15 +35,6 @@ from app.local_annotation_agent.workflow.preflight_detailed import (
     build_preflight_context,
 )
 from app.local_annotation_agent.workflow.tools import shape_label_doc_for_llm
-
-
-WHOLE_CHILD_RANGE_LABEL_RULE = (
-    "Every proposed label must describe the proposed child range as a "
-    "whole. Do not propose a label because it matches only one phase, one "
-    "apex moment, or a short slice inside the child range; shrink the "
-    "child range so the label fits throughout, submit a separate proposal "
-    "for the smaller range, or omit that label."
-)
 
 
 def _is_full_parent_range(
@@ -67,6 +59,26 @@ def _tool_agent_task_prompt(
     existing_children: List[dict],
 ) -> str:
     """User-message prompt the tool-agent runner sends as the session start."""
+    range_fit_rule = str(
+        skills.get("sub_label_annotation.range_fit_rule", "")
+    ).strip()
+    flow_rules = skills.get("sub_label_annotation.detailed_flow_rules", [])
+    if not isinstance(flow_rules, list):
+        raise RuntimeError(
+            "sub_label_annotation.detailed_flow_rules must be a list"
+        )
+    annotation_rules = [
+        rule
+        for rule in [
+            range_fit_rule,
+            *(str(rule).strip() for rule in flow_rules),
+        ]
+        if rule
+    ]
+    annotation_rules_block = "\n".join(annotation_rules)
+    annotation_rule_bullets = "\n".join(
+        f"- {rule}" for rule in annotation_rules
+    )
 
     parent_label_blocks = [
         f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})"
@@ -82,13 +94,13 @@ def _tool_agent_task_prompt(
                 f"  - [{c['start_index']}, {c['end_index']}] — {names}"
             )
         existing_block = (
-            "\n### Already discovered sub-segments (do NOT re-propose)\n"
+            "\n### Existing child proposals for duplicate checks\n"
             + "\n".join(lines) + "\n"
         )
 
     return (
-        "Discover the most notable sub-segment(s) within the parent "
-        "segment below and submit them via `submit_result`. A valid "
+        "Discover strongly supported candidate-label sub-segment(s) within "
+        "the parent segment below and submit them via `submit_result`. A valid "
         "sub-segment is a strict child range: it may touch one parent "
         "boundary, but it must not be identical to the parent range.\n"
         "\n"
@@ -112,13 +124,15 @@ def _tool_agent_task_prompt(
         "3. Call additional data tools only to resolve a concrete missing "
         "detail, not to rediscover the basic analysis path already covered "
         "by preflight.\n"
-        "4. Submit via `submit_result(payload_json, summary)` when evidence "
+        "4. Audit the parent range according to the detailed annotation "
+        "rules below.\n"
+        "5. Submit via `submit_result(payload_json, summary)` when evidence "
         "is sufficient, then stop after it returns `ok: true`. If the "
         "evidence only supports the whole parent range, submit an empty "
         "`proposals` list and say no strict child sub-segment was found.\n"
         "\n"
-        "### Whole-child-range fit rule\n"
-        f"{WHOLE_CHILD_RANGE_LABEL_RULE}\n"
+        "### Detailed annotation rules\n"
+        f"{annotation_rules_block}\n"
         "\n"
         "### Submit payload shape\n"
         "`payload_json` must be a JSON object of this shape:\n"
@@ -139,7 +153,7 @@ def _tool_agent_task_prompt(
         "### Hard rules\n"
         f"- Every proposed range must satisfy {parent_start} <= start_index < end_index <= {parent_end}.\n"
         f"- A proposed range must not be identical to the parent range [{parent_start}, {parent_end}].\n"
-        f"- {WHOLE_CHILD_RANGE_LABEL_RULE}\n"
+        f"{annotation_rule_bullets}\n"
         "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
         "- Only propose label_ids from the Upfront Detailed Embedding Label "
         "Candidates block. The AI does not search for labels in this flow.\n"
@@ -194,6 +208,7 @@ def _embedding_label_candidates(
     Detailed preflight only prepares semantic evidence sentences; this flow-level
     step performs the embedding retrieval before the AI chooses ranges.
     """
+    from app.internal_knowledge_base.label_reranker import rerank_label_docs
     from app.internal_knowledge_base.label_search import get_doc, search
 
     query = (evidence_text or "").strip()
@@ -204,10 +219,14 @@ def _embedding_label_candidates(
 
     def add(docs: List[Dict[str, Any]]) -> None:
         for doc in docs:
-            shaped = shape_label_doc_for_llm(doc)
-            current = merged.get(shaped["id"])
-            if current is None or shaped.get("score", 0.0) > current.get("score", 0.0):
-                merged[shaped["id"]] = shaped
+            label_id = str(doc.get("id") or "")
+            if not label_id:
+                continue
+            current = merged.get(label_id)
+            score = float(doc.get("score", 0.0) or 0.0)
+            current_score = float((current or {}).get("score", 0.0) or 0.0)
+            if current is None or score > current_score:
+                merged[label_id] = dict(doc)
 
     main_parents = [
         label_id
@@ -222,11 +241,10 @@ def _embedding_label_candidates(
     else:
         add(search(query, filters={"type": "main"}, top_k=12))
 
-    return sorted(
-        merged.values(),
-        key=lambda item: float(item.get("score", 0.0)),
-        reverse=True,
-    )[:16]
+    return [
+        shape_label_doc_for_llm(doc)
+        for doc in rerank_label_docs(query, list(merged.values()))
+    ]
 
 
 def _embedding_candidates_prompt_block(candidates: List[Dict[str, Any]]) -> str:
@@ -240,8 +258,8 @@ def _embedding_candidates_prompt_block(candidates: List[Dict[str, Any]]) -> str:
     ]
     if not candidates:
         lines.append(
-            "- (none found; submit an empty proposals list unless the "
-            "evidence supports no strict child label)"
+            "- (none found; submit an empty proposals list because no "
+            "label_id is authorized for this detailed pass)"
         )
         return "\n".join(lines)
 
