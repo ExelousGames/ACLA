@@ -32,6 +32,8 @@ def test_detailed_prompt_does_not_let_existing_children_suppress_overlap():
     assert "They do not mark their ilocs as handled" in prompt
     assert "different labels that overlap or nest inside them" in prompt
     assert "One category does not explain away or cover another category" in prompt
+    assert "Existing child proposals for duplicate checks" in prompt
+    assert "do NOT re-propose" not in prompt
 
 
 def test_detailed_prompt_local_event_ranges_ignore_unrelated_recovery():

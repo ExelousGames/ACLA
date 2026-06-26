@@ -94,7 +94,7 @@ def _tool_agent_task_prompt(
                 f"  - [{c['start_index']}, {c['end_index']}] — {names}"
             )
         existing_block = (
-            "\n### Already discovered sub-segments (do NOT re-propose)\n"
+            "\n### Existing child proposals for duplicate checks\n"
             + "\n".join(lines) + "\n"
         )
 
