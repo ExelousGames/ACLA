@@ -184,11 +184,6 @@ async def voice_stream(
         await websocket.close(code=1011, reason="voice dependency missing")
         return
 
-    config = VoiceSessionConfig(
-        session_id=session_id,
-        user_id=user_id,
-    )
-
     # ── Handshake: frontend declares executable tool capabilities ─────────
     # The first text frame on every voice session must be
     # ``{"type": "frontend_info", "tools": [...]}``. The frontend owns
@@ -198,7 +193,7 @@ async def voice_stream(
     # Audio frames before the handshake are dropped (we haven't built the
     # pipeline yet anyway).
     try:
-        frontend_tools, query_scope_schema = await _await_frontend_info(websocket, timeout=5.0)
+        frontend_tools, query_scope_schema, session_context = await _await_frontend_info(websocket, timeout=5.0)
     except _HandshakeError as exc:
         LOGGER.warning(
             "Voice WS handshake failed (user=%s): %s", user_id, exc,
@@ -216,6 +211,12 @@ async def voice_stream(
         except Exception:
             pass
         return
+
+    config = VoiceSessionConfig(
+        session_id=session_id,
+        session_context=session_context,
+        user_id=user_id,
+    )
 
     # Construct the tool executor here, in the inbound-adapter band, so
     # app/voice/ never imports from app/pipelines/ (see .importlinter
@@ -257,14 +258,15 @@ class _HandshakeError(Exception):
 
 async def _await_frontend_info(
     websocket: WebSocket, *, timeout: float,
-) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]:
     """Receive and parse the first text frame as ``frontend_info``.
 
-    Returns ``(tools, query_scope_schema)``. ``tools`` is the (possibly
-    empty) list of frontend tool capability schemas. ``query_scope_schema`` is the
-    frontend-owned JSON Schema for QueryScope (consumed by server-side
-    tools whose params reference a scope, e.g. ``analyze_telemetry``); may
-    be ``None`` if the frontend didn't send one. Raises
+    Returns ``(tools, query_scope_schema, session_context)``. ``tools`` is the
+    (possibly empty) list of frontend tool capability schemas.
+    ``query_scope_schema`` is the frontend-owned JSON Schema for QueryScope
+    (consumed by server-side tools whose params reference a scope, e.g.
+    ``analyze_telemetry``); may be ``None`` if the frontend didn't send one.
+    ``session_context`` is compact frontend view/session state. Raises
     :class:`_HandshakeError` on timeout, non-text first frame, malformed
     JSON, wrong ``type``, or invalid ``tools`` shape.
 
@@ -313,7 +315,17 @@ async def _await_frontend_info(
             raise _HandshakeError(
                 "frontend_info: 'query_scope_schema' must be an object or null"
             )
-        return tools, query_scope_schema
+        session_context = payload.get("session_context")
+        if session_context is None:
+            session_context = {}
+        if not isinstance(session_context, dict):
+            raise _HandshakeError("frontend_info: 'session_context' must be an object or null")
+        context_session_mode = session_context.get("session_mode")
+        if context_session_mode is not None and context_session_mode not in ("live", "recorded"):
+            raise _HandshakeError(
+                "frontend_info: 'session_context.session_mode' must be 'live', 'recorded', or omitted"
+            )
+        return tools, query_scope_schema, session_context
 
 
 class _TextFilteringWebSocket:

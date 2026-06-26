@@ -113,6 +113,17 @@ const getTrackNameForGuide = (
         ? liveData.Static_track
         : undefined;
 
+const countSummaryTracks = (summary: Record<string, any>): number => {
+    const sessionAnalysis = summary?.sessionAnalysis;
+    const practiceTracks = sessionAnalysis?.practice?.tracks;
+    const analyzerTracks = sessionAnalysis?.tracks;
+    const rootTracks = summary?.tracks;
+    const tracks = practiceTracks || analyzerTracks || rootTracks;
+    return tracks && typeof tracks === 'object' && !Array.isArray(tracks)
+        ? Object.keys(tracks).length
+        : 0;
+};
+
 const findTriggeredCorners = (
     corners: CornerDefinition[],
     lastPos: number,
@@ -378,9 +389,61 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled(true);
     };
 
-    const voiceConversation = useVoiceConversation({
+    const aiSessionContext = useMemo(() => {
+        const selectedSession = analysisContext?.sessionSelected as Record<string, any> | null;
+        const liveData = analysisContext?.liveData as Record<string, any> | null;
+        const liveDataKeys = liveData ? Object.keys(liveData).length : 0;
+        const summaryTrackCount = countSummaryTracks(userSummary || {});
+        const summaryLoaded = !userSummaryLoading && !userSummaryError && summaryTrackCount > 0;
+
+        return {
+            assistant_surface: 'lap_analysis_ai_chat',
+            session_mode: sessionMode,
+            session_id: sessionId || selectedSession?.SessionId || null,
+            active_tab: analysisContext?.activeTab || null,
+            selected_map_id: analysisContext?.mapSelected || selectedSession?.map || null,
+            selected_session: selectedSession
+                ? {
+                    id: selectedSession.SessionId || null,
+                    name: selectedSession.session_name || null,
+                    map: selectedSession.map || null,
+                    car: selectedSession.car || null,
+                }
+                : null,
+            telemetry: {
+                live_available: sessionMode === 'live' && Boolean(analysisContext?.sessionIntelligence),
+                latest_sample_present: liveDataKeys > 0,
+                latest_sample_key_count: liveDataKeys,
+                live_status: analysisContext?.TelemetryDataLiveStatus ?? null,
+                recorded_file_loaded: Boolean(analysisContext?.recordedSessionDataFilePath),
+                recorded_sample_count: analysisContext?.recordedTelemetryDataCount ?? 0,
+            },
+            user_summary: {
+                loaded: summaryLoaded,
+                loading: userSummaryLoading,
+                error: userSummaryError || null,
+                track_count: summaryTrackCount,
+            },
+        };
+    }, [
+        analysisContext?.TelemetryDataLiveStatus,
+        analysisContext?.activeTab,
+        analysisContext?.liveData,
+        analysisContext?.mapSelected,
+        analysisContext?.recordedSessionDataFilePath,
+        analysisContext?.recordedTelemetryDataCount,
+        analysisContext?.sessionIntelligence,
+        analysisContext?.sessionSelected,
         sessionId,
         sessionMode,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
+    ]);
+
+    const voiceConversation = useVoiceConversation({
+        sessionId,
+        sessionContext: aiSessionContext,
         onEvent: handleVoiceEvent,
         frontendTools: frontendToolSchemas,
         querySchemaScope: QUERY_SCOPE_SCHEMA,

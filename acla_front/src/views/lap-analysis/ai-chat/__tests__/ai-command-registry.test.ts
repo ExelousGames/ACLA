@@ -54,7 +54,25 @@ const createRegistry = () => createAiCommandRegistry({
                                 analyzedTimeCount: 10,
                                 mistakeCount: 6,
                                 expertAdherenceCount: 4,
-                                parentSegments: [],
+                                parentSegments: [
+                                    {
+                                        id: 'MSP',
+                                        type: 'mistake',
+                                        count: 6,
+                                        childSegments: [
+                                            { id: 'late_brake', count: 4 },
+                                            { id: 'wide_exit', count: 2 },
+                                        ],
+                                    },
+                                    {
+                                        id: 'EA',
+                                        type: 'expert_adherence',
+                                        count: 4,
+                                        childSegments: [
+                                            { id: 'good_apex', count: 4 },
+                                        ],
+                                    },
+                                ],
                             },
                         },
                     },
@@ -155,5 +173,32 @@ describe('ai command registry user summary tools', () => {
                 },
             ],
         });
+    });
+
+    it('includes section-level mistake breakdowns when reading a known map', async () => {
+        const result = await createRegistry().get_user_summary_map_level(
+            { map_id: 'brands_hatch' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result.maps[0].sections).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: 'brands_hatch2',
+                mistake_segments: [
+                    expect.objectContaining({
+                        id: 'MSP',
+                        count: 6,
+                        child_segments: [
+                            expect.objectContaining({ id: 'late_brake', count: 4 }),
+                            expect.objectContaining({ id: 'wide_exit', count: 2 }),
+                        ],
+                    }),
+                ],
+            }),
+        ]));
+        expect(result.maps[0].top_mistake_sections[0]).toEqual(expect.objectContaining({
+            id: 'brands_hatch2',
+            mistake_segments: expect.any(Array),
+        }));
     });
 });

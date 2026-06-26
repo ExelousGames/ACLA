@@ -4,9 +4,10 @@ title: Searching user summary maps
 description: >
   Search the already-loaded user summary at the map/track aggregate level.
   Use when the driver asks which maps match a track name, map id, top mistake
-  section, or top expert-adherence section. If the user asks a map-specific
-  question without naming a map, call get_available_user_summary_maps and ask
-  which map instead of searching all maps.
+  section, top expert-adherence section, or a vague follow-up to a summary
+  finding when the map is not known. If the user asks a map-specific question
+  without naming a map, call get_available_user_summary_maps and ask which map
+  instead of searching all maps.
 parameters:
   query:
     description: Search text, such as a map name, map id, section, mistake, or adherence phrase.
@@ -18,3 +19,7 @@ parameters:
 
 This searches summary aggregates only, not raw telemetry.
 
+Use this to recover the right map/section from phrases like "Surtees",
+"Clark Curve", "that mistake", or "check it now" when the recent conversation
+was about user-summary mistakes. Do not use analyze_telemetry unless the
+driver explicitly asks about current live/recorded telemetry.

@@ -2,7 +2,12 @@ import apiService from 'services/api.service';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
-import { asRecord, buildPracticeTrackSummaryViews } from 'views/user-summary/user-summary-model';
+import {
+    PracticeParentSegmentView,
+    PracticeSectionSummaryView,
+    asRecord,
+    buildPracticeTrackSummaryViews,
+} from 'views/user-summary/user-summary-model';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 
 export interface AiCommandRegistryContext {
@@ -107,6 +112,39 @@ const getSearchLimit = (value: unknown): number => {
     return Math.min(parsed, 10);
 };
 
+const summarizePracticeSegments = (segments: PracticeParentSegmentView[]) => segments
+    .filter((segment) => segment.count > 0)
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, 5)
+    .map((segment) => ({
+        id: segment.id,
+        name: segment.name,
+        count: segment.count,
+        child_segments: segment.childSegments
+            .filter((child) => child.count > 0)
+            .slice(0, 5)
+            .map((child) => ({
+                id: child.id,
+                name: child.name,
+                count: child.count,
+                ...(child.startIndex !== undefined ? { start_index: child.startIndex } : {}),
+                ...(child.endIndex !== undefined ? { end_index: child.endIndex } : {}),
+            })),
+    }));
+
+const summarizePracticeSection = (section: PracticeSectionSummaryView) => ({
+    id: section.id,
+    name: section.name,
+    analyzed_time_count: section.analyzedTimeCount,
+    mistake_count: section.mistakeCount,
+    mistake_percent: section.mistakePercent,
+    expert_adherence_count: section.expertAdherenceCount,
+    expert_adherence_percent: section.expertAdherencePercent,
+    mistake_segments: summarizePracticeSegments(section.mistakeSegments),
+    expert_adherence_segments: summarizePracticeSegments(section.expertAdherenceSegments),
+    recovery_merge_segments: summarizePracticeSegments(section.recoveryMergeSegments),
+});
+
 const buildUserSummaryMapLevel = (
     summary: Record<string, any>,
     args: Record<string, any>,
@@ -156,22 +194,15 @@ const buildUserSummaryMapLevel = (
                     .filter((section) => section.mistakeCount > 0)
                     .sort((a, b) => b.mistakeCount - a.mistakeCount || a.name.localeCompare(b.name))
                     .slice(0, 3)
-                    .map((section) => ({
-                        id: section.id,
-                        name: section.name,
-                        mistake_count: section.mistakeCount,
-                        mistake_percent: section.mistakePercent,
-                    })),
+                    .map(summarizePracticeSection),
                 top_expert_adherence_sections: track.sections
                     .filter((section) => section.expertAdherenceCount > 0)
                     .sort((a, b) => b.expertAdherenceCount - a.expertAdherenceCount || a.name.localeCompare(b.name))
                     .slice(0, 3)
-                    .map((section) => ({
-                        id: section.id,
-                        name: section.name,
-                        expert_adherence_count: section.expertAdherenceCount,
-                        expert_adherence_percent: section.expertAdherencePercent,
-                    })),
+                    .map(summarizePracticeSection),
+                sections: requestedMapId
+                    ? track.sections.map(summarizePracticeSection)
+                    : undefined,
             };
         }),
     };
@@ -412,13 +443,6 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     },
 
     // ── Telemetry ─────────────────────────────────────────────────────────────
-
-    async query_telemetry(args) {
-        if (context.sessionMode === 'recorded') return { error: 'recorded_session_live_tools_unavailable' };
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        return si.query(args as any);
-    },
 
     // Constrained-reduce variant exposed to the LLM. The schema enforces
     // reduce ∈ {avg,min,max,stats}; we defensively swap any other value

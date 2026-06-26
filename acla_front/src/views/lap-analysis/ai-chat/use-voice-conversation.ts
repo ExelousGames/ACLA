@@ -48,6 +48,8 @@ export interface FrontendToolSchema {
     required: string[];
 }
 
+export type AiSessionContext = Record<string, unknown>;
+
 /** One event surfaced to the chat UI off the voice WS. The hook fires
  *  these via `onEvent` so the caller can append them to a message list. */
 export type VoiceEvent =
@@ -67,7 +69,6 @@ export interface VoiceConversationOptions {
     /** Driving session id — required for backend tools that look up
      *  recent telemetry / lap data by session. */
     sessionId?: string;
-    sessionMode?: 'live' | 'recorded';
     /** User id — required for backend tools that key off the logged-in
      *  user (e.g. saved preferences, history). */
     userId?: string;
@@ -84,6 +85,9 @@ export interface VoiceConversationOptions {
      *  a query scope (e.g. analyze_telemetry) consume this executable data
      *  shape from the WS handshake instead of re-declaring it in Python. */
     querySchemaScope?: object;
+    /** Compact frontend view/session state injected into the backend system
+     *  context before the LLM chooses tools. */
+    sessionContext?: AiSessionContext;
     /** Fires for each transcript / tool event the backend sends. The
      *  caller is responsible for appending to its own message list. */
     onEvent?: (event: VoiceEvent) => void;
@@ -134,9 +138,8 @@ export function useVoiceConversation(
     const openWs = useCallback((): WebSocket => {
         return apiService.openWebSocket('/voice/stream', {
             session_id: options.sessionId,
-            session_mode: options.sessionMode,
         });
-    }, [options.sessionId, options.sessionMode]);
+    }, [options.sessionId]);
 
     // Always-fresh handler registry — updated as options.toolHandlers changes
     // without forcing the WS to reopen.
@@ -284,7 +287,7 @@ export function useVoiceConversation(
                 try {
                     ws.send(JSON.stringify({
                         type: 'frontend_info',
-                        session_mode: options.sessionMode ?? 'live',
+                        session_context: options.sessionContext ?? null,
                         tools: options.frontendTools || [],
                         query_scope_schema: options.querySchemaScope ?? null,
                     }));
@@ -426,7 +429,14 @@ export function useVoiceConversation(
             setState('error');
             stop();
         }
-    }, [state, openWs, stop, options.sessionMode]);
+    }, [
+        state,
+        openWs,
+        stop,
+        options.frontendTools,
+        options.querySchemaScope,
+        options.sessionContext,
+    ]);
 
     /**
      * Schedule a PCM16 chunk for gapless playback on the playback AudioContext.

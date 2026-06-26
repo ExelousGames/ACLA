@@ -38,6 +38,7 @@ Known limitations (deferred):
 from __future__ import annotations
 
 import logging
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
@@ -69,6 +70,22 @@ trail-brake, kerb, slip, weight transfer, etc.).
 """
 
 
+def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]) -> str:
+    if not session_context:
+        return ""
+    try:
+        encoded = json.dumps(session_context, ensure_ascii=True, sort_keys=True, default=str)
+    except Exception:
+        LOGGER.exception("Failed to serialize voice session context")
+        return ""
+    return (
+        "Frontend session context: "
+        f"{encoded}\n"
+        "Use this context to decide which tools are appropriate. "
+        "Fetch detailed data with tools instead of inventing it."
+    )
+
+
 # ----------------------------------------------------------------------
 # Public API
 # ----------------------------------------------------------------------
@@ -85,6 +102,7 @@ class VoiceSessionConfig:
     """
 
     session_id: Optional[str] = None
+    session_context: Optional[Dict[str, Any]] = None
     user_id: Optional[str] = None
     voice: Optional[str] = None  # Kokoro voice override
 
@@ -330,6 +348,7 @@ def _make_tool_handler(
                 # context schema.
                 context = {
                     "session_id": session_config.session_id,
+                    "session_context": session_config.session_context,
                     "user_id": session_config.user_id,
                     "_conn": conn,
                 }
@@ -896,6 +915,9 @@ async def build_voice_pipeline_task(
     # live in editable .md files, not in Python code.
     from app.external_knowledge_base import behavior as _skill_behavior
     system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
+    session_context_prompt = _format_session_context_for_prompt(session_config.session_context)
+    if session_context_prompt:
+        system_prompt = f"{system_prompt.rstrip()}\n\n{session_context_prompt}"
     for _behavior_name in ("tool_use", "emotion", "transcript_resilience"):
         _skill = _skill_behavior(_behavior_name)
         _section = _skill.get("_raw_body", "") if _skill else ""
