@@ -1,3 +1,4 @@
+import { buildCircuitTrackLayout, getAccTelemetryTrackKey } from './circuitTrackLayout';
 import { getPlaybackFrameIndex, parseTelemetryFrame, parseTelemetryFrames, segmentVisiblePoints } from './mapTelemetry';
 import {
     getSegmentMainLabelText,
@@ -227,6 +228,52 @@ describe('MapVisualization trajectory clipping', () => {
         ]);
 
         expect(segments).toEqual([]);
+    });
+});
+
+describe('MapVisualization circuit map layout', () => {
+    it('resolves ACC shared-memory track keys from raw keys and display names', () => {
+        expect(getAccTelemetryTrackKey('brands_hatch')).toBe('brands_hatch');
+        expect(getAccTelemetryTrackKey('Brands Hatch Circuit')).toBe('brands_hatch');
+        expect(getAccTelemetryTrackKey('', 'Circuit de Spa-Francorchamps')).toBe('spa');
+        expect(getAccTelemetryTrackKey('Unknown Circuit')).toBeNull();
+    });
+
+    it('builds an asphalt surface with boundaries beneath telemetry', () => {
+        const layout = buildCircuitTrackLayout({
+            id: 'map-1',
+            game: 'acc',
+            circuit_name: 'Test Circuit',
+            source_track_key: 'brands_hatch',
+            updated_at: null,
+            sample_count: 4,
+            resolution: 1000,
+            samples: {
+                left_boundary: [
+                    { bin: 0, normalized_position: 0, x: 0, y: 0, z: 0, sample_count: 1, updated_at: 'now' },
+                    { bin: 1, normalized_position: 0.001, x: 10, y: 0, z: 0, sample_count: 1, updated_at: 'now' }
+                ],
+                right_boundary: [
+                    { bin: 0, normalized_position: 0, x: 0, y: 0, z: 4, sample_count: 1, updated_at: 'now' },
+                    { bin: 1, normalized_position: 0.001, x: 10, y: 0, z: 4, sample_count: 1, updated_at: 'now' }
+                ],
+                pit_lane: []
+            }
+        });
+
+        expect(layout.surface).toEqual([[
+            { x: 0, y: 0, z: 0 },
+            { x: 10, y: 0, z: 0 },
+            { x: 10, y: 0, z: 4 },
+            { x: 0, y: 0, z: 4 }
+        ]]);
+        expect(layout.leftBoundary).toHaveLength(1);
+        expect(layout.rightBoundary).toHaveLength(1);
+        expect(layout.centerLine).toEqual([[
+            { x: 0, y: 0, z: 2 },
+            { x: 10, y: 0, z: 2 }
+        ]]);
+        expect(layout.allPoints.length).toBeGreaterThan(0);
     });
 });
 

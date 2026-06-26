@@ -5,7 +5,15 @@ import apiService from 'services/api.service';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from '../../analysis-context';
 import { useAiLabels } from 'contexts/AiLabelsContext';
+import { useCircuitMaps } from 'contexts/CircuitMapsContext';
+import { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { VisualizationProps } from '../VisualizationRegistry';
+import {
+    buildCircuitTrackLayout,
+    CircuitTrackLayout,
+    getAccTelemetryTrackKey,
+    getLegacyTrackLayout
+} from './circuitTrackLayout';
 import {
     CarPoint,
     getPlaybackFrameIndex,
@@ -102,29 +110,10 @@ const formatTime = (seconds: number): string => {
     return `${minutes}:${wholeSeconds}.${tenths}`;
 };
 
-const getTrackFrames = (points?: { position_x: number; position_y: number }[]): TelemetryFrame[] => {
-    if (!points || points.length === 0) return [];
-
-    return [{
-        time: 0,
-        playerKey: 'track',
-        cars: points.map((point, index) => ({
-            key: 'track',
-            id: 'track',
-            slot: index,
-            position: {
-                x: point.position_x,
-                y: 0,
-                z: point.position_y
-            }
-        }))
-    }];
-};
-
-const getBounds = (frames: TelemetryFrame[], trackFrames: TelemetryFrame[]) => {
+const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout) => {
     const positions: Vec3[] = [];
     frames.forEach((frame) => frame.cars.forEach((car) => positions.push(car.position)));
-    trackFrames.forEach((frame) => frame.cars.forEach((car) => positions.push(car.position)));
+    positions.push(...trackLayout.allPoints);
 
     if (positions.length === 0) {
         return {
@@ -177,6 +166,7 @@ const getBounds = (frames: TelemetryFrame[], trackFrames: TelemetryFrame[]) => {
 const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height = '100%' }) => {
     const analysisContext = useContext(AnalysisContext);
     const { getLabelName } = useAiLabels();
+    const { getCircuitMapByTrack } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
     const recordedCacheRef = useRef<Map<string, TelemetryFrame[]>>(new Map());
@@ -200,11 +190,28 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     const [axisFlip, setAxisFlip] = useState<AxisFlipState>({ x: false, y: false, z: false });
     const [segmentClassification, setSegmentClassification] = useState<SegmentClassificationResult | null>(null);
     const [segmentLoadState, setSegmentLoadState] = useState<LoadState>({ status: 'idle' });
+    const [circuitMap, setCircuitMap] = useState<CircuitMapDto | null>(null);
 
     const selectedSessionId = analysisContext.sessionSelected?.SessionId || '';
     const isRecordedMode = Boolean(selectedSessionId);
     const isLiveMode = !isRecordedMode;
-    const trackFrames = useMemo(() => getTrackFrames(analysisContext.sessionSelected?.points), [analysisContext.sessionSelected?.points]);
+    const circuitSourceTrackKey = useMemo(() => getAccTelemetryTrackKey(
+        analysisContext.liveData?.Static_track,
+        analysisContext.liveData?.Static?.track,
+        analysisContext.recordedSessioStaticsData?.track,
+        analysisContext.sessionSelected?.map,
+        analysisContext.mapSelected
+    ), [
+        analysisContext.liveData,
+        analysisContext.mapSelected,
+        analysisContext.recordedSessioStaticsData,
+        analysisContext.sessionSelected?.map
+    ]);
+    const circuitTrackLayout = useMemo(() => (
+        circuitMap
+            ? buildCircuitTrackLayout(circuitMap)
+            : getLegacyTrackLayout(analysisContext.sessionSelected?.points)
+    ), [analysisContext.sessionSelected?.points, circuitMap]);
     const frames = isRecordedMode ? recordedFrames : liveFrames;
     const currentFrame = isRecordedMode ? recordedFrames[playbackIndex] : liveFrames[liveFrames.length - 1];
     const renderStartIndex = isRecordedMode
@@ -214,8 +221,8 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
         isRecordedMode ? recordedFrames.slice(renderStartIndex, playbackIndex + 1) : liveFrames
     ), [isRecordedMode, liveFrames, playbackIndex, recordedFrames, renderStartIndex]);
     const bounds = useMemo(() => (
-        getBounds(frames, trackFrames)
-    ), [frames, trackFrames]);
+        getBounds(frames, circuitTrackLayout)
+    ), [circuitTrackLayout, frames]);
     const duration = recordedFrames.length > 1
         ? Math.max(0, recordedFrames[recordedFrames.length - 1].time - recordedFrames[0].time)
         : 0;
@@ -282,6 +289,28 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             playbackRef.current.elapsed = currentPlaybackTime;
         }
     }, [currentPlaybackTime, isPlaying]);
+
+    useEffect(() => {
+        let cancelled = false;
+
+        if (!circuitSourceTrackKey) {
+            setCircuitMap(null);
+            return;
+        }
+
+        const loadCircuitMap = async () => {
+            const map = await getCircuitMapByTrack('acc', circuitSourceTrackKey);
+            if (!cancelled) {
+                setCircuitMap(map);
+            }
+        };
+
+        void loadCircuitMap();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [circuitSourceTrackKey, getCircuitMapByTrack]);
 
     useEffect(() => {
         const wrapper = wrapperRef.current;
@@ -616,14 +645,33 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
 
         drawGrid();
 
-        if (trackFrames.length > 0) {
-            const trackSegments = segmentVisiblePoints(trackFrames[0].cars.map((car) => ({
-                position: car.position,
-                visible: true
-            })));
-            drawSegments(trackSegments, 'rgba(255,255,255,0.13)', 18, 0.8);
-            drawSegments(trackSegments, 'rgba(0,0,0,0.5)', 12, 0.9);
-            drawSegments(trackSegments, 'rgba(255,255,255,0.34)', 2, 0.8, [8, 16]);
+        if (circuitTrackLayout.allPoints.length > 0) {
+            circuitTrackLayout.surface.forEach((surface) => {
+                if (surface.length < 3) return;
+
+                context.save();
+                context.fillStyle = 'rgba(18, 23, 26, 0.92)';
+                context.strokeStyle = 'rgba(255,255,255,0.08)';
+                context.lineWidth = 1;
+                context.beginPath();
+                surface.forEach((point, index) => {
+                    const projected = projectPoint(point);
+                    if (index === 0) {
+                        context.moveTo(projected.screenX, projected.screenY);
+                    } else {
+                        context.lineTo(projected.screenX, projected.screenY);
+                    }
+                });
+                context.closePath();
+                context.fill();
+                context.stroke();
+                context.restore();
+            });
+
+            drawSegments(circuitTrackLayout.leftBoundary, 'rgba(255,255,255,0.34)', 4, 0.82);
+            drawSegments(circuitTrackLayout.rightBoundary, 'rgba(255,255,255,0.34)', 4, 0.82);
+            drawSegments(circuitTrackLayout.pitLane, 'rgba(102,187,106,0.46)', 4, 0.75, [10, 8]);
+            drawSegments(circuitTrackLayout.centerLine, 'rgba(255,255,255,0.22)', 2, 0.72, [8, 14]);
         }
 
         const grouped = new Map<string, { car: CarPoint; samples: VisibilitySample[] }>();
@@ -699,7 +747,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                     context.restore();
                 }
             });
-    }, [bounds, canvasSize, currentFrame, projectPoint, segmentOverlayRuns, trackFrames, visibleFrames]);
+    }, [bounds, canvasSize, circuitTrackLayout, currentFrame, projectPoint, segmentOverlayRuns, visibleFrames]);
 
     useEffect(() => {
         const canvas = canvasRef.current;
