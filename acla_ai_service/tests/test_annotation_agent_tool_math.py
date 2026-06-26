@@ -1206,12 +1206,20 @@ def test_detailed_preflight_events_capture_throttle_timing_and_lowest_pressure()
     event_names = {event["event"] for event in events}
     assert "throttle application onset earlier than expert" in event_names
     assert "lowest throttle pressure about same as expert" in event_names
+    timing_event = next(
+        event
+        for event in events
+        if event["event"] == "throttle application onset earlier than expert"
+    )
+    assert timing_event["phase"] == "unknown"
     throttle_event = next(
         event
         for event in events
         if event["event"] == "lowest throttle pressure about same as expert"
     )
+    assert throttle_event["phase"] == "unknown"
     sentence = preflight_detailed._event_sentence(throttle_event)
+    assert not sentence.startswith("During ")
     assert "the player lowest was 0.1 versus expert lowest 0.1" in sentence
     assert "player peak" not in sentence
 
@@ -1662,7 +1670,7 @@ def test_detailed_preflight_outputs_sentence_evidence_without_label_tool():
         [
             {
                 "event": "brake initiation onset later than expert",
-                "phase": "entry",
+                "phase": "unknown",
                 "range": [2, 5],
                 "confidence": "strong",
                 "measurements": {
@@ -1696,7 +1704,12 @@ def test_detailed_preflight_outputs_sentence_evidence_without_label_tool():
         in semantic_search_text
     )
     assert "trajectory wider than expert" in semantic_search_text
+    assert (
+        "During entry, the evidence shows trajectory wider than expert"
+        in semantic_search_text
+    )
     assert "the trajectory offset was 0.8 m" in semantic_search_text
+    assert "During entry, the evidence shows brake initiation" not in semantic_search_text
     assert "start_delta_iloc" not in semantic_search_text
     assert "measurements=" not in semantic_search_text
     assert "{" not in semantic_search_text
@@ -1705,6 +1718,55 @@ def test_detailed_preflight_outputs_sentence_evidence_without_label_tool():
     assert "Required tool outputs" not in prompt
     assert "search_labels" not in prompt
     assert "preflight semantic candidates" not in prompt.lower()
+
+
+def test_detailed_preflight_input_timing_sentences_omit_episode_spans():
+    events = [
+        {
+            "event": "brake initiation onset later than expert",
+            "phase": "unknown",
+            "range": [42, 44],
+            "confidence": "strong",
+            "measurements": {
+                "player_start_index": 44,
+                "player_end_index": 48,
+                "expert_start_index": 42,
+                "expert_end_index": 50,
+                "start_delta_iloc": 2,
+            },
+            "sources": [],
+        },
+        {
+            "event": "throttle application end earlier than expert",
+            "phase": "unknown",
+            "range": [46, 50],
+            "confidence": "strong",
+            "measurements": {
+                "player_start_index": 42,
+                "player_end_index": 46,
+                "expert_start_index": 44,
+                "expert_end_index": 50,
+                "end_delta_iloc": -4,
+            },
+            "sources": [],
+        },
+    ]
+
+    semantic_search_text = preflight_detailed._semantic_search_text(
+        events,
+        ["MSP"],
+        ["Mistake (Practice)"],
+    )
+
+    assert "episode spans" not in semantic_search_text
+    assert (
+        "the player onset was at iloc 44 while the expert onset was at iloc 42"
+        in semantic_search_text
+    )
+    assert (
+        "the player end was at iloc 46 while the expert end was at iloc 50"
+        in semantic_search_text
+    )
 
 
 def test_detailed_preflight_maps_shape_keys_to_evidence_sentences():
@@ -1963,6 +2025,23 @@ def test_detailed_preflight_shape_comparison_outputs_all_input_timing_events():
     assert "throttle release onset later than expert" in event_names
     assert "throttle application end aligned with expert" in event_names
     assert "throttle release end later than expert" in event_names
+    input_events = [
+        event
+        for event in events
+        if event["event"].startswith((
+            "brake initiation",
+            "brake release",
+            "throttle application",
+            "throttle release",
+        ))
+    ]
+    assert input_events
+    assert {event["phase"] for event in input_events} == {"unknown"}
+
+    evidence_text = preflight_detailed._event_text(events, [], [])
+    assert "During entry, the evidence shows brake initiation" not in evidence_text
+    assert "During apex, the evidence shows brake release" not in evidence_text
+    assert "During exit, the evidence shows throttle application" not in evidence_text
 
 
 def test_detailed_preflight_detects_short_brake_initiation_after_smoothing():

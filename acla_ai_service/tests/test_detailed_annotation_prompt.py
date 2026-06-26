@@ -49,6 +49,18 @@ def test_detailed_prompt_local_event_ranges_ignore_unrelated_recovery():
     assert "A later reversal or recovery is not disqualifying" in prompt
 
 
+def test_detailed_prompt_includes_json_support_sign_rule():
+    prompt = detailed_flow._tool_agent_task_prompt(
+        parent_start=800,
+        parent_end=825,
+        parent_main_labels=["MSP"],
+        existing_children=[],
+    )
+
+    assert "When the selected label description names supporting signs" in prompt
+    assert "include that supporting sign as part of the child segment range" in prompt
+
+
 def test_detailed_candidate_block_with_no_candidates_authorizes_empty_only():
     prompt = detailed_flow._embedding_candidates_prompt_block([])
 
