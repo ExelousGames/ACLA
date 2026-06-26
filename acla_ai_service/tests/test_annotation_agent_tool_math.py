@@ -1825,6 +1825,7 @@ def test_detailed_preflight_maps_shape_keys_to_evidence_sentences():
 
 
 def test_detailed_embedding_candidates_searches_parent_scoped_labels(monkeypatch):
+    from app.internal_knowledge_base import label_reranker
     from app.internal_knowledge_base import label_search
 
     calls = []
@@ -1855,6 +1856,11 @@ def test_detailed_embedding_candidates_searches_parent_scoped_labels(monkeypatch
 
     monkeypatch.setattr(label_search, "get_doc", fake_get_doc)
     monkeypatch.setattr(label_search, "search", fake_search)
+    monkeypatch.setattr(
+        label_reranker.settings,
+        "annotation_label_reranker_enabled",
+        False,
+    )
 
     candidates = detailed_flow._embedding_label_candidates(
         evidence_text="brake initiation onset later than expert",
@@ -1866,6 +1872,189 @@ def test_detailed_embedding_candidates_searches_parent_scoped_labels(monkeypatch
         ("brake initiation onset later than expert", 12, {"type": "segment_type"}),
         ("brake initiation onset later than expert", 12, {"parent": "MSP"}),
     ]
+
+
+def test_label_reranker_scores_evidence_label_pairs(monkeypatch):
+    from app.internal_knowledge_base import label_reranker
+
+    class FakeCrossEncoder:
+        def predict(self, pairs):
+            assert pairs[0][0] == "driver ended ahead of the opponent"
+            assert "driver ended ahead" in pairs[0][1]
+            assert "opponent ended ahead" in pairs[1][1]
+            return [0.95, 0.12]
+
+    monkeypatch.setattr(
+        label_reranker.settings,
+        "annotation_label_reranker_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        label_reranker.settings,
+        "annotation_label_reranker_top_k",
+        1,
+    )
+    monkeypatch.setattr(
+        label_reranker.settings,
+        "annotation_label_reranker_min_score",
+        None,
+    )
+    monkeypatch.setattr(label_reranker, "_get_cross_encoder", lambda: FakeCrossEncoder())
+
+    docs = [
+        {
+            "id": "O1",
+            "name": "Late-brake attack",
+            "description": "Use when the driver ended ahead of the opponent.",
+            "score": 0.2,
+        },
+        {
+            "id": "OD1",
+            "name": "Inside cover",
+            "description": "Use when the opponent ended ahead of the driver.",
+            "score": 0.9,
+        },
+    ]
+
+    reranked = label_reranker.rerank_label_docs(
+        "driver ended ahead of the opponent",
+        docs,
+    )
+
+    assert [doc["id"] for doc in reranked] == ["O1"]
+    assert reranked[0]["score"] == 0.95
+    assert reranked[0]["reranker_score"] == 0.95
+    assert reranked[0]["embedding_score"] == 0.2
+
+
+def test_detailed_embedding_candidates_uses_reranker_scores(monkeypatch):
+    from app.internal_knowledge_base import label_reranker
+    from app.internal_knowledge_base import label_search
+
+    def fake_get_doc(label_id):
+        return {"type": "main"} if label_id == "O" else {}
+
+    def fake_search(query, *, top_k=8, min_score=0.0, filters=None):
+        if filters == {"type": "segment_type"}:
+            return []
+        if filters == {"parent": "O"}:
+            return [
+                {
+                    "id": "O1",
+                    "name": "Late-brake attack",
+                    "type": "sub",
+                    "parent": "O",
+                    "description": "Driver completes the pass and ends ahead.",
+                    "annotation_guideline": "The gap flips to driver ahead.",
+                    "score": 0.2,
+                },
+                {
+                    "id": "O3",
+                    "name": "Outside-line sweep",
+                    "type": "sub",
+                    "parent": "O",
+                    "description": "Driver stays outside and completes the pass.",
+                    "score": 0.8,
+                },
+            ]
+        return []
+
+    def fake_rerank(query, docs, *, top_k=None, min_score=None):
+        assert query == "gap flipped from opponent ahead to driver ahead"
+        assert any(
+            doc.get("annotation_guideline") == "The gap flips to driver ahead."
+            for doc in docs
+        )
+        by_id = {doc["id"]: doc for doc in docs}
+        return [
+            {
+                **by_id["O1"],
+                "score": 0.97,
+                "embedding_score": 0.2,
+                "reranker_score": 0.97,
+            },
+            {
+                **by_id["O3"],
+                "score": 0.21,
+                "embedding_score": 0.8,
+                "reranker_score": 0.21,
+            },
+        ]
+
+    monkeypatch.setattr(label_search, "get_doc", fake_get_doc)
+    monkeypatch.setattr(label_search, "search", fake_search)
+    monkeypatch.setattr(label_reranker, "rerank_label_docs", fake_rerank)
+
+    candidates = detailed_flow._embedding_label_candidates(
+        evidence_text="gap flipped from opponent ahead to driver ahead",
+        parent_main_labels=["O"],
+    )
+
+    assert [candidate["id"] for candidate in candidates] == ["O1", "O3"]
+    assert candidates[0]["score"] == 0.97
+    assert candidates[0]["embedding_score"] == 0.2
+    assert candidates[0]["reranker_score"] == 0.97
+
+
+def test_label_verifier_uses_reranker_scores(monkeypatch):
+    from app.local_annotation_agent.sub_agents import label_verifier
+
+    def fake_get_doc(label_id):
+        return {"type": "main"} if label_id == "O" else {}
+
+    def fake_search(query, *, top_k=8, min_score=0.0, filters=None):
+        if filters == {"type": "segment_type"}:
+            return []
+        if filters == {"parent": "O"}:
+            return [
+                {
+                    "id": "O1",
+                    "name": "Late-brake attack",
+                    "description": "Driver ends ahead of the opponent.",
+                    "score": 0.3,
+                },
+                {
+                    "id": "O5",
+                    "name": "Slipstream pass",
+                    "description": "Driver passes on the straight.",
+                    "score": 0.7,
+                },
+            ]
+        return []
+
+    def fake_rerank(query, docs, *, top_k=None, min_score=None):
+        by_id = {doc["id"]: doc for doc in docs}
+        return [{
+            **by_id["O1"],
+            "score": 0.91,
+            "embedding_score": 0.3,
+            "reranker_score": 0.91,
+        }]
+
+    monkeypatch.setattr(label_verifier, "get_doc", fake_get_doc)
+    monkeypatch.setattr(label_verifier, "search", fake_search)
+    monkeypatch.setattr(label_verifier, "rerank_label_docs", fake_rerank)
+    monkeypatch.setattr(
+        label_verifier.settings,
+        "annotation_label_reranker_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        label_verifier.settings,
+        "annotation_label_reranker_top_k",
+        16,
+    )
+
+    verified, all_scored = label_verifier.compute_verified_labels(
+        ["O"],
+        "driver ended ahead of the opponent",
+    )
+
+    assert [item["label_id"] for item in verified] == ["O1"]
+    assert all_scored == verified
+    assert verified[0]["similarity"] == 0.91
+    assert verified[0]["embedding_similarity"] == 0.3
+    assert verified[0]["reranker_score"] == 0.91
 
 
 def test_detailed_build_request_adds_embedding_candidates_to_prompt(monkeypatch):

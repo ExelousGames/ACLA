@@ -208,6 +208,7 @@ def _embedding_label_candidates(
     Detailed preflight only prepares semantic evidence sentences; this flow-level
     step performs the embedding retrieval before the AI chooses ranges.
     """
+    from app.internal_knowledge_base.label_reranker import rerank_label_docs
     from app.internal_knowledge_base.label_search import get_doc, search
 
     query = (evidence_text or "").strip()
@@ -218,10 +219,14 @@ def _embedding_label_candidates(
 
     def add(docs: List[Dict[str, Any]]) -> None:
         for doc in docs:
-            shaped = shape_label_doc_for_llm(doc)
-            current = merged.get(shaped["id"])
-            if current is None or shaped.get("score", 0.0) > current.get("score", 0.0):
-                merged[shaped["id"]] = shaped
+            label_id = str(doc.get("id") or "")
+            if not label_id:
+                continue
+            current = merged.get(label_id)
+            score = float(doc.get("score", 0.0) or 0.0)
+            current_score = float((current or {}).get("score", 0.0) or 0.0)
+            if current is None or score > current_score:
+                merged[label_id] = dict(doc)
 
     main_parents = [
         label_id
@@ -236,11 +241,10 @@ def _embedding_label_candidates(
     else:
         add(search(query, filters={"type": "main"}, top_k=12))
 
-    return sorted(
-        merged.values(),
-        key=lambda item: float(item.get("score", 0.0)),
-        reverse=True,
-    )[:16]
+    return [
+        shape_label_doc_for_llm(doc)
+        for doc in rerank_label_docs(query, list(merged.values()))
+    ]
 
 
 def _embedding_candidates_prompt_block(candidates: List[Dict[str, Any]]) -> str:

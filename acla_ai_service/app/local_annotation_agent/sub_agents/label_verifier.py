@@ -22,6 +22,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Tuple
 
+from app.infra.config import settings
+from app.internal_knowledge_base.label_reranker import rerank_label_docs
 from app.internal_knowledge_base.label_search import get_doc, search
 from app.local_annotation_agent.framework import Agent, AgentState
 from app.local_annotation_agent.evaluators import (
@@ -36,13 +38,19 @@ LABEL_VERIFIER_AGENT_NAME = "label_verifier"
 _MAX_VERIFIED = 8
 
 
-def _payload(doc: Dict[str, Any], score: float) -> Dict[str, Any]:
-    return {
+def _payload(doc: Dict[str, Any]) -> Dict[str, Any]:
+    score = float(doc.get("score", 0.0))
+    payload = {
         "label_id": doc["id"],
         "name": doc.get("name", doc["id"]),
         "description": doc.get("description", ""),
         "similarity": score,
     }
+    if "embedding_score" in doc:
+        payload["embedding_similarity"] = float(doc.get("embedding_score", 0.0))
+    if "reranker_score" in doc:
+        payload["reranker_score"] = float(doc.get("reranker_score", 0.0))
+    return payload
 
 
 def compute_verified_labels(
@@ -52,8 +60,9 @@ def compute_verified_labels(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Shortlist eligible labels by hybrid similarity to the evidence prose.
 
-    Returns ``(verified, all_scored)`` — verified is the top-N shortlist,
-    all_scored carries every retrieved candidate for diagnostics.
+    Returns ``(verified, all_scored)``. With reranking enabled, both contain the
+    final post-rerank shortlist; with reranking disabled, this preserves the
+    embedding-only top-N behavior.
 
     The eligible tiers depend on the flow, read off the given parents:
 
@@ -102,9 +111,15 @@ def compute_verified_labels(
     else:
         _absorb(search(query, filters={"type": "main"}, top_k=_MAX_VERIFIED))
 
-    scored = sorted(merged.values(), key=lambda x: x[1], reverse=True)
-    all_scored = [_payload(d, s) for d, s in scored]
-    verified = [_payload(d, s) for d, s in scored[:_MAX_VERIFIED]]
+    docs = [doc for doc, _score in merged.values()]
+    top_k = (
+        settings.annotation_label_reranker_top_k
+        if settings.annotation_label_reranker_enabled
+        else _MAX_VERIFIED
+    )
+    scored = rerank_label_docs(query, docs, top_k=top_k)
+    all_scored = [_payload(d) for d in scored]
+    verified = [_payload(d) for d in scored]
     return verified, all_scored
 
 
