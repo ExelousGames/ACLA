@@ -269,7 +269,7 @@
     "MSP1": {
       "name": "Initiate brake too late",
       "type": "sub",
-      "description": "During entry, the player's **brake initiation onset is later than** the expert's, alongside the time **gap grows**. Player often **entry trajectory wider than expert** as they brake later.\n",
+      "description": "During entry, the player's **brake initiation onset is later than** the expert's. As the supporting signal, the time **gap grows** at the exit, and Player often **entry trajectory wider than expert** as they brake later.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -279,7 +279,7 @@
     "MSP5": {
       "name": "Initiate brake too early",
       "type": "sub",
-      "description": "During entry, the player's **brake initiation onset is earlier than** the expert's, alongside the time **gap grows**.\n",
+      "description": "During entry, the player's **brake initiation onset is earlier than** the expert's, as the supporting signal, the time **gap grows** at the entry.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -349,7 +349,7 @@
     "MSP27": {
       "name": "Initiate brake release too late",
       "type": "sub",
-      "description": "During apex or exit, the player's brake **release onset** is later than the expert. **Time gap grows** at exit can appear after that onset as a supporting sign.\n",
+      "description": "the player brake application onset end is aligned with expert, but the player's brake **release onset** is later than the expert. **Time gap grows** at exit can appear after that onset as a supporting sign.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -359,7 +359,7 @@
     "MSP28": {
       "name": "Initiate brake release too early",
       "type": "sub",
-      "description": "During apex or exit, the player's brake **release onset** is earlier than the expert. **Apex trajectory wider than expert** and **time gap grows** at exit can appear around or after that onset as supporting signs.\n",
+      "description": "the player brake application onset end is aligned with expert, The player's brake **release onset** is earlier than the expert. **Apex trajectory wider than expert** and **time gap grows** at exit can appear around or after that onset as supporting signs.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -397,7 +397,7 @@
     "MSP15": {
       "name": "Throttle applied too quickly",
       "type": "sub",
-      "description": "During exit, the player's **throttle application onset aligned with expert**, but **throttle application end earlier than expert**, often co-occurring with **oversteer** or **understeer**.\n",
+      "description": "The player's **throttle application onset aligned with expert**, but **throttle application end earlier than expert**, often co-occurring with **oversteer** or **understeer**.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -437,7 +437,7 @@
     "MSP20": {
       "name": "Initiate throttle too early",
       "type": "sub",
-      "description": "During exit, the player's throttle **application onset** is earlier than the expert. Understeer, oversteer, time loss, or trajectory wider than expert can appear around or after the throttle onset as supporting signs.\n",
+      "description": "During apex or exit, the player's throttle **application onset** is earlier than the expert. Understeer, oversteer, **gas grows** at exit, or trajectory wider than expert can appear around or after the throttle onset as supporting signs.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -447,7 +447,7 @@
     "MSP21": {
       "name": "Initiate throttle too late",
       "type": "sub",
-      "description": "During exit, the player's throttle **application onset** is later than the expert. When no understeer or oversteer is present, poor grip utilization and time loss can appear around or after the throttle onset as supporting signs.\n",
+      "description": "During apex or exit, the player's throttle **application onset** is later than the expert. When no understeer or oversteer is present, poor grip utilization and **time gap rising at exit** can appear around or after the throttle onset as supporting signs.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -457,7 +457,7 @@
     "MSP23": {
       "name": "Release throttle too quickly",
       "type": "sub",
-      "description": "During entry, the player's throttle **release onset** aligns with expert, but throttle **release end** is earlier than the expert. The player's **brake initiation end** may also be earlier than the expert's, and trajectory wider than expert at entry or apex can appear around the label range as supporting signs.\n",
+      "description": "During entry or apex, the player's throttle **release onset** aligns with expert, but throttle **release end** is earlier than the expert. The player's **brake initiation end** may also be earlier than the expert's, and trajectory wider than expert at entry or apex can appear around the label range as supporting signs.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": []
@@ -465,7 +465,7 @@
     "MSP29": {
       "name": "Initiate throttle release too late",
       "type": "sub",
-      "description": "During entry, the player's throttle **release onset** is later than the expert, with the player's brake **initiation end** also later than the expert's. Time gap rising at entry can appear around the label range as a supporting sign.\n",
+      "description": "During entry or apex, the player's throttle **release onset** is later than the expert, with the player's brake **initiation end** also later than the expert's. Time gap rising at entry can appear around the label range as a supporting sign.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -475,7 +475,7 @@
     "MSP30": {
       "name": "Initiate throttle release too early",
       "type": "sub",
-      "description": "During entry, the player's throttle **release onset** is earlier than the expert's while approaching the corner. Time gap rising at entry can appear around the label range as a supporting sign.\n",
+      "description": "During entry or apex, the player's throttle **release onset** is earlier than the expert's while approaching the corner. Time gap rising at entry can appear around the label range as a supporting sign.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -485,7 +485,7 @@
     "MSP2": {
       "name": "Initiate the turn too late",
       "type": "sub",
-      "description": "During entry, the player's turn-in onset is later than the expert and the **entry trajectory wider than expert**. **Time gap rising at exit** can appear later as a supporting sign.\n",
+      "description": "During entry or apex, the player's turn-in onset is later than the expert and the **entry trajectory wider than expert**. **Time gap rising at exit** can appear later as a supporting sign.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -495,7 +495,7 @@
     "MSP6": {
       "name": "Initiate the turn too early",
       "type": "sub",
-      "description": "During entry, the player's turn-in onset is earlier than the expert and the **entry trajectory tighter than expert**. **Apex trajectory tighter than expert**, **time gap rising at apex**, and **time gap rising at exit** can appear later as supporting signs.\n",
+      "description": "During entry or apex , the player's turn-in onset is earlier than the expert and the **entry trajectory tighter than expert**. **Apex trajectory tighter than expert**, **time gap rising at apex**, and **time gap rising at exit** can appear later as supporting signs.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [

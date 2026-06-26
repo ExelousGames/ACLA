@@ -61,19 +61,32 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
         ))
 
     if not new_children:
-        return 0, 0
+        return 0
 
     annotations = list(st.session_state.get("current_annotations", []))
-    before = len(annotations)
-    annotations = [
-        a for a in annotations
-        if getattr(a, "parent_id", None) != parent.id
-    ]
-    replaced = before - len(annotations)
     annotations.extend(new_children)
     st.session_state["current_annotations"] = annotations
     save_annotations(session_id, annotations, selected_annotation_key, silent=True)
-    return len(new_children), replaced
+    return len(new_children)
+
+
+def _delete_session_subsegments(session_id, selected_annotation_key) -> int:
+    """Remove all child sub-segments from the loaded session."""
+    annotations = list(st.session_state.get("current_annotations", []))
+    parent_only_annotations = [
+        ann for ann in annotations
+        if not getattr(ann, "parent_id", None)
+    ]
+    deleted = len(annotations) - len(parent_only_annotations)
+    if deleted:
+        st.session_state["current_annotations"] = parent_only_annotations
+        save_annotations(
+            session_id,
+            parent_only_annotations,
+            selected_annotation_key,
+            silent=True,
+        )
+    return deleted
 
 
 def _segments_to_positioned_dataframe(segments) -> pd.DataFrame:
@@ -273,14 +286,13 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     )
 
     st.markdown("---")
-    skip_with_children = st.checkbox(
-        "Skip parents that already have child sub-segments",
-        value=True,
-        key="batch_agent_skip_with_children",
+    delete_existing_subsegments = st.checkbox(
+        "Delete all existing sub-segments in this session before running",
+        value=False,
+        key="batch_agent_delete_session_subsegments",
         help=(
-            "Recommended — avoids re-running discovery on parents you've already annotated. "
-            "When unchecked, existing children of each parent are DELETED and replaced with "
-            "the new AI-discovered ones (clean re-run; old proposals are not used as hints)."
+            "Removes every saved child sub-segment in the selected session before "
+            "batch discovery starts. Parent segments are kept."
         ),
     )
 
@@ -333,17 +345,6 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
     provider_id = config.provider_id
 
-    children_by_parent: dict[str, list[dict]] = {}
-    for ann in annotations:
-        pid = getattr(ann, "parent_id", None)
-        if not pid:
-            continue
-        children_by_parent.setdefault(pid, []).append({
-            "start_index": ann.start_index,
-            "end_index": ann.end_index,
-            "labels": list(ann.labels),
-        })
-
     main_label_set = set(LABEL_CATEGORIES.get("Main Labels", []))
     st.session_state["batch_agent_stop"] = False
     logs = st.session_state["batch_agent_logs"]
@@ -360,6 +361,26 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         _flush_log()
 
     log(f"Starting batch sub-segment discovery: {total} parent(s), provider={provider_id}")
+    if delete_existing_subsegments:
+        deleted = _delete_session_subsegments(session_id, selected_annotation_key)
+        log(f"Deleted {deleted} existing sub-segment(s) from this session.")
+        _render_subsegment_coverage_bar(
+            coverage_slot,
+            selected_parent_spans,
+            chart_key="batch_agent_subsegment_coverage_after_delete",
+        )
+
+    annotations = st.session_state.get("current_annotations", [])
+    children_by_parent: dict[str, list[dict]] = {}
+    for ann in annotations:
+        pid = getattr(ann, "parent_id", None)
+        if not pid:
+            continue
+        children_by_parent.setdefault(pid, []).append({
+            "start_index": ann.start_index,
+            "end_index": ann.end_index,
+            "labels": list(ann.labels),
+        })
 
     for i, idx in enumerate(process_indices):
         if st.session_state["batch_agent_stop"]:
@@ -374,14 +395,6 @@ def render_batch_auto_annotation(df, selected_annotation_key):
             log(f"Parent #{idx}: skipped (missing parent id).")
             progress_bar.progress((i + 1) / total)
             continue
-
-        existing = children_by_parent.get(parent.id, [])
-        if skip_with_children and existing:
-            log(f"Parent #{idx}: skipped ({len(existing)} existing children).")
-            progress_bar.progress((i + 1) / total)
-            continue
-
-        existing_for_agent = [] if (existing and not skip_with_children) else existing
 
         parent_main_labels = [l for l in parent.labels if l in main_label_set]
         p_start = int(parent.start_index) if parent.start_index is not None else 0
@@ -402,7 +415,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
                 end_index=p_end,
                 session_id=session_id,
                 parent_main_labels=parent_main_labels,
-                existing_children=existing_for_agent,
+                existing_children=children_by_parent.get(parent.id, []),
                 config=config,
             )
         except ClaudeUsageExhausted as e:
@@ -418,7 +431,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
             continue
 
         try:
-            n_children, replaced = _persist_children_for_parent(
+            n_children = _persist_children_for_parent(
                 parent, result, session_id, selected_annotation_key, df,
             )
         except Exception as e:
@@ -430,14 +443,9 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         if n_children > 0:
             success_parents += 1
             total_children += n_children
-            if replaced:
-                log(f"Parent #{idx}: replaced {replaced} existing child(ren) with "
-                    f"{n_children} new sub-segment(s).")
-            else:
-                log(f"Parent #{idx}: saved {n_children} child sub-segment(s).")
+            log(f"Parent #{idx}: saved {n_children} child sub-segment(s).")
         else:
-            log(f"Parent #{idx}: pipeline produced no usable proposals "
-                f"(existing children left untouched).")
+            log(f"Parent #{idx}: pipeline produced no usable proposals.")
 
         progress_bar.progress((i + 1) / total)
 
