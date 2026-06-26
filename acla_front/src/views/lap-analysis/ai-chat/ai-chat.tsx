@@ -3,6 +3,7 @@ import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
+import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
 import apiService from 'services/api.service';
@@ -16,6 +17,7 @@ import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/t
 import type { OpportunityAgentState } from './ai-command-registry';
 import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
+import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
 
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
@@ -56,6 +58,7 @@ interface Message {
         ok?: boolean;
         error?: string | null;
     };
+    mapDisplay?: AiMapDisplayPayload;
 }
 
 
@@ -205,6 +208,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getLabelName,
         getCategoryLabels,
     } = useAiLabels();
+    const {
+        getCircuitMapById,
+        getCircuitMapByTrack,
+    } = useCircuitMaps();
     const opportunityForecastRowsRef = useRef<Record<string, any>[]>([]);
     const opportunityAgentStateRef = useRef<OpportunityAgentState>({
         intervalId: null,
@@ -232,6 +239,22 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const generateUniqueId = useCallback((prefix: string = 'msg') => {
         return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
     }, []);
+
+    const displayMapInChat = useCallback((display: AiMapDisplayPayload) => {
+        const fallbackText = display.status === 'unavailable'
+            ? 'Map is not available'
+            : display.note || display.title || display.map?.circuit_name || 'Map';
+        setMessages(prev => prev
+            .filter(m => !m.isLoading)
+            .concat({
+                id: generateUniqueId('map'),
+                content: fallbackText,
+                isUser: false,
+                timestamp: new Date(),
+                kind: 'chat',
+                mapDisplay: display,
+            }));
+    }, [generateUniqueId]);
 
     const broadcastPillMessage = useCallback((text: string, options: { emotion?: Emotion | null; tags?: string[] } = {}) => {
         try {
@@ -462,6 +485,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             userSummaryError,
             getLabelName,
             getCategoryLabels,
+            getCircuitMapById,
+            getCircuitMapByTrack,
+            displayMap: displayMapInChat,
         }),
     });
 
@@ -1243,6 +1269,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                         ) : (
                                             <>
                                                 <div className="ai-chat__msg-text">{message.content}</div>
+                                                {message.mapDisplay && (
+                                                    <AiMapToolDisplay display={message.mapDisplay} />
+                                                )}
 
                                             </>
                                         )}

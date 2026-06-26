@@ -43,6 +43,7 @@ export type FrontendToolHandler = (
  *  with LLM-facing instructions from its external knowledge base. */
 export interface FrontendToolSchema {
     name: string;
+    description?: string;
     /** JSON-Schema-style `properties` object. */
     properties: Record<string, unknown>;
     required: string[];

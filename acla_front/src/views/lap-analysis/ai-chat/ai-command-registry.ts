@@ -1,7 +1,10 @@
 import apiService from 'services/api.service';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
+import { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
+import { getAccTelemetryTrackKey } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
 import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import { AiMapDisplayPayload, AiMapSectionSelection } from './AiMapToolDisplay';
 import {
     PracticeParentSegmentView,
     PracticeSectionSummaryView,
@@ -26,6 +29,12 @@ export interface AiCommandRegistryContext {
     userSummaryError?: string;
     getLabelName?: (labelId: string) => string | undefined;
     getCategoryLabels?: (category: string) => string[];
+    getCircuitMapById?: (id: string) => Promise<CircuitMapDto | null>;
+    getCircuitMapByTrack?: (
+        game: CircuitMapGame,
+        sourceTrackKey: string | null | undefined,
+    ) => Promise<CircuitMapDto | null>;
+    displayMap?: (display: AiMapDisplayPayload) => void;
 }
 
 export interface OpportunityAgentState {
@@ -111,6 +120,59 @@ const getSearchLimit = (value: unknown): number => {
     if (!Number.isFinite(parsed) || parsed <= 0) return 5;
     return Math.min(parsed, 10);
 };
+
+const normalizeOptionalString = (value: unknown): string | undefined => (
+    typeof value === 'string' && value.trim() ? value.trim() : undefined
+);
+
+const clampNormalizedSectionValue = (value: unknown): number | undefined => {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return undefined;
+    return Math.max(0, Math.min(1, parsed));
+};
+
+const buildMapSectionSelection = (args: Record<string, any>): AiMapSectionSelection | undefined => {
+    const start = clampNormalizedSectionValue(args.section_start ?? args.start);
+    const end = clampNormalizedSectionValue(args.section_end ?? args.end);
+    const label = normalizeOptionalString(args.section_label ?? args.label);
+
+    if (start === undefined && end === undefined && !label) return undefined;
+
+    return { start, end, label };
+};
+
+const getMapRequestCandidates = (
+    args: Record<string, any>,
+    context: AiCommandRegistryContext,
+): string[] => {
+    const selectedSession = context.analysisContext?.sessionSelected as Record<string, any> | null | undefined;
+    const liveData = context.analysisContext?.liveData as Record<string, any> | null | undefined;
+    return [
+        args.map_id,
+        args.source_track_key,
+        args.map_name,
+        context.analysisContext?.mapSelected,
+        selectedSession?.map,
+        liveData?.Static_track,
+        liveData?.Static?.track,
+        context.analysisContext?.recordedSessioStaticsData?.track,
+    ]
+        .map(normalizeOptionalString)
+        .filter((value): value is string => Boolean(value));
+};
+
+const buildUnavailableMapDisplay = (
+    args: Record<string, any>,
+    reason: string,
+    requestedMap?: string,
+): AiMapDisplayPayload => ({
+    status: 'unavailable',
+    requestedMap,
+    title: normalizeOptionalString(args.title) || 'Map',
+    note: normalizeOptionalString(args.message ?? args.note),
+    reason,
+    section: buildMapSectionSelection(args),
+});
 
 const summarizePracticeSegments = (segments: PracticeParentSegmentView[]) => segments
     .filter((segment) => segment.count > 0)
@@ -413,6 +475,45 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         },
         required: ['query'],
     },
+    {
+        name: 'show_map',
+        description: 'Display a circuit map in the chat transcript, optionally highlighting a normalized lap section.',
+        properties: {
+            map_id: {
+                type: 'string',
+                description: 'Circuit map id to display. Prefer this when a map id is known.',
+            },
+            source_track_key: {
+                type: 'string',
+                description: 'ACC source track key such as brands_hatch, monza, or spa.',
+            },
+            map_name: {
+                type: 'string',
+                description: 'Human-readable map or circuit name when no id/key is known.',
+            },
+            section_start: {
+                type: 'number',
+                description: 'Start of the highlighted section as normalized lap position from 0 to 1.',
+            },
+            section_end: {
+                type: 'number',
+                description: 'End of the highlighted section as normalized lap position from 0 to 1. Values wrapping across start/finish are allowed.',
+            },
+            section_label: {
+                type: 'string',
+                description: 'Short label for the highlighted section.',
+            },
+            title: {
+                type: 'string',
+                description: 'Short title shown above the map.',
+            },
+            note: {
+                type: 'string',
+                description: 'Brief note shown below the map.',
+            },
+        },
+        required: [],
+    },
 ];
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
@@ -666,6 +767,71 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
     async get_visualization_capabilities() {
         return visualizationController.getVisualizationAssistantContext();
+    },
+
+    async show_map(args) {
+        const candidates = getMapRequestCandidates(args, context);
+        const requestedMap = candidates[0];
+        const section = buildMapSectionSelection(args);
+        const title = normalizeOptionalString(args.title) || 'Map';
+        const note = normalizeOptionalString(args.message ?? args.note);
+
+        let map: CircuitMapDto | null = null;
+        let resolvedBy: 'id' | 'track' | null = null;
+
+        if (context.getCircuitMapById) {
+            for (const candidate of candidates) {
+                map = await context.getCircuitMapById(candidate);
+                if (map) {
+                    resolvedBy = 'id';
+                    break;
+                }
+            }
+        }
+
+        if (!map && context.getCircuitMapByTrack) {
+            for (const candidate of candidates) {
+                const sourceTrackKey = getAccTelemetryTrackKey(candidate) || candidate;
+                map = await context.getCircuitMapByTrack('acc', sourceTrackKey);
+                if (map) {
+                    resolvedBy = 'track';
+                    break;
+                }
+            }
+        }
+
+        if (!map) {
+            const reason = requestedMap
+                ? `No circuit map is available for "${requestedMap}".`
+                : 'No circuit map is available for the current session.';
+            context.displayMap?.(buildUnavailableMapDisplay(args, reason, requestedMap));
+            return {
+                status: 'unavailable',
+                message: 'Map is not available',
+                requested_map: requestedMap ?? null,
+                reason,
+            };
+        }
+
+        const display: AiMapDisplayPayload = {
+            status: 'ready',
+            map,
+            requestedMap,
+            title,
+            note,
+            section,
+        };
+
+        context.displayMap?.(display);
+
+        return {
+            status: 'displayed',
+            map_id: map.id,
+            circuit_name: map.circuit_name,
+            source_track_key: map.source_track_key ?? null,
+            resolved_by: resolvedBy,
+            section: section ?? null,
+        };
     },
 
     async open_visualization_chart(args) {

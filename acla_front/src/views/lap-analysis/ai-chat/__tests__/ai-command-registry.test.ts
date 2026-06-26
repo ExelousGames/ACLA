@@ -103,6 +103,99 @@ describe('ai command registry user summary tools', () => {
         expect(frontendToolSchemas.some((tool) => tool.name === 'get_available_user_summary_maps')).toBe(true);
     });
 
+    it('exposes a frontend schema for displaying maps in chat', () => {
+        expect(frontendToolSchemas.some((tool) => tool.name === 'show_map')).toBe(true);
+    });
+
+    it('displays a requested circuit map through the frontend callback', async () => {
+        const displayMap = jest.fn();
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            getCircuitMapById: jest.fn(async () => ({
+                id: 'brands_hatch',
+                game: 'acc',
+                circuit_name: 'Brands Hatch GP',
+                source_track_key: 'brands_hatch',
+                updated_at: null,
+                sample_count: 4,
+                resolution: 1000,
+                samples: {
+                    left_boundary: [
+                        { bin: 0, normalized_position: 0, x: 0, y: 0, z: 0, sample_count: 1, updated_at: 'now' },
+                        { bin: 100, normalized_position: 0.1, x: 10, y: 0, z: 0, sample_count: 1, updated_at: 'now' },
+                    ],
+                    right_boundary: [
+                        { bin: 0, normalized_position: 0, x: 0, y: 0, z: 4, sample_count: 1, updated_at: 'now' },
+                        { bin: 100, normalized_position: 0.1, x: 10, y: 0, z: 4, sample_count: 1, updated_at: 'now' },
+                    ],
+                    pit_lane: [],
+                },
+            })),
+            displayMap,
+        });
+
+        const result = await registry.show_map(
+            { map_id: 'brands_hatch', section_start: 0, section_end: 0.1, section_label: 'Paddock' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toMatchObject({
+            status: 'displayed',
+            map_id: 'brands_hatch',
+            circuit_name: 'Brands Hatch GP',
+        });
+        expect(displayMap).toHaveBeenCalledWith(expect.objectContaining({
+            status: 'ready',
+            section: {
+                start: 0,
+                end: 0.1,
+                label: 'Paddock',
+            },
+        }));
+    });
+
+    it('shows the map unavailable fallback when no circuit map can be resolved', async () => {
+        const displayMap = jest.fn();
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            getCircuitMapById: jest.fn(async () => null),
+            getCircuitMapByTrack: jest.fn(async () => null),
+            displayMap,
+        });
+
+        const result = await registry.show_map(
+            { map_id: 'unknown_track' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toMatchObject({
+            status: 'unavailable',
+            message: 'Map is not available',
+        });
+        expect(displayMap).toHaveBeenCalledWith(expect.objectContaining({
+            status: 'unavailable',
+            reason: 'No circuit map is available for "unknown_track".',
+        }));
+    });
+
     it('lists compact map choices from the retrieved user summary', async () => {
         const result = await createRegistry().get_available_user_summary_maps(
             {},

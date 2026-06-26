@@ -457,6 +457,105 @@
   padding-left: 22px;
 }
 
+/* Map tool attachment */
+.ai-chat__map-card {
+  margin-top: 10px;
+  width: min(100%, 560px);
+  border: 1px solid var(--lp-border-strong);
+  border-radius: var(--lp-radius-sm);
+  background: rgba(8, 12, 18, 0.72);
+  overflow: hidden;
+}
+.ai-chat__map-card--empty {
+  padding-bottom: 12px;
+}
+.ai-chat__map-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--lp-border);
+  font-family: var(--lp-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--lp-green);
+}
+.ai-chat__map-head b {
+  min-width: 0;
+  color: var(--lp-gray);
+  font-size: 9px;
+  font-weight: 600;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-chat__map-svg {
+  display: block;
+  width: 100%;
+  aspect-ratio: 2 / 1;
+}
+.ai-chat__map-bg {
+  fill: rgba(4, 7, 11, 0.95);
+}
+.ai-chat__map-boundary,
+.ai-chat__map-pit,
+.ai-chat__map-center,
+.ai-chat__map-highlight {
+  fill: none;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ai-chat__map-boundary {
+  stroke: rgba(232, 232, 240, 0.42);
+  stroke-width: 4;
+}
+.ai-chat__map-pit {
+  stroke: rgba(41, 182, 246, 0.58);
+  stroke-width: 3;
+  stroke-dasharray: 10 8;
+}
+.ai-chat__map-center {
+  stroke: rgba(232, 232, 240, 0.24);
+  stroke-width: 2;
+  stroke-dasharray: 8 12;
+}
+.ai-chat__map-highlight {
+  stroke: var(--lp-amber);
+  stroke-width: 8;
+  filter: drop-shadow(0 0 8px rgba(255, 202, 40, 0.45));
+}
+.ai-chat__map-foot,
+.ai-chat__map-note,
+.ai-chat__map-empty {
+  font-family: var(--lp-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+.ai-chat__map-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--lp-border);
+  color: var(--lp-gray);
+}
+.ai-chat__map-foot span:first-child {
+  color: var(--lp-amber);
+}
+.ai-chat__map-empty {
+  padding: 16px 12px 4px;
+  color: var(--lp-amber);
+  text-transform: uppercase;
+}
+.ai-chat__map-note {
+  padding: 0 12px;
+  color: var(--lp-gray);
+}
+
 /* Typing indicator */
 .ai-chat__typing {
   display: inline-flex;
