@@ -19,6 +19,7 @@ import {
     cloneSamplesByMode,
     countCircuitMapSamples,
     extractAccCaptureSample,
+    getCircuitMapDrawSegments,
     upsertCaptureModeSample
 } from './circuit-map-utils';
 import './circuit-maps.css';
@@ -418,20 +419,26 @@ const CircuitMaps = () => {
 
         CIRCUIT_MAP_CAPTURE_MODES.forEach(({ value }) => {
             const samples = getSamplesForMode(samplesByMode, value);
-            if (samples.length > 1) {
+            const drawSegments = getCircuitMapDrawSegments(samples, value);
+
+            drawSegments.forEach((segment) => {
+                if (segment.length < 2) {
+                    return;
+                }
+
                 context.save();
                 context.strokeStyle = MODE_COLORS[value];
                 context.lineWidth = 3;
                 context.globalAlpha = 0.82;
                 context.beginPath();
-                samples.forEach((sample, index) => {
+                segment.forEach((sample, index) => {
                     const point = project(sample.x, sample.z);
                     if (index === 0) context.moveTo(point.screenX, point.screenY);
                     else context.lineTo(point.screenX, point.screenY);
                 });
                 context.stroke();
                 context.restore();
-            }
+            });
 
             samples.forEach((sample) => {
                 const point = project(sample.x, sample.z);

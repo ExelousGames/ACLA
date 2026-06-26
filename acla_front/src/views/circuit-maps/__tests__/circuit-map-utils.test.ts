@@ -2,6 +2,7 @@ import {
     alignCircuitMapSamples,
     extractAccCaptureSample,
     getCircuitMapBin,
+    getCircuitMapDrawSegments,
     upsertCircuitMapSample
 } from '../circuit-map-utils';
 import { CircuitMapBinSample } from '../circuit-map-types';
@@ -121,5 +122,54 @@ describe('circuit map utilities', () => {
         expect(rows[0].left_boundary?.x).toBe(1);
         expect(rows[0].right_boundary?.x).toBe(3);
         expect(rows[0].pit_lane?.x).toBe(2);
+    });
+
+    it('splits pit lane drawing across the lap start instead of connecting its ends', () => {
+        const samples: CircuitMapBinSample[] = [
+            {
+                bin: 20,
+                normalized_position: 0.02,
+                x: 1,
+                y: 0,
+                z: 1,
+                sample_count: 1,
+                updated_at: '2026-01-01T00:00:00.000Z'
+            },
+            {
+                bin: 35,
+                normalized_position: 0.035,
+                x: 2,
+                y: 0,
+                z: 2,
+                sample_count: 1,
+                updated_at: '2026-01-01T00:00:00.000Z'
+            },
+            {
+                bin: 940,
+                normalized_position: 0.94,
+                x: 9,
+                y: 0,
+                z: 9,
+                sample_count: 1,
+                updated_at: '2026-01-01T00:00:00.000Z'
+            },
+            {
+                bin: 960,
+                normalized_position: 0.96,
+                x: 10,
+                y: 0,
+                z: 10,
+                sample_count: 1,
+                updated_at: '2026-01-01T00:00:00.000Z'
+            }
+        ];
+
+        expect(getCircuitMapDrawSegments(samples, 'pit_lane').map((segment) => segment.map((sample) => sample.bin))).toEqual([
+            [20, 35],
+            [940, 960]
+        ]);
+        expect(getCircuitMapDrawSegments(samples, 'left_boundary').map((segment) => segment.map((sample) => sample.bin))).toEqual([
+            [20, 35, 940, 960]
+        ]);
     });
 });

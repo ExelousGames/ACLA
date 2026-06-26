@@ -137,6 +137,50 @@ export const alignCircuitMapSamples = (
     return Array.from(rows.values()).sort((a, b) => a.bin - b.bin);
 };
 
+export const getCircuitMapDrawSegments = (
+    samples: CircuitMapBinSample[],
+    mode: CircuitMapCaptureMode,
+    resolution = CIRCUIT_MAP_BIN_RESOLUTION
+): CircuitMapBinSample[][] => {
+    const sortedSamples = [...samples].sort((a, b) => a.bin - b.bin);
+
+    if (mode !== 'pit_lane' || sortedSamples.length < 2) {
+        return sortedSamples.length > 0 ? [sortedSamples] : [];
+    }
+
+    const wrapEdgeWindow = resolution * 0.2;
+    const crossesLapStart = sortedSamples[0].bin <= wrapEdgeWindow
+        && sortedSamples[sortedSamples.length - 1].bin >= resolution - wrapEdgeWindow;
+
+    if (!crossesLapStart) {
+        return [sortedSamples];
+    }
+
+    const maxPitLaneGap = resolution * 0.1;
+    let largestGap = 0;
+    let splitIndex = -1;
+
+    for (let index = 1; index < sortedSamples.length; index += 1) {
+        const previous = sortedSamples[index - 1];
+        const sample = sortedSamples[index];
+        const gap = sample.bin - previous.bin;
+
+        if (gap > largestGap) {
+            largestGap = gap;
+            splitIndex = index;
+        }
+    }
+
+    if (splitIndex < 0 || largestGap <= maxPitLaneGap) {
+        return [sortedSamples];
+    }
+
+    return [
+        sortedSamples.slice(0, splitIndex),
+        sortedSamples.slice(splitIndex)
+    ].filter((segment) => segment.length > 0);
+};
+
 export const countCircuitMapSamples = (samplesByMode: CircuitMapSamplesByMode): number => (
     Object.values(samplesByMode).reduce((sum, samples) => sum + (samples?.length || 0), 0)
 );
