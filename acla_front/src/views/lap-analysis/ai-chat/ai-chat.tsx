@@ -25,6 +25,7 @@ type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
+const BASELINE_PROGRESS_MESSAGE_ID = 'live-baseline-progress';
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -34,7 +35,7 @@ function extractEmotion(text: string): { emotion: Emotion | null; cleanText: str
     return { emotion: null, cleanText: text };
 }
 
-type MessageKind = 'chat' | 'tool';
+type MessageKind = 'chat' | 'tool' | 'progress';
 
 interface Message {
     id: string;
@@ -54,6 +55,13 @@ interface Message {
         error?: string | null;
     };
     mapDisplay?: AiMapDisplayPayload;
+    progress?: {
+        label: string;
+        value: number;
+        detail?: string;
+        startMarkerLabel?: string;
+        startMarkerValue?: number;
+    };
 }
 
 
@@ -289,6 +297,59 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         activeAgentTagsRef.current = [];
         broadcastPillMessage('', { tags: [] });
     }, [broadcastPillMessage]);
+
+    useEffect(() => {
+        if (sessionMode !== 'live' || !livePerformanceAnalystEnabled) {
+            setMessages(prev => prev.filter((message) => message.id !== BASELINE_PROGRESS_MESSAGE_ID));
+            return;
+        }
+
+        const snapshot = analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.();
+        if (!snapshot || snapshot.status === 'empty') {
+            return;
+        }
+
+        const value = Math.max(0, Math.min(100, Number(snapshot.baseline_progress_percent ?? 0)));
+        const detail = snapshot.baseline_ready
+            ? 'Baseline complete. Classifier analysis is starting.'
+            : snapshot.baseline_collection_started
+                ? `Lap ${snapshot.current_lap + 1} baseline`
+                : 'Start at normalized position 0';
+
+        setMessages(prev => {
+            const progressMessage: Message = {
+                id: BASELINE_PROGRESS_MESSAGE_ID,
+                content: 'Collecting baseline',
+                isUser: false,
+                timestamp: new Date(),
+                kind: 'progress',
+                progress: {
+                    label: 'Collecting baseline',
+                    value,
+                    detail,
+                    startMarkerLabel: 'Start',
+                    startMarkerValue: 0,
+                },
+            };
+
+            const existingIndex = prev.findIndex((message) => message.id === BASELINE_PROGRESS_MESSAGE_ID);
+            if (existingIndex === -1) {
+                return prev.concat(progressMessage);
+            }
+
+            const next = prev.slice();
+            next[existingIndex] = {
+                ...next[existingIndex],
+                progress: progressMessage.progress,
+            };
+            return next;
+        });
+    }, [
+        analysisContext?.liveData,
+        analysisContext?.sessionIntelligence,
+        livePerformanceAnalystEnabled,
+        sessionMode,
+    ]);
 
     const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
         if (!enabled) {
@@ -1123,6 +1184,36 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef}>
                         {messages.map((message) => {
+                            if (message.kind === 'progress' && message.progress) {
+                                const progress = Math.round(message.progress.value);
+                                const startMarkerValue = Math.max(0, Math.min(100, Number(message.progress.startMarkerValue ?? 0)));
+                                return (
+                                    <div key={message.id} className="ai-chat__progress">
+                                        <div className="ai-chat__progress-head">
+                                            <span>{message.progress.label}</span>
+                                            <span>{progress}%</span>
+                                        </div>
+                                        <div
+                                            className="ai-chat__progress-track"
+                                            role="progressbar"
+                                            aria-valuenow={progress}
+                                            aria-valuemin={0}
+                                            aria-valuemax={100}
+                                        >
+                                            <div className="ai-chat__progress-fill" style={{ width: `${progress}%` }} />
+                                            {message.progress.startMarkerLabel && (
+                                                <div className="ai-chat__progress-marker" style={{ left: `${startMarkerValue}%` }}>
+                                                    <span>{message.progress.startMarkerLabel}</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                        {message.progress.detail && (
+                                            <div className="ai-chat__progress-detail">{message.progress.detail}</div>
+                                        )}
+                                    </div>
+                                );
+                            }
+
                             // Tool-call messages
                             if (message.kind === 'tool' && message.tool) {
                                 const t = message.tool;

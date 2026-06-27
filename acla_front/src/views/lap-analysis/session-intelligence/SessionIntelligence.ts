@@ -48,9 +48,13 @@ type LiveSessionSnapshot = {
     sample_count: number;
     live_session_type: LiveSessionType;
     baseline_ready: boolean;
+    baseline_collection_started: boolean;
+    baseline_progress_percent: number;
     completed_lap_count: number;
     section_count: number;
 };
+
+const BASELINE_START_POSITION_EPSILON = 0.005;
 
 export class SessionIntelligence {
     private buffer = new TelemetryBuffer();
@@ -59,6 +63,8 @@ export class SessionIntelligence {
     private currentLap: number = 0;
     private currentTrack: string = '';
     private currentPosition: number = 0;
+    private baselineStartLap: number | null = 0;
+    private baselineStartPendingFromLap: number | null = null;
     private onEvent: ((event: SessionEvent) => void) | null = null;
     private sectionHistory: LiveSectionClassification[] = [];
     private focusSection: LiveSectionFocus | null = null;
@@ -80,6 +86,17 @@ export class SessionIntelligence {
 
         this.currentLap = getTelemetryLap(sample);
         this.currentPosition = getTelemetryPosition(sample) ?? this.currentPosition;
+
+        if (
+            this.baselineStartPendingFromLap !== null
+            && (
+                this.currentPosition <= BASELINE_START_POSITION_EPSILON
+                || this.currentLap > this.baselineStartPendingFromLap
+            )
+        ) {
+            this.baselineStartLap = this.currentLap;
+            this.baselineStartPendingFromLap = null;
+        }
 
         const sampleIdx = this.buffer.push(sample);
         this.sensors.tick(sample, sampleIdx, this.log);
@@ -133,6 +150,8 @@ export class SessionIntelligence {
                 sample_count: 0,
                 live_session_type: 'unknown',
                 baseline_ready: false,
+                baseline_collection_started: false,
+                baseline_progress_percent: 0,
                 completed_lap_count: 0,
                 section_count: 0,
             };
@@ -149,13 +168,51 @@ export class SessionIntelligence {
             sample_count: this.buffer.length,
             live_session_type: detectLiveSessionType(latest),
             baseline_ready: this.hasCompletedBaselineLap(),
+            baseline_collection_started: this.hasBaselineCollectionStarted(),
+            baseline_progress_percent: this.getBaselineProgressPercent(),
             completed_lap_count: completedLapNumbers.length,
             section_count: this.getKnownTrackSections().length,
         };
     }
 
+    startBaselineCollectionAtLapStart(): void {
+        this.sectionHistory = [];
+        this.focusSection = null;
+
+        if (this.currentPosition <= BASELINE_START_POSITION_EPSILON) {
+            this.baselineStartLap = this.currentLap;
+            this.baselineStartPendingFromLap = null;
+            return;
+        }
+
+        this.baselineStartLap = null;
+        this.baselineStartPendingFromLap = this.currentLap;
+    }
+
+    hasBaselineCollectionStarted(): boolean {
+        return this.baselineStartLap !== null;
+    }
+
     hasCompletedBaselineLap(): boolean {
-        return this.currentLap >= 1 && this.getLastCompletedLapRows().length > 0;
+        return this.baselineStartLap !== null
+            && this.currentLap > this.baselineStartLap
+            && this.getRowsForLap(this.baselineStartLap).length > 0;
+    }
+
+    getBaselineProgressPercent(): number {
+        if (this.hasCompletedBaselineLap()) {
+            return 100;
+        }
+
+        if (this.baselineStartLap === null) {
+            return 0;
+        }
+
+        if (this.currentLap > this.baselineStartLap) {
+            return 100;
+        }
+
+        return Math.max(0, Math.min(99, Math.round(this.currentPosition * 100)));
     }
 
     getKnownTrackSections(): LiveTrackSection[] {
@@ -175,8 +232,8 @@ export class SessionIntelligence {
     }
 
     getLastCompletedLapRows(): TelemetrySample[] {
-        if (this.currentLap < 1) return [];
-        return this.getRowsForLap(this.currentLap - 1);
+        if (!this.hasCompletedBaselineLap() || this.baselineStartLap === null) return [];
+        return this.getRowsForLap(this.baselineStartLap);
     }
 
     getRowsForLap(lap: number): TelemetrySample[] {
@@ -289,6 +346,8 @@ export class SessionIntelligence {
         this.currentLap = 0;
         this.currentTrack = '';
         this.currentPosition = 0;
+        this.baselineStartLap = 0;
+        this.baselineStartPendingFromLap = null;
         this.sectionHistory = [];
         this.focusSection = null;
     }

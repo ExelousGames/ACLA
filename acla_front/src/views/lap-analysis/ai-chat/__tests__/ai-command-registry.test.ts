@@ -573,7 +573,7 @@ describe('ai command registry live performance analyst tools', () => {
             Graphics_normalized_car_position: 0,
         });
 
-        const livePerformanceAnalystState = {
+        const livePerformanceAnalystState: any = {
             intervalId: null,
             inFlight: false,
             enabled: false,
@@ -584,6 +584,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         return {
             sessionIntelligence,
+            livePerformanceAnalystState,
             registry: createAiCommandRegistry({
                 sessionMode: 'live',
                 sessionIntelligence,
@@ -644,6 +645,94 @@ describe('ai command registry live performance analyst tools', () => {
                 live_session_type: 'solo_practice',
             },
         });
+    });
+
+    it('does not send assistant observations while collecting baseline', async () => {
+        const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Static_car_model: 'Ferrari 296',
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.45,
+        });
+
+        const livePerformanceAnalystState: any = {
+            intervalId: null,
+            inFlight: false,
+            enabled: false,
+            lastObservationKey: null,
+            lastObservationAt: 0,
+            lastSpokenAt: 0,
+        };
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState,
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            setLivePerformanceAnalystEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+        });
+        const sendObservation = jest.fn();
+
+        const result = await registry.start_live_performance_analysis(
+            {},
+            { sendObservation },
+        );
+
+        expect(result).toMatchObject({
+            status: 'started',
+            initial: {
+                status: 'checked',
+                snapshot: {
+                    baseline_ready: false,
+                    baseline_collection_started: false,
+                    baseline_progress_percent: 0,
+                },
+            },
+        });
+        expect(sendObservation).not.toHaveBeenCalled();
+
+        if (livePerformanceAnalystState.intervalId) {
+            clearInterval(livePerformanceAnalystState.intervalId);
+        }
+    });
+
+    it('sends compact baseline-ready observations without raw telemetry hints', async () => {
+        const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry();
+        const sendObservation = jest.fn();
+
+        const result = await registry.start_live_performance_analysis(
+            {},
+            { sendObservation },
+        );
+
+        expect(result).toMatchObject({
+            status: 'started',
+            initial: {
+                status: 'checked',
+                snapshot: {
+                    baseline_ready: true,
+                },
+            },
+        });
+        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'baseline_ready_needs_classification',
+            last_completed_lap: 0,
+            sections: expect.any(Array),
+        }));
+        expect(sendObservation.mock.calls[0][0]).not.toHaveProperty('internal_tool_hint');
+
+        if (livePerformanceAnalystState.intervalId) {
+            clearInterval(livePerformanceAnalystState.intervalId);
+        }
     });
 
     it('keeps raw section telemetry behind an internal handler', async () => {

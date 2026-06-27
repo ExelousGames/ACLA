@@ -1121,6 +1121,9 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
         const intervalSeconds = getLiveAnalystIntervalSeconds(args.interval_seconds);
         agent.enabled = true;
+        if (!si.hasCompletedBaselineLap()) {
+            si.startBaselineCollectionAtLapStart();
+        }
         context.setLivePerformanceAnalystEnabled?.(true);
         context.setAgentTagActive?.('Live Analyst', true);
 
@@ -1138,17 +1141,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                 if (notify) {
                     const now = Date.now();
                     if (!snapshot.baseline_ready) {
-                        const key = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
-                        if (agent.lastObservationKey !== key && now - agent.lastObservationAt > 12000) {
-                            agent.lastObservationKey = key;
-                            agent.lastObservationAt = now;
-                            ctx.sendObservation({
-                                source: 'live_performance_analyst',
-                                agent_mode: 'live_performance_analyst',
-                                event: 'collecting_baseline',
-                                snapshot,
-                            });
-                        }
+                        agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
                     } else if (!focus) {
                         const key = `baseline_ready:${snapshot.completed_laps}:${sections.length}:${si.getSectionHistory(1)[0]?.observedAt ?? 'none'}`;
                         if (agent.lastObservationKey !== key && now - agent.lastObservationAt > 12000) {
@@ -1161,13 +1154,6 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                                 snapshot,
                                 last_completed_lap: Math.max(0, snapshot.completed_laps - 1),
                                 sections,
-                                internal_tool_hint: {
-                                    name: '_get_live_section_telemetry',
-                                    arguments: {
-                                        lap: 'last',
-                                        section_id: sections[0]?.id,
-                                    },
-                                },
                             });
                         }
                     } else {

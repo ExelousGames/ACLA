@@ -107,8 +107,52 @@ describe('SessionIntelligence live analyst section state', () => {
 
         expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
             baseline_ready: false,
+            baseline_progress_percent: 50,
             completed_laps: 0,
             live_session_type: 'solo_practice',
+        });
+    });
+
+    it('starts analyst baseline collection at the next lap start', () => {
+        const intelligence = new SessionIntelligence();
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.45,
+        });
+
+        intelligence.startBaselineCollectionAtLapStart();
+
+        expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
+            baseline_ready: false,
+            baseline_collection_started: false,
+            baseline_progress_percent: 0,
+        });
+
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 1,
+            Graphics_normalized_car_position: 0.01,
+        });
+
+        expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
+            baseline_ready: false,
+            baseline_collection_started: true,
+            baseline_progress_percent: 1,
+        });
+
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 2,
+            Graphics_normalized_car_position: 0.01,
+        });
+
+        expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
+            baseline_ready: true,
+            baseline_progress_percent: 100,
         });
     });
 
@@ -134,6 +178,7 @@ describe('SessionIntelligence live analyst section state', () => {
         });
 
         expect(intelligence.hasCompletedBaselineLap()).toBe(true);
+        expect(intelligence.getBaselineProgressPercent()).toBe(100);
         expect(intelligence.getSectionTelemetryWindow({
             section_name: 'T1 Paddock Hill Bend',
             lap: 0,

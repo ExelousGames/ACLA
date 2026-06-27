@@ -471,6 +471,62 @@
   padding-left: 22px;
 }
 
+.ai-chat__progress {
+  padding: 10px 12px;
+  border-radius: var(--lp-radius-sm);
+  border: 1px solid var(--lp-border-strong);
+  background: rgba(22, 22, 40, 0.62);
+  font-family: var(--lp-mono);
+}
+.ai-chat__progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--lp-green);
+}
+.ai-chat__progress-track {
+  position: relative;
+  margin-top: 8px;
+  margin-bottom: 18px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(232, 232, 240, 0.12);
+}
+.ai-chat__progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--lp-green), var(--lp-blue));
+  transition: width 180ms ease;
+}
+.ai-chat__progress-marker {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  background: var(--lp-amber);
+  box-shadow: 0 0 8px rgba(255, 202, 40, 0.45);
+}
+.ai-chat__progress-marker span {
+  position: absolute;
+  top: 14px;
+  left: 0;
+  font-size: 8px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--lp-amber);
+  white-space: nowrap;
+}
+.ai-chat__progress-detail {
+  margin-top: 7px;
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--lp-gray);
+}
+
 /* Map tool attachment */
 .ai-chat__map-card {
   margin-top: 10px;

@@ -12,7 +12,8 @@ Live performance analyst mode:
   an observation source/agent_mode is `live_performance_analyst`.
 - During `collecting_baseline`, do not critique. The driver has not completed
   the required baseline yet. A short "collecting a baseline lap" message is
-  enough if you need to acknowledge the state.
+  enough if you need to acknowledge the state. Ask the driver to complete one
+  full lap before expecting analysis.
 - During `baseline_ready_needs_classification`, use `classify_live_section` on
   the candidate sections from the completed lap. That server tool fetches raw
   rows through the hidden frontend relay, classifies them, and records compact
