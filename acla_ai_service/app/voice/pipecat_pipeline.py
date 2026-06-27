@@ -1105,23 +1105,36 @@ def _format_observation_for_llm(data: dict) -> str:
                 "collecting one clean baseline lap."
             )
 
-        if event == "baseline_ready_needs_classification":
-            sections = data.get("sections") or []
-            section_bits: List[str] = []
-            for section in sections[:8]:
-                if not isinstance(section, dict):
-                    continue
-                section_bits.append(
-                    f"{section.get('id')}:{section.get('name')} "
-                    f"[{section.get('from')},{section.get('to')}]"
-                )
-            last_completed_lap = data.get("last_completed_lap")
+        if event == "recorded_analysis_plan_ready":
+            focus = data.get("focus") or {}
+            if not isinstance(focus, dict):
+                focus = {}
+            section = focus.get("section") or {}
+            baseline = focus.get("baseline") or {}
+            if not isinstance(section, dict):
+                section = {}
+            if not isinstance(baseline, dict):
+                baseline = {}
             return (
-                "live_performance_analyst baseline ready. "
-                f"Classify completed lap {last_completed_lap} sections with classify_live_section; "
-                f"session_type={session_type}; candidate_sections={'; '.join(section_bits)}. "
-                "Do not expose raw telemetry. After classification, use get_live_focus_section to see "
-                "whether a focus exists. Avoid spoken critique until a focus/coaching window exists."
+                "live_performance_analyst recorded analysis plan ready. "
+                f"goal={data.get('goal')}; plan={data.get('plan')}; "
+                f"section={section.get('id')}:{section.get('name')} "
+                f"range=[{section.get('from')},{section.get('to')}], "
+                f"labels={baseline.get('childLabels')}, session_type={session_type}. "
+                "Do not call classify_live_section for the baseline. Use the provided goal and plan; "
+                "save classify_live_section for the next pass through this focus section."
+            )
+
+        if event in {
+            "recorded_session_required",
+            "recorded_analysis_unavailable",
+            "recorded_analysis_failed",
+            "no_focus_from_recorded_analysis",
+        }:
+            return (
+                "live_performance_analyst cannot build a focus plan yet. "
+                f"reason={event}; message={data.get('message')}; "
+                "Explain briefly that recorded-session AI analysis is needed before live focus coaching."
             )
 
         if event == "coaching_window":

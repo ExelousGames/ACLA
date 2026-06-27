@@ -573,6 +573,50 @@ describe('ai command registry live performance analyst tools', () => {
             Graphics_normalized_car_position: 0,
         });
 
+        const recordedAiAnalysis: RecordedAiAnalysisState = {
+            sessionId: 'session-1',
+            status: 'ready',
+            result: {
+                status: 'success',
+                session_id: 'session-1',
+                samples_analyzed: 120,
+                segment_count: 1,
+                segments: [
+                    {
+                        id: 'brands_hatch2:10-30',
+                        parent_segment_id: 'brands_hatch2',
+                        parent_label_id: 'brands_hatch2',
+                        main_label_id: 'brands_hatch2',
+                        start_index: 10,
+                        end_index: 30,
+                        labels: ['brands_hatch2', 'MSP', 'late_brake'],
+                        sub_labels: ['late_brake'],
+                        child_segments: [
+                            {
+                                start_index: 12,
+                                end_index: 24,
+                                labels: ['MSP', 'late_brake'],
+                            },
+                        ],
+                    },
+                ],
+            },
+        };
+        const analysisContext = {
+            sessionSelected: {
+                SessionId: 'session-1',
+                session_name: 'Practice 1',
+                map: 'brands_hatch',
+                car: 'Ferrari 296',
+                user_id: 'user-1',
+                points: [],
+                data: [],
+            },
+            mapSelected: 'brands_hatch',
+            recordedAiAnalysis,
+            runRecordedAiAnalysis: jest.fn(async () => recordedAiAnalysis),
+        };
+
         const livePerformanceAnalystState: any = {
             intervalId: null,
             inFlight: false,
@@ -583,10 +627,12 @@ describe('ai command registry live performance analyst tools', () => {
         };
 
         return {
+            analysisContext,
             sessionIntelligence,
             livePerformanceAnalystState,
             registry: createAiCommandRegistry({
                 sessionMode: 'live',
+                analysisContext,
                 sessionIntelligence,
                 opportunityAgentState: {
                     intervalId: null,
@@ -602,6 +648,8 @@ describe('ai command registry live performance analyst tools', () => {
                 }),
                 setAgentTagActive: jest.fn(),
                 getOpportunityTelemetryRows: () => [],
+                getLabelName: (labelId) => labelNames[labelId] || labelId,
+                getCategoryLabels: (category) => categories[category] ?? [],
             }),
         };
     };
@@ -705,8 +753,8 @@ describe('ai command registry live performance analyst tools', () => {
         }
     });
 
-    it('sends compact baseline-ready observations without raw telemetry hints', async () => {
-        const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry();
+    it('builds a focus plan from shared recorded analysis instead of classifying every section', async () => {
+        const { analysisContext, registry, livePerformanceAnalystState } = createLiveAnalystRegistry();
         const sendObservation = jest.fn();
 
         const result = await registry.start_live_performance_analysis(
@@ -721,14 +769,29 @@ describe('ai command registry live performance analyst tools', () => {
                 snapshot: {
                     baseline_ready: true,
                 },
+                focus: {
+                    section: {
+                        name: 'T2 Druids',
+                    },
+                },
+                plan: {
+                    goal: expect.stringContaining('T2 Druids'),
+                },
             },
         });
+        expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: false });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'baseline_ready_needs_classification',
-            last_completed_lap: 0,
-            sections: expect.any(Array),
+            event: 'recorded_analysis_plan_ready',
+            goal: expect.stringContaining('T2 Druids'),
+            plan: expect.any(Array),
+            focus: expect.objectContaining({
+                section: expect.objectContaining({
+                    name: 'T2 Druids',
+                }),
+            }),
         }));
         expect(sendObservation.mock.calls[0][0]).not.toHaveProperty('internal_tool_hint');
+        expect(sendObservation.mock.calls[0][0]).not.toHaveProperty('sections');
 
         if (livePerformanceAnalystState.intervalId) {
             clearInterval(livePerformanceAnalystState.intervalId);

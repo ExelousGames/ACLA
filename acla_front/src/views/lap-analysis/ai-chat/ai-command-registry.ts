@@ -10,6 +10,7 @@ import {
     RecordedAiAnalysisState,
 } from 'views/lap-analysis/recorded-session-analysis';
 import {
+    getSegmentChildSegments,
     getSegmentMainLabelText,
     resolveSegmentChildLabelTexts,
     SegmentClassificationSegment,
@@ -68,9 +69,18 @@ export interface LivePerformanceAnalystState {
     lastObservationKey: string | null;
     lastObservationAt: number;
     lastSpokenAt: number;
+    analysisSessionId?: string | null;
 }
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
+
+type LivePerformancePlan = {
+    status: 'ready';
+    goal: string;
+    plan: string[];
+    focus: ReturnType<typeof buildLiveFocusPayload>;
+    analysis: ReturnType<typeof buildRecordedAnalysisToolResult>;
+};
 
 // Frontend-implemented tool capabilities. This file owns executable browser
 // handlers and JSON parameter shapes only; LLM-facing tool instructions live
@@ -453,6 +463,214 @@ const buildRecordedSessionContext = (
     };
 };
 
+const getSelectedSessionId = (context: AiCommandRegistryContext): string | null => {
+    const selectedSession = getSelectedRecordedSession(context);
+    return selectedSession?.SessionId || context.sessionId || null;
+};
+
+const normalizeComparableText = (value: unknown): string => String(value ?? '')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\bturn\s+/g, 't')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const getSegmentLabelIds = (segment: SegmentClassificationSegment): string[] => {
+    const labels = new Set<string>();
+    [
+        segment.parent_segment_id,
+        segment.parent_label_id,
+        segment.main_label_id,
+        ...(segment.labels || []),
+        ...(segment.sub_labels || []),
+    ].forEach((label) => {
+        if (label) labels.add(String(label));
+    });
+    getSegmentChildSegments(segment).forEach((child) => {
+        child.labels.forEach((label) => labels.add(String(label)));
+    });
+    return Array.from(labels);
+};
+
+const isMistakeLabel = (labelId: string): boolean => (
+    labelId === 'MSP'
+    || labelId === 'MSR'
+    || labelId.startsWith('MSP')
+    || labelId.startsWith('MSR')
+);
+
+const isExpertAdherenceLabel = (labelId: string): boolean => (
+    labelId === 'EA'
+    || labelId.startsWith('EA')
+);
+
+const resolveLiveSectionForRecordedSegment = (
+    segment: SegmentClassificationSegment,
+    context: AiCommandRegistryContext,
+) => {
+    const si = context.sessionIntelligence;
+    if (!si) return null;
+
+    const sections = si.getKnownTrackSections();
+    const snapshot = si.getLiveSessionSnapshot();
+    const track = normalizeOptionalString(snapshot.track || context.analysisContext?.mapSelected);
+    const parentLabelId = segment.parent_segment_id || segment.parent_label_id || segment.main_label_id;
+
+    if (track && parentLabelId && context.getCategoryLabels) {
+        const categoryLabels = context.getCategoryLabels(track);
+        const index = categoryLabels.findIndex((labelId) => labelId === parentLabelId);
+        if (index >= 0 && sections[index]) {
+            return sections[index];
+        }
+    }
+
+    const parentText = normalizeComparableText(getSegmentMainLabelText(segment, context.getLabelName));
+    if (parentText) {
+        const matched = sections.find((section) => {
+            const sectionText = normalizeComparableText(section.name);
+            return sectionText === parentText
+                || sectionText.includes(parentText)
+                || parentText.includes(sectionText);
+        });
+        if (matched) return matched;
+    }
+
+    return null;
+};
+
+const buildGoalText = (
+    sectionName: string,
+    childLabels: string[],
+): string => {
+    const primaryIssue = childLabels[0] || 'the main mistake';
+    return `Improve ${sectionName} by reducing ${primaryIssue}.`;
+};
+
+const buildPlanSteps = (
+    sectionName: string,
+    childLabels: string[],
+): string[] => {
+    const primaryIssue = childLabels[0] || 'the main mistake';
+    return [
+        `Use the next approach to ${sectionName} as the focus run.`,
+        `Change one thing first: clean up ${primaryIssue}.`,
+        'After the next pass, compare the focused section classification against this baseline.',
+    ];
+};
+
+const buildLivePerformancePlanFromRecordedAnalysis = (
+    state: RecordedAiAnalysisState,
+    context: AiCommandRegistryContext,
+): LivePerformancePlan | null => {
+    const si = context.sessionIntelligence;
+    const result = state.result;
+    if (!si || !result || !Array.isArray(result.segments)) return null;
+
+    const candidates = result.segments
+        .map((segment) => {
+            const section = resolveLiveSectionForRecordedSegment(segment, context);
+            if (!section) return null;
+
+            const labelIds = getSegmentLabelIds(segment);
+            const childLabels = resolveSegmentChildLabelTexts(segment, context.getLabelName);
+            const mistakeCount = labelIds.filter(isMistakeLabel).length;
+            const expertAdherenceCount = labelIds.filter(isExpertAdherenceLabel).length;
+            const childCount = childLabels.length;
+            const length = Math.max(1, segment.end_index - segment.start_index);
+            const score = (mistakeCount * 4) + childCount + Math.min(length / 100, 2);
+
+            return {
+                segment,
+                section,
+                childLabels,
+                mistakeCount,
+                expertAdherenceCount,
+                score,
+            };
+        })
+        .filter((candidate): candidate is {
+            segment: SegmentClassificationSegment;
+            section: NonNullable<ReturnType<typeof resolveLiveSectionForRecordedSegment>>;
+            childLabels: string[];
+            mistakeCount: number;
+            expertAdherenceCount: number;
+            score: number;
+        } => Boolean(candidate))
+        .filter((candidate) => candidate.mistakeCount > 0 || candidate.childLabels.length > 0)
+        .sort((a, b) => b.score - a.score);
+
+    const best = candidates[0];
+    if (!best) return null;
+
+    si.recordSectionClassification({
+        section_id: best.section.id,
+        section_name: best.section.name,
+        lap: Math.max(0, si.getLiveSessionSnapshot().completed_laps - 1),
+        start_sample_idx: best.segment.start_index,
+        end_sample_idx: best.segment.end_index,
+        mistake_count: best.mistakeCount,
+        expert_adherence_count: best.expertAdherenceCount,
+        severity: Math.min(5, Math.max(1, best.mistakeCount + (best.childLabels.length * 0.25))),
+        confidence: 0.85,
+        parent_label: getSegmentMainLabelText(best.segment, context.getLabelName),
+        child_labels: best.childLabels,
+        observed_at: Date.now(),
+    });
+
+    const focus = buildLiveFocusPayload(context);
+    if (!focus) return null;
+
+    return {
+        status: 'ready',
+        goal: buildGoalText(best.section.name, best.childLabels),
+        plan: buildPlanSteps(best.section.name, best.childLabels),
+        focus,
+        analysis: buildRecordedAnalysisToolResult(state, context, { limit: 8 }),
+    };
+};
+
+const runSharedAnalysisForLivePlan = async (
+    context: AiCommandRegistryContext,
+): Promise<{ status: 'ready'; plan: LivePerformancePlan } | { status: 'error'; error: string; message: string }> => {
+    const sessionId = getSelectedSessionId(context);
+    if (!sessionId) {
+        return {
+            status: 'error',
+            error: 'recorded_session_required',
+            message: 'Live performance analysis needs an uploaded or selected recorded session before it can build a focus plan.',
+        };
+    }
+
+    const runAnalysis = context.analysisContext?.runRecordedAiAnalysis;
+    if (typeof runAnalysis !== 'function') {
+        return {
+            status: 'error',
+            error: 'recorded_analysis_unavailable',
+            message: 'Recorded AI analysis is not available in this view.',
+        };
+    }
+
+    const state = await runAnalysis({ force: false });
+    if (state.status === 'error') {
+        return {
+            status: 'error',
+            error: 'recorded_analysis_failed',
+            message: state.message || 'Failed to run recorded AI analysis.',
+        };
+    }
+
+    const plan = buildLivePerformancePlanFromRecordedAnalysis(state, context);
+    if (!plan) {
+        return {
+            status: 'error',
+            error: 'no_focus_from_recorded_analysis',
+            message: 'Recorded AI analysis did not produce a focusable mistake segment for the current track.',
+        };
+    }
+
+    return { status: 'ready', plan };
+};
+
 const searchUserSummaryMapLevel = (
     mapLevel: UserSummaryMapLevelResult,
     args: Record<string, any>,
@@ -571,7 +789,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
     {
         name: 'start_live_performance_analysis',
-        description: 'Start the live performance analyst agent. The agent waits for a completed lap, then asks the AI service to classify and coach mistake-heavy track sections.',
+        description: 'Start the live performance analyst agent. The agent waits for a completed lap, runs the shared recorded-session AI analysis, builds one focus goal/plan, and uses live section classification only for the focused follow-up pass.',
         properties: {
             interval_seconds: {
                 type: 'number',
@@ -1136,25 +1354,45 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             try {
                 const snapshot = si.getLiveSessionSnapshot();
                 const sections = si.getKnownTrackSections();
-                const focus = buildLiveFocusPayload(context);
+                let focus = buildLiveFocusPayload(context);
+                let plan: LivePerformancePlan | null = null;
+                let analysisStatus: any = null;
 
                 if (notify) {
                     const now = Date.now();
                     if (!snapshot.baseline_ready) {
                         agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
                     } else if (!focus) {
-                        const key = `baseline_ready:${snapshot.completed_laps}:${sections.length}:${si.getSectionHistory(1)[0]?.observedAt ?? 'none'}`;
+                        const sessionId = getSelectedSessionId(context);
+                        const key = `recorded_analysis:${sessionId || 'none'}:${snapshot.completed_laps}`;
                         if (agent.lastObservationKey !== key && now - agent.lastObservationAt > 12000) {
                             agent.lastObservationKey = key;
                             agent.lastObservationAt = now;
-                            ctx.sendObservation({
-                                source: 'live_performance_analyst',
-                                agent_mode: 'live_performance_analyst',
-                                event: 'baseline_ready_needs_classification',
-                                snapshot,
-                                last_completed_lap: Math.max(0, snapshot.completed_laps - 1),
-                                sections,
-                            });
+                            analysisStatus = await runSharedAnalysisForLivePlan(context);
+
+                            if (analysisStatus.status === 'ready') {
+                                plan = analysisStatus.plan;
+                                focus = plan.focus;
+                                agent.analysisSessionId = sessionId;
+                                ctx.sendObservation({
+                                    source: 'live_performance_analyst',
+                                    agent_mode: 'live_performance_analyst',
+                                    event: 'recorded_analysis_plan_ready',
+                                    snapshot,
+                                    goal: plan.goal,
+                                    plan: plan.plan,
+                                    focus: plan.focus,
+                                    analysis: plan.analysis,
+                                });
+                            } else {
+                                ctx.sendObservation({
+                                    source: 'live_performance_analyst',
+                                    agent_mode: 'live_performance_analyst',
+                                    event: analysisStatus.error,
+                                    snapshot,
+                                    message: analysisStatus.message,
+                                });
+                            }
                         }
                     } else {
                         const timing = focus.timing;
@@ -1186,6 +1424,8 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                     snapshot,
                     section_count: sections.length,
                     focus,
+                    plan,
+                    analysis_status: analysisStatus,
                     history_count: si.getSectionHistory(80).length,
                 };
             } finally {
@@ -1218,6 +1458,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         agent.lastObservationKey = null;
         agent.lastObservationAt = 0;
         agent.lastSpokenAt = 0;
+        agent.analysisSessionId = null;
         context.sessionIntelligence?.clearFocusSection();
         context.setLivePerformanceAnalystEnabled?.(false);
         context.setAgentTagActive?.('Live Analyst', false);

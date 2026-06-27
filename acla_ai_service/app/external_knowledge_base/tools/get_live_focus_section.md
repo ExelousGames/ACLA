@@ -10,9 +10,10 @@ parameters: {}
 
 ## Usage notes
 
-Use this after live section classifications are recorded and before coaching.
+Use this after `recorded_analysis_plan_ready` or after a focused follow-up
+classification is recorded and before coaching.
 If a focus exists and the frontend timing says the coaching window is open,
 call show_map with `show_map_arguments`, then speak one concise correction.
 
-If no focus exists, classify more candidate sections or wait for the next
-baseline/focus observation.
+If no focus exists, wait for the next recorded-analysis plan observation or
+briefly explain that a focus plan is not ready yet.
