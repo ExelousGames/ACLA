@@ -1371,18 +1371,19 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                             analysisStatus = await runSharedAnalysisForLivePlan(context);
 
                             if (analysisStatus.status === 'ready') {
-                                plan = analysisStatus.plan;
-                                focus = plan.focus;
+                                const readyPlan = analysisStatus.plan;
+                                plan = readyPlan;
+                                focus = readyPlan.focus;
                                 agent.analysisSessionId = sessionId;
                                 ctx.sendObservation({
                                     source: 'live_performance_analyst',
                                     agent_mode: 'live_performance_analyst',
                                     event: 'recorded_analysis_plan_ready',
                                     snapshot,
-                                    goal: plan.goal,
-                                    plan: plan.plan,
-                                    focus: plan.focus,
-                                    analysis: plan.analysis,
+                                    goal: readyPlan.goal,
+                                    plan: readyPlan.plan,
+                                    focus: readyPlan.focus,
+                                    analysis: readyPlan.analysis,
                                 });
                             } else {
                                 ctx.sendObservation({
