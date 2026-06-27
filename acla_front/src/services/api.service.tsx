@@ -110,7 +110,7 @@ export class ApiService {
 
     /**
      * POST that returns the raw response body as an ArrayBuffer.
-     * Used for binary responses like Kokoro TTS audio (audio/wav).
+     * Used for binary responses such as generated media or file payloads.
      * The axios `timeout` and auth interceptors still apply.
      */
     public async postBinary(
@@ -121,7 +121,7 @@ export class ApiService {
         try {
             const response = await this.axiosInstance.post<ArrayBuffer>(url, data, {
                 responseType: 'arraybuffer',
-                timeout: opts?.timeoutMs ?? 30000, // TTS can take a few seconds, especially on cold-start
+                timeout: opts?.timeoutMs ?? 30000,
             });
             return response.data;
         } catch (error) {

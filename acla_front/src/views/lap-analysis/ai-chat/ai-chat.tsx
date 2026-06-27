@@ -15,17 +15,16 @@ import {
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
 import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/types';
 import type { OpportunityAgentState } from './ai-command-registry';
-import { speakWithNeuralTts, NeuralTtsPlayback } from './neural-tts';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
+
+type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
 
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
-const DEFAULT_TTS_VOLUME = 0.9;
-const MUTED_TTS_VOLUME = 0;
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -43,10 +42,6 @@ interface Message {
     isUser: boolean;
     timestamp: Date;
     isLoading?: boolean;
-    // Phase 2.5 — true when this AI response already streamed its own audio
-    // (Kokoro chunks via SSE). The auto-speak effect skips these so we don't
-    // re-synthesize the whole answer.
-    streamedAudio?: boolean;
     /** Default 'chat' — text bubble. 'tool' renders the distinct
      *  tool-call box (different background + readable title). */
     kind?: MessageKind;
@@ -64,7 +59,7 @@ interface Message {
 
 interface AiChatProps {
     sessionId?: string;
-    sessionMode?: 'live' | 'recorded';
+    sessionMode?: AiChatSessionMode;
     title?: string;
 }
 
@@ -127,6 +122,16 @@ const countSummaryTracks = (summary: Record<string, any>): number => {
         : 0;
 };
 
+const getContextDescription = (sessionMode: AiChatSessionMode): string => {
+    if (sessionMode === 'recorded') {
+        return 'Selected recorded session. Prefer recorded-session tools and saved playback/analysis metadata. Do not use live telemetry tools.';
+    }
+    if (sessionMode === 'user_summary') {
+        return 'User summary view. Prefer user-summary tools and aggregate practice history. Do not use live telemetry tools.';
+    }
+    return 'Live session. Prefer streaming telemetry, event log, and live coaching tools.';
+};
+
 const findTriggeredCorners = (
     corners: CornerDefinition[],
     lastPos: number,
@@ -158,19 +163,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const [inputValue, setInputValue] = useState('');
 
     // Loading and mode states
-    const [isLoading, setIsLoading] = useState(false);
+    const [isLoading] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
-
-    // Text-to-speech states. Neural TTS (Kokoro) is the only path; we
-    // optimistically assume it's available and flip this to false on first
-    // failure so the UI can show "not available" instead of retrying.
-    const [neuralTtsAvailable, setNeuralTtsAvailable] = useState(true);
-    const [isTextToSpeechEnabled, setIsTextToSpeechEnabled] = useState(false);
-    const [isSpeaking, setIsSpeaking] = useState(false);
 
     // Emotion GIF settings — keyed by Emotion, values are data URLs.
     const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
@@ -188,16 +186,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const messagesScrollRef = useRef<HTMLDivElement>(null);
-    // Active neural-TTS playback handle (Phase 2 — Kokoro via /voice-synthesize).
-    const currentNeuralPlaybackRef = useRef<NeuralTtsPlayback | null>(null);
-    const currentSpeechIsGuidanceRef = useRef<boolean>(false);
-    const speechQueueRef = useRef<Promise<void>>(Promise.resolve());
-    const speechQueueTokenRef = useRef(0);
-    const agentSpeechTokenRef = useRef(0);
-    const mainChatbotSpeakingRef = useRef(false);
-    // Mirrors neuralTtsAvailable for read access inside async closures that
-    // would otherwise see a stale state value.
-    const neuralTtsDisabledRef = useRef<boolean>(false);
     const analysisContext = useContext(AnalysisContext);
     const {
         userSummary,
@@ -293,23 +281,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         broadcastPillMessage('', { tags: [] });
     }, [broadcastPillMessage]);
 
-    const stopAgentSpeaking = useCallback(() => {
-        agentSpeechTokenRef.current += 1;
-        if (currentSpeechIsGuidanceRef.current && currentNeuralPlaybackRef.current) {
-            currentNeuralPlaybackRef.current.stop();
-            currentNeuralPlaybackRef.current = null;
-            currentSpeechIsGuidanceRef.current = false;
-            setIsSpeaking(false);
-        }
-    }, []);
-
     const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
         if (!enabled) {
             trackGuideRunTokenRef.current += 1;
-            stopAgentSpeaking();
         }
         setTrackGuideEnabled(enabled);
-    }, [stopAgentSpeaking]);
+    }, []);
 
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
@@ -342,7 +319,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     isUser: false,
                     timestamp: new Date(),
                     kind: 'chat',
-                    streamedAudio: true,
                 }));
             // Broadcast to the floating pill overlay (separate Electron window).
             // 'storage' events fire in other same-origin BrowserWindows but not
@@ -359,16 +335,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 ok: event.ok,
                 error: event.error,
             });
-            if (
-                event.status === 'completed'
-                && (
-                    event.name === 'stop_per_turn_coaching'
-                    || event.name === 'disable_guide_user_racing'
-                    || event.name === 'stop_overtake_agent'
-                )
-            ) {
-                stopAgentSpeaking();
-            }
             setMessages(prev => {
                 if (event.status === 'completed') {
                     for (let i = prev.length - 1; i >= 0; i--) {
@@ -412,6 +378,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled(true);
     };
 
+    const resolvedSessionId = sessionId || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId;
+
     const aiSessionContext = useMemo(() => {
         const selectedSession = analysisContext?.sessionSelected as Record<string, any> | null;
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -424,10 +392,17 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
         return {
             assistant_surface: 'lap_analysis_ai_chat',
+            context_kind: sessionMode,
+            context_description: getContextDescription(sessionMode),
             session_mode: sessionMode,
-            session_id: sessionId || selectedSession?.SessionId || null,
+            session_id: resolvedSessionId || null,
             active_tab: analysisContext?.activeTab || null,
             selected_map_id: analysisContext?.mapSelected || selectedSession?.map || null,
+            capabilities: {
+                live_session: sessionMode === 'live',
+                recorded_session: sessionMode === 'recorded',
+                user_summary: summaryLoaded,
+            },
             selected_session: selectedSession
                 ? {
                     id: selectedSession.SessionId || null,
@@ -482,7 +457,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analysisContext?.recordedTelemetryDataCount,
         analysisContext?.sessionIntelligence,
         analysisContext?.sessionSelected,
-        sessionId,
+        resolvedSessionId,
         sessionMode,
         userSummary,
         userSummaryError,
@@ -490,13 +465,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     ]);
 
     const voiceConversation = useVoiceConversation({
-        sessionId,
+        sessionId: resolvedSessionId,
         sessionContext: aiSessionContext,
         onEvent: handleVoiceEvent,
         frontendTools: frontendToolSchemas,
         querySchemaScope: QUERY_SCOPE_SCHEMA,
         toolHandlers: createAiCommandRegistry({
-            sessionId,
+            sessionId: resolvedSessionId,
             sessionMode,
             analysisContext,
             sessionIntelligence: analysisContext?.sessionIntelligence,
@@ -518,11 +493,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
+    const micDisabled = voiceConversation.micDisabled;
     const canOpenFloatingChat = typeof window !== 'undefined'
         && Boolean((window as any).electronAPI?.openFloatingChat);
 
     useEffect(() => {
-        if (sessionMode !== 'recorded') {
+        if (sessionMode === 'live') {
             return;
         }
 
@@ -567,26 +543,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         return () => { try { unsubscribe?.(); } catch { /* ignore */ } };
     }, []);
 
-    useEffect(() => {
-        const mainChatbotSpeaking = vState === 'speaking';
-        mainChatbotSpeakingRef.current = mainChatbotSpeaking;
-        if (currentSpeechIsGuidanceRef.current && currentNeuralPlaybackRef.current) {
-            currentNeuralPlaybackRef.current.audio.volume = mainChatbotSpeaking
-                ? MUTED_TTS_VOLUME
-                : DEFAULT_TTS_VOLUME;
-        }
-    }, [vState]);
-
-    const addStatusMessage = (type: string, content: string) => {
-        const message: Message = {
-            id: generateUniqueId(type),
-            content,
-            isUser: false,
-            timestamp: new Date()
-        };
-        setMessages(prev => [...prev, message]);
-    };
-
     const addGuidanceMessage = useCallback((content: string) => {
         const message: Message = {
             id: generateUniqueId('guidance'),
@@ -599,112 +555,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
-
-    /**
-     * Strip markdown so the TTS engine doesn't read "asterisk-asterisk bold".
-     */
-    const cleanTextForSpeech = (text: string): string => {
-        return text
-            .replace(/\*\*(.*?)\*\*/g, '$1')
-            .replace(/\*(.*?)\*/g, '$1')
-            .replace(/```[\s\S]*?```/g, '')
-            .replace(/`(.*?)`/g, '$1')
-            .replace(/https?:\/\/[^\s]+/g, 'link')
-            .replace(/[#]+\s*/g, '')
-            .replace(/\n+/g, '. ')
-            .replace(/\s+/g, ' ')
-            .trim();
-    };
-
-    /**
-     * Speak text using neural TTS (Kokoro via /voice-synthesize).
-     * Throws if unavailable; caller marks TTS unavailable for the session.
-     */
-    const speakWithNeural = async (
-        cleanText: string,
-        options?: { isGuidance?: boolean },
-    ): Promise<void> => {
-        if (currentNeuralPlaybackRef.current) {
-            currentNeuralPlaybackRef.current.stop();
-            currentNeuralPlaybackRef.current = null;
-            currentSpeechIsGuidanceRef.current = false;
-        }
-
-        const isGuidanceSpeech = options?.isGuidance === true;
-        setIsSpeaking(true);
-        const playback = await speakWithNeuralTts(cleanText, {
-            speed: isGuidanceSpeech ? 1.15 : 1.0,
-            volume: isGuidanceSpeech && mainChatbotSpeakingRef.current
-                ? MUTED_TTS_VOLUME
-                : DEFAULT_TTS_VOLUME,
-        });
-        currentNeuralPlaybackRef.current = playback;
-        currentSpeechIsGuidanceRef.current = isGuidanceSpeech;
-        if (isGuidanceSpeech && mainChatbotSpeakingRef.current) {
-            playback.audio.volume = MUTED_TTS_VOLUME;
-        }
-
-        try {
-            await playback.ended;
-        } finally {
-            if (currentNeuralPlaybackRef.current === playback) {
-                currentNeuralPlaybackRef.current = null;
-                currentSpeechIsGuidanceRef.current = false;
-                setIsSpeaking(false);
-            }
-        }
-    };
-
-    const speakText = (text: string, options?: { isGuidance?: boolean }) => {
-        if (!isTextToSpeechEnabled || neuralTtsDisabledRef.current) {
-            return;
-        }
-
-        const cleanText = cleanTextForSpeech(text);
-        if (!cleanText) return;
-
-        const queueToken = speechQueueTokenRef.current;
-        const isGuidanceSpeech = options?.isGuidance === true;
-        const agentToken = agentSpeechTokenRef.current;
-        speechQueueRef.current = speechQueueRef.current
-            .catch(() => undefined)
-            .then(async () => {
-                if (queueToken !== speechQueueTokenRef.current || neuralTtsDisabledRef.current) return;
-                if (isGuidanceSpeech && agentToken !== agentSpeechTokenRef.current) return;
-                await speakWithNeural(cleanText, options);
-            })
-            .catch((err) => {
-                console.warn('[AI Chat] Neural TTS failed; marking unavailable for this session:', err);
-                neuralTtsDisabledRef.current = true;
-                setNeuralTtsAvailable(false);
-                setIsSpeaking(false);
-            });
-    };
-
-    const stopSpeaking = () => {
-        speechQueueTokenRef.current += 1;
-        agentSpeechTokenRef.current += 1;
-        if (currentNeuralPlaybackRef.current) {
-            currentNeuralPlaybackRef.current.stop();
-            currentNeuralPlaybackRef.current = null;
-        }
-        currentSpeechIsGuidanceRef.current = false;
-        setIsSpeaking(false);
-    };
-
-    const toggleTextToSpeech = () => {
-        const newState = !isTextToSpeechEnabled;
-        setIsTextToSpeechEnabled(newState);
-
-        localStorage.setItem('ai-chat-tts-enabled', newState.toString());
-
-        if (!newState && isSpeaking) {
-            stopSpeaking();
-        }
-
-        const statusMessage = newState ? 'Text-to-speech enabled' : 'Text-to-speech disabled';
-        addStatusMessage('tts-toggle', statusMessage);
     };
 
     const handleGifUpload = (emotion: Emotion, e: React.ChangeEvent<HTMLInputElement>) => {
@@ -731,25 +581,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     useEffect(() => {
         scrollToBottom();
     }, [messages]);
-
-    // Automatically speak new AI messages
-    useEffect(() => {
-        if (!isTextToSpeechEnabled || messages.length === 0) return;
-
-        const lastMessage = messages[messages.length - 1];
-
-        if (!lastMessage.isUser && !lastMessage.isLoading && lastMessage.content) {
-            if (lastMessage.id === 'welcome' && messages.length === 1) return;
-            if (lastMessage.streamedAudio) return;
-            if (lastMessage.kind === 'tool') return;
-
-            const isGuidanceMessage = lastMessage.id.includes('guidance');
-
-            setTimeout(() => {
-                speakText(lastMessage.content, { isGuidance: isGuidanceMessage });
-            }, 300);
-        }
-    }, [messages, isTextToSpeechEnabled]);
 
     // Listen for guidance messages from ImitationGuidanceChart
     const lastProcessedGuidanceRef = useRef<string>('');
@@ -782,19 +613,40 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }
     }, [analysisContext?.latestGuidanceMessage, generateUniqueId, TrackGuideEnabled]);
 
+    const welcomeContent = useMemo(() => {
+        const selectedSessionName = (analysisContext?.sessionSelected as Record<string, any> | null)?.session_name;
+        if (sessionMode === 'recorded') {
+            return selectedSessionName
+                ? `Recorded session assistant ready for ${selectedSessionName}. Questions will use saved playback, AI analysis, and session metadata.`
+                : 'Recorded session assistant ready. Questions will use saved playback, AI analysis, and session metadata.';
+        }
+        if (sessionMode === 'user_summary') {
+            return 'User summary assistant ready. Questions will use saved practice summary and aggregate session history.';
+        }
+        return 'Live session assistant ready. Questions will use streaming telemetry context.';
+    }, [analysisContext?.sessionSelected, sessionMode]);
+
     useEffect(() => {
-        if (messages.length === 0) {
+        setMessages((previous) => {
             const welcomeMessage: Message = {
                 id: 'welcome',
-                content: sessionMode === 'recorded'
-                    ? "Recorded session assistant preview. Questions will use saved session context when recorded-session tools are available."
-                    : "Live session assistant ready. Questions will use streaming telemetry context.",
+                content: welcomeContent,
                 isUser: false,
-                timestamp: new Date()
+                timestamp: new Date(),
+                kind: 'chat',
             };
-            setMessages([welcomeMessage]);
-        }
-    }, [messages.length, sessionMode]);
+
+            if (previous.length === 0) {
+                return [welcomeMessage];
+            }
+
+            if (previous[0].id === 'welcome' && previous[0].content !== welcomeContent) {
+                return [{ ...previous[0], content: welcomeContent, timestamp: new Date() }, ...previous.slice(1)];
+            }
+
+            return previous;
+        });
+    }, [welcomeContent]);
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -903,30 +755,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     useEffect(() => {
         setEnvironment(detectEnvironment());
-
-        const savedTtsEnabled = localStorage.getItem('ai-chat-tts-enabled');
-        if (savedTtsEnabled === 'true') {
-            setIsTextToSpeechEnabled(true);
-        }
-
-        return () => {
-            stopSpeaking();
-        };
     }, []);
-
-    // Ctrl+Space (or Cmd+Space) — stop ongoing TTS playback.
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if ((event.ctrlKey || event.metaKey) && event.code === 'Space' && isSpeaking) {
-                event.preventDefault();
-                stopSpeaking();
-                addStatusMessage('speech-stop', 'Text-to-speech stopped.');
-            }
-        };
-
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [isSpeaking]);
 
     const handleSendMessage = async (override?: string) => {
         const text = (override ?? inputValue).trim();
@@ -941,7 +770,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 id: generateUniqueId('ai'),
                 ...(sessionMode === 'recorded'
                     ? { content: 'Start the assistant connection first. Recorded session context will be sent with the request.' }
-                    : { content: 'Click the mic to start a live voice session first - text chat runs on the same connection.' }),
+                    : sessionMode === 'user_summary'
+                        ? { content: 'Start the assistant connection first. User summary context will be sent with the request.' }
+                        : { content: 'Click the mic to start a live voice session first - text chat runs on the same connection.' }),
                 isUser: false,
                 timestamp: new Date(),
                 kind: 'chat',
@@ -963,13 +794,22 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     };
 
     // ── Voice state → mic panel display ─────────────────────────────
-    const sessionModeLabel = sessionMode === 'recorded' ? 'Recorded Session' : 'Live Session';
-    const transcriptLabel = sessionMode === 'recorded' ? 'RECORDED TRANSCRIPT' : 'LIVE TRANSCRIPT';
+    const sessionModeLabel = sessionMode === 'recorded'
+        ? 'Recorded Session'
+        : sessionMode === 'user_summary'
+            ? 'User Summary'
+            : 'Live Session';
+    const transcriptLabel = sessionMode === 'recorded'
+        ? 'RECORDED TRANSCRIPT'
+        : sessionMode === 'user_summary'
+            ? 'SUMMARY TRANSCRIPT'
+            : 'LIVE TRANSCRIPT';
 
     const channelLabel =
         vState === 'idle' ? 'CH-1 · OFFLINE' :
         vState === 'connecting' ? 'CH-1 · CONNECTING' :
         vState === 'error' ? 'CH-1 · ERROR' :
+        micDisabled ? 'CH-1 · MIC OFF' :
         'CH-1 · OPEN';
     const channelMod =
         vState === 'idle' ? 'ai-chat__mic-channel--idle' :
@@ -982,12 +822,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const statusTop =
         vState === 'idle' ? 'TAP MIC' :
         vState === 'connecting' ? 'CONNECTING' :
+        micDisabled ? 'MIC' :
         vState === 'speaking' ? 'ACLA' :
         vState === 'listening' ? 'DRIVER' :
         'VOICE';
     const statusBottom =
         vState === 'idle' ? 'TO START' :
         vState === 'connecting' ? '…' :
+        micDisabled ? 'DISABLED' :
         vState === 'speaking' ? 'RESPONDING' :
         vState === 'listening' ? 'LISTENING' :
         vState === 'error' ? 'RETRY' :
@@ -1007,6 +849,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }
     };
 
+    const toggleMicDisabled = () => {
+        voiceConversation.setMicDisabled(!micDisabled);
+    };
+
     // Wave bars: driver real mic level when listening so the bars visually
     // confirm we're picking up audio; otherwise CSS-only decorative animation.
     const waveBars = useMemo(
@@ -1020,10 +866,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         // Stable per-bar response curve so adjacent bars don't all jump in sync.
         return Array.from({ length: 24 }, (_, i) => {
             const phase = (i / 24) * Math.PI * 2;
-            return 0.55 + 0.45 * Math.abs(Math.sin(phase + Date.now() / 200));
+            return 0.55 + 0.45 * Math.abs(Math.sin(phase));
         });
-    }, [voiceConversation.micLevel]);
-    const useLiveBars = vState === 'listening';
+    }, []);
+    const useLiveBars = vState === 'listening' && !micDisabled;
 
     return (
         <div className="ai-chat">
@@ -1037,36 +883,24 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 </span>
                 <div className="ai-chat__header-meta">
                     <span className="ai-chat__chip ai-chat__chip--blue">{sessionModeLabel}</span>
-                    {sessionMode === 'recorded' && (
-                        <span className="ai-chat__chip ai-chat__chip--amber">Preview</span>
-                    )}
                     {environment === 'electron' && (
                         <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
-                    )}
-                    {!neuralTtsAvailable && (
-                        <span className="ai-chat__chip ai-chat__chip--amber">TTS Unavailable</span>
                     )}
                     {voiceConversation.error && (
                         <span className="ai-chat__chip ai-chat__chip--red" title={voiceConversation.error}>
                             Voice Error
                         </span>
                     )}
-                    {neuralTtsAvailable && (
-                        <button
-                            type="button"
-                            className={`ai-chat__chip-btn ${isTextToSpeechEnabled ? 'ai-chat__chip-btn--green' : ''}`}
-                            onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
-                            disabled={isLoading}
-                            aria-pressed={isTextToSpeechEnabled}
-                            title={
-                                isSpeaking ? 'Stop speaking' :
-                                isTextToSpeechEnabled ? 'Disable auto text-to-speech' :
-                                'Enable auto text-to-speech'
-                            }
-                        >
-                            {isSpeaking ? 'Stop TTS' : isTextToSpeechEnabled ? 'TTS On' : 'TTS Off'}
-                        </button>
-                    )}
+                    <button
+                        type="button"
+                        className={`ai-chat__chip-btn ${micDisabled ? 'ai-chat__chip-btn--red' : ''}`}
+                        onClick={toggleMicDisabled}
+                        disabled={isLoading}
+                        aria-pressed={micDisabled}
+                        title={micDisabled ? 'Enable microphone capture' : 'Disable microphone capture'}
+                    >
+                        {micDisabled ? 'Mic Off' : 'Mic On'}
+                    </button>
                     {canOpenFloatingChat && (
                         <button
                             type="button"
@@ -1159,7 +993,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         )}
                         <button
                             type="button"
-                            className={`ai-chat__mic-core ${coreMod}`}
+                            className={`ai-chat__mic-core ${coreMod} ${micDisabled ? 'ai-chat__mic-core--muted' : ''}`}
                             onClick={toggleVoice}
                             disabled={vState === 'connecting'}
                             title={
@@ -1188,7 +1022,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     </div>
 
                     <div
-                        className={`ai-chat__mic-wave ${useLiveBars ? 'ai-chat__mic-wave--live' : vState === 'idle' ? 'ai-chat__mic-wave--idle' : ''}`}
+                        className={`ai-chat__mic-wave ${useLiveBars ? 'ai-chat__mic-wave--live' : (vState === 'idle' || micDisabled) ? 'ai-chat__mic-wave--idle' : ''}`}
                         aria-hidden="true"
                     >
                         {waveBars.map((b, i) => {
@@ -1278,11 +1112,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                             <span className="ai-chat__msg-stamp">
                                                 {message.timestamp.toLocaleTimeString()}
                                             </span>
-                                            {!message.isUser && isTextToSpeechEnabled && isSpeaking && (
-                                                <span className="ai-chat__msg-stamp" style={{ color: 'var(--lp-green)' }}>
-                                                    SPEAKING…
-                                                </span>
-                                            )}
                                         </div>
 
                                         {message.isLoading ? (
@@ -1318,7 +1147,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                             ? 'Type a message to the engineer…'
                             : sessionMode === 'recorded'
                                 ? 'Ask about this recording.'
-                                : 'Ask about the live session.'
+                                : sessionMode === 'user_summary'
+                                    ? 'Ask about your summary.'
+                                    : 'Ask about the live session.'
                     }
                     value={inputValue}
                     onChange={handleInputChange}

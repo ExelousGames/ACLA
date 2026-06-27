@@ -28,6 +28,9 @@ import {
     normalizeSegmentClassificationResult,
 } from './recorded-session-analysis';
 
+export const buildAssistantConversationKey = (sessionMode: string, sessionId?: string | null): string =>
+    `${sessionMode}:${sessionId || 'none'}`;
+
 const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
     if (typeof numeric !== 'number' || Number.isNaN(numeric)) {
@@ -541,6 +544,7 @@ export const SessionAnalysisAssistant = () => {
     const assistantSessionId = analysisContext.sessionSelected?.SessionId;
     const assistantSessionMode = assistantSessionId ? 'recorded' : 'live';
     const assistantSessionLabel = analysisContext.sessionSelected?.session_name || 'Live Telemetry';
+    const assistantConversationKey = buildAssistantConversationKey(assistantSessionMode, assistantSessionId);
     const assistantClassName = `main-dashboard-assistant${isOpen ? ' main-dashboard-assistant--open' : ' main-dashboard-assistant--folded'}`;
 
     return (
@@ -559,6 +563,7 @@ export const SessionAnalysisAssistant = () => {
             </button>
             <div id="main-dashboard-assistant-body" className="main-dashboard-assistant__body" aria-hidden={!isOpen}>
                 <AiChat
+                    key={assistantConversationKey}
                     sessionId={assistantSessionId}
                     sessionMode={assistantSessionMode}
                     title={`AI Assistant - ${assistantSessionMode === 'recorded' ? 'Recorded' : 'Live'} - ${assistantSessionLabel}`}

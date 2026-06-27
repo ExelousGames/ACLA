@@ -3,7 +3,7 @@
  * rebuild). Opens a WebSocket to the backend's `/voice/stream` and runs
  * BOTH channels over the same connection:
  *
- * - **Binary frames** — raw PCM16 mic in / TTS audio out. Same protocol
+ * - **Binary frames** — raw PCM16 mic in / assistant audio out. Same protocol
  *   as before.
  * - **Text frames** — JSON tool-relay messages. The backend emits
  *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
@@ -101,10 +101,12 @@ export interface VoiceConversation {
      *  ~66ms window. 0 while not capturing. Updates ~15Hz. Use this to
      *  render a volume meter so the user can confirm the mic is hot. */
     micLevel: number;
+    micDisabled: boolean;
     /** Start the session — opens mic + WS. Throws if user denies mic. */
     start: () => Promise<void>;
     /** Stop the session — closes mic, WS, audio playback. Idempotent. */
     stop: () => void;
+    setMicDisabled: (disabled: boolean) => void;
     /** Send a typed chat message over the WS. Returns false if no WS is
      *  open. The backend treats it as a synthetic user turn and runs
      *  the LLM (same path as a spoken turn). */
@@ -120,6 +122,7 @@ export function useVoiceConversation(
     const [state, setState] = useState<VoiceConversationState>('idle');
     const [error, setError] = useState<string | null>(null);
     const [micLevel, setMicLevel] = useState<number>(0);
+    const [micDisabled, setMicDisabledState] = useState<boolean>(false);
 
     // Hold refs to all the resources we need to tear down on stop().
     const wsRef = useRef<WebSocket | null>(null);
@@ -130,6 +133,7 @@ export function useVoiceConversation(
     const playbackQueueTimeRef = useRef<number>(0);
     const playbackSerialRef = useRef<number>(0);
     const playbackIdleTimeoutRef = useRef<number | null>(null);
+    const micDisabledRef = useRef(false);
 
     /**
      * Open the backend voice WS through apiService — same baseURL + JWT
@@ -137,10 +141,14 @@ export function useVoiceConversation(
      * the JWT claim and isn't sent from here.
      */
     const openWs = useCallback((): WebSocket => {
+        const sessionMode = typeof options.sessionContext?.session_mode === 'string'
+            ? options.sessionContext.session_mode
+            : undefined;
         return apiService.openWebSocket('/voice/stream', {
             session_id: options.sessionId,
+            session_mode: sessionMode,
         });
-    }, [options.sessionId]);
+    }, [options.sessionContext, options.sessionId]);
 
     // Always-fresh handler registry — updated as options.toolHandlers changes
     // without forcing the WS to reopen.
@@ -158,6 +166,35 @@ export function useVoiceConversation(
     useEffect(() => {
         onEventRef.current = options.onEvent;
     }, [options.onEvent]);
+
+    const sessionContextRef = useRef<AiSessionContext | null>(
+        options.sessionContext ?? null,
+    );
+    useEffect(() => {
+        sessionContextRef.current = options.sessionContext ?? null;
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        try {
+            ws.send(JSON.stringify({
+                type: 'session_context',
+                session_context: sessionContextRef.current,
+            }));
+        } catch (err) {
+            console.warn('[voice] session_context update failed:', err);
+        }
+    }, [options.sessionContext]);
+
+    const setMicDisabled = useCallback((disabled: boolean) => {
+        micDisabledRef.current = disabled;
+        setMicDisabledState(disabled);
+        setMicLevel(0);
+        try {
+            micStreamRef.current?.getAudioTracks().forEach((track) => {
+                track.enabled = !disabled;
+            });
+        } catch { /* ignore */ }
+    }, []);
 
     const stop = useCallback(() => {
         // Tear down in reverse order of construction. All steps are idempotent.
@@ -213,6 +250,9 @@ export function useVoiceConversation(
                 },
                 video: false,
             });
+            micStream.getAudioTracks().forEach((track) => {
+                track.enabled = !micDisabledRef.current;
+            });
             micStreamRef.current = micStream;
 
             // --- 2. Set up capture AudioContext + worklet ---
@@ -259,6 +299,10 @@ export function useVoiceConversation(
             workletNode.port.onmessage = (event) => {
                 const data = event.data;
                 if (data && data.type === 'level') {
+                    if (micDisabledRef.current) {
+                        setMicLevel(0);
+                        return;
+                    }
                     // Prefer peak — it's what the user perceives as "am I
                     // talking right now". RMS is averaged and looks sleepy.
                     const lvl = typeof data.peak === 'number' ? data.peak : 0;
@@ -266,6 +310,7 @@ export function useVoiceConversation(
                     return;
                 }
                 if (!data || data.type !== 'pcm' || !data.buffer) return;
+                if (micDisabledRef.current) return;
                 if (ws.readyState !== WebSocket.OPEN) return;
                 try {
                     ws.send(data.buffer as ArrayBuffer);
@@ -288,7 +333,7 @@ export function useVoiceConversation(
                 try {
                     ws.send(JSON.stringify({
                         type: 'frontend_info',
-                        session_context: options.sessionContext ?? null,
+                        session_context: sessionContextRef.current,
                         tools: options.frontendTools || [],
                         query_scope_schema: options.querySchemaScope ?? null,
                     }));
@@ -436,7 +481,6 @@ export function useVoiceConversation(
         stop,
         options.frontendTools,
         options.querySchemaScope,
-        options.sessionContext,
     ]);
 
     /**
@@ -493,7 +537,11 @@ export function useVoiceConversation(
         const trimmed = text.trim();
         if (!trimmed) return false;
         try {
-            ws.send(JSON.stringify({ type: 'user_text', text: trimmed }));
+            ws.send(JSON.stringify({
+                type: 'user_text',
+                text: trimmed,
+                session_context: sessionContextRef.current,
+            }));
             return true;
         } catch (err) {
             console.warn('[voice] sendUserText failed:', err);
@@ -518,5 +566,15 @@ export function useVoiceConversation(
         return () => stop();
     }, [stop]);
 
-    return { state, error, micLevel, start, stop, sendUserText, sendObservation };
+    return {
+        state,
+        error,
+        micLevel,
+        micDisabled,
+        start,
+        stop,
+        setMicDisabled,
+        sendUserText,
+        sendObservation,
+    };
 }

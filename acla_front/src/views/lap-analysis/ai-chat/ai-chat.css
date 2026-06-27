@@ -119,6 +119,11 @@
   border-color: var(--lp-green);
   background: var(--lp-green-dim);
 }
+.ai-chat__chip-btn--red[aria-pressed='true'] {
+  color: var(--lp-red);
+  border-color: var(--lp-red);
+  background: var(--lp-red-dim);
+}
 
 /* ── Stage: mic panel + transcript ───────────────── */
 .ai-chat__stage {
@@ -232,6 +237,15 @@
 .ai-chat__mic-core--error svg path,
 .ai-chat__mic-core--error svg rect,
 .ai-chat__mic-core--error svg line {
+  stroke: var(--lp-red) !important;
+}
+.ai-chat__mic-core--muted {
+  border-color: var(--lp-red);
+  box-shadow: 0 0 26px rgba(255, 23, 68, 0.26), inset 0 0 20px rgba(255, 23, 68, 0.08);
+}
+.ai-chat__mic-core--muted svg path,
+.ai-chat__mic-core--muted svg rect,
+.ai-chat__mic-core--muted svg line {
   stroke: var(--lp-red) !important;
 }
 
