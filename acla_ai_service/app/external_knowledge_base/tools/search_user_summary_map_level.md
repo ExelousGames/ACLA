@@ -19,6 +19,11 @@ parameters:
 
 This searches summary aggregates only, not raw telemetry.
 
+In recorded-session mode, do not use this as the first source for a generic
+"find my mistakes" or "what did I do wrong" request. Those refer to the
+selected recording unless the driver asks for history, trends, percentages,
+all sessions, or comparison against prior sessions.
+
 Use this to recover the right map/section from phrases like "Surtees",
 "Clark Curve", "that mistake", or "check it now" when the recent conversation
 was about user-summary mistakes. Do not use analyze_telemetry unless the

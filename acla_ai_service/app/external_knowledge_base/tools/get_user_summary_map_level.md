@@ -19,6 +19,11 @@ parameters:
 Do not use this to infer raw driving telemetry. It summarizes historical user
 analysis already loaded by the frontend.
 
+In recorded-session mode, do not use this as the first source for a generic
+"find my mistakes" or "what did I do wrong" request. Those refer to the
+selected recording unless the driver asks for history, trends, percentages,
+all sessions, or comparison against prior sessions.
+
 Use this, not analyze_telemetry, for follow-ups about a mistake percentage,
 weak section, strong section, Surtees/Clark Curve-style section finding, or a
 previously mentioned user-summary issue. If map_id is known from the prior

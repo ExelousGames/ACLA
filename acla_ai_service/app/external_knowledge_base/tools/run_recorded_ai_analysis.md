@@ -20,6 +20,11 @@ Use this only in recorded-session mode. If the analysis is already ready and
 the driver only asks a follow-up, prefer get_recorded_session_analysis or
 get_recorded_session_context.
 
+In recorded-session mode, generic requests like "find my mistakes", "what did
+I do wrong", or "what should I improve" are requests about the selected
+recording unless the driver explicitly asks for historical trends or comparison
+against prior sessions.
+
 Do not use live-only telemetry tools for recorded session analysis. If the
 result has no segments, say that the AI analysis found no classified segments
 and ask what part of the recording the driver wants to inspect next.

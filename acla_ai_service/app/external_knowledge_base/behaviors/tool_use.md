@@ -15,6 +15,12 @@ Tool use:
   sections, map/track summaries, or a previously mentioned summary finding,
   use the user-summary tools. Do not switch to live telemetry just because the
   driver says "now" in a follow-up like "can you check now?".
+- In recorded-session mode, vague requests like "find my mistakes", "what did
+  I do wrong", or "what should I improve" refer to the selected recorded
+  session, not the aggregate user summary. Use recorded-session tools for that
+  selected recording. Use user-summary tools in recorded-session mode when the
+  driver explicitly asks about recent history, trends, percentages, all
+  sessions, or comparing the selected recording against prior sessions.
 - Resolve follow-ups against the recent conversation. If your previous answer
   named a summary section or mistake, the next vague request to "check",
   "look into it", or "why" refers to that summary finding unless the driver

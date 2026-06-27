@@ -9,7 +9,7 @@ import { detectEnvironment } from 'utils/environment';
 import apiService from 'services/api.service';
 import {
     createAiCommandRegistry,
-    frontendToolSchemas,
+    getFrontendToolSchemasForSessionMode,
     QUERY_SCOPE_SCHEMA,
 } from './ai-command-registry';
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
@@ -124,12 +124,12 @@ const countSummaryTracks = (summary: Record<string, any>): number => {
 
 const getContextDescription = (sessionMode: AiChatSessionMode): string => {
     if (sessionMode === 'recorded') {
-        return 'Selected recorded session. Prefer recorded-session tools and saved playback/analysis metadata. Do not use live telemetry tools.';
+        return 'Selected recorded session with saved playback, AI analysis, and session metadata.';
     }
     if (sessionMode === 'user_summary') {
-        return 'User summary view. Prefer user-summary tools and aggregate practice history. Do not use live telemetry tools.';
+        return 'User summary view with aggregate practice history.';
     }
-    return 'Live session. Prefer streaming telemetry, event log, and live coaching tools.';
+    return 'Live session with streaming telemetry, event log, and live coaching context.';
 };
 
 const findTriggeredCorners = (
@@ -464,11 +464,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         userSummaryLoading,
     ]);
 
+    const frontendTools = useMemo(
+        () => getFrontendToolSchemasForSessionMode(sessionMode),
+        [sessionMode],
+    );
+
     const voiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
         sessionContext: aiSessionContext,
         onEvent: handleVoiceEvent,
-        frontendTools: frontendToolSchemas,
+        frontendTools,
         querySchemaScope: QUERY_SCOPE_SCHEMA,
         toolHandlers: createAiCommandRegistry({
             sessionId: resolvedSessionId,

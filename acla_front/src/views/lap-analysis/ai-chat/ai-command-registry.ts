@@ -682,6 +682,44 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
 ];
 
+const COMMON_TOOL_NAMES = [
+    'show_map',
+] as const;
+
+const LIVE_TOOL_NAMES = [
+    'start_per_turn_coaching',
+    'stop_per_turn_coaching',
+    'start_overtake_agent',
+    'stop_overtake_agent',
+    'get_next_corner',
+    'query_telemetry_metric',
+    'get_event_log',
+] as const;
+
+const USER_SUMMARY_TOOL_NAMES = [
+    'get_user_summary_map_level',
+    'get_available_user_summary_maps',
+    'search_user_summary_map_level',
+] as const;
+
+const RECORDED_TOOL_NAMES = [
+    'run_recorded_ai_analysis',
+    'get_recorded_session_analysis',
+    'get_recorded_session_context',
+] as const;
+
+export const getFrontendToolSchemasForSessionMode = (
+    sessionMode: AiCommandRegistryContext['sessionMode'] = 'live',
+): FrontendToolSchema[] => {
+    const allowedNames: Set<string> = sessionMode === 'recorded'
+        ? new Set<string>([...COMMON_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES, ...RECORDED_TOOL_NAMES])
+        : sessionMode === 'user_summary'
+            ? new Set<string>([...COMMON_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES])
+            : new Set<string>([...COMMON_TOOL_NAMES, ...LIVE_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES]);
+
+    return frontendToolSchemas.filter((tool) => allowedNames.has(tool.name));
+};
+
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
     args.session_id ||
     context.sessionId ||

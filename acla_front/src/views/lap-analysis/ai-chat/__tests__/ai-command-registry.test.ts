@@ -15,7 +15,11 @@ jest.mock('services/api.service', () => ({
     },
 }));
 
-import { createAiCommandRegistry, frontendToolSchemas } from '../ai-command-registry';
+import {
+    createAiCommandRegistry,
+    frontendToolSchemas,
+    getFrontendToolSchemasForSessionMode,
+} from '../ai-command-registry';
 import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-analysis';
 
 const labelNames: Record<string, string> = {
@@ -390,6 +394,24 @@ describe('ai command registry recorded session tools', () => {
         expect(frontendToolSchemas.some((tool) => tool.name === 'get_recorded_session_context')).toBe(true);
     });
 
+    it('advertises recorded-session and user-summary tools in recorded mode', () => {
+        const toolNames = getFrontendToolSchemasForSessionMode('recorded').map((tool) => tool.name);
+
+        expect(toolNames).toEqual(expect.arrayContaining([
+            'show_map',
+            'run_recorded_ai_analysis',
+            'get_recorded_session_analysis',
+            'get_recorded_session_context',
+            'get_user_summary_map_level',
+            'get_available_user_summary_maps',
+            'search_user_summary_map_level',
+        ]));
+        expect(toolNames).not.toEqual(expect.arrayContaining([
+            'query_telemetry_metric',
+            'get_event_log',
+        ]));
+    });
+
     it('runs recorded AI analysis through the shared context action', async () => {
         const { analysisContext, registry } = createRecordedRegistry();
 
@@ -483,5 +505,42 @@ describe('ai command registry recorded session tools', () => {
         );
 
         expect(result).toEqual({ error: 'recorded_session_live_tools_unavailable' });
+    });
+
+    it('keeps user-summary map tools available in recorded mode for comparison context', async () => {
+        const { registry } = createRecordedRegistry({
+            registryContext: {
+                userSummary: {
+                    sessionAnalysis: {
+                        practice: {
+                            tracks: {
+                                brands_hatch: {
+                                    trackName: 'Brands Hatch GP',
+                                    analyzedSessionCount: 3,
+                                    sections: {},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        });
+
+        const result = await registry.get_user_summary_map_level(
+            { map_id: 'brands_hatch' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toMatchObject({
+            status: 'ready',
+            map_count: 1,
+            maps: [
+                {
+                    id: 'brands_hatch',
+                    name: 'Brands Hatch GP',
+                    analyzed_session_count: 3,
+                },
+            ],
+        });
     });
 });
