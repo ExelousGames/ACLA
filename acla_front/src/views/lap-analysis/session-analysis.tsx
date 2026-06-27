@@ -475,14 +475,14 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     useEffect(() => {
 
         //if current selected tab is Map tab
-        if (activeTab == "mapLists") {
+        if (activeTab === "mapLists") {
             setMap(null);
             setSession(null);
             return;
         }
 
         //if current tab is session list
-        if (activeTab == "sessionLists") {
+        if (activeTab === "sessionLists") {
             setSession(null);
         }
     }, [activeTab]);
@@ -538,14 +538,31 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     )
 };
 
-export const SessionAnalysisAssistant = () => {
+type SessionAnalysisAssistantMode = 'live' | 'recorded' | 'user_summary';
+
+type SessionAnalysisAssistantProps = {
+    assistantModeOverride?: SessionAnalysisAssistantMode;
+};
+
+export const SessionAnalysisAssistant = ({ assistantModeOverride }: SessionAnalysisAssistantProps = {}) => {
     const analysisContext = useContext(AnalysisContext);
     const [isOpen, setIsOpen] = useState(false);
     const assistantSessionId = analysisContext.sessionSelected?.SessionId;
-    const assistantSessionMode = assistantSessionId ? 'recorded' : 'live';
-    const assistantSessionLabel = analysisContext.sessionSelected?.session_name || 'Live Telemetry';
-    const assistantConversationKey = buildAssistantConversationKey(assistantSessionMode, assistantSessionId);
+    const assistantSessionMode: SessionAnalysisAssistantMode = assistantModeOverride
+        || (assistantSessionId ? 'recorded' : 'live');
+    const assistantSessionLabel = assistantSessionMode === 'user_summary'
+        ? 'User Summary'
+        : analysisContext.sessionSelected?.session_name || 'Live Telemetry';
+    const effectiveAssistantSessionId = assistantSessionMode === 'user_summary'
+        ? undefined
+        : assistantSessionId;
+    const assistantConversationKey = buildAssistantConversationKey(assistantSessionMode, effectiveAssistantSessionId);
     const assistantClassName = `main-dashboard-assistant${isOpen ? ' main-dashboard-assistant--open' : ' main-dashboard-assistant--folded'}`;
+    const assistantTitleMode = assistantSessionMode === 'user_summary'
+        ? 'User Summary'
+        : assistantSessionMode === 'recorded'
+            ? 'Recorded'
+            : 'Live';
 
     return (
         <aside className={assistantClassName} aria-label="AI Assistant">
@@ -564,9 +581,11 @@ export const SessionAnalysisAssistant = () => {
             <div id="main-dashboard-assistant-body" className="main-dashboard-assistant__body" aria-hidden={!isOpen}>
                 <AiChat
                     key={assistantConversationKey}
-                    sessionId={assistantSessionId}
+                    sessionId={effectiveAssistantSessionId}
                     sessionMode={assistantSessionMode}
-                    title={`AI Assistant - ${assistantSessionMode === 'recorded' ? 'Recorded' : 'Live'} - ${assistantSessionLabel}`}
+                    title={assistantSessionMode === 'user_summary'
+                        ? 'AI Assistant - User Summary'
+                        : `AI Assistant - ${assistantTitleMode} - ${assistantSessionLabel}`}
                 />
             </div>
         </aside>

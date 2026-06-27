@@ -1,14 +1,24 @@
 import * as React from "react";
 import { ScrollArea, Tabs } from "radix-ui";
 import "./side-main-menu.css";
-import { Box, Text, Flex, Container, Button } from "@radix-ui/themes";
+import { Box, Text, Button } from "@radix-ui/themes";
 import SessionAnalysis from "views/lap-analysis/session-analysis";
 import ProtectedComponent from "components/ProtectedComponent";
 import UserSummary from "views/user-summary/user-summary";
 import CircuitMaps from "views/circuit-maps/circuit-maps";
 
-const SideMainMenu = () => (
-    <Tabs.Root className="TabsRoot" defaultValue="analysis">
+type SideMainMenuProps = {
+    activeTab?: string;
+    onTabChange?: (value: string) => void;
+};
+
+const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
+    const tabsRootProps = activeTab !== undefined
+        ? { value: activeTab, onValueChange: onTabChange }
+        : { defaultValue: "analysis" };
+
+    return (
+        <Tabs.Root className="TabsRoot" {...tabsRootProps}>
 
         <ScrollArea.Root className="ScrollAreaRoot">
 
@@ -66,10 +76,10 @@ const SideMainMenu = () => (
             </Tabs.Content>
         </Box >
 
-    </Tabs.Root>
+        </Tabs.Root>
+    );
+};
 
 
-
-);
 
 export default SideMainMenu;
