@@ -30,6 +30,10 @@ import {
     resolveSegmentChildLabelTexts,
     SegmentClassificationSegment
 } from './segmentClassificationDisplay';
+import {
+    RecordedActiveSegmentSummary,
+    SegmentClassificationResult,
+} from 'views/lap-analysis/recorded-session-analysis';
 import './MapVisualization.css';
 
 type LoadState = {
@@ -37,22 +41,9 @@ type LoadState = {
     message?: string;
 };
 
-type SegmentClassificationResult = {
-    status: string;
-    session_id: string;
-    samples_analyzed: number;
-    segment_count: number;
-    segments: SegmentClassificationSegment[];
-};
-
 type SegmentOverlayRun = {
     color: string;
     points: Vec3[];
-};
-
-type ActiveSegmentSummary = {
-    parentLabel: string;
-    childLabels: string[];
 };
 
 type ProjectedPoint = Vec3 & {
@@ -165,12 +156,12 @@ const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout) =>
 
 const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height = '100%' }) => {
     const analysisContext = useContext(AnalysisContext);
+    const { runRecordedAiAnalysis, setRecordedPlaybackSummary } = analysisContext;
     const { getLabelName } = useAiLabels();
     const { getCircuitMapByTrack } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const wrapperRef = useRef<HTMLDivElement | null>(null);
     const recordedCacheRef = useRef<Map<string, TelemetryFrame[]>>(new Map());
-    const segmentClassificationCacheRef = useRef<Map<string, SegmentClassificationResult>>(new Map());
     const currentPlaybackTimeRef = useRef(0);
     const playbackRef = useRef<{ animationId: number | null; lastTick: number | null; elapsed: number }>({
         animationId: null,
@@ -188,8 +179,6 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     const [cameraMode, setCameraMode] = useState<CameraMode>('driver');
     const [zoom, setZoom] = useState(DRIVER_FOCUS_ZOOM);
     const [axisFlip, setAxisFlip] = useState<AxisFlipState>({ x: false, y: false, z: false });
-    const [segmentClassification, setSegmentClassification] = useState<SegmentClassificationResult | null>(null);
-    const [segmentLoadState, setSegmentLoadState] = useState<LoadState>({ status: 'idle' });
     const [circuitMap, setCircuitMap] = useState<CircuitMapDto | null>(null);
 
     const selectedSessionId = analysisContext.sessionSelected?.SessionId || '';
@@ -214,6 +203,40 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     ), [analysisContext.sessionSelected?.points, circuitMap]);
     const frames = isRecordedMode ? recordedFrames : liveFrames;
     const currentFrame = isRecordedMode ? recordedFrames[playbackIndex] : liveFrames[liveFrames.length - 1];
+    const recordedAiAnalysis = analysisContext.recordedAiAnalysis;
+    const isCurrentRecordedAnalysis = isRecordedMode
+        && Boolean(selectedSessionId)
+        && recordedAiAnalysis.sessionId === selectedSessionId;
+    const segmentClassification: SegmentClassificationResult | null = isCurrentRecordedAnalysis
+        ? recordedAiAnalysis.result
+        : null;
+    const segmentLoadState = useMemo<LoadState>(() => {
+        if (!isRecordedMode || !selectedSessionId) {
+            return { status: 'idle' };
+        }
+        if (!isCurrentRecordedAnalysis) {
+            return { status: 'idle' };
+        }
+        if (recordedAiAnalysis.status === 'loading') {
+            return { status: 'loading', message: recordedAiAnalysis.message || 'Running AI segment analysis...' };
+        }
+        if (recordedAiAnalysis.status === 'ready') {
+            return { status: 'ready', message: recordedAiAnalysis.message };
+        }
+        if (recordedAiAnalysis.status === 'empty') {
+            return { status: 'empty', message: recordedAiAnalysis.message || 'AI analysis found no classified segments.' };
+        }
+        if (recordedAiAnalysis.status === 'error') {
+            return { status: 'error', message: recordedAiAnalysis.message || 'Failed to run AI segment analysis.' };
+        }
+        return { status: 'idle' };
+    }, [
+        isCurrentRecordedAnalysis,
+        isRecordedMode,
+        recordedAiAnalysis.message,
+        recordedAiAnalysis.status,
+        selectedSessionId
+    ]);
     const renderStartIndex = isRecordedMode
         ? Math.max(0, playbackIndex - RECORDED_RENDER_FRAME_LIMIT + 1)
         : 0;
@@ -262,7 +285,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             })
             .filter((run) => run.points.length > 1);
     }, [isRecordedMode, segmentClassification, visibleFrames]);
-    const activeSegmentSummary = useMemo<ActiveSegmentSummary | null>(() => {
+    const activeSegmentSummary = useMemo<RecordedActiveSegmentSummary | null>(() => {
         if (!currentFrame || !segmentClassification?.segments?.length || currentFrame.sourceIndex === undefined) {
             return null;
         }
@@ -278,6 +301,9 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
         }
 
         return {
+            segmentId: activeSegment.id,
+            startIndex: activeSegment.start_index,
+            endIndex: activeSegment.end_index,
             parentLabel: getSegmentMainLabelText(activeSegment, getLabelName),
             childLabels: resolveActiveSubLabelTexts(activeSegment, currentFrame.sourceIndex, getLabelName)
         };
@@ -438,69 +464,34 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
         };
     }, [analysisContext.mapSelected, analysisContext.sessionSelected?.car, isRecordedMode, selectedSessionId]);
 
-    useEffect(() => {
-        if (!isRecordedMode || !selectedSessionId) {
-            setSegmentClassification(null);
-            setSegmentLoadState({ status: 'idle' });
-            return;
-        }
-
-        const cached = segmentClassificationCacheRef.current.get(selectedSessionId);
-        if (cached) {
-            setSegmentClassification(cached);
-            setSegmentLoadState(cached.segment_count > 0
-                ? { status: 'ready' }
-                : { status: 'empty', message: 'AI analysis found no classified segments.' });
-        } else {
-            setSegmentClassification(null);
-            setSegmentLoadState({ status: 'idle' });
-        }
-    }, [isRecordedMode, selectedSessionId]);
-
     const handleRunSegmentClassification = useCallback(async () => {
         if (!isRecordedMode || !selectedSessionId || segmentLoadState.status === 'loading') {
             return;
         }
 
-        const cached = segmentClassificationCacheRef.current.get(selectedSessionId);
-        if (cached) {
-            setSegmentClassification(cached);
-            setSegmentLoadState(cached.segment_count > 0
-                ? { status: 'ready' }
-                : { status: 'empty', message: 'AI analysis found no classified segments.' });
-            return;
-        }
+        await runRecordedAiAnalysis();
+    }, [isRecordedMode, runRecordedAiAnalysis, selectedSessionId, segmentLoadState.status]);
 
-        setSegmentLoadState({ status: 'loading', message: 'Running AI segment analysis...' });
-        setSegmentClassification(null);
-
-        try {
-            const response = await apiService.post<SegmentClassificationResult>('/racing-session/segment-classification', {
-                session_id: selectedSessionId
-            }, { timeout: RECORDED_TELEMETRY_TIMEOUT_MS });
-
-            const result = response.data;
-            const normalizedResult: SegmentClassificationResult = {
-                ...result,
-                segments: Array.isArray(result?.segments) ? result.segments : [],
-                segment_count: Number(result?.segment_count) || 0,
-                samples_analyzed: Number(result?.samples_analyzed) || 0,
-                session_id: result?.session_id || selectedSessionId,
-                status: result?.status || 'success'
-            };
-
-            segmentClassificationCacheRef.current.set(selectedSessionId, normalizedResult);
-            setSegmentClassification(normalizedResult);
-            setSegmentLoadState(normalizedResult.segment_count > 0
-                ? { status: 'ready' }
-                : { status: 'empty', message: 'AI analysis found no classified segments.' });
-        } catch (error: any) {
-            setSegmentLoadState({
-                status: 'error',
-                message: error?.data?.message || error?.message || 'Failed to run AI segment analysis.'
-            });
-        }
-    }, [isRecordedMode, selectedSessionId, segmentLoadState.status]);
+    useEffect(() => {
+        setRecordedPlaybackSummary({
+            sessionId: isRecordedMode ? selectedSessionId : null,
+            sampleCount: isRecordedMode ? recordedFrames.length : liveFrames.length,
+            durationSeconds: isRecordedMode ? duration : 0,
+            playbackIndex: isRecordedMode ? playbackIndex : Math.max(0, liveFrames.length - 1),
+            playbackTimeSeconds: isRecordedMode ? currentPlaybackTime : 0,
+            activeSegment: isRecordedMode ? activeSegmentSummary : null
+        });
+    }, [
+        activeSegmentSummary,
+        currentPlaybackTime,
+        duration,
+        isRecordedMode,
+        liveFrames.length,
+        playbackIndex,
+        recordedFrames.length,
+        selectedSessionId,
+        setRecordedPlaybackSummary
+    ]);
 
     useEffect(() => {
         const playbackState = playbackRef.current;

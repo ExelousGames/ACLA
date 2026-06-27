@@ -19,6 +19,14 @@ import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from './analysis-context';
 import { SessionIntelligence } from './session-intelligence/SessionIntelligence';
 import AiChat from './ai-chat/ai-chat';
+import apiService from 'services/api.service';
+import {
+    RecordedAiAnalysisState,
+    createEmptyRecordedPlaybackSummary,
+    createIdleRecordedAiAnalysis,
+    getRecordedAnalysisStateForResult,
+    normalizeSegmentClassificationResult,
+} from './recorded-session-analysis';
 
 const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -30,6 +38,7 @@ const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
 };
 
 const TELEMETRY_WRITE_TIMEOUT_MS = 6000;
+const RECORDED_AI_ANALYSIS_TIMEOUT_MS = 120000;
 
 type TelemetryWriterEvent = {
     status?: string;
@@ -58,7 +67,10 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     const [recordedTelemetryDataCount, setRecordedTelemetryDataCount] = useState<number>(0);
     const [activeVisualizations, setActiveVisualizations] = useState<VisualizationInstance[]>([]);
     const [latestGuidanceMessage, setLatestGuidanceMessage] = useState<string | null>(null);
+    const [recordedAiAnalysis, setRecordedAiAnalysis] = useState<RecordedAiAnalysisState>(createIdleRecordedAiAnalysis());
+    const [recordedPlaybackSummary, setRecordedPlaybackSummary] = useState(createEmptyRecordedPlaybackSummary());
     const sessionIntelligenceRef = useRef<SessionIntelligence>(new SessionIntelligence());
+    const recordedAiAnalysisCacheRef = useRef<Map<string, RecordedAiAnalysisState>>(new Map());
 
     const setLiveSessionData = useCallback((data: {}) => {
         const hasLiveData = Object.keys(data).length > 0;
@@ -202,6 +214,59 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
 
         await disposeTelemetryWriter({ force: false });
     }, [disposeTelemetryWriter]);
+
+    const runRecordedAiAnalysis = useCallback(async ({ force = false }: { force?: boolean } = {}): Promise<RecordedAiAnalysisState> => {
+        const sessionId = sessionSelected?.SessionId;
+        if (!sessionId) {
+            const nextState: RecordedAiAnalysisState = {
+                ...createIdleRecordedAiAnalysis(null),
+                status: 'error',
+                message: 'No recorded session is selected.',
+            };
+            setRecordedAiAnalysis(nextState);
+            return nextState;
+        }
+
+        const cached = recordedAiAnalysisCacheRef.current.get(sessionId);
+        if (cached && !force) {
+            setRecordedAiAnalysis(cached);
+            return cached;
+        }
+
+        const loadingState: RecordedAiAnalysisState = {
+            sessionId,
+            status: 'loading',
+            message: 'Running AI segment analysis...',
+            result: cached?.result ?? null,
+        };
+        setRecordedAiAnalysis(loadingState);
+
+        try {
+            const response = await apiService.post('/racing-session/segment-classification', {
+                session_id: sessionId,
+            }, { timeout: RECORDED_AI_ANALYSIS_TIMEOUT_MS });
+            const result = normalizeSegmentClassificationResult(response.data as any, sessionId);
+            const resultState = getRecordedAnalysisStateForResult(result);
+            const nextState: RecordedAiAnalysisState = {
+                sessionId,
+                result,
+                ...resultState,
+            };
+
+            recordedAiAnalysisCacheRef.current.set(sessionId, nextState);
+            setRecordedAiAnalysis(nextState);
+            return nextState;
+        } catch (error: any) {
+            const nextState: RecordedAiAnalysisState = {
+                sessionId,
+                status: 'error',
+                message: error?.data?.message || error?.message || 'Failed to run AI segment analysis.',
+                result: cached?.result ?? null,
+            };
+            setRecordedAiAnalysis(nextState);
+            return nextState;
+        }
+    }, [sessionSelected?.SessionId]);
 
     // File-based telemetry data functions
     const writeRecordedLiveSessionData = async (data: any): Promise<void> => {
@@ -425,6 +490,14 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
         };
     }, [disposeTelemetryWriter]);
 
+    useEffect(() => {
+        const sessionId = sessionSelected?.SessionId || null;
+        setRecordedPlaybackSummary(createEmptyRecordedPlaybackSummary(sessionId));
+        setRecordedAiAnalysis(sessionId
+            ? recordedAiAnalysisCacheRef.current.get(sessionId) || createIdleRecordedAiAnalysis(sessionId)
+            : createIdleRecordedAiAnalysis());
+    }, [sessionSelected?.SessionId]);
+
 
     return (
         <AnalysisContext.Provider value={{
@@ -438,11 +511,15 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             activeVisualizations,
             latestGuidanceMessage,
             sessionIntelligence: sessionIntelligenceRef.current,
+            recordedAiAnalysis,
+            recordedPlaybackSummary,
             setMap,
             setSession,
             setLiveSessionData,
             setRecordedSessionStaticsData,
             setRecordedSessionDataFilePath,
+            setRecordedPlaybackSummary,
+            runRecordedAiAnalysis,
             setActiveTab,
             writeRecordedLiveSessionData,
             readRecordedSessionData,

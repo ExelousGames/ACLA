@@ -8,7 +8,15 @@ jest.mock('views/lap-analysis/visualization/VisualizationRegistry', () => ({
     },
 }));
 
+jest.mock('services/api.service', () => ({
+    __esModule: true,
+    default: {
+        post: jest.fn(),
+    },
+}));
+
 import { createAiCommandRegistry, frontendToolSchemas } from '../ai-command-registry';
+import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-analysis';
 
 const labelNames: Record<string, string> = {
     brands_hatch: 'Brands Hatch',
@@ -293,5 +301,187 @@ describe('ai command registry user summary tools', () => {
             id: 'brands_hatch2',
             mistake_segments: expect.any(Array),
         }));
+    });
+});
+
+describe('ai command registry recorded session tools', () => {
+    const recordedAnalysisState: RecordedAiAnalysisState = {
+        sessionId: 'session-1',
+        status: 'ready',
+        result: {
+            status: 'success',
+            session_id: 'session-1',
+            samples_analyzed: 120,
+            segment_count: 1,
+            segments: [
+                {
+                    id: 'segment-1',
+                    start_index: 10,
+                    end_index: 40,
+                    main_label_id: 'brands_hatch1',
+                    labels: ['brands_hatch1', 'late_brake'],
+                    child_segments: [
+                        {
+                            start_index: 20,
+                            end_index: 28,
+                            labels: ['late_brake'],
+                        },
+                    ],
+                },
+            ],
+        },
+    };
+
+    const createRecordedRegistry = (overrides: Record<string, any> = {}) => {
+        const analysisContext = {
+            sessionSelected: {
+                SessionId: 'session-1',
+                session_name: 'Practice 1',
+                map: 'brands_hatch',
+                car: 'Ferrari 296',
+                user_id: 'user-1',
+                points: [],
+                data: [],
+            },
+            mapSelected: 'brands_hatch',
+            recordedAiAnalysis: recordedAnalysisState,
+            recordedPlaybackSummary: {
+                sessionId: 'session-1',
+                sampleCount: 120,
+                durationSeconds: 92.5,
+                playbackIndex: 24,
+                playbackTimeSeconds: 18.25,
+                activeSegment: {
+                    segmentId: 'segment-1',
+                    startIndex: 10,
+                    endIndex: 40,
+                    parentLabel: 'Paddock Hill Bend',
+                    childLabels: ['late_brake'],
+                },
+            },
+            runRecordedAiAnalysis: jest.fn(async () => recordedAnalysisState),
+            ...overrides.analysisContext,
+        };
+
+        return {
+            analysisContext,
+            registry: createAiCommandRegistry({
+                sessionMode: 'recorded',
+                analysisContext,
+                opportunityAgentState: {
+                    intervalId: null,
+                    inFlight: false,
+                    lastAlertKey: null,
+                    lastAlertAt: 0,
+                },
+                startTrackGuide: jest.fn(),
+                setTrackGuideEnabled: jest.fn(),
+                getOpportunityTelemetryRows: () => [],
+                getLabelName: (labelId) => labelNames[labelId] || labelId,
+                getCategoryLabels: (category) => categories[category] ?? [],
+                ...overrides.registryContext,
+            }),
+        };
+    };
+
+    it('exposes frontend schemas for recorded session analysis tools', () => {
+        expect(frontendToolSchemas.some((tool) => tool.name === 'run_recorded_ai_analysis')).toBe(true);
+        expect(frontendToolSchemas.some((tool) => tool.name === 'get_recorded_session_analysis')).toBe(true);
+        expect(frontendToolSchemas.some((tool) => tool.name === 'get_recorded_session_context')).toBe(true);
+    });
+
+    it('runs recorded AI analysis through the shared context action', async () => {
+        const { analysisContext, registry } = createRecordedRegistry();
+
+        const result = await registry.run_recorded_ai_analysis(
+            { force: true, limit: 5 },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: true });
+        expect(result).toMatchObject({
+            status: 'ready',
+            session_id: 'session-1',
+            analysis: {
+                segment_count: 1,
+                segments: [
+                    {
+                        id: 'segment-1',
+                        parent_label: 'Paddock Hill Bend',
+                    },
+                ],
+            },
+        });
+    });
+
+    it('returns cached shared recorded analysis without running analysis again', async () => {
+        const { analysisContext, registry } = createRecordedRegistry();
+
+        const result = await registry.get_recorded_session_analysis(
+            { limit: 1 },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+            status: 'ready',
+            analysis: {
+                returned_segment_count: 1,
+                samples_analyzed: 120,
+            },
+        });
+    });
+
+    it('returns selected recorded session playback context', async () => {
+        const { registry } = createRecordedRegistry();
+
+        const result = await registry.get_recorded_session_context(
+            {},
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toMatchObject({
+            status: 'ready',
+            selected_session: {
+                id: 'session-1',
+                name: 'Practice 1',
+            },
+            recorded_telemetry: {
+                sample_count: 120,
+                playback_time_seconds: 18.25,
+                active_segment: {
+                    parentLabel: 'Paddock Hill Bend',
+                },
+            },
+        });
+    });
+
+    it('returns a clear error when no recorded session is selected', async () => {
+        const { registry } = createRecordedRegistry({
+            analysisContext: {
+                sessionSelected: null,
+            },
+        });
+
+        const result = await registry.get_recorded_session_analysis(
+            {},
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toMatchObject({
+            status: 'error',
+            error: 'no_recorded_session',
+        });
+    });
+
+    it('keeps live-only telemetry tools unavailable in recorded mode', async () => {
+        const { registry } = createRecordedRegistry();
+
+        const result = await registry.query_telemetry_metric(
+            { fields: ['Physics_speed_kmh'], scope: { type: 'now' }, reduce: 'avg' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toEqual({ error: 'recorded_session_live_tools_unavailable' });
     });
 });

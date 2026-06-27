@@ -418,6 +418,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         const liveDataKeys = liveData ? Object.keys(liveData).length : 0;
         const summaryTrackCount = countSummaryTracks(userSummary || {});
         const summaryLoaded = !userSummaryLoading && !userSummaryError && summaryTrackCount > 0;
+        const recordedAiAnalysis = analysisContext?.recordedAiAnalysis;
+        const recordedAnalysisResult = recordedAiAnalysis?.result;
+        const recordedPlaybackSummary = analysisContext?.recordedPlaybackSummary;
 
         return {
             assistant_surface: 'lap_analysis_ai_chat',
@@ -439,7 +442,27 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 latest_sample_key_count: liveDataKeys,
                 live_status: analysisContext?.TelemetryDataLiveStatus ?? null,
                 recorded_file_loaded: Boolean(analysisContext?.recordedSessionDataFilePath),
-                recorded_sample_count: analysisContext?.recordedTelemetryDataCount ?? 0,
+                recorded_sample_count: recordedPlaybackSummary?.sampleCount
+                    ?? analysisContext?.recordedTelemetryDataCount
+                    ?? 0,
+            },
+            recorded_session: {
+                ai_analysis: {
+                    status: recordedAiAnalysis?.status || 'idle',
+                    message: recordedAiAnalysis?.message || null,
+                    session_id: recordedAiAnalysis?.sessionId || null,
+                    segment_count: recordedAnalysisResult?.segment_count ?? 0,
+                    samples_analyzed: recordedAnalysisResult?.samples_analyzed ?? 0,
+                    result_ready: Boolean(recordedAnalysisResult),
+                },
+                playback: {
+                    session_id: recordedPlaybackSummary?.sessionId || null,
+                    sample_count: recordedPlaybackSummary?.sampleCount ?? 0,
+                    duration_seconds: recordedPlaybackSummary?.durationSeconds ?? 0,
+                    playback_index: recordedPlaybackSummary?.playbackIndex ?? 0,
+                    playback_time_seconds: recordedPlaybackSummary?.playbackTimeSeconds ?? 0,
+                    active_segment: recordedPlaybackSummary?.activeSegment ?? null,
+                },
             },
             user_summary: {
                 loaded: summaryLoaded,
@@ -453,6 +476,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analysisContext?.activeTab,
         analysisContext?.liveData,
         analysisContext?.mapSelected,
+        analysisContext?.recordedAiAnalysis,
+        analysisContext?.recordedPlaybackSummary,
         analysisContext?.recordedSessionDataFilePath,
         analysisContext?.recordedTelemetryDataCount,
         analysisContext?.sessionIntelligence,

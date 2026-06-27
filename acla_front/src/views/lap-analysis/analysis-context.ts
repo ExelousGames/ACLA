@@ -3,6 +3,12 @@ import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-t
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
 import { SessionIntelligence } from './session-intelligence/SessionIntelligence';
+import {
+    RecordedAiAnalysisState,
+    RecordedPlaybackSummary,
+    createEmptyRecordedPlaybackSummary,
+    createIdleRecordedAiAnalysis,
+} from './recorded-session-analysis';
 
 export interface AnalysisContextType {
     activeTab: string;
@@ -16,11 +22,15 @@ export interface AnalysisContextType {
     activeVisualizations: VisualizationInstance[];
     latestGuidanceMessage: string | null;
     sessionIntelligence: SessionIntelligence | null;
+    recordedAiAnalysis: RecordedAiAnalysisState;
+    recordedPlaybackSummary: RecordedPlaybackSummary;
     setMap: (map: string | null) => void;
     setSession: Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>;
     setLiveSessionData: (data: {}) => void;
     setRecordedSessionStaticsData: (data: {}) => void;
     setRecordedSessionDataFilePath: (filePath: string | null) => void;
+    setRecordedPlaybackSummary: Dispatch<SetStateAction<RecordedPlaybackSummary>>;
+    runRecordedAiAnalysis: (options?: { force?: boolean }) => Promise<RecordedAiAnalysisState>;
     setActiveTab: Dispatch<SetStateAction<string>>;
     writeRecordedLiveSessionData: (data: any) => Promise<void>;
     readRecordedSessionData: (onProgress?: (read: number, total: number | null, bytesRead?: number, totalBytes?: number) => void) => Promise<any[]>;
@@ -42,6 +52,8 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     activeVisualizations: [],
     latestGuidanceMessage: null,
     sessionIntelligence: null,
+    recordedAiAnalysis: createIdleRecordedAiAnalysis(),
+    recordedPlaybackSummary: createEmptyRecordedPlaybackSummary(),
     setMap: () => {
         console.warn('No provider for AnalysisContext');
     },
@@ -56,6 +68,13 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     },
     setRecordedSessionDataFilePath: () => {
         console.warn('No provider for AnalysisContext');
+    },
+    setRecordedPlaybackSummary: ((value: RecordedPlaybackSummary) => {
+        console.warn('No provider for AnalysisContext');
+    }) as Dispatch<SetStateAction<RecordedPlaybackSummary>>,
+    runRecordedAiAnalysis: async () => {
+        console.warn('No provider for AnalysisContext');
+        return createIdleRecordedAiAnalysis();
     },
     setActiveTab: ((value: string) => {
         console.warn('No provider for AnalysisContext');

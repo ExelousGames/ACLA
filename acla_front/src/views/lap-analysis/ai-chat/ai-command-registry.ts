@@ -6,6 +6,15 @@ import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-ch
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import { AiMapDisplayPayload, AiMapSectionSelection } from './AiMapToolDisplay';
 import {
+    SegmentClassificationResult,
+    RecordedAiAnalysisState,
+} from 'views/lap-analysis/recorded-session-analysis';
+import {
+    getSegmentMainLabelText,
+    resolveSegmentChildLabelTexts,
+    SegmentClassificationSegment,
+} from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
+import {
     PracticeParentSegmentView,
     PracticeSectionSummaryView,
     asRecord,
@@ -119,6 +128,12 @@ const getSearchLimit = (value: unknown): number => {
     const parsed = Math.floor(Number(value));
     if (!Number.isFinite(parsed) || parsed <= 0) return 5;
     return Math.min(parsed, 10);
+};
+
+const getRecordedSegmentLimit = (value: unknown): number => {
+    const parsed = Math.floor(Number(value));
+    if (!Number.isFinite(parsed) || parsed <= 0) return 20;
+    return Math.min(parsed, 50);
 };
 
 const normalizeOptionalString = (value: unknown): string | undefined => (
@@ -293,6 +308,108 @@ const buildAvailableUserSummaryMaps = (mapLevel: UserSummaryMapLevelResult) => {
         response_text: mapOptions.length > 0
             ? `Available maps in your summary:\n${mapOptions.map((option) => `- ${option}`).join('\n')}\nWhich map should I inspect?`
             : 'I do not see any maps in your user summary yet.',
+    };
+};
+
+const getSelectedRecordedSession = (context: AiCommandRegistryContext): Record<string, any> | null => {
+    const selectedSession = context.analysisContext?.sessionSelected;
+    if (!selectedSession?.SessionId) return null;
+    return selectedSession;
+};
+
+const summarizeRecordedSegment = (
+    segment: SegmentClassificationSegment,
+    context: AiCommandRegistryContext,
+) => ({
+    id: segment.id ?? null,
+    start_index: segment.start_index,
+    end_index: segment.end_index,
+    parent_label: getSegmentMainLabelText(segment, context.getLabelName),
+    child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
+    label_ids: segment.labels ?? [],
+    child_segments: (segment.child_segments || segment.sub_segments || [])
+        .slice(0, 8)
+        .map((child) => ({
+            start_index: child.start_index,
+            end_index: child.end_index,
+            labels: child.labels,
+            label_names: child.labels.map((labelId) => context.getLabelName?.(labelId) || labelId),
+        })),
+});
+
+const buildRecordedAnalysisToolResult = (
+    state: RecordedAiAnalysisState | null | undefined,
+    context: AiCommandRegistryContext,
+    args: Record<string, any> = {},
+) => {
+    const selectedSession = getSelectedRecordedSession(context);
+    if (!selectedSession) {
+        return {
+            status: 'error',
+            error: 'no_recorded_session',
+            message: 'No recorded session is selected.',
+        };
+    }
+
+    const analysisState = state || context.analysisContext?.recordedAiAnalysis;
+    const result = analysisState?.result as SegmentClassificationResult | null | undefined;
+    const limit = getRecordedSegmentLimit(args.limit);
+    const segments = result && Array.isArray(result.segments) ? result.segments : [];
+
+    return {
+        status: analysisState?.status || 'idle',
+        message: analysisState?.message || null,
+        session_id: selectedSession.SessionId,
+        session_name: selectedSession.session_name || null,
+        map: selectedSession.map || context.analysisContext?.mapSelected || null,
+        car: selectedSession.car || null,
+        analysis: result
+            ? {
+                status: result.status,
+                session_id: result.session_id,
+                samples_analyzed: result.samples_analyzed,
+                segment_count: result.segment_count,
+                returned_segment_count: Math.min(segments.length, limit),
+                segments: segments.slice(0, limit).map((segment) => summarizeRecordedSegment(segment, context)),
+            }
+            : null,
+    };
+};
+
+const buildRecordedSessionContext = (
+    context: AiCommandRegistryContext,
+    args: Record<string, any> = {},
+) => {
+    const selectedSession = getSelectedRecordedSession(context);
+    if (!selectedSession) {
+        return {
+            status: 'error',
+            error: 'no_recorded_session',
+            message: 'No recorded session is selected.',
+        };
+    }
+
+    const playback = context.analysisContext?.recordedPlaybackSummary;
+    return {
+        status: 'ready',
+        selected_session: {
+            id: selectedSession.SessionId,
+            name: selectedSession.session_name || null,
+            map: selectedSession.map || context.analysisContext?.mapSelected || null,
+            car: selectedSession.car || null,
+        },
+        recorded_telemetry: {
+            sample_count: playback?.sampleCount ?? context.analysisContext?.recordedTelemetryDataCount ?? 0,
+            duration_seconds: playback?.durationSeconds ?? 0,
+            playback_index: playback?.playbackIndex ?? 0,
+            playback_time_seconds: playback?.playbackTimeSeconds ?? 0,
+            active_segment: playback?.activeSegment ?? null,
+        },
+        ai_analysis: buildRecordedAnalysisToolResult(
+            context.analysisContext?.recordedAiAnalysis,
+            context,
+            args,
+        ),
     };
 };
 
@@ -514,6 +631,43 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         },
         required: [],
     },
+    {
+        name: 'run_recorded_ai_analysis',
+        description: 'Run or retrieve the AI segment analysis for the currently selected recorded session.',
+        properties: {
+            force: {
+                type: 'boolean',
+                description: 'When true, rerun analysis even if a cached result is available.',
+            },
+            limit: {
+                type: 'integer',
+                description: 'Maximum number of compact classified segments to return.',
+            },
+        },
+        required: [],
+    },
+    {
+        name: 'get_recorded_session_analysis',
+        description: 'Return the shared AI segment analysis for the currently selected recorded session.',
+        properties: {
+            limit: {
+                type: 'integer',
+                description: 'Maximum number of compact classified segments to return.',
+            },
+        },
+        required: [],
+    },
+    {
+        name: 'get_recorded_session_context',
+        description: 'Return compact selected recorded-session, playback, and AI-analysis context.',
+        properties: {
+            limit: {
+                type: 'integer',
+                description: 'Maximum number of compact classified segments to include.',
+            },
+        },
+        required: [],
+    },
 ];
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
@@ -527,6 +681,48 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
     async get_session_analysis(args) {
         return await apiService.post('/racing-session/detailed-info', { id: getSessionId(args, context) });
+    },
+
+    async run_recorded_ai_analysis(args) {
+        if (context.sessionMode !== 'recorded') {
+            return { status: 'error', error: 'not_recorded_mode' };
+        }
+        if (!getSelectedRecordedSession(context)) {
+            return {
+                status: 'error',
+                error: 'no_recorded_session',
+                message: 'No recorded session is selected.',
+            };
+        }
+        const runAnalysis = context.analysisContext?.runRecordedAiAnalysis;
+        if (typeof runAnalysis !== 'function') {
+            return {
+                status: 'error',
+                error: 'recorded_analysis_unavailable',
+                message: 'Recorded AI analysis is not available in this view.',
+            };
+        }
+
+        const state = await runAnalysis({ force: args.force === true });
+        return buildRecordedAnalysisToolResult(state, context, args);
+    },
+
+    async get_recorded_session_analysis(args) {
+        if (context.sessionMode !== 'recorded') {
+            return { status: 'error', error: 'not_recorded_mode' };
+        }
+        return buildRecordedAnalysisToolResult(
+            context.analysisContext?.recordedAiAnalysis,
+            context,
+            args,
+        );
+    },
+
+    async get_recorded_session_context(args) {
+        if (context.sessionMode !== 'recorded') {
+            return { status: 'error', error: 'not_recorded_mode' };
+        }
+        return buildRecordedSessionContext(context, args);
     },
 
     async get_performance_insights(args) {
