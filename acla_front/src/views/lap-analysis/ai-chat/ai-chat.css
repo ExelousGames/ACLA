@@ -527,6 +527,84 @@
   color: var(--lp-gray);
 }
 
+.ai-chat__plan {
+  border: 1px solid rgba(41, 182, 246, 0.45);
+  border-radius: var(--lp-radius-sm);
+  background: rgba(13, 24, 34, 0.68);
+  padding: 12px 14px;
+}
+.ai-chat__plan-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ai-chat__plan-kicker,
+.ai-chat__plan-focus {
+  font-family: var(--lp-mono);
+  font-size: 9px;
+  letter-spacing: 1.8px;
+  text-transform: uppercase;
+}
+.ai-chat__plan-kicker {
+  color: var(--lp-blue);
+}
+.ai-chat__plan-goal {
+  margin-top: 4px;
+  color: var(--lp-white);
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 700;
+}
+.ai-chat__plan-focus {
+  margin-top: 8px;
+  color: var(--lp-amber);
+}
+.ai-chat__plan-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-chat__plan-step {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  color: var(--lp-gray);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.ai-chat__plan-step-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--lp-border-strong);
+  background: rgba(232, 232, 240, 0.12);
+}
+.ai-chat__plan-step--active {
+  color: var(--lp-white);
+}
+.ai-chat__plan-step--active .ai-chat__plan-step-dot {
+  border-color: var(--lp-green);
+  background: var(--lp-green);
+  box-shadow: 0 0 10px var(--lp-green-glow);
+}
+.ai-chat__plan-step--done {
+  color: rgba(232, 232, 240, 0.58);
+}
+.ai-chat__plan-step--done .ai-chat__plan-step-dot {
+  border-color: var(--lp-blue);
+  background: var(--lp-blue);
+}
+.ai-chat__plan-next {
+  min-height: 30px;
+  flex-shrink: 0;
+}
+
 /* Map tool attachment */
 .ai-chat__map-card {
   margin-top: 10px;
@@ -762,6 +840,8 @@
   .ai-chat__stage { grid-template-columns: 1fr; }
   .ai-chat__mic-visual { width: 140px; height: 140px; }
   .ai-chat__mic-core { width: 80px; height: 80px; }
+  .ai-chat__plan-head { flex-direction: column; }
+  .ai-chat__plan-next { width: 100%; }
 }
 
 /* ── Emotion GIF settings panel ── */

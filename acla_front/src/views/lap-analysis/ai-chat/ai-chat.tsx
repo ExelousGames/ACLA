@@ -37,6 +37,14 @@ function extractEmotion(text: string): { emotion: Emotion | null; cleanText: str
 
 type MessageKind = 'chat' | 'tool' | 'progress';
 
+type LiveCoachingPlan = {
+    goal: string;
+    steps: string[];
+    currentStep: number;
+    focusName?: string;
+    sourceEvent?: string;
+};
+
 interface Message {
     id: string;
     content: string;
@@ -166,6 +174,39 @@ const extractCornerKnowledgeMessage = (raw: any): string | null => {
     return null;
 };
 
+const toNonEmptyString = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed || null;
+};
+
+const buildLiveCoachingPlan = (data: Record<string, unknown>): LiveCoachingPlan | null => {
+    const sourceEvent = toNonEmptyString(data.event);
+    if (sourceEvent !== 'recorded_analysis_plan_ready') return null;
+
+    const steps = Array.isArray(data.plan)
+        ? data.plan.map(toNonEmptyString).filter((step): step is string => Boolean(step))
+        : [];
+    if (steps.length === 0) return null;
+
+    const focus = data.focus && typeof data.focus === 'object'
+        ? data.focus as Record<string, any>
+        : null;
+    const focusName = toNonEmptyString(focus?.section?.name);
+    const requestedStep = Math.floor(Number(data.current_step ?? data.currentStep ?? 0));
+    const currentStep = Number.isFinite(requestedStep)
+        ? Math.max(0, Math.min(steps.length - 1, requestedStep))
+        : 0;
+
+    return {
+        goal: toNonEmptyString(data.goal) || 'Live coaching plan',
+        steps,
+        currentStep,
+        focusName: focusName || undefined,
+        sourceEvent,
+    };
+};
+
 const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title = "AI Assistant" }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
@@ -175,6 +216,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
+    const [liveCoachingPlan, setLiveCoachingPlanState] = useState<LiveCoachingPlan | null>(null);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
@@ -228,6 +270,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
     const trackGuideRunTokenRef = useRef(0);
     const activeAgentTagsRef = useRef<string[]>([]);
+    const liveCoachingPlanRef = useRef<LiveCoachingPlan | null>(null);
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -363,6 +406,33 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setLivePerformanceAnalystEnabled(enabled);
     }, []);
 
+    const setLiveCoachingPlan = useCallback((plan: LiveCoachingPlan | null) => {
+        liveCoachingPlanRef.current = plan;
+        setLiveCoachingPlanState(plan);
+    }, []);
+
+    const advanceLiveCoachingPlanStep = useCallback((reason?: string) => {
+        const current = liveCoachingPlanRef.current;
+        if (!current) {
+            return { status: 'unavailable', error: 'no_coaching_plan' };
+        }
+
+        const nextStep = Math.min(current.currentStep + 1, current.steps.length - 1);
+        const nextPlan = { ...current, currentStep: nextStep };
+        setLiveCoachingPlan(nextPlan);
+
+        return {
+            status: nextStep === current.currentStep ? 'complete' : 'advanced',
+            current_step: nextStep,
+            step: nextPlan.steps[nextStep],
+            reason,
+        };
+    }, [setLiveCoachingPlan]);
+
+    const clearLiveCoachingPlan = useCallback(() => {
+        setLiveCoachingPlan(null);
+    }, [setLiveCoachingPlan]);
+
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
     // the same WS — frontend tools listed below are reachable from the
@@ -399,6 +469,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             // 'storage' events fire in other same-origin BrowserWindows but not
             // in the window that writes — perfect one-way fanout.
             broadcastPillMessage(cleanText, { emotion });
+            return;
+        }
+        if (event.kind === 'observation') {
+            const plan = buildLiveCoachingPlan(event.data);
+            if (plan) {
+                setLiveCoachingPlan(plan);
+            }
             return;
         }
         if (event.kind === 'tool_event') {
@@ -484,6 +561,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             agent_modes: {
                 active: activeAgentModes,
             },
+            live_coaching_plan: liveCoachingPlan
+                ? {
+                    goal: liveCoachingPlan.goal,
+                    steps: liveCoachingPlan.steps,
+                    current_step: liveCoachingPlan.currentStep,
+                    current_step_text: liveCoachingPlan.steps[liveCoachingPlan.currentStep] || null,
+                    focus: liveCoachingPlan.focusName || null,
+                }
+                : null,
             live_session_type: liveSnapshot?.live_session_type ?? 'unknown',
             track: liveSnapshot?.track || liveData?.Static_track || null,
             car: liveSnapshot?.car || liveData?.Static_car_model || null,
@@ -552,6 +638,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analysisContext?.sessionIntelligence,
         analysisContext?.sessionSelected,
         livePerformanceAnalystEnabled,
+        liveCoachingPlan,
         resolvedSessionId,
         sessionMode,
         TrackGuideEnabled,
@@ -581,6 +668,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             startTrackGuide,
             setTrackGuideEnabled: setTrackGuideAgentEnabled,
             setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
+            advanceLiveCoachingPlanStep,
+            clearLiveCoachingPlan,
             setAgentTagActive: setAgentTag,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
             userSummary,
@@ -593,6 +682,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             displayMap: displayMapInChat,
         }),
     });
+
+    const requestNextCoachingStep = useCallback(() => {
+        const current = liveCoachingPlanRef.current;
+        const advanced = advanceLiveCoachingPlanStep('driver_requested_next_step');
+        if (!current || advanced.status === 'unavailable') return;
+
+        voiceConversation.sendObservation({
+            source: 'coaching_plan_ui',
+            event: 'coaching_plan_next_step_requested',
+            goal: current.goal,
+            plan: current.steps,
+            current_step: advanced.current_step ?? current.currentStep,
+            step: advanced.step ?? current.steps[current.currentStep],
+        });
+    }, [advanceLiveCoachingPlanStep, voiceConversation]);
 
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
@@ -625,10 +729,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analystAgent.lastObservationAt = 0;
         analystAgent.lastSpokenAt = 0;
         setLivePerformanceAnalystAgentEnabled(false);
+        clearLiveCoachingPlan();
         setAgentTag('Track Guide', false);
         setAgentTag('Overtake', false);
         setAgentTag('Live Analyst', false);
-    }, [sessionMode, setAgentTag, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled]);
+    }, [clearLiveCoachingPlan, sessionMode, setAgentTag, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled]);
 
     const toggleFloatingChat = useCallback(async () => {
         const api = (window as any).electronAPI;
@@ -1181,6 +1286,48 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         </span>
                         <span className="ai-chat__transcript-time">{clock}</span>
                     </div>
+
+                    {liveCoachingPlan && (
+                        <div className="ai-chat__plan" aria-label="Live coaching plan">
+                            <div className="ai-chat__plan-head">
+                                <div>
+                                    <span className="ai-chat__plan-kicker">COACHING PLAN</span>
+                                    <div className="ai-chat__plan-goal">{liveCoachingPlan.goal}</div>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="ai-chat__btn ai-chat__btn--blue ai-chat__plan-next"
+                                    onClick={requestNextCoachingStep}
+                                    disabled={liveCoachingPlan.currentStep >= liveCoachingPlan.steps.length - 1}
+                                    title="Ask the assistant to move the plan to the next step"
+                                >
+                                    NEXT STEP
+                                </button>
+                            </div>
+                            {liveCoachingPlan.focusName && (
+                                <div className="ai-chat__plan-focus">{liveCoachingPlan.focusName}</div>
+                            )}
+                            <ul className="ai-chat__plan-list">
+                                {liveCoachingPlan.steps.map((step, index) => {
+                                    const isActive = index === liveCoachingPlan.currentStep;
+                                    const isDone = index < liveCoachingPlan.currentStep;
+                                    return (
+                                        <li
+                                            key={`${index}-${step}`}
+                                            className={[
+                                                'ai-chat__plan-step',
+                                                isActive ? 'ai-chat__plan-step--active' : '',
+                                                isDone ? 'ai-chat__plan-step--done' : '',
+                                            ].filter(Boolean).join(' ')}
+                                        >
+                                            <span className="ai-chat__plan-step-dot" aria-hidden="true" />
+                                            <span className="ai-chat__plan-step-text">{step}</span>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        </div>
+                    )}
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef}>
                         {messages.map((message) => {

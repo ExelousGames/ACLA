@@ -16,6 +16,7 @@ jest.mock('services/api.service', () => ({
 }));
 
 import {
+    AiCommandRegistryContext,
     createAiCommandRegistry,
     frontendToolSchemas,
     getFrontendToolSchemasForSessionMode,
@@ -549,7 +550,7 @@ describe('ai command registry recorded session tools', () => {
 });
 
 describe('ai command registry live performance analyst tools', () => {
-    const createLiveAnalystRegistry = () => {
+    const createLiveAnalystRegistry = (overrides: Partial<AiCommandRegistryContext> = {}) => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.tick({
             Static_track: 'brands_hatch',
@@ -650,6 +651,7 @@ describe('ai command registry live performance analyst tools', () => {
                 getOpportunityTelemetryRows: () => [],
                 getLabelName: (labelId) => labelNames[labelId] || labelId,
                 getCategoryLabels: (category) => categories[category] ?? [],
+                ...overrides,
             }),
         };
     };
@@ -664,6 +666,7 @@ describe('ai command registry live performance analyst tools', () => {
             'get_live_session_snapshot',
             'get_live_focus_section',
             'get_live_section_history',
+            'advance_live_coaching_plan_step',
         ]));
         expect(liveToolNames).not.toEqual(expect.arrayContaining([
             '_get_live_section_telemetry',
@@ -672,7 +675,31 @@ describe('ai command registry live performance analyst tools', () => {
         expect(recordedToolNames).not.toEqual(expect.arrayContaining([
             'start_live_performance_analysis',
             'get_live_session_snapshot',
+            'advance_live_coaching_plan_step',
         ]));
+    });
+
+    it('lets the assistant advance the visible live coaching plan step', async () => {
+        const advanceLiveCoachingPlanStep = jest.fn(() => ({
+            status: 'advanced',
+            current_step: 1,
+            step: 'Compare the next pass.',
+        }));
+        const { registry } = createLiveAnalystRegistry({
+            advanceLiveCoachingPlanStep,
+        });
+
+        const result = await registry.advance_live_coaching_plan_step(
+            { reason: 'first step completed' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(advanceLiveCoachingPlanStep).toHaveBeenCalledWith('first step completed');
+        expect(result).toEqual({
+            status: 'advanced',
+            current_step: 1,
+            step: 'Compare the next pass.',
+        });
     });
 
     it('returns compact live session snapshot state', async () => {
@@ -792,6 +819,88 @@ describe('ai command registry live performance analyst tools', () => {
         }));
         expect(sendObservation.mock.calls[0][0]).not.toHaveProperty('internal_tool_hint');
         expect(sendObservation.mock.calls[0][0]).not.toHaveProperty('sections');
+
+        if (livePerformanceAnalystState.intervalId) {
+            clearInterval(livePerformanceAnalystState.intervalId);
+        }
+    });
+
+    it('asks the live classifier for a focus when no recorded analysis is available', async () => {
+        const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Static_car_model: 'Ferrari 296',
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.98,
+        });
+        sessionIntelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Static_car_model: 'Ferrari 296',
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.03,
+        });
+        sessionIntelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Static_car_model: 'Ferrari 296',
+            Graphics_completed_laps: 1,
+            Graphics_normalized_car_position: 0,
+        });
+
+        const livePerformanceAnalystState: any = {
+            intervalId: null,
+            inFlight: false,
+            enabled: false,
+            lastObservationKey: null,
+            lastObservationAt: 0,
+            lastSpokenAt: 0,
+        };
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState,
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            setLivePerformanceAnalystEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+        });
+        const sendObservation = jest.fn();
+
+        const result = await registry.start_live_performance_analysis(
+            {},
+            { sendObservation },
+        );
+
+        expect(result).toMatchObject({
+            status: 'started',
+            initial: {
+                analysis_status: {
+                    status: 'needs_live_section_classification',
+                    recorded_analysis_error: 'recorded_session_required',
+                },
+                snapshot: {
+                    baseline_ready: true,
+                },
+            },
+        });
+        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'live_baseline_ready_for_classification',
+            completed_lap: 0,
+            candidate_sections: expect.arrayContaining([
+                expect.objectContaining({
+                    name: 'T1 Paddock Hill Bend',
+                    lap: 0,
+                }),
+            ]),
+        }));
 
         if (livePerformanceAnalystState.intervalId) {
             clearInterval(livePerformanceAnalystState.intervalId);

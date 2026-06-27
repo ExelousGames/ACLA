@@ -1125,6 +1125,24 @@ def _format_observation_for_llm(data: dict) -> str:
                 "save classify_live_section for the next pass through this focus section."
             )
 
+        if event == "live_baseline_ready_for_classification":
+            completed_lap = data.get("completed_lap")
+            candidate_sections = data.get("candidate_sections") or []
+            if not isinstance(candidate_sections, list):
+                candidate_sections = []
+            section_text = "; ".join(
+                f"{section.get('id')}:{section.get('name')}"
+                for section in candidate_sections[:8]
+                if isinstance(section, dict)
+            )
+            return (
+                "live_performance_analyst baseline lap is ready and no recorded-session "
+                f"analysis is required. track={track}, completed_lap={completed_lap}, "
+                f"session_type={session_type}, candidate_sections=[{section_text}]. "
+                "Call classify_live_section with lap='last' for candidate sections until a "
+                "mistake/focus is recorded. Do not tell the driver they need a recorded session."
+            )
+
         if event in {
             "recorded_session_required",
             "recorded_analysis_unavailable",

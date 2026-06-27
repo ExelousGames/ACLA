@@ -56,6 +56,7 @@ export type AiSessionContext = Record<string, unknown>;
 export type VoiceEvent =
     | { kind: 'user_transcript'; text: string; source?: 'voice' | 'typed' }
     | { kind: 'assistant_transcript'; text: string; emotion?: string }
+    | { kind: 'observation'; data: Record<string, unknown> }
     | {
         kind: 'tool_event';
         name: string;
@@ -352,7 +353,10 @@ export function useVoiceConversation(
                 catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
             };
             const toolCtx: ToolHandlerContext = {
-                sendObservation: (data) => sendText({ type: 'observation', data }),
+                sendObservation: (data) => {
+                    onEventRef.current?.({ kind: 'observation', data });
+                    sendText({ type: 'observation', data });
+                },
             };
 
             const handleToolCall = async (msg: {

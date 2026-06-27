@@ -40,6 +40,13 @@ export interface AiCommandRegistryContext {
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
+    advanceLiveCoachingPlanStep?: (reason?: string) => {
+        status: string;
+        current_step?: number;
+        step?: string;
+        error?: string;
+    };
+    clearLiveCoachingPlan?: () => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     getOpportunityTelemetryRows: () => Record<string, any>[];
     userSummary?: Record<string, any>;
@@ -80,6 +87,15 @@ type LivePerformancePlan = {
     plan: string[];
     focus: ReturnType<typeof buildLiveFocusPayload>;
     analysis: ReturnType<typeof buildRecordedAnalysisToolResult>;
+};
+
+type LiveBaselineCandidateSection = {
+    id: string;
+    name: string;
+    from: number;
+    to: number;
+    guideFrom?: number;
+    lap: number;
 };
 
 // Frontend-implemented tool capabilities. This file owns executable browser
@@ -671,6 +687,24 @@ const runSharedAnalysisForLivePlan = async (
     return { status: 'ready', plan };
 };
 
+const buildLiveBaselineCandidateSections = (
+    context: AiCommandRegistryContext,
+): LiveBaselineCandidateSection[] => {
+    const si = context.sessionIntelligence;
+    if (!si) return [];
+
+    const snapshot = si.getLiveSessionSnapshot();
+    const completedLap = Math.max(0, snapshot.completed_laps - 1);
+    return si.getKnownTrackSections().map((section) => ({
+        id: section.id,
+        name: section.name,
+        from: section.from,
+        to: section.to,
+        guideFrom: section.guideFrom,
+        lap: completedLap,
+    }));
+};
+
 const searchUserSummaryMapLevel = (
     mapLevel: UserSummaryMapLevelResult,
     args: Record<string, any>,
@@ -789,7 +823,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
     {
         name: 'start_live_performance_analysis',
-        description: 'Start the live performance analyst agent. The agent waits for a completed lap, runs the shared recorded-session AI analysis, builds one focus goal/plan, and uses live section classification only for the focused follow-up pass.',
+        description: 'Start the live performance analyst agent. The agent waits for a completed baseline lap, uses recorded-session analysis when available, and otherwise asks the live classifier to build a focus from the completed lap.',
         properties: {
             interval_seconds: {
                 type: 'number',
@@ -823,6 +857,17 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
             limit: {
                 type: 'integer',
                 description: 'Maximum number of compact classifications to return.',
+            },
+        },
+        required: [],
+    },
+    {
+        name: 'advance_live_coaching_plan_step',
+        description: 'Move the visible live coaching plan UI to the next bullet after the current step is complete.',
+        properties: {
+            reason: {
+                type: 'string',
+                description: 'Short reason the assistant is moving to the next coaching step.',
             },
         },
         required: [],
@@ -982,6 +1027,7 @@ const LIVE_TOOL_NAMES = [
     'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
+    'advance_live_coaching_plan_step',
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
@@ -1364,7 +1410,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                         agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
                     } else if (!focus) {
                         const sessionId = getSelectedSessionId(context);
-                        const key = `recorded_analysis:${sessionId || 'none'}:${snapshot.completed_laps}`;
+                        const key = `baseline_focus:${sessionId || 'live'}:${snapshot.completed_laps}`;
                         if (agent.lastObservationKey !== key && now - agent.lastObservationAt > 12000) {
                             agent.lastObservationKey = key;
                             agent.lastObservationAt = now;
@@ -1386,12 +1432,20 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                                     analysis: readyPlan.analysis,
                                 });
                             } else {
+                                const candidateSections = buildLiveBaselineCandidateSections(context);
+                                analysisStatus = {
+                                    status: 'needs_live_section_classification',
+                                    recorded_analysis_error: analysisStatus.error,
+                                    candidate_sections: candidateSections,
+                                };
                                 ctx.sendObservation({
                                     source: 'live_performance_analyst',
                                     agent_mode: 'live_performance_analyst',
-                                    event: analysisStatus.error,
+                                    event: 'live_baseline_ready_for_classification',
                                     snapshot,
-                                    message: analysisStatus.message,
+                                    completed_lap: Math.max(0, snapshot.completed_laps - 1),
+                                    candidate_sections: candidateSections,
+                                    message: 'Baseline lap is ready. Classify live sections from the completed lap to build a focus plan.',
                                 });
                             }
                         }
@@ -1462,6 +1516,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         agent.analysisSessionId = null;
         context.sessionIntelligence?.clearFocusSection();
         context.setLivePerformanceAnalystEnabled?.(false);
+        context.clearLiveCoachingPlan?.();
         context.setAgentTagActive?.('Live Analyst', false);
         return { status: 'stopped', agent_mode: 'live_performance_analyst', enabled: false };
     },
@@ -1499,6 +1554,14 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             status: 'ready',
             agent_mode: 'live_performance_analyst',
             history: context.sessionIntelligence!.getSectionHistory(limit),
+        };
+    },
+
+    async advance_live_coaching_plan_step(args) {
+        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        return context.advanceLiveCoachingPlanStep?.(normalizeOptionalString(args.reason)) || {
+            status: 'unavailable',
+            error: 'no_coaching_plan_ui',
         };
     },
 
