@@ -15,6 +15,12 @@ import {
     SegmentClassificationSegment,
 } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import {
+    DEFAULT_ANALYST_COOLDOWN_MS,
+    DEFAULT_ANALYST_MIN_DISTANCE,
+    DEFAULT_ANALYST_MIN_LEAD_SECONDS,
+    hasEnoughCoachingLead,
+} from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+import {
     PracticeParentSegmentView,
     PracticeSectionSummaryView,
     asRecord,
@@ -29,8 +35,10 @@ export interface AiCommandRegistryContext {
     // Populated during live recording. Null in post-session analysis view.
     sessionIntelligence?: SessionIntelligence | null;
     opportunityAgentState: OpportunityAgentState;
+    livePerformanceAnalystState?: LivePerformanceAnalystState;
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
+    setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     getOpportunityTelemetryRows: () => Record<string, any>[];
     userSummary?: Record<string, any>;
@@ -51,6 +59,15 @@ export interface OpportunityAgentState {
     inFlight: boolean;
     lastAlertKey: string | null;
     lastAlertAt: number;
+}
+
+export interface LivePerformanceAnalystState {
+    intervalId: ReturnType<typeof setInterval> | null;
+    inFlight: boolean;
+    enabled: boolean;
+    lastObservationKey: string | null;
+    lastObservationAt: number;
+    lastSpokenAt: number;
 }
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
@@ -96,6 +113,9 @@ const DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS = 5;
 const OVERTAKE_AGENT_MIN_INTERVAL_SECONDS = 2;
 const OVERTAKE_AGENT_MAX_INTERVAL_SECONDS = 15;
 const OVERTAKE_AGENT_REPEAT_ALERT_MS = 20000;
+const DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS = 4;
+const LIVE_ANALYST_MIN_INTERVAL_SECONDS = 2;
+const LIVE_ANALYST_MAX_INTERVAL_SECONDS = 12;
 
 const toPositiveNumber = (value: unknown): number | undefined => {
     const parsed = Number(value);
@@ -134,6 +154,14 @@ const getRecordedSegmentLimit = (value: unknown): number => {
     const parsed = Math.floor(Number(value));
     if (!Number.isFinite(parsed) || parsed <= 0) return 20;
     return Math.min(parsed, 50);
+};
+
+const getLiveAnalystIntervalSeconds = (value: unknown): number => {
+    const parsed = toPositiveNumber(value) ?? DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS;
+    return Math.min(
+        LIVE_ANALYST_MAX_INTERVAL_SECONDS,
+        Math.max(LIVE_ANALYST_MIN_INTERVAL_SECONDS, parsed),
+    );
 };
 
 const getLiveToolsUnavailableError = (context: AiCommandRegistryContext) => (
@@ -542,6 +570,46 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         required: [],
     },
     {
+        name: 'start_live_performance_analysis',
+        description: 'Start the live performance analyst agent. The agent waits for a completed lap, then asks the AI service to classify and coach mistake-heavy track sections.',
+        properties: {
+            interval_seconds: {
+                type: 'number',
+                description: 'How often the frontend should check live section/coaching state.',
+            },
+        },
+        required: [],
+    },
+    {
+        name: 'stop_live_performance_analysis',
+        description: 'Stop the live performance analyst agent.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'get_live_session_snapshot',
+        description: 'Return compact live session state, including lap readiness and detected session type.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'get_live_focus_section',
+        description: 'Return the current live analyst focus section, timing, and map-display arguments when available.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'get_live_section_history',
+        description: 'Return compact live section classifications already recorded by the AI service.',
+        properties: {
+            limit: {
+                type: 'integer',
+                description: 'Maximum number of compact classifications to return.',
+            },
+        },
+        required: [],
+    },
+    {
         name: 'get_next_corner',
         properties: {},
         required: [],
@@ -691,6 +759,11 @@ const LIVE_TOOL_NAMES = [
     'stop_per_turn_coaching',
     'start_overtake_agent',
     'stop_overtake_agent',
+    'start_live_performance_analysis',
+    'stop_live_performance_analysis',
+    'get_live_session_snapshot',
+    'get_live_focus_section',
+    'get_live_section_history',
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
@@ -718,6 +791,54 @@ export const getFrontendToolSchemasForSessionMode = (
             : new Set<string>([...COMMON_TOOL_NAMES, ...LIVE_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES]);
 
     return frontendToolSchemas.filter((tool) => allowedNames.has(tool.name));
+};
+
+const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext) => (
+    !isLiveSessionContext(context)
+        ? { status: 'error', error: getLiveToolsUnavailableError(context) }
+        : !context.sessionIntelligence
+            ? { status: 'error', error: 'no_live_session' }
+            : null
+);
+
+const getLiveAnalystState = (context: AiCommandRegistryContext): LivePerformanceAnalystState => {
+    if (context.livePerformanceAnalystState) return context.livePerformanceAnalystState;
+    return {
+        intervalId: null,
+        inFlight: false,
+        enabled: false,
+        lastObservationKey: null,
+        lastObservationAt: 0,
+        lastSpokenAt: 0,
+    };
+};
+
+const buildLiveFocusPayload = (context: AiCommandRegistryContext) => {
+    const si = context.sessionIntelligence;
+    if (!si) return null;
+
+    const focus = si.getFocusSection();
+    if (!focus) return null;
+
+    const timing = si.getSectionTiming(focus.section);
+    return {
+        section: focus.section,
+        baseline: focus.baseline,
+        selected_at: focus.selectedAt,
+        reason: focus.reason,
+        score: focus.score,
+        timing,
+        show_map_arguments: {
+            source_track_key: si.getLiveSessionSnapshot().track,
+            section_start: focus.section.from,
+            section_end: focus.section.to,
+            section_label: focus.section.name,
+            title: 'Live analyst focus',
+            note: focus.reason === 'repeated_mistake'
+                ? 'Repeated mistake section'
+                : 'Highest priority mistake section',
+        },
+    };
 };
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
@@ -978,6 +1099,214 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         agent.lastAlertAt = 0;
         context.setAgentTagActive?.('Overtake', false);
         return { status: 'stopped', agent_mode: 'overtake' };
+    },
+
+    async start_live_performance_analysis(args, ctx) {
+        const unavailable = buildLiveAnalystUnavailable(context);
+        if (unavailable) return unavailable;
+
+        const si = context.sessionIntelligence!;
+        const agent = getLiveAnalystState(context);
+        if (agent.intervalId) {
+            agent.enabled = true;
+            context.setLivePerformanceAnalystEnabled?.(true);
+            context.setAgentTagActive?.('Live Analyst', true);
+            return {
+                status: 'already_running',
+                agent_mode: 'live_performance_analyst',
+                snapshot: si.getLiveSessionSnapshot(),
+                focus: buildLiveFocusPayload(context),
+            };
+        }
+
+        const intervalSeconds = getLiveAnalystIntervalSeconds(args.interval_seconds);
+        agent.enabled = true;
+        context.setLivePerformanceAnalystEnabled?.(true);
+        context.setAgentTagActive?.('Live Analyst', true);
+
+        const runAnalystCycle = async (notify: boolean): Promise<any> => {
+            if (agent.inFlight) {
+                return { status: 'skipped_in_flight' };
+            }
+
+            agent.inFlight = true;
+            try {
+                const snapshot = si.getLiveSessionSnapshot();
+                const sections = si.getKnownTrackSections();
+                const focus = buildLiveFocusPayload(context);
+
+                if (notify) {
+                    const now = Date.now();
+                    if (!snapshot.baseline_ready) {
+                        const key = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
+                        if (agent.lastObservationKey !== key && now - agent.lastObservationAt > 12000) {
+                            agent.lastObservationKey = key;
+                            agent.lastObservationAt = now;
+                            ctx.sendObservation({
+                                source: 'live_performance_analyst',
+                                agent_mode: 'live_performance_analyst',
+                                event: 'collecting_baseline',
+                                snapshot,
+                            });
+                        }
+                    } else if (!focus) {
+                        const key = `baseline_ready:${snapshot.completed_laps}:${sections.length}:${si.getSectionHistory(1)[0]?.observedAt ?? 'none'}`;
+                        if (agent.lastObservationKey !== key && now - agent.lastObservationAt > 12000) {
+                            agent.lastObservationKey = key;
+                            agent.lastObservationAt = now;
+                            ctx.sendObservation({
+                                source: 'live_performance_analyst',
+                                agent_mode: 'live_performance_analyst',
+                                event: 'baseline_ready_needs_classification',
+                                snapshot,
+                                last_completed_lap: Math.max(0, snapshot.completed_laps - 1),
+                                sections,
+                                internal_tool_hint: {
+                                    name: '_get_live_section_telemetry',
+                                    arguments: {
+                                        lap: 'last',
+                                        section_id: sections[0]?.id,
+                                    },
+                                },
+                            });
+                        }
+                    } else {
+                        const timing = focus.timing;
+                        const key = `focus:${focus.section.id}:${focus.baseline.lap}:${focus.baseline.observedAt}`;
+                        const canSpeak = hasEnoughCoachingLead(
+                            timing.distanceAhead,
+                            timing.secondsAhead,
+                            DEFAULT_ANALYST_MIN_DISTANCE,
+                            DEFAULT_ANALYST_MIN_LEAD_SECONDS,
+                        ) && now - agent.lastSpokenAt >= DEFAULT_ANALYST_COOLDOWN_MS;
+
+                        if (canSpeak && agent.lastObservationKey !== key) {
+                            agent.lastObservationKey = key;
+                            agent.lastObservationAt = now;
+                            agent.lastSpokenAt = now;
+                            ctx.sendObservation({
+                                source: 'live_performance_analyst',
+                                agent_mode: 'live_performance_analyst',
+                                event: 'coaching_window',
+                                snapshot,
+                                focus,
+                            });
+                        }
+                    }
+                }
+
+                return {
+                    status: 'checked',
+                    snapshot,
+                    section_count: sections.length,
+                    focus,
+                    history_count: si.getSectionHistory(80).length,
+                };
+            } finally {
+                agent.inFlight = false;
+            }
+        };
+
+        const initial = await runAnalystCycle(true);
+
+        agent.intervalId = setInterval(() => {
+            void runAnalystCycle(true);
+        }, intervalSeconds * 1000);
+
+        return {
+            status: 'started',
+            agent_mode: 'live_performance_analyst',
+            interval_seconds: intervalSeconds,
+            initial,
+        };
+    },
+
+    async stop_live_performance_analysis() {
+        const agent = getLiveAnalystState(context);
+        if (agent.intervalId) {
+            clearInterval(agent.intervalId);
+        }
+        agent.intervalId = null;
+        agent.inFlight = false;
+        agent.enabled = false;
+        agent.lastObservationKey = null;
+        agent.lastObservationAt = 0;
+        agent.lastSpokenAt = 0;
+        context.sessionIntelligence?.clearFocusSection();
+        context.setLivePerformanceAnalystEnabled?.(false);
+        context.setAgentTagActive?.('Live Analyst', false);
+        return { status: 'stopped', agent_mode: 'live_performance_analyst', enabled: false };
+    },
+
+    async get_live_session_snapshot() {
+        const unavailable = buildLiveAnalystUnavailable(context);
+        if (unavailable) return unavailable;
+
+        const agent = getLiveAnalystState(context);
+        return {
+            status: 'ready',
+            agent_mode: 'live_performance_analyst',
+            enabled: agent.enabled,
+            snapshot: context.sessionIntelligence!.getLiveSessionSnapshot(),
+        };
+    },
+
+    async get_live_focus_section() {
+        const unavailable = buildLiveAnalystUnavailable(context);
+        if (unavailable) return unavailable;
+
+        return {
+            status: 'ready',
+            agent_mode: 'live_performance_analyst',
+            focus: buildLiveFocusPayload(context),
+        };
+    },
+
+    async get_live_section_history(args) {
+        const unavailable = buildLiveAnalystUnavailable(context);
+        if (unavailable) return unavailable;
+
+        const limit = getRecordedSegmentLimit(args.limit);
+        return {
+            status: 'ready',
+            agent_mode: 'live_performance_analyst',
+            history: context.sessionIntelligence!.getSectionHistory(limit),
+        };
+    },
+
+    async _get_live_section_telemetry(args) {
+        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+        return si.getSectionTelemetryWindow({
+            section_id: args.section_id || args.sectionId,
+            section_name: args.section_name || args.sectionName,
+            lap: args.lap,
+        });
+    },
+
+    async _record_live_section_classification(args) {
+        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        const si = context.sessionIntelligence;
+        if (!si) return { error: 'no_live_session' };
+
+        const classification = si.recordSectionClassification(args);
+        if (!classification) {
+            return { status: 'error', error: 'section_not_found' };
+        }
+
+        const focus = buildLiveFocusPayload(context);
+        const comparison = focus?.section.id === classification.sectionId
+            ? si.compareFocusedSection(classification)
+            : null;
+
+        return {
+            status: 'recorded',
+            agent_mode: 'live_performance_analyst',
+            classification,
+            focus,
+            comparison,
+        };
     },
 
     // ── Expert line ───────────────────────────────────────────────────────────

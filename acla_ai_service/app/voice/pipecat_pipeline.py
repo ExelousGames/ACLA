@@ -115,6 +115,7 @@ class VoiceSessionConfig:
 # server-side fallback for server-implemented tools only.
 _SERVER_TOOL_TITLES: Dict[str, str] = {
     "analyze_telemetry": "Analyzing telemetry",
+    "classify_live_section": "Classifying live section",
     "explain_label": "Looking up the term",
     "get_track_knowledge": "Pulling track notes",
     "search_racing_knowledge": "Searching racing knowledge",
@@ -198,6 +199,16 @@ def _build_server_tool_schemas(query_scope_schema: Optional[Dict[str, Any]]):
             description=_tool_description("analyze_telemetry"),
             properties=_with_parameter_docs("analyze_telemetry", {"scope": query_scope_schema}),
             required=["scope"],
+        ),
+        FunctionSchema(
+            name="classify_live_section",
+            description=_tool_description("classify_live_section"),
+            properties=_with_parameter_docs("classify_live_section", {
+                "section_id": {"type": "string"},
+                "section_name": {"type": "string"},
+                "lap": {"type": "string"},
+            }),
+            required=[],
         ),
         FunctionSchema(
             name="explain_label",
@@ -918,7 +929,7 @@ async def build_voice_pipeline_task(
     session_context_prompt = _format_session_context_for_prompt(session_config.session_context)
     if session_context_prompt:
         system_prompt = f"{system_prompt.rstrip()}\n\n{session_context_prompt}"
-    for _behavior_name in ("tool_use", "emotion", "transcript_resilience"):
+    for _behavior_name in ("tool_use", "live_performance_analyst", "emotion", "transcript_resilience"):
         _skill = _skill_behavior(_behavior_name)
         _section = _skill.get("_raw_body", "") if _skill else ""
         if _section:
@@ -1076,6 +1087,67 @@ def _format_observation_for_llm(data: dict) -> str:
     if it decides the observation warrants it.
     """
     event = data.get("event", "event")
+
+    if data.get("source") == "live_performance_analyst" or data.get("agent_mode") == "live_performance_analyst":
+        snapshot = data.get("snapshot") or {}
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        session_type = snapshot.get("live_session_type") or snapshot.get("session_type") or "unknown"
+        completed_laps = snapshot.get("completed_laps")
+        current_lap = snapshot.get("current_lap")
+        track = snapshot.get("track") or "current track"
+
+        if event == "collecting_baseline":
+            return (
+                "live_performance_analyst collecting baseline: "
+                f"track={track}, current_lap={current_lap}, completed_laps={completed_laps}, "
+                f"session_type={session_type}. Do not critique yet. If you speak, only say you are "
+                "collecting one clean baseline lap."
+            )
+
+        if event == "baseline_ready_needs_classification":
+            sections = data.get("sections") or []
+            section_bits: List[str] = []
+            for section in sections[:8]:
+                if not isinstance(section, dict):
+                    continue
+                section_bits.append(
+                    f"{section.get('id')}:{section.get('name')} "
+                    f"[{section.get('from')},{section.get('to')}]"
+                )
+            last_completed_lap = data.get("last_completed_lap")
+            return (
+                "live_performance_analyst baseline ready. "
+                f"Classify completed lap {last_completed_lap} sections with classify_live_section; "
+                f"session_type={session_type}; candidate_sections={'; '.join(section_bits)}. "
+                "Do not expose raw telemetry. After classification, use get_live_focus_section to see "
+                "whether a focus exists. Avoid spoken critique until a focus/coaching window exists."
+            )
+
+        if event == "coaching_window":
+            focus = data.get("focus") or {}
+            if not isinstance(focus, dict):
+                focus = {}
+            section = focus.get("section") or {}
+            baseline = focus.get("baseline") or {}
+            timing = focus.get("timing") or {}
+            if not isinstance(section, dict):
+                section = {}
+            if not isinstance(baseline, dict):
+                baseline = {}
+            if not isinstance(timing, dict):
+                timing = {}
+            return (
+                "live_performance_analyst coaching window. "
+                f"section={section.get('id')}:{section.get('name')} "
+                f"range=[{section.get('from')},{section.get('to')}], "
+                f"mistakes={baseline.get('mistakeCount')}, severity={baseline.get('severity')}, "
+                f"labels={baseline.get('childLabels')}, seconds_ahead={timing.get('secondsAhead')}, "
+                f"distance_ahead={timing.get('distanceAhead')}, session_type={session_type}. "
+                "Call show_map with focus.show_map_arguments before or alongside the coaching message. "
+                "Give one short correction only; if traffic_or_race, include awareness/context."
+            )
+
     if event in ("attack_window", "defense_threat"):
         section = data.get("projected_section") or None
         next_corner = data.get("next_corner") or {}

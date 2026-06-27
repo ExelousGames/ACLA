@@ -125,6 +125,14 @@ class AIService:
                     scope=arguments.get("scope") or {},
                     conn=(context or {}).get("_conn"),
                 )
+            if function_name == "classify_live_section":
+                return await self._classify_live_section_impl(
+                    conn=(context or {}).get("_conn"),
+                    section_id=str(arguments.get("section_id") or "").strip(),
+                    section_name=(str(arguments.get("section_name")).strip()
+                                  if arguments.get("section_name") else None),
+                    lap=arguments.get("lap", "last"),
+                )
             if function_name == "explain_label":
                 return await self._explain_label_impl(
                     label_id=str(arguments.get("label_id") or "").strip(),
@@ -309,6 +317,43 @@ class AIService:
             scope_summary={"scope": scope},
         )
 
+    async def _classify_live_section_impl(
+        self,
+        *,
+        conn: Any,
+        section_id: str,
+        section_name: Optional[str],
+        lap: Any,
+    ) -> Dict[str, Any]:
+        """Classify one live track-section window and record it in the frontend.
+
+        This is the live analyst bridge: the LLM sees only this compact tool,
+        while raw section rows travel over the internal frontend relay and are
+        consumed here by the segment classifier.
+        """
+        if not section_id and not section_name:
+            return {"error": "section_id or section_name is required"}
+
+        args: Dict[str, Any] = {"lap": lap or "last"}
+        if section_id:
+            args["section_id"] = section_id
+        if section_name:
+            args["section_name"] = section_name
+
+        return await self._composite_analyze(
+            conn=conn,
+            frontend_tool="_get_live_section_telemetry",
+            frontend_args=args,
+            scope_summary={
+                "live_section": {
+                    "section_id": section_id,
+                    "section_name": section_name,
+                    "lap": lap or "last",
+                },
+            },
+            record_live_classification=True,
+        )
+
     async def _composite_analyze(
         self,
         *,
@@ -316,6 +361,7 @@ class AIService:
         frontend_tool: str,
         frontend_args: Dict[str, Any],
         scope_summary: Dict[str, Any],
+        record_live_classification: bool = False,
     ) -> Dict[str, Any]:
         """Shared chain backing the analyze_* composites.
 
@@ -355,7 +401,7 @@ class AIService:
         if "error" in classify_result:
             return classify_result
 
-        from app.shared.labels import LABEL_NAME_TO_ID
+        from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
 
         labels_out: List[Dict[str, Any]] = []
         for name in classify_result.get("labels", []):
@@ -367,8 +413,91 @@ class AIService:
                 **({"solution": entry["solution"]} if entry.get("solution") else {}),
             })
 
-        return {
+        payload: Dict[str, Any] = {
             "telemetry_summary": {"rows": len(rows), **scope_summary},
             "labels": labels_out,
             "_label_ids": classify_result.get("_label_ids", []),
         }
+
+        if record_live_classification:
+            label_ids = [str(label_id) for label_id in classify_result.get("_label_ids", [])]
+            parent_labels = [
+                label_id for label_id in label_ids
+                if label_id in {"MSP", "MSR", "EA", "RM", "PS", "O", "OD"}
+            ]
+            child_labels = [
+                LABEL_MAPPING.get(label_id, label_id)
+                for label_id in label_ids
+                if label_id not in {"MSP", "MSR", "EA", "RM", "PS", "O", "OD"}
+                and not label_id.startswith("ST")
+            ]
+            mistake_count = sum(
+                1 for label_id in label_ids
+                if label_id in {"MSP", "MSR"} or label_id.startswith(("MSP", "MSR"))
+            )
+            expert_count = sum(
+                1 for label_id in label_ids
+                if label_id == "EA" or label_id.startswith("EA")
+            )
+            severity = round(min(5.0, mistake_count + (0.5 if "RM" in parent_labels else 0.0)), 3)
+            confidence = round(min(0.95, 0.45 + (0.08 * len(label_ids)) + min(len(rows), 200) / 1000), 3)
+
+            section = telemetry_resp.get("section") if isinstance(telemetry_resp.get("section"), dict) else {}
+            lap_value = telemetry_resp.get("lap")
+            record_args = {
+                "section_id": section.get("id") or frontend_args.get("section_id"),
+                "section_name": section.get("name") or frontend_args.get("section_name"),
+                "lap": lap_value if lap_value is not None else frontend_args.get("lap"),
+                "start_sample_idx": telemetry_resp.get("startSampleIdx", telemetry_resp.get("start_sample_idx", 0)),
+                "end_sample_idx": telemetry_resp.get("endSampleIdx", telemetry_resp.get("end_sample_idx", 0)),
+                "mistake_count": mistake_count,
+                "expert_adherence_count": expert_count,
+                "severity": severity,
+                "confidence": confidence,
+                "parent_label": LABEL_MAPPING.get(parent_labels[0], parent_labels[0]) if parent_labels else None,
+                "child_labels": child_labels,
+                "telemetry_stats": _live_section_stats(rows),
+            }
+
+            from app.voice.tool_relay import get_relay
+            recorded = await get_relay().dispatch(
+                conn,
+                "_record_live_section_classification",
+                record_args,
+            )
+            if isinstance(recorded, dict) and "error" in recorded:
+                payload["recording_error"] = recorded.get("error")
+            else:
+                payload["classification"] = (
+                    recorded.get("classification") if isinstance(recorded, dict) else record_args
+                )
+                payload["focus"] = recorded.get("focus") if isinstance(recorded, dict) else None
+                payload["comparison"] = recorded.get("comparison") if isinstance(recorded, dict) else None
+
+        return payload
+
+
+def _live_section_stats(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
+    """Small LLM-safe telemetry summary for live section comparison."""
+    aliases = {
+        "speed": ("Physics_speed_kmh", "Physics_speed", "speed_kmh", "speed"),
+        "brake": ("Physics_brake", "brake", "brake_pressure"),
+        "throttle": ("Physics_gas", "Physics_throttle", "throttle", "gas"),
+        "steer": ("Physics_steer_angle", "Physics_steer", "steer", "steering"),
+    }
+    out: Dict[str, Dict[str, float]] = {}
+    for name, keys in aliases.items():
+        values: List[float] = []
+        for row in rows:
+            for key in keys:
+                value = row.get(key)
+                if isinstance(value, (int, float)):
+                    values.append(float(value))
+                    break
+        if values:
+            out[name] = {
+                "min": round(min(values), 3),
+                "max": round(max(values), 3),
+                "avg": round(sum(values) / len(values), 3),
+            }
+    return out

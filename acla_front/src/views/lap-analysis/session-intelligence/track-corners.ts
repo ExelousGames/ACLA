@@ -64,7 +64,7 @@ export const TRACK_CORNERS: Record<string, CornerDefinition[]> = {
         { name: 'T12 Banc Sabadell', from: 0.94, to: 0.98, guideFrom: 0.92 },
     ],
     brands_hatch: [
-        { name: 'T1 Paddock Hill Bend', from: 1, to: 0.09, guideFrom: 0.97 },
+        { name: 'T1 Paddock Hill Bend', from: 0.97, to: 0.09, guideFrom: 0.97 },
         { name: 'T2 Druids', from: 0.11, to: 0.18, guideFrom: 0.07 },
         { name: 'T3 Graham Hill Bend', from: 0.19, to: 0.25, guideFrom: 0.16 },
         { name: 'T4 Surtees', from: 0.28, to: 0.35, guideFrom: 0.23 },
@@ -96,7 +96,11 @@ export function getCornersForTrack(trackName: string): CornerDefinition[] {
 
 // Find which corner (if any) contains the given normalized position.
 export function getCornerAtPosition(corners: CornerDefinition[], pos: number): CornerDefinition | null {
-    return corners.find(c => pos >= c.from && pos <= c.to) ?? null;
+    return corners.find(c => (
+        c.from <= c.to
+            ? pos >= c.from && pos <= c.to
+            : pos >= c.from || pos <= c.to
+    )) ?? null;
 }
 
 // Find the next corner ahead of the given normalized position.

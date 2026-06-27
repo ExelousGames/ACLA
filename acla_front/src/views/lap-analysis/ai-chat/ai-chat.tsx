@@ -14,7 +14,7 @@ import {
 } from './ai-command-registry';
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
 import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/types';
-import type { OpportunityAgentState } from './ai-command-registry';
+import type { LivePerformanceAnalystState, OpportunityAgentState } from './ai-command-registry';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
 
@@ -166,6 +166,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const [isLoading] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
+    const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
@@ -206,6 +207,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         inFlight: false,
         lastAlertKey: null,
         lastAlertAt: 0,
+    });
+    const livePerformanceAnalystStateRef = useRef<LivePerformanceAnalystState>({
+        intervalId: null,
+        inFlight: false,
+        enabled: false,
+        lastObservationKey: null,
+        lastObservationAt: 0,
+        lastSpokenAt: 0,
     });
     const trackGuideLastPosRef = useRef<number | undefined>(undefined);
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
@@ -286,6 +295,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             trackGuideRunTokenRef.current += 1;
         }
         setTrackGuideEnabled(enabled);
+    }, []);
+
+    const setLivePerformanceAnalystAgentEnabled = useCallback((enabled: boolean) => {
+        livePerformanceAnalystStateRef.current.enabled = enabled;
+        setLivePerformanceAnalystEnabled(enabled);
     }, []);
 
     // Racing engineer voice conversation. The hook owns mic, WS, and
@@ -389,6 +403,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         const recordedAiAnalysis = analysisContext?.recordedAiAnalysis;
         const recordedAnalysisResult = recordedAiAnalysis?.result;
         const recordedPlaybackSummary = analysisContext?.recordedPlaybackSummary;
+        const liveSnapshot = sessionMode === 'live'
+            ? analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.()
+            : null;
+        const activeAgentModes = [
+            ...(TrackGuideEnabled ? ['track_guide'] : []),
+            ...(opportunityAgentStateRef.current.intervalId ? ['overtake'] : []),
+            ...(livePerformanceAnalystEnabled ? ['live_performance_analyst'] : []),
+        ];
 
         return {
             assistant_surface: 'lap_analysis_ai_chat',
@@ -398,6 +420,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             session_id: resolvedSessionId || null,
             active_tab: analysisContext?.activeTab || null,
             selected_map_id: analysisContext?.mapSelected || selectedSession?.map || null,
+            agent_modes: {
+                active: activeAgentModes,
+            },
+            live_session_type: liveSnapshot?.live_session_type ?? 'unknown',
+            track: liveSnapshot?.track || liveData?.Static_track || null,
+            car: liveSnapshot?.car || liveData?.Static_car_model || null,
+            current_lap: liveSnapshot?.current_lap ?? null,
+            normalized_position: liveSnapshot?.normalized_position ?? getNormalizedCarPos(liveData),
+            completed_laps: liveSnapshot?.completed_laps ?? null,
+            sample_count: liveSnapshot?.sample_count ?? 0,
             capabilities: {
                 live_session: sessionMode === 'live',
                 recorded_session: sessionMode === 'recorded',
@@ -416,6 +448,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 latest_sample_present: liveDataKeys > 0,
                 latest_sample_key_count: liveDataKeys,
                 live_status: analysisContext?.TelemetryDataLiveStatus ?? null,
+                live_snapshot: liveSnapshot,
                 recorded_file_loaded: Boolean(analysisContext?.recordedSessionDataFilePath),
                 recorded_sample_count: recordedPlaybackSummary?.sampleCount
                     ?? analysisContext?.recordedTelemetryDataCount
@@ -457,8 +490,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analysisContext?.recordedTelemetryDataCount,
         analysisContext?.sessionIntelligence,
         analysisContext?.sessionSelected,
+        livePerformanceAnalystEnabled,
         resolvedSessionId,
         sessionMode,
+        TrackGuideEnabled,
         userSummary,
         userSummaryError,
         userSummaryLoading,
@@ -481,8 +516,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             analysisContext,
             sessionIntelligence: analysisContext?.sessionIntelligence,
             opportunityAgentState: opportunityAgentStateRef.current,
+            livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
             startTrackGuide,
             setTrackGuideEnabled: setTrackGuideAgentEnabled,
+            setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
             setAgentTagActive: setAgentTag,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
             userSummary,
@@ -516,9 +553,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         opportunityAgent.inFlight = false;
         opportunityAgent.lastAlertKey = null;
         opportunityAgent.lastAlertAt = 0;
+        const analystAgent = livePerformanceAnalystStateRef.current;
+        if (analystAgent.intervalId) {
+            clearInterval(analystAgent.intervalId);
+            analystAgent.intervalId = null;
+        }
+        analystAgent.inFlight = false;
+        analystAgent.enabled = false;
+        analystAgent.lastObservationKey = null;
+        analystAgent.lastObservationAt = 0;
+        analystAgent.lastSpokenAt = 0;
+        setLivePerformanceAnalystAgentEnabled(false);
         setAgentTag('Track Guide', false);
         setAgentTag('Overtake', false);
-    }, [sessionMode, setAgentTag, setTrackGuideAgentEnabled]);
+        setAgentTag('Live Analyst', false);
+    }, [sessionMode, setAgentTag, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled]);
 
     const toggleFloatingChat = useCallback(async () => {
         const api = (window as any).electronAPI;
@@ -740,10 +789,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     useEffect(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
+        const analystAgent = livePerformanceAnalystStateRef.current;
         return () => {
             if (opportunityAgent.intervalId) {
                 clearInterval(opportunityAgent.intervalId);
                 opportunityAgent.intervalId = null;
+            }
+            if (analystAgent.intervalId) {
+                clearInterval(analystAgent.intervalId);
+                analystAgent.intervalId = null;
             }
 
             const existingCharts = visualizationController.getCurrentInstances();
