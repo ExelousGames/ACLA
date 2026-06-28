@@ -8,8 +8,6 @@ description: >
 parameters:
   goal:
     description: Short goal shown above the request list.
-  focus_name:
-    description: Optional section, session, or workflow focus label.
   current_request:
     description: Optional zero-based index of the active request. Usually 0.
   requests:
@@ -22,6 +20,10 @@ parameters:
 
 Use this to make the plan visible after you have decided the plan yourself.
 Do not ask the frontend to invent steps.
+
+Use only the top-level fields `goal`, `current_request`, and `requests`.
+Do not add plan-level focus fields. Section names, map ranges, API arguments,
+or other request-specific data belong inside the relevant request's `payload`.
 
 Prefer request types such as:
 

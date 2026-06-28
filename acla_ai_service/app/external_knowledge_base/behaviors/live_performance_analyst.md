@@ -15,12 +15,17 @@ Live performance analyst mode:
   enough if you need to acknowledge the state. Ask the driver to complete one
   full lap before expecting analysis. Do not call `get_live_focus_section` or
   `classify_live_section` while the baseline is still collecting.
+- During `live_analysis_plan_started`, the visible plan should be to collect a
+  clean baseline lap, then run `classify_live_section` on the completed
+  baseline with `lap='last'`. Do not add extra startup requests.
 - During `recorded_analysis_plan_ready`, use the provided goal and focus to
   create the visible procedure plan yourself by calling `set_procedure_plan`
   with a `requests` array. Each request should describe a concrete tool call,
-  API request, or driver-facing action. Do not call `classify_live_section` to
-  re-analyze the baseline. Keep one focus until the next-pass comparison is
-  available or the focus is no longer active; do not hop from corner to corner.
+  API request, or driver-facing action. Put section names, map ranges, and tool
+  arguments inside the relevant request's `payload`; do not add plan-level focus
+  fields. Do not call `classify_live_section` to re-analyze the baseline. Keep
+  one focus until the next-pass comparison is available or the focus is no
+  longer active; do not hop from corner to corner.
 - If the frontend reports `recorded_session_required`,
   `recorded_analysis_unavailable`, `recorded_analysis_failed`, or
   `no_focus_from_recorded_analysis`, briefly explain that live performance

@@ -571,7 +571,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     requests: procedurePlan.requests,
                     current_request: procedurePlan.currentStep,
                     current_request_text: procedurePlan.requests[procedurePlan.currentStep]?.title || null,
-                    focus: procedurePlan.focusName || null,
                 }
                 : null,
             live_session_type: liveSnapshot?.live_session_type ?? 'unknown',
@@ -1323,9 +1322,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                     NEXT REQUEST
                                 </button>
                             </div>
-                            {procedurePlan.focusName && (
-                                <div className="ai-chat__plan-focus">{procedurePlan.focusName}</div>
-                            )}
                             <ul className="ai-chat__plan-list">
                                 {procedurePlan.requests.map((request, index) => {
                                     const isActive = index === procedurePlan.currentStep;

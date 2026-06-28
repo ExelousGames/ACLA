@@ -17,7 +17,11 @@ def test_live_performance_tool_knowledge_is_loaded():
     assert tool("classify_live_section")["title"] == "Classifying live section"
     assert "hidden frontend relay" in tool("classify_live_section")["description"]
     assert "requests" in tool("set_procedure_plan")["_raw_body"]
+    assert "focus_name" not in tool("set_procedure_plan")["_raw_body"]
+    assert "request's `payload`" in tool("set_procedure_plan")["_raw_body"]
     assert "collecting_baseline" in behavior("live_performance_analyst")["_raw_body"]
+    assert "live_analysis_plan_started" in behavior("live_performance_analyst")["_raw_body"]
+    assert "lap='last'" in behavior("live_performance_analyst")["_raw_body"]
 
 
 def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
@@ -75,6 +79,8 @@ def test_live_analyst_observations_drive_the_right_actions():
 
     assert "set_procedure_plan" in plan_msg
     assert "requests array" in plan_msg
+    assert "request payload" in plan_msg
+    assert "plan-level focus" in plan_msg
     assert "plan=" not in plan_msg
     assert "classify_live_section" in baseline_msg
     assert "Do not expose raw telemetry" in baseline_msg

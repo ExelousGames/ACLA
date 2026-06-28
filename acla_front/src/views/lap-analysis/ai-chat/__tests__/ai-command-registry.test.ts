@@ -723,7 +723,6 @@ describe('ai command registry live performance analyst tools', () => {
         const result = await registry.set_procedure_plan(
             {
                 goal: 'Improve Druids entry.',
-                focus_name: 'T2 Druids',
                 requests: [
                     {
                         type: 'tool_call',
@@ -742,7 +741,6 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(setProcedurePlan).toHaveBeenCalledWith(expect.objectContaining({
             goal: 'Improve Druids entry.',
-            focusName: 'T2 Druids',
             requests: [
                 expect.objectContaining({
                     type: 'tool_call',
@@ -993,10 +991,28 @@ describe('ai command registry live performance analyst tools', () => {
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
             message: expect.stringContaining('Collect a baseline first'),
+            goal: 'Collect a baseline and run the live section classifier.',
+            requests: [
+                expect.objectContaining({
+                    type: 'driver_action',
+                    title: 'Collect a clean baseline lap',
+                }),
+                expect.objectContaining({
+                    type: 'tool_call',
+                    name: 'classify_live_section',
+                    title: 'Classify the completed baseline',
+                    payload: { lap: 'last' },
+                }),
+            ],
             snapshot: expect.objectContaining({
                 baseline_ready: false,
             }),
         }));
+        const startupPlanObservation = sendObservation.mock.calls.find(([payload]) => (
+            payload.event === 'live_analysis_plan_started'
+        ))?.[0];
+        expect(startupPlanObservation).not.toHaveProperty('internal_tool_hint');
+        expect(startupPlanObservation).not.toHaveProperty('sections');
 
         if (livePerformanceAnalystState.intervalId) {
             clearInterval(livePerformanceAnalystState.intervalId);
@@ -1130,6 +1146,19 @@ describe('ai command registry live performance analyst tools', () => {
         }));
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
+            goal: 'Collect a baseline and run the live section classifier.',
+            requests: [
+                expect.objectContaining({
+                    type: 'driver_action',
+                    title: 'Collect a clean baseline lap',
+                }),
+                expect.objectContaining({
+                    type: 'tool_call',
+                    name: 'classify_live_section',
+                    title: 'Classify the completed baseline',
+                    payload: { lap: 'last' },
+                }),
+            ],
             snapshot: expect.objectContaining({
                 baseline_ready: true,
             }),

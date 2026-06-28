@@ -107,6 +107,21 @@ type LiveBaselineCandidateSection = {
     lap: number;
 };
 
+const LIVE_ANALYST_START_PLAN_REQUESTS: ProcedurePlanRequest[] = [
+    {
+        type: 'driver_action',
+        title: 'Collect a clean baseline lap',
+        detail: 'Complete one full lap before analysis starts.',
+    },
+    {
+        type: 'tool_call',
+        name: 'classify_live_section',
+        title: 'Classify the completed baseline',
+        detail: 'Run after the baseline lap is ready.',
+        payload: { lap: 'last' },
+    },
+];
+
 // Frontend-implemented tool capabilities. This file owns executable browser
 // handlers and JSON parameter shapes only; LLM-facing tool instructions live
 // in the AI service external knowledge base.
@@ -876,10 +891,6 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
                 type: 'string',
                 description: 'Short goal shown above the request list.',
             },
-            focus_name: {
-                type: 'string',
-                description: 'Optional section, session, or workflow focus label.',
-            },
             current_request: {
                 type: 'integer',
                 description: 'Zero-based index of the active request.',
@@ -1444,6 +1455,8 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             agent_mode: 'live_performance_analyst',
             event: 'live_analysis_plan_started',
             snapshot: si.getLiveSessionSnapshot(),
+            goal: 'Collect a baseline and run the live section classifier.',
+            requests: LIVE_ANALYST_START_PLAN_REQUESTS,
             message: 'Live analysis procedure started. Collect a baseline first, then analyze the completed baseline.',
         });
 

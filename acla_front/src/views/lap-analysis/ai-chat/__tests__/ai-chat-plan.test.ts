@@ -28,18 +28,15 @@ describe('buildLiveProcedurePlan', () => {
                     type: 'tool_call',
                     name: 'show_map',
                     title: 'Show the focus section map',
-                    arguments: { section_name: 'T2 Druids' },
+                    payload: { section_name: 'T2 Druids' },
                 },
                 {
                     type: 'api_request',
                     method: 'post',
-                    endpoint: '/racing-session/imitation-learning-guidance',
+                    url: '/racing-session/imitation-learning-guidance',
                     title: 'Request imitation guidance',
                 },
             ],
-            focus: {
-                section: { name: 'T2 Druids' },
-            },
         })).toMatchObject({
             goal: 'Improve T2 Druids by reducing late brake.',
             requests: [
@@ -56,30 +53,101 @@ describe('buildLiveProcedurePlan', () => {
                     title: 'Request imitation guidance',
                 },
             ],
-            focusName: 'T2 Druids',
             currentStep: 0,
         });
     });
 
-    it('accepts legacy string plan entries as generic requests', () => {
+    it('builds the startup live plan from explicit baseline classifier requests', () => {
+        expect(buildLiveProcedurePlan({
+            event: 'live_analysis_plan_started',
+            goal: 'Collect a baseline and run the live section classifier.',
+            requests: [
+                {
+                    type: 'driver_action',
+                    title: 'Collect a clean baseline lap',
+                },
+                {
+                    type: 'tool_call',
+                    name: 'classify_live_section',
+                    title: 'Classify the completed baseline',
+                    payload: { lap: 'last' },
+                },
+            ],
+        })).toMatchObject({
+            goal: 'Collect a baseline and run the live section classifier.',
+            requests: [
+                {
+                    type: 'driver_action',
+                    title: 'Collect a clean baseline lap',
+                },
+                {
+                    type: 'tool_call',
+                    name: 'classify_live_section',
+                    title: 'Classify the completed baseline',
+                    payload: { lap: 'last' },
+                },
+            ],
+            currentStep: 0,
+        });
+    });
+
+    it('rejects non-standard legacy string plan entries', () => {
         expect(buildLiveProcedurePlan({
             event: 'live_analysis_window',
             title: 'Next live request list',
             plan: ['Show focus telemetry.', 'Compare the next pass.'],
             current_request: 1,
+        })).toBeNull();
+    });
+
+    it('rejects nested plan objects instead of guessing the shape', () => {
+        expect(buildLiveProcedurePlan({
+            event: 'procedure_plan_started',
+            plan: {
+                goal: 'Coach the next pass through Druids.',
+                current_request: 1,
+                requests: [
+                    {
+                        type: 'tool_call',
+                        tool: 'show_map',
+                        title: 'Show the focus map',
+                        args: { section_name: 'T2 Druids' },
+                    },
+                    {
+                        type: 'driver_action',
+                        step: 'Drive one clean pass through the focus section',
+                        reason: 'The assistant needs a repeat sample to compare.',
+                    },
+                ],
+            },
+        })).toBeNull();
+    });
+
+    it('rejects procedure_plan envelopes instead of treating them as the standard shape', () => {
+        expect(buildLiveProcedurePlan({
+            event: 'recorded_analysis_plan_ready',
+            procedure_plan: {
+                goal: 'Improve Paddock Hill entry.',
+                steps: [
+                    { text: 'Show Paddock Hill on the map' },
+                    { label: 'Coach the braking reference' },
+                ],
+            },
             focus: {
                 section: { name: 'T1 Paddock Hill Bend' },
             },
-        })).toMatchObject({
-            goal: 'Next live request list',
+        })).toBeNull();
+    });
+
+    it('rejects requests without explicit type and title', () => {
+        expect(buildLiveProcedurePlan({
+            event: 'procedure_plan_started',
+            goal: 'Coach the next pass through Druids.',
             requests: [
-                { type: 'request', title: 'Show focus telemetry.' },
-                { type: 'request', title: 'Compare the next pass.' },
+                { type: 'tool_call', name: 'show_map' },
+                { title: 'Drive one clean pass through the focus section' },
             ],
-            focusName: 'T1 Paddock Hill Bend',
-            currentStep: 1,
-            sourceEvent: 'live_analysis_window',
-        });
+        })).toBeNull();
     });
 
     it('ignores unrelated live analyst events until a plan is available', () => {

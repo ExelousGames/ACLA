@@ -12,7 +12,6 @@ export type ProcedurePlan = {
     goal: string;
     requests: ProcedurePlanRequest[];
     currentStep: number;
-    focusName?: string;
     sourceEvent?: string;
 };
 
@@ -49,65 +48,31 @@ const toRecord = (value: unknown): Record<string, unknown> | null => (
         : null
 );
 
-const requestTitleFromRecord = (request: Record<string, unknown>): string | null => (
-    toNonEmptyString(request.title)
-    || toNonEmptyString(request.summary)
-    || toNonEmptyString(request.description)
-    || toNonEmptyString(request.name)
-    || toNonEmptyString(request.tool)
-    || toNonEmptyString(request.tool_name)
-    || toNonEmptyString(request.action)
-    || toNonEmptyString(request.endpoint)
-    || toNonEmptyString(request.url)
-);
-
 const buildProcedurePlanRequest = (value: unknown): ProcedurePlanRequest | null => {
-    const text = toNonEmptyString(value);
-    if (text) {
-        return {
-            type: 'request',
-            title: text,
-        };
-    }
-
     const request = toRecord(value);
     if (!request) return null;
 
-    const title = requestTitleFromRecord(request);
-    if (!title) return null;
+    const type = toNonEmptyString(request.type);
+    const title = toNonEmptyString(request.title);
+    if (!type || !title) return null;
 
     return {
-        type: (
-            toNonEmptyString(request.type)
-            || toNonEmptyString(request.kind)
-            || toNonEmptyString(request.request_type)
-            || 'request'
-        ),
+        type,
         title,
-        detail: (
-            toNonEmptyString(request.detail)
-            || toNonEmptyString(request.message)
-            || toNonEmptyString(request.reason)
-        ) || undefined,
-        name: (
-            toNonEmptyString(request.name)
-            || toNonEmptyString(request.tool)
-            || toNonEmptyString(request.tool_name)
-        ) || undefined,
+        detail: toNonEmptyString(request.detail) || undefined,
+        name: toNonEmptyString(request.name) || undefined,
         method: toNonEmptyString(request.method)?.toUpperCase(),
-        url: (
-            toNonEmptyString(request.url)
-            || toNonEmptyString(request.endpoint)
-        ) || undefined,
-        payload: request.payload ?? request.body ?? request.arguments ?? request.args ?? request.params,
+        url: toNonEmptyString(request.url) || undefined,
+        payload: request.payload,
     };
 };
 
-const toProcedurePlanRequests = (value: unknown): ProcedurePlanRequest[] => (
-    Array.isArray(value)
-        ? value.map(buildProcedurePlanRequest).filter((item): item is ProcedurePlanRequest => Boolean(item))
-        : []
-);
+const toProcedurePlanRequests = (value: unknown): ProcedurePlanRequest[] | null => {
+    if (!Array.isArray(value) || value.length === 0) return null;
+    const requests = value.map(buildProcedurePlanRequest);
+    if (requests.some((item) => !item)) return null;
+    return requests as ProcedurePlanRequest[];
+};
 
 const isLiveProcedurePlan = (plan: ProcedurePlan): boolean => (
     typeof plan.sourceEvent === 'string'
@@ -182,31 +147,18 @@ export const buildLiveProcedurePlan = (data: Record<string, unknown>): Procedure
         && sourceEvent !== 'live_analysis_window'
     ) return null;
 
-    const focus = data.focus && typeof data.focus === 'object'
-        ? data.focus as Record<string, any>
-        : null;
-    const focusName = toNonEmptyString(data.focus_name) || toNonEmptyString(focus?.section?.name);
+    const requests = toProcedurePlanRequests(data.requests);
+    if (!requests) return null;
 
-    const explicitRequests = toProcedurePlanRequests(data.requests);
-    const planRequests = toProcedurePlanRequests(data.plan);
-    const stepRequests = toProcedurePlanRequests(data.steps);
-    const requests = explicitRequests.length > 0
-        ? explicitRequests
-        : planRequests.length > 0
-            ? planRequests
-            : stepRequests;
-    if (requests.length === 0) return null;
-
-    const requestedStep = Math.floor(Number(data.current_request ?? data.current_step ?? 0));
+    const requestedStep = Math.floor(Number(data.current_request ?? 0));
     const currentStep = Number.isFinite(requestedStep)
         ? Math.max(0, Math.min(requests.length - 1, requestedStep))
         : 0;
 
     return {
-        goal: toNonEmptyString(data.goal) || toNonEmptyString(data.title) || requests[0].title,
+        goal: toNonEmptyString(data.goal) || requests[0].title,
         requests,
         currentStep,
-        focusName: focusName || undefined,
         sourceEvent: sourceEvent || undefined,
     };
 };

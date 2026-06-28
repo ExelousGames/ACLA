@@ -1121,11 +1121,7 @@ def _format_observation_for_llm(data: dict) -> str:
                 f"goal={data.get('goal')}; "
                 f"section={section.get('id')}:{section.get('name')} "
                 f"range=[{section.get('from')},{section.get('to')}], "
-                f"labels={baseline.get('childLabels')}, session_type={session_type}. "
-                "Create the visible procedure plan yourself by calling set_procedure_plan "
-                "with a requests array. Requests may include tool calls, API requests, "
-                "or driver-facing actions. Do not call classify_live_section for the baseline; "
-                "save classify_live_section for the next pass through this focus section."
+                f"labels={baseline.get('childLabels')}, session_type={session_type}."
             )
 
         if event == "live_baseline_ready_for_classification":
