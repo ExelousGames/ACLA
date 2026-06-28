@@ -13,8 +13,8 @@ parameters:
   requests:
     description: >
       Ordered list of request objects. Each request must have `type` and
-      `title`, and may include `subscriber`, `detail`, `name`, `method`, `url`,
-      and `payload`.
+      `title`, and may include `subscriber`, `detail`, `name`,
+      `result_visibility`, `output`, `method`, `url`, and `payload`.
 ---
 
 ## Usage notes
@@ -28,8 +28,12 @@ or other request-specific data belong inside the relevant request's `payload`.
 
 Prefer request types such as:
 
-- `tool_call` for frontend or server tools you intend to call, with `name` and
-  optional `payload`.
+- `tool_call` for frontend tools you want `advance_plan_step` to execute, with
+  `name` and optional `payload`. Use `result_visibility: "ai"` when the
+  assistant needs the returned data. Use `result_visibility: "tag"` for
+  UI-only/side-effect tools where a compact completion result is enough.
+- For server-side tools, call the server tool directly first, use its result,
+  then call `advance_plan_step` to move the visible plan.
 - `api_request` for HTTP/API work, with `method`, `url`, and optional `payload`.
 - `driver_action` for something the driver needs to do before the next request.
 

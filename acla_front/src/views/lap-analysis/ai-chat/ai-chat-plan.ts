@@ -12,9 +12,14 @@ export type ProcedurePlanStepStatus = typeof PROCEDURE_PLAN_STEP_STATUSES[number
 export type ProcedurePlanRequest = {
     type: string;
     title: string;
+    name?: string;
     subscriber?: string;
     status: ProcedurePlanStepStatus;
     detail?: string;
+    method?: string;
+    url?: string;
+    result_visibility?: string;
+    output?: string;
     payload?: unknown;
 };
 
@@ -68,15 +73,21 @@ const buildProcedurePlanRequest = (value: unknown): ProcedurePlanRequest | null 
 
     const type = toNonEmptyString(request.type);
     const title = toNonEmptyString(request.title);
+    const name = toNonEmptyString(request.name);
     const subscriber = toNonEmptyString(request.subscriber);
     if (!type || !title) return null;
 
     return {
         type,
         title,
+        name: name || undefined,
         subscriber: subscriber || undefined,
         status: isProcedurePlanStepStatus(request.status) ? request.status : 'pending',
         detail: toNonEmptyString(request.detail) || undefined,
+        method: toNonEmptyString(request.method) || undefined,
+        url: toNonEmptyString(request.url) || undefined,
+        result_visibility: toNonEmptyString(request.result_visibility) || undefined,
+        output: toNonEmptyString(request.output) || undefined,
         payload: request.payload,
     };
 };

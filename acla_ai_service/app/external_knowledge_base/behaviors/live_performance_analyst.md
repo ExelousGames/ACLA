@@ -24,10 +24,11 @@ Live performance analyst mode:
 - During `recorded_analysis_plan_ready`, use the provided goal and focus to
   create the visible procedure plan yourself by calling `set_procedure_plan`
   with a `requests` array. Each request must include `type`, `title`, and
-  `subscriber`; use shared step statuses (`pending`, `running`, `complete`,
-  `blocked`, `failed`, `skipped`) when a status is needed. Put section names,
-  map ranges, tool names, and arguments inside the relevant request's `payload`;
-  do not add plan-level focus fields or top-level tool names/URLs. Do not call
+  either a `subscriber` or, for `tool_call` requests, a `name`; use shared step
+  statuses (`pending`, `running`, `complete`, `blocked`, `failed`, `skipped`)
+  when a status is needed. Put section names, map ranges, and tool arguments
+  inside the relevant request's `payload`;
+  do not add plan-level focus fields or top-level URLs. Do not call
   `classify_live_section` to re-analyze the baseline. Keep one focus until the
   next-pass comparison is available or the focus is no longer active; do not hop
   from corner to corner.

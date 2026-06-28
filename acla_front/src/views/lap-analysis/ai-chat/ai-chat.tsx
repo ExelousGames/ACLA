@@ -693,26 +693,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         sessionMode,
     ]);
 
-    const requestNextPlanStep = useCallback(async () => {
-        const current = procedurePlanRef.current;
-        if (!current) return;
-
-        const advanced = await toolHandlers.advance_plan_step(
-            { reason: 'driver_requested_next_step' },
-            { sendObservation: voiceConversation.sendObservation },
-        );
-        if (advanced.status !== 'advanced' && advanced.status !== 'complete') return;
-
-        voiceConversation.sendObservation({
-            source: 'procedure_plan_ui',
-            event: 'procedure_plan_next_step_requested',
-            goal: current.goal,
-            requests: current.requests,
-            current_request: advanced.current_request ?? current.currentStep,
-            request: advanced.request ?? current.requests[current.currentStep],
-        });
-    }, [toolHandlers, voiceConversation]);
-
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
     const micDisabled = voiceConversation.micDisabled;
@@ -1322,15 +1302,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                     <span className="ai-chat__plan-kicker">PLAN</span>
                                     <div className="ai-chat__plan-goal">{procedurePlan.goal}</div>
                                 </div>
-                                <button
-                                    type="button"
-                                    className="ai-chat__btn ai-chat__btn--blue ai-chat__plan-next"
-                                    onClick={requestNextPlanStep}
-                                    disabled={procedurePlan.currentStep >= procedurePlan.requests.length - 1}
-                                    title="Move the plan to the next request"
-                                >
-                                    NEXT REQUEST
-                                </button>
                                 <button
                                     type="button"
                                     className="ai-chat__plan-clear"

@@ -495,6 +495,54 @@ const toRequestPayloadRecord = (request: ProcedurePlanRequest): Record<string, a
         : {}
 );
 
+const getProcedurePlanToolName = (request: ProcedurePlanRequest): string | undefined => {
+    const payload = toRequestPayloadRecord(request);
+    return normalizeOptionalString(
+        request.name
+        ?? payload.name
+        ?? payload.tool
+        ?? payload.tool_name,
+    );
+};
+
+const getProcedurePlanToolArguments = (request: ProcedurePlanRequest): Record<string, any> => {
+    const payload = toRequestPayloadRecord(request);
+    const explicitArgs = payload.arguments ?? payload.args ?? payload.parameters ?? payload.params;
+    if (explicitArgs && typeof explicitArgs === 'object' && !Array.isArray(explicitArgs)) {
+        return explicitArgs as Record<string, any>;
+    }
+
+    const {
+        name: _name,
+        tool: _tool,
+        tool_name: _toolName,
+        arguments: _arguments,
+        args: _args,
+        parameters: _parameters,
+        params: _params,
+        output: _output,
+        result_visibility: _resultVisibility,
+        resultVisibility: _camelResultVisibility,
+        ...rest
+    } = payload;
+    return rest;
+};
+
+const getProcedurePlanToolResultVisibility = (request: ProcedurePlanRequest): 'ai' | 'tag' => {
+    const payload = toRequestPayloadRecord(request);
+    const visibility = normalizeOptionalString(
+        request.result_visibility
+        ?? request.output
+        ?? payload.result_visibility
+        ?? payload.resultVisibility
+        ?? payload.output,
+    )?.toLowerCase();
+
+    return visibility && ['tag', 'tags', 'ui', 'hidden', 'none'].includes(visibility)
+        ? 'tag'
+        : 'ai';
+};
+
 const runRecordedAnalysisForLiveRequest = async (
     context: AiCommandRegistryContext,
     args: Record<string, any> = {},
@@ -599,6 +647,78 @@ const executeProcedurePlanRequest = async (
         };
     }
     return subscriber(request, ctx, snapshot);
+};
+
+const executeProcedurePlanToolCall = async (
+    request: ProcedurePlanRequest,
+    registry: Record<string, AiCommandHandler>,
+    ctx: ToolHandlerContext,
+): Promise<
+    | {
+        status: 'complete';
+        name: string;
+        arguments: Record<string, any>;
+        resultVisibility: 'ai' | 'tag';
+        result: any;
+    }
+    | {
+        status: 'failed';
+        error: string;
+        message: string;
+    }
+> => {
+    const name = getProcedurePlanToolName(request);
+    if (!name) {
+        return {
+            status: 'failed',
+            error: 'procedure_plan_tool_missing',
+            message: 'This plan request is a tool_call but does not name a tool.',
+        };
+    }
+    if (name === 'advance_plan_step') {
+        return {
+            status: 'failed',
+            error: 'procedure_plan_tool_recursive',
+            message: 'A plan request cannot execute advance_plan_step from inside advance_plan_step.',
+        };
+    }
+
+    const handler = registry[name];
+    if (!handler) {
+        return {
+            status: 'failed',
+            error: 'procedure_plan_tool_unavailable',
+            message: `No frontend tool handler is registered for "${name}". Call that tool directly if it is server-side, then advance the plan.`,
+        };
+    }
+
+    const toolArguments = getProcedurePlanToolArguments(request);
+    let result: any;
+    try {
+        result = await handler(toolArguments, ctx);
+    } catch (err) {
+        return {
+            status: 'failed',
+            error: 'procedure_plan_tool_failed',
+            message: (err as Error)?.message || String(err),
+        };
+    }
+    if (result && typeof result === 'object' && 'error' in result) {
+        return {
+            status: 'failed',
+            error: String((result as Record<string, any>).error || 'procedure_plan_tool_failed'),
+            message: normalizeOptionalString((result as Record<string, any>).message)
+                || `The plan tool "${name}" could not complete.`,
+        };
+    }
+
+    return {
+        status: 'complete',
+        name,
+        arguments: toolArguments,
+        resultVisibility: getProcedurePlanToolResultVisibility(request),
+        result,
+    };
 };
 
 const shouldExecuteProcedurePlanRequest = (
@@ -807,6 +927,10 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
                     properties: {
                         type: { type: 'string' },
                         title: { type: 'string' },
+                        name: {
+                            type: 'string',
+                            description: 'Tool name for tool_call requests.',
+                        },
                         subscriber: {
                             type: 'string',
                             description: 'Frontend subscriber that can complete this request, such as driver, live_recorded_analysis, or another registered component.',
@@ -816,7 +940,20 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
                             enum: ['pending', 'running', 'complete', 'blocked', 'failed', 'skipped'],
                         },
                         detail: { type: 'string' },
-                        payload: { type: 'object' },
+                        result_visibility: {
+                            type: 'string',
+                            enum: ['ai', 'tag'],
+                            description: 'Use ai when the assistant needs the tool result. Use tag for UI-only/side-effect tools.',
+                        },
+                        output: {
+                            type: 'string',
+                            enum: ['ai', 'tag'],
+                            description: 'Alias for result_visibility.',
+                        },
+                        payload: {
+                            type: 'object',
+                            description: 'Tool arguments for tool_call requests, or an object containing arguments/args/parameters.',
+                        },
                     },
                     required: ['type', 'title'],
                 },
@@ -1090,7 +1227,8 @@ const getSessionId = (args: Record<string, any>, context: AiCommandRegistryConte
     context.sessionId ||
     context.analysisContext?.sessionSelected?.SessionId;
 
-export const createAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => ({
+export const createAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => {
+    const registry: Record<string, AiCommandHandler> = {
 
     // ── Session ───────────────────────────────────────────────────────────────
 
@@ -1532,36 +1670,64 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     async advance_plan_step(args, ctx) {
         const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot?.() || null;
         const plan = context.getProcedurePlan?.() || null;
+        let toolCallResult: any = null;
         if (plan) {
             const activeRequest = plan.requests[plan.currentStep];
-            const nextStep = Math.min(plan.currentStep + 1, plan.requests.length - 1);
-            const nextRequest = nextStep > plan.currentStep
-                ? plan.requests[nextStep]
-                : undefined;
-            const executableRequest = shouldExecuteProcedurePlanRequest(activeRequest)
+            const executableRequest = activeRequest?.type === 'tool_call' && !isProcedurePlanRequestDone(activeRequest)
                 ? activeRequest
-                : nextRequest;
+                : shouldExecuteProcedurePlanRequest(activeRequest)
+                    ? activeRequest
+                    : undefined;
 
             if (executableRequest) {
-                const subscriberResult = await executeProcedurePlanRequest(
-                    executableRequest,
-                    context,
-                    ctx,
-                    snapshot,
-                );
-                if (subscriberResult.status === 'blocked' || subscriberResult.status === 'failed') {
+                if (executableRequest.type === 'tool_call') {
+                    toolCallResult = await executeProcedurePlanToolCall(executableRequest, registry, ctx);
+                } else {
+                    toolCallResult = await executeProcedurePlanRequest(
+                        executableRequest,
+                        context,
+                        ctx,
+                        snapshot,
+                    );
+                }
+                if (toolCallResult.status === 'blocked' || toolCallResult.status === 'failed') {
                     return buildProcedurePlanStepError(
-                        subscriberResult.error || subscriberResult.status,
-                        subscriberResult.message || 'The procedure plan request could not be completed.',
+                        toolCallResult.error || toolCallResult.status,
+                        toolCallResult.message || 'The procedure plan request could not be completed.',
                         snapshot,
                     );
                 }
             }
         }
 
-        return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
+        const advanceResult = context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
             status: 'unavailable',
             error: 'no_procedure_plan_ui',
+        };
+        if (!toolCallResult || !('name' in toolCallResult)) {
+            return advanceResult;
+        }
+
+        const executedTool = {
+            name: toolCallResult.name,
+            arguments: toolCallResult.arguments,
+            result_visibility: toolCallResult.resultVisibility,
+        };
+        if (toolCallResult.resultVisibility === 'tag') {
+            return {
+                ...advanceResult,
+                executed_tool: executedTool,
+                tool_result: {
+                    status: 'completed',
+                    result_visibility: 'tag',
+                },
+            };
+        }
+
+        return {
+            ...advanceResult,
+            executed_tool: executedTool,
+            tool_result: toolCallResult.result,
         };
     },
 
@@ -1775,4 +1941,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         if (args.component === 'chart' && context.analysisContext) return { success: true };
         return { success: false };
     },
-});
+    };
+
+    return registry;
+};

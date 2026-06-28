@@ -45,6 +45,34 @@ def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
     assert set(live_schema.properties) == {"section_id", "section_name", "lap"}
 
 
+def test_frontend_tool_schema_exposes_advance_plan_step(monkeypatch):
+    class FakeFunctionSchema:
+        def __init__(self, name, description, properties, required):
+            self.name = name
+            self.description = description
+            self.properties = properties
+            self.required = required
+
+    fake_module = types.ModuleType("pipecat.adapters.schemas.function_schema")
+    fake_module.FunctionSchema = FakeFunctionSchema
+    monkeypatch.setitem(sys.modules, "pipecat.adapters.schemas.function_schema", fake_module)
+
+    reload()
+    schemas = pipecat_pipeline._build_frontend_tool_schemas([
+        {
+            "name": "advance_plan_step",
+            "properties": {"reason": {"type": "string"}},
+            "required": [],
+        },
+    ])
+    schema = schemas[0]
+
+    assert schema.name == "advance_plan_step"
+    assert "frontend" in schema.description
+    assert "tool_call" in schema.description
+    assert schema.properties["reason"]["description"]
+
+
 @pytest.mark.asyncio
 async def test_classify_live_section_uses_hidden_frontend_telemetry_tool(monkeypatch):
     service = object.__new__(AIService)

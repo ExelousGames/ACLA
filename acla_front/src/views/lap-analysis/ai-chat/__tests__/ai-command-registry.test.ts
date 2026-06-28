@@ -731,8 +731,9 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'tool_call',
-                        subscriber: 'map_display',
+                        name: 'show_map',
                         title: 'Show the focus map',
+                        result_visibility: 'tag',
                         payload: { tool: 'show_map', section_name: 'T2 Druids' },
                     },
                     {
@@ -750,8 +751,9 @@ describe('ai command registry live performance analyst tools', () => {
             requests: [
                 expect.objectContaining({
                     type: 'tool_call',
-                    subscriber: 'map_display',
+                    name: 'show_map',
                     title: 'Show the focus map',
+                    result_visibility: 'tag',
                     payload: { tool: 'show_map', section_name: 'T2 Druids' },
                     status: 'pending',
                 }),
@@ -790,8 +792,12 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
-    it('blocks plan advancement when the next step has no subscriber', async () => {
-        const advanceProcedurePlanStep = jest.fn();
+    it('advances the current step without executing the next request', async () => {
+        const advanceProcedurePlanStep = jest.fn(() => ({
+            status: 'advanced',
+            current_step: 1,
+            step: 'Run the worker.',
+        }));
         const { registry } = createLiveAnalystRegistry({
             advanceProcedurePlanStep,
             getProcedurePlan: () => ({
@@ -810,10 +816,105 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first task complete');
+        expect(result).toEqual({
+            status: 'advanced',
+            current_step: 1,
+            step: 'Run the worker.',
+        });
+    });
+
+    it('executes the active tool_call request and returns AI-visible output before advancing', async () => {
+        const advanceProcedurePlanStep = jest.fn(() => ({
+            status: 'advanced',
+            current_step: 1,
+            step: 'Use the snapshot.',
+        }));
+        const { registry } = createLiveAnalystRegistry({
+            advanceProcedurePlanStep,
+            getProcedurePlan: () => ({
+                goal: 'Fetch live session state.',
+                requests: [
+                    {
+                        type: 'tool_call',
+                        name: 'get_live_session_snapshot',
+                        status: 'pending',
+                        title: 'Read live session state.',
+                        result_visibility: 'ai',
+                    },
+                    { type: 'driver_action', subscriber: 'driver', status: 'pending', title: 'Use the snapshot.' },
+                ],
+                currentStep: 0,
+                sourceEvent: 'procedure_plan_started',
+            }),
+        });
+
+        const result = await registry.advance_plan_step(
+            { reason: 'snapshot requested' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('snapshot requested');
         expect(result).toMatchObject({
-            status: 'error',
-            error: 'procedure_plan_subscriber_missing',
+            status: 'advanced',
+            current_step: 1,
+            executed_tool: {
+                name: 'get_live_session_snapshot',
+                arguments: {},
+                result_visibility: 'ai',
+            },
+            tool_result: {
+                status: 'ready',
+                agent_mode: 'live_performance_analyst',
+                snapshot: {
+                    baseline_ready: true,
+                },
+            },
+        });
+    });
+
+    it('executes tag-only active tool_call requests without returning full tool output', async () => {
+        const advanceProcedurePlanStep = jest.fn(() => ({
+            status: 'complete',
+            current_step: 0,
+            step: 'Show current state.',
+        }));
+        const { registry } = createLiveAnalystRegistry({
+            advanceProcedurePlanStep,
+            getProcedurePlan: () => ({
+                goal: 'Update the UI.',
+                requests: [
+                    {
+                        type: 'tool_call',
+                        name: 'get_live_session_snapshot',
+                        status: 'pending',
+                        title: 'Show current state.',
+                        result_visibility: 'tag',
+                    },
+                ],
+                currentStep: 0,
+                sourceEvent: 'procedure_plan_started',
+            }),
+        });
+
+        const result = await registry.advance_plan_step(
+            { reason: 'ui tag updated' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toEqual({
+            status: 'complete',
+            current_step: 0,
+            step: 'Show current state.',
+            executed_tool: {
+                name: 'get_live_session_snapshot',
+                arguments: {},
+                result_visibility: 'tag',
+            },
+            tool_result: {
+                status: 'completed',
+                result_visibility: 'tag',
+            },
         });
     });
 
@@ -855,7 +956,7 @@ describe('ai command registry live performance analyst tools', () => {
                     { type: 'request', subscriber: 'live_recorded_analysis', status: 'pending', title: 'Analyze the baseline.' },
                     { type: 'request', subscriber: 'driver', status: 'pending', title: 'Select the focus section.' },
                 ],
-                currentStep: 0,
+                currentStep: 1,
                 sourceEvent: 'live_analysis_plan_started',
             }),
         });
@@ -875,9 +976,14 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
-    it('blocks plan advancement when the next step has no registered subscriber', async () => {
+    it('does not execute an unregistered next request while advancing the current step', async () => {
+        const advanceProcedurePlanStep = jest.fn(() => ({
+            status: 'advanced',
+            current_step: 1,
+            step: 'Run the worker.',
+        }));
         const { registry } = createLiveAnalystRegistry({
-            advanceProcedurePlanStep: jest.fn(),
+            advanceProcedurePlanStep,
             getProcedurePlan: () => ({
                 goal: 'Run a delegated workflow.',
                 requests: [
@@ -894,9 +1000,11 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(result).toMatchObject({
-            status: 'error',
-            error: 'procedure_plan_subscriber_missing',
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first task complete');
+        expect(result).toEqual({
+            status: 'advanced',
+            current_step: 1,
+            step: 'Run the worker.',
         });
     });
 
@@ -1073,7 +1181,7 @@ describe('ai command registry live performance analyst tools', () => {
         }
     });
 
-    it('runs classifier analysis when the subscribed classifier request is advanced', async () => {
+    it('does not run classifier analysis while advancing into the classifier request', async () => {
         const {
             analysisContext,
             registry,
@@ -1086,7 +1194,7 @@ describe('ai command registry live performance analyst tools', () => {
             request: {
                 type: 'frontend_request',
                 subscriber: 'live_recorded_analysis',
-                status: 'complete',
+                status: 'complete' as const,
                 title: 'Request recorded-session classifier',
             },
         }));
@@ -1161,25 +1269,10 @@ describe('ai command registry live performance analyst tools', () => {
             current_request: 1,
         });
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline complete');
-        expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: false });
-        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+        expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
+        expect(sendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_ready',
-            analysis: expect.objectContaining({
-                status: 'ready',
-                analysis: expect.objectContaining({
-                    segment_count: 1,
-                    returned_segment_count: 1,
-                }),
-            }),
         }));
-        const recordedAnalysisObservation = sendObservation.mock.calls.find(([payload]) => (
-            payload.event === 'recorded_analysis_ready'
-        ))?.[0];
-        expect(recordedAnalysisObservation).not.toHaveProperty('goal');
-        expect(recordedAnalysisObservation).not.toHaveProperty('focus');
-        expect(recordedAnalysisObservation).not.toHaveProperty('plan');
-        expect(recordedAnalysisObservation).not.toHaveProperty('internal_tool_hint');
-        expect(recordedAnalysisObservation).not.toHaveProperty('sections');
         expect(toolContextSendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
             source: 'live_performance_analyst',
         }));
@@ -1196,7 +1289,7 @@ describe('ai command registry live performance analyst tools', () => {
             request: {
                 type: 'frontend_request',
                 subscriber: 'live_recorded_analysis',
-                status: 'complete',
+                status: 'complete' as const,
                 title: 'Request recorded-session classifier',
             },
         }));
@@ -1212,7 +1305,7 @@ describe('ai command registry live performance analyst tools', () => {
                     {
                         type: 'driver_action',
                         subscriber: 'driver',
-                        status: 'complete',
+                        status: 'complete' as const,
                         title: 'Collect a clean baseline lap',
                     },
                     {
@@ -1314,7 +1407,7 @@ describe('ai command registry live performance analyst tools', () => {
                         payload: { force: false },
                     },
                 ],
-                currentStep: 0,
+                currentStep: 1,
                 sourceEvent: 'live_analysis_plan_started',
             }),
         });
