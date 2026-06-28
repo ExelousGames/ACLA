@@ -25,6 +25,8 @@ export type ProcedurePlan = {
     sourceEvent?: string;
 };
 
+const PROCEDURE_PLAN_DONE_STATUSES: readonly ProcedurePlanStepStatus[] = ['complete', 'skipped'];
+
 export const isProcedurePlanStartEvent = (sourceEvent?: string): boolean => (
     typeof sourceEvent === 'string'
     && (
@@ -76,6 +78,29 @@ const toProcedurePlanRequests = (value: unknown): ProcedurePlanRequest[] | null 
     return requests as ProcedurePlanRequest[];
 };
 
+const isProcedurePlanRequestDone = (request: ProcedurePlanRequest | undefined): boolean => (
+    Boolean(request && PROCEDURE_PLAN_DONE_STATUSES.includes(request.status))
+);
+
+export const getSelfAdvancingProcedurePlan = (plan: ProcedurePlan): ProcedurePlan => {
+    let currentStep = plan.currentStep;
+    while (
+        currentStep < plan.requests.length - 1
+        && isProcedurePlanRequestDone(plan.requests[currentStep])
+    ) {
+        currentStep += 1;
+    }
+
+    const requests = plan.requests.map((request, index) => {
+        if (index < currentStep && !isProcedurePlanRequestDone(request)) {
+            return { ...request, status: 'complete' as ProcedurePlanStepStatus };
+        }
+        return request;
+    });
+
+    return { ...plan, requests, currentStep };
+};
+
 export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {
     if (typeof text !== 'string') return false;
     const normalized = text
@@ -107,10 +132,10 @@ export const buildProcedurePlan = (data: Record<string, unknown>): ProcedurePlan
         ? Math.max(0, Math.min(requests.length - 1, requestedStep))
         : 0;
 
-    return {
+    return getSelfAdvancingProcedurePlan({
         goal: toNonEmptyString(data.goal) || requests[0].title,
         requests,
         currentStep,
         sourceEvent: sourceEvent || undefined,
-    };
+    });
 };

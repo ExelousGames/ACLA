@@ -1323,7 +1323,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                     className="ai-chat__btn ai-chat__btn--blue ai-chat__plan-next"
                                     onClick={requestNextPlanStep}
                                     disabled={procedurePlan.currentStep >= procedurePlan.requests.length - 1}
-                                    title="Ask the assistant to move the plan to the next request"
+                                    title="Move the plan to the next request"
                                 >
                                     NEXT REQUEST
                                 </button>

@@ -90,6 +90,70 @@ describe('buildProcedurePlan', () => {
         });
     });
 
+    it('advances to the next request when the active request is already complete', () => {
+        expect(buildProcedurePlan({
+            event: 'procedure_plan_started',
+            goal: 'Run live analysis from a clean baseline.',
+            requests: [
+                {
+                    type: 'driver_action',
+                    subscriber: 'driver',
+                    title: 'Collect a clean baseline lap',
+                    status: 'complete',
+                },
+                {
+                    type: 'frontend_request',
+                    subscriber: 'live_recorded_analysis',
+                    title: 'Request recorded-session classifier',
+                },
+            ],
+        })).toMatchObject({
+            currentStep: 1,
+            requests: [
+                {
+                    title: 'Collect a clean baseline lap',
+                    status: 'complete',
+                },
+                {
+                    title: 'Request recorded-session classifier',
+                    status: 'pending',
+                },
+            ],
+        });
+    });
+
+    it('marks earlier requests complete when an observation advances current_request', () => {
+        expect(buildProcedurePlan({
+            event: 'baseline_classifier_request_ready',
+            goal: 'Run live analysis from a clean baseline.',
+            current_request: 1,
+            requests: [
+                {
+                    type: 'driver_action',
+                    subscriber: 'driver',
+                    title: 'Collect a clean baseline lap',
+                },
+                {
+                    type: 'frontend_request',
+                    subscriber: 'live_recorded_analysis',
+                    title: 'Request recorded-session classifier',
+                },
+            ],
+        })).toMatchObject({
+            currentStep: 1,
+            requests: [
+                {
+                    title: 'Collect a clean baseline lap',
+                    status: 'complete',
+                },
+                {
+                    title: 'Request recorded-session classifier',
+                    status: 'pending',
+                },
+            ],
+        });
+    });
+
     it('rejects non-standard legacy string plan entries', () => {
         expect(buildProcedurePlan({
             event: 'procedure_plan_started',

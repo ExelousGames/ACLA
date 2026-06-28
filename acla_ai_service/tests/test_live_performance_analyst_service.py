@@ -13,13 +13,15 @@ def test_live_performance_tool_knowledge_is_loaded():
 
     assert tool("start_live_performance_analysis")["title"] == "Starting live analyst"
     assert tool("set_procedure_plan")["title"] == "Setting procedure plan"
-    assert tool("get_live_focus_section")["title"] == "Reading focus section"
+    assert tool("get_live_focus_section")["title"] == "Analyzing focus section"
+    assert "show_map_arguments" in tool("get_live_focus_section")["_raw_body"]
     assert tool("classify_live_section")["title"] == "Classifying live section"
     assert "active Live Performance Analyst focus section" in tool("classify_live_section")["description"]
     assert "requests" in tool("set_procedure_plan")["_raw_body"]
     assert "focus_name" not in tool("set_procedure_plan")["_raw_body"]
     assert "request's `payload`" in tool("set_procedure_plan")["_raw_body"]
     assert "collecting_baseline" in behavior("live_performance_analyst")["_raw_body"]
+    assert "get_live_focus_section" not in behavior("live_performance_analyst")["_raw_body"]
     assert "live_analysis_plan_started" in behavior("live_performance_analyst")["_raw_body"]
     assert "Do not fall back to live lap or section classification" in behavior("live_performance_analyst")["_raw_body"]
 

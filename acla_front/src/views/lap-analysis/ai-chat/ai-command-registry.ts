@@ -938,11 +938,11 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
     {
         name: 'advance_plan_step',
-        description: 'Move the visible procedure plan UI to the next request after the current request is complete.',
+        description: 'Report that the current visible procedure plan request is complete so the UI can move to the next request.',
         properties: {
             reason: {
                 type: 'string',
-                description: 'Short reason the assistant is moving to the next plan request.',
+                description: 'Short reason the current plan request is complete.',
             },
         },
         required: [],
