@@ -18,12 +18,12 @@ import type { LivePerformanceAnalystState, OpportunityAgentState } from './ai-co
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
 import {
+    advanceProcedurePlan,
     buildProcedurePlan,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
     type ProcedurePlan,
-    type ProcedurePlanStepStatus,
 } from './ai-chat-plan';
 
 type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
@@ -390,33 +390,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setProcedurePlanState(plan);
     }, []);
 
-    const advanceProcedurePlanStep = useCallback((reason?: string, nextStatus: ProcedurePlanStepStatus = 'pending') => {
+    const advanceProcedurePlanStep = useCallback((reason?: string) => {
         const current = procedurePlanRef.current;
         if (!current) {
             return { status: 'unavailable', error: 'no_procedure_plan' };
         }
 
-        const nextStep = Math.min(current.currentStep + 1, current.requests.length - 1);
-        const nextRequests = current.requests.map((request, index) => {
-            if (index < nextStep) {
-                return { ...request, status: 'complete' as ProcedurePlanStepStatus };
-            }
-            if (index === nextStep) {
-                return { ...request, status: nextStatus };
-            }
-            return request;
-        });
-        const nextPlan = { ...current, requests: nextRequests, currentStep: nextStep };
-        setProcedurePlan(nextPlan);
+        const result = advanceProcedurePlan(current, reason);
+        setProcedurePlan(result.plan);
 
-        return {
-            status: nextStep === current.currentStep ? 'complete' : 'advanced',
-            current_request: nextStep,
-            current_step: nextStep,
-            request: nextPlan.requests[nextStep],
-            step: nextPlan.requests[nextStep]?.title,
-            reason,
-        };
+        return result;
     }, [setProcedurePlan]);
 
     const clearProcedurePlan = useCallback(() => {

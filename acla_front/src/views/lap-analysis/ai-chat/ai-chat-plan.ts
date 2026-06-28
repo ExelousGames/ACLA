@@ -25,6 +25,16 @@ export type ProcedurePlan = {
     sourceEvent?: string;
 };
 
+export type ProcedurePlanAdvanceResult = {
+    plan: ProcedurePlan;
+    status: 'advanced' | 'complete';
+    current_request: number;
+    current_step: number;
+    request: ProcedurePlanRequest;
+    step: string;
+    reason?: string;
+};
+
 const PROCEDURE_PLAN_DONE_STATUSES: readonly ProcedurePlanStepStatus[] = ['complete', 'skipped'];
 
 export const isProcedurePlanStartEvent = (sourceEvent?: string): boolean => (
@@ -99,6 +109,29 @@ export const getSelfAdvancingProcedurePlan = (plan: ProcedurePlan): ProcedurePla
     });
 
     return { ...plan, requests, currentStep };
+};
+
+export const advanceProcedurePlan = (
+    plan: ProcedurePlan,
+    reason?: string,
+): ProcedurePlanAdvanceResult => {
+    const requests = plan.requests.map((request, index) => (
+        index <= plan.currentStep
+            ? { ...request, status: 'complete' as ProcedurePlanStepStatus }
+            : request
+    ));
+    const nextPlan = getSelfAdvancingProcedurePlan({ ...plan, requests });
+    const request = nextPlan.requests[nextPlan.currentStep];
+
+    return {
+        plan: nextPlan,
+        status: nextPlan.currentStep === plan.currentStep ? 'complete' : 'advanced',
+        current_request: nextPlan.currentStep,
+        current_step: nextPlan.currentStep,
+        request,
+        step: request.title,
+        reason,
+    };
 };
 
 export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {

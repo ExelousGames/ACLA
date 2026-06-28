@@ -1,4 +1,5 @@
 import {
+    advanceProcedurePlan,
     buildProcedurePlan,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
@@ -235,6 +236,81 @@ describe('buildProcedurePlan', () => {
             event: 'unrelated_update',
             subject: { name: 'Task 1' },
         })).toBeNull();
+    });
+});
+
+describe('advanceProcedurePlan', () => {
+    it('completes the active request and moves to the next pending request', () => {
+        const result = advanceProcedurePlan({
+            goal: 'Complete a delegated task.',
+            currentStep: 0,
+            requests: [
+                { type: 'driver_action', title: 'Collect a clean baseline lap', status: 'pending' },
+                { type: 'frontend_request', title: 'Analyze the baseline', status: 'pending' },
+            ],
+        }, 'baseline complete');
+
+        expect(result).toMatchObject({
+            status: 'advanced',
+            current_request: 1,
+            step: 'Analyze the baseline',
+            reason: 'baseline complete',
+            plan: {
+                currentStep: 1,
+                requests: [
+                    { title: 'Collect a clean baseline lap', status: 'complete' },
+                    { title: 'Analyze the baseline', status: 'pending' },
+                ],
+            },
+        });
+    });
+
+    it('skips over already completed requests without marking the next pending request complete', () => {
+        const result = advanceProcedurePlan({
+            goal: 'Complete a delegated task.',
+            currentStep: 0,
+            requests: [
+                { type: 'driver_action', title: 'Collect a clean baseline lap', status: 'complete' },
+                { type: 'frontend_request', title: 'Analyze the baseline', status: 'complete' },
+                { type: 'driver_action', title: 'Run the next lap', status: 'pending' },
+            ],
+        });
+
+        expect(result).toMatchObject({
+            status: 'advanced',
+            current_request: 2,
+            plan: {
+                currentStep: 2,
+                requests: [
+                    { title: 'Collect a clean baseline lap', status: 'complete' },
+                    { title: 'Analyze the baseline', status: 'complete' },
+                    { title: 'Run the next lap', status: 'pending' },
+                ],
+            },
+        });
+    });
+
+    it('leaves the final request active when completing the last step', () => {
+        const result = advanceProcedurePlan({
+            goal: 'Complete a delegated task.',
+            currentStep: 1,
+            requests: [
+                { type: 'driver_action', title: 'Collect a clean baseline lap', status: 'complete' },
+                { type: 'driver_action', title: 'Run the next lap', status: 'pending' },
+            ],
+        });
+
+        expect(result).toMatchObject({
+            status: 'complete',
+            current_request: 1,
+            plan: {
+                currentStep: 1,
+                requests: [
+                    { title: 'Collect a clean baseline lap', status: 'complete' },
+                    { title: 'Run the next lap', status: 'complete' },
+                ],
+            },
+        });
     });
 });
 

@@ -711,7 +711,7 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first step completed', 'complete');
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first step completed');
         expect(result).toEqual({
             status: 'advanced',
             current_step: 1,
@@ -1160,7 +1160,7 @@ describe('ai command registry live performance analyst tools', () => {
             status: 'advanced',
             current_request: 1,
         });
-        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline complete', 'complete');
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline complete');
         expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: false });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_plan_ready',

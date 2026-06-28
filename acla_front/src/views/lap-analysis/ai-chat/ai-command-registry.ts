@@ -59,7 +59,7 @@ export interface AiCommandRegistryContext {
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
-    advanceProcedurePlanStep?: (reason?: string, nextStatus?: ProcedurePlanStepStatus) => {
+    advanceProcedurePlanStep?: (reason?: string) => {
         status: string;
         current_request?: number;
         request?: ProcedurePlanRequest;
@@ -1710,7 +1710,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             }
         }
 
-        return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason), 'complete') || {
+        return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
             status: 'unavailable',
             error: 'no_procedure_plan_ui',
         };
