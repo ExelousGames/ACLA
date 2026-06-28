@@ -662,6 +662,8 @@ describe('ai command registry live performance analyst tools', () => {
         const recordedToolNames = getFrontendToolSchemasForSessionMode('recorded').map((tool) => tool.name);
 
         expect(liveToolNames).toEqual(expect.arrayContaining([
+            'start_agent_session',
+            'stop_agent_session',
             'start_live_performance_analysis',
             'stop_live_performance_analysis',
             'get_live_session_snapshot',
@@ -680,9 +682,56 @@ describe('ai command registry live performance analyst tools', () => {
             'get_live_session_snapshot',
         ]));
         expect(recordedToolNames).toEqual(expect.arrayContaining([
+            'stop_agent_session',
             'advance_plan_step',
             'set_procedure_plan',
             'clear_procedure_plan',
+        ]));
+    });
+
+    it('starts the live analyst as a child agent session from the main assistant', async () => {
+        const startAgentSession = jest.fn(() => ({
+            status: 'started' as const,
+            conversation_role: 'agent' as const,
+            agent_mode: 'live_performance_analyst' as const,
+            agent_session_id: 'agent-1',
+            parent_client_session_id: 'main-1',
+        }));
+        const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry({
+            conversationRole: 'main',
+            startAgentSession,
+        });
+
+        const result = await registry.start_live_performance_analysis(
+            { interval_seconds: 3 },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(startAgentSession).toHaveBeenCalledWith('live_performance_analyst', { interval_seconds: 3 });
+        expect(result).toMatchObject({
+            status: 'started',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+            agent_session_id: 'agent-1',
+        });
+        expect(livePerformanceAnalystState.enabled).toBe(false);
+        expect(livePerformanceAnalystState.intervalId).toBeNull();
+    });
+
+    it('advertises live analyst runtime tools inside an agent session without recursive agent start', () => {
+        const toolNames = getFrontendToolSchemasForSessionMode('live', {
+            conversationRole: 'agent',
+            agentMode: 'live_performance_analyst',
+        }).map((tool) => tool.name);
+
+        expect(toolNames).toEqual(expect.arrayContaining([
+            'start_live_performance_analysis',
+            'stop_live_performance_analysis',
+            'get_live_session_snapshot',
+            'stop_agent_session',
+        ]));
+        expect(toolNames).not.toEqual(expect.arrayContaining([
+            'start_agent_session',
         ]));
     });
 

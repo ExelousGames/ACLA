@@ -37,6 +37,36 @@ import {
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
+export type AgentSessionMode = 'live_performance_analyst';
+export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
+export type AgentSessionRole = 'main' | 'agent';
+
+export interface AgentSessionInfo {
+    sessionRole: AgentSessionRole;
+    clientSessionId: string;
+    parentClientSessionId: string | null;
+    agentMode: AgentSessionMode;
+    status: AgentSessionStatus;
+}
+
+export type AgentSessionStartResult = {
+    status: 'started' | 'already_running' | 'error';
+    conversation_role: 'agent';
+    agent_mode: AgentSessionMode;
+    agent_session_id?: string;
+    parent_client_session_id?: string | null;
+    error?: string;
+    message?: string;
+};
+
+export type AgentSessionStopResult = {
+    status: 'stopped' | 'not_running' | 'error';
+    conversation_role: 'agent';
+    agent_mode?: AgentSessionMode;
+    agent_session_id?: string | null;
+    error?: string;
+    message?: string;
+};
 export type ProcedurePlanSubscriberResult = {
     status: Extract<ProcedurePlanStepStatus, 'complete' | 'blocked' | 'failed' | 'skipped'>;
     error?: string;
@@ -51,6 +81,8 @@ export type ProcedurePlanSubscriber = (
 export interface AiCommandRegistryContext {
     sessionId?: string;
     sessionMode?: 'live' | 'recorded' | 'user_summary';
+    conversationRole?: AgentSessionRole;
+    activeAgentSession?: AgentSessionInfo | null;
     analysisContext?: any;
     // Populated during live recording. Null in post-session analysis view.
     sessionIntelligence?: SessionIntelligence | null;
@@ -71,6 +103,13 @@ export interface AiCommandRegistryContext {
     clearProcedurePlan?: () => void;
     setProcedurePlan?: (plan: ProcedurePlan | null) => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
+    startAgentSession?: (
+        agentMode: AgentSessionMode,
+        args?: Record<string, any>,
+    ) => AgentSessionStartResult | Promise<AgentSessionStartResult>;
+    stopAgentSession?: (
+        agentSessionId?: string | null,
+    ) => AgentSessionStopResult | Promise<AgentSessionStopResult>;
     getOpportunityTelemetryRows: () => Record<string, any>[];
     userSummary?: Record<string, any>;
     userSummaryLoading?: boolean;
@@ -505,6 +544,10 @@ const getProcedurePlanToolName = (request: ProcedurePlanRequest): string | undef
     );
 };
 
+const normalizeAgentSessionMode = (value: unknown): AgentSessionMode | null => (
+    value === 'live_performance_analyst' ? 'live_performance_analyst' : null
+);
+
 const getProcedurePlanToolArguments = (request: ProcedurePlanRequest): Record<string, any> => {
     const payload = toRequestPayloadRecord(request);
     const explicitArgs = payload.arguments ?? payload.args ?? payload.parameters ?? payload.params;
@@ -822,6 +865,29 @@ const searchUserSummaryMapLevel = (
 
 export const frontendToolSchemas: FrontendToolSchema[] = [
     {
+        name: 'start_agent_session',
+        description: 'Start a separate child AI agent session. The user should interact with that child session while it is active.',
+        properties: {
+            agent_mode: {
+                type: 'string',
+                enum: ['live_performance_analyst'],
+                description: 'Agent profile to start.',
+            },
+        },
+        required: ['agent_mode'],
+    },
+    {
+        name: 'stop_agent_session',
+        description: 'Stop the active child AI agent session and return focus to the main assistant.',
+        properties: {
+            agent_session_id: {
+                type: 'string',
+                description: 'Optional frontend child session id. Defaults to the active agent session.',
+            },
+        },
+        required: [],
+    },
+    {
         name: 'start_per_turn_coaching',
         properties: {},
         required: [],
@@ -1107,9 +1173,11 @@ const COMMON_TOOL_NAMES = [
     'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
+    'stop_agent_session',
 ] as const;
 
 const LIVE_TOOL_NAMES = [
+    'start_agent_session',
     'start_per_turn_coaching',
     'stop_per_turn_coaching',
     'start_overtake_agent',
@@ -1138,7 +1206,20 @@ const RECORDED_TOOL_NAMES = [
 
 export const getFrontendToolSchemasForSessionMode = (
     sessionMode: AiCommandRegistryContext['sessionMode'] = 'live',
+    options: {
+        conversationRole?: AgentSessionRole;
+        agentMode?: AgentSessionMode | null;
+    } = {},
 ): FrontendToolSchema[] => {
+    if (options.conversationRole === 'agent') {
+        const agentAllowedNames = new Set<string>([
+            ...COMMON_TOOL_NAMES,
+            ...LIVE_TOOL_NAMES.filter((name) => name !== 'start_agent_session'),
+            ...USER_SUMMARY_TOOL_NAMES,
+        ]);
+        return frontendToolSchemas.filter((tool) => agentAllowedNames.has(tool.name));
+    }
+
     const allowedNames: Set<string> = sessionMode === 'recorded'
         ? new Set<string>([...COMMON_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES, ...RECORDED_TOOL_NAMES])
         : sessionMode === 'user_summary'
@@ -1231,6 +1312,43 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     const registry: Record<string, AiCommandHandler> = {
 
     // ── Session ───────────────────────────────────────────────────────────────
+
+    async start_agent_session(args) {
+        const agentMode = normalizeAgentSessionMode(args.agent_mode || args.agentMode);
+        if (!agentMode) {
+            return {
+                status: 'error',
+                error: 'unsupported_agent_mode',
+                message: 'Only live_performance_analyst is supported right now.',
+            };
+        }
+        if (!isLiveSessionContext(context)) {
+            return {
+                status: 'error',
+                error: getLiveToolsUnavailableError(context),
+                message: 'Agent sessions are only available from live session context.',
+            };
+        }
+        if (!context.startAgentSession) {
+            return {
+                status: 'error',
+                error: 'agent_session_unavailable',
+                message: 'This UI cannot start child AI agent sessions.',
+            };
+        }
+        return context.startAgentSession(agentMode, args);
+    },
+
+    async stop_agent_session(args) {
+        if (!context.stopAgentSession) {
+            return {
+                status: 'error',
+                error: 'agent_session_unavailable',
+                message: 'This UI cannot stop child AI agent sessions.',
+            };
+        }
+        return context.stopAgentSession(normalizeOptionalString(args.agent_session_id ?? args.agentSessionId));
+    },
 
     async get_session_analysis(args) {
         return await apiService.post('/racing-session/detailed-info', { id: getSessionId(args, context) });
@@ -1484,6 +1602,10 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     },
 
     async start_live_performance_analysis(args, ctx) {
+        if (context.conversationRole !== 'agent' && context.startAgentSession) {
+            return context.startAgentSession('live_performance_analyst', args);
+        }
+
         const unavailable = buildLiveAnalystUnavailable(context);
         if (unavailable) return unavailable;
 
@@ -1587,6 +1709,9 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         context.setLivePerformanceAnalystEnabled?.(false);
         context.clearProcedurePlan?.();
         context.setAgentTagActive?.('Live Analyst', false);
+        if (context.conversationRole === 'agent' && context.stopAgentSession) {
+            await context.stopAgentSession(agent.analysisSessionId);
+        }
         return { status: 'stopped', agent_mode: 'live_performance_analyst', enabled: false };
     },
 

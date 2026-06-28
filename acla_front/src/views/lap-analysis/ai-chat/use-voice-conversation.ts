@@ -51,6 +51,7 @@ export interface FrontendToolSchema {
 }
 
 export type AiSessionContext = Record<string, unknown>;
+export type ConversationRole = 'main' | 'agent';
 
 /** One event surfaced to the chat UI off the voice WS. The hook fires
  *  these via `onEvent` so the caller can append them to a message list. */
@@ -75,6 +76,10 @@ export interface VoiceConversationOptions {
     /** User id — required for backend tools that key off the logged-in
      *  user (e.g. saved preferences, history). */
     userId?: string;
+    conversationRole?: ConversationRole;
+    clientSessionId?: string;
+    parentClientSessionId?: string | null;
+    agentMode?: string | null;
     /** Map of frontend tool name → handler. The LLM picks which tools to
      *  call from its system prompt; the backend routes the call to this
      *  hook over the WS via a `tool_call` text frame; we dispatch by
@@ -95,6 +100,16 @@ export interface VoiceConversationOptions {
      *  caller is responsible for appending to its own message list. */
     onEvent?: (event: VoiceEvent) => void;
 }
+
+export const buildVoiceSessionMetadata = (options: Pick<
+    VoiceConversationOptions,
+    'agentMode' | 'clientSessionId' | 'conversationRole' | 'parentClientSessionId'
+>) => ({
+    conversation_role: options.conversationRole || 'main',
+    client_session_id: options.clientSessionId,
+    parent_client_session_id: options.parentClientSessionId ?? null,
+    agent_mode: options.agentMode ?? null,
+});
 
 export interface VoiceConversation {
     state: VoiceConversationState;
@@ -146,11 +161,28 @@ export function useVoiceConversation(
         const sessionMode = typeof options.sessionContext?.session_mode === 'string'
             ? options.sessionContext.session_mode
             : undefined;
+        const metadata = buildVoiceSessionMetadata({
+            agentMode: options.agentMode,
+            clientSessionId: options.clientSessionId,
+            conversationRole: options.conversationRole,
+            parentClientSessionId: options.parentClientSessionId,
+        });
         return apiService.openWebSocket('/voice/stream', {
             session_id: options.sessionId,
             session_mode: sessionMode,
+            conversation_role: metadata.conversation_role,
+            client_session_id: metadata.client_session_id,
+            parent_client_session_id: metadata.parent_client_session_id || undefined,
+            agent_mode: metadata.agent_mode || undefined,
         });
-    }, [options.sessionContext, options.sessionId]);
+    }, [
+        options.agentMode,
+        options.clientSessionId,
+        options.conversationRole,
+        options.parentClientSessionId,
+        options.sessionContext,
+        options.sessionId,
+    ]);
 
     // Always-fresh handler registry — updated as options.toolHandlers changes
     // without forcing the WS to reopen.
@@ -333,8 +365,15 @@ export function useVoiceConversation(
                 // then enriches them with external knowledge-base tool
                 // instructions before exposing them to the LLM.
                 try {
+                    const metadata = buildVoiceSessionMetadata({
+                        agentMode: options.agentMode,
+                        clientSessionId: options.clientSessionId,
+                        conversationRole: options.conversationRole,
+                        parentClientSessionId: options.parentClientSessionId,
+                    });
                     ws.send(JSON.stringify({
                         type: 'frontend_info',
+                        ...metadata,
                         session_context: sessionContextRef.current,
                         tools: options.frontendTools || [],
                         query_scope_schema: options.querySchemaScope ?? null,
@@ -484,7 +523,11 @@ export function useVoiceConversation(
         state,
         openWs,
         stop,
+        options.agentMode,
+        options.clientSessionId,
+        options.conversationRole,
         options.frontendTools,
+        options.parentClientSessionId,
         options.querySchemaScope,
     ]);
 

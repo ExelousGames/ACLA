@@ -321,9 +321,9 @@ async def _await_frontend_info(
         if not isinstance(session_context, dict):
             raise _HandshakeError("frontend_info: 'session_context' must be an object or null")
         context_session_mode = session_context.get("session_mode")
-        if context_session_mode is not None and context_session_mode not in ("live", "recorded"):
+        if context_session_mode is not None and context_session_mode not in ("live", "recorded", "user_summary"):
             raise _HandshakeError(
-                "frontend_info: 'session_context.session_mode' must be 'live', 'recorded', or omitted"
+                "frontend_info: 'session_context.session_mode' must be 'live', 'recorded', 'user_summary', or omitted"
             )
         return tools, query_scope_schema, session_context
 
