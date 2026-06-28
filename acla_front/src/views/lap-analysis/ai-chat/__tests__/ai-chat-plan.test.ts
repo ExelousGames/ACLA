@@ -1,8 +1,42 @@
-import { buildLiveCoachingPlan } from '../ai-chat-plan';
+import { buildLiveProcedurePlan } from '../ai-chat-plan';
 
-describe('buildLiveCoachingPlan', () => {
+describe('buildLiveProcedurePlan', () => {
+    it('starts the visible plan with baseline collection', () => {
+        expect(buildLiveProcedurePlan({
+            event: 'live_analysis_plan_started',
+            snapshot: {
+                baseline_ready: false,
+            },
+        })).toMatchObject({
+            goal: 'Run live analysis from a clean baseline.',
+            steps: [
+                'Collect a complete baseline lap.',
+                'Analyze the baseline with recorded-session data or live section classification.',
+                'Select the focus section and compare the next pass against the baseline.',
+            ],
+            currentStep: 0,
+            sourceEvent: 'live_analysis_plan_started',
+        });
+    });
+
+    it('advances the visible plan when the baseline is ready for classification', () => {
+        expect(buildLiveProcedurePlan({
+            event: 'live_baseline_ready_for_classification',
+            candidate_sections: [{ name: 'T1 Paddock Hill Bend' }],
+        })).toMatchObject({
+            goal: 'Analyze the completed baseline and choose the focus section.',
+            steps: [
+                'Collect a complete baseline lap.',
+                'Classify baseline sections from the completed lap.',
+                'Select the focus section and compare the next pass against the baseline.',
+            ],
+            currentStep: 1,
+            sourceEvent: 'live_baseline_ready_for_classification',
+        });
+    });
+
     it('builds the visible plan from recorded analysis plan events', () => {
-        expect(buildLiveCoachingPlan({
+        expect(buildLiveProcedurePlan({
             event: 'recorded_analysis_plan_ready',
             goal: 'Improve T2 Druids by reducing late brake.',
             plan: ['Focus the next approach.', 'Clean up late brake.'],
@@ -17,9 +51,9 @@ describe('buildLiveCoachingPlan', () => {
         });
     });
 
-    it('infers a visible plan from a live coaching window focus', () => {
-        expect(buildLiveCoachingPlan({
-            event: 'coaching_window',
+    it('infers a visible plan from a live analysis window focus', () => {
+        expect(buildLiveProcedurePlan({
+            event: 'live_analysis_window',
             focus: {
                 section: { name: 'T1 Paddock Hill Bend' },
                 baseline: {
@@ -34,13 +68,13 @@ describe('buildLiveCoachingPlan', () => {
                 'After the next pass, compare the focused section classification against this baseline.',
             ],
             focusName: 'T1 Paddock Hill Bend',
-            sourceEvent: 'coaching_window',
+            sourceEvent: 'live_analysis_window',
         });
     });
 
-    it('ignores baseline classification request events until a focus exists', () => {
-        expect(buildLiveCoachingPlan({
-            event: 'live_baseline_ready_for_classification',
+    it('ignores unrelated live analyst events until a plan is available', () => {
+        expect(buildLiveProcedurePlan({
+            event: 'live_section_history_updated',
             candidate_sections: [{ name: 'T1 Paddock Hill Bend' }],
         })).toBeNull();
     });

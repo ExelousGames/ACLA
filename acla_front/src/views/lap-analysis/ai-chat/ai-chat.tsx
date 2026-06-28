@@ -17,7 +17,7 @@ import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/t
 import type { LivePerformanceAnalystState, OpportunityAgentState } from './ai-command-registry';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
-import { buildLiveCoachingPlan, type LiveCoachingPlan } from './ai-chat-plan';
+import { buildLiveProcedurePlan, type ProcedurePlan } from './ai-chat-plan';
 
 type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
 
@@ -177,7 +177,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
-    const [liveCoachingPlan, setLiveCoachingPlanState] = useState<LiveCoachingPlan | null>(null);
+    const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlan | null>(null);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
@@ -232,7 +232,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
     const trackGuideRunTokenRef = useRef(0);
     const activeAgentTagsRef = useRef<string[]>([]);
-    const liveCoachingPlanRef = useRef<LiveCoachingPlan | null>(null);
+    const procedurePlanRef = useRef<ProcedurePlan | null>(null);
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -368,20 +368,20 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setLivePerformanceAnalystEnabled(enabled);
     }, []);
 
-    const setLiveCoachingPlan = useCallback((plan: LiveCoachingPlan | null) => {
-        liveCoachingPlanRef.current = plan;
-        setLiveCoachingPlanState(plan);
+    const setProcedurePlan = useCallback((plan: ProcedurePlan | null) => {
+        procedurePlanRef.current = plan;
+        setProcedurePlanState(plan);
     }, []);
 
-    const advanceLiveCoachingPlanStep = useCallback((reason?: string) => {
-        const current = liveCoachingPlanRef.current;
+    const advanceProcedurePlanStep = useCallback((reason?: string) => {
+        const current = procedurePlanRef.current;
         if (!current) {
-            return { status: 'unavailable', error: 'no_coaching_plan' };
+            return { status: 'unavailable', error: 'no_procedure_plan' };
         }
 
         const nextStep = Math.min(current.currentStep + 1, current.steps.length - 1);
         const nextPlan = { ...current, currentStep: nextStep };
-        setLiveCoachingPlan(nextPlan);
+        setProcedurePlan(nextPlan);
 
         return {
             status: nextStep === current.currentStep ? 'complete' : 'advanced',
@@ -389,11 +389,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             step: nextPlan.steps[nextStep],
             reason,
         };
-    }, [setLiveCoachingPlan]);
+    }, [setProcedurePlan]);
 
-    const clearLiveCoachingPlan = useCallback(() => {
-        setLiveCoachingPlan(null);
-    }, [setLiveCoachingPlan]);
+    const clearProcedurePlan = useCallback(() => {
+        setProcedurePlan(null);
+    }, [setProcedurePlan]);
 
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
@@ -434,9 +434,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
         if (event.kind === 'observation') {
-            const plan = buildLiveCoachingPlan(event.data);
+            const plan = buildLiveProcedurePlan(event.data);
             if (plan) {
-                setLiveCoachingPlan(plan);
+                setProcedurePlan(plan);
             }
             return;
         }
@@ -523,13 +523,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             agent_modes: {
                 active: activeAgentModes,
             },
-            live_coaching_plan: liveCoachingPlan
+            procedure_plan: procedurePlan
                 ? {
-                    goal: liveCoachingPlan.goal,
-                    steps: liveCoachingPlan.steps,
-                    current_step: liveCoachingPlan.currentStep,
-                    current_step_text: liveCoachingPlan.steps[liveCoachingPlan.currentStep] || null,
-                    focus: liveCoachingPlan.focusName || null,
+                    goal: procedurePlan.goal,
+                    steps: procedurePlan.steps,
+                    current_step: procedurePlan.currentStep,
+                    current_step_text: procedurePlan.steps[procedurePlan.currentStep] || null,
+                    focus: procedurePlan.focusName || null,
                 }
                 : null,
             live_session_type: liveSnapshot?.live_session_type ?? 'unknown',
@@ -600,7 +600,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analysisContext?.sessionIntelligence,
         analysisContext?.sessionSelected,
         livePerformanceAnalystEnabled,
-        liveCoachingPlan,
+        procedurePlan,
         resolvedSessionId,
         sessionMode,
         TrackGuideEnabled,
@@ -630,8 +630,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             startTrackGuide,
             setTrackGuideEnabled: setTrackGuideAgentEnabled,
             setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-            advanceLiveCoachingPlanStep,
-            clearLiveCoachingPlan,
+            advanceProcedurePlanStep,
+            clearProcedurePlan,
             setAgentTagActive: setAgentTag,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
             userSummary,
@@ -645,20 +645,20 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }),
     });
 
-    const requestNextCoachingStep = useCallback(() => {
-        const current = liveCoachingPlanRef.current;
-        const advanced = advanceLiveCoachingPlanStep('driver_requested_next_step');
+    const requestNextPlanStep = useCallback(() => {
+        const current = procedurePlanRef.current;
+        const advanced = advanceProcedurePlanStep('driver_requested_next_step');
         if (!current || advanced.status === 'unavailable') return;
 
         voiceConversation.sendObservation({
-            source: 'coaching_plan_ui',
-            event: 'coaching_plan_next_step_requested',
+            source: 'procedure_plan_ui',
+            event: 'procedure_plan_next_step_requested',
             goal: current.goal,
             plan: current.steps,
             current_step: advanced.current_step ?? current.currentStep,
             step: advanced.step ?? current.steps[current.currentStep],
         });
-    }, [advanceLiveCoachingPlanStep, voiceConversation]);
+    }, [advanceProcedurePlanStep, voiceConversation]);
 
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
@@ -691,11 +691,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analystAgent.lastObservationAt = 0;
         analystAgent.lastSpokenAt = 0;
         setLivePerformanceAnalystAgentEnabled(false);
-        clearLiveCoachingPlan();
+        clearProcedurePlan();
         setAgentTag('Track Guide', false);
         setAgentTag('Overtake', false);
         setAgentTag('Live Analyst', false);
-    }, [clearLiveCoachingPlan, sessionMode, setAgentTag, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled]);
+    }, [clearProcedurePlan, sessionMode, setAgentTag, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled]);
 
     const toggleFloatingChat = useCallback(async () => {
         const api = (window as any).electronAPI;
@@ -1258,30 +1258,30 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         <span className="ai-chat__transcript-time">{clock}</span>
                     </div>
 
-                    {liveCoachingPlan && (
-                        <div className="ai-chat__plan" aria-label="Live coaching plan">
+                    {procedurePlan && (
+                        <div className="ai-chat__plan" aria-label="Procedure plan">
                             <div className="ai-chat__plan-head">
                                 <div>
-                                    <span className="ai-chat__plan-kicker">COACHING PLAN</span>
-                                    <div className="ai-chat__plan-goal">{liveCoachingPlan.goal}</div>
+                                    <span className="ai-chat__plan-kicker">PLAN</span>
+                                    <div className="ai-chat__plan-goal">{procedurePlan.goal}</div>
                                 </div>
                                 <button
                                     type="button"
                                     className="ai-chat__btn ai-chat__btn--blue ai-chat__plan-next"
-                                    onClick={requestNextCoachingStep}
-                                    disabled={liveCoachingPlan.currentStep >= liveCoachingPlan.steps.length - 1}
+                                    onClick={requestNextPlanStep}
+                                    disabled={procedurePlan.currentStep >= procedurePlan.steps.length - 1}
                                     title="Ask the assistant to move the plan to the next step"
                                 >
                                     NEXT STEP
                                 </button>
                             </div>
-                            {liveCoachingPlan.focusName && (
-                                <div className="ai-chat__plan-focus">{liveCoachingPlan.focusName}</div>
+                            {procedurePlan.focusName && (
+                                <div className="ai-chat__plan-focus">{procedurePlan.focusName}</div>
                             )}
                             <ul className="ai-chat__plan-list">
-                                {liveCoachingPlan.steps.map((step, index) => {
-                                    const isActive = index === liveCoachingPlan.currentStep;
-                                    const isDone = index < liveCoachingPlan.currentStep;
+                                {procedurePlan.steps.map((step, index) => {
+                                    const isActive = index === procedurePlan.currentStep;
+                                    const isDone = index < procedurePlan.currentStep;
                                     return (
                                         <li
                                             key={`${index}-${step}`}

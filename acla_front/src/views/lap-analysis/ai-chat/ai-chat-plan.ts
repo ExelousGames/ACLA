@@ -1,4 +1,4 @@
-export type LiveCoachingPlan = {
+export type ProcedurePlan = {
     goal: string;
     steps: string[];
     currentStep: number;
@@ -18,7 +18,7 @@ const toStringArray = (value: unknown): string[] => (
         : []
 );
 
-const buildInferredLivePlanSteps = (sectionName: string, primaryIssue: string | null): string[] => {
+const buildInferredLiveProcedureSteps = (sectionName: string, primaryIssue: string | null): string[] => {
     if (primaryIssue) {
         return [
             `Use the next approach to ${sectionName} as the focus run.`,
@@ -34,6 +34,28 @@ const buildInferredLivePlanSteps = (sectionName: string, primaryIssue: string | 
     ];
 };
 
+const buildLiveAnalysisStartupPlan = (snapshot: Record<string, any> | null): ProcedurePlan => ({
+    goal: 'Run live analysis from a clean baseline.',
+    steps: [
+        'Collect a complete baseline lap.',
+        'Analyze the baseline with recorded-session data or live section classification.',
+        'Select the focus section and compare the next pass against the baseline.',
+    ],
+    currentStep: snapshot?.baseline_ready ? 1 : 0,
+    sourceEvent: 'live_analysis_plan_started',
+});
+
+const buildBaselineReadyPlan = (): ProcedurePlan => ({
+    goal: 'Analyze the completed baseline and choose the focus section.',
+    steps: [
+        'Collect a complete baseline lap.',
+        'Classify baseline sections from the completed lap.',
+        'Select the focus section and compare the next pass against the baseline.',
+    ],
+    currentStep: 1,
+    sourceEvent: 'live_baseline_ready_for_classification',
+});
+
 const getFocusPrimaryIssue = (focus: Record<string, any> | null): string | null => {
     const baseline = focus?.baseline && typeof focus.baseline === 'object'
         ? focus.baseline as Record<string, unknown>
@@ -45,11 +67,20 @@ const getFocusPrimaryIssue = (focus: Record<string, any> | null): string | null 
         || null;
 };
 
-export const buildLiveCoachingPlan = (data: Record<string, unknown>): LiveCoachingPlan | null => {
+export const buildLiveProcedurePlan = (data: Record<string, unknown>): ProcedurePlan | null => {
     const sourceEvent = toNonEmptyString(data.event);
+    const snapshot = data.snapshot && typeof data.snapshot === 'object'
+        ? data.snapshot as Record<string, any>
+        : null;
+    if (sourceEvent === 'live_analysis_plan_started') {
+        return buildLiveAnalysisStartupPlan(snapshot);
+    }
+    if (sourceEvent === 'live_baseline_ready_for_classification') {
+        return buildBaselineReadyPlan();
+    }
     if (
         sourceEvent !== 'recorded_analysis_plan_ready'
-        && sourceEvent !== 'coaching_window'
+        && sourceEvent !== 'live_analysis_window'
     ) return null;
 
     const focus = data.focus && typeof data.focus === 'object'
@@ -62,7 +93,7 @@ export const buildLiveCoachingPlan = (data: Record<string, unknown>): LiveCoachi
     const inferredSteps = steps.length > 0
         ? steps
         : focusName
-            ? buildInferredLivePlanSteps(focusName, primaryIssue)
+            ? buildInferredLiveProcedureSteps(focusName, primaryIssue)
             : [];
     if (inferredSteps.length === 0) return null;
 
@@ -73,8 +104,8 @@ export const buildLiveCoachingPlan = (data: Record<string, unknown>): LiveCoachi
     const inferredGoal = focusName
         ? primaryIssue
             ? `Improve ${focusName} by reducing ${primaryIssue}.`
-            : `Improve ${focusName} with a focused live coaching pass.`
-        : 'Live coaching plan';
+            : `Improve ${focusName} with a focused live analysis pass.`
+        : 'Live procedure plan';
 
     return {
         goal: toNonEmptyString(data.goal) || inferredGoal,

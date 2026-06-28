@@ -40,13 +40,13 @@ export interface AiCommandRegistryContext {
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
-    advanceLiveCoachingPlanStep?: (reason?: string) => {
+    advanceProcedurePlanStep?: (reason?: string) => {
         status: string;
         current_step?: number;
         step?: string;
         error?: string;
     };
-    clearLiveCoachingPlan?: () => void;
+    clearProcedurePlan?: () => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     getOpportunityTelemetryRows: () => Record<string, any>[];
     userSummary?: Record<string, any>;
@@ -823,11 +823,11 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
     {
         name: 'start_live_performance_analysis',
-        description: 'Start the live performance analyst agent. The agent waits for a completed baseline lap, uses recorded-session analysis when available, and otherwise asks the live classifier to build a focus from the completed lap.',
+        description: 'Start the live performance analyst agent. The agent creates a procedure plan, waits for a completed baseline lap, uses recorded-session analysis when available, and otherwise asks the live classifier to build a focus from the completed lap.',
         properties: {
             interval_seconds: {
                 type: 'number',
-                description: 'How often the frontend should check live section/coaching state.',
+                description: 'How often the frontend should check live section and plan state.',
             },
         },
         required: [],
@@ -862,12 +862,12 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         required: [],
     },
     {
-        name: 'advance_live_coaching_plan_step',
-        description: 'Move the visible live coaching plan UI to the next bullet after the current step is complete.',
+        name: 'advance_plan_step',
+        description: 'Move the visible procedure plan UI to the next bullet after the current step is complete.',
         properties: {
             reason: {
                 type: 'string',
-                description: 'Short reason the assistant is moving to the next coaching step.',
+                description: 'Short reason the assistant is moving to the next plan step.',
             },
         },
         required: [],
@@ -1027,7 +1027,7 @@ const LIVE_TOOL_NAMES = [
     'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
-    'advance_live_coaching_plan_step',
+    'advance_plan_step',
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
@@ -1390,6 +1390,13 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         }
         context.setLivePerformanceAnalystEnabled?.(true);
         context.setAgentTagActive?.('Live Analyst', true);
+        ctx.sendObservation({
+            source: 'live_performance_analyst',
+            agent_mode: 'live_performance_analyst',
+            event: 'live_analysis_plan_started',
+            snapshot: si.getLiveSessionSnapshot(),
+            message: 'Live analysis procedure started. Collect a baseline first, then analyze the completed baseline.',
+        });
 
         const runAnalystCycle = async (notify: boolean): Promise<any> => {
             if (agent.inFlight) {
@@ -1466,7 +1473,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                             ctx.sendObservation({
                                 source: 'live_performance_analyst',
                                 agent_mode: 'live_performance_analyst',
-                                event: 'coaching_window',
+                                event: 'live_analysis_window',
                                 snapshot,
                                 focus,
                             });
@@ -1516,7 +1523,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         agent.analysisSessionId = null;
         context.sessionIntelligence?.clearFocusSection();
         context.setLivePerformanceAnalystEnabled?.(false);
-        context.clearLiveCoachingPlan?.();
+        context.clearProcedurePlan?.();
         context.setAgentTagActive?.('Live Analyst', false);
         return { status: 'stopped', agent_mode: 'live_performance_analyst', enabled: false };
     },
@@ -1557,11 +1564,11 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         };
     },
 
-    async advance_live_coaching_plan_step(args) {
+    async advance_plan_step(args) {
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        return context.advanceLiveCoachingPlanStep?.(normalizeOptionalString(args.reason)) || {
+        return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
             status: 'unavailable',
-            error: 'no_coaching_plan_ui',
+            error: 'no_procedure_plan_ui',
         };
     },
 

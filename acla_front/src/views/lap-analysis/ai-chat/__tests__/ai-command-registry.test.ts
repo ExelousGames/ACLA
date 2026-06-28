@@ -666,7 +666,7 @@ describe('ai command registry live performance analyst tools', () => {
             'get_live_session_snapshot',
             'get_live_focus_section',
             'get_live_section_history',
-            'advance_live_coaching_plan_step',
+            'advance_plan_step',
         ]));
         expect(liveToolNames).not.toEqual(expect.arrayContaining([
             '_get_live_section_telemetry',
@@ -675,26 +675,26 @@ describe('ai command registry live performance analyst tools', () => {
         expect(recordedToolNames).not.toEqual(expect.arrayContaining([
             'start_live_performance_analysis',
             'get_live_session_snapshot',
-            'advance_live_coaching_plan_step',
+            'advance_plan_step',
         ]));
     });
 
-    it('lets the assistant advance the visible live coaching plan step', async () => {
-        const advanceLiveCoachingPlanStep = jest.fn(() => ({
+    it('lets the assistant advance the visible procedure plan step', async () => {
+        const advanceProcedurePlanStep = jest.fn(() => ({
             status: 'advanced',
             current_step: 1,
             step: 'Compare the next pass.',
         }));
         const { registry } = createLiveAnalystRegistry({
-            advanceLiveCoachingPlanStep,
+            advanceProcedurePlanStep,
         });
 
-        const result = await registry.advance_live_coaching_plan_step(
+        const result = await registry.advance_plan_step(
             { reason: 'first step completed' },
             { sendObservation: jest.fn() },
         );
 
-        expect(advanceLiveCoachingPlanStep).toHaveBeenCalledWith('first step completed');
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first step completed');
         expect(result).toEqual({
             status: 'advanced',
             current_step: 1,
@@ -722,7 +722,7 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
-    it('does not send assistant observations while collecting baseline', async () => {
+    it('starts the visible procedure plan while collecting baseline', async () => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.tick({
             Static_track: 'brands_hatch',
@@ -773,7 +773,14 @@ describe('ai command registry live performance analyst tools', () => {
                 },
             },
         });
-        expect(sendObservation).not.toHaveBeenCalled();
+        expect(sendObservation).toHaveBeenCalledTimes(1);
+        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'live_analysis_plan_started',
+            message: expect.stringContaining('Collect a baseline first'),
+            snapshot: expect.objectContaining({
+                baseline_ready: false,
+            }),
+        }));
 
         if (livePerformanceAnalystState.intervalId) {
             clearInterval(livePerformanceAnalystState.intervalId);
@@ -817,8 +824,11 @@ describe('ai command registry live performance analyst tools', () => {
                 }),
             }),
         }));
-        expect(sendObservation.mock.calls[0][0]).not.toHaveProperty('internal_tool_hint');
-        expect(sendObservation.mock.calls[0][0]).not.toHaveProperty('sections');
+        const recordedPlanObservation = sendObservation.mock.calls.find(([payload]) => (
+            payload.event === 'recorded_analysis_plan_ready'
+        ))?.[0];
+        expect(recordedPlanObservation).not.toHaveProperty('internal_tool_hint');
+        expect(recordedPlanObservation).not.toHaveProperty('sections');
 
         if (livePerformanceAnalystState.intervalId) {
             clearInterval(livePerformanceAnalystState.intervalId);
@@ -900,6 +910,12 @@ describe('ai command registry live performance analyst tools', () => {
                     lap: 0,
                 }),
             ]),
+        }));
+        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'live_analysis_plan_started',
+            snapshot: expect.objectContaining({
+                baseline_ready: true,
+            }),
         }));
 
         if (livePerformanceAnalystState.intervalId) {
