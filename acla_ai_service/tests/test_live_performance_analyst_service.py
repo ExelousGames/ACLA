@@ -45,64 +45,6 @@ def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
     assert set(live_schema.properties) == {"section_id", "section_name", "lap"}
 
 
-def test_live_analyst_observations_report_state_without_teaching_actions():
-    collecting_msg = pipecat_pipeline._format_observation_for_llm({
-        "source": "live_performance_analyst",
-        "agent_mode": "live_performance_analyst",
-        "event": "collecting_baseline",
-        "snapshot": {
-            "track": "brands_hatch",
-            "current_lap": 1,
-            "completed_laps": 0,
-            "live_session_type": "solo_practice",
-        },
-    })
-    plan_msg = pipecat_pipeline._format_observation_for_llm({
-        "source": "live_performance_analyst",
-        "agent_mode": "live_performance_analyst",
-        "event": "recorded_analysis_plan_ready",
-        "goal": "Improve Paddock Hill.",
-        "snapshot": {"track": "brands_hatch", "live_session_type": "solo_practice"},
-        "focus": {
-            "section": {"id": "brands_hatch2", "name": "Paddock Hill", "from": 0.1, "to": 0.2},
-            "baseline": {"childLabels": ["Initiate brake too late"]},
-        },
-    })
-    baseline_msg = pipecat_pipeline._format_observation_for_llm({
-        "source": "live_performance_analyst",
-        "agent_mode": "live_performance_analyst",
-        "event": "recorded_session_required",
-        "message": "Recorded-session AI analysis is required.",
-        "snapshot": {"track": "brands_hatch", "live_session_type": "solo_practice"},
-    })
-    coaching_msg = pipecat_pipeline._format_observation_for_llm({
-        "source": "live_performance_analyst",
-        "agent_mode": "live_performance_analyst",
-        "event": "live_analysis_window",
-        "snapshot": {"live_session_type": "traffic_or_race"},
-        "focus": {
-            "section": {"id": "brands_hatch2", "name": "Paddock Hill", "from": 0.1, "to": 0.2},
-            "baseline": {"mistakeCount": 2, "severity": 2, "childLabels": ["Initiate brake too late"]},
-            "timing": {"secondsAhead": 9.5, "distanceAhead": 0.06},
-        },
-    })
-
-    assert "track=brands_hatch" in collecting_msg
-    assert "completed_laps=0" in collecting_msg
-    assert "get_live_focus_section" not in collecting_msg
-    assert "classify_live_section" not in collecting_msg
-    assert "Do not" not in collecting_msg
-    assert "goal=Improve Paddock Hill." in plan_msg
-    assert "section=brands_hatch2:Paddock Hill" in plan_msg
-    assert "plan=" not in plan_msg
-    assert "Recorded-session AI analysis is required." in baseline_msg
-    assert "Explain briefly" not in baseline_msg
-    assert "classify_live_section" not in baseline_msg
-    assert "Call show_map" not in coaching_msg
-    assert "Give one short correction" not in coaching_msg
-    assert "traffic_or_race" in coaching_msg
-
-
 @pytest.mark.asyncio
 async def test_classify_live_section_uses_hidden_frontend_telemetry_tool(monkeypatch):
     service = object.__new__(AIService)

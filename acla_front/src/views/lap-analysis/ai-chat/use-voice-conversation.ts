@@ -10,11 +10,12 @@
  *   them through a caller-supplied handler registry and replies with
  *   `{type:"tool_result",...}` or `{type:"tool_error",...}`. Long-running
  *   handlers (e.g. per-turn coaching) can also push
- *   `{type:"observation",data}` frames any time via `ctx.sendObservation`.
+ *   `{type:"observation",data:{text}}` frames any time via `ctx.sendObservation`.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
+import { buildFormattedObservationFrame } from './voice-observation-formatter';
 
 export type VoiceConversationState =
     | 'idle'           // not connected
@@ -26,8 +27,8 @@ export type VoiceConversationState =
 /** Context passed to every frontend tool handler. */
 export interface ToolHandlerContext {
     /** Push an `observation` frame on the open WS. Safe to call from a
-     *  background monitoring agent at any time. Becomes a synthetic user
-     *  turn in the LLM's context on the backend. */
+     *  background monitoring agent at any time. The frontend formats it
+     *  before the backend injects it into the LLM context. */
     sendObservation: (data: Record<string, unknown>) => void;
 }
 
@@ -355,7 +356,7 @@ export function useVoiceConversation(
             const toolCtx: ToolHandlerContext = {
                 sendObservation: (data) => {
                     onEventRef.current?.({ kind: 'observation', data });
-                    sendText({ type: 'observation', data });
+                    sendText(buildFormattedObservationFrame(data));
                 },
             };
 
@@ -558,7 +559,7 @@ export function useVoiceConversation(
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
-            ws.send(JSON.stringify({ type: 'observation', data }));
+            ws.send(JSON.stringify(buildFormattedObservationFrame(data)));
             return true;
         } catch (err) {
             console.warn('[voice] sendObservation failed:', err);

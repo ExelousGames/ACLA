@@ -1007,15 +1007,17 @@ async def build_voice_pipeline_task(
     )
     task_ref["task"] = task
     # --- Observation sink (frontend monitoring-agent pushes) ----------------
-    # When the frontend WS sends {"type":"observation","data":{...}}, the
-    # relay calls this sink. We format the observation as a synthetic user
-    # turn, append it to the live LLMContext, and trigger the LLM to
-    # respond. Same conversation context as voice turns — the LLM doesn't
-    # know an observation came from a different path than STT.
+    # When the frontend WS sends {"type":"observation","data":{"text":"..."}},
+    # the relay calls this sink. The frontend owns observation formatting; the
+    # backend injects the final text as a synthetic user turn and triggers the
+    # LLM to respond.
     loop = asyncio.get_running_loop()
 
     def observation_sink(data: dict) -> None:
-        text = _format_observation_for_llm(data)
+        text = str(data.get("text") or "").strip()
+        if not text:
+            LOGGER.warning("observation_sink: dropped observation without formatted text")
+            return
         context.add_message({"role": "user", "content": f"[OBSERVATION] {text}"})
         # Trigger the LLM to generate a response now (don't wait for the
         # next spoken user turn). Best-effort across Pipecat versions:
@@ -1074,182 +1076,6 @@ async def build_voice_pipeline_task(
     )
 
     return task
-
-
-def _format_observation_for_llm(data: dict) -> str:
-    """Turn an observation payload into a one-line prompt for the LLM.
-
-    Observations come in raw from the frontend monitoring agent — they
-    carry an ``event`` name plus arbitrary context (telemetry rows, lap
-    number, etc.). We compress them to a short prompt so the LLM has
-    something concrete to respond to without re-classifying every channel.
-    Classification is still on the LLM to invoke (via analyze_telemetry)
-    if it decides the observation warrants it.
-    """
-    event = data.get("event", "event")
-
-    if data.get("source") == "live_performance_analyst" or data.get("agent_mode") == "live_performance_analyst":
-        snapshot = data.get("snapshot") or {}
-        if not isinstance(snapshot, dict):
-            snapshot = {}
-        session_type = snapshot.get("live_session_type") or snapshot.get("session_type") or "unknown"
-        completed_laps = snapshot.get("completed_laps")
-        current_lap = snapshot.get("current_lap")
-        track = snapshot.get("track") or "current track"
-
-        if event == "collecting_baseline":
-            return (
-                "live_performance_analyst collecting baseline: "
-                f"track={track}, current_lap={current_lap}, completed_laps={completed_laps}, "
-                f"session_type={session_type}."
-            )
-
-        if event == "recorded_analysis_plan_ready":
-            focus = data.get("focus") or {}
-            if not isinstance(focus, dict):
-                focus = {}
-            section = focus.get("section") or {}
-            baseline = focus.get("baseline") or {}
-            if not isinstance(section, dict):
-                section = {}
-            if not isinstance(baseline, dict):
-                baseline = {}
-            return (
-                "live_performance_analyst recorded analysis plan ready. "
-                f"goal={data.get('goal')}; "
-                f"section={section.get('id')}:{section.get('name')} "
-                f"range=[{section.get('from')},{section.get('to')}], "
-                f"labels={baseline.get('childLabels')}, session_type={session_type}."
-            )
-
-        if event in {
-            "recorded_session_required",
-            "recorded_analysis_unavailable",
-            "recorded_analysis_failed",
-            "no_focus_from_recorded_analysis",
-        }:
-            return (
-                "live_performance_analyst cannot build a focus plan yet. "
-                f"reason={event}; message={data.get('message')}."
-            )
-
-        if event == "live_analysis_window":
-            focus = data.get("focus") or {}
-            if not isinstance(focus, dict):
-                focus = {}
-            section = focus.get("section") or {}
-            baseline = focus.get("baseline") or {}
-            timing = focus.get("timing") or {}
-            if not isinstance(section, dict):
-                section = {}
-            if not isinstance(baseline, dict):
-                baseline = {}
-            if not isinstance(timing, dict):
-                timing = {}
-            return (
-                "live_performance_analyst coaching window. "
-                f"section={section.get('id')}:{section.get('name')} "
-                f"range=[{section.get('from')},{section.get('to')}], "
-                f"mistakes={baseline.get('mistakeCount')}, severity={baseline.get('severity')}, "
-                f"labels={baseline.get('childLabels')}, seconds_ahead={timing.get('secondsAhead')}, "
-                f"distance_ahead={timing.get('distanceAhead')}, session_type={session_type}."
-            )
-
-    if event in ("attack_window", "defense_threat"):
-        section = data.get("projected_section") or None
-        next_corner = data.get("next_corner") or {}
-        if not isinstance(next_corner, dict):
-            next_corner = {}
-        corner_name = next_corner.get("name")
-        location = section or corner_name or "the next section"
-        time_to_overlap = data.get("time_to_overlap_seconds")
-        closing_speed = data.get("closing_speed_mps")
-        distance = data.get("distance_m")
-        opponent = data.get("opponent_id")
-        if opponent is None:
-            opponent = data.get("opponent_slot")
-
-        details: List[str] = []
-        if isinstance(time_to_overlap, (int, float)):
-            details.append(f"arriving in {round(float(time_to_overlap), 1)}s")
-        if isinstance(closing_speed, (int, float)):
-            details.append(f"closing speed {round(float(closing_speed), 1)} m/s")
-        if isinstance(distance, (int, float)):
-            details.append(f"distance {round(float(distance), 1)}m")
-        if opponent is not None:
-            details.append(f"opponent {opponent}")
-        detail_text = ", ".join(details) if details else "coordinate-derived relative motion"
-
-        if event == "attack_window":
-            return (
-                f"overtake_agent attack_window at {location}: {detail_text}. "
-                "Tell the driver an attack is opening and give one short action."
-            )
-        return (
-            f"overtake_agent defense_threat at {location}: {detail_text}. "
-            "Tell the driver to defend and give one short action."
-        )
-
-    if event == "opportunity_forecast":
-        selected = data.get("selected_opportunity") or {}
-        if not isinstance(selected, dict):
-            selected = {}
-        opportunities = data.get("opportunities") or []
-        labels: List[str] = []
-        for item in opportunities[:3]:
-            if not isinstance(item, dict):
-                continue
-            label = item.get("label_name") or item.get("label_id") or "opportunity"
-            probability = item.get("probability")
-            if isinstance(probability, (int, float)):
-                label = f"{label} {round(probability * 100)}%"
-            section = item.get("circuit_section_name")
-            if section:
-                label = f"{label} at {section}"
-            labels.append(str(label))
-        horizon = data.get("horizon_seconds")
-        horizon_text = f"next {horizon}s" if horizon is not None else "upcoming"
-        mode = data.get("mode")
-        source = data.get("source")
-        next_corner = data.get("next_corner") or {}
-        if not isinstance(next_corner, dict):
-            next_corner = {}
-        corner_name = next_corner.get("name")
-        section_match = data.get("circuit_section_match") or {}
-        best_match = section_match.get("best_match") if isinstance(section_match, dict) else None
-        selected_section = selected.get("circuit_section_name")
-        if not selected_section and isinstance(best_match, dict):
-            selected_section = best_match.get("name")
-        location_bits = []
-        if selected_section:
-            location_bits.append(f"forecast section {selected_section}")
-        if corner_name:
-            location_bits.append(f"next corner {corner_name}")
-        location_text = f" ({'; '.join(location_bits)})" if location_bits else ""
-        if labels:
-            if mode == "agent" or source == "overtake_agent":
-                return (
-                    f"overtake_agent alert {horizon_text}{location_text}: {', '.join(labels)}. "
-                    "Tell the driver the next possible pass window relative to the circuit section and give one short action."
-                )
-            return (
-                f"opportunity_forecast {horizon_text}{location_text}: {', '.join(labels)}. "
-                "Explain what it means and what the driver should do next in one short engineer radio message."
-            )
-        return (
-            f"opportunity_forecast {horizon_text}{location_text}: no strong opportunity labels. "
-            "If useful, tell the driver to keep building the setup in one short radio message."
-        )
-
-    bits = [event]
-    for k in ("section", "lap", "lap_number"):
-        v = data.get(k)
-        if v is not None:
-            bits.append(f"{k}={v}")
-    n_rows = len(data.get("telemetry_rows") or [])
-    if n_rows:
-        bits.append(f"telemetry_rows={n_rows}")
-    return " ".join(bits) + ". Respond with one short engineer suggestion."
 
 
 async def run_voice_session(

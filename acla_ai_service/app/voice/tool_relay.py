@@ -25,7 +25,7 @@ Frame shapes (over the WS as JSON text):
 
 * Frontend → Backend (independent of any specific tool call)::
 
-      {"type": "observation", "data": {...}}
+      {"type": "observation", "data": {"text": "<formatted prompt>"}}
 
 Public surface:
 
@@ -92,8 +92,8 @@ class ToolRelay:
     ) -> None:
         """Register a connection. ``conn`` is any hashable identifier (we use
         ``id(websocket)``). ``send_text`` writes one text frame; the
-        ``observation_sink`` receives the ``data`` payload of each inbound
-        ``observation`` frame; the optional ``user_text_sink`` receives the
+        ``observation_sink`` receives the formatted ``data`` payload of each
+        inbound ``observation`` frame; the optional ``user_text_sink`` receives the
         ``text`` of each inbound ``user_text`` frame (typed chat input)."""
         self._by_conn[id(conn)] = _ConnectionState(
             send_text, observation_sink, user_text_sink,
@@ -166,9 +166,9 @@ class ToolRelay:
         - ``tool_result`` / ``tool_error`` → resolve the matching in-flight
           future. Unknown ids are dropped (likely a late response after the
           caller already timed out / cancelled).
-        - ``observation`` → forward ``payload["data"]`` to the connection's
-          ``observation_sink``. Sink exceptions are caught and logged so a
-          buggy sink never breaks the relay.
+        - ``observation`` → forward formatted ``payload["data"]`` to the
+          connection's ``observation_sink``. Sink exceptions are caught and
+          logged so a buggy sink never breaks the relay.
         """
         state = self._by_conn.get(id(conn))
         if state is None:
