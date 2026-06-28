@@ -668,6 +668,7 @@ describe('ai command registry live performance analyst tools', () => {
             'get_live_focus_section',
             'get_live_section_history',
             'advance_plan_step',
+            'set_procedure_plan',
         ]));
         expect(liveToolNames).not.toEqual(expect.arrayContaining([
             '_get_live_section_telemetry',
@@ -680,7 +681,7 @@ describe('ai command registry live performance analyst tools', () => {
         ]));
     });
 
-    it('lets the assistant advance the visible procedure plan step', async () => {
+    it('lets the assistant advance the visible procedure plan request', async () => {
         const advanceProcedurePlanStep = jest.fn(() => ({
             status: 'advanced',
             current_step: 1,
@@ -688,6 +689,16 @@ describe('ai command registry live performance analyst tools', () => {
         }));
         const { registry } = createLiveAnalystRegistry({
             advanceProcedurePlanStep,
+            getProcedurePlan: () => ({
+                goal: 'Run live analysis from a clean baseline.',
+                requests: [
+                    { type: 'request', title: 'Collect a complete baseline lap.' },
+                    { type: 'request', title: 'Analyze the baseline.' },
+                    { type: 'request', title: 'Select the focus section.' },
+                ],
+                currentStep: 0,
+                sourceEvent: 'live_analysis_plan_started',
+            }),
         });
 
         const result = await registry.advance_plan_step(
@@ -700,6 +711,141 @@ describe('ai command registry live performance analyst tools', () => {
             status: 'advanced',
             current_step: 1,
             step: 'Compare the next pass.',
+        });
+    });
+
+    it('lets the assistant set the visible procedure plan request list', async () => {
+        const setProcedurePlan = jest.fn();
+        const { registry } = createLiveAnalystRegistry({
+            setProcedurePlan,
+        });
+
+        const result = await registry.set_procedure_plan(
+            {
+                goal: 'Improve Druids entry.',
+                focus_name: 'T2 Druids',
+                requests: [
+                    {
+                        type: 'tool_call',
+                        name: 'show_map',
+                        title: 'Show the focus map',
+                        payload: { section_name: 'T2 Druids' },
+                    },
+                    {
+                        type: 'driver_action',
+                        title: 'Brake earlier on the next approach',
+                    },
+                ],
+            },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(setProcedurePlan).toHaveBeenCalledWith(expect.objectContaining({
+            goal: 'Improve Druids entry.',
+            focusName: 'T2 Druids',
+            requests: [
+                expect.objectContaining({
+                    type: 'tool_call',
+                    name: 'show_map',
+                    title: 'Show the focus map',
+                    payload: { section_name: 'T2 Druids' },
+                }),
+                expect.objectContaining({
+                    type: 'driver_action',
+                    title: 'Brake earlier on the next approach',
+                }),
+            ],
+            currentStep: 0,
+        }));
+        expect(result).toMatchObject({
+            status: 'ready',
+            goal: 'Improve Druids entry.',
+            request_count: 2,
+            current_request: 0,
+        });
+    });
+
+    it('blocks plan advancement until the baseline prerequisite is complete', async () => {
+        const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Static_car_model: 'Ferrari 296',
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.2,
+        });
+        const advanceProcedurePlanStep = jest.fn();
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState: {
+                intervalId: null,
+                inFlight: false,
+                enabled: true,
+                lastObservationKey: null,
+                lastObservationAt: 0,
+                lastSpokenAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            advanceProcedurePlanStep,
+            getProcedurePlan: () => ({
+                goal: 'Run live analysis from a clean baseline.',
+                requests: [
+                    { type: 'request', title: 'Collect a complete baseline lap.' },
+                    { type: 'request', title: 'Analyze the baseline.' },
+                    { type: 'request', title: 'Select the focus section.' },
+                ],
+                currentStep: 0,
+                sourceEvent: 'live_analysis_plan_started',
+            }),
+        });
+
+        const result = await registry.advance_plan_step(
+            { reason: 'skip ahead' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+            status: 'error',
+            error: 'baseline_collection_incomplete',
+            snapshot: {
+                baseline_ready: false,
+            },
+        });
+    });
+
+    it('blocks plan advancement to the focus step until a focus section exists', async () => {
+        const { registry } = createLiveAnalystRegistry({
+            advanceProcedurePlanStep: jest.fn(),
+            getProcedurePlan: () => ({
+                goal: 'Run live analysis from a clean baseline.',
+                requests: [
+                    { type: 'request', title: 'Collect a complete baseline lap.' },
+                    { type: 'request', title: 'Analyze the baseline.' },
+                    { type: 'request', title: 'Select the focus section.' },
+                ],
+                currentStep: 1,
+                sourceEvent: 'live_baseline_ready_for_classification',
+            }),
+        });
+
+        const result = await registry.advance_plan_step(
+            { reason: 'skip focus analysis' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toMatchObject({
+            status: 'error',
+            error: 'focus_section_not_ready',
         });
     });
 
@@ -777,15 +923,15 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(focusResult).toMatchObject({
-            status: 'collecting_baseline',
-            focus: null,
+            status: 'error',
+            error: 'baseline_collection_incomplete',
             snapshot: {
                 baseline_ready: false,
             },
         });
         expect(telemetryResult).toMatchObject({
-            status: 'collecting_baseline',
-            rows: [],
+            status: 'error',
+            error: 'baseline_collection_incomplete',
             snapshot: {
                 baseline_ready: false,
             },
@@ -887,7 +1033,6 @@ describe('ai command registry live performance analyst tools', () => {
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_plan_ready',
             goal: expect.stringContaining('T2 Druids'),
-            plan: expect.any(Array),
             focus: expect.objectContaining({
                 section: expect.objectContaining({
                     name: 'T2 Druids',
@@ -897,6 +1042,7 @@ describe('ai command registry live performance analyst tools', () => {
         const recordedPlanObservation = sendObservation.mock.calls.find(([payload]) => (
             payload.event === 'recorded_analysis_plan_ready'
         ))?.[0];
+        expect(recordedPlanObservation).not.toHaveProperty('plan');
         expect(recordedPlanObservation).not.toHaveProperty('internal_tool_hint');
         expect(recordedPlanObservation).not.toHaveProperty('sections');
 

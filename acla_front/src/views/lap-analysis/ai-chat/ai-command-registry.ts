@@ -22,6 +22,12 @@ import {
     hasEnoughCoachingLead,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
+    buildLiveProcedurePlan,
+    getProcedurePlanAdvanceBlock,
+    type ProcedurePlan,
+    type ProcedurePlanRequest,
+} from './ai-chat-plan';
+import {
     PracticeParentSegmentView,
     PracticeSectionSummaryView,
     asRecord,
@@ -42,11 +48,15 @@ export interface AiCommandRegistryContext {
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
     advanceProcedurePlanStep?: (reason?: string) => {
         status: string;
+        current_request?: number;
+        request?: ProcedurePlanRequest;
         current_step?: number;
         step?: string;
         error?: string;
     };
+    getProcedurePlan?: () => ProcedurePlan | null;
     clearProcedurePlan?: () => void;
+    setProcedurePlan?: (plan: ProcedurePlan | null) => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     getOpportunityTelemetryRows: () => Record<string, any>[];
     userSummary?: Record<string, any>;
@@ -84,7 +94,6 @@ type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => 
 type LivePerformancePlan = {
     status: 'ready';
     goal: string;
-    plan: string[];
     focus: ReturnType<typeof buildLiveFocusPayload>;
     analysis: ReturnType<typeof buildRecordedAnalysisToolResult>;
 };
@@ -562,18 +571,6 @@ const buildGoalText = (
     return `Improve ${sectionName} by reducing ${primaryIssue}.`;
 };
 
-const buildPlanSteps = (
-    sectionName: string,
-    childLabels: string[],
-): string[] => {
-    const primaryIssue = childLabels[0] || 'the main mistake';
-    return [
-        `Use the next approach to ${sectionName} as the focus run.`,
-        `Change one thing first: clean up ${primaryIssue}.`,
-        'After the next pass, compare the focused section classification against this baseline.',
-    ];
-};
-
 const buildLivePerformancePlanFromRecordedAnalysis = (
     state: RecordedAiAnalysisState,
     context: AiCommandRegistryContext,
@@ -639,7 +636,6 @@ const buildLivePerformancePlanFromRecordedAnalysis = (
     return {
         status: 'ready',
         goal: buildGoalText(best.section.name, best.childLabels),
-        plan: buildPlanSteps(best.section.name, best.childLabels),
         focus,
         analysis: buildRecordedAnalysisToolResult(state, context, { limit: 8 }),
     };
@@ -863,14 +859,50 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
     {
         name: 'advance_plan_step',
-        description: 'Move the visible procedure plan UI to the next bullet after the current step is complete.',
+        description: 'Move the visible procedure plan UI to the next request after the current request is complete.',
         properties: {
             reason: {
                 type: 'string',
-                description: 'Short reason the assistant is moving to the next plan step.',
+                description: 'Short reason the assistant is moving to the next plan request.',
             },
         },
         required: [],
+    },
+    {
+        name: 'set_procedure_plan',
+        description: 'Create or replace the visible procedure plan UI with an AI-authored list of requests.',
+        properties: {
+            goal: {
+                type: 'string',
+                description: 'Short goal shown above the request list.',
+            },
+            focus_name: {
+                type: 'string',
+                description: 'Optional section, session, or workflow focus label.',
+            },
+            current_request: {
+                type: 'integer',
+                description: 'Zero-based index of the active request.',
+            },
+            requests: {
+                type: 'array',
+                description: 'Ordered list of requests the assistant plans to perform or ask the UI/backend to perform.',
+                items: {
+                    type: 'object',
+                    properties: {
+                        type: { type: 'string' },
+                        title: { type: 'string' },
+                        detail: { type: 'string' },
+                        name: { type: 'string' },
+                        method: { type: 'string' },
+                        url: { type: 'string' },
+                        payload: { type: 'object' },
+                    },
+                    required: ['type', 'title'],
+                },
+            },
+        },
+        required: ['goal', 'requests'],
     },
     {
         name: 'get_next_corner',
@@ -1015,6 +1047,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
 
 const COMMON_TOOL_NAMES = [
     'show_map',
+    'set_procedure_plan',
 ] as const;
 
 const LIVE_TOOL_NAMES = [
@@ -1107,6 +1140,18 @@ const buildLiveFocusPayload = (context: AiCommandRegistryContext) => {
         },
     };
 };
+
+const buildLiveAnalystPlanError = (
+    error: string,
+    message: string,
+    snapshot?: Record<string, any>,
+) => ({
+    status: 'error',
+    error,
+    agent_mode: 'live_performance_analyst',
+    ...(snapshot ? { snapshot } : {}),
+    message,
+});
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
     args.session_id ||
@@ -1438,7 +1483,6 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                                     event: 'recorded_analysis_plan_ready',
                                     snapshot,
                                     goal: readyPlan.goal,
-                                    plan: readyPlan.plan,
                                     focus: readyPlan.focus,
                                     analysis: readyPlan.analysis,
                                 });
@@ -1551,19 +1595,26 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
         const snapshot = context.sessionIntelligence!.getLiveSessionSnapshot();
         if (!snapshot.baseline_ready) {
-            return {
-                status: 'collecting_baseline',
-                agent_mode: 'live_performance_analyst',
+            return buildLiveAnalystPlanError(
+                'baseline_collection_incomplete',
+                'Complete one clean baseline lap before reading a focus section.',
                 snapshot,
-                focus: null,
-                message: 'Complete one clean baseline lap before reading a focus section.',
-            };
+            );
+        }
+
+        const focus = buildLiveFocusPayload(context);
+        if (!focus) {
+            return buildLiveAnalystPlanError(
+                'focus_section_not_ready',
+                'Analyze the completed baseline and select a focus section before reading it.',
+                snapshot,
+            );
         }
 
         return {
             status: 'ready',
             agent_mode: 'live_performance_analyst',
-            focus: buildLiveFocusPayload(context),
+            focus,
         };
     },
 
@@ -1579,8 +1630,46 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         };
     },
 
+    async set_procedure_plan(args) {
+        const plan = buildLiveProcedurePlan({
+            ...args,
+            event: normalizeOptionalString(args.event) || 'procedure_plan_started',
+        });
+        if (!plan) {
+            return {
+                status: 'error',
+                error: 'invalid_procedure_plan_requests',
+                message: 'Provide a goal and at least one request with a title.',
+            };
+        }
+
+        context.setProcedurePlan?.(plan);
+        return {
+            status: 'ready',
+            goal: plan.goal,
+            request_count: plan.requests.length,
+            current_request: plan.currentStep,
+            request: plan.requests[plan.currentStep],
+        };
+    },
+
     async advance_plan_step(args) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        const unavailable = buildLiveAnalystUnavailable(context);
+        if (unavailable) return unavailable;
+
+        const snapshot = context.sessionIntelligence!.getLiveSessionSnapshot();
+        const plan = context.getProcedurePlan?.() || null;
+        if (plan) {
+            const blocked = getProcedurePlanAdvanceBlock(
+                plan,
+                snapshot,
+                Boolean(buildLiveFocusPayload(context)),
+            );
+            if (blocked) {
+                return buildLiveAnalystPlanError(blocked.error, blocked.message, snapshot);
+            }
+        }
+
         return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
             status: 'unavailable',
             error: 'no_procedure_plan_ui',
@@ -1593,13 +1682,11 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         if (!si) return { error: 'no_live_session' };
         const snapshot = si.getLiveSessionSnapshot();
         if (!snapshot.baseline_ready) {
-            return {
-                status: 'collecting_baseline',
-                agent_mode: 'live_performance_analyst',
+            return buildLiveAnalystPlanError(
+                'baseline_collection_incomplete',
+                'Complete one clean baseline lap before classifying live sections.',
                 snapshot,
-                rows: [],
-                message: 'Complete one clean baseline lap before classifying live sections.',
-            };
+            );
         }
         return si.getSectionTelemetryWindow({
             section_id: args.section_id || args.sectionId,
@@ -1612,6 +1699,14 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
+        const snapshot = si.getLiveSessionSnapshot();
+        if (!snapshot.baseline_ready) {
+            return buildLiveAnalystPlanError(
+                'baseline_collection_incomplete',
+                'Complete one clean baseline lap before recording a live section classification.',
+                snapshot,
+            );
+        }
 
         const classification = si.recordSectionClassification(args);
         if (!classification) {

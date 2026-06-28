@@ -1,10 +1,33 @@
+export type ProcedurePlanRequest = {
+    type: string;
+    title: string;
+    detail?: string;
+    name?: string;
+    method?: string;
+    url?: string;
+    payload?: unknown;
+};
+
 export type ProcedurePlan = {
     goal: string;
-    steps: string[];
+    requests: ProcedurePlanRequest[];
     currentStep: number;
     focusName?: string;
     sourceEvent?: string;
 };
+
+export type ProcedurePlanAdvanceBlock = {
+    status: 'blocked' | 'unavailable';
+    error: string;
+    message: string;
+};
+
+const LIVE_PROCEDURE_PLAN_EVENTS = new Set([
+    'live_analysis_plan_started',
+    'live_baseline_ready_for_classification',
+    'recorded_analysis_plan_ready',
+    'live_analysis_window',
+]);
 
 export const isProcedurePlanStartEvent = (sourceEvent?: string): boolean => (
     typeof sourceEvent === 'string'
@@ -20,11 +43,113 @@ const toNonEmptyString = (value: unknown): string | null => {
     return trimmed || null;
 };
 
-const toStringArray = (value: unknown): string[] => (
+const toRecord = (value: unknown): Record<string, unknown> | null => (
+    value && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null
+);
+
+const requestTitleFromRecord = (request: Record<string, unknown>): string | null => (
+    toNonEmptyString(request.title)
+    || toNonEmptyString(request.summary)
+    || toNonEmptyString(request.description)
+    || toNonEmptyString(request.name)
+    || toNonEmptyString(request.tool)
+    || toNonEmptyString(request.tool_name)
+    || toNonEmptyString(request.action)
+    || toNonEmptyString(request.endpoint)
+    || toNonEmptyString(request.url)
+);
+
+const buildProcedurePlanRequest = (value: unknown): ProcedurePlanRequest | null => {
+    const text = toNonEmptyString(value);
+    if (text) {
+        return {
+            type: 'request',
+            title: text,
+        };
+    }
+
+    const request = toRecord(value);
+    if (!request) return null;
+
+    const title = requestTitleFromRecord(request);
+    if (!title) return null;
+
+    return {
+        type: (
+            toNonEmptyString(request.type)
+            || toNonEmptyString(request.kind)
+            || toNonEmptyString(request.request_type)
+            || 'request'
+        ),
+        title,
+        detail: (
+            toNonEmptyString(request.detail)
+            || toNonEmptyString(request.message)
+            || toNonEmptyString(request.reason)
+        ) || undefined,
+        name: (
+            toNonEmptyString(request.name)
+            || toNonEmptyString(request.tool)
+            || toNonEmptyString(request.tool_name)
+        ) || undefined,
+        method: toNonEmptyString(request.method)?.toUpperCase(),
+        url: (
+            toNonEmptyString(request.url)
+            || toNonEmptyString(request.endpoint)
+        ) || undefined,
+        payload: request.payload ?? request.body ?? request.arguments ?? request.args ?? request.params,
+    };
+};
+
+const toProcedurePlanRequests = (value: unknown): ProcedurePlanRequest[] => (
     Array.isArray(value)
-        ? value.map(toNonEmptyString).filter((item): item is string => Boolean(item))
+        ? value.map(buildProcedurePlanRequest).filter((item): item is ProcedurePlanRequest => Boolean(item))
         : []
 );
+
+const isLiveProcedurePlan = (plan: ProcedurePlan): boolean => (
+    typeof plan.sourceEvent === 'string'
+    && LIVE_PROCEDURE_PLAN_EVENTS.has(plan.sourceEvent)
+);
+
+export const getProcedurePlanAdvanceBlock = (
+    plan: ProcedurePlan | null,
+    snapshot?: Record<string, any> | null,
+    hasFocus = false,
+): ProcedurePlanAdvanceBlock | null => {
+    if (!plan) {
+        return {
+            status: 'unavailable',
+            error: 'no_procedure_plan',
+            message: 'No active procedure plan is available.',
+        };
+    }
+
+    if (!isLiveProcedurePlan(plan)) return null;
+
+    const targetStep = Math.min(plan.currentStep + 1, plan.requests.length - 1);
+    if (targetStep === plan.currentStep) return null;
+
+    if (targetStep >= 1 && snapshot?.baseline_ready !== true) {
+        return {
+            status: 'blocked',
+            error: 'baseline_collection_incomplete',
+            message: 'Complete one clean baseline lap before advancing the plan.',
+        };
+    }
+
+    if (targetStep >= 2 && !hasFocus) {
+        return {
+            status: 'blocked',
+            error: 'focus_section_not_ready',
+            message: 'Analyze the completed baseline and select a focus section before advancing the plan.',
+        };
+    }
+
+    return null;
+};
 
 export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {
     if (typeof text !== 'string') return false;
@@ -47,100 +172,41 @@ export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {
     ].some((pattern) => pattern.test(normalized));
 };
 
-const buildInferredLiveProcedureSteps = (sectionName: string, primaryIssue: string | null): string[] => {
-    if (primaryIssue) {
-        return [
-            `Use the next approach to ${sectionName} as the focus run.`,
-            `Change one thing first: clean up ${primaryIssue}.`,
-            'After the next pass, compare the focused section classification against this baseline.',
-        ];
-    }
-
-    return [
-        `Use the next approach to ${sectionName} as the focus run.`,
-        'Make one clean, repeatable adjustment through the focused section.',
-        'After the next pass, compare the focused section classification against this baseline.',
-    ];
-};
-
-const buildLiveAnalysisStartupPlan = (snapshot: Record<string, any> | null): ProcedurePlan => ({
-    goal: 'Run live analysis from a clean baseline.',
-    steps: [
-        'Collect a complete baseline lap.',
-        'Analyze the baseline with recorded-session data or live section classification.',
-        'Select the focus section and compare the next pass against the baseline.',
-    ],
-    currentStep: snapshot?.baseline_ready ? 1 : 0,
-    sourceEvent: 'live_analysis_plan_started',
-});
-
-const buildBaselineReadyPlan = (): ProcedurePlan => ({
-    goal: 'Analyze the completed baseline and choose the focus section.',
-    steps: [
-        'Collect a complete baseline lap.',
-        'Classify baseline sections from the completed lap.',
-        'Select the focus section and compare the next pass against the baseline.',
-    ],
-    currentStep: 1,
-    sourceEvent: 'live_baseline_ready_for_classification',
-});
-
-const getFocusPrimaryIssue = (focus: Record<string, any> | null): string | null => {
-    const baseline = focus?.baseline && typeof focus.baseline === 'object'
-        ? focus.baseline as Record<string, unknown>
-        : null;
-    const childLabels = toStringArray(baseline?.childLabels);
-
-    return childLabels[0]
-        || toNonEmptyString(baseline?.parentLabel)
-        || null;
-};
-
 export const buildLiveProcedurePlan = (data: Record<string, unknown>): ProcedurePlan | null => {
     const sourceEvent = toNonEmptyString(data.event);
-    const snapshot = data.snapshot && typeof data.snapshot === 'object'
-        ? data.snapshot as Record<string, any>
-        : null;
-    if (sourceEvent === 'live_analysis_plan_started') {
-        return buildLiveAnalysisStartupPlan(snapshot);
-    }
-    if (sourceEvent === 'live_baseline_ready_for_classification') {
-        return buildBaselineReadyPlan();
-    }
     if (
-        sourceEvent !== 'recorded_analysis_plan_ready'
+        !isProcedurePlanStartEvent(sourceEvent || undefined)
+        && sourceEvent !== 'live_analysis_plan_started'
+        && sourceEvent !== 'live_baseline_ready_for_classification'
+        && sourceEvent !== 'recorded_analysis_plan_ready'
         && sourceEvent !== 'live_analysis_window'
     ) return null;
 
     const focus = data.focus && typeof data.focus === 'object'
         ? data.focus as Record<string, any>
         : null;
-    const focusName = toNonEmptyString(focus?.section?.name);
-    const primaryIssue = getFocusPrimaryIssue(focus);
+    const focusName = toNonEmptyString(data.focus_name) || toNonEmptyString(focus?.section?.name);
 
-    const steps = toStringArray(data.plan);
-    const inferredSteps = steps.length > 0
-        ? steps
-        : focusName
-            ? buildInferredLiveProcedureSteps(focusName, primaryIssue)
-            : [];
-    if (inferredSteps.length === 0) return null;
+    const explicitRequests = toProcedurePlanRequests(data.requests);
+    const planRequests = toProcedurePlanRequests(data.plan);
+    const stepRequests = toProcedurePlanRequests(data.steps);
+    const requests = explicitRequests.length > 0
+        ? explicitRequests
+        : planRequests.length > 0
+            ? planRequests
+            : stepRequests;
+    if (requests.length === 0) return null;
 
-    const requestedStep = Math.floor(Number(data.current_step ?? 0));
+    const requestedStep = Math.floor(Number(data.current_request ?? data.current_step ?? 0));
     const currentStep = Number.isFinite(requestedStep)
-        ? Math.max(0, Math.min(inferredSteps.length - 1, requestedStep))
+        ? Math.max(0, Math.min(requests.length - 1, requestedStep))
         : 0;
-    const inferredGoal = focusName
-        ? primaryIssue
-            ? `Improve ${focusName} by reducing ${primaryIssue}.`
-            : `Improve ${focusName} with a focused live analysis pass.`
-        : 'Live procedure plan';
 
     return {
-        goal: toNonEmptyString(data.goal) || inferredGoal,
-        steps: inferredSteps,
+        goal: toNonEmptyString(data.goal) || toNonEmptyString(data.title) || requests[0].title,
+        requests,
         currentStep,
         focusName: focusName || undefined,
-        sourceEvent,
+        sourceEvent: sourceEvent || undefined,
     };
 };

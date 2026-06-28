@@ -19,6 +19,7 @@ import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
 import {
     buildLiveProcedurePlan,
+    getProcedurePlanAdvanceBlock,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
     type ProcedurePlan,
@@ -80,6 +81,16 @@ interface AiChatProps {
 
 const formatClock = (d: Date) =>
     `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+
+const getProcedurePlanRequestMeta = (request: ProcedurePlan['requests'][number]): string => {
+    const parts = [
+        request.type,
+        request.method,
+        request.name,
+        request.url,
+    ].filter((part): part is string => Boolean(part));
+    return parts.join(' · ');
+};
 
 const OverlayIcon = ({ size = 14 }: { size?: number }) => (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -385,17 +396,28 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return { status: 'unavailable', error: 'no_procedure_plan' };
         }
 
-        const nextStep = Math.min(current.currentStep + 1, current.steps.length - 1);
+        const liveSnapshot = sessionMode === 'live'
+            ? analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.()
+            : null;
+        const hasLiveFocus = sessionMode === 'live'
+            ? Boolean(analysisContext?.sessionIntelligence?.getFocusSection?.())
+            : false;
+        const blocked = getProcedurePlanAdvanceBlock(current, liveSnapshot, hasLiveFocus);
+        if (blocked) return blocked;
+
+        const nextStep = Math.min(current.currentStep + 1, current.requests.length - 1);
         const nextPlan = { ...current, currentStep: nextStep };
         setProcedurePlan(nextPlan);
 
         return {
             status: nextStep === current.currentStep ? 'complete' : 'advanced',
+            current_request: nextStep,
             current_step: nextStep,
-            step: nextPlan.steps[nextStep],
+            request: nextPlan.requests[nextStep],
+            step: nextPlan.requests[nextStep]?.title,
             reason,
         };
-    }, [setProcedurePlan]);
+    }, [analysisContext?.sessionIntelligence, sessionMode, setProcedurePlan]);
 
     const clearProcedurePlan = useCallback(() => {
         setProcedurePlan(null);
@@ -546,9 +568,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             procedure_plan: procedurePlan
                 ? {
                     goal: procedurePlan.goal,
-                    steps: procedurePlan.steps,
-                    current_step: procedurePlan.currentStep,
-                    current_step_text: procedurePlan.steps[procedurePlan.currentStep] || null,
+                    requests: procedurePlan.requests,
+                    current_request: procedurePlan.currentStep,
+                    current_request_text: procedurePlan.requests[procedurePlan.currentStep]?.title || null,
                     focus: procedurePlan.focusName || null,
                 }
                 : null,
@@ -651,7 +673,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             setTrackGuideEnabled: setTrackGuideAgentEnabled,
             setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
             advanceProcedurePlanStep,
+            getProcedurePlan: () => procedurePlanRef.current,
             clearProcedurePlan,
+            setProcedurePlan,
             setAgentTagActive: setAgentTag,
             getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
             userSummary,
@@ -668,15 +692,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const requestNextPlanStep = useCallback(() => {
         const current = procedurePlanRef.current;
         const advanced = advanceProcedurePlanStep('driver_requested_next_step');
-        if (!current || advanced.status === 'unavailable') return;
+        if (!current || (advanced.status !== 'advanced' && advanced.status !== 'complete')) return;
 
         voiceConversation.sendObservation({
             source: 'procedure_plan_ui',
             event: 'procedure_plan_next_step_requested',
             goal: current.goal,
-            plan: current.steps,
-            current_step: advanced.current_step ?? current.currentStep,
-            step: advanced.step ?? current.steps[current.currentStep],
+            requests: current.requests,
+            current_request: advanced.current_request ?? current.currentStep,
+            request: advanced.request ?? current.requests[current.currentStep],
         });
     }, [advanceProcedurePlanStep, voiceConversation]);
 
@@ -1293,22 +1317,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                     type="button"
                                     className="ai-chat__btn ai-chat__btn--blue ai-chat__plan-next"
                                     onClick={requestNextPlanStep}
-                                    disabled={procedurePlan.currentStep >= procedurePlan.steps.length - 1}
-                                    title="Ask the assistant to move the plan to the next step"
+                                    disabled={procedurePlan.currentStep >= procedurePlan.requests.length - 1}
+                                    title="Ask the assistant to move the plan to the next request"
                                 >
-                                    NEXT STEP
+                                    NEXT REQUEST
                                 </button>
                             </div>
                             {procedurePlan.focusName && (
                                 <div className="ai-chat__plan-focus">{procedurePlan.focusName}</div>
                             )}
                             <ul className="ai-chat__plan-list">
-                                {procedurePlan.steps.map((step, index) => {
+                                {procedurePlan.requests.map((request, index) => {
                                     const isActive = index === procedurePlan.currentStep;
                                     const isDone = index < procedurePlan.currentStep;
+                                    const meta = getProcedurePlanRequestMeta(request);
                                     return (
                                         <li
-                                            key={`${index}-${step}`}
+                                            key={`${index}-${request.type}-${request.title}`}
                                             className={[
                                                 'ai-chat__plan-step',
                                                 isActive ? 'ai-chat__plan-step--active' : '',
@@ -1316,7 +1341,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                             ].filter(Boolean).join(' ')}
                                         >
                                             <span className="ai-chat__plan-step-dot" aria-hidden="true" />
-                                            <span className="ai-chat__plan-step-text">{step}</span>
+                                            <span className="ai-chat__plan-step-text">
+                                                <span>{request.title}</span>
+                                                {meta && (
+                                                    <span className="ai-chat__plan-step-meta">{meta}</span>
+                                                )}
+                                                {request.detail && (
+                                                    <span className="ai-chat__plan-step-detail">{request.detail}</span>
+                                                )}
+                                            </span>
                                         </li>
                                     );
                                 })}

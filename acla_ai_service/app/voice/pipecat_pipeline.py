@@ -1102,7 +1102,8 @@ def _format_observation_for_llm(data: dict) -> str:
                 "live_performance_analyst collecting baseline: "
                 f"track={track}, current_lap={current_lap}, completed_laps={completed_laps}, "
                 f"session_type={session_type}. Do not critique yet. If you speak, only say you are "
-                "collecting one clean baseline lap."
+                "collecting one clean baseline lap. Do not call get_live_focus_section or "
+                "classify_live_section yet."
             )
 
         if event == "recorded_analysis_plan_ready":
@@ -1117,11 +1118,13 @@ def _format_observation_for_llm(data: dict) -> str:
                 baseline = {}
             return (
                 "live_performance_analyst recorded analysis plan ready. "
-                f"goal={data.get('goal')}; plan={data.get('plan')}; "
+                f"goal={data.get('goal')}; "
                 f"section={section.get('id')}:{section.get('name')} "
                 f"range=[{section.get('from')},{section.get('to')}], "
                 f"labels={baseline.get('childLabels')}, session_type={session_type}. "
-                "Do not call classify_live_section for the baseline. Use the provided goal and plan; "
+                "Create the visible procedure plan yourself by calling set_procedure_plan "
+                "with a requests array. Requests may include tool calls, API requests, "
+                "or driver-facing actions. Do not call classify_live_section for the baseline; "
                 "save classify_live_section for the next pass through this focus section."
             )
 
@@ -1140,7 +1143,8 @@ def _format_observation_for_llm(data: dict) -> str:
                 f"analysis is required. track={track}, completed_lap={completed_lap}, "
                 f"session_type={session_type}, candidate_sections=[{section_text}]. "
                 "Call classify_live_section with lap='last' for candidate sections until a "
-                "mistake/focus is recorded. Do not tell the driver they need a recorded session."
+                "mistake/focus is recorded. Do not expose raw telemetry. Do not tell the driver "
+                "they need a recorded session."
             )
 
         if event in {
@@ -1155,7 +1159,7 @@ def _format_observation_for_llm(data: dict) -> str:
                 "Explain briefly that recorded-session AI analysis is needed before live focus coaching."
             )
 
-        if event == "coaching_window":
+        if event == "live_analysis_window":
             focus = data.get("focus") or {}
             if not isinstance(focus, dict):
                 focus = {}

@@ -601,6 +601,23 @@
   border-color: var(--lp-blue);
   background: var(--lp-blue);
 }
+.ai-chat__plan-step-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.ai-chat__plan-step-meta,
+.ai-chat__plan-step-detail {
+  color: rgba(232, 232, 240, 0.62);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.ai-chat__plan-step-meta {
+  font-family: var(--lp-mono);
+  text-transform: uppercase;
+}
 .ai-chat__plan-next {
   min-height: 30px;
   flex-shrink: 0;
