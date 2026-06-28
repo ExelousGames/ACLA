@@ -1722,7 +1722,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         };
     },
 
-    async advance_plan_step(args) {
+    async advance_plan_step(args, ctx) {
         const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot?.() || null;
         const plan = context.getProcedurePlan?.() || null;
         if (plan) {
