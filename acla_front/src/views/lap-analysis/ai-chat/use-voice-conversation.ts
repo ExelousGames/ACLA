@@ -151,6 +151,15 @@ export function useVoiceConversation(
     const playbackSerialRef = useRef<number>(0);
     const playbackIdleTimeoutRef = useRef<number | null>(null);
     const micDisabledRef = useRef(false);
+    const sessionContextRef = useRef<AiSessionContext | null>(
+        options.sessionContext ?? null,
+    );
+    const frontendToolsRef = useRef<FrontendToolSchema[]>(
+        options.frontendTools || [],
+    );
+    const querySchemaScopeRef = useRef<object | null>(
+        options.querySchemaScope ?? null,
+    );
 
     /**
      * Open the backend voice WS through apiService — same baseURL + JWT
@@ -158,8 +167,8 @@ export function useVoiceConversation(
      * the JWT claim and isn't sent from here.
      */
     const openWs = useCallback((): WebSocket => {
-        const sessionMode = typeof options.sessionContext?.session_mode === 'string'
-            ? options.sessionContext.session_mode
+        const sessionMode = typeof sessionContextRef.current?.session_mode === 'string'
+            ? sessionContextRef.current.session_mode
             : undefined;
         const metadata = buildVoiceSessionMetadata({
             agentMode: options.agentMode,
@@ -180,7 +189,6 @@ export function useVoiceConversation(
         options.clientSessionId,
         options.conversationRole,
         options.parentClientSessionId,
-        options.sessionContext,
         options.sessionId,
     ]);
 
@@ -201,9 +209,6 @@ export function useVoiceConversation(
         onEventRef.current = options.onEvent;
     }, [options.onEvent]);
 
-    const sessionContextRef = useRef<AiSessionContext | null>(
-        options.sessionContext ?? null,
-    );
     useEffect(() => {
         sessionContextRef.current = options.sessionContext ?? null;
         const ws = wsRef.current;
@@ -218,6 +223,12 @@ export function useVoiceConversation(
             console.warn('[voice] session_context update failed:', err);
         }
     }, [options.sessionContext]);
+    useEffect(() => {
+        frontendToolsRef.current = options.frontendTools || [];
+    }, [options.frontendTools]);
+    useEffect(() => {
+        querySchemaScopeRef.current = options.querySchemaScope ?? null;
+    }, [options.querySchemaScope]);
 
     const setMicDisabled = useCallback((disabled: boolean) => {
         micDisabledRef.current = disabled;
@@ -375,8 +386,8 @@ export function useVoiceConversation(
                         type: 'frontend_info',
                         ...metadata,
                         session_context: sessionContextRef.current,
-                        tools: options.frontendTools || [],
-                        query_scope_schema: options.querySchemaScope ?? null,
+                        tools: frontendToolsRef.current,
+                        query_scope_schema: querySchemaScopeRef.current,
                     }));
                 } catch (err) {
                     console.warn('[voice] frontend_info send failed:', err);
@@ -526,9 +537,7 @@ export function useVoiceConversation(
         options.agentMode,
         options.clientSessionId,
         options.conversationRole,
-        options.frontendTools,
         options.parentClientSessionId,
-        options.querySchemaScope,
     ]);
 
     /**

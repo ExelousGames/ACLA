@@ -276,6 +276,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const activeAgentSessionRef = useRef<AgentSessionInfo | null>(null);
     const agentVoiceStopRef = useRef<() => void>(() => undefined);
     const mainVoiceStopRef = useRef<() => void>(() => undefined);
+    const agentAutoStartSessionIdRef = useRef<string | null>(null);
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
 
@@ -367,7 +368,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     useEffect(() => {
         if (sessionMode !== 'live' || !livePerformanceAnalystEnabled) {
-            setAgentMessages(prev => prev.filter((message) => message.id !== BASELINE_PROGRESS_MESSAGE_ID));
+            setAgentMessages(prev => {
+                if (!prev.some((message) => message.id === BASELINE_PROGRESS_MESSAGE_ID)) {
+                    return prev;
+                }
+                return prev.filter((message) => message.id !== BASELINE_PROGRESS_MESSAGE_ID);
+            });
             return;
         }
 
@@ -402,6 +408,17 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             const existingIndex = prev.findIndex((message) => message.id === BASELINE_PROGRESS_MESSAGE_ID);
             if (existingIndex === -1) {
                 return prev.concat(progressMessage);
+            }
+
+            const existingProgress = prev[existingIndex].progress;
+            if (
+                existingProgress?.value === value
+                && existingProgress.detail === detail
+                && existingProgress.label === progressMessage.progress?.label
+                && existingProgress.startMarkerLabel === progressMessage.progress?.startMarkerLabel
+                && existingProgress.startMarkerValue === progressMessage.progress?.startMarkerValue
+            ) {
+                return prev;
             }
 
             const next = prev.slice();
@@ -580,10 +597,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         handleSessionVoiceEvent(event, 'agent');
     }, [handleSessionVoiceEvent]);
 
-    const startTrackGuide = () => {
+    const startTrackGuide = useCallback(() => {
         trackGuideRunTokenRef.current += 1;
         setTrackGuideEnabled(true);
-    };
+    }, []);
 
     const resolvedSessionId = sessionId || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId;
 
@@ -722,6 +739,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }),
         [activeAgentSession?.agentMode, sessionMode],
     );
+    const inactiveAgentFrontendTools = useMemo(() => [], []);
+    const inactiveAgentToolHandlers = useMemo(() => ({}), []);
+    const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
+    const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
 
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
@@ -757,6 +778,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
         const existing = activeAgentSessionRef.current;
         if (existing && existing.agentMode === agentMode && existing.status !== 'stopped') {
+            if (existing.status === 'error') {
+                agentAutoStartSessionIdRef.current = null;
+            }
             setActiveAgentSession({ ...existing, status: existing.status === 'error' ? 'starting' : existing.status });
             return {
                 status: 'already_running',
@@ -825,6 +849,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         resetLivePerformanceAnalystRuntime();
         setActiveAgentSession(null);
         activeAgentSessionRef.current = null;
+        agentAutoStartSessionIdRef.current = null;
         setAgentTag(getAgentDisplayName(current.agentMode), false);
         broadcastPillMessage('', { tags: [] });
 
@@ -836,7 +861,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         };
     }, [broadcastPillMessage, resetLivePerformanceAnalystRuntime, setAgentTag]);
 
-    const toolHandlers = createAiCommandRegistry({
+    const toolHandlers = useMemo(() => createAiCommandRegistry({
         sessionId: resolvedSessionId,
         sessionMode,
         conversationRole: 'main',
@@ -849,13 +874,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         advanceProcedurePlanStep,
-        getProcedurePlan: () => procedurePlanRef.current,
+        getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
         setAgentTagActive: setAgentTag,
         startAgentSession,
         stopAgentSession,
-        getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
+        getOpportunityTelemetryRows,
         userSummary,
         userSummaryLoading,
         userSummaryError,
@@ -864,7 +889,31 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCircuitMapById,
         getCircuitMapByTrack,
         displayMap: displayMapInChat,
-    });
+    }), [
+        activeAgentSession,
+        advanceProcedurePlanStep,
+        analysisContext,
+        clearProcedurePlan,
+        displayMapInChat,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        getLabelName,
+        getOpportunityTelemetryRows,
+        getProcedurePlan,
+        resolvedSessionId,
+        sessionMode,
+        setAgentTag,
+        setLivePerformanceAnalystAgentEnabled,
+        setProcedurePlan,
+        setTrackGuideAgentEnabled,
+        startAgentSession,
+        startTrackGuide,
+        stopAgentSession,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
+    ]);
 
     const voiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
@@ -895,7 +944,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             : null
     ), [activeAgentSession, aiSessionContext]);
 
-    const agentToolHandlers = createAiCommandRegistry({
+    const agentToolHandlers = useMemo(() => createAiCommandRegistry({
         sessionId: resolvedSessionId,
         sessionMode,
         conversationRole: 'agent',
@@ -908,12 +957,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         advanceProcedurePlanStep,
-        getProcedurePlan: () => procedurePlanRef.current,
+        getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
         setAgentTagActive: setAgentTag,
         stopAgentSession,
-        getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
+        getOpportunityTelemetryRows,
         userSummary,
         userSummaryLoading,
         userSummaryError,
@@ -922,7 +971,30 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCircuitMapById,
         getCircuitMapByTrack,
         displayMap: displayMapInChat,
-    });
+    }), [
+        activeAgentSession,
+        advanceProcedurePlanStep,
+        analysisContext,
+        clearProcedurePlan,
+        displayMapInChat,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        getLabelName,
+        getOpportunityTelemetryRows,
+        getProcedurePlan,
+        resolvedSessionId,
+        sessionMode,
+        setAgentTag,
+        setLivePerformanceAnalystAgentEnabled,
+        setProcedurePlan,
+        setTrackGuideAgentEnabled,
+        startTrackGuide,
+        stopAgentSession,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
+    ]);
 
     const agentVoiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
@@ -932,9 +1004,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         agentMode: activeAgentSession?.agentMode,
         sessionContext: agentSessionContext || undefined,
         onEvent: handleAgentVoiceEvent,
-        frontendTools: activeAgentSession ? agentFrontendTools : [],
+        frontendTools: activeAgentSession ? agentFrontendTools : inactiveAgentFrontendTools,
         querySchemaScope: QUERY_SCOPE_SCHEMA,
-        toolHandlers: activeAgentSession ? agentToolHandlers : {},
+        toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
     });
     const sendAgentVoiceObservation = agentVoiceConversation.sendObservation;
 
@@ -946,16 +1018,33 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         agentVoiceStopRef.current = agentVoiceConversation.stop;
     }, [agentVoiceConversation.stop]);
 
+    const activeAgentSessionId = activeAgentSession?.clientSessionId;
+    const activeAgentSessionStatus = activeAgentSession?.status;
+    const agentVoiceState = agentVoiceConversation.state;
+    const startAgentVoiceConversation = agentVoiceConversation.start;
+
     useEffect(() => {
-        if (!activeAgentSession) return;
-        if (agentVoiceConversation.state !== 'idle' && agentVoiceConversation.state !== 'error') return;
-        agentVoiceConversation.start().catch((err) => {
+        if (!activeAgentSessionId) {
+            agentAutoStartSessionIdRef.current = null;
+            return;
+        }
+        if (activeAgentSessionStatus !== 'starting') return;
+        if (agentVoiceState !== 'idle' && agentVoiceState !== 'error') return;
+        if (agentAutoStartSessionIdRef.current === activeAgentSessionId) return;
+
+        agentAutoStartSessionIdRef.current = activeAgentSessionId;
+        startAgentVoiceConversation().catch((err) => {
             console.error('Agent voice conversation failed to start:', err);
             setActiveAgentSession((current) => current
                 ? { ...current, status: 'error' }
                 : current);
         });
-    }, [activeAgentSession, agentVoiceConversation]);
+    }, [
+        activeAgentSessionId,
+        activeAgentSessionStatus,
+        agentVoiceState,
+        startAgentVoiceConversation,
+    ]);
 
     useEffect(() => {
         if (!activeAgentSession) return;
