@@ -694,6 +694,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         querySchemaScope: QUERY_SCOPE_SCHEMA,
         toolHandlers,
     });
+    const sendVoiceObservation = voiceConversation.sendObservation;
+
+    useEffect(() => {
+        const sessionIntelligence = analysisContext?.sessionIntelligence;
+        if (sessionMode !== 'live' || !sessionIntelligence) return;
+
+        return sessionIntelligence.onLiveAnalystObservation((observation) => {
+            if (!livePerformanceAnalystStateRef.current.enabled) return;
+            sendVoiceObservation(observation);
+        });
+    }, [
+        analysisContext?.sessionIntelligence,
+        sendVoiceObservation,
+        sessionMode,
+    ]);
 
     const requestNextPlanStep = useCallback(async () => {
         const current = procedurePlanRef.current;

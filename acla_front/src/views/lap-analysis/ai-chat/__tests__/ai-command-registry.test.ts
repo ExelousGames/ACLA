@@ -1023,6 +1023,7 @@ describe('ai command registry live performance analyst tools', () => {
             getOpportunityTelemetryRows: () => [],
         });
         const sendObservation = jest.fn();
+        sessionIntelligence.onLiveAnalystObservation(sendObservation);
 
         const result = await registry.start_live_performance_analysis(
             {},
@@ -1131,8 +1132,10 @@ describe('ai command registry live performance analyst tools', () => {
             }),
         });
         const sendObservation = jest.fn();
+        sessionIntelligence.onLiveAnalystObservation(sendObservation);
+        const toolContextSendObservation = jest.fn();
 
-        const startResult = await registry.start_live_performance_analysis({}, { sendObservation });
+        const startResult = await registry.start_live_performance_analysis({}, { sendObservation: toolContextSendObservation });
         expect(startResult).toMatchObject({
             status: 'started',
             initial: {
@@ -1143,11 +1146,14 @@ describe('ai command registry live performance analyst tools', () => {
                 focus: null,
             },
         });
+        expect(sendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+            event: 'baseline_classifier_request_ready',
+        }));
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
 
         const result = await planRegistry.advance_plan_step(
             { reason: 'baseline complete' },
-            { sendObservation },
+            { sendObservation: toolContextSendObservation },
         );
 
         expect(result).toMatchObject({
@@ -1171,6 +1177,9 @@ describe('ai command registry live performance analyst tools', () => {
         expect(recordedPlanObservation).not.toHaveProperty('plan');
         expect(recordedPlanObservation).not.toHaveProperty('internal_tool_hint');
         expect(recordedPlanObservation).not.toHaveProperty('sections');
+        expect(toolContextSendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+            source: 'live_performance_analyst',
+        }));
 
         if (livePerformanceAnalystState.intervalId) {
             clearInterval(livePerformanceAnalystState.intervalId);
@@ -1247,14 +1256,16 @@ describe('ai command registry live performance analyst tools', () => {
             }),
         });
         const sendObservation = jest.fn();
+        sessionIntelligence.onLiveAnalystObservation(sendObservation);
+        const toolContextSendObservation = jest.fn();
 
         await registry.start_live_performance_analysis(
             {},
-            { sendObservation },
+            { sendObservation: toolContextSendObservation },
         );
         const result = await registry.advance_plan_step(
             { reason: 'baseline complete' },
-            { sendObservation },
+            { sendObservation: toolContextSendObservation },
         );
 
         expect(result).toMatchObject({
@@ -1286,6 +1297,9 @@ describe('ai command registry live performance analyst tools', () => {
             snapshot: expect.objectContaining({
                 baseline_ready: true,
             }),
+        }));
+        expect(toolContextSendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+            source: 'live_performance_analyst',
         }));
 
         if (livePerformanceAnalystState.intervalId) {

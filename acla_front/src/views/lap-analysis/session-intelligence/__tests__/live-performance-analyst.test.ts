@@ -195,6 +195,64 @@ describe('SessionIntelligence live analyst section state', () => {
         });
     });
 
+    it('emits the classifier-ready observation from the source when baseline completes', () => {
+        const intelligence = new SessionIntelligence();
+        const onObservation = jest.fn();
+        intelligence.onLiveAnalystObservation(onObservation);
+        intelligence.startBaselineCollectionAtLapStart();
+
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.98,
+        });
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.03,
+        });
+
+        expect(onObservation).not.toHaveBeenCalled();
+
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 1,
+            Graphics_normalized_car_position: 0.01,
+        });
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 1,
+            Graphics_normalized_car_position: 0.02,
+        });
+
+        expect(onObservation).toHaveBeenCalledTimes(1);
+        expect(onObservation).toHaveBeenCalledWith(expect.objectContaining({
+            source: 'live_performance_analyst',
+            agent_mode: 'live_performance_analyst',
+            event: 'baseline_classifier_request_ready',
+            current_request: 1,
+            requests: [
+                expect.objectContaining({
+                    type: 'driver_action',
+                    title: 'Collect a clean baseline lap',
+                }),
+                expect.objectContaining({
+                    type: 'frontend_request',
+                    subscriber: 'live_recorded_analysis',
+                    title: 'Request recorded-session classifier',
+                }),
+            ],
+            snapshot: expect.objectContaining({
+                baseline_ready: true,
+                baseline_lap: 0,
+            }),
+        }));
+    });
+
     it('does not complete a new baseline from laps driven before collection started', () => {
         const intelligence = new SessionIntelligence();
         intelligence.tick({

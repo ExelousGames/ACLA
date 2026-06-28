@@ -42,6 +42,103 @@ export type LivePerformanceComparison = {
     confidence: number;
 };
 
+export type LiveAnalystObservation = Record<string, unknown> & {
+    source: 'live_performance_analyst';
+    agent_mode: 'live_performance_analyst';
+    event: string;
+};
+
+export const LIVE_ANALYST_PLAN_GOAL = 'Collect a baseline and use recorded-session analysis to choose a focus.';
+
+export const LIVE_ANALYST_START_PLAN_REQUESTS = [
+    {
+        type: 'driver_action',
+        subscriber: 'driver',
+        status: 'pending',
+        title: 'Collect a clean baseline lap',
+        detail: 'Complete one full lap before requesting classifier analysis.',
+    },
+    {
+        type: 'frontend_request',
+        subscriber: 'live_recorded_analysis',
+        status: 'pending',
+        title: 'Request recorded-session classifier',
+        detail: 'Ask the frontend to request classifier analysis through the backend and cache the result.',
+        payload: { force: false },
+    },
+];
+
+export const buildBaselineClassifierRequestReadyObservation = (
+    snapshot: Record<string, unknown>,
+): LiveAnalystObservation => ({
+    source: 'live_performance_analyst',
+    agent_mode: 'live_performance_analyst',
+    event: 'baseline_classifier_request_ready',
+    snapshot,
+    goal: LIVE_ANALYST_PLAN_GOAL,
+    requests: LIVE_ANALYST_START_PLAN_REQUESTS,
+    current_request: 1,
+    message: 'Baseline complete. Request the recorded-session classifier through the frontend before choosing a focus.',
+});
+
+export type LiveAnalystRecordedAnalysisError =
+    | 'recorded_session_required'
+    | 'recorded_analysis_unavailable'
+    | 'recorded_analysis_failed'
+    | 'no_focus_from_recorded_analysis';
+
+export const buildLiveAnalysisPlanStartedObservation = (
+    snapshot: Record<string, unknown>,
+): LiveAnalystObservation => ({
+    source: 'live_performance_analyst',
+    agent_mode: 'live_performance_analyst',
+    event: 'live_analysis_plan_started',
+    snapshot,
+    goal: LIVE_ANALYST_PLAN_GOAL,
+    requests: LIVE_ANALYST_START_PLAN_REQUESTS,
+    message: 'Live analysis procedure started. Collect a baseline first, then use recorded-session analysis to choose a focus.',
+});
+
+export const buildRecordedAnalysisErrorObservation = (
+    error: LiveAnalystRecordedAnalysisError,
+    message: string,
+    snapshot?: Record<string, unknown> | null,
+): LiveAnalystObservation => ({
+    source: 'live_performance_analyst',
+    agent_mode: 'live_performance_analyst',
+    event: error,
+    ...(snapshot ? { snapshot } : {}),
+    message,
+});
+
+export const buildRecordedAnalysisPlanReadyObservation = (
+    plan: {
+        goal: string;
+        focus: unknown;
+        analysis: unknown;
+    },
+    snapshot?: Record<string, unknown> | null,
+): LiveAnalystObservation => ({
+    source: 'live_performance_analyst',
+    agent_mode: 'live_performance_analyst',
+    event: 'recorded_analysis_plan_ready',
+    ...(snapshot ? { snapshot } : {}),
+    goal: plan.goal,
+    focus: plan.focus,
+    analysis: plan.analysis,
+});
+
+export const buildLiveAnalysisWindowObservation = (
+    snapshot: Record<string, unknown>,
+    focus: unknown,
+): LiveAnalystObservation => ({
+    source: 'live_performance_analyst',
+    agent_mode: 'live_performance_analyst',
+    event: 'live_analysis_window',
+    snapshot,
+    focus,
+});
+
 export const DEFAULT_ANALYST_MIN_LEAD_SECONDS = 8;
 export const DEFAULT_ANALYST_MIN_DISTANCE = 0.04;
 export const DEFAULT_ANALYST_COOLDOWN_MS = 20000;

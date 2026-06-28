@@ -8,6 +8,11 @@ import {
     chooseLiveFocusSection,
     compareLiveSectionPerformance,
     createLiveTrackSection,
+    buildBaselineClassifierRequestReadyObservation,
+    buildLiveAnalysisPlanStartedObservation,
+    buildLiveAnalysisWindowObservation,
+    buildRecordedAnalysisErrorObservation,
+    buildRecordedAnalysisPlanReadyObservation,
     detectLiveSessionType,
     estimateSecondsToSection,
     getTelemetryCar,
@@ -15,6 +20,8 @@ import {
     getTelemetryPosition,
     getTelemetryTrack,
     isPositionInWrappedRange,
+    LiveAnalystObservation,
+    LiveAnalystRecordedAnalysisError,
     LivePerformanceComparison,
     LiveSectionClassification,
     LiveSectionFocus,
@@ -67,13 +74,53 @@ export class SessionIntelligence {
     private baselineStartLap: number | null = null;
     private baselineStartPendingFromLap: number | null = null;
     private onEvent: ((event: SessionEvent) => void) | null = null;
+    private onAnalystObservation: ((observation: LiveAnalystObservation) => void) | null = null;
     private sectionHistory: LiveSectionClassification[] = [];
     private focusSection: LiveSectionFocus | null = null;
+    private baselineClassifierReadyEmittedForLap: number | null = null;
 
     // Optional callback fired on every new event — used to push WS observations.
     onEventEmitted(cb: (event: SessionEvent) => void): void {
         this.onEvent = cb;
         this.sensors.onEventEmitted(cb);
+    }
+
+    onLiveAnalystObservation(cb: (observation: LiveAnalystObservation) => void): () => void {
+        this.onAnalystObservation = cb;
+        return () => {
+            if (this.onAnalystObservation === cb) {
+                this.onAnalystObservation = null;
+            }
+        };
+    }
+
+    emitLiveAnalysisPlanStarted(): void {
+        this.emitLiveAnalystObservation(buildLiveAnalysisPlanStartedObservation(
+            this.getLiveSessionSnapshot() as unknown as Record<string, unknown>,
+        ));
+    }
+
+    emitRecordedAnalysisError(
+        error: LiveAnalystRecordedAnalysisError,
+        message: string,
+        snapshot?: Record<string, unknown> | null,
+    ): void {
+        this.emitLiveAnalystObservation(buildRecordedAnalysisErrorObservation(error, message, snapshot));
+    }
+
+    emitRecordedAnalysisPlanReady(
+        plan: {
+            goal: string;
+            focus: unknown;
+            analysis: unknown;
+        },
+        snapshot?: Record<string, unknown> | null,
+    ): void {
+        this.emitLiveAnalystObservation(buildRecordedAnalysisPlanReadyObservation(plan, snapshot));
+    }
+
+    emitLiveAnalysisWindow(snapshot: Record<string, unknown>, focus: unknown): void {
+        this.emitLiveAnalystObservation(buildLiveAnalysisWindowObservation(snapshot, focus));
     }
 
     // Called every telemetry tick from AnalysisContext.
@@ -101,6 +148,7 @@ export class SessionIntelligence {
 
         const sampleIdx = this.buffer.push(sample);
         this.sensors.tick(sample, sampleIdx, this.log);
+        this.emitLiveAnalystObservations();
     }
 
     // ── Tool API (called by ai-command-registry handlers) ─────────────────────
@@ -181,6 +229,7 @@ export class SessionIntelligence {
     startBaselineCollectionAtLapStart(): void {
         this.sectionHistory = [];
         this.focusSection = null;
+        this.baselineClassifierReadyEmittedForLap = null;
 
         if (this.currentPosition <= BASELINE_START_POSITION_EPSILON) {
             this.baselineStartLap = this.currentLap;
@@ -357,6 +406,22 @@ export class SessionIntelligence {
         this.baselineStartPendingFromLap = null;
         this.sectionHistory = [];
         this.focusSection = null;
+        this.baselineClassifierReadyEmittedForLap = null;
+    }
+
+    private emitLiveAnalystObservations(): void {
+        if (!this.hasCompletedBaselineLap()) return;
+        const baselineLap = this.getBaselineLap();
+        if (baselineLap === null || this.baselineClassifierReadyEmittedForLap === baselineLap) return;
+
+        this.baselineClassifierReadyEmittedForLap = baselineLap;
+        this.emitLiveAnalystObservation(buildBaselineClassifierRequestReadyObservation(
+            this.getLiveSessionSnapshot() as unknown as Record<string, unknown>,
+        ));
+    }
+
+    private emitLiveAnalystObservation(observation: LiveAnalystObservation): void {
+        this.onAnalystObservation?.(observation);
     }
 
     private getLatestSample(): TelemetrySample | null {

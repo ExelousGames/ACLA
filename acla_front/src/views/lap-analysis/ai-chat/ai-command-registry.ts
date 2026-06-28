@@ -20,6 +20,7 @@ import {
     DEFAULT_ANALYST_MIN_DISTANCE,
     DEFAULT_ANALYST_MIN_LEAD_SECONDS,
     hasEnoughCoachingLead,
+    type LiveAnalystRecordedAnalysisError,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
     buildProcedurePlan,
@@ -108,24 +109,6 @@ type LivePerformancePlan = {
     focus: ReturnType<typeof buildLiveFocusPayload>;
     analysis: ReturnType<typeof buildRecordedAnalysisToolResult>;
 };
-
-const LIVE_ANALYST_START_PLAN_REQUESTS: ProcedurePlanRequest[] = [
-    {
-        type: 'driver_action',
-        subscriber: 'driver',
-        status: 'pending',
-        title: 'Collect a clean baseline lap',
-        detail: 'Complete one full lap before requesting classifier analysis.',
-    },
-    {
-        type: 'frontend_request',
-        subscriber: 'live_recorded_analysis',
-        status: 'pending',
-        title: 'Request recorded-session classifier',
-        detail: 'Ask the frontend to request classifier analysis through the backend and cache the result.',
-        payload: { force: false },
-    },
-];
 
 // Frontend-implemented tool capabilities. This file owns executable browser
 // handlers and JSON parameter shapes only; LLM-facing tool instructions live
@@ -670,7 +653,10 @@ const toRequestPayloadRecord = (request: ProcedurePlanRequest): Record<string, a
 const runSharedAnalysisForLivePlan = async (
     context: AiCommandRegistryContext,
     args: Record<string, any> = {},
-): Promise<{ status: 'ready'; plan: LivePerformancePlan } | { status: 'error'; error: string; message: string }> => {
+): Promise<
+    | { status: 'ready'; plan: LivePerformancePlan }
+    | { status: 'error'; error: LiveAnalystRecordedAnalysisError; message: string }
+> => {
     const sessionId = getSelectedSessionId(context);
     if (!sessionId) {
         return {
@@ -717,7 +703,7 @@ const buildProcedurePlanSubscribers = (
         return { status: 'complete' };
     },
 
-    async live_recorded_analysis(request, ctx, snapshot) {
+    async live_recorded_analysis(request, _ctx, snapshot) {
         if (snapshot?.baseline_ready !== true) {
             return {
                 status: 'blocked',
@@ -731,13 +717,11 @@ const buildProcedurePlanSubscribers = (
             toRequestPayloadRecord(request),
         );
         if (analysisStatus.status !== 'ready') {
-            ctx.sendObservation({
-                source: 'live_performance_analyst',
-                agent_mode: 'live_performance_analyst',
-                event: analysisStatus.error,
-                ...(snapshot ? { snapshot } : {}),
-                message: analysisStatus.message,
-            });
+            context.sessionIntelligence?.emitRecordedAnalysisError(
+                analysisStatus.error,
+                analysisStatus.message,
+                snapshot,
+            );
             return {
                 status: 'failed',
                 error: analysisStatus.error,
@@ -749,15 +733,7 @@ const buildProcedurePlanSubscribers = (
         const readyPlan = analysisStatus.plan;
         const agent = getLiveAnalystState(context);
         agent.analysisSessionId = sessionId;
-        ctx.sendObservation({
-            source: 'live_performance_analyst',
-            agent_mode: 'live_performance_analyst',
-            event: 'recorded_analysis_plan_ready',
-            ...(snapshot ? { snapshot } : {}),
-            goal: readyPlan.goal,
-            focus: readyPlan.focus,
-            analysis: readyPlan.analysis,
-        });
+        context.sessionIntelligence?.emitRecordedAnalysisPlanReady(readyPlan, snapshot);
         return { status: 'complete' };
     },
     ...context.procedurePlanSubscribers,
@@ -1549,15 +1525,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         }
         context.setLivePerformanceAnalystEnabled?.(true);
         context.setAgentTagActive?.('Live Analyst', true);
-        ctx.sendObservation({
-            source: 'live_performance_analyst',
-            agent_mode: 'live_performance_analyst',
-            event: 'live_analysis_plan_started',
-            snapshot: si.getLiveSessionSnapshot(),
-            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
-            requests: LIVE_ANALYST_START_PLAN_REQUESTS,
-            message: 'Live analysis procedure started. Collect a baseline first, then use recorded-session analysis to choose a focus.',
-        });
+        si.emitLiveAnalysisPlanStarted();
 
         const runAnalystCycle = async (notify: boolean): Promise<any> => {
             if (agent.inFlight) {
@@ -1576,23 +1544,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                     const now = Date.now();
                     if (!snapshot.baseline_ready) {
                         agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
-                    } else if (!focus) {
-                        const key = `baseline_classifier_request:${snapshot.completed_laps}`;
-                        if (agent.lastObservationKey !== key && now - agent.lastObservationAt > 12000) {
-                            agent.lastObservationKey = key;
-                            agent.lastObservationAt = now;
-                            ctx.sendObservation({
-                                source: 'live_performance_analyst',
-                                agent_mode: 'live_performance_analyst',
-                                event: 'baseline_classifier_request_ready',
-                                snapshot,
-                                goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
-                                requests: LIVE_ANALYST_START_PLAN_REQUESTS,
-                                current_request: 1,
-                                message: 'Baseline complete. Request the recorded-session classifier through the frontend before choosing a focus.',
-                            });
-                        }
-                    } else {
+                    } else if (focus) {
                         const timing = focus.timing;
                         const key = `focus:${focus.section.id}:${focus.baseline.lap}:${focus.baseline.observedAt}`;
                         const canSpeak = hasEnoughCoachingLead(
@@ -1606,13 +1558,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                             agent.lastObservationKey = key;
                             agent.lastObservationAt = now;
                             agent.lastSpokenAt = now;
-                            ctx.sendObservation({
-                                source: 'live_performance_analyst',
-                                agent_mode: 'live_performance_analyst',
-                                event: 'live_analysis_window',
-                                snapshot,
-                                focus,
-                            });
+                            si.emitLiveAnalysisWindow(snapshot, focus);
                         }
                     }
                 }

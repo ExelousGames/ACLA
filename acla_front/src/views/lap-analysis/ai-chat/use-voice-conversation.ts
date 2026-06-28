@@ -554,6 +554,7 @@ export function useVoiceConversation(
     }, []);
 
     const sendObservation = useCallback((data: Record<string, unknown>): boolean => {
+        onEventRef.current?.({ kind: 'observation', data });
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
