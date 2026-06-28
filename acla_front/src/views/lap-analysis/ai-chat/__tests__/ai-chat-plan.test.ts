@@ -1,5 +1,6 @@
 import {
     buildProcedurePlan,
+    isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
 } from '../ai-chat-plan';
@@ -202,14 +203,29 @@ describe('buildProcedurePlan', () => {
         })).toBeNull();
     });
 
-    it('rejects requests without explicit type, title, and subscriber', () => {
+    it('accepts AI-authored request lists without frontend subscribers', () => {
         expect(buildProcedurePlan({
             event: 'procedure_plan_started',
             goal: 'Complete the next task.',
             requests: [
-                { type: 'tool_call', subscriber: 'display_surface' },
-                { title: 'Provide one clean sample', subscriber: 'human' },
-                { type: 'human_action', title: 'Provide one clean sample' },
+                { type: 'tool_call', title: 'Show supporting context' },
+                { type: 'driver_action', title: 'Provide one clean sample' },
+            ],
+        })).toMatchObject({
+            requests: [
+                { type: 'tool_call', title: 'Show supporting context', status: 'pending' },
+                { type: 'driver_action', title: 'Provide one clean sample', status: 'pending' },
+            ],
+        });
+    });
+
+    it('rejects requests without explicit type and title', () => {
+        expect(buildProcedurePlan({
+            event: 'procedure_plan_started',
+            goal: 'Complete the next task.',
+            requests: [
+                { type: 'tool_call' },
+                { title: 'Provide one clean sample' },
             ],
         })).toBeNull();
     });
@@ -247,5 +263,19 @@ describe('isProcedurePlanStartEvent', () => {
     it('does not treat plan updates as new plans', () => {
         expect(isProcedurePlanStartEvent('task_ready')).toBe(false);
         expect(isProcedurePlanStartEvent(undefined)).toBe(false);
+    });
+});
+
+describe('isProcedurePlanClearEvent', () => {
+    it('recognizes plan-clear events', () => {
+        expect(isProcedurePlanClearEvent('procedure_plan_cleared')).toBe(true);
+        expect(isProcedurePlanClearEvent('procedure_plan_terminated')).toBe(true);
+        expect(isProcedurePlanClearEvent('live_analysis_plan_terminated')).toBe(true);
+    });
+
+    it('does not treat plan updates as clear events', () => {
+        expect(isProcedurePlanClearEvent('procedure_plan_started')).toBe(false);
+        expect(isProcedurePlanClearEvent('task_ready')).toBe(false);
+        expect(isProcedurePlanClearEvent(undefined)).toBe(false);
     });
 });

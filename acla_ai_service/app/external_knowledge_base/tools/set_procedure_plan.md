@@ -13,7 +13,8 @@ parameters:
   requests:
     description: >
       Ordered list of request objects. Each request must have `type` and
-      `title`, and may include `detail`, `name`, `method`, `url`, and `payload`.
+      `title`, and may include `subscriber`, `detail`, `name`, `method`, `url`,
+      and `payload`.
 ---
 
 ## Usage notes
@@ -31,6 +32,10 @@ Prefer request types such as:
   optional `payload`.
 - `api_request` for HTTP/API work, with `method`, `url`, and optional `payload`.
 - `driver_action` for something the driver needs to do before the next request.
+
+Include `subscriber` when the frontend should be able to execute or validate a
+request during `advance_plan_step`; for example, `driver` or
+`live_recorded_analysis`.
 
 Keep titles short and concrete. Include only requests you actually intend to
 perform or monitor.

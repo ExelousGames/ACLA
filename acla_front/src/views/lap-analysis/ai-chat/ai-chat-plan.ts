@@ -12,7 +12,7 @@ export type ProcedurePlanStepStatus = typeof PROCEDURE_PLAN_STEP_STATUSES[number
 export type ProcedurePlanRequest = {
     type: string;
     title: string;
-    subscriber: string;
+    subscriber?: string;
     status: ProcedurePlanStepStatus;
     detail?: string;
     payload?: unknown;
@@ -59,12 +59,12 @@ const buildProcedurePlanRequest = (value: unknown): ProcedurePlanRequest | null 
     const type = toNonEmptyString(request.type);
     const title = toNonEmptyString(request.title);
     const subscriber = toNonEmptyString(request.subscriber);
-    if (!type || !title || !subscriber) return null;
+    if (!type || !title) return null;
 
     return {
         type,
         title,
-        subscriber,
+        subscriber: subscriber || undefined,
         status: isProcedurePlanStepStatus(request.status) ? request.status : 'pending',
         detail: toNonEmptyString(request.detail) || undefined,
         payload: request.payload,
@@ -121,6 +121,16 @@ export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {
         new RegExp(`\\bignore\\s+${planTarget}\\b`),
     ].some((pattern) => pattern.test(normalized));
 };
+
+export const isProcedurePlanClearEvent = (sourceEvent?: string): boolean => (
+    typeof sourceEvent === 'string'
+    && (
+        sourceEvent === 'procedure_plan_cleared'
+        || sourceEvent === 'procedure_plan_terminated'
+        || sourceEvent.endsWith('_plan_cleared')
+        || sourceEvent.endsWith('_plan_terminated')
+    )
+);
 
 export const buildProcedurePlan = (data: Record<string, unknown>): ProcedurePlan | null => {
     const sourceEvent = toNonEmptyString(data.event);

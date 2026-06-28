@@ -769,6 +769,13 @@ const executeProcedurePlanRequest = async (
     ctx: ToolHandlerContext,
     snapshot?: Record<string, any> | null,
 ): Promise<ProcedurePlanSubscriberResult> => {
+    if (!request.subscriber) {
+        return {
+            status: 'blocked',
+            error: 'procedure_plan_subscriber_missing',
+            message: 'This plan request does not name a frontend subscriber.',
+        };
+    }
     const subscriber = buildProcedurePlanSubscribers(context)[request.subscriber];
     if (!subscriber) {
         return {
@@ -948,6 +955,17 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         required: [],
     },
     {
+        name: 'clear_procedure_plan',
+        description: 'Clear or terminate the visible procedure plan UI when the plan is no longer useful.',
+        properties: {
+            reason: {
+                type: 'string',
+                description: 'Optional short reason the visible plan should be cleared.',
+            },
+        },
+        required: [],
+    },
+    {
         name: 'set_procedure_plan',
         description: 'Create or replace the visible procedure plan UI with an AI-authored list of requests.',
         properties: {
@@ -978,7 +996,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
                         detail: { type: 'string' },
                         payload: { type: 'object' },
                     },
-                    required: ['type', 'title', 'subscriber'],
+                    required: ['type', 'title'],
                 },
             },
         },
@@ -1129,6 +1147,7 @@ const COMMON_TOOL_NAMES = [
     'show_map',
     'set_procedure_plan',
     'advance_plan_step',
+    'clear_procedure_plan',
 ] as const;
 
 const LIVE_TOOL_NAMES = [
@@ -1748,6 +1767,14 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason), 'complete') || {
             status: 'unavailable',
             error: 'no_procedure_plan_ui',
+        };
+    },
+
+    async clear_procedure_plan(args) {
+        context.clearProcedurePlan?.();
+        return {
+            status: 'cleared',
+            reason: normalizeOptionalString(args.reason),
         };
     },
 

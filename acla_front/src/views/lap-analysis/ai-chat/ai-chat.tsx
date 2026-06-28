@@ -19,6 +19,7 @@ import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
 import {
     buildProcedurePlan,
+    isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
     type ProcedurePlan,
@@ -469,6 +470,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
         if (event.kind === 'observation') {
+            const sourceEvent = typeof event.data.event === 'string' ? event.data.event : undefined;
+            if (isProcedurePlanClearEvent(sourceEvent)) {
+                clearProcedurePlan();
+                return;
+            }
             const plan = buildProcedurePlan(event.data);
             if (plan) {
                 if (isProcedurePlanStartEvent(plan.sourceEvent)) {
@@ -1326,6 +1332,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                     title="Move the plan to the next request"
                                 >
                                     NEXT REQUEST
+                                </button>
+                                <button
+                                    type="button"
+                                    className="ai-chat__plan-clear"
+                                    onClick={clearProcedurePlan}
+                                    title="Dismiss the visible plan"
+                                    aria-label="Dismiss the visible plan"
+                                >
+                                    &times;
                                 </button>
                             </div>
                             <ul className="ai-chat__plan-list">

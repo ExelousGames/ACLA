@@ -622,6 +622,23 @@
   min-height: 30px;
   flex-shrink: 0;
 }
+.ai-chat__plan-clear {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 1px solid var(--lp-border);
+  border-radius: var(--lp-radius-sm);
+  background: rgba(232, 232, 240, 0.06);
+  color: var(--lp-gray);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ai-chat__plan-clear:hover {
+  border-color: var(--lp-blue);
+  color: var(--lp-white);
+  background: rgba(41, 182, 246, 0.14);
+}
 
 /* Map tool attachment */
 .ai-chat__map-card {

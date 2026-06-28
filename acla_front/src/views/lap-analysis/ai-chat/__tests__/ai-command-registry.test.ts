@@ -669,6 +669,7 @@ describe('ai command registry live performance analyst tools', () => {
             'get_live_section_history',
             'advance_plan_step',
             'set_procedure_plan',
+            'clear_procedure_plan',
         ]));
         expect(liveToolNames).not.toEqual(expect.arrayContaining([
             '_get_live_section_telemetry',
@@ -681,6 +682,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(recordedToolNames).toEqual(expect.arrayContaining([
             'advance_plan_step',
             'set_procedure_plan',
+            'clear_procedure_plan',
         ]));
     });
 
@@ -767,6 +769,51 @@ describe('ai command registry live performance analyst tools', () => {
             goal: 'Improve Druids entry.',
             request_count: 2,
             current_request: 0,
+        });
+    });
+
+    it('lets the assistant clear the visible procedure plan', async () => {
+        const clearProcedurePlan = jest.fn();
+        const { registry } = createLiveAnalystRegistry({
+            clearProcedurePlan,
+        });
+
+        const result = await registry.clear_procedure_plan(
+            { reason: 'plan is complete' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(clearProcedurePlan).toHaveBeenCalledTimes(1);
+        expect(result).toEqual({
+            status: 'cleared',
+            reason: 'plan is complete',
+        });
+    });
+
+    it('blocks plan advancement when the next step has no subscriber', async () => {
+        const advanceProcedurePlanStep = jest.fn();
+        const { registry } = createLiveAnalystRegistry({
+            advanceProcedurePlanStep,
+            getProcedurePlan: () => ({
+                goal: 'Run a delegated workflow.',
+                requests: [
+                    { type: 'request', subscriber: 'driver', status: 'complete', title: 'Complete the first task.' },
+                    { type: 'request', status: 'pending', title: 'Run the worker.' },
+                ],
+                currentStep: 0,
+                sourceEvent: 'procedure_plan_started',
+            }),
+        });
+
+        const result = await registry.advance_plan_step(
+            { reason: 'first task complete' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+            status: 'error',
+            error: 'procedure_plan_subscriber_missing',
         });
     });
 
