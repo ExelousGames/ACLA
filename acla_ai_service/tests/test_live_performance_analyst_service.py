@@ -20,6 +20,7 @@ def test_live_performance_tool_knowledge_is_loaded():
     assert "requests" in tool("set_procedure_plan")["_raw_body"]
     assert "focus_name" not in tool("set_procedure_plan")["_raw_body"]
     assert "request's `payload`" in tool("set_procedure_plan")["_raw_body"]
+    assert "advance_plan_step" in behavior("procedure_plan")["_raw_body"]
     assert "collecting_baseline" in behavior("live_performance_analyst")["_raw_body"]
     assert "get_live_focus_section" not in behavior("live_performance_analyst")["_raw_body"]
     assert "live_analysis_plan_started" in behavior("live_performance_analyst")["_raw_body"]
@@ -71,6 +72,39 @@ def test_frontend_tool_schema_exposes_advance_plan_step(monkeypatch):
     assert "frontend" in schema.description
     assert "tool_call" in schema.description
     assert schema.properties["reason"]["description"]
+
+
+def test_observation_prompt_includes_generic_plan_mode_contract():
+    prompt = pipecat_pipeline._format_observation_for_prompt(
+        {
+            "event": "baseline_classifier_request_ready",
+            "text": "baseline_classifier_request_ready.",
+            "goal": "Collect a baseline and use recorded-session analysis to choose a focus.",
+            "current_request": 1,
+            "requests": [
+                {
+                    "type": "driver_action",
+                    "subscriber": "driver",
+                    "title": "Collect a clean baseline lap",
+                    "status": "complete",
+                },
+                {
+                    "type": "frontend_request",
+                    "subscriber": "live_recorded_analysis",
+                    "title": "Request recorded-session classifier",
+                    "status": "pending",
+                    "payload": {"force": False},
+                },
+            ],
+        },
+        {},
+    )
+
+    assert "Procedure plan mode is active" in prompt
+    assert "advance_plan_step" in prompt
+    assert "live_recorded_analysis" in prompt
+    assert "Request recorded-session classifier" in prompt
+    assert "classify_live_section" not in prompt
 
 
 @pytest.mark.asyncio

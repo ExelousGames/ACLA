@@ -178,5 +178,8 @@ export const formatObservationForLlm = (data: Record<string, unknown>): string =
 
 export const buildFormattedObservationFrame = (data: Record<string, unknown>) => ({
     type: 'observation' as const,
-    data: { text: formatObservationForLlm(data) },
+    data: {
+        ...data,
+        text: formatObservationForLlm(data),
+    },
 });

@@ -26,6 +26,7 @@ Frame shapes (over the WS as JSON text):
 * Frontend → Backend (independent of any specific tool call)::
 
       {"type": "observation", "data": {"text": "<formatted prompt>"}}
+      {"type": "session_context", "session_context": {...}}
 
 Public surface:
 
@@ -56,22 +57,31 @@ LOGGER = logging.getLogger(__name__)
 SendText = Callable[[str], Awaitable[None]]
 ObservationSink = Callable[[Dict[str, Any]], Any]
 UserTextSink = Callable[[str], Any]
+SessionContextSink = Callable[[Dict[str, Any]], Any]
 
 
 class _ConnectionState:
     """Per-connection state held by the relay."""
 
-    __slots__ = ("send_text", "observation_sink", "user_text_sink", "in_flight")
+    __slots__ = (
+        "send_text",
+        "observation_sink",
+        "user_text_sink",
+        "session_context_sink",
+        "in_flight",
+    )
 
     def __init__(
         self,
         send_text: SendText,
         observation_sink: ObservationSink,
         user_text_sink: Optional[UserTextSink] = None,
+        session_context_sink: Optional[SessionContextSink] = None,
     ) -> None:
         self.send_text = send_text
         self.observation_sink = observation_sink
         self.user_text_sink = user_text_sink
+        self.session_context_sink = session_context_sink
         self.in_flight: Dict[str, asyncio.Future] = {}
 
 
@@ -89,14 +99,17 @@ class ToolRelay:
         send_text: SendText,
         observation_sink: ObservationSink,
         user_text_sink: Optional[UserTextSink] = None,
+        session_context_sink: Optional[SessionContextSink] = None,
     ) -> None:
         """Register a connection. ``conn`` is any hashable identifier (we use
         ``id(websocket)``). ``send_text`` writes one text frame; the
         ``observation_sink`` receives the formatted ``data`` payload of each
         inbound ``observation`` frame; the optional ``user_text_sink`` receives the
-        ``text`` of each inbound ``user_text`` frame (typed chat input)."""
+        ``text`` of each inbound ``user_text`` frame (typed chat input); the
+        optional ``session_context_sink`` receives compact frontend context
+        updates such as the active procedure plan."""
         self._by_conn[id(conn)] = _ConnectionState(
-            send_text, observation_sink, user_text_sink,
+            send_text, observation_sink, user_text_sink, session_context_sink,
         )
 
     def unbind(self, conn: Any) -> None:
@@ -207,6 +220,20 @@ class ToolRelay:
                 state.user_text_sink(text)
             except Exception:
                 LOGGER.exception("tool_relay: user_text_sink raised")
+            return
+
+        if frame_type == "session_context":
+            if state.session_context_sink is None:
+                LOGGER.warning("tool_relay: session_context frame received but no sink bound")
+                return
+            session_context = payload.get("session_context") or {}
+            if not isinstance(session_context, dict):
+                LOGGER.warning("tool_relay: dropped non-object session_context frame")
+                return
+            try:
+                state.session_context_sink(session_context)
+            except Exception:
+                LOGGER.exception("tool_relay: session_context_sink raised")
             return
 
         LOGGER.warning("tool_relay: unknown frame type %r", frame_type)

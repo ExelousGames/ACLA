@@ -106,6 +106,8 @@ describe('formatObservationForLlm', () => {
         })).toEqual({
             type: 'observation',
             data: {
+                event: 'custom_alert',
+                section: 'T1',
                 text: 'custom_alert section=T1. Respond with one short engineer suggestion.',
             },
         });

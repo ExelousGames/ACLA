@@ -86,6 +86,116 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
     )
 
 
+_PLAN_REQUEST_FIELDS = (
+    "type",
+    "title",
+    "subscriber",
+    "name",
+    "status",
+    "detail",
+    "result_visibility",
+    "output",
+    "method",
+    "url",
+    "payload",
+)
+
+
+def _compact_json(value: Any, *, max_chars: int = 3000) -> str:
+    try:
+        encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
+    except Exception:
+        return str(value)[:max_chars]
+    if len(encoded) <= max_chars:
+        return encoded
+    return f"{encoded[:max_chars]}...<truncated>"
+
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _compact_plan_request(request: Any) -> Dict[str, Any]:
+    if not isinstance(request, dict):
+        return {}
+    return {
+        field: request[field]
+        for field in _PLAN_REQUEST_FIELDS
+        if request.get(field) is not None
+    }
+
+
+def _coerce_plan_index(value: Any, request_count: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = 0
+    if request_count <= 0:
+        return 0
+    return max(0, min(request_count - 1, parsed))
+
+
+def _extract_procedure_plan(
+    data: Dict[str, Any],
+    session_context: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    plan = _as_dict(data.get("procedure_plan"))
+    if not plan and isinstance(data.get("requests"), list):
+        plan = {
+            "goal": data.get("goal"),
+            "requests": data.get("requests"),
+            "current_request": data.get("current_request", data.get("current_step", 0)),
+            "source_event": data.get("event"),
+        }
+    if not plan:
+        plan = _as_dict(_as_dict(session_context).get("procedure_plan"))
+    requests = plan.get("requests")
+    if not isinstance(requests, list) or not requests:
+        return None
+
+    compact_requests = [_compact_plan_request(request) for request in requests]
+    current_request = _coerce_plan_index(
+        plan.get("current_request", plan.get("currentStep", 0)),
+        len(compact_requests),
+    )
+    return {
+        "goal": plan.get("goal") or "",
+        "current_request": current_request,
+        "active_request": compact_requests[current_request],
+        "requests": compact_requests,
+        "source_event": plan.get("source_event") or data.get("event"),
+    }
+
+
+def _format_procedure_plan_for_prompt(plan: Dict[str, Any]) -> str:
+    return (
+        "Procedure plan mode is active. "
+        f"Current plan: {_compact_json(plan)}\n"
+        "Plan-mode rule: the frontend owns visible plan state and executable "
+        "subscribed requests. When an observation or the active request state "
+        "shows the current request is ready, complete, or executable now, call "
+        "`advance_plan_step` before speaking. If `advance_plan_step` returns "
+        "AI-visible tool_result data, use that result for the response and next "
+        "decision. Do not clear, skip, or abandon the plan unless the driver "
+        "explicitly asks to opt out."
+    )
+
+
+def _format_observation_for_prompt(
+    data: Dict[str, Any],
+    session_context: Optional[Dict[str, Any]],
+) -> str:
+    text = str(data.get("text") or "").strip()
+    if not text:
+        text = f"event={data.get('event', 'observation')}"
+
+    plan = _extract_procedure_plan(data, session_context)
+    if not plan:
+        return text
+
+    return f"{text}\n\n{_format_procedure_plan_for_prompt(plan)}"
+
+
 # ----------------------------------------------------------------------
 # Public API
 # ----------------------------------------------------------------------
@@ -929,7 +1039,7 @@ async def build_voice_pipeline_task(
     session_context_prompt = _format_session_context_for_prompt(session_config.session_context)
     if session_context_prompt:
         system_prompt = f"{system_prompt.rstrip()}\n\n{session_context_prompt}"
-    for _behavior_name in ("tool_use", "live_performance_analyst", "emotion", "transcript_resilience"):
+    for _behavior_name in ("tool_use", "procedure_plan", "live_performance_analyst", "emotion", "transcript_resilience"):
         _skill = _skill_behavior(_behavior_name)
         _section = _skill.get("_raw_body", "") if _skill else ""
         if _section:
@@ -957,6 +1067,10 @@ async def build_voice_pipeline_task(
     emotion_tag_stripper = EmotionTagStripper()
     context_logger = ContextLogger(context)
     task_ref: Dict[str, Any] = {"task": None}
+    latest_session_context: Dict[str, Dict[str, Any]] = {
+        "value": session_config.session_context or {},
+    }
+    latest_plan_fingerprint: Dict[str, str] = {"value": ""}
     function_tag_recovery = FunctionTagRecovery(
         dispatch_tool,
         context,
@@ -1013,8 +1127,25 @@ async def build_voice_pipeline_task(
     # LLM to respond.
     loop = asyncio.get_running_loop()
 
+    def _remember_session_context(session_context: Dict[str, Any]) -> None:
+        session_config.session_context = session_context
+        latest_session_context["value"] = session_context
+        plan = _extract_procedure_plan({}, session_context)
+        fingerprint = _compact_json(plan, max_chars=4000) if plan else ""
+        if fingerprint == latest_plan_fingerprint["value"]:
+            return
+        latest_plan_fingerprint["value"] = fingerprint
+        if plan:
+            context.add_message({
+                "role": "system",
+                "content": _format_procedure_plan_for_prompt(plan),
+            })
+
     def observation_sink(data: dict) -> None:
-        text = str(data.get("text") or "").strip()
+        if not isinstance(data, dict):
+            LOGGER.warning("observation_sink: dropped non-object observation")
+            return
+        text = _format_observation_for_prompt(data, latest_session_context["value"])
         if not text:
             LOGGER.warning("observation_sink: dropped observation without formatted text")
             return
@@ -1073,6 +1204,7 @@ async def build_voice_pipeline_task(
         send_text=_send_text,
         observation_sink=observation_sink,
         user_text_sink=user_text_sink,
+        session_context_sink=_remember_session_context,
     )
 
     return task
