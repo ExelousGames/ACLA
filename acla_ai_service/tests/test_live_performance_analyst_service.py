@@ -43,7 +43,18 @@ def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
     assert set(live_schema.properties) == {"section_id", "section_name", "lap"}
 
 
-def test_live_analyst_observations_drive_the_right_actions():
+def test_live_analyst_observations_report_state_without_teaching_actions():
+    collecting_msg = pipecat_pipeline._format_observation_for_llm({
+        "source": "live_performance_analyst",
+        "agent_mode": "live_performance_analyst",
+        "event": "collecting_baseline",
+        "snapshot": {
+            "track": "brands_hatch",
+            "current_lap": 1,
+            "completed_laps": 0,
+            "live_session_type": "solo_practice",
+        },
+    })
     plan_msg = pipecat_pipeline._format_observation_for_llm({
         "source": "live_performance_analyst",
         "agent_mode": "live_performance_analyst",
@@ -74,14 +85,19 @@ def test_live_analyst_observations_drive_the_right_actions():
         },
     })
 
-    assert "set_procedure_plan" in plan_msg
-    assert "requests array" in plan_msg
-    assert "request payload" in plan_msg
-    assert "plan-level focus" in plan_msg
+    assert "track=brands_hatch" in collecting_msg
+    assert "completed_laps=0" in collecting_msg
+    assert "get_live_focus_section" not in collecting_msg
+    assert "classify_live_section" not in collecting_msg
+    assert "Do not" not in collecting_msg
+    assert "goal=Improve Paddock Hill." in plan_msg
+    assert "section=brands_hatch2:Paddock Hill" in plan_msg
     assert "plan=" not in plan_msg
-    assert "recorded-session AI analysis is needed" in baseline_msg
+    assert "Recorded-session AI analysis is required." in baseline_msg
+    assert "Explain briefly" not in baseline_msg
     assert "classify_live_section" not in baseline_msg
-    assert "Call show_map" in coaching_msg
+    assert "Call show_map" not in coaching_msg
+    assert "Give one short correction" not in coaching_msg
     assert "traffic_or_race" in coaching_msg
 
 

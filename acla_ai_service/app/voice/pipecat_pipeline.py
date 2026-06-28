@@ -1101,9 +1101,7 @@ def _format_observation_for_llm(data: dict) -> str:
             return (
                 "live_performance_analyst collecting baseline: "
                 f"track={track}, current_lap={current_lap}, completed_laps={completed_laps}, "
-                f"session_type={session_type}. Do not critique yet. If you speak, only say you are "
-                "collecting one clean baseline lap. Do not call get_live_focus_section or "
-                "classify_live_section yet."
+                f"session_type={session_type}."
             )
 
         if event == "recorded_analysis_plan_ready":
@@ -1132,8 +1130,7 @@ def _format_observation_for_llm(data: dict) -> str:
         }:
             return (
                 "live_performance_analyst cannot build a focus plan yet. "
-                f"reason={event}; message={data.get('message')}; "
-                "Explain briefly that recorded-session AI analysis is needed before live focus coaching."
+                f"reason={event}; message={data.get('message')}."
             )
 
         if event == "live_analysis_window":
@@ -1155,9 +1152,7 @@ def _format_observation_for_llm(data: dict) -> str:
                 f"range=[{section.get('from')},{section.get('to')}], "
                 f"mistakes={baseline.get('mistakeCount')}, severity={baseline.get('severity')}, "
                 f"labels={baseline.get('childLabels')}, seconds_ahead={timing.get('secondsAhead')}, "
-                f"distance_ahead={timing.get('distanceAhead')}, session_type={session_type}. "
-                "Call show_map with focus.show_map_arguments before or alongside the coaching message. "
-                "Give one short correction only; if traffic_or_race, include awareness/context."
+                f"distance_ahead={timing.get('distanceAhead')}, session_type={session_type}."
             )
 
     if event in ("attack_window", "defense_threat"):
