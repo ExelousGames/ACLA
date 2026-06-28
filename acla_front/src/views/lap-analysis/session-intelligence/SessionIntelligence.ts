@@ -12,7 +12,7 @@ import {
     buildLiveAnalysisPlanStartedObservation,
     buildLiveAnalysisWindowObservation,
     buildRecordedAnalysisErrorObservation,
-    buildRecordedAnalysisPlanReadyObservation,
+    buildRecordedAnalysisReadyObservation,
     detectLiveSessionType,
     estimateSecondsToSection,
     getTelemetryCar,
@@ -108,15 +108,11 @@ export class SessionIntelligence {
         this.emitLiveAnalystObservation(buildRecordedAnalysisErrorObservation(error, message, snapshot));
     }
 
-    emitRecordedAnalysisPlanReady(
-        plan: {
-            goal: string;
-            focus: unknown;
-            analysis: unknown;
-        },
+    emitRecordedAnalysisReady(
+        analysis: unknown,
         snapshot?: Record<string, unknown> | null,
     ): void {
-        this.emitLiveAnalystObservation(buildRecordedAnalysisPlanReadyObservation(plan, snapshot));
+        this.emitLiveAnalystObservation(buildRecordedAnalysisReadyObservation(analysis, snapshot));
     }
 
     emitLiveAnalysisWindow(snapshot: Record<string, unknown>, focus: unknown): void {

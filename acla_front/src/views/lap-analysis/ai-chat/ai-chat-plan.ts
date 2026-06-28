@@ -88,7 +88,7 @@ const toProcedurePlanRequests = (value: unknown): ProcedurePlanRequest[] | null 
     return requests as ProcedurePlanRequest[];
 };
 
-const isProcedurePlanRequestDone = (request: ProcedurePlanRequest | undefined): boolean => (
+export const isProcedurePlanRequestDone = (request: ProcedurePlanRequest | undefined): boolean => (
     Boolean(request && PROCEDURE_PLAN_DONE_STATUSES.includes(request.status))
 );
 

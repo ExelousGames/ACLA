@@ -14,6 +14,20 @@ const formatLabels = (value: unknown): string => (
     Array.isArray(value) ? `[${value.map(String).join(', ')}]` : String(value)
 );
 
+const summarizeRecordedAnalysisSegments = (value: unknown): string => {
+    if (!Array.isArray(value)) return '[]';
+
+    const summaries = value.slice(0, 5).map((item) => {
+        const segment = asRecord(item);
+        const labels = Array.isArray(segment.child_labels) && segment.child_labels.length
+            ? segment.child_labels
+            : segment.label_ids;
+        return `${segment.id || 'segment'}:${segment.parent_label || 'unknown'} labels=${formatLabels(labels)}`;
+    });
+
+    return `[${summaries.join('; ')}]`;
+};
+
 export const formatObservationForLlm = (data: Record<string, unknown>): string => {
     const event = typeof data.event === 'string' ? data.event : 'event';
 
@@ -32,16 +46,18 @@ export const formatObservationForLlm = (data: Record<string, unknown>): string =
             );
         }
 
-        if (event === 'recorded_analysis_plan_ready') {
-            const focus = asRecord(data.focus);
-            const section = asRecord(focus.section);
-            const baseline = asRecord(focus.baseline);
+        if (event === 'recorded_analysis_ready') {
+            const analysisContext = asRecord(data.analysis);
+            const analysis = asRecord(analysisContext.analysis);
             return (
-                'live_performance_analyst recorded analysis plan ready. '
-                + `goal=${data.goal}; `
-                + `section=${section.id}:${section.name} `
-                + `range=[${section.from},${section.to}], `
-                + `labels=${formatLabels(baseline.childLabels)}, session_type=${sessionType}.`
+                'live_performance_analyst recorded classifier analysis ready. '
+                + `status=${analysisContext.status}; `
+                + `session_id=${analysisContext.session_id}; `
+                + `samples_analyzed=${analysis.samples_analyzed}; `
+                + `segment_count=${analysis.segment_count}; `
+                + `returned_segment_count=${analysis.returned_segment_count}; `
+                + `segments=${summarizeRecordedAnalysisSegments(analysis.segments)}, `
+                + `session_type=${sessionType}.`
             );
         }
 
@@ -49,10 +65,9 @@ export const formatObservationForLlm = (data: Record<string, unknown>): string =
             'recorded_session_required',
             'recorded_analysis_unavailable',
             'recorded_analysis_failed',
-            'no_focus_from_recorded_analysis',
         ].includes(event)) {
             return (
-                'live_performance_analyst cannot build a focus plan yet. '
+                'live_performance_analyst cannot complete recorded classifier analysis. '
                 + `reason=${event}; message=${data.message}.`
             );
         }

@@ -16,15 +16,26 @@ describe('formatObservationForLlm', () => {
                 live_session_type: 'solo_practice',
             },
         });
-        const planMsg = formatObservationForLlm({
+        const analysisMsg = formatObservationForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
-            event: 'recorded_analysis_plan_ready',
-            goal: 'Improve Paddock Hill.',
+            event: 'recorded_analysis_ready',
             snapshot: { track: 'brands_hatch', live_session_type: 'solo_practice' },
-            focus: {
-                section: { id: 'brands_hatch2', name: 'Paddock Hill', from: 0.1, to: 0.2 },
-                baseline: { childLabels: ['Initiate brake too late'] },
+            analysis: {
+                status: 'ready',
+                session_id: 'session-1',
+                analysis: {
+                    samples_analyzed: 120,
+                    segment_count: 1,
+                    returned_segment_count: 1,
+                    segments: [
+                        {
+                            id: 'segment-1',
+                            parent_label: 'Paddock Hill',
+                            child_labels: ['Initiate brake too late'],
+                        },
+                    ],
+                },
             },
         });
         const baselineMsg = formatObservationForLlm({
@@ -51,9 +62,12 @@ describe('formatObservationForLlm', () => {
         expect(collectingMsg).not.toContain('get_live_focus_section');
         expect(collectingMsg).not.toContain('classify_live_section');
         expect(collectingMsg).not.toContain('Do not');
-        expect(planMsg).toContain('goal=Improve Paddock Hill.');
-        expect(planMsg).toContain('section=brands_hatch2:Paddock Hill');
-        expect(planMsg).not.toContain('plan=');
+        expect(analysisMsg).toContain('recorded classifier analysis ready');
+        expect(analysisMsg).toContain('segment_count=1');
+        expect(analysisMsg).toContain('Paddock Hill');
+        expect(analysisMsg).not.toContain('goal=');
+        expect(analysisMsg).not.toContain('focus=');
+        expect(analysisMsg).not.toContain('plan=');
         expect(baselineMsg).toContain('Recorded-session AI analysis is required.');
         expect(baselineMsg).not.toContain('Explain briefly');
         expect(baselineMsg).not.toContain('classify_live_section');

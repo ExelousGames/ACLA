@@ -84,8 +84,7 @@ export const buildBaselineClassifierRequestReadyObservation = (
 export type LiveAnalystRecordedAnalysisError =
     | 'recorded_session_required'
     | 'recorded_analysis_unavailable'
-    | 'recorded_analysis_failed'
-    | 'no_focus_from_recorded_analysis';
+    | 'recorded_analysis_failed';
 
 export const buildLiveAnalysisPlanStartedObservation = (
     snapshot: Record<string, unknown>,
@@ -111,21 +110,15 @@ export const buildRecordedAnalysisErrorObservation = (
     message,
 });
 
-export const buildRecordedAnalysisPlanReadyObservation = (
-    plan: {
-        goal: string;
-        focus: unknown;
-        analysis: unknown;
-    },
+export const buildRecordedAnalysisReadyObservation = (
+    analysis: unknown,
     snapshot?: Record<string, unknown> | null,
 ): LiveAnalystObservation => ({
     source: 'live_performance_analyst',
     agent_mode: 'live_performance_analyst',
-    event: 'recorded_analysis_plan_ready',
+    event: 'recorded_analysis_ready',
     ...(snapshot ? { snapshot } : {}),
-    goal: plan.goal,
-    focus: plan.focus,
-    analysis: plan.analysis,
+    analysis,
 });
 
 export const buildLiveAnalysisWindowObservation = (

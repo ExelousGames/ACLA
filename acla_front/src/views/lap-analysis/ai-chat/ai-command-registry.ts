@@ -10,7 +10,6 @@ import {
     RecordedAiAnalysisState,
 } from 'views/lap-analysis/recorded-session-analysis';
 import {
-    getSegmentChildSegments,
     getSegmentMainLabelText,
     resolveSegmentChildLabelTexts,
     SegmentClassificationSegment,
@@ -24,6 +23,7 @@ import {
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
     buildProcedurePlan,
+    isProcedurePlanRequestDone,
     type ProcedurePlan,
     type ProcedurePlanRequest,
     type ProcedurePlanStepStatus,
@@ -102,13 +102,6 @@ export interface LivePerformanceAnalystState {
     lastSpokenAt: number;
     analysisSessionId?: string | null;
 }
-
-type LivePerformancePlan = {
-    status: 'ready';
-    goal: string;
-    focus: ReturnType<typeof buildLiveFocusPayload>;
-    analysis: ReturnType<typeof buildRecordedAnalysisToolResult>;
-};
 
 // Frontend-implemented tool capabilities. This file owns executable browser
 // handlers and JSON parameter shapes only; LLM-facing tool instructions live
@@ -496,165 +489,17 @@ const getSelectedSessionId = (context: AiCommandRegistryContext): string | null 
     return selectedSession?.SessionId || context.sessionId || null;
 };
 
-const normalizeComparableText = (value: unknown): string => String(value ?? '')
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ')
-    .replace(/\bturn\s+/g, 't')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const getSegmentLabelIds = (segment: SegmentClassificationSegment): string[] => {
-    const labels = new Set<string>();
-    [
-        segment.parent_segment_id,
-        segment.parent_label_id,
-        segment.main_label_id,
-        ...(segment.labels || []),
-        ...(segment.sub_labels || []),
-    ].forEach((label) => {
-        if (label) labels.add(String(label));
-    });
-    getSegmentChildSegments(segment).forEach((child) => {
-        child.labels.forEach((label) => labels.add(String(label)));
-    });
-    return Array.from(labels);
-};
-
-const isMistakeLabel = (labelId: string): boolean => (
-    labelId === 'MSP'
-    || labelId === 'MSR'
-    || labelId.startsWith('MSP')
-    || labelId.startsWith('MSR')
-);
-
-const isExpertAdherenceLabel = (labelId: string): boolean => (
-    labelId === 'EA'
-    || labelId.startsWith('EA')
-);
-
-const resolveLiveSectionForRecordedSegment = (
-    segment: SegmentClassificationSegment,
-    context: AiCommandRegistryContext,
-) => {
-    const si = context.sessionIntelligence;
-    if (!si) return null;
-
-    const sections = si.getKnownTrackSections();
-    const snapshot = si.getLiveSessionSnapshot();
-    const track = normalizeOptionalString(snapshot.track || context.analysisContext?.mapSelected);
-    const parentLabelId = segment.parent_segment_id || segment.parent_label_id || segment.main_label_id;
-
-    if (track && parentLabelId && context.getCategoryLabels) {
-        const categoryLabels = context.getCategoryLabels(track);
-        const index = categoryLabels.findIndex((labelId) => labelId === parentLabelId);
-        if (index >= 0 && sections[index]) {
-            return sections[index];
-        }
-    }
-
-    const parentText = normalizeComparableText(getSegmentMainLabelText(segment, context.getLabelName));
-    if (parentText) {
-        const matched = sections.find((section) => {
-            const sectionText = normalizeComparableText(section.name);
-            return sectionText === parentText
-                || sectionText.includes(parentText)
-                || parentText.includes(sectionText);
-        });
-        if (matched) return matched;
-    }
-
-    return null;
-};
-
-const buildGoalText = (
-    sectionName: string,
-    childLabels: string[],
-): string => {
-    const primaryIssue = childLabels[0] || 'the main mistake';
-    return `Improve ${sectionName} by reducing ${primaryIssue}.`;
-};
-
-const buildLivePerformancePlanFromRecordedAnalysis = (
-    state: RecordedAiAnalysisState,
-    context: AiCommandRegistryContext,
-): LivePerformancePlan | null => {
-    const si = context.sessionIntelligence;
-    const result = state.result;
-    if (!si || !result || !Array.isArray(result.segments)) return null;
-
-    const candidates = result.segments
-        .map((segment) => {
-            const section = resolveLiveSectionForRecordedSegment(segment, context);
-            if (!section) return null;
-
-            const labelIds = getSegmentLabelIds(segment);
-            const childLabels = resolveSegmentChildLabelTexts(segment, context.getLabelName);
-            const mistakeCount = labelIds.filter(isMistakeLabel).length;
-            const expertAdherenceCount = labelIds.filter(isExpertAdherenceLabel).length;
-            const childCount = childLabels.length;
-            const length = Math.max(1, segment.end_index - segment.start_index);
-            const score = (mistakeCount * 4) + childCount + Math.min(length / 100, 2);
-
-            return {
-                segment,
-                section,
-                childLabels,
-                mistakeCount,
-                expertAdherenceCount,
-                score,
-            };
-        })
-        .filter((candidate): candidate is {
-            segment: SegmentClassificationSegment;
-            section: NonNullable<ReturnType<typeof resolveLiveSectionForRecordedSegment>>;
-            childLabels: string[];
-            mistakeCount: number;
-            expertAdherenceCount: number;
-            score: number;
-        } => Boolean(candidate))
-        .filter((candidate) => candidate.mistakeCount > 0 || candidate.childLabels.length > 0)
-        .sort((a, b) => b.score - a.score);
-
-    const best = candidates[0];
-    if (!best) return null;
-
-    si.recordSectionClassification({
-        section_id: best.section.id,
-        section_name: best.section.name,
-        lap: Math.max(0, si.getLiveSessionSnapshot().completed_laps - 1),
-        start_sample_idx: best.segment.start_index,
-        end_sample_idx: best.segment.end_index,
-        mistake_count: best.mistakeCount,
-        expert_adherence_count: best.expertAdherenceCount,
-        severity: Math.min(5, Math.max(1, best.mistakeCount + (best.childLabels.length * 0.25))),
-        confidence: 0.85,
-        parent_label: getSegmentMainLabelText(best.segment, context.getLabelName),
-        child_labels: best.childLabels,
-        observed_at: Date.now(),
-    });
-
-    const focus = buildLiveFocusPayload(context);
-    if (!focus) return null;
-
-    return {
-        status: 'ready',
-        goal: buildGoalText(best.section.name, best.childLabels),
-        focus,
-        analysis: buildRecordedAnalysisToolResult(state, context, { limit: 8 }),
-    };
-};
-
 const toRequestPayloadRecord = (request: ProcedurePlanRequest): Record<string, any> => (
     request.payload && typeof request.payload === 'object' && !Array.isArray(request.payload)
         ? request.payload as Record<string, any>
         : {}
 );
 
-const runSharedAnalysisForLivePlan = async (
+const runRecordedAnalysisForLiveRequest = async (
     context: AiCommandRegistryContext,
     args: Record<string, any> = {},
 ): Promise<
-    | { status: 'ready'; plan: LivePerformancePlan }
+    | { status: 'ready'; analysis: ReturnType<typeof buildRecordedAnalysisToolResult> }
     | { status: 'error'; error: LiveAnalystRecordedAnalysisError; message: string }
 > => {
     const sessionId = getSelectedSessionId(context);
@@ -662,7 +507,7 @@ const runSharedAnalysisForLivePlan = async (
         return {
             status: 'error',
             error: 'recorded_session_required',
-            message: 'Live performance analysis needs an uploaded or selected recorded session before it can build a focus plan.',
+            message: 'Live performance analysis needs an uploaded or selected recorded session before it can request classifier analysis.',
         };
     }
 
@@ -684,16 +529,10 @@ const runSharedAnalysisForLivePlan = async (
         };
     }
 
-    const plan = buildLivePerformancePlanFromRecordedAnalysis(state, context);
-    if (!plan) {
-        return {
-            status: 'error',
-            error: 'no_focus_from_recorded_analysis',
-            message: 'Recorded AI analysis did not produce a focusable mistake segment for the current track.',
-        };
-    }
-
-    return { status: 'ready', plan };
+    return {
+        status: 'ready',
+        analysis: buildRecordedAnalysisToolResult(state, context, { limit: 8 }),
+    };
 };
 
 const buildProcedurePlanSubscribers = (
@@ -712,7 +551,7 @@ const buildProcedurePlanSubscribers = (
             };
         }
 
-        const analysisStatus = await runSharedAnalysisForLivePlan(
+        const analysisStatus = await runRecordedAnalysisForLiveRequest(
             context,
             toRequestPayloadRecord(request),
         );
@@ -730,10 +569,9 @@ const buildProcedurePlanSubscribers = (
         }
 
         const sessionId = getSelectedSessionId(context);
-        const readyPlan = analysisStatus.plan;
         const agent = getLiveAnalystState(context);
         agent.analysisSessionId = sessionId;
-        context.sessionIntelligence?.emitRecordedAnalysisPlanReady(readyPlan, snapshot);
+        context.sessionIntelligence?.emitRecordedAnalysisReady(analysisStatus.analysis, snapshot);
         return { status: 'complete' };
     },
     ...context.procedurePlanSubscribers,
@@ -762,6 +600,14 @@ const executeProcedurePlanRequest = async (
     }
     return subscriber(request, ctx, snapshot);
 };
+
+const shouldExecuteProcedurePlanRequest = (
+    request: ProcedurePlanRequest | undefined,
+): request is ProcedurePlanRequest => (
+    Boolean(request?.subscriber)
+    && request?.subscriber !== 'driver'
+    && !isProcedurePlanRequestDone(request)
+);
 
 const searchUserSummaryMapLevel = (
     mapLevel: UserSummaryMapLevelResult,
@@ -1537,8 +1383,6 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                 const snapshot = si.getLiveSessionSnapshot();
                 const sections = si.getKnownTrackSections();
                 let focus = snapshot.baseline_ready ? buildLiveFocusPayload(context) : null;
-                let plan: LivePerformancePlan | null = null;
-                let analysisStatus: any = null;
 
                 if (notify) {
                     const now = Date.now();
@@ -1568,8 +1412,6 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                     snapshot,
                     section_count: sections.length,
                     focus,
-                    plan,
-                    analysis_status: analysisStatus,
                     history_count: si.getSectionHistory(80).length,
                 };
             } finally {
@@ -1691,11 +1533,18 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot?.() || null;
         const plan = context.getProcedurePlan?.() || null;
         if (plan) {
+            const activeRequest = plan.requests[plan.currentStep];
             const nextStep = Math.min(plan.currentStep + 1, plan.requests.length - 1);
-            if (nextStep > plan.currentStep) {
-                const nextRequest = plan.requests[nextStep];
+            const nextRequest = nextStep > plan.currentStep
+                ? plan.requests[nextStep]
+                : undefined;
+            const executableRequest = shouldExecuteProcedurePlanRequest(activeRequest)
+                ? activeRequest
+                : nextRequest;
+
+            if (executableRequest) {
                 const subscriberResult = await executeProcedurePlanRequest(
-                    nextRequest,
+                    executableRequest,
                     context,
                     ctx,
                     snapshot,

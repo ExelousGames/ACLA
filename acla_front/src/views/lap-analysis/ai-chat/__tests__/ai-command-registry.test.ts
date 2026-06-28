@@ -1073,7 +1073,7 @@ describe('ai command registry live performance analyst tools', () => {
         }
     });
 
-    it('builds a focus plan when the subscribed classifier request is advanced', async () => {
+    it('runs classifier analysis when the subscribed classifier request is advanced', async () => {
         const {
             analysisContext,
             registry,
@@ -1163,20 +1163,23 @@ describe('ai command registry live performance analyst tools', () => {
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline complete');
         expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: false });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'recorded_analysis_plan_ready',
-            goal: expect.stringContaining('T2 Druids'),
-            focus: expect.objectContaining({
-                section: expect.objectContaining({
-                    name: 'T2 Druids',
+            event: 'recorded_analysis_ready',
+            analysis: expect.objectContaining({
+                status: 'ready',
+                analysis: expect.objectContaining({
+                    segment_count: 1,
+                    returned_segment_count: 1,
                 }),
             }),
         }));
-        const recordedPlanObservation = sendObservation.mock.calls.find(([payload]) => (
-            payload.event === 'recorded_analysis_plan_ready'
+        const recordedAnalysisObservation = sendObservation.mock.calls.find(([payload]) => (
+            payload.event === 'recorded_analysis_ready'
         ))?.[0];
-        expect(recordedPlanObservation).not.toHaveProperty('plan');
-        expect(recordedPlanObservation).not.toHaveProperty('internal_tool_hint');
-        expect(recordedPlanObservation).not.toHaveProperty('sections');
+        expect(recordedAnalysisObservation).not.toHaveProperty('goal');
+        expect(recordedAnalysisObservation).not.toHaveProperty('focus');
+        expect(recordedAnalysisObservation).not.toHaveProperty('plan');
+        expect(recordedAnalysisObservation).not.toHaveProperty('internal_tool_hint');
+        expect(recordedAnalysisObservation).not.toHaveProperty('sections');
         expect(toolContextSendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
             source: 'live_performance_analyst',
         }));
@@ -1184,6 +1187,66 @@ describe('ai command registry live performance analyst tools', () => {
         if (livePerformanceAnalystState.intervalId) {
             clearInterval(livePerformanceAnalystState.intervalId);
         }
+    });
+
+    it('runs the classifier when the subscribed classifier request is already active', async () => {
+        const advanceProcedurePlanStep = jest.fn(() => ({
+            status: 'complete',
+            current_request: 1,
+            request: {
+                type: 'frontend_request',
+                subscriber: 'live_recorded_analysis',
+                status: 'complete',
+                title: 'Request recorded-session classifier',
+            },
+        }));
+        const {
+            analysisContext,
+            registry,
+            sessionIntelligence,
+        } = createLiveAnalystRegistry({
+            advanceProcedurePlanStep,
+            getProcedurePlan: () => ({
+                goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
+                requests: [
+                    {
+                        type: 'driver_action',
+                        subscriber: 'driver',
+                        status: 'complete',
+                        title: 'Collect a clean baseline lap',
+                    },
+                    {
+                        type: 'frontend_request',
+                        subscriber: 'live_recorded_analysis',
+                        status: 'pending',
+                        title: 'Request recorded-session classifier',
+                        payload: { force: false },
+                    },
+                ],
+                currentStep: 1,
+                sourceEvent: 'live_analysis_plan_started',
+            }),
+        });
+        const sendObservation = jest.fn();
+        sessionIntelligence.onLiveAnalystObservation(sendObservation);
+
+        const result = await registry.advance_plan_step(
+            { reason: 'run active classifier request' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toMatchObject({
+            status: 'complete',
+            current_request: 1,
+        });
+        expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: false });
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('run active classifier request');
+        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+            event: 'recorded_analysis_ready',
+            analysis: expect.objectContaining({
+                status: 'ready',
+            }),
+        }));
     });
 
     it('requires recorded analysis when the subscribed classifier request is advanced', async () => {
