@@ -10,9 +10,9 @@ import { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { VisualizationProps } from '../VisualizationRegistry';
 import {
     buildCircuitTrackLayout,
+    buildSessionPointsTrackLayout,
     CircuitTrackLayout,
-    getAccTelemetryTrackKey,
-    getLegacyTrackLayout
+    getAccTelemetryTrackKey
 } from './circuitTrackLayout';
 import {
     CarPoint,
@@ -199,7 +199,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     const circuitTrackLayout = useMemo(() => (
         circuitMap
             ? buildCircuitTrackLayout(circuitMap)
-            : getLegacyTrackLayout(analysisContext.sessionSelected?.points)
+            : buildSessionPointsTrackLayout(analysisContext.sessionSelected?.points)
     ), [analysisContext.sessionSelected?.points, circuitMap]);
     const frames = isRecordedMode ? recordedFrames : liveFrames;
     const currentFrame = isRecordedMode ? recordedFrames[playbackIndex] : liveFrames[liveFrames.length - 1];

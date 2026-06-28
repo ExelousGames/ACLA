@@ -121,7 +121,7 @@ export const buildCircuitTrackLayout = (map: CircuitMapDto | null): CircuitTrack
     };
 };
 
-export const getLegacyTrackLayout = (points?: { position_x: number; position_y: number }[]): CircuitTrackLayout => {
+export const buildSessionPointsTrackLayout = (points?: { position_x: number; position_y: number }[]): CircuitTrackLayout => {
     if (!points || points.length === 0) return EMPTY_CIRCUIT_TRACK_LAYOUT;
 
     const centerLine = points.map((point) => ({

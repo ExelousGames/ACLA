@@ -1178,7 +1178,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
 
     // Constrained-reduce variant exposed to the LLM. The schema enforces
     // reduce ∈ {avg,min,max,stats}; we defensively swap any other value
-    // (incl. legacy 'raw') for 'stats' so a stale prompt can't leak rows.
+    // for 'stats' so an invalid prompt can't leak rows.
     async query_telemetry_metric(args) {
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
         const si = context.sessionIntelligence;

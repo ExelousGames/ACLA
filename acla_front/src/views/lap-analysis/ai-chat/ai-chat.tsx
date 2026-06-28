@@ -17,6 +17,7 @@ import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/t
 import type { LivePerformanceAnalystState, OpportunityAgentState } from './ai-command-registry';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
+import { buildLiveCoachingPlan, type LiveCoachingPlan } from './ai-chat-plan';
 
 type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
 
@@ -26,6 +27,7 @@ const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
 const BASELINE_PROGRESS_MESSAGE_ID = 'live-baseline-progress';
+const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -36,14 +38,6 @@ function extractEmotion(text: string): { emotion: Emotion | null; cleanText: str
 }
 
 type MessageKind = 'chat' | 'tool' | 'progress';
-
-type LiveCoachingPlan = {
-    goal: string;
-    steps: string[];
-    currentStep: number;
-    focusName?: string;
-    sourceEvent?: string;
-};
 
 interface Message {
     id: string;
@@ -174,39 +168,6 @@ const extractCornerKnowledgeMessage = (raw: any): string | null => {
     return null;
 };
 
-const toNonEmptyString = (value: unknown): string | null => {
-    if (typeof value !== 'string') return null;
-    const trimmed = value.trim();
-    return trimmed || null;
-};
-
-const buildLiveCoachingPlan = (data: Record<string, unknown>): LiveCoachingPlan | null => {
-    const sourceEvent = toNonEmptyString(data.event);
-    if (sourceEvent !== 'recorded_analysis_plan_ready') return null;
-
-    const steps = Array.isArray(data.plan)
-        ? data.plan.map(toNonEmptyString).filter((step): step is string => Boolean(step))
-        : [];
-    if (steps.length === 0) return null;
-
-    const focus = data.focus && typeof data.focus === 'object'
-        ? data.focus as Record<string, any>
-        : null;
-    const focusName = toNonEmptyString(focus?.section?.name);
-    const requestedStep = Math.floor(Number(data.current_step ?? data.currentStep ?? 0));
-    const currentStep = Number.isFinite(requestedStep)
-        ? Math.max(0, Math.min(steps.length - 1, requestedStep))
-        : 0;
-
-    return {
-        goal: toNonEmptyString(data.goal) || 'Live coaching plan',
-        steps,
-        currentStep,
-        focusName: focusName || undefined,
-        sourceEvent,
-    };
-};
-
 const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title = "AI Assistant" }) => {
     const [messages, setMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
@@ -237,6 +198,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const messagesScrollRef = useRef<HTMLDivElement>(null);
+    const shouldAutoScrollMessagesRef = useRef(true);
     const analysisContext = useContext(AnalysisContext);
     const {
         userSummary,
@@ -773,9 +735,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setMessages(prev => [...prev, message]);
     }, [generateUniqueId]);
 
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
+    const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+        messagesEndRef.current?.scrollIntoView({ behavior });
+    }, []);
+
+    const handleMessagesScroll = useCallback(() => {
+        const el = messagesScrollRef.current;
+        if (!el) return;
+        const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        shouldAutoScrollMessagesRef.current = distanceFromBottom <= TRANSCRIPT_BOTTOM_THRESHOLD_PX;
+    }, []);
 
     const handleGifUpload = (emotion: Emotion, e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -799,8 +768,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     };
 
     useEffect(() => {
-        scrollToBottom();
-    }, [messages]);
+        if (shouldAutoScrollMessagesRef.current) {
+            scrollToBottom();
+        }
+    }, [messages, scrollToBottom]);
 
     // Listen for guidance messages from ImitationGuidanceChart
     const lastProcessedGuidanceRef = useRef<string>('');
@@ -1329,7 +1300,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         </div>
                     )}
 
-                    <div className="ai-chat__msgs" ref={messagesScrollRef}>
+                    <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
                         {messages.map((message) => {
                             if (message.kind === 'progress' && message.progress) {
                                 const progress = Math.round(message.progress.value);
