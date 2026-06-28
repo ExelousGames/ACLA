@@ -1,4 +1,8 @@
-import { buildLiveProcedurePlan } from '../ai-chat-plan';
+import {
+    buildLiveProcedurePlan,
+    isProcedurePlanOptOutRequest,
+    isProcedurePlanStartEvent,
+} from '../ai-chat-plan';
 
 describe('buildLiveProcedurePlan', () => {
     it('starts the visible plan with baseline collection', () => {
@@ -77,5 +81,34 @@ describe('buildLiveProcedurePlan', () => {
             event: 'live_section_history_updated',
             candidate_sections: [{ name: 'T1 Paddock Hill Bend' }],
         })).toBeNull();
+    });
+});
+
+describe('isProcedurePlanOptOutRequest', () => {
+    it('detects explicit plan opt-out commands', () => {
+        expect(isProcedurePlanOptOutRequest('skip the plan')).toBe(true);
+        expect(isProcedurePlanOptOutRequest('I want to opt out of the plan')).toBe(true);
+        expect(isProcedurePlanOptOutRequest("don't follow the plan anymore")).toBe(true);
+        expect(isProcedurePlanOptOutRequest('clear procedure plan')).toBe(true);
+    });
+
+    it('does not treat normal plan questions as opt-out commands', () => {
+        expect(isProcedurePlanOptOutRequest("what's the plan?")).toBe(false);
+        expect(isProcedurePlanOptOutRequest('next step in the plan')).toBe(false);
+        expect(isProcedurePlanOptOutRequest('follow the plan')).toBe(false);
+    });
+});
+
+describe('isProcedurePlanStartEvent', () => {
+    it('recognizes generic plan-start events', () => {
+        expect(isProcedurePlanStartEvent('procedure_plan_started')).toBe(true);
+        expect(isProcedurePlanStartEvent('live_analysis_plan_started')).toBe(true);
+        expect(isProcedurePlanStartEvent('setup_plan_started')).toBe(true);
+    });
+
+    it('does not treat plan updates as new plans', () => {
+        expect(isProcedurePlanStartEvent('live_baseline_ready_for_classification')).toBe(false);
+        expect(isProcedurePlanStartEvent('recorded_analysis_plan_ready')).toBe(false);
+        expect(isProcedurePlanStartEvent(undefined)).toBe(false);
     });
 });

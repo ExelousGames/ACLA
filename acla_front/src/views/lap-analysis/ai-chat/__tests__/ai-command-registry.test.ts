@@ -552,6 +552,7 @@ describe('ai command registry recorded session tools', () => {
 describe('ai command registry live performance analyst tools', () => {
     const createLiveAnalystRegistry = (overrides: Partial<AiCommandRegistryContext> = {}) => {
         const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.startBaselineCollectionAtLapStart();
         sessionIntelligence.tick({
             Static_track: 'brands_hatch',
             Static_num_cars: 1,
@@ -717,7 +718,76 @@ describe('ai command registry live performance analyst tools', () => {
                 car: 'Ferrari 296',
                 completed_laps: 1,
                 baseline_ready: true,
+                baseline_lap: 0,
                 live_session_type: 'solo_practice',
+            },
+        });
+    });
+
+    it('does not expose a focus section while baseline collection is still in progress', async () => {
+        const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Static_car_model: 'Ferrari 296',
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.2,
+        });
+        sessionIntelligence.recordSectionClassification({
+            section_name: 'T2 Druids',
+            lap: 0,
+            start_sample_idx: 1,
+            end_sample_idx: 2,
+            mistake_count: 3,
+            expert_adherence_count: 0,
+            severity: 2,
+            confidence: 0.9,
+            child_labels: ['late brake'],
+        });
+
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState: {
+                intervalId: null,
+                inFlight: false,
+                enabled: true,
+                lastObservationKey: null,
+                lastObservationAt: 0,
+                lastSpokenAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+        });
+
+        const focusResult = await registry.get_live_focus_section(
+            {},
+            { sendObservation: jest.fn() },
+        );
+        const telemetryResult = await registry._get_live_section_telemetry(
+            { section_name: 'T2 Druids', lap: 0 },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(focusResult).toMatchObject({
+            status: 'collecting_baseline',
+            focus: null,
+            snapshot: {
+                baseline_ready: false,
+            },
+        });
+        expect(telemetryResult).toMatchObject({
+            status: 'collecting_baseline',
+            rows: [],
+            snapshot: {
+                baseline_ready: false,
             },
         });
     });
@@ -837,6 +907,7 @@ describe('ai command registry live performance analyst tools', () => {
 
     it('asks the live classifier for a focus when no recorded analysis is available', async () => {
         const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.startBaselineCollectionAtLapStart();
         sessionIntelligence.tick({
             Static_track: 'brands_hatch',
             Static_num_cars: 1,

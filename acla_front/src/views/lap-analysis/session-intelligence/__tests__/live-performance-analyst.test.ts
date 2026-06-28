@@ -96,7 +96,7 @@ describe('live performance analyst helpers', () => {
 });
 
 describe('SessionIntelligence live analyst section state', () => {
-    it('does not report baseline readiness before one completed lap', () => {
+    it('does not infer a baseline before the analyst starts collection', () => {
         const intelligence = new SessionIntelligence();
         intelligence.tick({
             Static_track: 'brands_hatch',
@@ -107,7 +107,9 @@ describe('SessionIntelligence live analyst section state', () => {
 
         expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
             baseline_ready: false,
-            baseline_progress_percent: 50,
+            baseline_collection_started: false,
+            baseline_progress_percent: 0,
+            baseline_lap: null,
             completed_laps: 0,
             live_session_type: 'solo_practice',
         });
@@ -141,6 +143,7 @@ describe('SessionIntelligence live analyst section state', () => {
             baseline_ready: false,
             baseline_collection_started: true,
             baseline_progress_percent: 1,
+            baseline_lap: 1,
         });
 
         intelligence.tick({
@@ -153,11 +156,13 @@ describe('SessionIntelligence live analyst section state', () => {
         expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
             baseline_ready: true,
             baseline_progress_percent: 100,
+            baseline_lap: 1,
         });
     });
 
     it('extracts wrap-aware section telemetry after a baseline lap exists', () => {
         const intelligence = new SessionIntelligence();
+        intelligence.startBaselineCollectionAtLapStart();
         intelligence.tick({
             Static_track: 'brands_hatch',
             Static_num_cars: 1,
@@ -187,6 +192,45 @@ describe('SessionIntelligence live analyst section state', () => {
             rows: expect.any(Array),
             startSampleIdx: 0,
             endSampleIdx: 1,
+        });
+    });
+
+    it('does not complete a new baseline from laps driven before collection started', () => {
+        const intelligence = new SessionIntelligence();
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.98,
+        });
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 1,
+            Graphics_normalized_car_position: 0.45,
+        });
+
+        intelligence.startBaselineCollectionAtLapStart();
+
+        expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
+            baseline_ready: false,
+            baseline_collection_started: false,
+            baseline_progress_percent: 0,
+            baseline_lap: null,
+        });
+
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 2,
+            Graphics_normalized_car_position: 0.01,
+        });
+
+        expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
+            baseline_ready: false,
+            baseline_collection_started: true,
+            baseline_progress_percent: 1,
+            baseline_lap: 2,
         });
     });
 });

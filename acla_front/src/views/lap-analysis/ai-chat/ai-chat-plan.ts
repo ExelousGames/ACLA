@@ -6,6 +6,14 @@ export type ProcedurePlan = {
     sourceEvent?: string;
 };
 
+export const isProcedurePlanStartEvent = (sourceEvent?: string): boolean => (
+    typeof sourceEvent === 'string'
+    && (
+        sourceEvent === 'procedure_plan_started'
+        || sourceEvent.endsWith('_plan_started')
+    )
+);
+
 const toNonEmptyString = (value: unknown): string | null => {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
@@ -17,6 +25,27 @@ const toStringArray = (value: unknown): string[] => (
         ? value.map(toNonEmptyString).filter((item): item is string => Boolean(item))
         : []
 );
+
+export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {
+    if (typeof text !== 'string') return false;
+    const normalized = text
+        .toLowerCase()
+        .replace(/['\u2019]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!normalized) return false;
+
+    const planTarget = '(?:the\\s+)?(?:procedure\\s+)?plan';
+    const optOutVerb = '(?:cancel|clear|stop|end|exit|dismiss|hide|skip|drop|forget)';
+    return [
+        new RegExp(`\\b${optOutVerb}\\b.*\\b${planTarget}\\b`),
+        new RegExp(`\\b${planTarget}\\b.*\\b${optOutVerb}\\b`),
+        new RegExp(`\\bopt\\s*out\\b.*\\b${planTarget}\\b`),
+        new RegExp(`\\b(?:dont|do\\s+not|no\\s+longer)\\s+(?:follow|use|respect)\\s+${planTarget}\\b`),
+        new RegExp(`\\bignore\\s+${planTarget}\\b`),
+    ].some((pattern) => pattern.test(normalized));
+};
 
 const buildInferredLiveProcedureSteps = (sectionName: string, primaryIssue: string | null): string[] => {
     if (primaryIssue) {

@@ -17,7 +17,12 @@ import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/t
 import type { LivePerformanceAnalystState, OpportunityAgentState } from './ai-command-registry';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
-import { buildLiveProcedurePlan, type ProcedurePlan } from './ai-chat-plan';
+import {
+    buildLiveProcedurePlan,
+    isProcedurePlanOptOutRequest,
+    isProcedurePlanStartEvent,
+    type ProcedurePlan,
+} from './ai-chat-plan';
 
 type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
 
@@ -233,6 +238,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const trackGuideRunTokenRef = useRef(0);
     const activeAgentTagsRef = useRef<string[]>([]);
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
+    const procedurePlanOptedOutRef = useRef(false);
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
@@ -395,12 +401,20 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setProcedurePlan(null);
     }, [setProcedurePlan]);
 
+    const optOutProcedurePlan = useCallback(() => {
+        procedurePlanOptedOutRef.current = true;
+        setProcedurePlan(null);
+    }, [setProcedurePlan]);
+
     // Racing engineer voice conversation. The hook owns mic, WS, and
     // audio playback; it ALSO multiplexes the tool-relay text channel on
     // the same WS — frontend tools listed below are reachable from the
     // backend LLM via JSON text frames.
     const handleVoiceEvent = (event: VoiceEvent) => {
         if (event.kind === 'user_transcript') {
+            if (isProcedurePlanOptOutRequest(event.text)) {
+                optOutProcedurePlan();
+            }
             setMessages(prev => prev
                 .filter(m => !m.isLoading)
                 .concat({
@@ -436,6 +450,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         if (event.kind === 'observation') {
             const plan = buildLiveProcedurePlan(event.data);
             if (plan) {
+                if (isProcedurePlanStartEvent(plan.sourceEvent)) {
+                    procedurePlanOptedOutRef.current = false;
+                }
+                if (procedurePlanOptedOutRef.current) {
+                    return;
+                }
                 setProcedurePlan(plan);
             }
             return;
@@ -691,6 +711,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analystAgent.lastObservationAt = 0;
         analystAgent.lastSpokenAt = 0;
         setLivePerformanceAnalystAgentEnabled(false);
+        procedurePlanOptedOutRef.current = false;
         clearProcedurePlan();
         setAgentTag('Track Guide', false);
         setAgentTag('Overtake', false);
@@ -956,6 +977,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const handleSendMessage = async (override?: string) => {
         const text = (override ?? inputValue).trim();
         if (!text || isLoading) return;
+        if (isProcedurePlanOptOutRequest(text)) {
+            optOutProcedurePlan();
+        }
 
         // The voice WS is the single chat surface. Backend echoes a
         // user_transcript frame for typed input, so we don't append the

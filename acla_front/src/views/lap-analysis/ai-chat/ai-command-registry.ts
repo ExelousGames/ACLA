@@ -1081,6 +1081,9 @@ const buildLiveFocusPayload = (context: AiCommandRegistryContext) => {
     const si = context.sessionIntelligence;
     if (!si) return null;
 
+    const snapshot = si.getLiveSessionSnapshot();
+    if (!snapshot.baseline_ready) return null;
+
     const focus = si.getFocusSection();
     if (!focus) return null;
 
@@ -1375,11 +1378,12 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             agent.enabled = true;
             context.setLivePerformanceAnalystEnabled?.(true);
             context.setAgentTagActive?.('Live Analyst', true);
+            const snapshot = si.getLiveSessionSnapshot();
             return {
                 status: 'already_running',
                 agent_mode: 'live_performance_analyst',
-                snapshot: si.getLiveSessionSnapshot(),
-                focus: buildLiveFocusPayload(context),
+                snapshot,
+                focus: snapshot.baseline_ready ? buildLiveFocusPayload(context) : null,
             };
         }
 
@@ -1407,7 +1411,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             try {
                 const snapshot = si.getLiveSessionSnapshot();
                 const sections = si.getKnownTrackSections();
-                let focus = buildLiveFocusPayload(context);
+                let focus = snapshot.baseline_ready ? buildLiveFocusPayload(context) : null;
                 let plan: LivePerformancePlan | null = null;
                 let analysisStatus: any = null;
 
@@ -1545,6 +1549,17 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         const unavailable = buildLiveAnalystUnavailable(context);
         if (unavailable) return unavailable;
 
+        const snapshot = context.sessionIntelligence!.getLiveSessionSnapshot();
+        if (!snapshot.baseline_ready) {
+            return {
+                status: 'collecting_baseline',
+                agent_mode: 'live_performance_analyst',
+                snapshot,
+                focus: null,
+                message: 'Complete one clean baseline lap before reading a focus section.',
+            };
+        }
+
         return {
             status: 'ready',
             agent_mode: 'live_performance_analyst',
@@ -1576,6 +1591,16 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
+        const snapshot = si.getLiveSessionSnapshot();
+        if (!snapshot.baseline_ready) {
+            return {
+                status: 'collecting_baseline',
+                agent_mode: 'live_performance_analyst',
+                snapshot,
+                rows: [],
+                message: 'Complete one clean baseline lap before classifying live sections.',
+            };
+        }
         return si.getSectionTelemetryWindow({
             section_id: args.section_id || args.sectionId,
             section_name: args.section_name || args.sectionName,

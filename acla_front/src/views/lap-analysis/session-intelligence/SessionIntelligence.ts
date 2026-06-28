@@ -50,6 +50,7 @@ type LiveSessionSnapshot = {
     baseline_ready: boolean;
     baseline_collection_started: boolean;
     baseline_progress_percent: number;
+    baseline_lap: number | null;
     completed_lap_count: number;
     section_count: number;
 };
@@ -63,7 +64,7 @@ export class SessionIntelligence {
     private currentLap: number = 0;
     private currentTrack: string = '';
     private currentPosition: number = 0;
-    private baselineStartLap: number | null = 0;
+    private baselineStartLap: number | null = null;
     private baselineStartPendingFromLap: number | null = null;
     private onEvent: ((event: SessionEvent) => void) | null = null;
     private sectionHistory: LiveSectionClassification[] = [];
@@ -152,6 +153,7 @@ export class SessionIntelligence {
                 baseline_ready: false,
                 baseline_collection_started: false,
                 baseline_progress_percent: 0,
+                baseline_lap: null,
                 completed_lap_count: 0,
                 section_count: 0,
             };
@@ -170,6 +172,7 @@ export class SessionIntelligence {
             baseline_ready: this.hasCompletedBaselineLap(),
             baseline_collection_started: this.hasBaselineCollectionStarted(),
             baseline_progress_percent: this.getBaselineProgressPercent(),
+            baseline_lap: this.getBaselineLap(),
             completed_lap_count: completedLapNumbers.length,
             section_count: this.getKnownTrackSections().length,
         };
@@ -197,6 +200,10 @@ export class SessionIntelligence {
         return this.baselineStartLap !== null
             && this.currentLap > this.baselineStartLap
             && this.getRowsForLap(this.baselineStartLap).length > 0;
+    }
+
+    getBaselineLap(): number | null {
+        return this.baselineStartLap;
     }
 
     getBaselineProgressPercent(): number {
@@ -346,7 +353,7 @@ export class SessionIntelligence {
         this.currentLap = 0;
         this.currentTrack = '';
         this.currentPosition = 0;
-        this.baselineStartLap = 0;
+        this.baselineStartLap = null;
         this.baselineStartPendingFromLap = null;
         this.sectionHistory = [];
         this.focusSection = null;
