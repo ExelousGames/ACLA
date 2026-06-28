@@ -677,7 +677,10 @@ describe('ai command registry live performance analyst tools', () => {
         expect(recordedToolNames).not.toEqual(expect.arrayContaining([
             'start_live_performance_analysis',
             'get_live_session_snapshot',
+        ]));
+        expect(recordedToolNames).toEqual(expect.arrayContaining([
             'advance_plan_step',
+            'set_procedure_plan',
         ]));
     });
 
@@ -692,9 +695,9 @@ describe('ai command registry live performance analyst tools', () => {
             getProcedurePlan: () => ({
                 goal: 'Run live analysis from a clean baseline.',
                 requests: [
-                    { type: 'request', title: 'Collect a complete baseline lap.' },
-                    { type: 'request', title: 'Analyze the baseline.' },
-                    { type: 'request', title: 'Select the focus section.' },
+                    { type: 'request', subscriber: 'driver', status: 'complete', title: 'Collect a complete baseline lap.' },
+                    { type: 'request', subscriber: 'driver', status: 'pending', title: 'Compare the next pass.' },
+                    { type: 'request', subscriber: 'driver', status: 'pending', title: 'Select the focus section.' },
                 ],
                 currentStep: 0,
                 sourceEvent: 'live_analysis_plan_started',
@@ -706,7 +709,7 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first step completed');
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first step completed', 'complete');
         expect(result).toEqual({
             status: 'advanced',
             current_step: 1,
@@ -726,12 +729,13 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'tool_call',
-                        name: 'show_map',
+                        subscriber: 'map_display',
                         title: 'Show the focus map',
-                        payload: { section_name: 'T2 Druids' },
+                        payload: { tool: 'show_map', section_name: 'T2 Druids' },
                     },
                     {
                         type: 'driver_action',
+                        subscriber: 'driver',
                         title: 'Brake earlier on the next approach',
                     },
                 ],
@@ -744,13 +748,16 @@ describe('ai command registry live performance analyst tools', () => {
             requests: [
                 expect.objectContaining({
                     type: 'tool_call',
-                    name: 'show_map',
+                    subscriber: 'map_display',
                     title: 'Show the focus map',
-                    payload: { section_name: 'T2 Druids' },
+                    payload: { tool: 'show_map', section_name: 'T2 Druids' },
+                    status: 'pending',
                 }),
                 expect.objectContaining({
                     type: 'driver_action',
+                    subscriber: 'driver',
                     title: 'Brake earlier on the next approach',
+                    status: 'pending',
                 }),
             ],
             currentStep: 0,
@@ -797,9 +804,9 @@ describe('ai command registry live performance analyst tools', () => {
             getProcedurePlan: () => ({
                 goal: 'Run live analysis from a clean baseline.',
                 requests: [
-                    { type: 'request', title: 'Collect a complete baseline lap.' },
-                    { type: 'request', title: 'Analyze the baseline.' },
-                    { type: 'request', title: 'Select the focus section.' },
+                    { type: 'request', subscriber: 'driver', status: 'pending', title: 'Collect a complete baseline lap.' },
+                    { type: 'request', subscriber: 'live_recorded_analysis', status: 'pending', title: 'Analyze the baseline.' },
+                    { type: 'request', subscriber: 'driver', status: 'pending', title: 'Select the focus section.' },
                 ],
                 currentStep: 0,
                 sourceEvent: 'live_analysis_plan_started',
@@ -821,29 +828,28 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
-    it('blocks plan advancement to the focus step until a focus section exists', async () => {
+    it('blocks plan advancement when the next step has no registered subscriber', async () => {
         const { registry } = createLiveAnalystRegistry({
             advanceProcedurePlanStep: jest.fn(),
             getProcedurePlan: () => ({
-                goal: 'Run live analysis from a clean baseline.',
+                goal: 'Run a delegated workflow.',
                 requests: [
-                    { type: 'request', title: 'Collect a complete baseline lap.' },
-                    { type: 'request', title: 'Analyze the baseline.' },
-                    { type: 'request', title: 'Select the focus section.' },
+                    { type: 'request', subscriber: 'driver', status: 'complete', title: 'Complete the first task.' },
+                    { type: 'request', subscriber: 'unregistered_worker', status: 'pending', title: 'Run the worker.' },
                 ],
-                currentStep: 1,
-                sourceEvent: 'recorded_analysis_plan_ready',
+                currentStep: 0,
+                sourceEvent: 'procedure_plan_started',
             }),
         });
 
         const result = await registry.advance_plan_step(
-            { reason: 'skip focus analysis' },
+            { reason: 'first task complete' },
             { sendObservation: jest.fn() },
         );
 
         expect(result).toMatchObject({
             status: 'error',
-            error: 'focus_section_not_ready',
+            error: 'procedure_plan_subscriber_missing',
         });
     });
 
@@ -995,7 +1001,13 @@ describe('ai command registry live performance analyst tools', () => {
             requests: [
                 expect.objectContaining({
                     type: 'driver_action',
+                    subscriber: 'driver',
                     title: 'Collect a clean baseline lap',
+                }),
+                expect.objectContaining({
+                    type: 'frontend_request',
+                    subscriber: 'live_recorded_analysis',
+                    title: 'Request recorded-session classifier',
                 }),
             ],
             snapshot: expect.objectContaining({
@@ -1013,32 +1025,89 @@ describe('ai command registry live performance analyst tools', () => {
         }
     });
 
-    it('builds a focus plan from shared recorded analysis instead of classifying every section', async () => {
-        const { analysisContext, registry, livePerformanceAnalystState } = createLiveAnalystRegistry();
+    it('builds a focus plan when the subscribed classifier request is advanced', async () => {
+        const {
+            analysisContext,
+            registry,
+            livePerformanceAnalystState,
+            sessionIntelligence,
+        } = createLiveAnalystRegistry();
+        const advanceProcedurePlanStep = jest.fn(() => ({
+            status: 'advanced',
+            current_request: 1,
+            request: {
+                type: 'frontend_request',
+                subscriber: 'live_recorded_analysis',
+                status: 'complete',
+                title: 'Request recorded-session classifier',
+            },
+        }));
+        const planRegistry = createAiCommandRegistry({
+            sessionMode: 'live',
+            analysisContext,
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState,
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            setLivePerformanceAnalystEnabled: jest.fn((enabled) => {
+                livePerformanceAnalystState.enabled = enabled;
+            }),
+            getOpportunityTelemetryRows: () => [],
+            getLabelName: (labelId) => labelNames[labelId] || labelId,
+            getCategoryLabels: (category) => categories[category] ?? [],
+            advanceProcedurePlanStep,
+            getProcedurePlan: () => ({
+                goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
+                requests: [
+                    {
+                        type: 'driver_action',
+                        subscriber: 'driver',
+                        status: 'complete',
+                        title: 'Collect a clean baseline lap',
+                    },
+                    {
+                        type: 'frontend_request',
+                        subscriber: 'live_recorded_analysis',
+                        status: 'pending',
+                        title: 'Request recorded-session classifier',
+                        payload: { force: false },
+                    },
+                ],
+                currentStep: 0,
+                sourceEvent: 'live_analysis_plan_started',
+            }),
+        });
         const sendObservation = jest.fn();
 
-        const result = await registry.start_live_performance_analysis(
-            {},
-            { sendObservation },
-        );
-
-        expect(result).toMatchObject({
+        const startResult = await registry.start_live_performance_analysis({}, { sendObservation });
+        expect(startResult).toMatchObject({
             status: 'started',
             initial: {
                 status: 'checked',
                 snapshot: {
                     baseline_ready: true,
                 },
-                focus: {
-                    section: {
-                        name: 'T2 Druids',
-                    },
-                },
-                plan: {
-                    goal: expect.stringContaining('T2 Druids'),
-                },
+                focus: null,
             },
         });
+        expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
+
+        const result = await planRegistry.advance_plan_step(
+            { reason: 'baseline complete' },
+            { sendObservation },
+        );
+
+        expect(result).toMatchObject({
+            status: 'advanced',
+            current_request: 1,
+        });
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline complete', 'complete');
         expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: false });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_plan_ready',
@@ -1061,7 +1130,7 @@ describe('ai command registry live performance analyst tools', () => {
         }
     });
 
-    it('requires recorded analysis instead of falling back to live section classification', async () => {
+    it('requires recorded analysis when the subscribed classifier request is advanced', async () => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.startBaselineCollectionAtLapStart();
         sessionIntelligence.tick({
@@ -1108,24 +1177,44 @@ describe('ai command registry live performance analyst tools', () => {
             setTrackGuideEnabled: jest.fn(),
             setLivePerformanceAnalystEnabled: jest.fn(),
             getOpportunityTelemetryRows: () => [],
+            advanceProcedurePlanStep: jest.fn(),
+            getProcedurePlan: () => ({
+                goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
+                requests: [
+                    {
+                        type: 'driver_action',
+                        subscriber: 'driver',
+                        status: 'complete',
+                        title: 'Collect a clean baseline lap',
+                    },
+                    {
+                        type: 'frontend_request',
+                        subscriber: 'live_recorded_analysis',
+                        status: 'pending',
+                        title: 'Request recorded-session classifier',
+                        payload: { force: false },
+                    },
+                ],
+                currentStep: 0,
+                sourceEvent: 'live_analysis_plan_started',
+            }),
         });
         const sendObservation = jest.fn();
 
-        const result = await registry.start_live_performance_analysis(
+        await registry.start_live_performance_analysis(
             {},
+            { sendObservation },
+        );
+        const result = await registry.advance_plan_step(
+            { reason: 'baseline complete' },
             { sendObservation },
         );
 
         expect(result).toMatchObject({
-            status: 'started',
-            initial: {
-                analysis_status: {
-                    status: 'error',
-                    error: 'recorded_session_required',
-                },
-                snapshot: {
-                    baseline_ready: true,
-                },
+            status: 'error',
+            error: 'recorded_session_required',
+            snapshot: {
+                baseline_ready: true,
             },
         });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
@@ -1138,7 +1227,13 @@ describe('ai command registry live performance analyst tools', () => {
             requests: [
                 expect.objectContaining({
                     type: 'driver_action',
+                    subscriber: 'driver',
                     title: 'Collect a clean baseline lap',
+                }),
+                expect.objectContaining({
+                    type: 'frontend_request',
+                    subscriber: 'live_recorded_analysis',
+                    title: 'Request recorded-session classifier',
                 }),
             ],
             snapshot: expect.objectContaining({

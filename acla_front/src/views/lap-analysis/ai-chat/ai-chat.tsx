@@ -18,11 +18,11 @@ import type { LivePerformanceAnalystState, OpportunityAgentState } from './ai-co
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
 import {
-    buildLiveProcedurePlan,
-    getProcedurePlanAdvanceBlock,
+    buildProcedurePlan,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
     type ProcedurePlan,
+    type ProcedurePlanStepStatus,
 } from './ai-chat-plan';
 
 type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
@@ -85,9 +85,8 @@ const formatClock = (d: Date) =>
 const getProcedurePlanRequestMeta = (request: ProcedurePlan['requests'][number]): string => {
     const parts = [
         request.type,
-        request.method,
-        request.name,
-        request.url,
+        request.subscriber,
+        request.status,
     ].filter((part): part is string => Boolean(part));
     return parts.join(' · ');
 };
@@ -333,7 +332,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
         const value = Math.max(0, Math.min(100, Number(snapshot.baseline_progress_percent ?? 0)));
         const detail = snapshot.baseline_ready
-            ? 'Baseline complete. Classifier analysis is starting.'
+            ? 'Baseline complete. Classifier request is ready.'
             : snapshot.baseline_collection_started
                 ? `Lap ${snapshot.current_lap + 1} baseline`
                 : 'Start at normalized position 0';
@@ -390,23 +389,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setProcedurePlanState(plan);
     }, []);
 
-    const advanceProcedurePlanStep = useCallback((reason?: string) => {
+    const advanceProcedurePlanStep = useCallback((reason?: string, nextStatus: ProcedurePlanStepStatus = 'pending') => {
         const current = procedurePlanRef.current;
         if (!current) {
             return { status: 'unavailable', error: 'no_procedure_plan' };
         }
 
-        const liveSnapshot = sessionMode === 'live'
-            ? analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.()
-            : null;
-        const hasLiveFocus = sessionMode === 'live'
-            ? Boolean(analysisContext?.sessionIntelligence?.getFocusSection?.())
-            : false;
-        const blocked = getProcedurePlanAdvanceBlock(current, liveSnapshot, hasLiveFocus);
-        if (blocked) return blocked;
-
         const nextStep = Math.min(current.currentStep + 1, current.requests.length - 1);
-        const nextPlan = { ...current, currentStep: nextStep };
+        const nextRequests = current.requests.map((request, index) => {
+            if (index < nextStep) {
+                return { ...request, status: 'complete' as ProcedurePlanStepStatus };
+            }
+            if (index === nextStep) {
+                return { ...request, status: nextStatus };
+            }
+            return request;
+        });
+        const nextPlan = { ...current, requests: nextRequests, currentStep: nextStep };
         setProcedurePlan(nextPlan);
 
         return {
@@ -417,7 +416,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             step: nextPlan.requests[nextStep]?.title,
             reason,
         };
-    }, [analysisContext?.sessionIntelligence, sessionMode, setProcedurePlan]);
+    }, [setProcedurePlan]);
 
     const clearProcedurePlan = useCallback(() => {
         setProcedurePlan(null);
@@ -470,7 +469,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
         if (event.kind === 'observation') {
-            const plan = buildLiveProcedurePlan(event.data);
+            const plan = buildProcedurePlan(event.data);
             if (plan) {
                 if (isProcedurePlanStartEvent(plan.sourceEvent)) {
                     procedurePlanOptedOutRef.current = false;
@@ -655,43 +654,50 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         [sessionMode],
     );
 
+    const toolHandlers = createAiCommandRegistry({
+        sessionId: resolvedSessionId,
+        sessionMode,
+        analysisContext,
+        sessionIntelligence: analysisContext?.sessionIntelligence,
+        opportunityAgentState: opportunityAgentStateRef.current,
+        livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
+        startTrackGuide,
+        setTrackGuideEnabled: setTrackGuideAgentEnabled,
+        setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
+        advanceProcedurePlanStep,
+        getProcedurePlan: () => procedurePlanRef.current,
+        clearProcedurePlan,
+        setProcedurePlan,
+        setAgentTagActive: setAgentTag,
+        getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+        getLabelName,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        displayMap: displayMapInChat,
+    });
+
     const voiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
         sessionContext: aiSessionContext,
         onEvent: handleVoiceEvent,
         frontendTools,
         querySchemaScope: QUERY_SCOPE_SCHEMA,
-        toolHandlers: createAiCommandRegistry({
-            sessionId: resolvedSessionId,
-            sessionMode,
-            analysisContext,
-            sessionIntelligence: analysisContext?.sessionIntelligence,
-            opportunityAgentState: opportunityAgentStateRef.current,
-            livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
-            startTrackGuide,
-            setTrackGuideEnabled: setTrackGuideAgentEnabled,
-            setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-            advanceProcedurePlanStep,
-            getProcedurePlan: () => procedurePlanRef.current,
-            clearProcedurePlan,
-            setProcedurePlan,
-            setAgentTagActive: setAgentTag,
-            getOpportunityTelemetryRows: () => opportunityForecastRowsRef.current,
-            userSummary,
-            userSummaryLoading,
-            userSummaryError,
-            getLabelName,
-            getCategoryLabels,
-            getCircuitMapById,
-            getCircuitMapByTrack,
-            displayMap: displayMapInChat,
-        }),
+        toolHandlers,
     });
 
-    const requestNextPlanStep = useCallback(() => {
+    const requestNextPlanStep = useCallback(async () => {
         const current = procedurePlanRef.current;
-        const advanced = advanceProcedurePlanStep('driver_requested_next_step');
-        if (!current || (advanced.status !== 'advanced' && advanced.status !== 'complete')) return;
+        if (!current) return;
+
+        const advanced = await toolHandlers.advance_plan_step(
+            { reason: 'driver_requested_next_step' },
+            { sendObservation: voiceConversation.sendObservation },
+        );
+        if (advanced.status !== 'advanced' && advanced.status !== 'complete') return;
 
         voiceConversation.sendObservation({
             source: 'procedure_plan_ui',
@@ -701,7 +707,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             current_request: advanced.current_request ?? current.currentStep,
             request: advanced.request ?? current.requests[current.currentStep],
         });
-    }, [advanceProcedurePlanStep, voiceConversation]);
+    }, [toolHandlers, voiceConversation]);
 
     const vState = voiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';

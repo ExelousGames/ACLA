@@ -1,74 +1,89 @@
 import {
-    buildLiveProcedurePlan,
-    getProcedurePlanAdvanceBlock,
+    buildProcedurePlan,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
 } from '../ai-chat-plan';
 
-describe('buildLiveProcedurePlan', () => {
+describe('buildProcedurePlan', () => {
     it('does not create a visible plan without AI-provided requests', () => {
-        expect(buildLiveProcedurePlan({
-            event: 'live_analysis_plan_started',
-            snapshot: {
-                baseline_ready: false,
+        expect(buildProcedurePlan({
+            event: 'procedure_plan_started',
+            metadata: {
+                ready: false,
             },
         })).toBeNull();
     });
 
     it('builds the visible plan from AI request lists', () => {
-        expect(buildLiveProcedurePlan({
-            event: 'recorded_analysis_plan_ready',
-            goal: 'Improve T2 Druids by reducing late brake.',
+        expect(buildProcedurePlan({
+            event: 'procedure_plan_started',
+            goal: 'Complete a delegated task.',
             requests: [
                 {
                     type: 'tool_call',
-                    name: 'show_map',
-                    title: 'Show the focus section map',
-                    payload: { section_name: 'T2 Druids' },
+                    subscriber: 'display_surface',
+                    title: 'Show supporting context',
+                    payload: { tool: 'show_context', target_id: 'task-1' },
                 },
                 {
                     type: 'api_request',
-                    method: 'post',
-                    url: '/racing-session/imitation-learning-guidance',
-                    title: 'Request imitation guidance',
+                    subscriber: 'domain_worker',
+                    title: 'Run domain task',
                 },
             ],
         })).toMatchObject({
-            goal: 'Improve T2 Druids by reducing late brake.',
+            goal: 'Complete a delegated task.',
             requests: [
                 {
                     type: 'tool_call',
-                    name: 'show_map',
-                    title: 'Show the focus section map',
-                    payload: { section_name: 'T2 Druids' },
+                    subscriber: 'display_surface',
+                    title: 'Show supporting context',
+                    payload: { tool: 'show_context', target_id: 'task-1' },
+                    status: 'pending',
                 },
                 {
                     type: 'api_request',
-                    method: 'POST',
-                    url: '/racing-session/imitation-learning-guidance',
-                    title: 'Request imitation guidance',
+                    subscriber: 'domain_worker',
+                    title: 'Run domain task',
+                    status: 'pending',
                 },
             ],
             currentStep: 0,
         });
     });
 
-    it('builds the startup live plan from explicit baseline requests', () => {
-        expect(buildLiveProcedurePlan({
-            event: 'live_analysis_plan_started',
-            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
+    it('builds plans from non-start update events when explicit requests are present', () => {
+        expect(buildProcedurePlan({
+            event: 'task_ready',
+            goal: 'Continue the delegated workflow.',
             requests: [
                 {
-                    type: 'driver_action',
-                    title: 'Collect a clean baseline lap',
+                    type: 'human_action',
+                    subscriber: 'human',
+                    title: 'Provide an input sample',
+                },
+                {
+                    type: 'frontend_request',
+                    subscriber: 'workflow_worker',
+                    title: 'Run workflow worker',
+                    payload: { force: false },
                 },
             ],
         })).toMatchObject({
-            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
+            goal: 'Continue the delegated workflow.',
             requests: [
                 {
-                    type: 'driver_action',
-                    title: 'Collect a clean baseline lap',
+                    type: 'human_action',
+                    subscriber: 'human',
+                    title: 'Provide an input sample',
+                    status: 'pending',
+                },
+                {
+                    type: 'frontend_request',
+                    subscriber: 'workflow_worker',
+                    title: 'Run workflow worker',
+                    status: 'pending',
+                    payload: { force: false },
                 },
             ],
             currentStep: 0,
@@ -76,30 +91,30 @@ describe('buildLiveProcedurePlan', () => {
     });
 
     it('rejects non-standard legacy string plan entries', () => {
-        expect(buildLiveProcedurePlan({
-            event: 'live_analysis_window',
-            title: 'Next live request list',
-            plan: ['Show focus telemetry.', 'Compare the next pass.'],
+        expect(buildProcedurePlan({
+            event: 'procedure_plan_started',
+            title: 'Next request list',
+            plan: ['Show context.', 'Compare the next result.'],
             current_request: 1,
         })).toBeNull();
     });
 
     it('rejects nested plan objects instead of guessing the shape', () => {
-        expect(buildLiveProcedurePlan({
+        expect(buildProcedurePlan({
             event: 'procedure_plan_started',
             plan: {
-                goal: 'Coach the next pass through Druids.',
+                goal: 'Complete the nested task.',
                 current_request: 1,
                 requests: [
                     {
                         type: 'tool_call',
-                        tool: 'show_map',
-                        title: 'Show the focus map',
-                        args: { section_name: 'T2 Druids' },
+                        tool: 'show_context',
+                        title: 'Show supporting context',
+                        args: { target_id: 'task-1' },
                     },
                     {
-                        type: 'driver_action',
-                        step: 'Drive one clean pass through the focus section',
+                        type: 'human_action',
+                        step: 'Provide a new sample',
                         reason: 'The assistant needs a repeat sample to compare.',
                     },
                 ],
@@ -108,36 +123,37 @@ describe('buildLiveProcedurePlan', () => {
     });
 
     it('rejects procedure_plan envelopes instead of treating them as the standard shape', () => {
-        expect(buildLiveProcedurePlan({
-            event: 'recorded_analysis_plan_ready',
+        expect(buildProcedurePlan({
+            event: 'task_ready',
             procedure_plan: {
-                goal: 'Improve Paddock Hill entry.',
+                goal: 'Improve the current task.',
                 steps: [
-                    { text: 'Show Paddock Hill on the map' },
-                    { label: 'Coach the braking reference' },
+                    { text: 'Show supporting context' },
+                    { label: 'Run the worker' },
                 ],
             },
-            focus: {
-                section: { name: 'T1 Paddock Hill Bend' },
+            subject: {
+                name: 'Task 1',
             },
         })).toBeNull();
     });
 
-    it('rejects requests without explicit type and title', () => {
-        expect(buildLiveProcedurePlan({
+    it('rejects requests without explicit type, title, and subscriber', () => {
+        expect(buildProcedurePlan({
             event: 'procedure_plan_started',
-            goal: 'Coach the next pass through Druids.',
+            goal: 'Complete the next task.',
             requests: [
-                { type: 'tool_call', name: 'show_map' },
-                { title: 'Drive one clean pass through the focus section' },
+                { type: 'tool_call', subscriber: 'display_surface' },
+                { title: 'Provide one clean sample', subscriber: 'human' },
+                { type: 'human_action', title: 'Provide one clean sample' },
             ],
         })).toBeNull();
     });
 
-    it('ignores unrelated live analyst events until a plan is available', () => {
-        expect(buildLiveProcedurePlan({
-            event: 'live_section_history_updated',
-            section: { name: 'T1 Paddock Hill Bend' },
+    it('ignores unrelated events until a request list is available', () => {
+        expect(buildProcedurePlan({
+            event: 'unrelated_update',
+            subject: { name: 'Task 1' },
         })).toBeNull();
     });
 });
@@ -157,50 +173,15 @@ describe('isProcedurePlanOptOutRequest', () => {
     });
 });
 
-describe('getProcedurePlanAdvanceBlock', () => {
-    const plan = {
-        goal: 'Run live analysis from a clean baseline.',
-        requests: [
-            { type: 'request', title: 'Collect a complete baseline lap.' },
-            { type: 'request', title: 'Analyze the baseline.' },
-            { type: 'request', title: 'Select the focus section.' },
-        ],
-        currentStep: 0,
-        sourceEvent: 'live_analysis_plan_started',
-    };
-
-    it('blocks live plans from advancing before baseline collection is complete', () => {
-        expect(getProcedurePlanAdvanceBlock(plan, { baseline_ready: false })).toMatchObject({
-            status: 'blocked',
-            error: 'baseline_collection_incomplete',
-        });
-    });
-
-    it('blocks live plans from advancing to focus work before a focus exists', () => {
-        expect(getProcedurePlanAdvanceBlock(
-            { ...plan, currentStep: 1, sourceEvent: 'recorded_analysis_plan_ready' },
-            { baseline_ready: true },
-            false,
-        )).toMatchObject({
-            status: 'blocked',
-            error: 'focus_section_not_ready',
-        });
-    });
-
-    it('allows the baseline analysis step after baseline collection is complete', () => {
-        expect(getProcedurePlanAdvanceBlock(plan, { baseline_ready: true })).toBeNull();
-    });
-});
-
 describe('isProcedurePlanStartEvent', () => {
     it('recognizes generic plan-start events', () => {
         expect(isProcedurePlanStartEvent('procedure_plan_started')).toBe(true);
-        expect(isProcedurePlanStartEvent('live_analysis_plan_started')).toBe(true);
         expect(isProcedurePlanStartEvent('setup_plan_started')).toBe(true);
+        expect(isProcedurePlanStartEvent('worker_plan_started')).toBe(true);
     });
 
     it('does not treat plan updates as new plans', () => {
-        expect(isProcedurePlanStartEvent('recorded_analysis_plan_ready')).toBe(false);
+        expect(isProcedurePlanStartEvent('task_ready')).toBe(false);
         expect(isProcedurePlanStartEvent(undefined)).toBe(false);
     });
 });

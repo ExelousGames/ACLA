@@ -22,10 +22,10 @@ import {
     hasEnoughCoachingLead,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
-    buildLiveProcedurePlan,
-    getProcedurePlanAdvanceBlock,
+    buildProcedurePlan,
     type ProcedurePlan,
     type ProcedurePlanRequest,
+    type ProcedurePlanStepStatus,
 } from './ai-chat-plan';
 import {
     PracticeParentSegmentView,
@@ -34,6 +34,18 @@ import {
     buildPracticeTrackSummaryViews,
 } from 'views/user-summary/user-summary-model';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
+
+type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
+export type ProcedurePlanSubscriberResult = {
+    status: Extract<ProcedurePlanStepStatus, 'complete' | 'blocked' | 'failed' | 'skipped'>;
+    error?: string;
+    message?: string;
+};
+export type ProcedurePlanSubscriber = (
+    request: ProcedurePlanRequest,
+    ctx: ToolHandlerContext,
+    snapshot?: Record<string, any> | null,
+) => Promise<ProcedurePlanSubscriberResult>;
 
 export interface AiCommandRegistryContext {
     sessionId?: string;
@@ -46,7 +58,7 @@ export interface AiCommandRegistryContext {
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
-    advanceProcedurePlanStep?: (reason?: string) => {
+    advanceProcedurePlanStep?: (reason?: string, nextStatus?: ProcedurePlanStepStatus) => {
         status: string;
         current_request?: number;
         request?: ProcedurePlanRequest;
@@ -70,6 +82,7 @@ export interface AiCommandRegistryContext {
         sourceTrackKey: string | null | undefined,
     ) => Promise<CircuitMapDto | null>;
     displayMap?: (display: AiMapDisplayPayload) => void;
+    procedurePlanSubscribers?: Record<string, ProcedurePlanSubscriber>;
 }
 
 export interface OpportunityAgentState {
@@ -89,8 +102,6 @@ export interface LivePerformanceAnalystState {
     analysisSessionId?: string | null;
 }
 
-type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
-
 type LivePerformancePlan = {
     status: 'ready';
     goal: string;
@@ -101,8 +112,18 @@ type LivePerformancePlan = {
 const LIVE_ANALYST_START_PLAN_REQUESTS: ProcedurePlanRequest[] = [
     {
         type: 'driver_action',
+        subscriber: 'driver',
+        status: 'pending',
         title: 'Collect a clean baseline lap',
-        detail: 'Complete one full lap before analysis starts.',
+        detail: 'Complete one full lap before requesting classifier analysis.',
+    },
+    {
+        type: 'frontend_request',
+        subscriber: 'live_recorded_analysis',
+        status: 'pending',
+        title: 'Request recorded-session classifier',
+        detail: 'Ask the frontend to request classifier analysis through the backend and cache the result.',
+        payload: { force: false },
     },
 ];
 
@@ -640,8 +661,15 @@ const buildLivePerformancePlanFromRecordedAnalysis = (
     };
 };
 
+const toRequestPayloadRecord = (request: ProcedurePlanRequest): Record<string, any> => (
+    request.payload && typeof request.payload === 'object' && !Array.isArray(request.payload)
+        ? request.payload as Record<string, any>
+        : {}
+);
+
 const runSharedAnalysisForLivePlan = async (
     context: AiCommandRegistryContext,
+    args: Record<string, any> = {},
 ): Promise<{ status: 'ready'; plan: LivePerformancePlan } | { status: 'error'; error: string; message: string }> => {
     const sessionId = getSelectedSessionId(context);
     if (!sessionId) {
@@ -661,7 +689,7 @@ const runSharedAnalysisForLivePlan = async (
         };
     }
 
-    const state = await runAnalysis({ force: false });
+    const state = await runAnalysis({ force: args.force === true });
     if (state.status === 'error') {
         return {
             status: 'error',
@@ -680,6 +708,76 @@ const runSharedAnalysisForLivePlan = async (
     }
 
     return { status: 'ready', plan };
+};
+
+const buildProcedurePlanSubscribers = (
+    context: AiCommandRegistryContext,
+): Record<string, ProcedurePlanSubscriber> => ({
+    async driver() {
+        return { status: 'complete' };
+    },
+
+    async live_recorded_analysis(request, ctx, snapshot) {
+        if (snapshot?.baseline_ready !== true) {
+            return {
+                status: 'blocked',
+                error: 'baseline_collection_incomplete',
+                message: 'Complete one clean baseline lap before advancing the plan.',
+            };
+        }
+
+        const analysisStatus = await runSharedAnalysisForLivePlan(
+            context,
+            toRequestPayloadRecord(request),
+        );
+        if (analysisStatus.status !== 'ready') {
+            ctx.sendObservation({
+                source: 'live_performance_analyst',
+                agent_mode: 'live_performance_analyst',
+                event: analysisStatus.error,
+                ...(snapshot ? { snapshot } : {}),
+                message: analysisStatus.message,
+            });
+            return {
+                status: 'failed',
+                error: analysisStatus.error,
+                message: analysisStatus.message,
+            };
+        }
+
+        const sessionId = getSelectedSessionId(context);
+        const readyPlan = analysisStatus.plan;
+        const agent = getLiveAnalystState(context);
+        agent.analysisSessionId = sessionId;
+        ctx.sendObservation({
+            source: 'live_performance_analyst',
+            agent_mode: 'live_performance_analyst',
+            event: 'recorded_analysis_plan_ready',
+            ...(snapshot ? { snapshot } : {}),
+            goal: readyPlan.goal,
+            focus: readyPlan.focus,
+            analysis: readyPlan.analysis,
+        });
+        return { status: 'complete' };
+    },
+    ...context.procedurePlanSubscribers,
+});
+
+const executeProcedurePlanRequest = async (
+    request: ProcedurePlanRequest,
+    context: AiCommandRegistryContext,
+    ctx: ToolHandlerContext,
+    snapshot?: Record<string, any> | null,
+): Promise<ProcedurePlanSubscriberResult> => {
+    const subscriber = buildProcedurePlanSubscribers(context)[request.subscriber];
+    if (!subscriber) {
+        return {
+            status: 'blocked',
+            error: 'procedure_plan_subscriber_missing',
+            message: `No frontend subscriber is registered for "${request.subscriber}".`,
+        };
+    }
+    return subscriber(request, ctx, snapshot);
 };
 
 const searchUserSummaryMapLevel = (
@@ -869,13 +967,18 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
                     properties: {
                         type: { type: 'string' },
                         title: { type: 'string' },
+                        subscriber: {
+                            type: 'string',
+                            description: 'Frontend subscriber that can complete this request, such as driver, live_recorded_analysis, or another registered component.',
+                        },
+                        status: {
+                            type: 'string',
+                            enum: ['pending', 'running', 'complete', 'blocked', 'failed', 'skipped'],
+                        },
                         detail: { type: 'string' },
-                        name: { type: 'string' },
-                        method: { type: 'string' },
-                        url: { type: 'string' },
                         payload: { type: 'object' },
                     },
-                    required: ['type', 'title'],
+                    required: ['type', 'title', 'subscriber'],
                 },
             },
         },
@@ -1025,6 +1128,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
 const COMMON_TOOL_NAMES = [
     'show_map',
     'set_procedure_plan',
+    'advance_plan_step',
 ] as const;
 
 const LIVE_TOOL_NAMES = [
@@ -1037,7 +1141,6 @@ const LIVE_TOOL_NAMES = [
     'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
-    'advance_plan_step',
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
@@ -1126,6 +1229,17 @@ const buildLiveAnalystPlanError = (
     status: 'error',
     error,
     agent_mode: 'live_performance_analyst',
+    ...(snapshot ? { snapshot } : {}),
+    message,
+});
+
+const buildProcedurePlanStepError = (
+    error: string,
+    message: string,
+    snapshot?: Record<string, any> | null,
+) => ({
+    status: 'error',
+    error,
     ...(snapshot ? { snapshot } : {}),
     message,
 });
@@ -1444,36 +1558,20 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                     if (!snapshot.baseline_ready) {
                         agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
                     } else if (!focus) {
-                        const sessionId = getSelectedSessionId(context);
-                        const key = `baseline_focus:${sessionId || 'live'}:${snapshot.completed_laps}`;
+                        const key = `baseline_classifier_request:${snapshot.completed_laps}`;
                         if (agent.lastObservationKey !== key && now - agent.lastObservationAt > 12000) {
                             agent.lastObservationKey = key;
                             agent.lastObservationAt = now;
-                            analysisStatus = await runSharedAnalysisForLivePlan(context);
-
-                            if (analysisStatus.status === 'ready') {
-                                const readyPlan = analysisStatus.plan;
-                                plan = readyPlan;
-                                focus = readyPlan.focus;
-                                agent.analysisSessionId = sessionId;
-                                ctx.sendObservation({
-                                    source: 'live_performance_analyst',
-                                    agent_mode: 'live_performance_analyst',
-                                    event: 'recorded_analysis_plan_ready',
-                                    snapshot,
-                                    goal: readyPlan.goal,
-                                    focus: readyPlan.focus,
-                                    analysis: readyPlan.analysis,
-                                });
-                            } else {
-                                ctx.sendObservation({
-                                    source: 'live_performance_analyst',
-                                    agent_mode: 'live_performance_analyst',
-                                    event: analysisStatus.error,
-                                    snapshot,
-                                    message: analysisStatus.message,
-                                });
-                            }
+                            ctx.sendObservation({
+                                source: 'live_performance_analyst',
+                                agent_mode: 'live_performance_analyst',
+                                event: 'baseline_classifier_request_ready',
+                                snapshot,
+                                goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
+                                requests: LIVE_ANALYST_START_PLAN_REQUESTS,
+                                current_request: 1,
+                                message: 'Baseline complete. Request the recorded-session classifier through the frontend before choosing a focus.',
+                            });
                         }
                     } else {
                         const timing = focus.timing;
@@ -1602,7 +1700,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     },
 
     async set_procedure_plan(args) {
-        const plan = buildLiveProcedurePlan({
+        const plan = buildProcedurePlan({
             ...args,
             event: normalizeOptionalString(args.event) || 'procedure_plan_started',
         });
@@ -1625,23 +1723,29 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     },
 
     async advance_plan_step(args) {
-        const unavailable = buildLiveAnalystUnavailable(context);
-        if (unavailable) return unavailable;
-
-        const snapshot = context.sessionIntelligence!.getLiveSessionSnapshot();
+        const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot?.() || null;
         const plan = context.getProcedurePlan?.() || null;
         if (plan) {
-            const blocked = getProcedurePlanAdvanceBlock(
-                plan,
-                snapshot,
-                Boolean(buildLiveFocusPayload(context)),
-            );
-            if (blocked) {
-                return buildLiveAnalystPlanError(blocked.error, blocked.message, snapshot);
+            const nextStep = Math.min(plan.currentStep + 1, plan.requests.length - 1);
+            if (nextStep > plan.currentStep) {
+                const nextRequest = plan.requests[nextStep];
+                const subscriberResult = await executeProcedurePlanRequest(
+                    nextRequest,
+                    context,
+                    ctx,
+                    snapshot,
+                );
+                if (subscriberResult.status === 'blocked' || subscriberResult.status === 'failed') {
+                    return buildProcedurePlanStepError(
+                        subscriberResult.error || subscriberResult.status,
+                        subscriberResult.message || 'The procedure plan request could not be completed.',
+                        snapshot,
+                    );
+                }
             }
         }
 
-        return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
+        return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason), 'complete') || {
             status: 'unavailable',
             error: 'no_procedure_plan_ui',
         };

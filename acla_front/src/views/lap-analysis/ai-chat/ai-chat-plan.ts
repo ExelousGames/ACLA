@@ -1,10 +1,20 @@
+export const PROCEDURE_PLAN_STEP_STATUSES = [
+    'pending',
+    'running',
+    'complete',
+    'blocked',
+    'failed',
+    'skipped',
+] as const;
+
+export type ProcedurePlanStepStatus = typeof PROCEDURE_PLAN_STEP_STATUSES[number];
+
 export type ProcedurePlanRequest = {
     type: string;
     title: string;
+    subscriber: string;
+    status: ProcedurePlanStepStatus;
     detail?: string;
-    name?: string;
-    method?: string;
-    url?: string;
     payload?: unknown;
 };
 
@@ -14,18 +24,6 @@ export type ProcedurePlan = {
     currentStep: number;
     sourceEvent?: string;
 };
-
-export type ProcedurePlanAdvanceBlock = {
-    status: 'blocked' | 'unavailable';
-    error: string;
-    message: string;
-};
-
-const LIVE_PROCEDURE_PLAN_EVENTS = new Set([
-    'live_analysis_plan_started',
-    'recorded_analysis_plan_ready',
-    'live_analysis_window',
-]);
 
 export const isProcedurePlanStartEvent = (sourceEvent?: string): boolean => (
     typeof sourceEvent === 'string'
@@ -47,21 +45,26 @@ const toRecord = (value: unknown): Record<string, unknown> | null => (
         : null
 );
 
+const isProcedurePlanStepStatus = (value: unknown): value is ProcedurePlanStepStatus => (
+    typeof value === 'string'
+    && (PROCEDURE_PLAN_STEP_STATUSES as readonly string[]).includes(value)
+);
+
 const buildProcedurePlanRequest = (value: unknown): ProcedurePlanRequest | null => {
     const request = toRecord(value);
     if (!request) return null;
 
     const type = toNonEmptyString(request.type);
     const title = toNonEmptyString(request.title);
-    if (!type || !title) return null;
+    const subscriber = toNonEmptyString(request.subscriber);
+    if (!type || !title || !subscriber) return null;
 
     return {
         type,
         title,
+        subscriber,
+        status: isProcedurePlanStepStatus(request.status) ? request.status : 'pending',
         detail: toNonEmptyString(request.detail) || undefined,
-        name: toNonEmptyString(request.name) || undefined,
-        method: toNonEmptyString(request.method)?.toUpperCase(),
-        url: toNonEmptyString(request.url) || undefined,
         payload: request.payload,
     };
 };
@@ -71,48 +74,6 @@ const toProcedurePlanRequests = (value: unknown): ProcedurePlanRequest[] | null 
     const requests = value.map(buildProcedurePlanRequest);
     if (requests.some((item) => !item)) return null;
     return requests as ProcedurePlanRequest[];
-};
-
-const isLiveProcedurePlan = (plan: ProcedurePlan): boolean => (
-    typeof plan.sourceEvent === 'string'
-    && LIVE_PROCEDURE_PLAN_EVENTS.has(plan.sourceEvent)
-);
-
-export const getProcedurePlanAdvanceBlock = (
-    plan: ProcedurePlan | null,
-    snapshot?: Record<string, any> | null,
-    hasFocus = false,
-): ProcedurePlanAdvanceBlock | null => {
-    if (!plan) {
-        return {
-            status: 'unavailable',
-            error: 'no_procedure_plan',
-            message: 'No active procedure plan is available.',
-        };
-    }
-
-    if (!isLiveProcedurePlan(plan)) return null;
-
-    const targetStep = Math.min(plan.currentStep + 1, plan.requests.length - 1);
-    if (targetStep === plan.currentStep) return null;
-
-    if (targetStep >= 1 && snapshot?.baseline_ready !== true) {
-        return {
-            status: 'blocked',
-            error: 'baseline_collection_incomplete',
-            message: 'Complete one clean baseline lap before advancing the plan.',
-        };
-    }
-
-    if (targetStep >= 2 && !hasFocus) {
-        return {
-            status: 'blocked',
-            error: 'focus_section_not_ready',
-            message: 'Analyze the completed baseline and select a focus section before advancing the plan.',
-        };
-    }
-
-    return null;
 };
 
 export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {
@@ -136,15 +97,8 @@ export const isProcedurePlanOptOutRequest = (text: unknown): boolean => {
     ].some((pattern) => pattern.test(normalized));
 };
 
-export const buildLiveProcedurePlan = (data: Record<string, unknown>): ProcedurePlan | null => {
+export const buildProcedurePlan = (data: Record<string, unknown>): ProcedurePlan | null => {
     const sourceEvent = toNonEmptyString(data.event);
-    if (
-        !isProcedurePlanStartEvent(sourceEvent || undefined)
-        && sourceEvent !== 'live_analysis_plan_started'
-        && sourceEvent !== 'recorded_analysis_plan_ready'
-        && sourceEvent !== 'live_analysis_window'
-    ) return null;
-
     const requests = toProcedurePlanRequests(data.requests);
     if (!requests) return null;
 
