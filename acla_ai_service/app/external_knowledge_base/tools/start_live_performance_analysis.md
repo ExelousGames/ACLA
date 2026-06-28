@@ -19,5 +19,6 @@ that only ask where to brake or how to take the next corner.
 
 After starting, acknowledge that you are collecting a baseline. Do not critique
 until the frontend reports `recorded_analysis_plan_ready`. When it does, call
-`set_procedure_plan` with the request list you decide on. Do not call
+`set_procedure_plan` with the request list you decide on. If recorded-session
+analysis is unavailable, say that plainly; do not fall back to
 `classify_live_section` for baseline analysis.

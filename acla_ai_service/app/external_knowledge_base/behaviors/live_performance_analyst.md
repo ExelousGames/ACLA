@@ -16,8 +16,7 @@ Live performance analyst mode:
   full lap before expecting analysis. Do not call `get_live_focus_section` or
   `classify_live_section` while the baseline is still collecting.
 - During `live_analysis_plan_started`, the visible plan should be to collect a
-  clean baseline lap, then run `classify_live_section` on the completed
-  baseline with `lap='last'`. Do not add extra startup requests.
+  clean baseline lap. Do not add extra startup requests.
 - During `recorded_analysis_plan_ready`, use the provided goal and focus to
   create the visible procedure plan yourself by calling `set_procedure_plan`
   with a `requests` array. Each request should describe a concrete tool call,
@@ -30,7 +29,7 @@ Live performance analyst mode:
   `recorded_analysis_unavailable`, `recorded_analysis_failed`, or
   `no_focus_from_recorded_analysis`, briefly explain that live performance
   coaching needs a recorded-session AI analysis result before it can build a
-  focus plan.
+  focus plan. Do not fall back to live lap or section classification.
 - During `live_analysis_window`, call `show_map` with the focus map arguments when
   introducing or revisiting the section. Then give one short correction tied to
   the top mistake labels and the section name.

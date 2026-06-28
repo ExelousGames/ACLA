@@ -12,7 +12,7 @@ parameters:
   section_name:
     description: Optional section name if an id is not available.
   lap:
-    description: Lap to classify. Use "last" for the most recent completed baseline lap, or a specific lap number when supplied by the observation.
+    description: Lap to classify for the active focus section. Use "last" for the most recent completed pass, or a specific lap number when supplied by the observation.
 ---
 
 ## Usage notes

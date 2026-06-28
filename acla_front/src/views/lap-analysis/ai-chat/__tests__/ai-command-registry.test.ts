@@ -832,7 +832,7 @@ describe('ai command registry live performance analyst tools', () => {
                     { type: 'request', title: 'Select the focus section.' },
                 ],
                 currentStep: 1,
-                sourceEvent: 'live_baseline_ready_for_classification',
+                sourceEvent: 'recorded_analysis_plan_ready',
             }),
         });
 
@@ -991,17 +991,11 @@ describe('ai command registry live performance analyst tools', () => {
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
             message: expect.stringContaining('Collect a baseline first'),
-            goal: 'Collect a baseline and run the live section classifier.',
+            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
             requests: [
                 expect.objectContaining({
                     type: 'driver_action',
                     title: 'Collect a clean baseline lap',
-                }),
-                expect.objectContaining({
-                    type: 'tool_call',
-                    name: 'classify_live_section',
-                    title: 'Classify the completed baseline',
-                    payload: { lap: 'last' },
                 }),
             ],
             snapshot: expect.objectContaining({
@@ -1067,7 +1061,7 @@ describe('ai command registry live performance analyst tools', () => {
         }
     });
 
-    it('asks the live classifier for a focus when no recorded analysis is available', async () => {
+    it('requires recorded analysis instead of falling back to live section classification', async () => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.startBaselineCollectionAtLapStart();
         sessionIntelligence.tick({
@@ -1126,8 +1120,8 @@ describe('ai command registry live performance analyst tools', () => {
             status: 'started',
             initial: {
                 analysis_status: {
-                    status: 'needs_live_section_classification',
-                    recorded_analysis_error: 'recorded_session_required',
+                    status: 'error',
+                    error: 'recorded_session_required',
                 },
                 snapshot: {
                     baseline_ready: true,
@@ -1135,28 +1129,16 @@ describe('ai command registry live performance analyst tools', () => {
             },
         });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'live_baseline_ready_for_classification',
-            completed_lap: 0,
-            candidate_sections: expect.arrayContaining([
-                expect.objectContaining({
-                    name: 'T1 Paddock Hill Bend',
-                    lap: 0,
-                }),
-            ]),
+            event: 'recorded_session_required',
+            message: expect.stringContaining('recorded session'),
         }));
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
-            goal: 'Collect a baseline and run the live section classifier.',
+            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
             requests: [
                 expect.objectContaining({
                     type: 'driver_action',
                     title: 'Collect a clean baseline lap',
-                }),
-                expect.objectContaining({
-                    type: 'tool_call',
-                    name: 'classify_live_section',
-                    title: 'Classify the completed baseline',
-                    payload: { lap: 'last' },
                 }),
             ],
             snapshot: expect.objectContaining({

@@ -15,13 +15,13 @@ def test_live_performance_tool_knowledge_is_loaded():
     assert tool("set_procedure_plan")["title"] == "Setting procedure plan"
     assert tool("get_live_focus_section")["title"] == "Reading focus section"
     assert tool("classify_live_section")["title"] == "Classifying live section"
-    assert "hidden frontend relay" in tool("classify_live_section")["description"]
+    assert "active Live Performance Analyst focus section" in tool("classify_live_section")["description"]
     assert "requests" in tool("set_procedure_plan")["_raw_body"]
     assert "focus_name" not in tool("set_procedure_plan")["_raw_body"]
     assert "request's `payload`" in tool("set_procedure_plan")["_raw_body"]
     assert "collecting_baseline" in behavior("live_performance_analyst")["_raw_body"]
     assert "live_analysis_plan_started" in behavior("live_performance_analyst")["_raw_body"]
-    assert "lap='last'" in behavior("live_performance_analyst")["_raw_body"]
+    assert "Do not fall back to live lap or section classification" in behavior("live_performance_analyst")["_raw_body"]
 
 
 def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
@@ -58,12 +58,9 @@ def test_live_analyst_observations_drive_the_right_actions():
     baseline_msg = pipecat_pipeline._format_observation_for_llm({
         "source": "live_performance_analyst",
         "agent_mode": "live_performance_analyst",
-        "event": "live_baseline_ready_for_classification",
-        "completed_lap": 2,
+        "event": "recorded_session_required",
+        "message": "Recorded-session AI analysis is required.",
         "snapshot": {"track": "brands_hatch", "live_session_type": "solo_practice"},
-        "candidate_sections": [
-            {"id": "brands_hatch2", "name": "Paddock Hill", "from": 0.1, "to": 0.2},
-        ],
     })
     coaching_msg = pipecat_pipeline._format_observation_for_llm({
         "source": "live_performance_analyst",
@@ -82,8 +79,8 @@ def test_live_analyst_observations_drive_the_right_actions():
     assert "request payload" in plan_msg
     assert "plan-level focus" in plan_msg
     assert "plan=" not in plan_msg
-    assert "classify_live_section" in baseline_msg
-    assert "Do not expose raw telemetry" in baseline_msg
+    assert "recorded-session AI analysis is needed" in baseline_msg
+    assert "classify_live_section" not in baseline_msg
     assert "Call show_map" in coaching_msg
     assert "traffic_or_race" in coaching_msg
 

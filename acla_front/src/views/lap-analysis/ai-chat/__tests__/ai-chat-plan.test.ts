@@ -13,10 +13,6 @@ describe('buildLiveProcedurePlan', () => {
                 baseline_ready: false,
             },
         })).toBeNull();
-        expect(buildLiveProcedurePlan({
-            event: 'live_baseline_ready_for_classification',
-            candidate_sections: [{ name: 'T1 Paddock Hill Bend' }],
-        })).toBeNull();
     });
 
     it('builds the visible plan from AI request lists', () => {
@@ -57,34 +53,22 @@ describe('buildLiveProcedurePlan', () => {
         });
     });
 
-    it('builds the startup live plan from explicit baseline classifier requests', () => {
+    it('builds the startup live plan from explicit baseline requests', () => {
         expect(buildLiveProcedurePlan({
             event: 'live_analysis_plan_started',
-            goal: 'Collect a baseline and run the live section classifier.',
+            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
             requests: [
                 {
                     type: 'driver_action',
                     title: 'Collect a clean baseline lap',
-                },
-                {
-                    type: 'tool_call',
-                    name: 'classify_live_section',
-                    title: 'Classify the completed baseline',
-                    payload: { lap: 'last' },
                 },
             ],
         })).toMatchObject({
-            goal: 'Collect a baseline and run the live section classifier.',
+            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
             requests: [
                 {
                     type: 'driver_action',
                     title: 'Collect a clean baseline lap',
-                },
-                {
-                    type: 'tool_call',
-                    name: 'classify_live_section',
-                    title: 'Classify the completed baseline',
-                    payload: { lap: 'last' },
                 },
             ],
             currentStep: 0,
@@ -153,7 +137,7 @@ describe('buildLiveProcedurePlan', () => {
     it('ignores unrelated live analyst events until a plan is available', () => {
         expect(buildLiveProcedurePlan({
             event: 'live_section_history_updated',
-            candidate_sections: [{ name: 'T1 Paddock Hill Bend' }],
+            section: { name: 'T1 Paddock Hill Bend' },
         })).toBeNull();
     });
 });
@@ -194,7 +178,7 @@ describe('getProcedurePlanAdvanceBlock', () => {
 
     it('blocks live plans from advancing to focus work before a focus exists', () => {
         expect(getProcedurePlanAdvanceBlock(
-            { ...plan, currentStep: 1, sourceEvent: 'live_baseline_ready_for_classification' },
+            { ...plan, currentStep: 1, sourceEvent: 'recorded_analysis_plan_ready' },
             { baseline_ready: true },
             false,
         )).toMatchObject({
@@ -216,7 +200,6 @@ describe('isProcedurePlanStartEvent', () => {
     });
 
     it('does not treat plan updates as new plans', () => {
-        expect(isProcedurePlanStartEvent('live_baseline_ready_for_classification')).toBe(false);
         expect(isProcedurePlanStartEvent('recorded_analysis_plan_ready')).toBe(false);
         expect(isProcedurePlanStartEvent(undefined)).toBe(false);
     });

@@ -98,27 +98,11 @@ type LivePerformancePlan = {
     analysis: ReturnType<typeof buildRecordedAnalysisToolResult>;
 };
 
-type LiveBaselineCandidateSection = {
-    id: string;
-    name: string;
-    from: number;
-    to: number;
-    guideFrom?: number;
-    lap: number;
-};
-
 const LIVE_ANALYST_START_PLAN_REQUESTS: ProcedurePlanRequest[] = [
     {
         type: 'driver_action',
         title: 'Collect a clean baseline lap',
         detail: 'Complete one full lap before analysis starts.',
-    },
-    {
-        type: 'tool_call',
-        name: 'classify_live_section',
-        title: 'Classify the completed baseline',
-        detail: 'Run after the baseline lap is ready.',
-        payload: { lap: 'last' },
     },
 ];
 
@@ -698,24 +682,6 @@ const runSharedAnalysisForLivePlan = async (
     return { status: 'ready', plan };
 };
 
-const buildLiveBaselineCandidateSections = (
-    context: AiCommandRegistryContext,
-): LiveBaselineCandidateSection[] => {
-    const si = context.sessionIntelligence;
-    if (!si) return [];
-
-    const snapshot = si.getLiveSessionSnapshot();
-    const completedLap = Math.max(0, snapshot.completed_laps - 1);
-    return si.getKnownTrackSections().map((section) => ({
-        id: section.id,
-        name: section.name,
-        from: section.from,
-        to: section.to,
-        guideFrom: section.guideFrom,
-        lap: completedLap,
-    }));
-};
-
 const searchUserSummaryMapLevel = (
     mapLevel: UserSummaryMapLevelResult,
     args: Record<string, any>,
@@ -834,7 +800,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
     {
         name: 'start_live_performance_analysis',
-        description: 'Start the live performance analyst agent. The agent creates a procedure plan, waits for a completed baseline lap, uses recorded-session analysis when available, and otherwise asks the live classifier to build a focus from the completed lap.',
+        description: 'Start the live performance analyst agent. The agent creates a procedure plan, waits for a completed baseline lap, and uses recorded-session analysis to build one focus goal.',
         properties: {
             interval_seconds: {
                 type: 'number',
@@ -1455,9 +1421,9 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             agent_mode: 'live_performance_analyst',
             event: 'live_analysis_plan_started',
             snapshot: si.getLiveSessionSnapshot(),
-            goal: 'Collect a baseline and run the live section classifier.',
+            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
             requests: LIVE_ANALYST_START_PLAN_REQUESTS,
-            message: 'Live analysis procedure started. Collect a baseline first, then analyze the completed baseline.',
+            message: 'Live analysis procedure started. Collect a baseline first, then use recorded-session analysis to choose a focus.',
         });
 
         const runAnalystCycle = async (notify: boolean): Promise<any> => {
@@ -1500,20 +1466,12 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                                     analysis: readyPlan.analysis,
                                 });
                             } else {
-                                const candidateSections = buildLiveBaselineCandidateSections(context);
-                                analysisStatus = {
-                                    status: 'needs_live_section_classification',
-                                    recorded_analysis_error: analysisStatus.error,
-                                    candidate_sections: candidateSections,
-                                };
                                 ctx.sendObservation({
                                     source: 'live_performance_analyst',
                                     agent_mode: 'live_performance_analyst',
-                                    event: 'live_baseline_ready_for_classification',
+                                    event: analysisStatus.error,
                                     snapshot,
-                                    completed_lap: Math.max(0, snapshot.completed_laps - 1),
-                                    candidate_sections: candidateSections,
-                                    message: 'Baseline lap is ready. Classify live sections from the completed lap to build a focus plan.',
+                                    message: analysisStatus.message,
                                 });
                             }
                         }

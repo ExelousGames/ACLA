@@ -23,7 +23,6 @@ export type ProcedurePlanAdvanceBlock = {
 
 const LIVE_PROCEDURE_PLAN_EVENTS = new Set([
     'live_analysis_plan_started',
-    'live_baseline_ready_for_classification',
     'recorded_analysis_plan_ready',
     'live_analysis_window',
 ]);
@@ -142,7 +141,6 @@ export const buildLiveProcedurePlan = (data: Record<string, unknown>): Procedure
     if (
         !isProcedurePlanStartEvent(sourceEvent || undefined)
         && sourceEvent !== 'live_analysis_plan_started'
-        && sourceEvent !== 'live_baseline_ready_for_classification'
         && sourceEvent !== 'recorded_analysis_plan_ready'
         && sourceEvent !== 'live_analysis_window'
     ) return null;
