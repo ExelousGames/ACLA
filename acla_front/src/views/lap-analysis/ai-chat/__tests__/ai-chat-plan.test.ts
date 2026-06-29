@@ -23,13 +23,12 @@ describe('buildProcedurePlan', () => {
             requests: [
                 {
                     type: 'tool_call',
-                    subscriber: 'display_surface',
                     title: 'Show supporting context',
+                    name: 'show_context',
                     payload: { tool: 'show_context', target_id: 'task-1' },
                 },
                 {
                     type: 'api_request',
-                    subscriber: 'domain_worker',
                     title: 'Run domain task',
                 },
             ],
@@ -38,14 +37,13 @@ describe('buildProcedurePlan', () => {
             requests: [
                 {
                     type: 'tool_call',
-                    subscriber: 'display_surface',
                     title: 'Show supporting context',
+                    name: 'show_context',
                     payload: { tool: 'show_context', target_id: 'task-1' },
                     status: 'pending',
                 },
                 {
                     type: 'api_request',
-                    subscriber: 'domain_worker',
                     title: 'Run domain task',
                     status: 'pending',
                 },
@@ -61,12 +59,10 @@ describe('buildProcedurePlan', () => {
             requests: [
                 {
                     type: 'human_action',
-                    subscriber: 'human',
                     title: 'Provide an input sample',
                 },
                 {
                     type: 'frontend_request',
-                    subscriber: 'workflow_worker',
                     title: 'Run workflow worker',
                     payload: { force: false },
                 },
@@ -76,13 +72,11 @@ describe('buildProcedurePlan', () => {
             requests: [
                 {
                     type: 'human_action',
-                    subscriber: 'human',
                     title: 'Provide an input sample',
                     status: 'pending',
                 },
                 {
                     type: 'frontend_request',
-                    subscriber: 'workflow_worker',
                     title: 'Run workflow worker',
                     status: 'pending',
                     payload: { force: false },
@@ -99,13 +93,11 @@ describe('buildProcedurePlan', () => {
             requests: [
                 {
                     type: 'driver_action',
-                    subscriber: 'driver',
                     title: 'Collect a clean baseline lap',
                     status: 'complete',
                 },
                 {
                     type: 'frontend_request',
-                    subscriber: 'live_recorded_analysis',
                     title: 'Request recorded-session classifier',
                 },
             ],
@@ -132,12 +124,10 @@ describe('buildProcedurePlan', () => {
             requests: [
                 {
                     type: 'driver_action',
-                    subscriber: 'driver',
                     title: 'Collect a clean baseline lap',
                 },
                 {
                     type: 'frontend_request',
-                    subscriber: 'live_recorded_analysis',
                     title: 'Request recorded-session classifier',
                 },
             ],
@@ -218,6 +208,33 @@ describe('buildProcedurePlan', () => {
                 { type: 'driver_action', title: 'Provide one clean sample', status: 'pending' },
             ],
         });
+    });
+
+    it('removes legacy subscriber and output visibility fields from requests', () => {
+        const request = buildProcedurePlan({
+            event: 'procedure_plan_started',
+            goal: 'Run one tool.',
+            requests: [
+                {
+                    type: 'tool_call',
+                    title: 'Read context',
+                    name: 'get_recorded_session_context',
+                    subscriber: 'legacy_worker',
+                    result_visibility: 'tag',
+                    output: 'tag',
+                },
+            ],
+        })?.requests[0];
+
+        expect(request).toMatchObject({
+            type: 'tool_call',
+            title: 'Read context',
+            name: 'get_recorded_session_context',
+            status: 'pending',
+        });
+        expect(request).not.toHaveProperty('subscriber');
+        expect(request).not.toHaveProperty('result_visibility');
+        expect(request).not.toHaveProperty('output');
     });
 
     it('rejects requests without explicit type and title', () => {

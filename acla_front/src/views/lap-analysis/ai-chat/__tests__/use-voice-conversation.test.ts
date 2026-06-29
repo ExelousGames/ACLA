@@ -1,5 +1,6 @@
 import {
     buildVoiceSessionMetadata,
+    executeSubscribedFrontendTool,
     extractInlineFunctionCalls,
 } from '../use-voice-conversation';
 
@@ -57,5 +58,132 @@ describe('extractInlineFunctionCalls', () => {
                 arguments: { raw: 'agent_mode=track_guide' },
             },
         ]);
+    });
+});
+
+describe('executeSubscribedFrontendTool', () => {
+    it('emits lifecycle events and a final tool_result for direct tool calls', async () => {
+        const frames: object[] = [];
+        const events: object[] = [];
+
+        const result = await executeSubscribedFrontendTool({
+            call: {
+                id: 'tool-1',
+                name: 'read_context',
+                arguments: { session_id: 's1' },
+            },
+            handlers: {
+                read_context: async (args, ctx) => {
+                    ctx.sendToolOutput?.({ chunk: 'first' });
+                    return { status: 'ready', args };
+                },
+            },
+            baseContext: {
+                sendObservation: (data) => frames.push({ type: 'observation', data }),
+            },
+            sendText: (payload) => frames.push(payload),
+            emitEvent: (event) => events.push(event),
+        });
+
+        expect(result).toMatchObject({ id: 'tool-1', name: 'read_context', ok: true });
+        expect(events).toMatchObject([
+            { kind: 'tool_event', runId: 'tool-1', name: 'read_context', status: 'started' },
+            { kind: 'tool_event', runId: 'tool-1', name: 'read_context', status: 'completed', ok: true },
+        ]);
+        expect(frames).toContainEqual({
+            type: 'observation',
+            data: {
+                event: 'tool_output',
+                tool_run_id: 'tool-1',
+                tool_name: 'read_context',
+                final: false,
+                output: { chunk: 'first' },
+            },
+        });
+        expect(frames).toContainEqual({
+            type: 'tool_result',
+            id: 'tool-1',
+            result: {
+                status: 'ready',
+                args: { session_id: 's1' },
+            },
+        });
+    });
+
+    it('emits lifecycle events and a final tool_error when the handler fails', async () => {
+        const frames: object[] = [];
+        const events: object[] = [];
+
+        const result = await executeSubscribedFrontendTool({
+            call: { id: 'tool-2', name: 'explode' },
+            handlers: {
+                explode: async () => {
+                    throw new Error('boom');
+                },
+            },
+            baseContext: {
+                sendObservation: (data) => frames.push({ type: 'observation', data }),
+            },
+            sendText: (payload) => frames.push(payload),
+            emitEvent: (event) => events.push(event),
+        });
+
+        expect(result).toEqual({ id: 'tool-2', name: 'explode', ok: false, error: 'boom' });
+        expect(events).toMatchObject([
+            { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'started' },
+            { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'completed', ok: false, error: 'boom' },
+        ]);
+        expect(frames).toContainEqual({ type: 'tool_error', id: 'tool-2', error: 'boom' });
+    });
+
+    it('unsubscribes after completion so late tool output is ignored', async () => {
+        const frames: object[] = [];
+        let lateOutput: (() => void) | null = null;
+
+        await executeSubscribedFrontendTool({
+            call: { id: 'tool-3', name: 'deferred_output' },
+            handlers: {
+                deferred_output: async (_args, ctx) => {
+                    lateOutput = () => ctx.sendToolOutput?.({ chunk: 'late' });
+                    return { status: 'done' };
+                },
+            },
+            baseContext: {
+                sendObservation: (data) => frames.push({ type: 'observation', data }),
+            },
+            sendText: (payload) => frames.push(payload),
+        });
+
+        lateOutput?.();
+
+        expect(frames).toEqual([
+            { type: 'tool_result', id: 'tool-3', result: { status: 'done' } },
+        ]);
+    });
+
+    it('supports plan-triggered calls with generated run ids', async () => {
+        const frames: object[] = [];
+
+        await executeSubscribedFrontendTool({
+            call: {
+                name: 'show_map',
+                title: 'Show the current map',
+                arguments: { map_id: 'spa' },
+            },
+            handlers: {
+                show_map: async () => ({ status: 'displayed' }),
+            },
+            baseContext: {
+                sendObservation: (data) => frames.push({ type: 'observation', data }),
+            },
+            sendText: (payload) => frames.push(payload),
+            makeRunId: () => 'plan-1',
+        });
+
+        expect(frames).toContainEqual({
+            type: 'tool_result',
+            id: 'plan-1',
+            result: { status: 'displayed' },
+        });
     });
 });

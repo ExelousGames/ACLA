@@ -33,6 +33,9 @@ export interface ToolHandlerContext {
      *  background monitoring agent at any time. The frontend formats it
      *  before the backend injects it into the LLM context. */
     sendObservation: (data: Record<string, unknown>) => void;
+    /** Push output for the currently running subscribed tool. The voice
+     *  session forwards it to the AI as an observation tied to the run id. */
+    sendToolOutput?: (data: Record<string, unknown>, options?: { final?: boolean }) => void;
 }
 
 /** One frontend tool handler. Return value becomes the `tool_result`. Throw
@@ -64,6 +67,7 @@ export type VoiceEvent =
     | { kind: 'observation'; data: Record<string, unknown> }
     | {
         kind: 'tool_event';
+        runId?: string;
         name: string;
         title: string;
         status: 'started' | 'completed';
@@ -134,6 +138,35 @@ export interface VoiceConversation {
     /** Push a background observation into the open voice session. Returns
      *  false when the voice WebSocket is not ready. */
     sendObservation: (data: Record<string, unknown>) => boolean;
+    /** Execute a frontend tool through this session's subscription channel. */
+    executeToolCall: (call: SubscribedToolCall) => Promise<ToolSubscriptionResult | null>;
+}
+
+export interface SubscribedToolCall {
+    id?: string;
+    name?: string;
+    title?: string;
+    arguments?: Record<string, unknown>;
+}
+
+export interface ToolSubscriptionResult {
+    id: string;
+    name: string;
+    ok: boolean;
+    result?: unknown;
+    error?: string;
+}
+
+type ToolFrameSender = (payload: object) => void;
+type ToolEventEmitter = (event: VoiceEvent) => void;
+
+interface ExecuteSubscribedToolOptions {
+    call: SubscribedToolCall;
+    handlers: Record<string, FrontendToolHandler>;
+    baseContext: Pick<ToolHandlerContext, 'sendObservation'>;
+    sendText: ToolFrameSender;
+    emitEvent?: ToolEventEmitter;
+    makeRunId?: () => string;
 }
 
 export interface InlineFunctionCall {
@@ -173,6 +206,103 @@ export const extractInlineFunctionCalls = (
     }).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 
     return { cleanText, calls };
+};
+
+const toToolResultPayload = (result: unknown): Record<string, unknown> => (
+    result && typeof result === 'object' && !Array.isArray(result)
+        ? result as Record<string, unknown>
+        : { value: result }
+);
+
+const defaultToolRunId = () =>
+    `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+export const executeSubscribedFrontendTool = async ({
+    call,
+    handlers,
+    baseContext,
+    sendText,
+    emitEvent,
+    makeRunId = defaultToolRunId,
+}: ExecuteSubscribedToolOptions): Promise<ToolSubscriptionResult> => {
+    const id = call.id || makeRunId();
+    const name = String(call.name || '').trim();
+    const title = call.title || name;
+    const args = call.arguments && typeof call.arguments === 'object'
+        ? call.arguments
+        : {};
+
+    if (!name) {
+        const error = 'tool call missing name';
+        sendText({ type: 'tool_error', id, error });
+        return { id, name, ok: false, error };
+    }
+
+    emitEvent?.({
+        kind: 'tool_event',
+        runId: id,
+        name,
+        title,
+        status: 'started',
+        arguments: args,
+    });
+
+    const handler = handlers[name];
+    let subscribed = true;
+
+    const sendToolOutput: ToolHandlerContext['sendToolOutput'] = (data, options) => {
+        if (!subscribed) return;
+        baseContext.sendObservation({
+            event: options?.final ? 'tool_output_final' : 'tool_output',
+            tool_run_id: id,
+            tool_name: name,
+            final: options?.final === true,
+            output: data,
+        });
+    };
+
+    const scopedContext: ToolHandlerContext = {
+        sendObservation: baseContext.sendObservation,
+        sendToolOutput,
+    };
+
+    try {
+        if (!handler) {
+            throw new Error(`no handler for '${name}'`);
+        }
+
+        const result = await handler(args, scopedContext);
+        sendText({
+            type: 'tool_result',
+            id,
+            result: toToolResultPayload(result),
+        });
+        emitEvent?.({
+            kind: 'tool_event',
+            runId: id,
+            name,
+            title,
+            status: 'completed',
+            ok: true,
+            error: null,
+        });
+        return { id, name, ok: true, result };
+    } catch (err) {
+        const error = (err as Error)?.message || String(err);
+        sendText({ type: 'tool_error', id, error });
+        emitEvent?.({
+            kind: 'tool_event',
+            runId: id,
+            name,
+            title,
+            status: 'completed',
+            ok: false,
+            error,
+        });
+        return { id, name, ok: false, error };
+    } finally {
+        subscribed = false;
+    }
 };
 
 export function useVoiceConversation(
@@ -518,7 +648,7 @@ export function useVoiceConversation(
                 try { ws.send(JSON.stringify(payload)); }
                 catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
             };
-            const toolCtx: ToolHandlerContext = {
+            const toolCtx: Pick<ToolHandlerContext, 'sendObservation'> = {
                 sendObservation: (data) => {
                     onEventRef.current?.({ kind: 'observation', data });
                     sendText(buildFormattedObservationFrame(data));
@@ -534,35 +664,13 @@ export function useVoiceConversation(
                     console.warn('[ai-tool] bad tool_call frame:', msg);
                     return;
                 }
-                const handler = toolHandlersRef.current[name];
-                console.log('[ai-tool] ◀ tool_call received', {
-                    id,
-                    name,
-                    arguments: msg.arguments,
-                    handlerRegistered: !!handler,
+                await executeSubscribedFrontendTool({
+                    call: { id, name, arguments: msg.arguments },
+                    handlers: toolHandlersRef.current,
+                    baseContext: toolCtx,
+                    sendText,
+                    emitEvent: onEventRef.current,
                 });
-                if (!handler) {
-                    console.warn(
-                        '[ai-tool] no handler for', name,
-                        '— available handlers:', Object.keys(toolHandlersRef.current),
-                    );
-                    sendText({ type: 'tool_error', id, error: `no handler for '${name}'` });
-                    return;
-                }
-                try {
-                    const result = await handler(msg.arguments || {}, toolCtx);
-                    const output = {
-                        type: 'tool_result',
-                        id,
-                        result: result && typeof result === 'object' ? result : { value: result },
-                    };
-                    console.log(output);
-                    sendText(output);
-                } catch (err) {
-                    const message = (err as Error)?.message || String(err);
-                    console.error('[ai-tool] ▶ tool_error', { id, name, error: message, err });
-                    sendText({ type: 'tool_error', id, error: message });
-                }
             };
 
             const handleInlineToolCall = async (
@@ -570,74 +678,13 @@ export function useVoiceConversation(
                 index: number,
             ) => {
                 const id = `inline-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`;
-                const handler = toolHandlersRef.current[call.name];
-                console.log('[ai-tool] inline function call received', {
-                    id,
-                    name: call.name,
-                    arguments: call.arguments,
-                    handlerRegistered: !!handler,
+                await executeSubscribedFrontendTool({
+                    call: { id, name: call.name, arguments: call.arguments },
+                    handlers: toolHandlersRef.current,
+                    baseContext: toolCtx,
+                    sendText,
+                    emitEvent: onEventRef.current,
                 });
-
-                onEventRef.current?.({
-                    kind: 'tool_event',
-                    name: call.name,
-                    title: call.name,
-                    status: 'started',
-                    arguments: call.arguments,
-                });
-
-                if (!handler) {
-                    const error = `no handler for '${call.name}'`;
-                    console.warn(
-                        '[ai-tool] no handler for inline function call',
-                        call.name,
-                        'available handlers:',
-                        Object.keys(toolHandlersRef.current),
-                    );
-                    onEventRef.current?.({
-                        kind: 'tool_event',
-                        name: call.name,
-                        title: call.name,
-                        status: 'completed',
-                        ok: false,
-                        error,
-                    });
-                    sendText({ type: 'tool_error', id, error });
-                    return;
-                }
-
-                try {
-                    const result = await handler(call.arguments, toolCtx);
-                    onEventRef.current?.({
-                        kind: 'tool_event',
-                        name: call.name,
-                        title: call.name,
-                        status: 'completed',
-                        ok: true,
-                    });
-                    sendText({
-                        type: 'tool_result',
-                        id,
-                        result: result && typeof result === 'object' ? result : { value: result },
-                    });
-                } catch (err) {
-                    const error = (err as Error)?.message || String(err);
-                    console.error('[ai-tool] inline function call failed', {
-                        id,
-                        name: call.name,
-                        error,
-                        err,
-                    });
-                    onEventRef.current?.({
-                        kind: 'tool_event',
-                        name: call.name,
-                        title: call.name,
-                        status: 'completed',
-                        ok: false,
-                        error,
-                    });
-                    sendText({ type: 'tool_error', id, error });
-                }
             };
 
             ws.onmessage = (event) => {
@@ -821,6 +868,32 @@ export function useVoiceConversation(
         }
     }, []);
 
+    const executeToolCall = useCallback(async (
+        call: SubscribedToolCall,
+    ): Promise<ToolSubscriptionResult | null> => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return null;
+
+        const sendText = (payload: object) => {
+            if (ws.readyState !== WebSocket.OPEN) return;
+            try { ws.send(JSON.stringify(payload)); }
+            catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
+        };
+
+        return executeSubscribedFrontendTool({
+            call,
+            handlers: toolHandlersRef.current,
+            baseContext: {
+                sendObservation: (data) => {
+                    onEventRef.current?.({ kind: 'observation', data });
+                    sendText(buildFormattedObservationFrame(data));
+                },
+            },
+            sendText,
+            emitEvent: onEventRef.current,
+        });
+    }, []);
+
     // Auto-cleanup on unmount.
     useEffect(() => {
         return () => stop();
@@ -836,5 +909,6 @@ export function useVoiceConversation(
         setMicDisabled,
         sendUserText,
         sendObservation,
+        executeToolCall,
     };
 }

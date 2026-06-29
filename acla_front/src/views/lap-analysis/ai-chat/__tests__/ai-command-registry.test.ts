@@ -815,9 +815,9 @@ describe('ai command registry live performance analyst tools', () => {
             getProcedurePlan: () => ({
                 goal: 'Run live analysis from a clean baseline.',
                 requests: [
-                    { type: 'request', subscriber: 'driver', status: 'complete', title: 'Collect a complete baseline lap.' },
-                    { type: 'request', subscriber: 'driver', status: 'pending', title: 'Compare the next pass.' },
-                    { type: 'request', subscriber: 'driver', status: 'pending', title: 'Select the focus section.' },
+                    { type: 'request', status: 'complete', title: 'Collect a complete baseline lap.' },
+                    { type: 'request', status: 'pending', title: 'Compare the next pass.' },
+                    { type: 'request', status: 'pending', title: 'Select the focus section.' },
                 ],
                 currentStep: 0,
                 sourceEvent: 'live_analysis_plan_started',
@@ -851,12 +851,10 @@ describe('ai command registry live performance analyst tools', () => {
                         type: 'tool_call',
                         name: 'show_map',
                         title: 'Show the focus map',
-                        result_visibility: 'tag',
                         payload: { tool: 'show_map', section_name: 'T2 Druids' },
                     },
                     {
                         type: 'driver_action',
-                        subscriber: 'driver',
                         title: 'Brake earlier on the next approach',
                     },
                 ],
@@ -871,13 +869,11 @@ describe('ai command registry live performance analyst tools', () => {
                     type: 'tool_call',
                     name: 'show_map',
                     title: 'Show the focus map',
-                    result_visibility: 'tag',
                     payload: { tool: 'show_map', section_name: 'T2 Druids' },
                     status: 'pending',
                 }),
                 expect.objectContaining({
                     type: 'driver_action',
-                    subscriber: 'driver',
                     title: 'Brake earlier on the next approach',
                     status: 'pending',
                 }),
@@ -921,7 +917,7 @@ describe('ai command registry live performance analyst tools', () => {
             getProcedurePlan: () => ({
                 goal: 'Run a delegated workflow.',
                 requests: [
-                    { type: 'request', subscriber: 'driver', status: 'complete', title: 'Complete the first task.' },
+                    { type: 'request', status: 'complete', title: 'Complete the first task.' },
                     { type: 'request', status: 'pending', title: 'Run the worker.' },
                 ],
                 currentStep: 0,
@@ -958,9 +954,8 @@ describe('ai command registry live performance analyst tools', () => {
                         name: 'get_live_session_snapshot',
                         status: 'pending',
                         title: 'Read live session state.',
-                        result_visibility: 'ai',
                     },
-                    { type: 'driver_action', subscriber: 'driver', status: 'pending', title: 'Use the snapshot.' },
+                    { type: 'driver_action', status: 'pending', title: 'Use the snapshot.' },
                 ],
                 currentStep: 0,
                 sourceEvent: 'procedure_plan_started',
@@ -996,7 +991,6 @@ describe('ai command registry live performance analyst tools', () => {
                         name: 'get_live_session_snapshot',
                         status: 'pending',
                         title: 'Show current state.',
-                        result_visibility: 'tag',
                     },
                 ],
                 currentStep: 0,
@@ -1070,9 +1064,9 @@ describe('ai command registry live performance analyst tools', () => {
             getProcedurePlan: () => ({
                 goal: 'Run live analysis from a clean baseline.',
                 requests: [
-                    { type: 'request', subscriber: 'driver', status: 'pending', title: 'Collect a complete baseline lap.' },
-                    { type: 'request', subscriber: 'live_recorded_analysis', status: 'pending', title: 'Analyze the baseline.' },
-                    { type: 'request', subscriber: 'driver', status: 'pending', title: 'Select the focus section.' },
+                    { type: 'request', status: 'pending', title: 'Collect a complete baseline lap.' },
+                    { type: 'request', status: 'pending', title: 'Analyze the baseline.' },
+                    { type: 'request', status: 'pending', title: 'Select the focus section.' },
                 ],
                 currentStep: 1,
                 sourceEvent: 'live_analysis_plan_started',
@@ -1137,14 +1131,12 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'driver_action',
-                        subscriber: 'baseline_collection',
                         status: 'pending',
                         title: 'Collect a clean baseline lap',
                         detail: 'Complete one full lap before requesting classifier analysis.',
                     },
                     {
                         type: 'frontend_request',
-                        subscriber: 'live_recorded_analysis',
                         status: 'pending',
                         title: 'Request recorded-session classifier',
                     },
@@ -1278,8 +1270,8 @@ describe('ai command registry live performance analyst tools', () => {
             getProcedurePlan: () => ({
                 goal: 'Run a delegated workflow.',
                 requests: [
-                    { type: 'request', subscriber: 'driver', status: 'complete', title: 'Complete the first task.' },
-                    { type: 'request', subscriber: 'unregistered_worker', status: 'pending', title: 'Run the worker.' },
+                    { type: 'request', status: 'complete', title: 'Complete the first task.' },
+                    { type: 'request', status: 'pending', title: 'Run the worker.' },
                 ],
                 currentStep: 0,
                 sourceEvent: 'procedure_plan_started',
@@ -1478,7 +1470,6 @@ describe('ai command registry live performance analyst tools', () => {
             current_request: 1,
             request: {
                 type: 'frontend_request',
-                subscriber: 'live_recorded_analysis',
                 status: 'complete' as const,
                 title: 'Request recorded-session classifier',
             },
@@ -1508,13 +1499,11 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'driver_action',
-                        subscriber: 'baseline_collection',
                         status: 'complete',
                         title: 'Collect a clean baseline lap',
                     },
                     {
                         type: 'frontend_request',
-                        subscriber: 'live_recorded_analysis',
                         status: 'pending',
                         title: 'Request recorded-session classifier',
                         payload: { force: false },
@@ -1596,7 +1585,6 @@ describe('ai command registry live performance analyst tools', () => {
             current_request: 1,
             request: {
                 type: 'frontend_request',
-                subscriber: 'live_recorded_analysis',
                 status: 'complete' as const,
                 title: 'Request recorded-session classifier',
             },
@@ -1612,13 +1600,11 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'driver_action',
-                        subscriber: 'baseline_collection',
                         status: 'complete' as const,
                         title: 'Collect a clean baseline lap',
                     },
                     {
                         type: 'frontend_request',
-                        subscriber: 'live_recorded_analysis',
                         status: 'pending',
                         title: 'Request recorded-session classifier',
                         payload: { force: false },
@@ -1714,13 +1700,11 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'driver_action',
-                        subscriber: 'baseline_collection',
                         status: 'complete',
                         title: 'Collect a clean baseline lap',
                     },
                     {
                         type: 'frontend_request',
-                        subscriber: 'live_recorded_analysis',
                         status: 'pending',
                         title: 'Request recorded-session classifier',
                         payload: { force: false },

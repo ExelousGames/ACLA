@@ -32,6 +32,7 @@ import {
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
     type ProcedurePlan,
+    type ProcedurePlanRequest,
 } from './ai-chat-plan';
 import {
     BaselineCollectionTracker,
@@ -69,6 +70,7 @@ interface Message {
     kind?: MessageKind;
     /** Tool-call metadata when kind === 'tool'. */
     tool?: {
+        runId?: string;
         name: string;
         title: string;
         status: 'started' | 'completed';
@@ -98,7 +100,6 @@ const formatClock = (d: Date) =>
 const getProcedurePlanRequestMeta = (request: ProcedurePlan['requests'][number]): string => {
     const parts = [
         request.type,
-        request.subscriber,
         request.status,
     ].filter((part): part is string => Boolean(part));
     return parts.join(' · ');
@@ -172,6 +173,23 @@ const getContextDescription = (sessionMode: AiChatSessionMode): string => {
 
 const createClientSessionId = (prefix: string): string =>
     `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+);
+
+const getPlanToolArguments = (request: ProcedurePlanRequest): Record<string, unknown> => {
+    if (!isRecord(request.payload)) return {};
+    const nested = request.payload.arguments || request.payload.args || request.payload.parameters;
+    return isRecord(nested)
+        ? nested
+        : request.payload;
+};
+
+const getPlanToolRunKey = (
+    plan: ProcedurePlan,
+    request: ProcedurePlanRequest,
+): string => `${plan.currentStep}:${request.name || ''}:${JSON.stringify(request.payload ?? null)}`;
 
 const getAgentDisplayName = (agentMode?: AgentSessionMode | null): string => {
     if (agentMode === 'track_guide') return 'Track Guide';
@@ -294,6 +312,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
+    const planToolRunsRef = useRef<Set<string>>(new Set());
 
     useEffect(() => {
         activeAgentSessionRef.current = activeAgentSession;
@@ -412,6 +431,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, []);
 
     const setProcedurePlan = useCallback((plan: ProcedurePlan | null) => {
+        if (!plan || isProcedurePlanStartEvent(plan.sourceEvent)) {
+            planToolRunsRef.current.clear();
+        }
         procedurePlanRef.current = plan;
         setProcedurePlanState(plan);
     }, []);
@@ -430,6 +452,29 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const clearProcedurePlan = useCallback(() => {
         setProcedurePlan(null);
+    }, [setProcedurePlan]);
+
+    const setProcedurePlanRequestStatus = useCallback((
+        index: number,
+        status: ProcedurePlanRequest['status'],
+        detail?: string,
+    ) => {
+        const current = procedurePlanRef.current;
+        if (!current || !current.requests[index]) return;
+
+        const next: ProcedurePlan = {
+            ...current,
+            requests: current.requests.map((request, requestIndex) => (
+                requestIndex === index
+                    ? {
+                        ...request,
+                        status,
+                        detail: detail ?? request.detail,
+                    }
+                    : request
+            )),
+        };
+        setProcedurePlan(next);
     }, [setProcedurePlan]);
 
     const optOutProcedurePlan = useCallback(() => {
@@ -513,7 +558,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 if (event.status === 'completed') {
                     for (let i = prev.length - 1; i >= 0; i--) {
                         const m = prev[i];
-                        if (m.kind === 'tool' && m.tool?.name === event.name && m.tool?.status === 'started') {
+                        const matchesRun = event.runId
+                            ? m.tool?.runId === event.runId
+                            : m.tool?.name === event.name;
+                        if (m.kind === 'tool' && matchesRun && m.tool?.status === 'started') {
                             const next = prev.slice();
                             next[i] = {
                                 ...m,
@@ -535,6 +583,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     timestamp: new Date(),
                     kind: 'tool',
                     tool: {
+                        runId: event.runId,
                         name: event.name,
                         title: event.title,
                         status: event.status,
@@ -1095,7 +1144,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 getCircuitMapById,
                 getCircuitMapByTrack,
                 displayMap: displayMapInChat,
-            }, {}, { sendObservation: agentVoiceConversation.sendObservation });
+            }, {}, {
+                sendObservation: agentVoiceConversation.sendObservation,
+                sendToolOutput: () => undefined,
+            });
         }, 0);
     }, [
         activeAgentSession,
@@ -1148,6 +1200,60 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const micDisabled = activeVoiceConversation.micDisabled;
     const canOpenFloatingChat = typeof window !== 'undefined'
         && Boolean((window as any).electronAPI?.openFloatingChat);
+
+    useEffect(() => {
+        if (!procedurePlan) return;
+        const request = procedurePlan.requests[procedurePlan.currentStep];
+        if (!request || request.type !== 'tool_call' || !request.name) return;
+        if (request.status === 'complete' || request.status === 'failed' || request.status === 'skipped') return;
+        if (activeVoiceConversation.state !== 'listening' && activeVoiceConversation.state !== 'speaking') return;
+
+        const runKey = getPlanToolRunKey(procedurePlan, request);
+        if (planToolRunsRef.current.has(runKey)) return;
+        planToolRunsRef.current.add(runKey);
+
+        const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        const requestIndex = procedurePlan.currentStep;
+        setProcedurePlanRequestStatus(requestIndex, 'running');
+
+        activeVoiceConversation.executeToolCall({
+            id: runId,
+            name: request.name,
+            title: request.title,
+            arguments: getPlanToolArguments(request),
+        }).then((result) => {
+            if (!result) {
+                planToolRunsRef.current.delete(runKey);
+                setProcedurePlanRequestStatus(
+                    requestIndex,
+                    'blocked',
+                    'Start the active AI session before running this tool.',
+                );
+                return;
+            }
+            if (!result.ok) {
+                setProcedurePlanRequestStatus(
+                    requestIndex,
+                    'failed',
+                    result.error || 'Tool failed.',
+                );
+                return;
+            }
+            advanceProcedurePlanStep(`tool ${request.name} completed`);
+        }).catch((error) => {
+            setProcedurePlanRequestStatus(
+                requestIndex,
+                'failed',
+                (error as Error)?.message || 'Tool failed.',
+            );
+        });
+    }, [
+        activeVoiceConversation,
+        activeVoiceConversation.state,
+        advanceProcedurePlanStep,
+        procedurePlan,
+        setProcedurePlanRequestStatus,
+    ]);
 
     useEffect(() => {
         if (sessionMode === 'live') {

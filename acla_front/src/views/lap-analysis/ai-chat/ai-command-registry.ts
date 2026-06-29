@@ -783,7 +783,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
     {
         name: 'set_procedure_plan',
-        description: 'Create or replace the visible procedure plan UI with an AI-authored list of requests.',
+        description: 'Create or replace the visible procedure plan UI with an AI-authored list of requests. Requests with type "tool_call" and a name are executed through the active AI session subscription.',
         properties: {
             goal: {
                 type: 'string',
@@ -803,30 +803,16 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
                         title: { type: 'string' },
                         name: {
                             type: 'string',
-                            description: 'Tool name for tool_call requests.',
-                        },
-                        subscriber: {
-                            type: 'string',
-                            description: 'Frontend subscriber that can complete this request, such as driver, live_recorded_analysis, or another registered component.',
+                            description: 'Tool name for tool_call requests. The active AI session subscribes to this tool run and receives the final result.',
                         },
                         status: {
                             type: 'string',
                             enum: ['pending', 'running', 'complete', 'blocked', 'failed', 'skipped'],
                         },
                         detail: { type: 'string' },
-                        result_visibility: {
-                            type: 'string',
-                            enum: ['ai', 'tag'],
-                            description: 'Use ai when the assistant needs the tool result. Use tag for UI-only/side-effect tools.',
-                        },
-                        output: {
-                            type: 'string',
-                            enum: ['ai', 'tag'],
-                            description: 'Alias for result_visibility.',
-                        },
                         payload: {
                             type: 'object',
-                            description: 'Tool arguments for tool_call requests, or an object containing arguments/args/parameters.',
+                            description: 'Tool arguments for tool_call requests, optionally wrapped in arguments, args, or parameters.',
                         },
                     },
                     required: ['type', 'title'],
