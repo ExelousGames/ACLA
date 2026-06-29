@@ -1,7 +1,6 @@
 import { render } from '@testing-library/react';
 import {
     BaselineCollectionTracker,
-    BASELINE_PROGRESS_MESSAGE_ID,
     type BaselineCollectionTag,
     type BaselineLapRecord,
 } from '../BaselineCollectionTracker';
@@ -19,7 +18,6 @@ describe('BaselineCollectionTracker', () => {
     it('keeps completed baseline progress and cached rows when live telemetry pauses', () => {
         const tags: Array<BaselineCollectionTag | null> = [];
         const records: Array<BaselineLapRecord | null> = [];
-        let messages: any[] = [];
 
         const props = {
             enabled: true,
@@ -27,9 +25,6 @@ describe('BaselineCollectionTracker', () => {
             sessionMode: 'live' as const,
             onTagChange: (tag: BaselineCollectionTag | null) => tags.push(tag),
             onLapRecordChange: (record: BaselineLapRecord | null) => records.push(record),
-            updateAgentMessages: (updater: (messages: any[]) => any[]) => {
-                messages = updater(messages);
-            },
         };
 
         const { rerender } = render(<BaselineCollectionTracker {...props} />);
@@ -57,15 +52,10 @@ describe('BaselineCollectionTracker', () => {
 
         rerender(<BaselineCollectionTracker {...props} liveData={null} />);
 
-        const progressMessage = messages.find((message) => message.id === BASELINE_PROGRESS_MESSAGE_ID);
         expect(tags.at(-1)).toMatchObject({
             ready: true,
             progress_percent: 100,
             status: 'complete',
-        });
-        expect(progressMessage?.progress).toMatchObject({
-            value: 100,
-            detail: 'Baseline complete. Classifier request is ready.',
         });
         expect(records.filter(Boolean).at(-1)).toBe(completedRecord);
     });
@@ -73,7 +63,6 @@ describe('BaselineCollectionTracker', () => {
     it('completes the cached baseline when position wraps even before lap counter advances', () => {
         const tags: Array<BaselineCollectionTag | null> = [];
         const records: Array<BaselineLapRecord | null> = [];
-        let messages: any[] = [];
 
         const props = {
             enabled: true,
@@ -81,9 +70,6 @@ describe('BaselineCollectionTracker', () => {
             sessionMode: 'live' as const,
             onTagChange: (tag: BaselineCollectionTag | null) => tags.push(tag),
             onLapRecordChange: (record: BaselineLapRecord | null) => records.push(record),
-            updateAgentMessages: (updater: (messages: any[]) => any[]) => {
-                messages = updater(messages);
-            },
         };
 
         const { rerender } = render(<BaselineCollectionTracker {...props} />);
@@ -100,6 +86,5 @@ describe('BaselineCollectionTracker', () => {
             progress_percent: 100,
             status: 'complete',
         });
-        expect(messages.find((message) => message.id === BASELINE_PROGRESS_MESSAGE_ID)?.progress?.value).toBe(100);
     });
 });

@@ -181,6 +181,10 @@ const LIVE_ANALYST_MIN_INTERVAL_SECONDS = 2;
 const LIVE_ANALYST_MAX_INTERVAL_SECONDS = 12;
 const LIVE_RECORDED_ANALYSIS_TIMEOUT_MS = 120000;
 const LIVE_RECORDED_ANALYSIS_ENDPOINT = '/racing-session/analyze-live-recorded-analysis';
+const BASELINE_COLLECTION_TOOL_POLL_MS = 250;
+const DEFAULT_BASELINE_COLLECTION_TIMEOUT_SECONDS = 600;
+const MIN_BASELINE_COLLECTION_TIMEOUT_SECONDS = 30;
+const MAX_BASELINE_COLLECTION_TIMEOUT_SECONDS = 900;
 
 const toPositiveNumber = (value: unknown): number | undefined => {
     const parsed = Number(value);
@@ -552,11 +556,6 @@ const buildRecordedSessionContext = (
     };
 };
 
-const getSelectedSessionId = (context: AiCommandRegistryContext): string | null => {
-    const selectedSession = getSelectedRecordedSession(context);
-    return selectedSession?.SessionId || context.sessionId || null;
-};
-
 const normalizeAgentSessionMode = (value: unknown): AgentSessionMode | null => (
     value === 'track_guide'
     || value === 'overtake'
@@ -744,6 +743,17 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
             limit: {
                 type: 'integer',
                 description: 'Maximum number of compact classifications to return.',
+            },
+        },
+        required: [],
+    },
+    {
+        name: 'collect_live_baseline',
+        description: 'Collect one complete live baseline lap through the dedicated baseline UI component and return the cached baseline lap record when complete.',
+        properties: {
+            timeout_seconds: {
+                type: 'integer',
+                description: 'Maximum time to wait for the baseline lap to complete. Defaults to 600 seconds.',
             },
         },
         required: [],
@@ -975,6 +985,7 @@ const LIVE_TOOL_NAMES = [
     'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
+    'collect_live_baseline',
     'analyze_live_recorded_analysis',
     'get_next_corner',
     'query_telemetry_metric',
@@ -1103,18 +1114,105 @@ const buildLiveAnalystPlanError = (
     message,
 });
 
-const buildProcedurePlanStepError = (
-    error: string,
-    message: string,
-    snapshot?: Record<string, any> | null,
-    tag?: BaselineCollectionTag,
+const buildBaselineCollectionToolPayload = (
+    tag: BaselineCollectionTag | null,
+    record: BaselineLapRecord | null,
 ) => ({
-    status: 'error',
-    error,
-    ...(snapshot ? { snapshot } : {}),
-    ...(tag ? { tag } : {}),
-    message,
+    status: record ? 'complete' : tag?.status ?? 'waiting_for_start',
+    source: 'baseline_collection',
+    agent_mode: 'live_performance_analyst',
+    ready: Boolean(record),
+    progress_percent: record ? 100 : tag?.progress_percent ?? 0,
+    detail: record
+        ? 'Baseline complete. Cached lap record is ready.'
+        : tag?.detail ?? 'Waiting for baseline collection to start.',
+    snapshot: record?.snapshot ?? tag?.snapshot ?? null,
+    baseline: record
+        ? {
+            id: record.id,
+            lap: record.lap,
+            track: record.track,
+            car: record.car,
+            sample_count: record.sample_count,
+            captured_at: record.captured_at,
+        }
+        : null,
 });
+
+const getBaselineCollectionTimeoutMs = (args: Record<string, any>): number => {
+    const seconds = toPositiveNumber(args.timeout_seconds) ?? DEFAULT_BASELINE_COLLECTION_TIMEOUT_SECONDS;
+    return Math.min(
+        MAX_BASELINE_COLLECTION_TIMEOUT_SECONDS,
+        Math.max(MIN_BASELINE_COLLECTION_TIMEOUT_SECONDS, seconds),
+    ) * 1000;
+};
+
+const getBaselineCollectionToolPayload = (context: AiCommandRegistryContext) => (
+    buildBaselineCollectionToolPayload(
+        context.getBaselineCollectionTag?.() ?? null,
+        getCachedBaselineLapRecord(context),
+    )
+);
+
+const collectBaselineLapThroughComponent = async (
+    context: AiCommandRegistryContext,
+    args: Record<string, any>,
+    ctx: ToolHandlerContext,
+) => {
+    const unavailable = buildLiveAnalystUnavailable(context);
+    if (unavailable) return unavailable;
+
+    context.setLivePerformanceAnalystEnabled?.(true);
+    context.setAgentTagActive?.('Live Analyst', true);
+
+    const initial = getBaselineCollectionToolPayload(context);
+    if (initial.status === 'complete') {
+        ctx.sendToolOutput?.(initial, { final: true });
+        return initial;
+    }
+
+    const timeoutMs = getBaselineCollectionTimeoutMs(args);
+    const startedAt = Date.now();
+    let lastProgressKey = '';
+
+    return new Promise((resolve) => {
+        const intervalId = setInterval(() => {
+            const payload = getBaselineCollectionToolPayload(context);
+            const progressKey = [
+                payload.status,
+                payload.progress_percent,
+                payload.detail,
+                payload.baseline ? (payload.baseline as Record<string, unknown>).id : '',
+            ].join(':');
+
+            if (payload.status === 'complete') {
+                clearInterval(intervalId);
+                ctx.sendToolOutput?.(payload, { final: true });
+                resolve(payload);
+                return;
+            }
+
+            if (progressKey !== lastProgressKey) {
+                lastProgressKey = progressKey;
+                ctx.sendToolOutput?.(payload);
+            }
+
+            if (Date.now() - startedAt >= timeoutMs) {
+                clearInterval(intervalId);
+                const timeoutPayload = {
+                    status: 'error',
+                    error: 'baseline_collection_timeout',
+                    source: 'baseline_collection',
+                    agent_mode: 'live_performance_analyst',
+                    progress: payload,
+                    message: 'Baseline collection did not complete before the tool timeout.',
+                };
+                ctx.sendToolOutput?.(timeoutPayload, { final: true });
+                resolve(timeoutPayload);
+            }
+        }, BASELINE_COLLECTION_TOOL_POLL_MS);
+    });
+};
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
     args.session_id ||
@@ -1536,6 +1634,10 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             agent_mode: 'live_performance_analyst',
             history: context.sessionIntelligence!.getSectionHistory(limit),
         };
+    },
+
+    async collect_live_baseline(args, ctx) {
+        return collectBaselineLapThroughComponent(context, args, ctx);
     },
 
     async analyze_live_recorded_analysis(args) {

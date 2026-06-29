@@ -57,7 +57,17 @@ function extractEmotion(text: string): { emotion: Emotion | null; cleanText: str
     return { emotion: null, cleanText: text };
 }
 
-type MessageKind = 'chat' | 'tool' | 'progress';
+const formatToolDebugResult = (result: unknown): string | null => {
+    if (result === undefined) return null;
+    try {
+        const json = JSON.stringify(result, null, 2);
+        return json.length > 4000 ? `${json.slice(0, 4000)}\n... truncated` : json;
+    } catch {
+        return String(result);
+    }
+};
+
+type MessageKind = 'chat' | 'tool';
 
 interface Message {
     id: string;
@@ -76,15 +86,9 @@ interface Message {
         status: 'started' | 'completed';
         ok?: boolean;
         error?: string | null;
+        result?: unknown;
     };
     mapDisplay?: AiMapDisplayPayload;
-    progress?: {
-        label: string;
-        value: number;
-        detail?: string;
-        startMarkerLabel?: string;
-        startMarkerValue?: number;
-    };
 }
 
 
@@ -250,6 +254,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
     const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlan | null>(null);
+    const [baselineCollectionTag, setBaselineCollectionTag] = useState<BaselineCollectionTag | null>(null);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
@@ -402,6 +407,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const handleBaselineCollectionTagChange = useCallback((tag: BaselineCollectionTag | null) => {
         baselineCollectionTagRef.current = tag;
+        setBaselineCollectionTag(tag);
     }, []);
 
     const getBaselineCollectionTag = useCallback(() => baselineCollectionTagRef.current, []);
@@ -411,12 +417,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, []);
 
     const getBaselineLapRecord = useCallback(() => baselineLapRecordRef.current, []);
-
-    const updateBaselineAgentMessages = useCallback((
-        updater: (messages: any[]) => any[],
-    ) => {
-        setAgentMessages(prev => updater(prev) as Message[]);
-    }, []);
 
     const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
         if (!enabled) {
@@ -551,6 +551,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 title: event.title,
                 status: event.status,
                 arguments: event.arguments,
+                result: event.result,
                 ok: event.ok,
                 error: event.error,
             });
@@ -570,6 +571,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                     status: 'completed',
                                     ok: event.ok,
                                     error: event.error ?? null,
+                                    result: event.result,
                                 },
                             };
                             return next;
@@ -589,6 +591,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         status: event.status,
                         ok: event.ok,
                         error: event.error ?? null,
+                        result: event.result,
                     },
                 });
             });
@@ -1677,7 +1680,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 sessionMode={sessionMode}
                 onTagChange={handleBaselineCollectionTagChange}
                 onLapRecordChange={handleBaselineLapRecordChange}
-                updateAgentMessages={updateBaselineAgentMessages}
             />
             <div className="ai-chat__grid-bg" aria-hidden="true" />
 
@@ -1883,6 +1885,30 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         <span className="ai-chat__transcript-time">{clock}</span>
                     </div>
 
+                    {livePerformanceAnalystEnabled && baselineCollectionTag && (
+                        <div className="ai-chat__baseline-progress" aria-label="Baseline collection progress">
+                            <div className="ai-chat__baseline-progress-head">
+                                <span>BASELINE</span>
+                                <span>{Math.round(baselineCollectionTag.progress_percent)}%</span>
+                            </div>
+                            <div
+                                className="ai-chat__baseline-progress-track"
+                                role="progressbar"
+                                aria-valuenow={Math.round(baselineCollectionTag.progress_percent)}
+                                aria-valuemin={0}
+                                aria-valuemax={100}
+                            >
+                                <div
+                                    className="ai-chat__baseline-progress-fill"
+                                    style={{ width: `${Math.round(baselineCollectionTag.progress_percent)}%` }}
+                                />
+                            </div>
+                            <div className="ai-chat__baseline-progress-detail">
+                                {baselineCollectionTag.detail}
+                            </div>
+                        </div>
+                    )}
+
                     {procedurePlan && (
                         <div className="ai-chat__plan" aria-label="Procedure plan">
                             <div className="ai-chat__plan-head">
@@ -1933,36 +1959,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
                         {messages.map((message) => {
-                            if (message.kind === 'progress' && message.progress) {
-                                const progress = Math.round(message.progress.value);
-                                const startMarkerValue = Math.max(0, Math.min(100, Number(message.progress.startMarkerValue ?? 0)));
-                                return (
-                                    <div key={message.id} className="ai-chat__progress">
-                                        <div className="ai-chat__progress-head">
-                                            <span>{message.progress.label}</span>
-                                            <span>{progress}%</span>
-                                        </div>
-                                        <div
-                                            className="ai-chat__progress-track"
-                                            role="progressbar"
-                                            aria-valuenow={progress}
-                                            aria-valuemin={0}
-                                            aria-valuemax={100}
-                                        >
-                                            <div className="ai-chat__progress-fill" style={{ width: `${progress}%` }} />
-                                            {message.progress.startMarkerLabel && (
-                                                <div className="ai-chat__progress-marker" style={{ left: `${startMarkerValue}%` }}>
-                                                    <span>{message.progress.startMarkerLabel}</span>
-                                                </div>
-                                            )}
-                                        </div>
-                                        {message.progress.detail && (
-                                            <div className="ai-chat__progress-detail">{message.progress.detail}</div>
-                                        )}
-                                    </div>
-                                );
-                            }
-
                             // Tool-call messages
                             if (message.kind === 'tool' && message.tool) {
                                 const t = message.tool;
@@ -1971,6 +1967,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                 const mod = isError ? 'ai-chat__tool--error'
                                     : isRunning ? 'ai-chat__tool--running'
                                     : 'ai-chat__tool--ok';
+                                const debugResult = debugMode ? formatToolDebugResult(t.result) : null;
                                 return (
                                     <div key={message.id}>
                                         <div className={`ai-chat__tool ${mod}`}>
@@ -1989,6 +1986,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                         )}
                                         {debugMode && (
                                             <div className="ai-chat__tool-detail">{t.name}</div>
+                                        )}
+                                        {debugResult && (
+                                            <pre className="ai-chat__tool-result">{debugResult}</pre>
                                         )}
                                     </div>
                                 );

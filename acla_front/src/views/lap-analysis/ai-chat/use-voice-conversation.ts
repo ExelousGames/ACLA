@@ -72,6 +72,7 @@ export type VoiceEvent =
         title: string;
         status: 'started' | 'completed';
         arguments?: Record<string, unknown>;
+        result?: unknown;
         ok?: boolean;
         error?: string | null;
     };
@@ -217,6 +218,12 @@ const toToolResultPayload = (result: unknown): Record<string, unknown> => (
 const defaultToolRunId = () =>
     `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
+// Backend tool events describe server-side orchestration. The transcript only
+// surfaces frontend tool execution events emitted by executeSubscribedFrontendTool.
+export const mapBackendToolEventForUi = (_parsed: unknown): VoiceEvent | null => {
+    return null;
+};
+
 export const executeSubscribedFrontendTool = async ({
     call,
     handlers,
@@ -283,6 +290,7 @@ export const executeSubscribedFrontendTool = async ({
             name,
             title,
             status: 'completed',
+            result,
             ok: true,
             error: null,
         });
@@ -717,19 +725,9 @@ export function useVoiceConversation(
                             }
                         }
                     } else if (parsed?.type === 'tool_event') {
-                        const name = String(parsed.name || '');
-                        if (name) {
-                            onEventRef.current?.({
-                                kind: 'tool_event',
-                                name,
-                                title: String(parsed.title || name),
-                                status: parsed.status === 'completed' ? 'completed' : 'started',
-                                arguments: parsed.arguments && typeof parsed.arguments === 'object'
-                                    ? parsed.arguments
-                                    : undefined,
-                                ok: typeof parsed.ok === 'boolean' ? parsed.ok : undefined,
-                                error: typeof parsed.error === 'string' ? parsed.error : null,
-                            });
+                        const backendToolEvent = mapBackendToolEventForUi(parsed);
+                        if (backendToolEvent) {
+                            onEventRef.current?.(backendToolEvent);
                         }
                     } else if (parsed?.type === 'error') {
                         // Backend explicit error (e.g. pipecat / faster-whisper

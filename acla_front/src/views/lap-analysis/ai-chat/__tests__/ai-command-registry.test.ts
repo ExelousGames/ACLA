@@ -698,6 +698,7 @@ describe('ai command registry live performance analyst tools', () => {
             'get_live_session_snapshot',
             'get_live_focus_section',
             'get_live_section_history',
+            'collect_live_baseline',
             'advance_plan_step',
             'set_procedure_plan',
             'clear_procedure_plan',
@@ -722,6 +723,40 @@ describe('ai command registry live performance analyst tools', () => {
             'set_procedure_plan',
             'clear_procedure_plan',
         ]));
+    });
+
+    it('collects baseline through the subscribed tool result channel', async () => {
+        const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry();
+        const sendToolOutput = jest.fn();
+
+        const result = await registry.collect_live_baseline(
+            {},
+            { sendObservation: jest.fn(), sendToolOutput },
+        );
+
+        expect(result).toMatchObject({
+            status: 'complete',
+            source: 'baseline_collection',
+            agent_mode: 'live_performance_analyst',
+            ready: true,
+            progress_percent: 100,
+            baseline: {
+                id: expect.any(String),
+                lap: 0,
+                track: 'brands_hatch',
+                car: 'Ferrari 296',
+                sample_count: expect.any(Number),
+            },
+        });
+        expect(livePerformanceAnalystState.enabled).toBe(true);
+        expect(sendToolOutput).toHaveBeenCalledWith(
+            expect.objectContaining({
+                status: 'complete',
+                source: 'baseline_collection',
+                ready: true,
+            }),
+            { final: true },
+        );
     });
 
     it('starts every live agent through the generic child agent session tool', async () => {
@@ -1130,15 +1165,17 @@ describe('ai command registry live performance analyst tools', () => {
                 goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
                 requests: [
                     {
-                        type: 'driver_action',
+                        type: 'tool_call',
                         status: 'pending',
                         title: 'Collect a clean baseline lap',
+                        name: 'collect_live_baseline',
                         detail: 'Complete one full lap before requesting classifier analysis.',
                     },
                     {
-                        type: 'frontend_request',
+                        type: 'tool_call',
                         status: 'pending',
                         title: 'Request recorded-session classifier',
+                        name: 'analyze_live_recorded_analysis',
                     },
                 ],
                 currentStep: 0,
@@ -1469,9 +1506,10 @@ describe('ai command registry live performance analyst tools', () => {
             status: 'advanced',
             current_request: 1,
             request: {
-                type: 'frontend_request',
+                type: 'tool_call',
                 status: 'complete' as const,
                 title: 'Request recorded-session classifier',
+                name: 'analyze_live_recorded_analysis',
             },
         }));
         const planRegistry = createAiCommandRegistry({
@@ -1498,14 +1536,16 @@ describe('ai command registry live performance analyst tools', () => {
                 goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
                 requests: [
                     {
-                        type: 'driver_action',
+                        type: 'tool_call',
                         status: 'complete',
                         title: 'Collect a clean baseline lap',
+                        name: 'collect_live_baseline',
                     },
                     {
-                        type: 'frontend_request',
+                        type: 'tool_call',
                         status: 'pending',
                         title: 'Request recorded-session classifier',
+                        name: 'analyze_live_recorded_analysis',
                         payload: { force: false },
                     },
                 ],
@@ -1584,9 +1624,10 @@ describe('ai command registry live performance analyst tools', () => {
             status: 'complete',
             current_request: 1,
             request: {
-                type: 'frontend_request',
+                type: 'tool_call',
                 status: 'complete' as const,
                 title: 'Request recorded-session classifier',
+                name: 'analyze_live_recorded_analysis',
             },
         }));
         const {
@@ -1599,14 +1640,16 @@ describe('ai command registry live performance analyst tools', () => {
                 goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
                 requests: [
                     {
-                        type: 'driver_action',
+                        type: 'tool_call',
                         status: 'complete' as const,
                         title: 'Collect a clean baseline lap',
+                        name: 'collect_live_baseline',
                     },
                     {
-                        type: 'frontend_request',
+                        type: 'tool_call',
                         status: 'pending',
                         title: 'Request recorded-session classifier',
+                        name: 'analyze_live_recorded_analysis',
                         payload: { force: false },
                     },
                 ],
@@ -1699,14 +1742,16 @@ describe('ai command registry live performance analyst tools', () => {
                 goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
                 requests: [
                     {
-                        type: 'driver_action',
+                        type: 'tool_call',
                         status: 'complete',
                         title: 'Collect a clean baseline lap',
+                        name: 'collect_live_baseline',
                     },
                     {
-                        type: 'frontend_request',
+                        type: 'tool_call',
                         status: 'pending',
                         title: 'Request recorded-session classifier',
+                        name: 'analyze_live_recorded_analysis',
                         payload: { force: false },
                     },
                 ],

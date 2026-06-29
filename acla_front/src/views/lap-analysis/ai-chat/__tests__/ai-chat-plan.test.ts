@@ -62,8 +62,9 @@ describe('buildProcedurePlan', () => {
                     title: 'Provide an input sample',
                 },
                 {
-                    type: 'frontend_request',
+                    type: 'tool_call',
                     title: 'Run workflow worker',
+                    name: 'run_workflow_worker',
                     payload: { force: false },
                 },
             ],
@@ -76,8 +77,9 @@ describe('buildProcedurePlan', () => {
                     status: 'pending',
                 },
                 {
-                    type: 'frontend_request',
+                    type: 'tool_call',
                     title: 'Run workflow worker',
+                    name: 'run_workflow_worker',
                     status: 'pending',
                     payload: { force: false },
                 },
@@ -92,13 +94,15 @@ describe('buildProcedurePlan', () => {
             goal: 'Run live analysis from a clean baseline.',
             requests: [
                 {
-                    type: 'driver_action',
+                    type: 'tool_call',
                     title: 'Collect a clean baseline lap',
+                    name: 'collect_live_baseline',
                     status: 'complete',
                 },
                 {
-                    type: 'frontend_request',
+                    type: 'tool_call',
                     title: 'Request recorded-session classifier',
+                    name: 'analyze_live_recorded_analysis',
                 },
             ],
         })).toMatchObject({
@@ -106,10 +110,12 @@ describe('buildProcedurePlan', () => {
             requests: [
                 {
                     title: 'Collect a clean baseline lap',
+                    name: 'collect_live_baseline',
                     status: 'complete',
                 },
                 {
                     title: 'Request recorded-session classifier',
+                    name: 'analyze_live_recorded_analysis',
                     status: 'pending',
                 },
             ],
@@ -123,12 +129,14 @@ describe('buildProcedurePlan', () => {
             current_request: 1,
             requests: [
                 {
-                    type: 'driver_action',
+                    type: 'tool_call',
                     title: 'Collect a clean baseline lap',
+                    name: 'collect_live_baseline',
                 },
                 {
-                    type: 'frontend_request',
+                    type: 'tool_call',
                     title: 'Request recorded-session classifier',
+                    name: 'analyze_live_recorded_analysis',
                 },
             ],
         })).toMatchObject({
@@ -136,10 +144,12 @@ describe('buildProcedurePlan', () => {
             requests: [
                 {
                     title: 'Collect a clean baseline lap',
+                    name: 'collect_live_baseline',
                     status: 'complete',
                 },
                 {
                     title: 'Request recorded-session classifier',
+                    name: 'analyze_live_recorded_analysis',
                     status: 'pending',
                 },
             ],
@@ -194,7 +204,7 @@ describe('buildProcedurePlan', () => {
         })).toBeNull();
     });
 
-    it('accepts AI-authored request lists without frontend subscribers', () => {
+    it('accepts AI-authored request lists without channel hints', () => {
         expect(buildProcedurePlan({
             event: 'procedure_plan_started',
             goal: 'Complete the next task.',
@@ -210,7 +220,7 @@ describe('buildProcedurePlan', () => {
         });
     });
 
-    it('removes legacy subscriber and output visibility fields from requests', () => {
+    it('keeps unsupported output visibility fields out of requests', () => {
         const request = buildProcedurePlan({
             event: 'procedure_plan_started',
             goal: 'Run one tool.',
@@ -219,7 +229,6 @@ describe('buildProcedurePlan', () => {
                     type: 'tool_call',
                     title: 'Read context',
                     name: 'get_recorded_session_context',
-                    subscriber: 'legacy_worker',
                     result_visibility: 'tag',
                     output: 'tag',
                 },
@@ -232,7 +241,6 @@ describe('buildProcedurePlan', () => {
             name: 'get_recorded_session_context',
             status: 'pending',
         });
-        expect(request).not.toHaveProperty('subscriber');
         expect(request).not.toHaveProperty('result_visibility');
         expect(request).not.toHaveProperty('output');
     });
@@ -262,8 +270,8 @@ describe('advanceProcedurePlan', () => {
             goal: 'Complete a delegated task.',
             currentStep: 0,
             requests: [
-                { type: 'driver_action', title: 'Collect a clean baseline lap', status: 'pending' },
-                { type: 'frontend_request', title: 'Analyze the baseline', status: 'pending' },
+                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'pending' },
+                { type: 'tool_call', title: 'Analyze the baseline', status: 'pending' },
             ],
         }, 'baseline complete');
 
@@ -287,8 +295,8 @@ describe('advanceProcedurePlan', () => {
             goal: 'Complete a delegated task.',
             currentStep: 0,
             requests: [
-                { type: 'driver_action', title: 'Collect a clean baseline lap', status: 'complete' },
-                { type: 'frontend_request', title: 'Analyze the baseline', status: 'complete' },
+                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'complete' },
+                { type: 'tool_call', title: 'Analyze the baseline', status: 'complete' },
                 { type: 'driver_action', title: 'Run the next lap', status: 'pending' },
             ],
         });
@@ -312,7 +320,7 @@ describe('advanceProcedurePlan', () => {
             goal: 'Complete a delegated task.',
             currentStep: 1,
             requests: [
-                { type: 'driver_action', title: 'Collect a clean baseline lap', status: 'complete' },
+                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'complete' },
                 { type: 'driver_action', title: 'Run the next lap', status: 'pending' },
             ],
         });

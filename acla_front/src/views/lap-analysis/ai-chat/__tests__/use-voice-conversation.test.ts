@@ -2,6 +2,7 @@ import {
     buildVoiceSessionMetadata,
     executeSubscribedFrontendTool,
     extractInlineFunctionCalls,
+    mapBackendToolEventForUi,
 } from '../use-voice-conversation';
 
 describe('buildVoiceSessionMetadata', () => {
@@ -88,7 +89,17 @@ describe('executeSubscribedFrontendTool', () => {
         expect(result).toMatchObject({ id: 'tool-1', name: 'read_context', ok: true });
         expect(events).toMatchObject([
             { kind: 'tool_event', runId: 'tool-1', name: 'read_context', status: 'started' },
-            { kind: 'tool_event', runId: 'tool-1', name: 'read_context', status: 'completed', ok: true },
+            {
+                kind: 'tool_event',
+                runId: 'tool-1',
+                name: 'read_context',
+                status: 'completed',
+                ok: true,
+                result: {
+                    status: 'ready',
+                    args: { session_id: 's1' },
+                },
+            },
         ]);
         expect(frames).toContainEqual({
             type: 'observation',
@@ -185,5 +196,16 @@ describe('executeSubscribedFrontendTool', () => {
             id: 'plan-1',
             result: { status: 'displayed' },
         });
+    });
+});
+
+describe('mapBackendToolEventForUi', () => {
+    it('keeps backend tool status frames out of the visible transcript', () => {
+        expect(mapBackendToolEventForUi({
+            type: 'tool_event',
+            name: 'query_telemetry_metric',
+            title: 'Querying telemetry',
+            status: 'started',
+        })).toBeNull();
     });
 });

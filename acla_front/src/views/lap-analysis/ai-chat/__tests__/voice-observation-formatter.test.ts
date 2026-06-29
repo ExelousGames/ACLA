@@ -17,17 +17,6 @@ describe('formatObservationForLlm', () => {
                 live_session_type: 'solo_practice',
             },
         });
-        const collectingMsg = formatObservationForLlm({
-            source: 'live_performance_analyst',
-            agent_mode: 'live_performance_analyst',
-            event: 'collecting_baseline',
-            snapshot: {
-                track: 'brands_hatch',
-                current_lap: 1,
-                completed_laps: 0,
-                live_session_type: 'solo_practice',
-            },
-        });
         const classifierReadyMsg = formatObservationForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
@@ -84,11 +73,6 @@ describe('formatObservationForLlm', () => {
         expect(planStartedMsg).toContain('plan started');
         expect(planStartedMsg).toContain('baseline_ready=false');
         expect(planStartedMsg).not.toContain('Respond with one short');
-        expect(collectingMsg).toContain('track=brands_hatch');
-        expect(collectingMsg).toContain('completed_laps=0');
-        expect(collectingMsg).not.toContain('get_live_focus_section');
-        expect(collectingMsg).not.toContain('classify_live_section');
-        expect(collectingMsg).not.toContain('Do not');
         expect(classifierReadyMsg).toContain('baseline classifier request ready');
         expect(classifierReadyMsg).toContain('baseline_ready=true');
         expect(classifierReadyMsg).not.toContain('Respond with one short');

@@ -471,15 +471,30 @@
   margin-top: 4px;
   padding-left: 22px;
 }
+.ai-chat__tool-result {
+  max-height: 180px;
+  overflow: auto;
+  margin: 6px 0 0 22px;
+  padding: 8px;
+  border: 1px solid var(--lp-border);
+  border-radius: var(--lp-radius-sm);
+  background: rgba(5, 8, 14, 0.7);
+  color: var(--lp-gray);
+  font-family: var(--lp-mono);
+  font-size: 9px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
-.ai-chat__progress {
+.ai-chat__baseline-progress {
   padding: 10px 12px;
   border-radius: var(--lp-radius-sm);
   border: 1px solid var(--lp-border-strong);
   background: rgba(22, 22, 40, 0.62);
   font-family: var(--lp-mono);
 }
-.ai-chat__progress-head {
+.ai-chat__baseline-progress-head {
   display: flex;
   justify-content: space-between;
   gap: 12px;
@@ -488,39 +503,20 @@
   text-transform: uppercase;
   color: var(--lp-green);
 }
-.ai-chat__progress-track {
-  position: relative;
+.ai-chat__baseline-progress-track {
   margin-top: 8px;
-  margin-bottom: 18px;
   height: 8px;
   border-radius: 999px;
   background: rgba(232, 232, 240, 0.12);
+  overflow: hidden;
 }
-.ai-chat__progress-fill {
+.ai-chat__baseline-progress-fill {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--lp-green), var(--lp-blue));
   transition: width 180ms ease;
 }
-.ai-chat__progress-marker {
-  position: absolute;
-  top: -4px;
-  bottom: -4px;
-  width: 2px;
-  background: var(--lp-amber);
-  box-shadow: 0 0 8px rgba(255, 202, 40, 0.45);
-}
-.ai-chat__progress-marker span {
-  position: absolute;
-  top: 14px;
-  left: 0;
-  font-size: 8px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: var(--lp-amber);
-  white-space: nowrap;
-}
-.ai-chat__progress-detail {
+.ai-chat__baseline-progress-detail {
   margin-top: 7px;
   font-size: 9px;
   letter-spacing: 1px;

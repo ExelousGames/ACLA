@@ -46,14 +46,6 @@ export const formatObservationForLlm = (data: Record<string, unknown>): string =
             );
         }
 
-        if (event === 'collecting_baseline') {
-            return (
-                'live_performance_analyst collecting baseline: '
-                + `track=${track}, current_lap=${currentLap}, completed_laps=${completedLaps}, `
-                + `session_type=${sessionType}.`
-            );
-        }
-
         if (event === 'baseline_classifier_request_ready') {
             return (
                 'live_performance_analyst baseline classifier request ready: '
