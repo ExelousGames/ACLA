@@ -257,6 +257,63 @@ const normalizeOptionalString = (value: unknown): string | undefined => (
     typeof value === 'string' && value.trim() ? value.trim() : undefined
 );
 
+function stripTelemetryFieldToken(value: string): string {
+    let token = value.trim();
+    if (
+        (token.startsWith("'") && token.endsWith("'"))
+        || (token.startsWith('"') && token.endsWith('"'))
+    ) {
+        token = token.slice(1, -1).trim();
+    }
+    return token;
+}
+
+function parseTelemetryFieldString(value: string): string[] {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+            return normalizeTelemetryFields(parsed);
+        }
+    } catch {
+        // Accept Python-style array strings emitted by some models/tools.
+    }
+
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+        const inner = trimmed.slice(1, -1).trim();
+        if (!inner) return [];
+        return inner
+            .split(',')
+            .map(stripTelemetryFieldToken)
+            .filter(Boolean);
+    }
+
+    if (trimmed.includes(',')) {
+        return trimmed
+            .split(',')
+            .map(stripTelemetryFieldToken)
+            .filter(Boolean);
+    }
+
+    return [stripTelemetryFieldToken(trimmed)];
+}
+
+function normalizeTelemetryFields(value: unknown): string[] {
+    if (Array.isArray(value)) {
+        return value.flatMap((field) => (
+            typeof field === 'string'
+                ? parseTelemetryFieldString(field)
+                : []
+        ));
+    }
+    if (typeof value === 'string') {
+        return parseTelemetryFieldString(value);
+    }
+    return [];
+}
+
 const clampNormalizedSectionValue = (value: unknown): number | undefined => {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return undefined;
@@ -1515,7 +1572,11 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
         if (!si) return { error: 'no_live_session' };
         const allowed = new Set(['avg', 'min', 'max', 'stats']);
         const reduce = allowed.has(args.reduce) ? args.reduce : 'stats';
-        return si.query({ fields: args.fields, scope: args.scope, reduce } as any);
+        const fields = normalizeTelemetryFields(args.fields);
+        if (fields.length === 0) {
+            return { error: 'telemetry_fields_required' };
+        }
+        return si.query({ fields, scope: args.scope, reduce } as any);
     },
 
     // Server-internal: backs analyze_telemetry. Returns raw rows over the

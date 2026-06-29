@@ -148,6 +148,59 @@ describe('ai command registry user summary tools', () => {
         ))).toBe(true);
     });
 
+    it('normalizes bracketed telemetry fields and common tire/fuel aliases', async () => {
+        const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.tick({
+            Physics_fuel: 38,
+            Physics_wheel_pressure_front_left: 26.1,
+            Physics_wheel_pressure_front_right: 26.2,
+            Physics_wheel_pressure_rear_left: 25.9,
+            Physics_wheel_pressure_rear_right: 26,
+        });
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+        });
+
+        const fuelResult = await registry.query_telemetry_metric(
+            { fields: '[FuelLevel]', scope: { type: 'now' }, reduce: 'avg' },
+            { sendObservation: jest.fn() },
+        );
+        const tireResult = await registry.query_telemetry_metric(
+            {
+                fields: "['TirePressureFL', 'TirePressureFR', 'TirePressureRL', 'TirePressureRR']",
+                scope: { type: 'now' },
+                reduce: 'avg',
+            },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(fuelResult).toMatchObject({
+            status: 'complete',
+            payload: {
+                Physics_fuel: 38,
+            },
+        });
+        expect(tireResult).toMatchObject({
+            status: 'complete',
+            payload: {
+                Physics_wheel_pressure_front_left: 26.1,
+                Physics_wheel_pressure_front_right: 26.2,
+                Physics_wheel_pressure_rear_left: 25.9,
+                Physics_wheel_pressure_rear_right: 26,
+            },
+        });
+    });
+
     it('exposes a frontend schema for searching map-level user summary', () => {
         expect(frontendToolSchemas.some((tool) => tool.name === 'search_user_summary_map_level')).toBe(true);
     });

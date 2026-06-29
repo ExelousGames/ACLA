@@ -24,15 +24,34 @@ export const FIELD_GROUPS: Record<string, string[]> = {
     race_position: ['Graphics_position'],
 };
 
+const FIELD_ALIASES: Record<string, string> = {
+    fuellevel: 'Physics_fuel',
+    fuel_level: 'Physics_fuel',
+    tirepressurefl: 'Physics_wheel_pressure_front_left',
+    tirepressurefr: 'Physics_wheel_pressure_front_right',
+    tirepressurerl: 'Physics_wheel_pressure_rear_left',
+    tirepressurerr: 'Physics_wheel_pressure_rear_right',
+    tyrepressurefl: 'Physics_wheel_pressure_front_left',
+    tyrepressurefr: 'Physics_wheel_pressure_front_right',
+    tyrepressurerl: 'Physics_wheel_pressure_rear_left',
+    tyrepressurerr: 'Physics_wheel_pressure_rear_right',
+};
+
+function resolveFieldAlias(field: string): string {
+    const normalized = field.trim();
+    return FIELD_ALIASES[normalized.toLowerCase()] ?? normalized;
+}
+
 // Expand group aliases to raw field names. Unknown names passed through as-is.
 function expandFields(fields: string[]): string[] {
     const expanded: string[] = [];
     for (const f of fields) {
-        const group = FIELD_GROUPS[f];
+        const field = resolveFieldAlias(f);
+        const group = FIELD_GROUPS[field];
         if (group) {
             expanded.push(...group);
         } else {
-            expanded.push(f);
+            expanded.push(field);
         }
     }
     return Array.from(new Set(expanded));
