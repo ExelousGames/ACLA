@@ -20,6 +20,7 @@ import {
     createAiCommandRegistry,
     frontendToolSchemas,
     getFrontendToolSchemasForSessionMode,
+    startAgentRuntime,
 } from '../ai-command-registry';
 import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-analysis';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
@@ -412,6 +413,7 @@ describe('ai command registry recorded session tools', () => {
             'query_telemetry_metric',
             'get_event_log',
             'start_live_performance_analysis',
+            'stop_per_turn_coaching',
             'get_live_session_snapshot',
         ]));
     });
@@ -628,44 +630,45 @@ describe('ai command registry live performance analyst tools', () => {
             lastSpokenAt: 0,
         };
 
+        const context: AiCommandRegistryContext = {
+            sessionMode: 'live',
+            analysisContext,
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState,
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            setLivePerformanceAnalystEnabled: jest.fn((enabled) => {
+                livePerformanceAnalystState.enabled = enabled;
+            }),
+            setAgentTagActive: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            getLabelName: (labelId) => labelNames[labelId] || labelId,
+            getCategoryLabels: (category) => categories[category] ?? [],
+            ...overrides,
+        };
+
         return {
             analysisContext,
             sessionIntelligence,
             livePerformanceAnalystState,
-            registry: createAiCommandRegistry({
-                sessionMode: 'live',
-                analysisContext,
-                sessionIntelligence,
-                opportunityAgentState: {
-                    intervalId: null,
-                    inFlight: false,
-                    lastAlertKey: null,
-                    lastAlertAt: 0,
-                },
-                livePerformanceAnalystState,
-                startTrackGuide: jest.fn(),
-                setTrackGuideEnabled: jest.fn(),
-                setLivePerformanceAnalystEnabled: jest.fn((enabled) => {
-                    livePerformanceAnalystState.enabled = enabled;
-                }),
-                setAgentTagActive: jest.fn(),
-                getOpportunityTelemetryRows: () => [],
-                getLabelName: (labelId) => labelNames[labelId] || labelId,
-                getCategoryLabels: (category) => categories[category] ?? [],
-                ...overrides,
-            }),
+            context,
+            registry: createAiCommandRegistry(context),
         };
     };
 
-    it('advertises public live analyst tools only in live mode', () => {
+    it('advertises generic live agent session tools only in live mode', () => {
         const liveToolNames = getFrontendToolSchemasForSessionMode('live').map((tool) => tool.name);
         const recordedToolNames = getFrontendToolSchemasForSessionMode('recorded').map((tool) => tool.name);
 
         expect(liveToolNames).toEqual(expect.arrayContaining([
             'start_agent_session',
             'stop_agent_session',
-            'start_live_performance_analysis',
-            'stop_live_performance_analysis',
             'get_live_session_snapshot',
             'get_live_focus_section',
             'get_live_section_history',
@@ -676,6 +679,12 @@ describe('ai command registry live performance analyst tools', () => {
         expect(liveToolNames).not.toEqual(expect.arrayContaining([
             '_get_live_section_telemetry',
             '_record_live_section_classification',
+            'start_per_turn_coaching',
+            'stop_per_turn_coaching',
+            'start_overtake_agent',
+            'stop_overtake_agent',
+            'start_live_performance_analysis',
+            'stop_live_performance_analysis',
         ]));
         expect(recordedToolNames).not.toEqual(expect.arrayContaining([
             'start_live_performance_analysis',
@@ -689,7 +698,7 @@ describe('ai command registry live performance analyst tools', () => {
         ]));
     });
 
-    it('starts the live analyst as a child agent session from the main assistant', async () => {
+    it('starts every live agent through the generic child agent session tool', async () => {
         const startAgentSession = jest.fn(() => ({
             status: 'started' as const,
             conversation_role: 'agent' as const,
@@ -702,12 +711,15 @@ describe('ai command registry live performance analyst tools', () => {
             startAgentSession,
         });
 
-        const result = await registry.start_live_performance_analysis(
-            { interval_seconds: 3 },
+        const result = await registry.start_agent_session(
+            { agent_mode: 'live_performance_analyst', interval_seconds: 3 },
             { sendObservation: jest.fn() },
         );
 
-        expect(startAgentSession).toHaveBeenCalledWith('live_performance_analyst', { interval_seconds: 3 });
+        expect(startAgentSession).toHaveBeenCalledWith(
+            'live_performance_analyst',
+            { agent_mode: 'live_performance_analyst', interval_seconds: 3 },
+        );
         expect(result).toMatchObject({
             status: 'started',
             conversation_role: 'agent',
@@ -718,20 +730,51 @@ describe('ai command registry live performance analyst tools', () => {
         expect(livePerformanceAnalystState.intervalId).toBeNull();
     });
 
-    it('advertises live analyst runtime tools inside an agent session without recursive agent start', () => {
+    it('starts track guide through the generic child agent session tool', async () => {
+        const startAgentSession = jest.fn((agentMode) => ({
+            status: 'started' as const,
+            conversation_role: 'agent' as const,
+            agent_mode: agentMode,
+            agent_session_id: `agent-${agentMode}`,
+            parent_client_session_id: 'main-1',
+        }));
+        const { registry } = createLiveAnalystRegistry({
+            conversationRole: 'main',
+            startAgentSession,
+        });
+
+        const result = await registry.start_agent_session(
+            { agent_mode: 'track_guide' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(startAgentSession).toHaveBeenCalledWith('track_guide', { agent_mode: 'track_guide' });
+        expect(result).toMatchObject({
+            status: 'started',
+            conversation_role: 'agent',
+            agent_mode: 'track_guide',
+            agent_session_id: 'agent-track_guide',
+        });
+    });
+
+    it('advertises shared runtime tools inside an agent session without recursive or dedicated agent controls', () => {
         const toolNames = getFrontendToolSchemasForSessionMode('live', {
             conversationRole: 'agent',
             agentMode: 'live_performance_analyst',
         }).map((tool) => tool.name);
 
         expect(toolNames).toEqual(expect.arrayContaining([
-            'start_live_performance_analysis',
-            'stop_live_performance_analysis',
             'get_live_session_snapshot',
             'stop_agent_session',
         ]));
         expect(toolNames).not.toEqual(expect.arrayContaining([
             'start_agent_session',
+            'start_per_turn_coaching',
+            'stop_per_turn_coaching',
+            'start_overtake_agent',
+            'stop_overtake_agent',
+            'start_live_performance_analysis',
+            'stop_live_performance_analysis',
         ]));
     });
 
@@ -977,7 +1020,7 @@ describe('ai command registry live performance analyst tools', () => {
             Graphics_normalized_car_position: 0.2,
         });
         const advanceProcedurePlanStep = jest.fn();
-        const registry = createAiCommandRegistry({
+        const context: AiCommandRegistryContext = {
             sessionMode: 'live',
             sessionIntelligence,
             opportunityAgentState: {
@@ -1008,7 +1051,8 @@ describe('ai command registry live performance analyst tools', () => {
                 currentStep: 1,
                 sourceEvent: 'live_analysis_plan_started',
             }),
-        });
+        };
+        const registry = createAiCommandRegistry(context);
 
         const result = await registry.advance_plan_step(
             { reason: 'skip ahead' },
@@ -1099,7 +1143,7 @@ describe('ai command registry live performance analyst tools', () => {
             child_labels: ['late brake'],
         });
 
-        const registry = createAiCommandRegistry({
+        const context: AiCommandRegistryContext = {
             sessionMode: 'live',
             sessionIntelligence,
             opportunityAgentState: {
@@ -1119,7 +1163,8 @@ describe('ai command registry live performance analyst tools', () => {
             startTrackGuide: jest.fn(),
             setTrackGuideEnabled: jest.fn(),
             getOpportunityTelemetryRows: () => [],
-        });
+        };
+        const registry = createAiCommandRegistry(context);
 
         const focusResult = await registry.get_live_focus_section(
             {},
@@ -1164,7 +1209,7 @@ describe('ai command registry live performance analyst tools', () => {
             lastObservationAt: 0,
             lastSpokenAt: 0,
         };
-        const registry = createAiCommandRegistry({
+        const context: AiCommandRegistryContext = {
             sessionMode: 'live',
             sessionIntelligence,
             opportunityAgentState: {
@@ -1178,11 +1223,13 @@ describe('ai command registry live performance analyst tools', () => {
             setTrackGuideEnabled: jest.fn(),
             setLivePerformanceAnalystEnabled: jest.fn(),
             getOpportunityTelemetryRows: () => [],
-        });
+        };
         const sendObservation = jest.fn();
         sessionIntelligence.onLiveAnalystObservation(sendObservation);
 
-        const result = await registry.start_live_performance_analysis(
+        const result = await startAgentRuntime(
+            'live_performance_analyst',
+            context,
             {},
             { sendObservation },
         );
@@ -1233,6 +1280,7 @@ describe('ai command registry live performance analyst tools', () => {
     it('does not run classifier analysis while advancing into the classifier request', async () => {
         const {
             analysisContext,
+            context,
             registry,
             livePerformanceAnalystState,
             sessionIntelligence,
@@ -1292,7 +1340,12 @@ describe('ai command registry live performance analyst tools', () => {
         sessionIntelligence.onLiveAnalystObservation(sendObservation);
         const toolContextSendObservation = jest.fn();
 
-        const startResult = await registry.start_live_performance_analysis({}, { sendObservation: toolContextSendObservation });
+        const startResult = await startAgentRuntime(
+            'live_performance_analyst',
+            context,
+            {},
+            { sendObservation: toolContextSendObservation },
+        );
         expect(startResult).toMatchObject({
             status: 'started',
             initial: {
@@ -1424,7 +1477,7 @@ describe('ai command registry live performance analyst tools', () => {
             lastObservationAt: 0,
             lastSpokenAt: 0,
         };
-        const registry = createAiCommandRegistry({
+        const context: AiCommandRegistryContext = {
             sessionMode: 'live',
             sessionIntelligence,
             opportunityAgentState: {
@@ -1459,12 +1512,15 @@ describe('ai command registry live performance analyst tools', () => {
                 currentStep: 1,
                 sourceEvent: 'live_analysis_plan_started',
             }),
-        });
+        };
+        const registry = createAiCommandRegistry(context);
         const sendObservation = jest.fn();
         sessionIntelligence.onLiveAnalystObservation(sendObservation);
         const toolContextSendObservation = jest.fn();
 
-        await registry.start_live_performance_analysis(
+        await startAgentRuntime(
+            'live_performance_analyst',
+            context,
             {},
             { sendObservation: toolContextSendObservation },
         );

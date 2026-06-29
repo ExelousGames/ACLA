@@ -11,6 +11,7 @@ import {
     createAiCommandRegistry,
     getFrontendToolSchemasForSessionMode,
     QUERY_SCOPE_SCHEMA,
+    startAgentRuntime,
 } from './ai-command-registry';
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
 import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/types';
@@ -169,11 +170,19 @@ const createClientSessionId = (prefix: string): string =>
     `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
 
 const getAgentDisplayName = (agentMode?: AgentSessionMode | null): string => {
+    if (agentMode === 'track_guide') return 'Track Guide';
+    if (agentMode === 'overtake') return 'Overtake';
     if (agentMode === 'live_performance_analyst') return 'Live Analyst';
     return 'Agent';
 };
 
 const getAgentWelcomeContent = (agentMode: AgentSessionMode): string => {
+    if (agentMode === 'track_guide') {
+        return 'Track Guide session ready. This child session owns corner-by-corner live guidance.';
+    }
+    if (agentMode === 'overtake') {
+        return 'Overtake session ready. This child session owns traffic and passing opportunity guidance.';
+    }
     if (agentMode === 'live_performance_analyst') {
         return 'Live Analyst session ready. This child session owns baseline collection, focus selection, and live coaching.';
     }
@@ -762,6 +771,27 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         clearProcedurePlan();
     }, [analysisContext?.sessionIntelligence, clearProcedurePlan, setLivePerformanceAnalystAgentEnabled]);
 
+    const resetOvertakeRuntime = useCallback(() => {
+        const opportunityAgent = opportunityAgentStateRef.current;
+        if (opportunityAgent.intervalId) {
+            clearInterval(opportunityAgent.intervalId);
+        }
+        opportunityAgent.intervalId = null;
+        opportunityAgent.inFlight = false;
+        opportunityAgent.lastAlertKey = null;
+        opportunityAgent.lastAlertAt = 0;
+    }, []);
+
+    const resetAgentRuntimes = useCallback(() => {
+        setTrackGuideAgentEnabled(false);
+        resetOvertakeRuntime();
+        resetLivePerformanceAnalystRuntime();
+    }, [
+        resetLivePerformanceAnalystRuntime,
+        resetOvertakeRuntime,
+        setTrackGuideAgentEnabled,
+    ]);
+
     const startAgentSession = useCallback((
         agentMode: AgentSessionMode,
         args: Record<string, any> = {},
@@ -791,8 +821,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             };
         }
 
+        agentVoiceStopRef.current?.();
         mainVoiceStopRef.current?.();
-        resetLivePerformanceAnalystRuntime();
+        resetAgentRuntimes();
 
         const clientSessionId = createClientSessionId(`agent-${agentMode}`);
         const nextSession: AgentSessionInfo = {
@@ -826,7 +857,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         };
     }, [
         broadcastPillMessage,
-        resetLivePerformanceAnalystRuntime,
+        resetAgentRuntimes,
         sessionMode,
         setAgentTag,
     ]);
@@ -846,7 +877,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
         setActiveAgentSession({ ...current, status: 'stopping' });
         agentVoiceStopRef.current?.();
-        resetLivePerformanceAnalystRuntime();
+        resetAgentRuntimes();
         setActiveAgentSession(null);
         activeAgentSessionRef.current = null;
         agentAutoStartSessionIdRef.current = null;
@@ -859,7 +890,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             agent_mode: current.agentMode,
             agent_session_id: current.clientSessionId,
         };
-    }, [broadcastPillMessage, resetLivePerformanceAnalystRuntime, setAgentTag]);
+    }, [broadcastPillMessage, resetAgentRuntimes, setAgentTag]);
 
     const toolHandlers = useMemo(() => createAiCommandRegistry({
         sessionId: resolvedSessionId,
@@ -1054,24 +1085,79 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             activeAgentSessionRef.current = next;
             setActiveAgentSession(next);
         }
-        if (
-            activeAgentSession.agentMode === 'live_performance_analyst'
-            && !livePerformanceAnalystStateRef.current.enabled
-        ) {
-            window.setTimeout(() => {
-                if (!activeAgentSessionRef.current) return;
-                if (livePerformanceAnalystStateRef.current.enabled) return;
-                void agentToolHandlers.start_live_performance_analysis(
-                    {},
-                    { sendObservation: agentVoiceConversation.sendObservation },
-                );
-            }, 0);
-        }
+        const shouldStartRuntime = (
+            (activeAgentSession.agentMode === 'track_guide' && !TrackGuideEnabled)
+            || (activeAgentSession.agentMode === 'overtake' && !opportunityAgentStateRef.current.intervalId)
+            || (activeAgentSession.agentMode === 'live_performance_analyst' && !livePerformanceAnalystStateRef.current.enabled)
+        );
+        if (!shouldStartRuntime) return;
+
+        window.setTimeout(() => {
+            const current = activeAgentSessionRef.current;
+            if (!current || current.clientSessionId !== activeAgentSession.clientSessionId) return;
+            if (
+                (current.agentMode === 'track_guide' && TrackGuideEnabled)
+                || (current.agentMode === 'overtake' && opportunityAgentStateRef.current.intervalId)
+                || (current.agentMode === 'live_performance_analyst' && livePerformanceAnalystStateRef.current.enabled)
+            ) {
+                return;
+            }
+
+            void startAgentRuntime(current.agentMode, {
+                sessionId: resolvedSessionId,
+                sessionMode,
+                conversationRole: 'agent',
+                activeAgentSession: current,
+                analysisContext,
+                sessionIntelligence: analysisContext?.sessionIntelligence,
+                opportunityAgentState: opportunityAgentStateRef.current,
+                livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
+                startTrackGuide,
+                setTrackGuideEnabled: setTrackGuideAgentEnabled,
+                setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
+                advanceProcedurePlanStep,
+                getProcedurePlan,
+                clearProcedurePlan,
+                setProcedurePlan,
+                setAgentTagActive: setAgentTag,
+                stopAgentSession,
+                getOpportunityTelemetryRows,
+                userSummary,
+                userSummaryLoading,
+                userSummaryError,
+                getLabelName,
+                getCategoryLabels,
+                getCircuitMapById,
+                getCircuitMapByTrack,
+                displayMap: displayMapInChat,
+            }, {}, { sendObservation: agentVoiceConversation.sendObservation });
+        }, 0);
     }, [
         activeAgentSession,
-        agentToolHandlers,
+        TrackGuideEnabled,
+        advanceProcedurePlanStep,
+        analysisContext,
+        clearProcedurePlan,
+        displayMapInChat,
         agentVoiceConversation.state,
         agentVoiceConversation.sendObservation,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        getLabelName,
+        getOpportunityTelemetryRows,
+        getProcedurePlan,
+        resolvedSessionId,
+        sessionMode,
+        setAgentTag,
+        setLivePerformanceAnalystAgentEnabled,
+        setProcedurePlan,
+        setTrackGuideAgentEnabled,
+        startTrackGuide,
+        stopAgentSession,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
     ]);
 
     useEffect(() => {

@@ -11,7 +11,11 @@ from app.voice import pipecat_pipeline
 def test_live_performance_tool_knowledge_is_loaded():
     reload()
 
-    assert tool("start_live_performance_analysis")["title"] == "Starting live analyst"
+    assert tool("start_agent_session")["title"] == "Starting agent mode"
+    assert tool("stop_agent_session")["title"] == "Stopping agent mode"
+    assert "live_performance_analyst" in tool("start_agent_session")["_raw_body"]
+    assert tool("start_live_performance_analysis") is None
+    assert tool("stop_per_turn_coaching") is None
     assert tool("set_procedure_plan")["title"] == "Setting procedure plan"
     assert tool("get_live_focus_section")["title"] == "Analyzing focus section"
     assert "show_map_arguments" in tool("get_live_focus_section")["_raw_body"]

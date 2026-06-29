@@ -37,7 +37,7 @@ import {
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
-export type AgentSessionMode = 'live_performance_analyst';
+export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
 export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
 export type AgentSessionRole = 'main' | 'agent';
 
@@ -545,7 +545,11 @@ const getProcedurePlanToolName = (request: ProcedurePlanRequest): string | undef
 };
 
 const normalizeAgentSessionMode = (value: unknown): AgentSessionMode | null => (
-    value === 'live_performance_analyst' ? 'live_performance_analyst' : null
+    value === 'track_guide'
+    || value === 'overtake'
+    || value === 'live_performance_analyst'
+        ? value
+        : null
 );
 
 const getProcedurePlanToolArguments = (request: ProcedurePlanRequest): Record<string, any> => {
@@ -870,62 +874,21 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         properties: {
             agent_mode: {
                 type: 'string',
-                enum: ['live_performance_analyst'],
-                description: 'Agent profile to start.',
+                enum: ['track_guide', 'overtake', 'live_performance_analyst'],
+                description: 'Agent profile to start. Use this for every live child agent instead of dedicated agent start tools.',
             },
         },
         required: ['agent_mode'],
     },
     {
         name: 'stop_agent_session',
-        description: 'Stop the active child AI agent session and return focus to the main assistant.',
+        description: 'Stop the active child AI agent session and return focus to the main assistant. Use this for every live child agent instead of dedicated agent stop tools.',
         properties: {
             agent_session_id: {
                 type: 'string',
                 description: 'Optional frontend child session id. Defaults to the active agent session.',
             },
         },
-        required: [],
-    },
-    {
-        name: 'start_per_turn_coaching',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'stop_per_turn_coaching',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'start_overtake_agent',
-        properties: {
-            interval_seconds: {
-                type: 'number',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'stop_overtake_agent',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'start_live_performance_analysis',
-        description: 'Start the live performance analyst agent. The agent creates a procedure plan, waits for a completed baseline lap, and uses recorded-session analysis to build one focus goal.',
-        properties: {
-            interval_seconds: {
-                type: 'number',
-                description: 'How often the frontend should check live section and plan state.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'stop_live_performance_analysis',
-        description: 'Stop the live performance analyst agent.',
-        properties: {},
         required: [],
     },
     {
@@ -1178,12 +1141,6 @@ const COMMON_TOOL_NAMES = [
 
 const LIVE_TOOL_NAMES = [
     'start_agent_session',
-    'start_per_turn_coaching',
-    'stop_per_turn_coaching',
-    'start_overtake_agent',
-    'stop_overtake_agent',
-    'start_live_performance_analysis',
-    'stop_live_performance_analysis',
     'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
@@ -1308,6 +1265,175 @@ const getSessionId = (args: Record<string, any>, context: AiCommandRegistryConte
     context.sessionId ||
     context.analysisContext?.sessionSelected?.SessionId;
 
+export const startAgentRuntime = async (
+    agentMode: AgentSessionMode,
+    context: AiCommandRegistryContext,
+    args: Record<string, any>,
+    ctx: ToolHandlerContext,
+): Promise<any> => {
+    if (agentMode === 'track_guide') {
+        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        context.startTrackGuide();
+        context.setAgentTagActive?.('Track Guide', true);
+        return { status: 'started', agent_mode: 'track_guide', enabled: true };
+    }
+
+    if (agentMode === 'overtake') {
+        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        const telemetryRows = context.getOpportunityTelemetryRows();
+        if (telemetryRows.length === 0) {
+            return { error: 'no_live_telemetry' };
+        }
+
+        const agent = context.opportunityAgentState;
+        if (agent.intervalId) {
+            context.setAgentTagActive?.('Overtake', true);
+            return { status: 'already_running', agent_mode: 'overtake' };
+        }
+
+        const intervalSeconds = getAgentIntervalSeconds(args.interval_seconds);
+
+        const runTacticalCycle = async (notify: boolean): Promise<any> => {
+            if (agent.inFlight) {
+                return { status: 'skipped_in_flight' };
+            }
+
+            const rows = context.getOpportunityTelemetryRows();
+            if (rows.length === 0) {
+                return { status: 'no_live_telemetry' };
+            }
+
+            agent.inFlight = true;
+            try {
+                const result = detectOvertakeTacticalState(rows);
+
+                if (notify && result.status === 'actionable') {
+                    const alertKey = getTacticalAlertKey(result);
+                    const now = Date.now();
+                    if (agent.lastAlertKey !== alertKey || now - agent.lastAlertAt > OVERTAKE_AGENT_REPEAT_ALERT_MS) {
+                        agent.lastAlertKey = alertKey;
+                        agent.lastAlertAt = now;
+                        ctx.sendObservation({
+                            ...result,
+                            source: 'overtake_agent',
+                            agent_mode: 'overtake',
+                            telemetry_rows: rows.length,
+                        });
+                    }
+                }
+
+                return {
+                    status: 'checked',
+                    tactical_state: result,
+                    telemetry_rows: rows.length,
+                };
+            } finally {
+                agent.inFlight = false;
+            }
+        };
+
+        const initial = await runTacticalCycle(false);
+
+        agent.intervalId = setInterval(() => {
+            void runTacticalCycle(true);
+        }, intervalSeconds * 1000);
+        context.setAgentTagActive?.('Overtake', true);
+
+        return {
+            status: 'started',
+            agent_mode: 'overtake',
+            interval_seconds: intervalSeconds,
+            initial,
+        };
+    }
+
+    const unavailable = buildLiveAnalystUnavailable(context);
+    if (unavailable) return unavailable;
+
+    const si = context.sessionIntelligence!;
+    const agent = getLiveAnalystState(context);
+    if (agent.intervalId) {
+        agent.enabled = true;
+        context.setLivePerformanceAnalystEnabled?.(true);
+        context.setAgentTagActive?.('Live Analyst', true);
+        const snapshot = si.getLiveSessionSnapshot();
+        return {
+            status: 'already_running',
+            agent_mode: 'live_performance_analyst',
+            snapshot,
+            focus: snapshot.baseline_ready ? buildLiveFocusPayload(context) : null,
+        };
+    }
+
+    const intervalSeconds = getLiveAnalystIntervalSeconds(args.interval_seconds);
+    agent.enabled = true;
+    if (!si.hasCompletedBaselineLap()) {
+        si.startBaselineCollectionAtLapStart();
+    }
+    context.setLivePerformanceAnalystEnabled?.(true);
+    context.setAgentTagActive?.('Live Analyst', true);
+    si.emitLiveAnalysisPlanStarted();
+
+    const runAnalystCycle = async (notify: boolean): Promise<any> => {
+        if (agent.inFlight) {
+            return { status: 'skipped_in_flight' };
+        }
+
+        agent.inFlight = true;
+        try {
+            const snapshot = si.getLiveSessionSnapshot();
+            const sections = si.getKnownTrackSections();
+            const focus = snapshot.baseline_ready ? buildLiveFocusPayload(context) : null;
+
+            if (notify) {
+                const now = Date.now();
+                if (!snapshot.baseline_ready) {
+                    agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
+                } else if (focus) {
+                    const timing = focus.timing;
+                    const key = `focus:${focus.section.id}:${focus.baseline.lap}:${focus.baseline.observedAt}`;
+                    const canSpeak = hasEnoughCoachingLead(
+                        timing.distanceAhead,
+                        timing.secondsAhead,
+                        DEFAULT_ANALYST_MIN_DISTANCE,
+                        DEFAULT_ANALYST_MIN_LEAD_SECONDS,
+                    ) && now - agent.lastSpokenAt >= DEFAULT_ANALYST_COOLDOWN_MS;
+
+                    if (canSpeak && agent.lastObservationKey !== key) {
+                        agent.lastObservationKey = key;
+                        agent.lastObservationAt = now;
+                        agent.lastSpokenAt = now;
+                        si.emitLiveAnalysisWindow(snapshot, focus);
+                    }
+                }
+            }
+
+            return {
+                status: 'checked',
+                snapshot,
+                section_count: sections.length,
+                focus,
+                history_count: si.getSectionHistory(80).length,
+            };
+        } finally {
+            agent.inFlight = false;
+        }
+    };
+
+    const initial = await runAnalystCycle(true);
+
+    agent.intervalId = setInterval(() => {
+        void runAnalystCycle(true);
+    }, intervalSeconds * 1000);
+
+    return {
+        status: 'started',
+        agent_mode: 'live_performance_analyst',
+        interval_seconds: intervalSeconds,
+        initial,
+    };
+};
+
 export const createAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => {
     const registry: Record<string, AiCommandHandler> = {
 
@@ -1319,7 +1445,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
             return {
                 status: 'error',
                 error: 'unsupported_agent_mode',
-                message: 'Only live_performance_analyst is supported right now.',
+                message: 'Supported agent modes are track_guide, overtake, and live_performance_analyst.',
             };
         }
         if (!isLiveSessionContext(context)) {
@@ -1502,217 +1628,6 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
         return si.getNextCorner() ?? { error: 'no_corner_data' };
-    },
-
-    // ── Coaching ──────────────────────────────────────────────────────────────
-
-    async start_per_turn_coaching() {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        context.startTrackGuide();
-        context.setAgentTagActive?.('Track Guide', true);
-        return { status: 'started', agent_mode: 'track_guide', enabled: true };
-    },
-
-    async stop_per_turn_coaching() {
-        context.setTrackGuideEnabled(false);
-        context.setAgentTagActive?.('Track Guide', false);
-        return { status: 'stopped', agent_mode: 'track_guide', enabled: false };
-    },
-
-    async start_overtake_agent(args, ctx) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        const telemetryRows = context.getOpportunityTelemetryRows();
-        if (telemetryRows.length === 0) {
-            return { error: 'no_live_telemetry' };
-        }
-
-        const agent = context.opportunityAgentState;
-        if (agent.intervalId) {
-            context.setAgentTagActive?.('Overtake', true);
-            return { status: 'already_running', agent_mode: 'overtake' };
-        }
-
-        const intervalSeconds = getAgentIntervalSeconds(args.interval_seconds);
-
-        const runTacticalCycle = async (notify: boolean): Promise<any> => {
-            if (agent.inFlight) {
-                return { status: 'skipped_in_flight' };
-            }
-
-            const rows = context.getOpportunityTelemetryRows();
-            if (rows.length === 0) {
-                return { status: 'no_live_telemetry' };
-            }
-
-            agent.inFlight = true;
-            try {
-                const result = detectOvertakeTacticalState(rows);
-
-                if (notify && result.status === 'actionable') {
-                    const alertKey = getTacticalAlertKey(result);
-                    const now = Date.now();
-                    if (agent.lastAlertKey !== alertKey || now - agent.lastAlertAt > OVERTAKE_AGENT_REPEAT_ALERT_MS) {
-                        agent.lastAlertKey = alertKey;
-                        agent.lastAlertAt = now;
-                        ctx.sendObservation({
-                            ...result,
-                            source: 'overtake_agent',
-                            agent_mode: 'overtake',
-                            telemetry_rows: rows.length,
-                        });
-                    }
-                }
-
-                return {
-                    status: 'checked',
-                    tactical_state: result,
-                    telemetry_rows: rows.length,
-                };
-            } finally {
-                agent.inFlight = false;
-            }
-        };
-
-        const initial = await runTacticalCycle(false);
-
-        agent.intervalId = setInterval(() => {
-            void runTacticalCycle(true);
-        }, intervalSeconds * 1000);
-        context.setAgentTagActive?.('Overtake', true);
-
-        return {
-            status: 'started',
-            agent_mode: 'overtake',
-            interval_seconds: intervalSeconds,
-            initial,
-        };
-    },
-
-    async stop_overtake_agent() {
-        const agent = context.opportunityAgentState;
-        if (agent.intervalId) {
-            clearInterval(agent.intervalId);
-        }
-        agent.intervalId = null;
-        agent.inFlight = false;
-        agent.lastAlertKey = null;
-        agent.lastAlertAt = 0;
-        context.setAgentTagActive?.('Overtake', false);
-        return { status: 'stopped', agent_mode: 'overtake' };
-    },
-
-    async start_live_performance_analysis(args, ctx) {
-        if (context.conversationRole !== 'agent' && context.startAgentSession) {
-            return context.startAgentSession('live_performance_analyst', args);
-        }
-
-        const unavailable = buildLiveAnalystUnavailable(context);
-        if (unavailable) return unavailable;
-
-        const si = context.sessionIntelligence!;
-        const agent = getLiveAnalystState(context);
-        if (agent.intervalId) {
-            agent.enabled = true;
-            context.setLivePerformanceAnalystEnabled?.(true);
-            context.setAgentTagActive?.('Live Analyst', true);
-            const snapshot = si.getLiveSessionSnapshot();
-            return {
-                status: 'already_running',
-                agent_mode: 'live_performance_analyst',
-                snapshot,
-                focus: snapshot.baseline_ready ? buildLiveFocusPayload(context) : null,
-            };
-        }
-
-        const intervalSeconds = getLiveAnalystIntervalSeconds(args.interval_seconds);
-        agent.enabled = true;
-        if (!si.hasCompletedBaselineLap()) {
-            si.startBaselineCollectionAtLapStart();
-        }
-        context.setLivePerformanceAnalystEnabled?.(true);
-        context.setAgentTagActive?.('Live Analyst', true);
-        si.emitLiveAnalysisPlanStarted();
-
-        const runAnalystCycle = async (notify: boolean): Promise<any> => {
-            if (agent.inFlight) {
-                return { status: 'skipped_in_flight' };
-            }
-
-            agent.inFlight = true;
-            try {
-                const snapshot = si.getLiveSessionSnapshot();
-                const sections = si.getKnownTrackSections();
-                let focus = snapshot.baseline_ready ? buildLiveFocusPayload(context) : null;
-
-                if (notify) {
-                    const now = Date.now();
-                    if (!snapshot.baseline_ready) {
-                        agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
-                    } else if (focus) {
-                        const timing = focus.timing;
-                        const key = `focus:${focus.section.id}:${focus.baseline.lap}:${focus.baseline.observedAt}`;
-                        const canSpeak = hasEnoughCoachingLead(
-                            timing.distanceAhead,
-                            timing.secondsAhead,
-                            DEFAULT_ANALYST_MIN_DISTANCE,
-                            DEFAULT_ANALYST_MIN_LEAD_SECONDS,
-                        ) && now - agent.lastSpokenAt >= DEFAULT_ANALYST_COOLDOWN_MS;
-
-                        if (canSpeak && agent.lastObservationKey !== key) {
-                            agent.lastObservationKey = key;
-                            agent.lastObservationAt = now;
-                            agent.lastSpokenAt = now;
-                            si.emitLiveAnalysisWindow(snapshot, focus);
-                        }
-                    }
-                }
-
-                return {
-                    status: 'checked',
-                    snapshot,
-                    section_count: sections.length,
-                    focus,
-                    history_count: si.getSectionHistory(80).length,
-                };
-            } finally {
-                agent.inFlight = false;
-            }
-        };
-
-        const initial = await runAnalystCycle(true);
-
-        agent.intervalId = setInterval(() => {
-            void runAnalystCycle(true);
-        }, intervalSeconds * 1000);
-
-        return {
-            status: 'started',
-            agent_mode: 'live_performance_analyst',
-            interval_seconds: intervalSeconds,
-            initial,
-        };
-    },
-
-    async stop_live_performance_analysis() {
-        const agent = getLiveAnalystState(context);
-        if (agent.intervalId) {
-            clearInterval(agent.intervalId);
-        }
-        agent.intervalId = null;
-        agent.inFlight = false;
-        agent.enabled = false;
-        agent.lastObservationKey = null;
-        agent.lastObservationAt = 0;
-        agent.lastSpokenAt = 0;
-        agent.analysisSessionId = null;
-        context.sessionIntelligence?.clearFocusSection();
-        context.setLivePerformanceAnalystEnabled?.(false);
-        context.clearProcedurePlan?.();
-        context.setAgentTagActive?.('Live Analyst', false);
-        if (context.conversationRole === 'agent' && context.stopAgentSession) {
-            await context.stopAgentSession(agent.analysisSessionId);
-        }
-        return { status: 'stopped', agent_mode: 'live_performance_analyst', enabled: false };
     },
 
     async get_live_session_snapshot() {
@@ -1932,19 +1847,6 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     },
 
     // ── Visualizations ────────────────────────────────────────────────────────
-
-    async track_detail_for_guide() {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        context.startTrackGuide();
-        context.setAgentTagActive?.('Track Guide', true);
-        return { status: 'guidance_enabled', enabled: true };
-    },
-
-    async disable_guide_user_racing() {
-        context.setTrackGuideEnabled(false);
-        context.setAgentTagActive?.('Track Guide', false);
-        return { status: 'guidance_disabled', enabled: false };
-    },
 
     async get_visualization_capabilities() {
         return visualizationController.getVisualizationAssistantContext();
