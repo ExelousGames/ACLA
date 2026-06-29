@@ -25,8 +25,20 @@ export const FIELD_GROUPS: Record<string, string[]> = {
 };
 
 const FIELD_ALIASES: Record<string, string> = {
+    fuel: 'Physics_fuel',
     fuellevel: 'Physics_fuel',
     fuel_level: 'Physics_fuel',
+    tire_pressure: 'tyre_pressure',
+    tirepressure: 'tyre_pressure',
+    tyrepressure: 'tyre_pressure',
+    tire_pressure_front_left: 'Physics_wheel_pressure_front_left',
+    tire_pressure_front_right: 'Physics_wheel_pressure_front_right',
+    tire_pressure_rear_left: 'Physics_wheel_pressure_rear_left',
+    tire_pressure_rear_right: 'Physics_wheel_pressure_rear_right',
+    tyre_pressure_front_left: 'Physics_wheel_pressure_front_left',
+    tyre_pressure_front_right: 'Physics_wheel_pressure_front_right',
+    tyre_pressure_rear_left: 'Physics_wheel_pressure_rear_left',
+    tyre_pressure_rear_right: 'Physics_wheel_pressure_rear_right',
     tirepressurefl: 'Physics_wheel_pressure_front_left',
     tirepressurefr: 'Physics_wheel_pressure_front_right',
     tirepressurerl: 'Physics_wheel_pressure_rear_left',
@@ -37,9 +49,16 @@ const FIELD_ALIASES: Record<string, string> = {
     tyrepressurerr: 'Physics_wheel_pressure_rear_right',
 };
 
+function normalizeFieldLookupKey(field: string): string {
+    return field
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/g, '_');
+}
+
 function resolveFieldAlias(field: string): string {
     const normalized = field.trim();
-    return FIELD_ALIASES[normalized.toLowerCase()] ?? normalized;
+    return FIELD_ALIASES[normalizeFieldLookupKey(normalized)] ?? normalized;
 }
 
 // Expand group aliases to raw field names. Unknown names passed through as-is.
