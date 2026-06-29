@@ -38,11 +38,27 @@ export const formatObservationForLlm = (data: Record<string, unknown>): string =
         const currentLap = snapshot.current_lap;
         const track = snapshot.track || 'current track';
 
+        if (event === 'live_analysis_plan_started') {
+            return (
+                'live_performance_analyst plan started: '
+                + `track=${track}, current_lap=${currentLap}, completed_laps=${completedLaps}, `
+                + `session_type=${sessionType}, baseline_ready=${snapshot.baseline_ready}.`
+            );
+        }
+
         if (event === 'collecting_baseline') {
             return (
                 'live_performance_analyst collecting baseline: '
                 + `track=${track}, current_lap=${currentLap}, completed_laps=${completedLaps}, `
                 + `session_type=${sessionType}.`
+            );
+        }
+
+        if (event === 'baseline_classifier_request_ready') {
+            return (
+                'live_performance_analyst baseline classifier request ready: '
+                + `track=${track}, current_lap=${currentLap}, completed_laps=${completedLaps}, `
+                + `session_type=${sessionType}, baseline_ready=${snapshot.baseline_ready}.`
             );
         }
 

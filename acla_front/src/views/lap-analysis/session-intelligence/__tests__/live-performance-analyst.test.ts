@@ -234,24 +234,15 @@ describe('SessionIntelligence live analyst section state', () => {
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
             event: 'baseline_classifier_request_ready',
-            current_request: 1,
-            requests: [
-                expect.objectContaining({
-                    type: 'driver_action',
-                    subscriber: 'baseline_collection',
-                    title: 'Collect a clean baseline lap',
-                }),
-                expect.objectContaining({
-                    type: 'frontend_request',
-                    subscriber: 'live_recorded_analysis',
-                    title: 'Request recorded-session classifier',
-                }),
-            ],
             snapshot: expect.objectContaining({
                 baseline_ready: true,
                 baseline_lap: 0,
             }),
         }));
+        const observation = onObservation.mock.calls[0][0];
+        expect(observation).not.toHaveProperty('goal');
+        expect(observation).not.toHaveProperty('requests');
+        expect(observation).not.toHaveProperty('current_request');
     });
 
     it('does not complete a new baseline from laps driven before collection started', () => {

@@ -14,12 +14,16 @@ Live performance analyst mode:
   the required baseline yet. A short "collecting a baseline lap" message is
   enough if you need to acknowledge the state. Ask the driver to complete one
   full lap before expecting analysis.
-- During `live_analysis_plan_started`, the visible plan should collect a clean
-  baseline lap and include a subscribed frontend request for
-  `live_recorded_analysis`. Do not add unrelated startup requests.
+- During `live_analysis_plan_started`, create the visible procedure plan by
+  calling `set_procedure_plan`. The plan must first collect a clean baseline lap
+  with a `driver_action` request subscribed to `baseline_collection`, then use a
+  `frontend_request` subscribed to `live_recorded_analysis` to run recorded
+  classifier analysis. Do not add unrelated startup requests. Do not expect the
+  frontend to provide this startup plan.
 - During `baseline_classifier_request_ready`, treat the event as confirmation
-  that the frontend recorded-session classifier request can run. The visible
-  plan state is owned by the frontend. Do not call `classify_live_section` for
+  that the recorded-session classifier request can run. Advance the visible plan
+  with `advance_plan_step` so the frontend executes the subscribed
+  `live_recorded_analysis` request. Do not call `classify_live_section` for
   baseline analysis.
 - During `recorded_analysis_plan_ready`, use the provided goal and focus to
   create the visible procedure plan yourself by calling `set_procedure_plan`

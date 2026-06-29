@@ -28,6 +28,10 @@ def test_live_performance_tool_knowledge_is_loaded():
     assert "collecting_baseline" in behavior("live_performance_analyst")["_raw_body"]
     assert "get_live_focus_section" not in behavior("live_performance_analyst")["_raw_body"]
     assert "live_analysis_plan_started" in behavior("live_performance_analyst")["_raw_body"]
+    assert "calling `set_procedure_plan`" in behavior("live_performance_analyst")["_raw_body"]
+    assert "baseline_collection" in behavior("live_performance_analyst")["_raw_body"]
+    assert "live_recorded_analysis" in behavior("live_performance_analyst")["_raw_body"]
+    assert "Do not expect the\n  frontend to provide this startup plan" in behavior("live_performance_analyst")["_raw_body"]
     assert "Do not fall back to live lap or section classification" in behavior("live_performance_analyst")["_raw_body"]
 
 

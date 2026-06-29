@@ -5,6 +5,18 @@ import {
 
 describe('formatObservationForLlm', () => {
     it('formats live analyst observations without backend-only teaching actions', () => {
+        const planStartedMsg = formatObservationForLlm({
+            source: 'live_performance_analyst',
+            agent_mode: 'live_performance_analyst',
+            event: 'live_analysis_plan_started',
+            snapshot: {
+                track: 'brands_hatch',
+                current_lap: 1,
+                completed_laps: 0,
+                baseline_ready: false,
+                live_session_type: 'solo_practice',
+            },
+        });
         const collectingMsg = formatObservationForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
@@ -13,6 +25,18 @@ describe('formatObservationForLlm', () => {
                 track: 'brands_hatch',
                 current_lap: 1,
                 completed_laps: 0,
+                live_session_type: 'solo_practice',
+            },
+        });
+        const classifierReadyMsg = formatObservationForLlm({
+            source: 'live_performance_analyst',
+            agent_mode: 'live_performance_analyst',
+            event: 'baseline_classifier_request_ready',
+            snapshot: {
+                track: 'brands_hatch',
+                current_lap: 2,
+                completed_laps: 1,
+                baseline_ready: true,
                 live_session_type: 'solo_practice',
             },
         });
@@ -57,11 +81,17 @@ describe('formatObservationForLlm', () => {
             },
         });
 
+        expect(planStartedMsg).toContain('plan started');
+        expect(planStartedMsg).toContain('baseline_ready=false');
+        expect(planStartedMsg).not.toContain('Respond with one short');
         expect(collectingMsg).toContain('track=brands_hatch');
         expect(collectingMsg).toContain('completed_laps=0');
         expect(collectingMsg).not.toContain('get_live_focus_section');
         expect(collectingMsg).not.toContain('classify_live_section');
         expect(collectingMsg).not.toContain('Do not');
+        expect(classifierReadyMsg).toContain('baseline classifier request ready');
+        expect(classifierReadyMsg).toContain('baseline_ready=true');
+        expect(classifierReadyMsg).not.toContain('Respond with one short');
         expect(analysisMsg).toContain('recorded classifier analysis ready');
         expect(analysisMsg).toContain('segment_count=1');
         expect(analysisMsg).toContain('Paddock Hill');

@@ -1338,19 +1338,6 @@ describe('ai command registry live performance analyst tools', () => {
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
             message: expect.stringContaining('Collect a baseline first'),
-            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
-            requests: [
-                expect.objectContaining({
-                    type: 'driver_action',
-                    subscriber: 'baseline_collection',
-                    title: 'Collect a clean baseline lap',
-                }),
-                expect.objectContaining({
-                    type: 'frontend_request',
-                    subscriber: 'live_recorded_analysis',
-                    title: 'Request recorded-session classifier',
-                }),
-            ],
             snapshot: expect.objectContaining({
                 baseline_ready: false,
             }),
@@ -1358,6 +1345,9 @@ describe('ai command registry live performance analyst tools', () => {
         const startupPlanObservation = sendObservation.mock.calls.find(([payload]) => (
             payload.event === 'live_analysis_plan_started'
         ))?.[0];
+        expect(startupPlanObservation).not.toHaveProperty('goal');
+        expect(startupPlanObservation).not.toHaveProperty('requests');
+        expect(startupPlanObservation).not.toHaveProperty('current_request');
         expect(startupPlanObservation).not.toHaveProperty('internal_tool_hint');
         expect(startupPlanObservation).not.toHaveProperty('sections');
 
@@ -1631,23 +1621,16 @@ describe('ai command registry live performance analyst tools', () => {
         }));
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
-            goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
-            requests: [
-                expect.objectContaining({
-                    type: 'driver_action',
-                    subscriber: 'baseline_collection',
-                    title: 'Collect a clean baseline lap',
-                }),
-                expect.objectContaining({
-                    type: 'frontend_request',
-                    subscriber: 'live_recorded_analysis',
-                    title: 'Request recorded-session classifier',
-                }),
-            ],
             snapshot: expect.objectContaining({
                 baseline_ready: true,
             }),
         }));
+        const startupObservation = sendObservation.mock.calls.find(([payload]) => (
+            payload.event === 'live_analysis_plan_started'
+        ))?.[0];
+        expect(startupObservation).not.toHaveProperty('goal');
+        expect(startupObservation).not.toHaveProperty('requests');
+        expect(startupObservation).not.toHaveProperty('current_request');
         expect(toolContextSendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
             source: 'live_performance_analyst',
         }));
