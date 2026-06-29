@@ -8,6 +8,7 @@ import { AiMapDisplayPayload, AiMapSectionSelection } from './AiMapToolDisplay';
 import {
     SegmentClassificationResult,
     RecordedAiAnalysisState,
+    normalizeSegmentClassificationResult,
 } from 'views/lap-analysis/recorded-session-analysis';
 import {
     getSegmentMainLabelText,
@@ -37,6 +38,7 @@ import {
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
     BASELINE_COLLECTION_SUBSCRIBER,
+    type BaselineLapRecord,
     type BaselineCollectionTag,
 } from './BaselineCollectionTracker';
 
@@ -108,6 +110,7 @@ export interface AiCommandRegistryContext {
     clearProcedurePlan?: () => void;
     setProcedurePlan?: (plan: ProcedurePlan | null) => void;
     getBaselineCollectionTag?: () => BaselineCollectionTag | null;
+    getBaselineLapRecord?: () => BaselineLapRecord | null;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     startAgentSession?: (
         agentMode: AgentSessionMode,
@@ -192,6 +195,8 @@ const OVERTAKE_AGENT_REPEAT_ALERT_MS = 20000;
 const DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS = 4;
 const LIVE_ANALYST_MIN_INTERVAL_SECONDS = 2;
 const LIVE_ANALYST_MAX_INTERVAL_SECONDS = 12;
+const LIVE_RECORDED_ANALYSIS_TIMEOUT_MS = 120000;
+const LIVE_RECORDED_ANALYSIS_ENDPOINT = '/racing-session/analyze-live-recorded-analysis';
 
 const toPositiveNumber = (value: unknown): number | undefined => {
     const parsed = Number(value);
@@ -492,6 +497,40 @@ const buildRecordedAnalysisToolResult = (
     };
 };
 
+const buildLiveRecordedAnalysisToolResult = (
+    result: SegmentClassificationResult,
+    baselineRecord: BaselineLapRecord,
+    context: AiCommandRegistryContext,
+    args: Record<string, any> = {},
+) => {
+    const limit = getRecordedSegmentLimit(args.limit);
+    const segments = Array.isArray(result.segments) ? result.segments : [];
+
+    return {
+        status: result.segment_count > 0 ? 'ready' : 'empty',
+        message: result.segment_count > 0
+            ? 'Live baseline lap analysis is ready.'
+            : 'Live baseline lap analysis found no classified segments.',
+        source: 'baseline_lap_record',
+        baseline: {
+            id: baselineRecord.id,
+            lap: baselineRecord.lap,
+            track: baselineRecord.track || context.sessionIntelligence?.getLiveSessionSnapshot?.().track || null,
+            car: baselineRecord.car || context.sessionIntelligence?.getLiveSessionSnapshot?.().car || null,
+            sample_count: baselineRecord.sample_count,
+            captured_at: baselineRecord.captured_at,
+        },
+        analysis: {
+            status: result.status,
+            session_id: result.session_id,
+            samples_analyzed: result.samples_analyzed,
+            segment_count: result.segment_count,
+            returned_segment_count: Math.min(segments.length, limit),
+            segments: segments.slice(0, limit).map((segment) => summarizeRecordedSegment(segment, context)),
+        },
+    };
+};
+
 const buildRecordedSessionContext = (
     context: AiCommandRegistryContext,
     args: Record<string, any> = {},
@@ -600,40 +639,37 @@ const runRecordedAnalysisForLiveRequest = async (
     context: AiCommandRegistryContext,
     args: Record<string, any> = {},
 ): Promise<
-    | { status: 'ready'; analysis: ReturnType<typeof buildRecordedAnalysisToolResult> }
+    | { status: 'ready'; analysis: ReturnType<typeof buildLiveRecordedAnalysisToolResult> }
     | { status: 'error'; error: LiveAnalystRecordedAnalysisError; message: string }
 > => {
-    const sessionId = getSelectedSessionId(context);
-    if (!sessionId) {
+    const baselineRecord = context.getBaselineLapRecord?.() ?? null;
+    if (!baselineRecord || baselineRecord.records.length === 0) {
         return {
             status: 'error',
-            error: 'recorded_session_required',
-            message: 'Live performance analysis needs an uploaded or selected recorded session before it can request classifier analysis.',
+            error: 'baseline_lap_record_required',
+            message: 'Live performance analysis needs the baseline component cached lap records before it can request classifier analysis.',
         };
     }
 
-    const runAnalysis = context.analysisContext?.runRecordedAiAnalysis;
-    if (typeof runAnalysis !== 'function') {
+    try {
+        const response = await apiService.post(LIVE_RECORDED_ANALYSIS_ENDPOINT, {
+            track: baselineRecord.track,
+            car: baselineRecord.car,
+            baseline_lap: baselineRecord.lap,
+            records: baselineRecord.records,
+        }, { timeout: LIVE_RECORDED_ANALYSIS_TIMEOUT_MS });
+        const result = normalizeSegmentClassificationResult(response.data as any, baselineRecord.id);
         return {
-            status: 'error',
-            error: 'recorded_analysis_unavailable',
-            message: 'Recorded AI analysis is not available in this view.',
+            status: 'ready',
+            analysis: buildLiveRecordedAnalysisToolResult(result, baselineRecord, context, { limit: 8, ...args }),
         };
-    }
-
-    const state = await runAnalysis({ force: args.force === true });
-    if (state.status === 'error') {
+    } catch (error: any) {
         return {
             status: 'error',
             error: 'recorded_analysis_failed',
-            message: state.message || 'Failed to run recorded AI analysis.',
+            message: error?.data?.message || error?.message || 'Failed to run live baseline analysis.',
         };
     }
-
-    return {
-        status: 'ready',
-        analysis: buildRecordedAnalysisToolResult(state, context, { limit: 8 }),
-    };
 };
 
 const buildProcedurePlanSubscribers = (
@@ -691,9 +727,8 @@ const buildProcedurePlanSubscribers = (
             };
         }
 
-        const sessionId = getSelectedSessionId(context);
         const agent = getLiveAnalystState(context);
-        agent.analysisSessionId = sessionId;
+        agent.analysisSessionId = analysisStatus.analysis.baseline.id;
         context.sessionIntelligence?.emitRecordedAnalysisReady(analysisStatus.analysis, snapshot);
         return { status: 'complete' };
     },

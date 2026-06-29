@@ -65,8 +65,8 @@ describe('formatObservationForLlm', () => {
         const baselineMsg = formatObservationForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
-            event: 'recorded_session_required',
-            message: 'Recorded-session AI analysis is required.',
+            event: 'baseline_lap_record_required',
+            message: 'Cached baseline lap records are required.',
             snapshot: { track: 'brands_hatch', live_session_type: 'solo_practice' },
         });
         const coachingMsg = formatObservationForLlm({
@@ -98,7 +98,7 @@ describe('formatObservationForLlm', () => {
         expect(analysisMsg).not.toContain('goal=');
         expect(analysisMsg).not.toContain('focus=');
         expect(analysisMsg).not.toContain('plan=');
-        expect(baselineMsg).toContain('Recorded-session AI analysis is required.');
+        expect(baselineMsg).toContain('Cached baseline lap records are required.');
         expect(baselineMsg).not.toContain('Explain briefly');
         expect(baselineMsg).not.toContain('classify_live_section');
         expect(coachingMsg).not.toContain('Call show_map');

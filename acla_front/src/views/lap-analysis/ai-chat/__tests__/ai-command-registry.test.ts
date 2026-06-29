@@ -25,6 +25,7 @@ import {
 import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-analysis';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import { buildBaselineCollectionTag } from '../BaselineCollectionTracker';
+import apiService from 'services/api.service';
 
 const labelNames: Record<string, string> = {
     brands_hatch: 'Brands Hatch',
@@ -38,6 +39,10 @@ const categories: Record<string, string[]> = {
     brands_hatch: ['brands_hatch1', 'brands_hatch2'],
     monza: ['monza1'],
 };
+
+beforeEach(() => {
+    jest.clearAllMocks();
+});
 
 const createRegistry = () => createAiCommandRegistry({
     sessionMode: 'live',
@@ -630,6 +635,22 @@ describe('ai command registry live performance analyst tools', () => {
             lastObservationAt: 0,
             lastSpokenAt: 0,
         };
+        const getBaselineLapRecord = () => {
+            const snapshot = sessionIntelligence.getLiveSessionSnapshot() as unknown as Record<string, any>;
+            const records = sessionIntelligence.getLastCompletedLapRows()
+                .map((row) => ({ ...(row as Record<string, any>) }));
+
+            return {
+                id: `brands_hatch:Ferrari 296:${snapshot.baseline_lap}:${records.length}`,
+                lap: Number(snapshot.baseline_lap ?? 0),
+                captured_at: 1,
+                track: 'brands_hatch',
+                car: 'Ferrari 296',
+                sample_count: records.length,
+                snapshot,
+                records,
+            };
+        };
 
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
@@ -652,6 +673,7 @@ describe('ai command registry live performance analyst tools', () => {
             getBaselineCollectionTag: () => buildBaselineCollectionTag(
                 sessionIntelligence.getLiveSessionSnapshot() as unknown as Record<string, any>,
             ),
+            getBaselineLapRecord,
             getLabelName: (labelId) => labelNames[labelId] || labelId,
             getCategoryLabels: (category) => categories[category] ?? [],
             ...overrides,
@@ -1464,6 +1486,24 @@ describe('ai command registry live performance analyst tools', () => {
     });
 
     it('runs the classifier when the subscribed classifier request is already active', async () => {
+        (apiService.post as jest.Mock).mockResolvedValueOnce({
+            data: {
+                status: 'success',
+                session_id: 'live-baseline',
+                samples_analyzed: 2,
+                segment_count: 1,
+                segments: [
+                    {
+                        id: 'live-segment-1',
+                        start_index: 0,
+                        end_index: 1,
+                        main_label_id: 'brands_hatch2',
+                        labels: ['brands_hatch2', 'late_brake'],
+                        child_segments: [],
+                    },
+                ],
+            },
+        });
         const advanceProcedurePlanStep = jest.fn(() => ({
             status: 'complete',
             current_request: 1,
@@ -1513,17 +1553,28 @@ describe('ai command registry live performance analyst tools', () => {
             status: 'complete',
             current_request: 1,
         });
-        expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: false });
+        expect(apiService.post).toHaveBeenCalledWith(
+            '/racing-session/analyze-live-recorded-analysis',
+            expect.objectContaining({
+                track: 'brands_hatch',
+                car: 'Ferrari 296',
+                baseline_lap: 0,
+                records: expect.any(Array),
+            }),
+            expect.objectContaining({ timeout: 120000 }),
+        );
+        expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('run active classifier request');
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_ready',
             analysis: expect.objectContaining({
                 status: 'ready',
+                source: 'baseline_lap_record',
             }),
         }));
     });
 
-    it('requires recorded analysis when the subscribed classifier request is advanced', async () => {
+    it('requires cached baseline records when the subscribed classifier request is advanced', async () => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.startBaselineCollectionAtLapStart();
         sessionIntelligence.tick({
@@ -1610,14 +1661,14 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(result).toMatchObject({
             status: 'error',
-            error: 'recorded_session_required',
+            error: 'baseline_lap_record_required',
             snapshot: {
                 baseline_ready: true,
             },
         });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
-            event: 'recorded_session_required',
-            message: expect.stringContaining('recorded session'),
+            event: 'baseline_lap_record_required',
+            message: expect.stringContaining('cached lap records'),
         }));
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',

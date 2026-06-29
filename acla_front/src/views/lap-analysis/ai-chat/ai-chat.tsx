@@ -35,6 +35,7 @@ import {
 } from './ai-chat-plan';
 import {
     BaselineCollectionTracker,
+    type BaselineLapRecord,
     type BaselineCollectionTag,
 } from './BaselineCollectionTracker';
 
@@ -287,6 +288,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const activeAgentTagsRef = useRef<string[]>([]);
     const activeAgentSessionRef = useRef<AgentSessionInfo | null>(null);
     const baselineCollectionTagRef = useRef<BaselineCollectionTag | null>(null);
+    const baselineLapRecordRef = useRef<BaselineLapRecord | null>(null);
     const agentVoiceStopRef = useRef<() => void>(() => undefined);
     const mainVoiceStopRef = useRef<() => void>(() => undefined);
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
@@ -384,6 +386,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, []);
 
     const getBaselineCollectionTag = useCallback(() => baselineCollectionTagRef.current, []);
+
+    const handleBaselineLapRecordChange = useCallback((record: BaselineLapRecord | null) => {
+        baselineLapRecordRef.current = record;
+    }, []);
+
+    const getBaselineLapRecord = useCallback(() => baselineLapRecordRef.current, []);
 
     const updateBaselineAgentMessages = useCallback((
         updater: (messages: any[]) => any[],
@@ -853,6 +861,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         advanceProcedurePlanStep,
         getBaselineCollectionTag,
+        getBaselineLapRecord,
         getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
@@ -880,6 +889,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
+        getBaselineLapRecord,
         getProcedurePlan,
         resolvedSessionId,
         sessionMode,
@@ -938,6 +948,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         advanceProcedurePlanStep,
         getBaselineCollectionTag,
+        getBaselineLapRecord,
         getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
@@ -964,6 +975,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
+        getBaselineLapRecord,
         getProcedurePlan,
         resolvedSessionId,
         sessionMode,
@@ -1068,6 +1080,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
                 advanceProcedurePlanStep,
                 getBaselineCollectionTag,
+                getBaselineLapRecord,
                 getProcedurePlan,
                 clearProcedurePlan,
                 setProcedurePlan,
@@ -1099,6 +1112,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
+        getBaselineLapRecord,
         getProcedurePlan,
         resolvedSessionId,
         sessionMode,
@@ -1557,6 +1571,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 sessionMode={sessionMode}
                 sessionIntelligence={analysisContext?.sessionIntelligence}
                 onTagChange={handleBaselineCollectionTagChange}
+                onLapRecordChange={handleBaselineLapRecordChange}
                 updateAgentMessages={updateBaselineAgentMessages}
             />
             <div className="ai-chat__grid-bg" aria-hidden="true" />

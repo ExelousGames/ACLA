@@ -59,7 +59,7 @@ export const buildBaselineClassifierRequestReadyObservation = (
 });
 
 export type LiveAnalystRecordedAnalysisError =
-    | 'recorded_session_required'
+    | 'baseline_lap_record_required'
     | 'recorded_analysis_unavailable'
     | 'recorded_analysis_failed';
 
