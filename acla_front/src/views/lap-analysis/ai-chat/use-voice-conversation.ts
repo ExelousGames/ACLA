@@ -17,6 +17,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
 import { buildFormattedObservationFrame } from './voice-observation-formatter';
 
+const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
+
 export type VoiceConversationState =
     | 'idle'           // not connected
     | 'connecting'     // WS handshake in progress
@@ -150,6 +152,7 @@ export function useVoiceConversation(
     const playbackQueueTimeRef = useRef<number>(0);
     const playbackSerialRef = useRef<number>(0);
     const playbackIdleTimeoutRef = useRef<number | null>(null);
+    const connectTimeoutRef = useRef<number | null>(null);
     const micDisabledRef = useRef(false);
     const micLevelRef = useRef(0);
     const pendingMicLevelRef = useRef<number | null>(null);
@@ -281,8 +284,19 @@ export function useVoiceConversation(
         } catch { /* ignore */ }
     }, [resetMicLevel]);
 
-    const stop = useCallback(() => {
-        // Tear down in reverse order of construction. All steps are idempotent.
+    const clearConnectTimeout = useCallback(() => {
+        if (connectTimeoutRef.current !== null) {
+            window.clearTimeout(connectTimeoutRef.current);
+            connectTimeoutRef.current = null;
+        }
+    }, []);
+
+    const releaseSessionResources = useCallback((
+        closeCode = 1000,
+        closeReason = 'client stop',
+    ) => {
+        clearConnectTimeout();
+
         try { workletNodeRef.current?.disconnect(); } catch { /* ignore */ }
         workletNodeRef.current = null;
 
@@ -306,15 +320,20 @@ export function useVoiceConversation(
         if (wsRef.current) {
             try {
                 if (wsRef.current.readyState <= WebSocket.OPEN) {
-                    wsRef.current.close(1000, 'client stop');
+                    wsRef.current.close(closeCode, closeReason);
                 }
             } catch { /* ignore */ }
         }
         wsRef.current = null;
 
         resetMicLevel();
+    }, [clearConnectTimeout, resetMicLevel]);
+
+    const stop = useCallback(() => {
+        // Tear down in reverse order of construction. All steps are idempotent.
+        releaseSessionResources();
         setState('idle');
-    }, [resetMicLevel]);
+    }, [releaseSessionResources]);
 
     const start = useCallback(async () => {
         if (state !== 'idle' && state !== 'error') {
@@ -376,6 +395,21 @@ export function useVoiceConversation(
             const ws = openWs();
             ws.binaryType = 'arraybuffer';
             wsRef.current = ws;
+            connectTimeoutRef.current = window.setTimeout(() => {
+                if (wsRef.current !== ws || ws.readyState === WebSocket.OPEN) {
+                    return;
+                }
+
+                const timeoutSeconds = Math.round(VOICE_WS_CONNECT_TIMEOUT_MS / 1000);
+                const message = `Voice connection timed out after ${timeoutSeconds}s`;
+                console.error('[voice] WS connection timeout:', {
+                    readyState: ws.readyState,
+                    url: ws.url,
+                });
+                setError(message);
+                setState('error');
+                releaseSessionResources(4000, 'connection timeout');
+            }, VOICE_WS_CONNECT_TIMEOUT_MS);
 
             // Hook up the worklet → WS pipe. The worklet posts two kinds of
             // messages: { type:'pcm', buffer } (forwarded over the WS) and
@@ -410,6 +444,7 @@ export function useVoiceConversation(
             playbackQueueTimeRef.current = playbackContext.currentTime;
 
             ws.onopen = () => {
+                clearConnectTimeout();
                 // First text frame on every voice session: hand the AI
                 // service the frontend-implemented tool capability shapes.
                 // The backend blocks the pipeline build until this arrives,
@@ -548,12 +583,14 @@ export function useVoiceConversation(
             };
 
             ws.onerror = (event) => {
+                clearConnectTimeout();
                 console.error('[voice] WS error event:', event);
                 setError('Voice connection error');
                 setState('error');
             };
 
             ws.onclose = (event) => {
+                clearConnectTimeout();
                 // closure-captured `state` is stale; use the setter form.
                 setState((prev) => {
                     if (prev === 'idle') return prev;
@@ -568,12 +605,13 @@ export function useVoiceConversation(
             console.error('[voice] start failed:', err);
             setError((err as Error).message || 'Failed to start voice session');
             setState('error');
-            stop();
+            releaseSessionResources(4001, 'start failed');
         }
     }, [
         state,
+        clearConnectTimeout,
         openWs,
-        stop,
+        releaseSessionResources,
         options.agentMode,
         options.clientSessionId,
         options.conversationRole,

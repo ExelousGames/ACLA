@@ -33,6 +33,10 @@ import {
     isProcedurePlanStartEvent,
     type ProcedurePlan,
 } from './ai-chat-plan';
+import {
+    BaselineCollectionTracker,
+    type BaselineCollectionTag,
+} from './BaselineCollectionTracker';
 
 type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
 
@@ -41,7 +45,6 @@ type Emotion = typeof EMOTIONS[number];
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
-const BASELINE_PROGRESS_MESSAGE_ID = 'live-baseline-progress';
 const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
@@ -283,6 +286,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const trackGuideRunTokenRef = useRef(0);
     const activeAgentTagsRef = useRef<string[]>([]);
     const activeAgentSessionRef = useRef<AgentSessionInfo | null>(null);
+    const baselineCollectionTagRef = useRef<BaselineCollectionTag | null>(null);
     const agentVoiceStopRef = useRef<() => void>(() => undefined);
     const mainVoiceStopRef = useRef<() => void>(() => undefined);
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
@@ -375,74 +379,17 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         broadcastPillMessage('', { tags: [] });
     }, [broadcastPillMessage]);
 
-    useEffect(() => {
-        if (sessionMode !== 'live' || !livePerformanceAnalystEnabled) {
-            setAgentMessages(prev => {
-                if (!prev.some((message) => message.id === BASELINE_PROGRESS_MESSAGE_ID)) {
-                    return prev;
-                }
-                return prev.filter((message) => message.id !== BASELINE_PROGRESS_MESSAGE_ID);
-            });
-            return;
-        }
+    const handleBaselineCollectionTagChange = useCallback((tag: BaselineCollectionTag | null) => {
+        baselineCollectionTagRef.current = tag;
+    }, []);
 
-        const snapshot = analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.();
-        if (!snapshot || snapshot.status === 'empty') {
-            return;
-        }
+    const getBaselineCollectionTag = useCallback(() => baselineCollectionTagRef.current, []);
 
-        const value = Math.max(0, Math.min(100, Number(snapshot.baseline_progress_percent ?? 0)));
-        const detail = snapshot.baseline_ready
-            ? 'Baseline complete. Classifier request is ready.'
-            : snapshot.baseline_collection_started
-                ? `Lap ${snapshot.current_lap + 1} baseline`
-                : 'Start at normalized position 0';
-
-        setAgentMessages(prev => {
-            const progressMessage: Message = {
-                id: BASELINE_PROGRESS_MESSAGE_ID,
-                content: 'Collecting baseline',
-                isUser: false,
-                timestamp: new Date(),
-                kind: 'progress',
-                progress: {
-                    label: 'Collecting baseline',
-                    value,
-                    detail,
-                    startMarkerLabel: 'Start',
-                    startMarkerValue: 0,
-                },
-            };
-
-            const existingIndex = prev.findIndex((message) => message.id === BASELINE_PROGRESS_MESSAGE_ID);
-            if (existingIndex === -1) {
-                return prev.concat(progressMessage);
-            }
-
-            const existingProgress = prev[existingIndex].progress;
-            if (
-                existingProgress?.value === value
-                && existingProgress.detail === detail
-                && existingProgress.label === progressMessage.progress?.label
-                && existingProgress.startMarkerLabel === progressMessage.progress?.startMarkerLabel
-                && existingProgress.startMarkerValue === progressMessage.progress?.startMarkerValue
-            ) {
-                return prev;
-            }
-
-            const next = prev.slice();
-            next[existingIndex] = {
-                ...next[existingIndex],
-                progress: progressMessage.progress,
-            };
-            return next;
-        });
-    }, [
-        analysisContext?.liveData,
-        analysisContext?.sessionIntelligence,
-        livePerformanceAnalystEnabled,
-        sessionMode,
-    ]);
+    const updateBaselineAgentMessages = useCallback((
+        updater: (messages: any[]) => any[],
+    ) => {
+        setAgentMessages(prev => updater(prev) as Message[]);
+    }, []);
 
     const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
         if (!enabled) {
@@ -905,6 +852,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         advanceProcedurePlanStep,
+        getBaselineCollectionTag,
         getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
@@ -931,6 +879,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCircuitMapByTrack,
         getLabelName,
         getOpportunityTelemetryRows,
+        getBaselineCollectionTag,
         getProcedurePlan,
         resolvedSessionId,
         sessionMode,
@@ -988,6 +937,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         advanceProcedurePlanStep,
+        getBaselineCollectionTag,
         getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
@@ -1013,6 +963,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCircuitMapByTrack,
         getLabelName,
         getOpportunityTelemetryRows,
+        getBaselineCollectionTag,
         getProcedurePlan,
         resolvedSessionId,
         sessionMode,
@@ -1116,6 +1067,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 setTrackGuideEnabled: setTrackGuideAgentEnabled,
                 setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
                 advanceProcedurePlanStep,
+                getBaselineCollectionTag,
                 getProcedurePlan,
                 clearProcedurePlan,
                 setProcedurePlan,
@@ -1146,6 +1098,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCircuitMapByTrack,
         getLabelName,
         getOpportunityTelemetryRows,
+        getBaselineCollectionTag,
         getProcedurePlan,
         resolvedSessionId,
         sessionMode,
@@ -1598,6 +1551,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     return (
         <div className="ai-chat">
+            <BaselineCollectionTracker
+                enabled={livePerformanceAnalystEnabled}
+                liveData={analysisContext?.liveData as Record<string, any> | null}
+                sessionMode={sessionMode}
+                sessionIntelligence={analysisContext?.sessionIntelligence}
+                onTagChange={handleBaselineCollectionTagChange}
+                updateAgentMessages={updateBaselineAgentMessages}
+            />
             <div className="ai-chat__grid-bg" aria-hidden="true" />
 
             {/* Header */}

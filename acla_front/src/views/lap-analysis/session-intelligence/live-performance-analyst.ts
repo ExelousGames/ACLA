@@ -53,7 +53,7 @@ export const LIVE_ANALYST_PLAN_GOAL = 'Collect a baseline and use recorded-sessi
 export const LIVE_ANALYST_START_PLAN_REQUESTS = [
     {
         type: 'driver_action',
-        subscriber: 'driver',
+        subscriber: 'baseline_collection',
         status: 'pending',
         title: 'Collect a clean baseline lap',
         detail: 'Complete one full lap before requesting classifier analysis.',

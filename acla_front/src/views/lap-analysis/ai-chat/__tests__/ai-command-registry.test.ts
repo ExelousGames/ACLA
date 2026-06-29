@@ -24,6 +24,7 @@ import {
 } from '../ai-command-registry';
 import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-analysis';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import { buildBaselineCollectionTag } from '../BaselineCollectionTracker';
 
 const labelNames: Record<string, string> = {
     brands_hatch: 'Brands Hatch',
@@ -648,6 +649,9 @@ describe('ai command registry live performance analyst tools', () => {
             }),
             setAgentTagActive: jest.fn(),
             getOpportunityTelemetryRows: () => [],
+            getBaselineCollectionTag: () => buildBaselineCollectionTag(
+                sessionIntelligence.getLiveSessionSnapshot() as unknown as Record<string, any>,
+            ),
             getLabelName: (labelId) => labelNames[labelId] || labelId,
             getCategoryLabels: (category) => categories[category] ?? [],
             ...overrides,
@@ -1069,6 +1073,91 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
+    it('does not mark the baseline collection step complete while baseline progress is still zero', async () => {
+        const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Static_car_model: 'Ferrari 296',
+            Graphics_completed_laps: 0,
+            Graphics_normalized_car_position: 0.2,
+        });
+        sessionIntelligence.startBaselineCollectionAtLapStart();
+
+        const advanceProcedurePlanStep = jest.fn();
+        const context: AiCommandRegistryContext = {
+            sessionMode: 'live',
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState: {
+                intervalId: null,
+                inFlight: false,
+                enabled: true,
+                lastObservationKey: null,
+                lastObservationAt: 0,
+                lastSpokenAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            getBaselineCollectionTag: () => buildBaselineCollectionTag(
+                sessionIntelligence.getLiveSessionSnapshot() as unknown as Record<string, any>,
+            ),
+            advanceProcedurePlanStep,
+            getProcedurePlan: () => ({
+                goal: 'Collect a baseline and use recorded-session analysis to choose a focus.',
+                requests: [
+                    {
+                        type: 'driver_action',
+                        subscriber: 'baseline_collection',
+                        status: 'pending',
+                        title: 'Collect a clean baseline lap',
+                        detail: 'Complete one full lap before requesting classifier analysis.',
+                    },
+                    {
+                        type: 'frontend_request',
+                        subscriber: 'live_recorded_analysis',
+                        status: 'pending',
+                        title: 'Request recorded-session classifier',
+                    },
+                ],
+                currentStep: 0,
+                sourceEvent: 'procedure_plan_started',
+            }),
+        };
+        const registry = createAiCommandRegistry(context);
+
+        const result = await registry.advance_plan_step(
+            { reason: 'baseline step completed' },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(sessionIntelligence.getLiveSessionSnapshot()).toMatchObject({
+            baseline_ready: false,
+            baseline_collection_started: false,
+            baseline_progress_percent: 0,
+        });
+        expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+            status: 'error',
+            error: 'baseline_collection_incomplete',
+            snapshot: {
+                baseline_ready: false,
+                baseline_progress_percent: 0,
+            },
+            tag: {
+                subscriber: 'baseline_collection',
+                ready: false,
+                progress_percent: 0,
+            },
+        });
+    });
+
     it('does not execute an unregistered next request while advancing the current step', async () => {
         const advanceProcedurePlanStep = jest.fn(() => ({
             status: 'advanced',
@@ -1253,7 +1342,7 @@ describe('ai command registry live performance analyst tools', () => {
             requests: [
                 expect.objectContaining({
                     type: 'driver_action',
-                    subscriber: 'driver',
+                    subscriber: 'baseline_collection',
                     title: 'Collect a clean baseline lap',
                 }),
                 expect.objectContaining({
@@ -1320,7 +1409,7 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'driver_action',
-                        subscriber: 'driver',
+                        subscriber: 'baseline_collection',
                         status: 'complete',
                         title: 'Collect a clean baseline lap',
                     },
@@ -1406,7 +1495,7 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'driver_action',
-                        subscriber: 'driver',
+                        subscriber: 'baseline_collection',
                         status: 'complete' as const,
                         title: 'Collect a clean baseline lap',
                     },
@@ -1497,7 +1586,7 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'driver_action',
-                        subscriber: 'driver',
+                        subscriber: 'baseline_collection',
                         status: 'complete',
                         title: 'Collect a clean baseline lap',
                     },
@@ -1546,7 +1635,7 @@ describe('ai command registry live performance analyst tools', () => {
             requests: [
                 expect.objectContaining({
                     type: 'driver_action',
-                    subscriber: 'driver',
+                    subscriber: 'baseline_collection',
                     title: 'Collect a clean baseline lap',
                 }),
                 expect.objectContaining({

@@ -238,6 +238,7 @@ describe('SessionIntelligence live analyst section state', () => {
             requests: [
                 expect.objectContaining({
                     type: 'driver_action',
+                    subscriber: 'baseline_collection',
                     title: 'Collect a clean baseline lap',
                 }),
                 expect.objectContaining({

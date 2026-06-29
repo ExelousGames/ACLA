@@ -35,6 +35,10 @@ import {
     buildPracticeTrackSummaryViews,
 } from 'views/user-summary/user-summary-model';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
+import {
+    BASELINE_COLLECTION_SUBSCRIBER,
+    type BaselineCollectionTag,
+} from './BaselineCollectionTracker';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
@@ -71,6 +75,7 @@ export type ProcedurePlanSubscriberResult = {
     status: Extract<ProcedurePlanStepStatus, 'complete' | 'blocked' | 'failed' | 'skipped'>;
     error?: string;
     message?: string;
+    tag?: BaselineCollectionTag;
 };
 export type ProcedurePlanSubscriber = (
     request: ProcedurePlanRequest,
@@ -102,6 +107,7 @@ export interface AiCommandRegistryContext {
     getProcedurePlan?: () => ProcedurePlan | null;
     clearProcedurePlan?: () => void;
     setProcedurePlan?: (plan: ProcedurePlan | null) => void;
+    getBaselineCollectionTag?: () => BaselineCollectionTag | null;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     startAgentSession?: (
         agentMode: AgentSessionMode,
@@ -637,6 +643,28 @@ const buildProcedurePlanSubscribers = (
         return { status: 'complete' };
     },
 
+    async [BASELINE_COLLECTION_SUBSCRIBER]() {
+        const tag = context.getBaselineCollectionTag?.() ?? null;
+        if (tag?.ready) {
+            return { status: 'complete', tag };
+        }
+
+        if (tag) {
+            return {
+                status: 'blocked',
+                error: 'baseline_collection_incomplete',
+                message: 'Complete one clean baseline lap before advancing the plan.',
+                tag,
+            };
+        }
+
+        return {
+            status: 'blocked',
+            error: 'baseline_collection_tag_missing',
+            message: 'The baseline collection tracker has not produced a readiness tag yet.',
+        };
+    },
+
     async live_recorded_analysis(request, _ctx, snapshot) {
         if (snapshot?.baseline_ready !== true) {
             return {
@@ -772,8 +800,8 @@ const shouldExecuteProcedurePlanRequest = (
     request: ProcedurePlanRequest | undefined,
 ): request is ProcedurePlanRequest => (
     Boolean(request?.subscriber)
-    && request?.subscriber !== 'driver'
     && !isProcedurePlanRequestDone(request)
+    && request?.subscriber !== 'driver'
 );
 
 const searchUserSummaryMapLevel = (
@@ -1253,10 +1281,12 @@ const buildProcedurePlanStepError = (
     error: string,
     message: string,
     snapshot?: Record<string, any> | null,
+    tag?: BaselineCollectionTag,
 ) => ({
     status: 'error',
     error,
     ...(snapshot ? { snapshot } : {}),
+    ...(tag ? { tag } : {}),
     message,
 });
 
@@ -1735,6 +1765,7 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
                         toolCallResult.error || toolCallResult.status,
                         toolCallResult.message || 'The procedure plan request could not be completed.',
                         snapshot,
+                        toolCallResult.tag,
                     );
                 }
             }
