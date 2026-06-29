@@ -47,6 +47,20 @@ describe('extractInlineFunctionCalls', () => {
         ]);
     });
 
+    it('handles inline function tags that are missing the closing name bracket', () => {
+        const result = extractInlineFunctionCalls(
+            '<function=start_agent_session{"agent_mode":"live_performance_analyst"}</function>',
+        );
+
+        expect(result.cleanText).toBe('');
+        expect(result.calls).toEqual([
+            {
+                name: 'start_agent_session',
+                arguments: { agent_mode: 'live_performance_analyst' },
+            },
+        ]);
+    });
+
     it('keeps malformed arguments available for diagnostics', () => {
         const result = extractInlineFunctionCalls(
             '<function=start_agent_session>agent_mode=track_guide</function>',

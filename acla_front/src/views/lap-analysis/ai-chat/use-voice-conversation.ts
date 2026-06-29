@@ -19,7 +19,7 @@ import { buildFormattedObservationFrame } from './voice-observation-formatter';
 import { getToolEnvelopeError, isToolOutputEnvelope } from './ai-tool-base';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
-const INLINE_FUNCTION_CALL_RE = /<function=([a-zA-Z0-9_.:-]+)>([\s\S]*?)<\/function>/g;
+const INLINE_FUNCTION_CALL_RE = /<function=([a-zA-Z0-9_.:-]+)\s*>?([\s\S]*?)<\/function>/g;
 
 export type VoiceConversationState =
     | 'idle'           // not connected
