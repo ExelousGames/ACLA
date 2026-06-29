@@ -151,6 +151,9 @@ export function useVoiceConversation(
     const playbackSerialRef = useRef<number>(0);
     const playbackIdleTimeoutRef = useRef<number | null>(null);
     const micDisabledRef = useRef(false);
+    const micLevelRef = useRef(0);
+    const pendingMicLevelRef = useRef<number | null>(null);
+    const micLevelFrameRef = useRef<number | null>(null);
     const sessionContextRef = useRef<AiSessionContext | null>(
         options.sessionContext ?? null,
     );
@@ -230,16 +233,53 @@ export function useVoiceConversation(
         querySchemaScopeRef.current = options.querySchemaScope ?? null;
     }, [options.querySchemaScope]);
 
+    const resetMicLevel = useCallback(() => {
+        if (micLevelFrameRef.current !== null) {
+            window.cancelAnimationFrame(micLevelFrameRef.current);
+            micLevelFrameRef.current = null;
+        }
+        pendingMicLevelRef.current = null;
+        if (micLevelRef.current !== 0) {
+            micLevelRef.current = 0;
+            setMicLevel(0);
+        }
+    }, []);
+
+    const commitMicLevel = useCallback((level: number) => {
+        const normalized = level > 1 ? 1 : level < 0 ? 0 : level;
+        if (Math.abs(micLevelRef.current - normalized) < 0.01) {
+            return;
+        }
+        micLevelRef.current = normalized;
+        setMicLevel(normalized);
+    }, []);
+
+    const scheduleMicLevel = useCallback((level: number) => {
+        pendingMicLevelRef.current = level;
+        if (micLevelFrameRef.current !== null) {
+            return;
+        }
+
+        micLevelFrameRef.current = window.requestAnimationFrame(() => {
+            micLevelFrameRef.current = null;
+            const nextLevel = pendingMicLevelRef.current;
+            pendingMicLevelRef.current = null;
+            if (nextLevel !== null) {
+                commitMicLevel(nextLevel);
+            }
+        });
+    }, [commitMicLevel]);
+
     const setMicDisabled = useCallback((disabled: boolean) => {
         micDisabledRef.current = disabled;
-        setMicDisabledState(disabled);
-        setMicLevel(0);
+        setMicDisabledState((previous) => previous === disabled ? previous : disabled);
+        resetMicLevel();
         try {
             micStreamRef.current?.getAudioTracks().forEach((track) => {
                 track.enabled = !disabled;
             });
         } catch { /* ignore */ }
-    }, []);
+    }, [resetMicLevel]);
 
     const stop = useCallback(() => {
         // Tear down in reverse order of construction. All steps are idempotent.
@@ -272,9 +312,9 @@ export function useVoiceConversation(
         }
         wsRef.current = null;
 
-        setMicLevel(0);
+        resetMicLevel();
         setState('idle');
-    }, []);
+    }, [resetMicLevel]);
 
     const start = useCallback(async () => {
         if (state !== 'idle' && state !== 'error') {
@@ -345,13 +385,13 @@ export function useVoiceConversation(
                 const data = event.data;
                 if (data && data.type === 'level') {
                     if (micDisabledRef.current) {
-                        setMicLevel(0);
+                        resetMicLevel();
                         return;
                     }
                     // Prefer peak — it's what the user perceives as "am I
                     // talking right now". RMS is averaged and looks sleepy.
                     const lvl = typeof data.peak === 'number' ? data.peak : 0;
-                    setMicLevel(lvl > 1 ? 1 : lvl < 0 ? 0 : lvl);
+                    scheduleMicLevel(lvl);
                     return;
                 }
                 if (!data || data.type !== 'pcm' || !data.buffer) return;
@@ -538,6 +578,8 @@ export function useVoiceConversation(
         options.clientSessionId,
         options.conversationRole,
         options.parentClientSessionId,
+        resetMicLevel,
+        scheduleMicLevel,
     ]);
 
     /**

@@ -176,8 +176,10 @@ export default function LiveAnalysisSessionRecording() {
         startInFlightRef.current = false;
         hasReceivedLiveSampleRef.current = false;
 
+        const ctx = analysisContextRef.current;
+
         if (reason === 'manual' || reason === 'complete') {
-            void analysisContext.finalizeRecordingWrites().catch((error) => {
+            void ctx.finalizeRecordingWrites().catch((error) => {
                 console.warn('Failed to finalize telemetry writer', error);
             });
         }
@@ -189,7 +191,7 @@ export default function LiveAnalysisSessionRecording() {
             }
             case 'error': {
                 recordingFileInfoRef.current = null;
-                analysisContext.clearRecordingSession();
+                ctx.clearRecordingSession();
                 transition({ type: 'recordingStopped', reason: 'error' });
                 break;
             }
@@ -201,7 +203,7 @@ export default function LiveAnalysisSessionRecording() {
                 transition({ type: 'recordingStopped', reason: 'complete' });
             }
         }
-    }, [analysisContext, transition]);
+    }, [transition]);
 
     /**
      * Process updates from the ACC session checking stream
@@ -389,8 +391,17 @@ export default function LiveAnalysisSessionRecording() {
         }
 
         startInFlightRef.current = true;
+        if (pythonMessageCleanupRef.current) {
+            pythonMessageCleanupRef.current();
+            pythonMessageCleanupRef.current = null;
+        }
+        if (pythonEndCleanupRef.current) {
+            pythonEndCleanupRef.current();
+            pythonEndCleanupRef.current = null;
+        }
 
-        analysisContext.setMap((analysisContext.recordedSessioStaticsData as any)?.track || analysisContext.mapSelected || 'Unknown Track');
+        const ctx = analysisContextRef.current;
+        ctx.setMap((ctx.recordedSessioStaticsData as any)?.track || ctx.mapSelected || 'Unknown Track');
         let folder = '../session_recording';
         let filename: string;
 
@@ -407,19 +418,19 @@ export default function LiveAnalysisSessionRecording() {
 
         if (!resumeExisting) {
             const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
-            analysisContext.setSession({
+            ctx.setSession({
                 session_name: newSessionName,
                 SessionId: '',
-                map: analysisContext.mapSelected || (analysisContext.recordedSessioStaticsData as any)?.track || 'Unknown Track',
+                map: ctx.mapSelected || (ctx.recordedSessioStaticsData as any)?.track || 'Unknown Track',
                 user_id: '',
                 points: [],
                 data: [],
-                car: (analysisContext.recordedSessioStaticsData as any)?.car_model || 'Unknown Car'
+                car: (ctx.recordedSessioStaticsData as any)?.car_model || 'Unknown Car'
             } as RacingSessionDetailedInfoDto as any);
         }
 
         // Reset live data to clear stale status
-        analysisContext.setLiveSessionData({});
+        ctx.setLiveSessionData({});
 
         hasReceivedLiveSampleRef.current = false;
         transition({ type: resumeExisting ? 'recordingResumed' : 'recordingStarted' });
@@ -438,7 +449,8 @@ export default function LiveAnalysisSessionRecording() {
                 try {
                     const obj = JSON.parse(message);
                     const status = obj.Graphics?.status;
-                    analysisContext.setLiveSessionData(obj);
+                    const latestContext = analysisContextRef.current;
+                    latestContext.setLiveSessionData(obj);
 
                     if (obj.available === false) {
                         wasUnavailable = true;
@@ -466,7 +478,7 @@ export default function LiveAnalysisSessionRecording() {
                         }
                         wasUnavailable = false;
                         lastValidObj = obj;
-                        void analysisContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
+                        void latestContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
                     }
 
                     if (status !== undefined && status !== null) {
@@ -499,7 +511,7 @@ export default function LiveAnalysisSessionRecording() {
         } finally {
             startInFlightRef.current = false;
         }
-    }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen, determineStopReason, stopRecordingProcess]);
+    }, [applyStopOutcome, canRecord, transition, determineStopReason, stopRecordingProcess]);
 
     useEffect(() => {
         if (state !== RecordingState.HOLDING) {
@@ -528,6 +540,25 @@ export default function LiveAnalysisSessionRecording() {
             }
         }
     }, [state, TelemetryDataLiveStatus, stopRecordingProcess]);
+
+    useEffect(() => {
+        return () => {
+            if (pythonMessageCleanupRef.current) {
+                pythonMessageCleanupRef.current();
+                pythonMessageCleanupRef.current = null;
+            }
+            if (pythonEndCleanupRef.current) {
+                pythonEndCleanupRef.current();
+                pythonEndCleanupRef.current = null;
+            }
+            const shellId = recordingShellIdRef.current;
+            recordingShellIdRef.current = null;
+            if (shellId !== null && window?.electronAPI?.stopPythonScript) {
+                void window.electronAPI.stopPythonScript(shellId).catch(() => undefined);
+            }
+            void stopSessionCheckingStream({ force: true });
+        };
+    }, [stopSessionCheckingStream]);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }

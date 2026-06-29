@@ -8,7 +8,7 @@ import { ChatBubbleIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/rea
 
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
-import React, { useContext, useEffect, useState, useRef, useCallback } from 'react';
+import React, { useContext, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { useEnvironment } from 'contexts/EnvironmentContext';
@@ -42,6 +42,8 @@ const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
 
 const TELEMETRY_WRITE_TIMEOUT_MS = 6000;
 const RECORDED_AI_ANALYSIS_TIMEOUT_MS = 120000;
+const LIVE_TELEMETRY_UI_UPDATE_MS = 100;
+const RECORDED_TELEMETRY_COUNT_UI_UPDATE_MS = 250;
 
 type TelemetryWriterEvent = {
     status?: string;
@@ -74,22 +76,51 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     const [recordedPlaybackSummary, setRecordedPlaybackSummary] = useState(createEmptyRecordedPlaybackSummary());
     const sessionIntelligenceRef = useRef<SessionIntelligence>(new SessionIntelligence());
     const recordedAiAnalysisCacheRef = useRef<Map<string, RecordedAiAnalysisState>>(new Map());
+    const liveDataRef = useRef<any>({});
+    const committedLiveDataRef = useRef<any>({});
+    const liveDataFlushTimeoutRef = useRef<number | null>(null);
+
+    const flushLiveData = useCallback(() => {
+        if (liveDataFlushTimeoutRef.current !== null) {
+            window.clearTimeout(liveDataFlushTimeoutRef.current);
+            liveDataFlushTimeoutRef.current = null;
+        }
+
+        const nextLiveData = liveDataRef.current && typeof liveDataRef.current === 'object'
+            ? liveDataRef.current
+            : {};
+
+        if (committedLiveDataRef.current === nextLiveData) {
+            return;
+        }
+
+        if (Object.keys(nextLiveData).length === 0 && Object.keys(committedLiveDataRef.current).length === 0) {
+            return;
+        }
+
+        committedLiveDataRef.current = nextLiveData;
+        setLiveData(nextLiveData);
+    }, []);
+
+    const scheduleLiveDataFlush = useCallback(() => {
+        if (liveDataFlushTimeoutRef.current !== null) {
+            return;
+        }
+
+        liveDataFlushTimeoutRef.current = window.setTimeout(flushLiveData, LIVE_TELEMETRY_UI_UPDATE_MS);
+    }, [flushLiveData]);
 
     const setLiveSessionData = useCallback((data: {}) => {
-        const hasLiveData = Object.keys(data).length > 0;
+        const nextLiveData = data && typeof data === 'object' ? data : {};
+        const hasLiveData = Object.keys(nextLiveData).length > 0;
 
-        setLiveData((previous) => {
-            if (!hasLiveData && Object.keys(previous).length === 0) {
-                return previous;
-            }
-
-            return data;
-        });
+        liveDataRef.current = nextLiveData;
+        scheduleLiveDataFlush();
 
         if (hasLiveData) {
-            sessionIntelligenceRef.current.tick(data as any);
+            sessionIntelligenceRef.current.tick(nextLiveData as any);
         }
-    }, []);
+    }, [scheduleLiveDataFlush]);
 
     // Use ref to persist file path during recording to prevent state reset issues
     const recordingFilePathRef = useRef<string | null>(null);
@@ -99,6 +130,58 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     const telemetryWriterFilePathRef = useRef<string | null>(null);
     const telemetryWriterPendingRef = useRef<Map<string, PendingTelemetryWrite>>(new Map());
     const telemetryWriterSequenceRef = useRef(0);
+    const recordedTelemetryDataCountRef = useRef(0);
+    const committedRecordedTelemetryDataCountRef = useRef(0);
+    const telemetryCountFlushTimeoutRef = useRef<number | null>(null);
+
+    const setRecordingSessionDataFilePath = useCallback((filePath: string | null) => {
+        recordingFilePathRef.current = filePath;
+        setRecordedSessionDataFilePath(filePath);
+    }, []);
+
+    const flushRecordedTelemetryDataCount = useCallback(() => {
+        if (telemetryCountFlushTimeoutRef.current !== null) {
+            window.clearTimeout(telemetryCountFlushTimeoutRef.current);
+            telemetryCountFlushTimeoutRef.current = null;
+        }
+
+        const nextCount = recordedTelemetryDataCountRef.current;
+        if (committedRecordedTelemetryDataCountRef.current === nextCount) {
+            return;
+        }
+
+        committedRecordedTelemetryDataCountRef.current = nextCount;
+        setRecordedTelemetryDataCount(nextCount);
+    }, []);
+
+    const scheduleRecordedTelemetryDataCountFlush = useCallback(() => {
+        if (telemetryCountFlushTimeoutRef.current !== null) {
+            return;
+        }
+
+        telemetryCountFlushTimeoutRef.current = window.setTimeout(
+            flushRecordedTelemetryDataCount,
+            RECORDED_TELEMETRY_COUNT_UI_UPDATE_MS
+        );
+    }, [flushRecordedTelemetryDataCount]);
+
+    const incrementRecordedTelemetryDataCount = useCallback(() => {
+        recordedTelemetryDataCountRef.current += 1;
+        scheduleRecordedTelemetryDataCountFlush();
+    }, [scheduleRecordedTelemetryDataCountFlush]);
+
+    const resetRecordedTelemetryDataCount = useCallback(() => {
+        if (telemetryCountFlushTimeoutRef.current !== null) {
+            window.clearTimeout(telemetryCountFlushTimeoutRef.current);
+            telemetryCountFlushTimeoutRef.current = null;
+        }
+
+        recordedTelemetryDataCountRef.current = 0;
+        if (committedRecordedTelemetryDataCountRef.current !== 0) {
+            committedRecordedTelemetryDataCountRef.current = 0;
+            setRecordedTelemetryDataCount(0);
+        }
+    }, []);
 
     const disposeTelemetryWriter = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
         const cleanup = telemetryWriterCleanupRef.current;
@@ -215,8 +298,9 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             writeQueueRef.current = Promise.resolve();
         }
 
+        flushRecordedTelemetryDataCount();
         await disposeTelemetryWriter({ force: false });
-    }, [disposeTelemetryWriter]);
+    }, [disposeTelemetryWriter, flushRecordedTelemetryDataCount]);
 
     const runRecordedAiAnalysis = useCallback(async ({ force = false }: { force?: boolean } = {}): Promise<RecordedAiAnalysisState> => {
         const sessionId = sessionSelected?.SessionId;
@@ -272,7 +356,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     }, [sessionSelected?.SessionId]);
 
     // File-based telemetry data functions
-    const writeRecordedLiveSessionData = async (data: any): Promise<void> => {
+    const writeRecordedLiveSessionData = useCallback(async (data: any): Promise<void> => {
         const enqueueWrite = async () => {
             let currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
 
@@ -280,9 +364,8 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
                 const timestamp = new Date().getTime();
                 const sessionId = sessionSelected?.SessionId || 'unknown';
                 currentFilePath = `../session_recording/temp/telemetry_${sessionId}_${timestamp}.jsonl`;
-                setRecordedSessionDataFilePath(currentFilePath);
-                recordingFilePathRef.current = currentFilePath;
-                setRecordedTelemetryDataCount(0);
+                setRecordingSessionDataFilePath(currentFilePath);
+                resetRecordedTelemetryDataCount();
             }
 
             const session = await ensureTelemetryWriter(currentFilePath);
@@ -328,7 +411,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             }
 
             await ackPromise;
-            setRecordedTelemetryDataCount(prev => prev + 1);
+            incrementRecordedTelemetryDataCount();
         };
 
         const nextWrite = writeQueueRef.current.then(enqueueWrite);
@@ -348,9 +431,16 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             }
             throw error;
         });
-    };
+    }, [
+        ensureTelemetryWriter,
+        incrementRecordedTelemetryDataCount,
+        recordedSessionDataFilePath,
+        resetRecordedTelemetryDataCount,
+        sessionSelected?.SessionId,
+        setRecordingSessionDataFilePath
+    ]);
 
-    const readRecordedSessionData = async (onProgress?: (read: number, total: number | null, bytesRead?: number, totalBytes?: number) => void): Promise<any[]> => {
+    const readRecordedSessionData = useCallback(async (onProgress?: (read: number, total: number | null, bytesRead?: number, totalBytes?: number) => void): Promise<any[]> => {
         const currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
         console.log('readRecordedSessionData called with file path:', currentFilePath);
 
@@ -424,23 +514,22 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             console.error('Error reading telemetry data from file:', error);
             return [];
         }
-    };
+    }, [recordedSessionDataFilePath]);
 
     // Clear recording session (reset file paths and counters)
-    const clearRecordingSession = (): void => {
+    const clearRecordingSession = useCallback((): void => {
         console.log('Clearing recording session');
-        setRecordedSessionDataFilePath(null);
-        recordingFilePathRef.current = null;
-        setRecordedTelemetryDataCount(0);
+        setRecordingSessionDataFilePath(null);
+        resetRecordedTelemetryDataCount();
         writeQueueRef.current = Promise.resolve();
         sessionIntelligenceRef.current.reset();
         void disposeTelemetryWriter({ force: true });
-    };
+    }, [disposeTelemetryWriter, resetRecordedTelemetryDataCount, setRecordingSessionDataFilePath]);
 
     // Function to send guidance messages to chat
-    const sendGuidanceToChat = (message: string) => {
-        setLatestGuidanceMessage(message);
-    };
+    const sendGuidanceToChat = useCallback((message: string) => {
+        setLatestGuidanceMessage((previous) => previous === message ? previous : message);
+    }, []);
 
     useEffect(() => {
         if (!liveData || typeof liveData !== 'object') {
@@ -489,6 +578,14 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
 
     useEffect(() => {
         return () => {
+            if (liveDataFlushTimeoutRef.current !== null) {
+                window.clearTimeout(liveDataFlushTimeoutRef.current);
+                liveDataFlushTimeoutRef.current = null;
+            }
+            if (telemetryCountFlushTimeoutRef.current !== null) {
+                window.clearTimeout(telemetryCountFlushTimeoutRef.current);
+                telemetryCountFlushTimeoutRef.current = null;
+            }
             void disposeTelemetryWriter({ force: true });
         };
     }, [disposeTelemetryWriter]);
@@ -500,39 +597,59 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             ? recordedAiAnalysisCacheRef.current.get(sessionId) || createIdleRecordedAiAnalysis(sessionId)
             : createIdleRecordedAiAnalysis());
     }, [sessionSelected?.SessionId]);
-
+    const contextValue = useMemo(() => ({
+        activeTab,
+        mapSelected,
+        sessionSelected,
+        liveData,
+        recordedSessionDataFilePath,
+        recordedTelemetryDataCount,
+        recordedSessioStaticsData,
+        activeVisualizations,
+        latestGuidanceMessage,
+        sessionIntelligence: sessionIntelligenceRef.current,
+        recordedAiAnalysis,
+        recordedPlaybackSummary,
+        setMap,
+        setSession,
+        setLiveSessionData,
+        setRecordedSessionStaticsData,
+        setRecordedSessionDataFilePath: setRecordingSessionDataFilePath,
+        setRecordedPlaybackSummary,
+        runRecordedAiAnalysis,
+        setActiveTab,
+        writeRecordedLiveSessionData,
+        readRecordedSessionData,
+        finalizeRecordingWrites,
+        clearRecordingSession,
+        setActiveVisualizations,
+        sendGuidanceToChat,
+        TelemetryDataLiveStatus
+    }), [
+        activeTab,
+        activeVisualizations,
+        clearRecordingSession,
+        finalizeRecordingWrites,
+        latestGuidanceMessage,
+        liveData,
+        mapSelected,
+        readRecordedSessionData,
+        recordedAiAnalysis,
+        recordedPlaybackSummary,
+        recordedSessionDataFilePath,
+        recordedSessioStaticsData,
+        recordedTelemetryDataCount,
+        runRecordedAiAnalysis,
+        sendGuidanceToChat,
+        sessionSelected,
+        setLiveSessionData,
+        setRecordingSessionDataFilePath,
+        TelemetryDataLiveStatus,
+        writeRecordedLiveSessionData
+    ]);
 
     return (
-        <AnalysisContext.Provider value={{
-            activeTab,
-            mapSelected,
-            sessionSelected,
-            liveData,
-            recordedSessionDataFilePath,
-            recordedTelemetryDataCount,
-            recordedSessioStaticsData,
-            activeVisualizations,
-            latestGuidanceMessage,
-            sessionIntelligence: sessionIntelligenceRef.current,
-            recordedAiAnalysis,
-            recordedPlaybackSummary,
-            setMap,
-            setSession,
-            setLiveSessionData,
-            setRecordedSessionStaticsData,
-            setRecordedSessionDataFilePath,
-            setRecordedPlaybackSummary,
-            runRecordedAiAnalysis,
-            setActiveTab,
-            writeRecordedLiveSessionData,
-            readRecordedSessionData,
-            finalizeRecordingWrites,
-            clearRecordingSession,
-            setActiveVisualizations,
-            sendGuidanceToChat
-            ,
-            TelemetryDataLiveStatus
-        }}>
+        <AnalysisContext.Provider value={contextValue}>
             {children}
         </AnalysisContext.Provider>
     )
