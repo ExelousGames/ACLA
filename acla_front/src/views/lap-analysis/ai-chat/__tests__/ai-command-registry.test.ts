@@ -24,7 +24,7 @@ import {
 } from '../ai-command-registry';
 import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-analysis';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
-import { buildBaselineCollectionTag } from '../BaselineCollectionTracker';
+import { buildBaselineCollectionTag, type BaselineLapRecord } from '../BaselineCollectionTracker';
 import apiService from 'services/api.service';
 
 const labelNames: Record<string, string> = {
@@ -143,7 +143,7 @@ describe('ai command registry user summary tools', () => {
             getOpportunityTelemetryRows: () => [],
             getCircuitMapById: jest.fn(async () => ({
                 id: 'brands_hatch',
-                game: 'acc',
+                game: 'acc' as const,
                 circuit_name: 'Brands Hatch GP',
                 source_track_key: 'brands_hatch',
                 updated_at: null,
@@ -942,7 +942,7 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
-    it('executes the active tool_call request and returns AI-visible output before advancing', async () => {
+    it('advances the visible plan without executing active tool_call requests', async () => {
         const advanceProcedurePlanStep = jest.fn(() => ({
             status: 'advanced',
             current_step: 1,
@@ -973,25 +973,14 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('snapshot requested');
-        expect(result).toMatchObject({
+        expect(result).toEqual({
             status: 'advanced',
             current_step: 1,
-            executed_tool: {
-                name: 'get_live_session_snapshot',
-                arguments: {},
-                result_visibility: 'ai',
-            },
-            tool_result: {
-                status: 'ready',
-                agent_mode: 'live_performance_analyst',
-                snapshot: {
-                    baseline_ready: true,
-                },
-            },
+            step: 'Use the snapshot.',
         });
     });
 
-    it('executes tag-only active tool_call requests without returning full tool output', async () => {
+    it('advances tag-only plan requests without executing the tagged tool', async () => {
         const advanceProcedurePlanStep = jest.fn(() => ({
             status: 'complete',
             current_step: 0,
@@ -1024,19 +1013,10 @@ describe('ai command registry live performance analyst tools', () => {
             status: 'complete',
             current_step: 0,
             step: 'Show current state.',
-            executed_tool: {
-                name: 'get_live_session_snapshot',
-                arguments: {},
-                result_visibility: 'tag',
-            },
-            tool_result: {
-                status: 'completed',
-                result_visibility: 'tag',
-            },
         });
     });
 
-    it('blocks plan advancement until the baseline prerequisite is complete', async () => {
+    it('does not use baseline prerequisites to block visible plan advancement', async () => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.tick({
             Static_track: 'brands_hatch',
@@ -1045,7 +1025,11 @@ describe('ai command registry live performance analyst tools', () => {
             Graphics_completed_laps: 0,
             Graphics_normalized_car_position: 0.2,
         });
-        const advanceProcedurePlanStep = jest.fn();
+        const advanceProcedurePlanStep = jest.fn(() => ({
+            status: 'advanced',
+            current_step: 2,
+            step: 'Select the focus section.',
+        }));
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
             sessionIntelligence,
@@ -1067,6 +1051,22 @@ describe('ai command registry live performance analyst tools', () => {
             setTrackGuideEnabled: jest.fn(),
             getOpportunityTelemetryRows: () => [],
             advanceProcedurePlanStep,
+            getBaselineCollectionTag: () => buildBaselineCollectionTag({
+                status: 'ready',
+                track: 'brands_hatch',
+                car: 'Ferrari 296',
+                current_lap: 0,
+                completed_laps: 0,
+                normalized_position: 0.2,
+                sample_count: 1,
+                live_session_type: 'solo_practice',
+                baseline_ready: false,
+                baseline_collection_started: true,
+                baseline_progress_percent: 20,
+                baseline_lap: 0,
+                completed_lap_count: 0,
+                section_count: 0,
+            }),
             getProcedurePlan: () => ({
                 goal: 'Run live analysis from a clean baseline.',
                 requests: [
@@ -1085,17 +1085,14 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('skip ahead');
         expect(result).toMatchObject({
-            status: 'error',
-            error: 'baseline_collection_incomplete',
-            snapshot: {
-                baseline_ready: false,
-            },
+            status: 'advanced',
+            current_step: 2,
         });
     });
 
-    it('does not mark the baseline collection step complete while baseline progress is still zero', async () => {
+    it('leaves baseline readiness to the baseline component when advancing the visible plan', async () => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.tick({
             Static_track: 'brands_hatch',
@@ -1106,7 +1103,11 @@ describe('ai command registry live performance analyst tools', () => {
         });
         sessionIntelligence.startBaselineCollectionAtLapStart();
 
-        const advanceProcedurePlanStep = jest.fn();
+        const advanceProcedurePlanStep = jest.fn(() => ({
+            status: 'advanced',
+            current_step: 1,
+            step: 'Request recorded-session classifier',
+        }));
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
             sessionIntelligence,
@@ -1164,20 +1165,106 @@ describe('ai command registry live performance analyst tools', () => {
             baseline_collection_started: false,
             baseline_progress_percent: 0,
         });
-        expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
+        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline step completed');
         expect(result).toMatchObject({
-            status: 'error',
-            error: 'baseline_collection_incomplete',
-            snapshot: {
-                baseline_ready: false,
-                baseline_progress_percent: 0,
-            },
-            tag: {
-                subscriber: 'baseline_collection',
-                ready: false,
-                progress_percent: 0,
+            status: 'advanced',
+            current_step: 1,
+        });
+    });
+
+    it('returns immediately until a recorded baseline lap is cached, then runs live recorded analysis', async () => {
+        (apiService.post as jest.Mock).mockResolvedValueOnce({
+            data: {
+                status: 'success',
+                session_id: 'live-baseline',
+                samples_analyzed: 2,
+                segment_count: 1,
+                segments: [
+                    {
+                        id: 'live-segment-1',
+                        start_index: 0,
+                        end_index: 1,
+                        main_label_id: 'brands_hatch2',
+                        labels: ['brands_hatch2', 'late_brake'],
+                        child_segments: [],
+                    },
+                ],
             },
         });
+        let cachedRecord: BaselineLapRecord | null = null;
+        const currentTag = buildBaselineCollectionTag({
+            status: 'ready',
+            track: 'brands_hatch',
+            car: 'Ferrari 296',
+            current_lap: 0,
+            completed_laps: 0,
+            normalized_position: 0.42,
+            sample_count: 2,
+            live_session_type: 'solo_practice',
+            baseline_ready: false,
+            baseline_collection_started: true,
+            baseline_progress_percent: 42,
+            baseline_lap: 0,
+            completed_lap_count: 0,
+            section_count: 0,
+        });
+        const { registry } = createLiveAnalystRegistry({
+            getBaselineCollectionTag: () => currentTag,
+            getBaselineLapRecord: () => cachedRecord,
+        });
+
+        const missingResult = await registry.analyze_live_recorded_analysis(
+            { limit: 5 },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(missingResult).toMatchObject({
+            status: 'error',
+            error: 'baseline_lap_record_required',
+            message: expect.stringContaining('recorded baseline lap'),
+        });
+        expect(apiService.post).not.toHaveBeenCalled();
+
+        cachedRecord = {
+            id: 'brands_hatch:Ferrari 296:0:2',
+            lap: 0,
+            captured_at: 1,
+            track: 'brands_hatch',
+            car: 'Ferrari 296',
+            sample_count: 2,
+            snapshot: {
+                baseline_ready: true,
+                baseline_progress_percent: 100,
+            },
+            records: [
+                { Graphics_completed_laps: 0, Graphics_normalized_car_position: 0.01 },
+                { Graphics_completed_laps: 0, Graphics_normalized_car_position: 0.99 },
+            ],
+        };
+
+        await expect(registry.analyze_live_recorded_analysis(
+            { limit: 5 },
+            { sendObservation: jest.fn() },
+        )).resolves.toMatchObject({
+            status: 'ready',
+            source: 'baseline_lap_record',
+            baseline: {
+                id: cachedRecord.id,
+                lap: 0,
+                sample_count: 2,
+            },
+            analysis: {
+                samples_analyzed: 2,
+                segment_count: 1,
+                returned_segment_count: 1,
+            },
+        });
+        expect(apiService.post).toHaveBeenCalledWith('/racing-session/analyze-live-recorded-analysis', {
+            track: cachedRecord.track,
+            car: cachedRecord.car,
+            baseline_lap: cachedRecord.lap,
+            records: cachedRecord.records,
+        }, { timeout: 120000 });
     });
 
     it('does not execute an unregistered next request while advancing the current step', async () => {
@@ -1544,14 +1631,14 @@ describe('ai command registry live performance analyst tools', () => {
         const sendObservation = jest.fn();
         sessionIntelligence.onLiveAnalystObservation(sendObservation);
 
-        const result = await registry.advance_plan_step(
-            { reason: 'run active classifier request' },
+        const result = await registry.analyze_live_recorded_analysis(
+            { limit: 8 },
             { sendObservation: jest.fn() },
         );
 
         expect(result).toMatchObject({
-            status: 'complete',
-            current_request: 1,
+            status: 'ready',
+            source: 'baseline_lap_record',
         });
         expect(apiService.post).toHaveBeenCalledWith(
             '/racing-session/analyze-live-recorded-analysis',
@@ -1564,7 +1651,7 @@ describe('ai command registry live performance analyst tools', () => {
             expect.objectContaining({ timeout: 120000 }),
         );
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
-        expect(advanceProcedurePlanStep).toHaveBeenCalledWith('run active classifier request');
+        expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_ready',
             analysis: expect.objectContaining({
@@ -1654,8 +1741,8 @@ describe('ai command registry live performance analyst tools', () => {
             {},
             { sendObservation: toolContextSendObservation },
         );
-        const result = await registry.advance_plan_step(
-            { reason: 'baseline complete' },
+        const result = await registry.analyze_live_recorded_analysis(
+            { limit: 8 },
             { sendObservation: toolContextSendObservation },
         );
 
@@ -1663,12 +1750,12 @@ describe('ai command registry live performance analyst tools', () => {
             status: 'error',
             error: 'baseline_lap_record_required',
             snapshot: {
-                baseline_ready: true,
+                baseline_ready: false,
             },
         });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'baseline_lap_record_required',
-            message: expect.stringContaining('cached lap records'),
+            message: expect.stringContaining('recorded baseline lap'),
         }));
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',

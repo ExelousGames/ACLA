@@ -24,10 +24,8 @@ import {
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
     buildProcedurePlan,
-    isProcedurePlanRequestDone,
     type ProcedurePlan,
     type ProcedurePlanRequest,
-    type ProcedurePlanStepStatus,
 } from './ai-chat-plan';
 import {
     PracticeParentSegmentView,
@@ -37,7 +35,6 @@ import {
 } from 'views/user-summary/user-summary-model';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
-    BASELINE_COLLECTION_SUBSCRIBER,
     type BaselineLapRecord,
     type BaselineCollectionTag,
 } from './BaselineCollectionTracker';
@@ -73,18 +70,6 @@ export type AgentSessionStopResult = {
     error?: string;
     message?: string;
 };
-export type ProcedurePlanSubscriberResult = {
-    status: Extract<ProcedurePlanStepStatus, 'complete' | 'blocked' | 'failed' | 'skipped'>;
-    error?: string;
-    message?: string;
-    tag?: BaselineCollectionTag;
-};
-export type ProcedurePlanSubscriber = (
-    request: ProcedurePlanRequest,
-    ctx: ToolHandlerContext,
-    snapshot?: Record<string, any> | null,
-) => Promise<ProcedurePlanSubscriberResult>;
-
 export interface AiCommandRegistryContext {
     sessionId?: string;
     sessionMode?: 'live' | 'recorded' | 'user_summary';
@@ -131,7 +116,6 @@ export interface AiCommandRegistryContext {
         sourceTrackKey: string | null | undefined,
     ) => Promise<CircuitMapDto | null>;
     displayMap?: (display: AiMapDisplayPayload) => void;
-    procedurePlanSubscribers?: Record<string, ProcedurePlanSubscriber>;
 }
 
 export interface OpportunityAgentState {
@@ -573,22 +557,6 @@ const getSelectedSessionId = (context: AiCommandRegistryContext): string | null 
     return selectedSession?.SessionId || context.sessionId || null;
 };
 
-const toRequestPayloadRecord = (request: ProcedurePlanRequest): Record<string, any> => (
-    request.payload && typeof request.payload === 'object' && !Array.isArray(request.payload)
-        ? request.payload as Record<string, any>
-        : {}
-);
-
-const getProcedurePlanToolName = (request: ProcedurePlanRequest): string | undefined => {
-    const payload = toRequestPayloadRecord(request);
-    return normalizeOptionalString(
-        request.name
-        ?? payload.name
-        ?? payload.tool
-        ?? payload.tool_name,
-    );
-};
-
 const normalizeAgentSessionMode = (value: unknown): AgentSessionMode | null => (
     value === 'track_guide'
     || value === 'overtake'
@@ -597,57 +565,20 @@ const normalizeAgentSessionMode = (value: unknown): AgentSessionMode | null => (
         : null
 );
 
-const getProcedurePlanToolArguments = (request: ProcedurePlanRequest): Record<string, any> => {
-    const payload = toRequestPayloadRecord(request);
-    const explicitArgs = payload.arguments ?? payload.args ?? payload.parameters ?? payload.params;
-    if (explicitArgs && typeof explicitArgs === 'object' && !Array.isArray(explicitArgs)) {
-        return explicitArgs as Record<string, any>;
-    }
-
-    const {
-        name: _name,
-        tool: _tool,
-        tool_name: _toolName,
-        arguments: _arguments,
-        args: _args,
-        parameters: _parameters,
-        params: _params,
-        output: _output,
-        result_visibility: _resultVisibility,
-        resultVisibility: _camelResultVisibility,
-        ...rest
-    } = payload;
-    return rest;
-};
-
-const getProcedurePlanToolResultVisibility = (request: ProcedurePlanRequest): 'ai' | 'tag' => {
-    const payload = toRequestPayloadRecord(request);
-    const visibility = normalizeOptionalString(
-        request.result_visibility
-        ?? request.output
-        ?? payload.result_visibility
-        ?? payload.resultVisibility
-        ?? payload.output,
-    )?.toLowerCase();
-
-    return visibility && ['tag', 'tags', 'ui', 'hidden', 'none'].includes(visibility)
-        ? 'tag'
-        : 'ai';
-};
-
 const runRecordedAnalysisForLiveRequest = async (
     context: AiCommandRegistryContext,
     args: Record<string, any> = {},
+    baselineRecordOverride?: BaselineLapRecord | null,
 ): Promise<
     | { status: 'ready'; analysis: ReturnType<typeof buildLiveRecordedAnalysisToolResult> }
     | { status: 'error'; error: LiveAnalystRecordedAnalysisError; message: string }
 > => {
-    const baselineRecord = context.getBaselineLapRecord?.() ?? null;
+    const baselineRecord = baselineRecordOverride ?? context.getBaselineLapRecord?.() ?? null;
     if (!baselineRecord || baselineRecord.records.length === 0) {
         return {
             status: 'error',
             error: 'baseline_lap_record_required',
-            message: 'Live performance analysis needs the baseline component cached lap records before it can request classifier analysis.',
+            message: 'Live performance analysis requires a recorded baseline lap before it can request classifier analysis.',
         };
     }
 
@@ -672,172 +603,12 @@ const runRecordedAnalysisForLiveRequest = async (
     }
 };
 
-const buildProcedurePlanSubscribers = (
+const getCachedBaselineLapRecord = (
     context: AiCommandRegistryContext,
-): Record<string, ProcedurePlanSubscriber> => ({
-    async driver() {
-        return { status: 'complete' };
-    },
-
-    async [BASELINE_COLLECTION_SUBSCRIBER]() {
-        const tag = context.getBaselineCollectionTag?.() ?? null;
-        if (tag?.ready) {
-            return { status: 'complete', tag };
-        }
-
-        if (tag) {
-            return {
-                status: 'blocked',
-                error: 'baseline_collection_incomplete',
-                message: 'Complete one clean baseline lap before advancing the plan.',
-                tag,
-            };
-        }
-
-        return {
-            status: 'blocked',
-            error: 'baseline_collection_tag_missing',
-            message: 'The baseline collection tracker has not produced a readiness tag yet.',
-        };
-    },
-
-    async live_recorded_analysis(request, _ctx, snapshot) {
-        if (snapshot?.baseline_ready !== true) {
-            return {
-                status: 'blocked',
-                error: 'baseline_collection_incomplete',
-                message: 'Complete one clean baseline lap before advancing the plan.',
-            };
-        }
-
-        const analysisStatus = await runRecordedAnalysisForLiveRequest(
-            context,
-            toRequestPayloadRecord(request),
-        );
-        if (analysisStatus.status !== 'ready') {
-            context.sessionIntelligence?.emitRecordedAnalysisError(
-                analysisStatus.error,
-                analysisStatus.message,
-                snapshot,
-            );
-            return {
-                status: 'failed',
-                error: analysisStatus.error,
-                message: analysisStatus.message,
-            };
-        }
-
-        const agent = getLiveAnalystState(context);
-        agent.analysisSessionId = analysisStatus.analysis.baseline.id;
-        context.sessionIntelligence?.emitRecordedAnalysisReady(analysisStatus.analysis, snapshot);
-        return { status: 'complete' };
-    },
-    ...context.procedurePlanSubscribers,
-});
-
-const executeProcedurePlanRequest = async (
-    request: ProcedurePlanRequest,
-    context: AiCommandRegistryContext,
-    ctx: ToolHandlerContext,
-    snapshot?: Record<string, any> | null,
-): Promise<ProcedurePlanSubscriberResult> => {
-    if (!request.subscriber) {
-        return {
-            status: 'blocked',
-            error: 'procedure_plan_subscriber_missing',
-            message: 'This plan request does not name a frontend subscriber.',
-        };
-    }
-    const subscriber = buildProcedurePlanSubscribers(context)[request.subscriber];
-    if (!subscriber) {
-        return {
-            status: 'blocked',
-            error: 'procedure_plan_subscriber_missing',
-            message: `No frontend subscriber is registered for "${request.subscriber}".`,
-        };
-    }
-    return subscriber(request, ctx, snapshot);
+): BaselineLapRecord | null => {
+    const record = context.getBaselineLapRecord?.() ?? null;
+    return record?.records?.length ? record : null;
 };
-
-const executeProcedurePlanToolCall = async (
-    request: ProcedurePlanRequest,
-    registry: Record<string, AiCommandHandler>,
-    ctx: ToolHandlerContext,
-): Promise<
-    | {
-        status: 'complete';
-        name: string;
-        arguments: Record<string, any>;
-        resultVisibility: 'ai' | 'tag';
-        result: any;
-    }
-    | {
-        status: 'failed';
-        error: string;
-        message: string;
-    }
-> => {
-    const name = getProcedurePlanToolName(request);
-    if (!name) {
-        return {
-            status: 'failed',
-            error: 'procedure_plan_tool_missing',
-            message: 'This plan request is a tool_call but does not name a tool.',
-        };
-    }
-    if (name === 'advance_plan_step') {
-        return {
-            status: 'failed',
-            error: 'procedure_plan_tool_recursive',
-            message: 'A plan request cannot execute advance_plan_step from inside advance_plan_step.',
-        };
-    }
-
-    const handler = registry[name];
-    if (!handler) {
-        return {
-            status: 'failed',
-            error: 'procedure_plan_tool_unavailable',
-            message: `No frontend tool handler is registered for "${name}". Call that tool directly if it is server-side, then advance the plan.`,
-        };
-    }
-
-    const toolArguments = getProcedurePlanToolArguments(request);
-    let result: any;
-    try {
-        result = await handler(toolArguments, ctx);
-    } catch (err) {
-        return {
-            status: 'failed',
-            error: 'procedure_plan_tool_failed',
-            message: (err as Error)?.message || String(err),
-        };
-    }
-    if (result && typeof result === 'object' && 'error' in result) {
-        return {
-            status: 'failed',
-            error: String((result as Record<string, any>).error || 'procedure_plan_tool_failed'),
-            message: normalizeOptionalString((result as Record<string, any>).message)
-                || `The plan tool "${name}" could not complete.`,
-        };
-    }
-
-    return {
-        status: 'complete',
-        name,
-        arguments: toolArguments,
-        resultVisibility: getProcedurePlanToolResultVisibility(request),
-        result,
-    };
-};
-
-const shouldExecuteProcedurePlanRequest = (
-    request: ProcedurePlanRequest | undefined,
-): request is ProcedurePlanRequest => (
-    Boolean(request?.subscriber)
-    && !isProcedurePlanRequestDone(request)
-    && request?.subscriber !== 'driver'
-);
 
 const searchUserSummaryMapLevel = (
     mapLevel: UserSummaryMapLevelResult,
@@ -973,6 +744,17 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
             limit: {
                 type: 'integer',
                 description: 'Maximum number of compact classifications to return.',
+            },
+        },
+        required: [],
+    },
+    {
+        name: 'analyze_live_recorded_analysis',
+        description: 'Submit the already recorded baseline lap to live recorded analysis and return the compact classifier result. Returns an error until baseline collection has recorded a cached lap.',
+        properties: {
+            limit: {
+                type: 'integer',
+                description: 'Maximum number of classified segments to return.',
             },
         },
         required: [],
@@ -1207,6 +989,7 @@ const LIVE_TOOL_NAMES = [
     'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
+    'analyze_live_recorded_analysis',
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
@@ -1269,12 +1052,34 @@ const getLiveAnalystState = (context: AiCommandRegistryContext): LivePerformance
     };
 };
 
+const getBaselineRecorderReadiness = (context: AiCommandRegistryContext) => {
+    const record = context.getBaselineLapRecord?.() ?? null;
+    const tag = context.getBaselineCollectionTag?.() ?? null;
+    const ready = Boolean(record?.records?.length);
+
+    return { ready, record, tag };
+};
+
+const buildLiveAnalystSnapshot = (context: AiCommandRegistryContext): Record<string, any> => {
+    const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot?.() as Record<string, any> | undefined;
+    const { record, tag, ready } = getBaselineRecorderReadiness(context);
+
+    return {
+        ...(snapshot ?? {}),
+        ...(tag?.snapshot ?? {}),
+        baseline_ready: ready,
+        baseline_collection_started: ready || tag?.status === 'collecting',
+        baseline_progress_percent: ready ? 100 : tag?.progress_percent ?? snapshot?.baseline_progress_percent ?? 0,
+        baseline_lap: record?.lap ?? tag?.snapshot?.baseline_lap ?? snapshot?.baseline_lap ?? null,
+        baseline_record_sample_count: record?.sample_count ?? 0,
+    };
+};
+
 const buildLiveFocusPayload = (context: AiCommandRegistryContext) => {
     const si = context.sessionIntelligence;
     if (!si) return null;
 
-    const snapshot = si.getLiveSessionSnapshot();
-    if (!snapshot.baseline_ready) return null;
+    if (!getBaselineRecorderReadiness(context).ready) return null;
 
     const focus = si.getFocusSection();
     if (!focus) return null;
@@ -1421,20 +1226,17 @@ export const startAgentRuntime = async (
         agent.enabled = true;
         context.setLivePerformanceAnalystEnabled?.(true);
         context.setAgentTagActive?.('Live Analyst', true);
-        const snapshot = si.getLiveSessionSnapshot();
+        const snapshot = buildLiveAnalystSnapshot(context);
         return {
             status: 'already_running',
             agent_mode: 'live_performance_analyst',
             snapshot,
-            focus: snapshot.baseline_ready ? buildLiveFocusPayload(context) : null,
+            focus: getBaselineRecorderReadiness(context).ready ? buildLiveFocusPayload(context) : null,
         };
     }
 
     const intervalSeconds = getLiveAnalystIntervalSeconds(args.interval_seconds);
     agent.enabled = true;
-    if (!si.hasCompletedBaselineLap()) {
-        si.startBaselineCollectionAtLapStart();
-    }
     context.setLivePerformanceAnalystEnabled?.(true);
     context.setAgentTagActive?.('Live Analyst', true);
     si.emitLiveAnalysisPlanStarted();
@@ -1446,13 +1248,14 @@ export const startAgentRuntime = async (
 
         agent.inFlight = true;
         try {
-            const snapshot = si.getLiveSessionSnapshot();
+            const snapshot = buildLiveAnalystSnapshot(context);
             const sections = si.getKnownTrackSections();
-            const focus = snapshot.baseline_ready ? buildLiveFocusPayload(context) : null;
+            const baselineReady = getBaselineRecorderReadiness(context).ready;
+            const focus = baselineReady ? buildLiveFocusPayload(context) : null;
 
             if (notify) {
                 const now = Date.now();
-                if (!snapshot.baseline_ready) {
+                if (!baselineReady) {
                     agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
                 } else if (focus) {
                     const timing = focus.timing;
@@ -1712,8 +1515,8 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         const unavailable = buildLiveAnalystUnavailable(context);
         if (unavailable) return unavailable;
 
-        const snapshot = context.sessionIntelligence!.getLiveSessionSnapshot();
-        if (!snapshot.baseline_ready) {
+        const snapshot = buildLiveAnalystSnapshot(context);
+        if (!getBaselineRecorderReadiness(context).ready) {
             return buildLiveAnalystPlanError(
                 'baseline_collection_incomplete',
                 'Complete one clean baseline lap before reading a focus section.',
@@ -1749,6 +1552,53 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         };
     },
 
+    async analyze_live_recorded_analysis(args) {
+        const unavailable = buildLiveAnalystUnavailable(context);
+        if (unavailable) return unavailable;
+
+        const baselineRecord = getCachedBaselineLapRecord(context);
+        if (!baselineRecord) {
+            const snapshot = buildLiveAnalystSnapshot(context);
+            const message = 'Live recorded analysis requires a recorded baseline lap before it can run.';
+            context.sessionIntelligence?.emitRecordedAnalysisError(
+                'baseline_lap_record_required',
+                message,
+                snapshot,
+            );
+            return buildLiveAnalystPlanError(
+                'baseline_lap_record_required',
+                message,
+                snapshot,
+            );
+        }
+
+        const analysisStatus = await runRecordedAnalysisForLiveRequest(
+            context,
+            args,
+            baselineRecord,
+        );
+        if (analysisStatus.status !== 'ready') {
+            context.sessionIntelligence?.emitRecordedAnalysisError(
+                analysisStatus.error,
+                analysisStatus.message,
+                buildLiveAnalystSnapshot(context),
+            );
+            return buildLiveAnalystPlanError(
+                analysisStatus.error,
+                analysisStatus.message,
+                buildLiveAnalystSnapshot(context),
+            );
+        }
+
+        const agent = getLiveAnalystState(context);
+        agent.analysisSessionId = analysisStatus.analysis.baseline.id;
+        context.sessionIntelligence?.emitRecordedAnalysisReady(
+            analysisStatus.analysis,
+            buildLiveAnalystSnapshot(context),
+        );
+        return analysisStatus.analysis;
+    },
+
     async set_procedure_plan(args) {
         const plan = buildProcedurePlan({
             ...args,
@@ -1772,68 +1622,10 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         };
     },
 
-    async advance_plan_step(args, ctx) {
-        const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot?.() || null;
-        const plan = context.getProcedurePlan?.() || null;
-        let toolCallResult: any = null;
-        if (plan) {
-            const activeRequest = plan.requests[plan.currentStep];
-            const executableRequest = activeRequest?.type === 'tool_call' && !isProcedurePlanRequestDone(activeRequest)
-                ? activeRequest
-                : shouldExecuteProcedurePlanRequest(activeRequest)
-                    ? activeRequest
-                    : undefined;
-
-            if (executableRequest) {
-                if (executableRequest.type === 'tool_call') {
-                    toolCallResult = await executeProcedurePlanToolCall(executableRequest, registry, ctx);
-                } else {
-                    toolCallResult = await executeProcedurePlanRequest(
-                        executableRequest,
-                        context,
-                        ctx,
-                        snapshot,
-                    );
-                }
-                if (toolCallResult.status === 'blocked' || toolCallResult.status === 'failed') {
-                    return buildProcedurePlanStepError(
-                        toolCallResult.error || toolCallResult.status,
-                        toolCallResult.message || 'The procedure plan request could not be completed.',
-                        snapshot,
-                        toolCallResult.tag,
-                    );
-                }
-            }
-        }
-
-        const advanceResult = context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
+    async advance_plan_step(args) {
+        return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
             status: 'unavailable',
             error: 'no_procedure_plan_ui',
-        };
-        if (!toolCallResult || !('name' in toolCallResult)) {
-            return advanceResult;
-        }
-
-        const executedTool = {
-            name: toolCallResult.name,
-            arguments: toolCallResult.arguments,
-            result_visibility: toolCallResult.resultVisibility,
-        };
-        if (toolCallResult.resultVisibility === 'tag') {
-            return {
-                ...advanceResult,
-                executed_tool: executedTool,
-                tool_result: {
-                    status: 'completed',
-                    result_visibility: 'tag',
-                },
-            };
-        }
-
-        return {
-            ...advanceResult,
-            executed_tool: executedTool,
-            tool_result: toolCallResult.result,
         };
     },
 
@@ -1849,8 +1641,8 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
-        const snapshot = si.getLiveSessionSnapshot();
-        if (!snapshot.baseline_ready) {
+        const snapshot = buildLiveAnalystSnapshot(context);
+        if (!getBaselineRecorderReadiness(context).ready) {
             return buildLiveAnalystPlanError(
                 'baseline_collection_incomplete',
                 'Complete one clean baseline lap before classifying live sections.',
@@ -1868,8 +1660,8 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
         const si = context.sessionIntelligence;
         if (!si) return { error: 'no_live_session' };
-        const snapshot = si.getLiveSessionSnapshot();
-        if (!snapshot.baseline_ready) {
+        const snapshot = buildLiveAnalystSnapshot(context);
+        if (!getBaselineRecorderReadiness(context).ready) {
             return buildLiveAnalystPlanError(
                 'baseline_collection_incomplete',
                 'Complete one clean baseline lap before recording a live section classification.',

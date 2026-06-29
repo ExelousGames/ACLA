@@ -1,5 +1,11 @@
 import { useEffect, useRef } from 'react';
-import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import {
+    detectLiveSessionType,
+    getTelemetryCar,
+    getTelemetryLap,
+    getTelemetryPosition,
+    getTelemetryTrack,
+} from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 
 export const BASELINE_PROGRESS_MESSAGE_ID = 'live-baseline-progress';
 export const BASELINE_COLLECTION_SUBSCRIBER = 'baseline_collection';
@@ -44,13 +50,118 @@ type BaselineCollectionTrackerProps = {
     enabled: boolean;
     liveData: Record<string, any> | null | undefined;
     sessionMode: 'live' | 'recorded' | 'user_summary';
-    sessionIntelligence: SessionIntelligence | null | undefined;
     onTagChange: (tag: BaselineCollectionTag | null) => void;
     onLapRecordChange: (record: BaselineLapRecord | null) => void;
     updateAgentMessages: (
         updater: (messages: BaselineProgressMessage[]) => BaselineProgressMessage[],
     ) => void;
 };
+
+type BaselineRecorderState = {
+    status: 'waiting_for_start' | 'collecting' | 'complete';
+    rows: Record<string, any>[];
+    startLap: number | null;
+    startPosition: number;
+    currentLap: number;
+    currentPosition: number;
+    lastLap: number | null;
+    lastPosition: number | null;
+    lastSampleKey: string | null;
+    track: string;
+    car: string;
+    completedRecord: BaselineLapRecord | null;
+};
+
+const BASELINE_START_POSITION_EPSILON = 0.005;
+const BASELINE_WRAP_THRESHOLD = 0.65;
+
+const createEmptyRecorderState = (): BaselineRecorderState => ({
+    status: 'waiting_for_start',
+    rows: [],
+    startLap: null,
+    startPosition: 0,
+    currentLap: 0,
+    currentPosition: 0,
+    lastLap: null,
+    lastPosition: null,
+    lastSampleKey: null,
+    track: '',
+    car: '',
+    completedRecord: null,
+});
+
+const cloneSample = (sample: Record<string, any>): Record<string, any> => ({ ...sample });
+
+const getSampleKey = (
+    sample: Record<string, any>,
+    lap: number,
+    position: number,
+): string => [
+    lap,
+    position,
+    sample.Graphics_current_time ?? sample.Graphics?.current_time ?? '',
+    sample.Physics_timestamp ?? sample.timestamp ?? '',
+].join(':');
+
+const crossedLapStart = (
+    previousLap: number | null,
+    currentLap: number,
+    previousPosition: number | null,
+    currentPosition: number,
+): boolean => (
+    currentPosition <= BASELINE_START_POSITION_EPSILON
+    || (previousLap !== null && currentLap > previousLap)
+    || (
+        previousPosition !== null
+        && previousPosition - currentPosition > BASELINE_WRAP_THRESHOLD
+    )
+);
+
+const hasCompletedRecordingLap = (
+    state: BaselineRecorderState,
+    lap: number,
+    position: number,
+): boolean => (
+    state.startLap !== null
+    && state.rows.length > 0
+    && (
+        lap > state.startLap
+        || (
+            state.lastPosition !== null
+            && state.lastPosition - position > BASELINE_WRAP_THRESHOLD
+        )
+    )
+);
+
+const getCollectionProgress = (state: BaselineRecorderState): number => {
+    if (state.status === 'complete') return 100;
+    if (state.status !== 'collecting') return 0;
+
+    const rawProgress = state.currentPosition >= state.startPosition
+        ? state.currentPosition - state.startPosition
+        : 1 - state.startPosition + state.currentPosition;
+
+    return Math.max(1, Math.min(99, Math.round(rawProgress * 100)));
+};
+
+const buildRecorderSnapshot = (state: BaselineRecorderState): Record<string, any> => ({
+    status: 'ready',
+    track: state.track,
+    car: state.car,
+    current_lap: state.currentLap,
+    completed_laps: state.currentLap,
+    normalized_position: state.currentPosition,
+    sample_count: state.rows.length,
+    live_session_type: state.rows.length > 0
+        ? detectLiveSessionType(state.rows[state.rows.length - 1])
+        : 'unknown',
+    baseline_ready: state.status === 'complete',
+    baseline_collection_started: state.status !== 'waiting_for_start',
+    baseline_progress_percent: getCollectionProgress(state),
+    baseline_lap: state.startLap,
+    completed_lap_count: state.status === 'complete' ? 1 : 0,
+    section_count: 0,
+});
 
 export const buildBaselineCollectionTag = (
     snapshot: Record<string, any>,
@@ -126,79 +237,99 @@ export const BaselineCollectionTracker = ({
     enabled,
     liveData,
     sessionMode,
-    sessionIntelligence,
     onTagChange,
     onLapRecordChange,
     updateAgentMessages,
 }: BaselineCollectionTrackerProps) => {
-    const lapRecordRef = useRef<BaselineLapRecord | null>(null);
+    const recorderRef = useRef<BaselineRecorderState>(createEmptyRecorderState());
 
     useEffect(() => {
-        const clearLapRecord = () => {
-            if (lapRecordRef.current) {
-                lapRecordRef.current = null;
-                onLapRecordChange(null);
-            }
+        const resetRecorder = () => {
+            recorderRef.current = createEmptyRecorderState();
+            onLapRecordChange(null);
         };
 
         if (sessionMode !== 'live' || !enabled) {
             onTagChange(null);
-            clearLapRecord();
+            resetRecorder();
             updateAgentMessages((messages) => messages.filter((message) => message.id !== BASELINE_PROGRESS_MESSAGE_ID));
             return;
         }
 
-        const snapshot = sessionIntelligence?.getLiveSessionSnapshot?.();
-        if (!snapshot || snapshot.status === 'empty') {
-            onTagChange(null);
-            clearLapRecord();
+        if (!liveData || typeof liveData !== 'object' || Object.keys(liveData).length === 0) {
+            const snapshot = buildRecorderSnapshot(recorderRef.current);
+            const tag = buildBaselineCollectionTag(snapshot);
+            onTagChange(tag);
+            updateAgentMessages((messages) => upsertBaselineProgressMessage(messages, tag));
             return;
         }
 
+        const sample = liveData as Record<string, any>;
+        const lap = getTelemetryLap(sample);
+        const position = getTelemetryPosition(sample) ?? recorderRef.current.currentPosition;
+        const track = getTelemetryTrack(sample) || recorderRef.current.track;
+        const car = getTelemetryCar(sample) || recorderRef.current.car;
+        const sampleKey = getSampleKey(sample, lap, position);
+        const state = recorderRef.current;
+
+        if (state.lastSampleKey !== sampleKey) {
+            state.track = track;
+            state.car = car;
+            state.currentLap = lap;
+            state.currentPosition = position;
+
+            if (state.status === 'waiting_for_start') {
+                if (crossedLapStart(state.lastLap, lap, state.lastPosition, position)) {
+                    state.status = 'collecting';
+                    state.startLap = lap;
+                    state.startPosition = position <= BASELINE_START_POSITION_EPSILON ? 0 : position;
+                    state.rows = [cloneSample(sample)];
+                }
+            } else if (state.status === 'collecting') {
+                if (hasCompletedRecordingLap(state, lap, position)) {
+                    const snapshot = buildRecorderSnapshot({
+                        ...state,
+                        status: 'complete',
+                        currentLap: lap,
+                        currentPosition: position,
+                    });
+                    const completedRecord: BaselineLapRecord = {
+                        id: [
+                            state.track,
+                            state.car,
+                            String(state.startLap ?? 0),
+                            String(state.rows.length),
+                        ].join(':'),
+                        lap: state.startLap ?? 0,
+                        captured_at: Date.now(),
+                        track: state.track,
+                        car: state.car,
+                        sample_count: state.rows.length,
+                        snapshot,
+                        records: state.rows.map(cloneSample),
+                    };
+                    state.status = 'complete';
+                    state.completedRecord = completedRecord;
+                    onLapRecordChange(completedRecord);
+                } else {
+                    state.rows.push(cloneSample(sample));
+                }
+            }
+
+            state.lastLap = lap;
+            state.lastPosition = position;
+            state.lastSampleKey = sampleKey;
+        }
+
+        const snapshot = state.completedRecord?.snapshot ?? buildRecorderSnapshot(state);
         const tag = buildBaselineCollectionTag(snapshot);
         onTagChange(tag);
         updateAgentMessages((messages) => upsertBaselineProgressMessage(messages, tag));
-
-        if (!tag.ready) {
-            clearLapRecord();
-            return;
-        }
-
-        const lap = Number(snapshot.baseline_lap);
-        const rows = sessionIntelligence?.getLastCompletedLapRows?.() ?? [];
-        if (!Number.isFinite(lap) || rows.length === 0) {
-            clearLapRecord();
-            return;
-        }
-
-        const id = [
-            String(snapshot.track || ''),
-            String(snapshot.car || ''),
-            String(lap),
-            String(rows.length),
-        ].join(':');
-        if (lapRecordRef.current?.id === id) {
-            return;
-        }
-
-        const nextRecord: BaselineLapRecord = {
-            id,
-            lap,
-            captured_at: Date.now(),
-            track: String(snapshot.track || ''),
-            car: String(snapshot.car || ''),
-            sample_count: rows.length,
-            snapshot: { ...snapshot },
-            records: rows.map((row) => ({ ...(row as Record<string, any>) })),
-        };
-        lapRecordRef.current = nextRecord;
-        onLapRecordChange(nextRecord);
     }, [
         enabled,
         liveData,
         onLapRecordChange,
         onTagChange,
-        sessionIntelligence,
         sessionMode,
         updateAgentMessages,
     ]);

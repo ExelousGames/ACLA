@@ -1569,7 +1569,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 enabled={livePerformanceAnalystEnabled}
                 liveData={analysisContext?.liveData as Record<string, any> | null}
                 sessionMode={sessionMode}
-                sessionIntelligence={analysisContext?.sessionIntelligence}
                 onTagChange={handleBaselineCollectionTagChange}
                 onLapRecordChange={handleBaselineLapRecordChange}
                 updateAgentMessages={updateBaselineAgentMessages}

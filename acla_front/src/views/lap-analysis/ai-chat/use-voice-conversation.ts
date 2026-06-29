@@ -18,6 +18,7 @@ import apiService from 'services/api.service';
 import { buildFormattedObservationFrame } from './voice-observation-formatter';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
+const INLINE_FUNCTION_CALL_RE = /<function=([a-zA-Z0-9_.:-]+)>([\s\S]*?)<\/function>/g;
 
 export type VoiceConversationState =
     | 'idle'           // not connected
@@ -134,6 +135,45 @@ export interface VoiceConversation {
      *  false when the voice WebSocket is not ready. */
     sendObservation: (data: Record<string, unknown>) => boolean;
 }
+
+export interface InlineFunctionCall {
+    name: string;
+    arguments: Record<string, unknown>;
+}
+
+const parseInlineFunctionArguments = (
+    rawArguments: string,
+): Record<string, unknown> => {
+    const trimmed = rawArguments.trim();
+    if (!trimmed) return {};
+
+    try {
+        const parsed = JSON.parse(trimmed);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? parsed
+            : { value: parsed };
+    } catch {
+        return { raw: trimmed };
+    }
+};
+
+export const extractInlineFunctionCalls = (
+    text: string,
+): { cleanText: string; calls: InlineFunctionCall[] } => {
+    const calls: InlineFunctionCall[] = [];
+    const cleanText = text.replace(INLINE_FUNCTION_CALL_RE, (_match, rawName, rawArguments) => {
+        const name = String(rawName || '').trim();
+        if (name) {
+            calls.push({
+                name,
+                arguments: parseInlineFunctionArguments(String(rawArguments || '')),
+            });
+        }
+        return '';
+    }).replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+
+    return { cleanText, calls };
+};
 
 export function useVoiceConversation(
     options: VoiceConversationOptions = {},
@@ -511,16 +551,92 @@ export function useVoiceConversation(
                 }
                 try {
                     const result = await handler(msg.arguments || {}, toolCtx);
-                    console.log('[ai-tool] ▶ tool_result', { id, name, result });
+                    const output = {
+                        type: 'tool_result',
+                        id,
+                        result: result && typeof result === 'object' ? result : { value: result },
+                    };
+                    console.log(output);
+                    sendText(output);
+                } catch (err) {
+                    const message = (err as Error)?.message || String(err);
+                    console.error('[ai-tool] ▶ tool_error', { id, name, error: message, err });
+                    sendText({ type: 'tool_error', id, error: message });
+                }
+            };
+
+            const handleInlineToolCall = async (
+                call: InlineFunctionCall,
+                index: number,
+            ) => {
+                const id = `inline-${Date.now()}-${index}-${Math.random().toString(36).substring(2, 9)}`;
+                const handler = toolHandlersRef.current[call.name];
+                console.log('[ai-tool] inline function call received', {
+                    id,
+                    name: call.name,
+                    arguments: call.arguments,
+                    handlerRegistered: !!handler,
+                });
+
+                onEventRef.current?.({
+                    kind: 'tool_event',
+                    name: call.name,
+                    title: call.name,
+                    status: 'started',
+                    arguments: call.arguments,
+                });
+
+                if (!handler) {
+                    const error = `no handler for '${call.name}'`;
+                    console.warn(
+                        '[ai-tool] no handler for inline function call',
+                        call.name,
+                        'available handlers:',
+                        Object.keys(toolHandlersRef.current),
+                    );
+                    onEventRef.current?.({
+                        kind: 'tool_event',
+                        name: call.name,
+                        title: call.name,
+                        status: 'completed',
+                        ok: false,
+                        error,
+                    });
+                    sendText({ type: 'tool_error', id, error });
+                    return;
+                }
+
+                try {
+                    const result = await handler(call.arguments, toolCtx);
+                    onEventRef.current?.({
+                        kind: 'tool_event',
+                        name: call.name,
+                        title: call.name,
+                        status: 'completed',
+                        ok: true,
+                    });
                     sendText({
                         type: 'tool_result',
                         id,
                         result: result && typeof result === 'object' ? result : { value: result },
                     });
                 } catch (err) {
-                    const message = (err as Error)?.message || String(err);
-                    console.error('[ai-tool] ▶ tool_error', { id, name, error: message, err });
-                    sendText({ type: 'tool_error', id, error: message });
+                    const error = (err as Error)?.message || String(err);
+                    console.error('[ai-tool] inline function call failed', {
+                        id,
+                        name: call.name,
+                        error,
+                        err,
+                    });
+                    onEventRef.current?.({
+                        kind: 'tool_event',
+                        name: call.name,
+                        title: call.name,
+                        status: 'completed',
+                        ok: false,
+                        error,
+                    });
+                    sendText({ type: 'tool_error', id, error });
                 }
             };
 
@@ -544,8 +660,14 @@ export function useVoiceConversation(
                     } else if (parsed?.type === 'assistant_transcript') {
                         const text = String(parsed.text || '').trim();
                         if (text) {
+                            const { cleanText, calls } = extractInlineFunctionCalls(text);
+                            calls.forEach((call, index) => {
+                                void handleInlineToolCall(call, index);
+                            });
                             const emotion = typeof parsed.emotion === 'string' ? parsed.emotion : undefined;
-                            onEventRef.current?.({ kind: 'assistant_transcript', text, emotion });
+                            if (cleanText) {
+                                onEventRef.current?.({ kind: 'assistant_transcript', text: cleanText, emotion });
+                            }
                         }
                     } else if (parsed?.type === 'tool_event') {
                         const name = String(parsed.name || '');
