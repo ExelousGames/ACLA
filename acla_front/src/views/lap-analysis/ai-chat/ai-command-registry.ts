@@ -38,8 +38,16 @@ import {
     type BaselineLapRecord,
     type BaselineCollectionTag,
 } from './BaselineCollectionTracker';
+import {
+    AiToolDefinition,
+    ToolOutputController,
+    createToolOutputController,
+    executeAiToolDefinition,
+    toFrontendToolSchema,
+} from './ai-tool-base';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
+export type AiCommandToolDefinition = AiToolDefinition<AiCommandRegistryContext, ToolHandlerContext>;
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
 export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
 export type AgentSessionRole = 'main' | 'agent';
@@ -1017,7 +1025,9 @@ export const getFrontendToolSchemasForSessionMode = (
             ...LIVE_TOOL_NAMES.filter((name) => name !== 'start_agent_session'),
             ...USER_SUMMARY_TOOL_NAMES,
         ]);
-        return frontendToolSchemas.filter((tool) => agentAllowedNames.has(tool.name));
+        return frontendToolDefinitions
+            .filter((tool) => tool.visibility !== 'internal' && agentAllowedNames.has(tool.name))
+            .map(toFrontendToolSchema);
     }
 
     const allowedNames: Set<string> = sessionMode === 'recorded'
@@ -1026,7 +1036,9 @@ export const getFrontendToolSchemasForSessionMode = (
             ? new Set<string>([...COMMON_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES])
             : new Set<string>([...COMMON_TOOL_NAMES, ...LIVE_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES]);
 
-    return frontendToolSchemas.filter((tool) => allowedNames.has(tool.name));
+    return frontendToolDefinitions
+        .filter((tool) => tool.visibility !== 'internal' && allowedNames.has(tool.name))
+        .map(toFrontendToolSchema);
 };
 
 const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext) => (
@@ -1157,18 +1169,17 @@ const getBaselineCollectionToolPayload = (context: AiCommandRegistryContext) => 
 const collectBaselineLapThroughComponent = async (
     context: AiCommandRegistryContext,
     args: Record<string, any>,
-    ctx: ToolHandlerContext,
+    output: ToolOutputController,
 ) => {
     const unavailable = buildLiveAnalystUnavailable(context);
-    if (unavailable) return unavailable;
+    if (unavailable) return output.error(unavailable.error || 'baseline_collection_unavailable', unavailable);
 
     context.setLivePerformanceAnalystEnabled?.(true);
     context.setAgentTagActive?.('Live Analyst', true);
 
     const initial = getBaselineCollectionToolPayload(context);
     if (initial.status === 'complete') {
-        ctx.sendToolOutput?.(initial, { final: true });
-        return initial;
+        return output.final(initial);
     }
 
     const timeoutMs = getBaselineCollectionTimeoutMs(args);
@@ -1187,14 +1198,16 @@ const collectBaselineLapThroughComponent = async (
 
             if (payload.status === 'complete') {
                 clearInterval(intervalId);
-                ctx.sendToolOutput?.(payload, { final: true });
-                resolve(payload);
+                resolve(output.final(payload));
                 return;
             }
 
             if (progressKey !== lastProgressKey) {
                 lastProgressKey = progressKey;
-                ctx.sendToolOutput?.(payload);
+                output.progress(payload, {
+                    progressPercent: payload.progress_percent,
+                    message: payload.detail,
+                });
             }
 
             if (Date.now() - startedAt >= timeoutMs) {
@@ -1207,8 +1220,11 @@ const collectBaselineLapThroughComponent = async (
                     progress: payload,
                     message: 'Baseline collection did not complete before the tool timeout.',
                 };
-                ctx.sendToolOutput?.(timeoutPayload, { final: true });
-                resolve(timeoutPayload);
+                resolve(output.error(
+                    'baseline_collection_timeout',
+                    timeoutPayload,
+                    { message: timeoutPayload.message },
+                ));
             }
         }, BASELINE_COLLECTION_TOOL_POLL_MS);
     });
@@ -1386,7 +1402,7 @@ export const startAgentRuntime = async (
     };
 };
 
-export const createAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => {
+const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => {
     const registry: Record<string, AiCommandHandler> = {
 
     // ── Session ───────────────────────────────────────────────────────────────
@@ -1637,7 +1653,12 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
     },
 
     async collect_live_baseline(args, ctx) {
-        return collectBaselineLapThroughComponent(context, args, ctx);
+        const output = createToolOutputController(
+            'collect_live_baseline',
+            ctx.toolRunId || `collect_live_baseline-${Date.now()}`,
+            ctx.sendToolOutput,
+        );
+        return collectBaselineLapThroughComponent(context, args, output);
     },
 
     async analyze_live_recorded_analysis(args) {
@@ -1915,6 +1936,123 @@ export const createAiCommandRegistry = (context: AiCommandRegistryContext): Reco
         return { success: false };
     },
     };
+
+    return registry;
+};
+
+const ALL_AI_TOOL_NAMES = [
+    'start_agent_session',
+    'stop_agent_session',
+    'get_session_analysis',
+    'run_recorded_ai_analysis',
+    'get_recorded_session_analysis',
+    'get_recorded_session_context',
+    'get_performance_insights',
+    'compare_lap_times',
+    'query_telemetry_metric',
+    '_get_telemetry_for_scope',
+    'get_event_log',
+    'get_user_summary_map_level',
+    'get_available_user_summary_maps',
+    'search_user_summary_map_level',
+    'get_next_corner',
+    'get_live_session_snapshot',
+    'get_live_focus_section',
+    'get_live_section_history',
+    'collect_live_baseline',
+    'analyze_live_recorded_analysis',
+    'set_procedure_plan',
+    'advance_plan_step',
+    'clear_procedure_plan',
+    '_get_live_section_telemetry',
+    '_record_live_section_classification',
+    'follow_expert_line',
+    'get_telemetry_data',
+    'get_visualization_capabilities',
+    'show_map',
+    'open_visualization_chart',
+    'close_visualization_chart',
+    'invoke_visualization_control',
+    'update_guidance_once',
+    'add_imitation_guidance_chart',
+    'remove_imitation_guidance_chart',
+    'disable_ui_component',
+] as const;
+
+const frontendToolSchemaByName = new Map(frontendToolSchemas.map((schema) => [schema.name, schema]));
+
+const getToolSessionModes = (
+    name: typeof ALL_AI_TOOL_NAMES[number],
+): Array<'live' | 'recorded' | 'user_summary'> => {
+    if ((RECORDED_TOOL_NAMES as readonly string[]).includes(name)) {
+        return ['recorded'];
+    }
+    if (
+        (LIVE_TOOL_NAMES as readonly string[]).includes(name)
+        || name === '_get_telemetry_for_scope'
+        || name === '_get_live_section_telemetry'
+        || name === '_record_live_section_classification'
+    ) {
+        return ['live'];
+    }
+    return ['live', 'recorded', 'user_summary'];
+};
+
+const getToolVisibility = (
+    name: typeof ALL_AI_TOOL_NAMES[number],
+): 'public' | 'internal' => (
+    frontendToolSchemaByName.has(name) ? 'public' : 'internal'
+);
+
+const createAiToolDefinition = (
+    name: typeof ALL_AI_TOOL_NAMES[number],
+): AiCommandToolDefinition => {
+    const schema = frontendToolSchemaByName.get(name);
+    return {
+        name,
+        description: schema?.description,
+        schema: {
+            properties: schema?.properties ?? {},
+            required: schema?.required ?? [],
+        },
+        required: schema?.required ?? [],
+        sessionModes: getToolSessionModes(name),
+        visibility: getToolVisibility(name),
+        execute: async (args, context, output, handlerContext) => {
+            if (name === 'collect_live_baseline') {
+                return collectBaselineLapThroughComponent(context, args, output);
+            }
+
+            const rawRegistry = createRawAiCommandRegistry(context);
+            const handler = rawRegistry[name];
+            if (!handler) {
+                return output.error('tool_not_registered', {
+                    status: 'error',
+                    error: 'tool_not_registered',
+                    message: `Tool ${name} is not registered.`,
+                });
+            }
+            return handler(args, handlerContext);
+        },
+    };
+};
+
+export const frontendToolDefinitions: AiCommandToolDefinition[] = ALL_AI_TOOL_NAMES
+    .map(createAiToolDefinition);
+
+export const createAiCommandRegistry = (
+    context: AiCommandRegistryContext,
+): Record<string, AiCommandHandler> => {
+    const registry: Record<string, AiCommandHandler> = {};
+
+    frontendToolDefinitions.forEach((definition) => {
+        registry[definition.name] = (args, ctx) => executeAiToolDefinition(
+            definition,
+            args,
+            context,
+            ctx,
+        );
+    });
 
     return registry;
 };

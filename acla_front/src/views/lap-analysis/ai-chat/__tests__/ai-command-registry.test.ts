@@ -18,6 +18,7 @@ jest.mock('services/api.service', () => ({
 import {
     AiCommandRegistryContext,
     createAiCommandRegistry,
+    frontendToolDefinitions,
     frontendToolSchemas,
     getFrontendToolSchemasForSessionMode,
     startAgentRuntime,
@@ -116,6 +117,37 @@ const createRegistry = () => createAiCommandRegistry({
 });
 
 describe('ai command registry user summary tools', () => {
+    it('registers frontend commands from AI tool definitions', () => {
+        const registryNames = Object.keys(createRegistry()).sort();
+        const definitionNames = frontendToolDefinitions.map((tool) => tool.name).sort();
+
+        expect(registryNames).toEqual(definitionNames);
+        expect(frontendToolDefinitions).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                name: 'collect_live_baseline',
+                visibility: 'public',
+                execute: expect.any(Function),
+                schema: expect.objectContaining({
+                    properties: expect.any(Object),
+                    required: expect.any(Array),
+                }),
+            }),
+        ]));
+    });
+
+    it('derives advertised frontend schemas from AI tool definitions', () => {
+        const definitionNames = new Set(frontendToolDefinitions.map((tool) => tool.name));
+
+        expect(frontendToolSchemas.every((schema) => definitionNames.has(schema.name))).toBe(true);
+        expect(getFrontendToolSchemasForSessionMode('live').every((schema) => (
+            frontendToolDefinitions.some((tool) => (
+                tool.name === schema.name
+                && tool.visibility !== 'internal'
+                && tool.sessionModes.includes('live')
+            ))
+        ))).toBe(true);
+    });
+
     it('exposes a frontend schema for searching map-level user summary', () => {
         expect(frontendToolSchemas.some((tool) => tool.name === 'search_user_summary_map_level')).toBe(true);
     });
@@ -516,7 +548,13 @@ describe('ai command registry recorded session tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(result).toEqual({ error: 'recorded_session_live_tools_unavailable' });
+        expect(result).toMatchObject({
+            status: 'error',
+            error: 'recorded_session_live_tools_unavailable',
+            final: true,
+            payload: { error: 'recorded_session_live_tools_unavailable' },
+            tool_name: 'query_telemetry_metric',
+        });
     });
 
     it('keeps user-summary map tools available in recorded mode for comparison context', async () => {
@@ -740,6 +778,13 @@ describe('ai command registry live performance analyst tools', () => {
             agent_mode: 'live_performance_analyst',
             ready: true,
             progress_percent: 100,
+            final: true,
+            tool_name: 'collect_live_baseline',
+            payload: expect.objectContaining({
+                status: 'complete',
+                source: 'baseline_collection',
+                ready: true,
+            }),
             baseline: {
                 id: expect.any(String),
                 lap: 0,
@@ -754,9 +799,77 @@ describe('ai command registry live performance analyst tools', () => {
                 status: 'complete',
                 source: 'baseline_collection',
                 ready: true,
+                final: true,
+                tool_name: 'collect_live_baseline',
             }),
             { final: true },
         );
+    });
+
+    it('streams baseline progress and returns timeout through tool output envelopes', async () => {
+        jest.useFakeTimers();
+        try {
+            const collectingTag = buildBaselineCollectionTag({
+                status: 'ready',
+                track: 'brands_hatch',
+                car: 'Ferrari 296',
+                current_lap: 0,
+                completed_laps: 0,
+                normalized_position: 0.35,
+                sample_count: 5,
+                live_session_type: 'solo_practice',
+                baseline_ready: false,
+                baseline_collection_started: true,
+                baseline_progress_percent: 35,
+                baseline_lap: 0,
+                completed_lap_count: 0,
+                section_count: 0,
+            });
+            const { registry } = createLiveAnalystRegistry({
+                getBaselineCollectionTag: () => collectingTag,
+                getBaselineLapRecord: () => null,
+            });
+            const sendToolOutput = jest.fn();
+
+            const resultPromise = registry.collect_live_baseline(
+                { timeout_seconds: 30 },
+                { sendObservation: jest.fn(), sendToolOutput },
+            );
+
+            jest.advanceTimersByTime(250);
+            await Promise.resolve();
+            expect(sendToolOutput).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    status: 'collecting',
+                    final: false,
+                    tool_name: 'collect_live_baseline',
+                    progress_percent: 35,
+                    payload: expect.objectContaining({
+                        source: 'baseline_collection',
+                        ready: false,
+                    }),
+                }),
+                { final: false },
+            );
+
+            jest.advanceTimersByTime(30000);
+            await Promise.resolve();
+            await expect(resultPromise).resolves.toMatchObject({
+                status: 'error',
+                error: 'baseline_collection_timeout',
+                final: true,
+                tool_name: 'collect_live_baseline',
+                payload: expect.objectContaining({
+                    status: 'error',
+                    progress: expect.objectContaining({
+                        source: 'baseline_collection',
+                        ready: false,
+                    }),
+                }),
+            });
+        } finally {
+            jest.useRealTimers();
+        }
     });
 
     it('starts every live agent through the generic child agent session tool', async () => {
@@ -865,10 +978,17 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first step completed');
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             status: 'advanced',
             current_step: 1,
             step: 'Compare the next pass.',
+            final: true,
+            payload: {
+                status: 'advanced',
+                current_step: 1,
+                step: 'Compare the next pass.',
+            },
+            tool_name: 'advance_plan_step',
         });
     });
 
@@ -935,9 +1055,15 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(clearProcedurePlan).toHaveBeenCalledTimes(1);
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             status: 'cleared',
             reason: 'plan is complete',
+            final: true,
+            payload: {
+                status: 'cleared',
+                reason: 'plan is complete',
+            },
+            tool_name: 'clear_procedure_plan',
         });
     });
 
@@ -966,10 +1092,17 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first task complete');
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             status: 'advanced',
             current_step: 1,
             step: 'Run the worker.',
+            final: true,
+            payload: {
+                status: 'advanced',
+                current_step: 1,
+                step: 'Run the worker.',
+            },
+            tool_name: 'advance_plan_step',
         });
     });
 
@@ -1003,10 +1136,17 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('snapshot requested');
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             status: 'advanced',
             current_step: 1,
             step: 'Use the snapshot.',
+            final: true,
+            payload: {
+                status: 'advanced',
+                current_step: 1,
+                step: 'Use the snapshot.',
+            },
+            tool_name: 'advance_plan_step',
         });
     });
 
@@ -1038,10 +1178,17 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             status: 'complete',
             current_step: 0,
             step: 'Show current state.',
+            final: true,
+            payload: {
+                status: 'complete',
+                current_step: 0,
+                step: 'Show current state.',
+            },
+            tool_name: 'advance_plan_step',
         });
     });
 
@@ -1321,10 +1468,17 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first task complete');
-        expect(result).toEqual({
+        expect(result).toMatchObject({
             status: 'advanced',
             current_step: 1,
             step: 'Run the worker.',
+            final: true,
+            payload: {
+                status: 'advanced',
+                current_step: 1,
+                step: 'Run the worker.',
+            },
+            tool_name: 'advance_plan_step',
         });
     });
 

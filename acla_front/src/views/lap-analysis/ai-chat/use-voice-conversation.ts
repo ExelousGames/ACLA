@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
 import { buildFormattedObservationFrame } from './voice-observation-formatter';
+import { getToolEnvelopeError, isToolOutputEnvelope } from './ai-tool-base';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
 const INLINE_FUNCTION_CALL_RE = /<function=([a-zA-Z0-9_.:-]+)>([\s\S]*?)<\/function>/g;
@@ -29,6 +30,8 @@ export type VoiceConversationState =
 
 /** Context passed to every frontend tool handler. */
 export interface ToolHandlerContext {
+    toolRunId?: string;
+    toolName?: string;
     /** Push an `observation` frame on the open WS. Safe to call from a
      *  background monitoring agent at any time. The frontend formats it
      *  before the backend injects it into the LLM context. */
@@ -269,6 +272,8 @@ export const executeSubscribedFrontendTool = async ({
     };
 
     const scopedContext: ToolHandlerContext = {
+        toolRunId: id,
+        toolName: name,
         sendObservation: baseContext.sendObservation,
         sendToolOutput,
     };
@@ -279,6 +284,9 @@ export const executeSubscribedFrontendTool = async ({
         }
 
         const result = await handler(args, scopedContext);
+        const envelopeError = isToolOutputEnvelope(result)
+            ? getToolEnvelopeError(result)
+            : null;
         sendText({
             type: 'tool_result',
             id,
@@ -291,10 +299,12 @@ export const executeSubscribedFrontendTool = async ({
             title,
             status: 'completed',
             result,
-            ok: true,
-            error: null,
+            ok: !envelopeError,
+            error: envelopeError,
         });
-        return { id, name, ok: true, result };
+        return envelopeError
+            ? { id, name, ok: false, result, error: envelopeError }
+            : { id, name, ok: true, result };
     } catch (err) {
         const error = (err as Error)?.message || String(err);
         sendText({ type: 'tool_error', id, error });

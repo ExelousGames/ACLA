@@ -39,6 +39,7 @@ import {
     type BaselineLapRecord,
     type BaselineCollectionTag,
 } from './BaselineCollectionTracker';
+import { getToolEnvelopeError, isToolOutputEnvelope } from './ai-tool-base';
 
 type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
 
@@ -1234,15 +1235,33 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 );
                 return;
             }
-            if (!result.ok) {
+            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
+            if (!envelope) {
                 setProcedurePlanRequestStatus(
                     requestIndex,
                     'failed',
-                    result.error || 'Tool failed.',
+                    'Tool did not return a standard output envelope.',
                 );
                 return;
             }
-            advanceProcedurePlanStep(`tool ${request.name} completed`);
+            const envelopeError = getToolEnvelopeError(envelope);
+            if (!result.ok || envelopeError) {
+                setProcedurePlanRequestStatus(
+                    requestIndex,
+                    'failed',
+                    result.error || envelopeError || 'Tool failed.',
+                );
+                return;
+            }
+            if (!envelope.final) {
+                setProcedurePlanRequestStatus(
+                    requestIndex,
+                    'blocked',
+                    envelope.message || 'Tool has not produced a final output yet.',
+                );
+                return;
+            }
+            advanceProcedurePlanStep(envelope.message || `tool ${request.name} completed`);
         }).catch((error) => {
             setProcedurePlanRequestStatus(
                 requestIndex,
