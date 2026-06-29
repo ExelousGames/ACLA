@@ -1656,7 +1656,6 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
         const output = createToolOutputController(
             'collect_live_baseline',
             ctx.toolRunId || `collect_live_baseline-${Date.now()}`,
-            ctx.sendToolOutput,
         );
         return collectBaselineLapThroughComponent(context, args, output);
     },

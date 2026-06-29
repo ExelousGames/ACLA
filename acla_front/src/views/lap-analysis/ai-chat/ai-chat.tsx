@@ -1150,7 +1150,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 displayMap: displayMapInChat,
             }, {}, {
                 sendObservation: agentVoiceConversation.sendObservation,
-                sendToolOutput: () => undefined,
             });
         }, 0);
     }, [

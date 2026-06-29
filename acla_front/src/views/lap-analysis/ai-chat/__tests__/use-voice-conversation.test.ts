@@ -63,7 +63,7 @@ describe('extractInlineFunctionCalls', () => {
 });
 
 describe('executeSubscribedFrontendTool', () => {
-    it('emits lifecycle events and a final tool_result for direct tool calls', async () => {
+    it('emits lifecycle events and a single final tool_result for direct tool calls', async () => {
         const frames: object[] = [];
         const events: object[] = [];
 
@@ -74,10 +74,7 @@ describe('executeSubscribedFrontendTool', () => {
                 arguments: { session_id: 's1' },
             },
             handlers: {
-                read_context: async (args, ctx) => {
-                    ctx.sendToolOutput?.({ chunk: 'first' });
-                    return { status: 'ready', args };
-                },
+                read_context: async (args) => ({ status: 'ready', args }),
             },
             baseContext: {
                 sendObservation: (data) => frames.push({ type: 'observation', data }),
@@ -101,24 +98,16 @@ describe('executeSubscribedFrontendTool', () => {
                 },
             },
         ]);
-        expect(frames).toContainEqual({
-            type: 'observation',
-            data: {
-                event: 'tool_output',
-                tool_run_id: 'tool-1',
-                tool_name: 'read_context',
-                final: false,
-                output: { chunk: 'first' },
+        expect(frames).toEqual([
+            {
+                type: 'tool_result',
+                id: 'tool-1',
+                result: {
+                    status: 'ready',
+                    args: { session_id: 's1' },
+                },
             },
-        });
-        expect(frames).toContainEqual({
-            type: 'tool_result',
-            id: 'tool-1',
-            result: {
-                status: 'ready',
-                args: { session_id: 's1' },
-            },
-        });
+        ]);
     });
 
     it('emits lifecycle events and a final tool_error when the handler fails', async () => {
@@ -147,15 +136,15 @@ describe('executeSubscribedFrontendTool', () => {
         expect(frames).toContainEqual({ type: 'tool_error', id: 'tool-2', error: 'boom' });
     });
 
-    it('unsubscribes after completion so late tool output is ignored', async () => {
+    it('does not expose a secondary tool output callback', async () => {
         const frames: object[] = [];
-        let lateOutput: (() => void) | null = null;
+        const contextKeys: string[][] = [];
 
         await executeSubscribedFrontendTool({
-            call: { id: 'tool-3', name: 'deferred_output' },
+            call: { id: 'tool-3', name: 'single_output' },
             handlers: {
-                deferred_output: async (_args, ctx) => {
-                    lateOutput = () => ctx.sendToolOutput?.({ chunk: 'late' });
+                single_output: async (_args, ctx) => {
+                    contextKeys.push(Object.keys(ctx).sort());
                     return { status: 'done' };
                 },
             },
@@ -165,8 +154,7 @@ describe('executeSubscribedFrontendTool', () => {
             sendText: (payload) => frames.push(payload),
         });
 
-        lateOutput?.();
-
+        expect(contextKeys).toEqual([['sendObservation', 'toolName', 'toolRunId']]);
         expect(frames).toEqual([
             { type: 'tool_result', id: 'tool-3', result: { status: 'done' } },
         ]);

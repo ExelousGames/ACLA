@@ -765,11 +765,10 @@ describe('ai command registry live performance analyst tools', () => {
 
     it('collects baseline through the subscribed tool result channel', async () => {
         const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry();
-        const sendToolOutput = jest.fn();
 
         const result = await registry.collect_live_baseline(
             {},
-            { sendObservation: jest.fn(), sendToolOutput },
+            { sendObservation: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -794,19 +793,9 @@ describe('ai command registry live performance analyst tools', () => {
             },
         });
         expect(livePerformanceAnalystState.enabled).toBe(true);
-        expect(sendToolOutput).toHaveBeenCalledWith(
-            expect.objectContaining({
-                status: 'complete',
-                source: 'baseline_collection',
-                ready: true,
-                final: true,
-                tool_name: 'collect_live_baseline',
-            }),
-            { final: true },
-        );
     });
 
-    it('streams baseline progress and returns timeout through tool output envelopes', async () => {
+    it('returns baseline timeout through the subscribed tool result channel', async () => {
         jest.useFakeTimers();
         try {
             const collectingTag = buildBaselineCollectionTag({
@@ -829,28 +818,14 @@ describe('ai command registry live performance analyst tools', () => {
                 getBaselineCollectionTag: () => collectingTag,
                 getBaselineLapRecord: () => null,
             });
-            const sendToolOutput = jest.fn();
 
             const resultPromise = registry.collect_live_baseline(
                 { timeout_seconds: 30 },
-                { sendObservation: jest.fn(), sendToolOutput },
+                { sendObservation: jest.fn() },
             );
 
             jest.advanceTimersByTime(250);
             await Promise.resolve();
-            expect(sendToolOutput).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    status: 'collecting',
-                    final: false,
-                    tool_name: 'collect_live_baseline',
-                    progress_percent: 35,
-                    payload: expect.objectContaining({
-                        source: 'baseline_collection',
-                        ready: false,
-                    }),
-                }),
-                { final: false },
-            );
 
             jest.advanceTimersByTime(30000);
             await Promise.resolve();

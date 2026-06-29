@@ -36,9 +36,6 @@ export interface ToolHandlerContext {
      *  background monitoring agent at any time. The frontend formats it
      *  before the backend injects it into the LLM context. */
     sendObservation: (data: Record<string, unknown>) => void;
-    /** Push output for the currently running subscribed tool. The voice
-     *  session forwards it to the AI as an observation tied to the run id. */
-    sendToolOutput?: (data: Record<string, unknown>, options?: { final?: boolean }) => void;
 }
 
 /** One frontend tool handler. Return value becomes the `tool_result`. Throw
@@ -258,24 +255,10 @@ export const executeSubscribedFrontendTool = async ({
     });
 
     const handler = handlers[name];
-    let subscribed = true;
-
-    const sendToolOutput: ToolHandlerContext['sendToolOutput'] = (data, options) => {
-        if (!subscribed) return;
-        baseContext.sendObservation({
-            event: options?.final ? 'tool_output_final' : 'tool_output',
-            tool_run_id: id,
-            tool_name: name,
-            final: options?.final === true,
-            output: data,
-        });
-    };
-
     const scopedContext: ToolHandlerContext = {
         toolRunId: id,
         toolName: name,
         sendObservation: baseContext.sendObservation,
-        sendToolOutput,
     };
 
     try {
@@ -318,8 +301,6 @@ export const executeSubscribedFrontendTool = async ({
             error,
         });
         return { id, name, ok: false, error };
-    } finally {
-        subscribed = false;
     }
 };
 

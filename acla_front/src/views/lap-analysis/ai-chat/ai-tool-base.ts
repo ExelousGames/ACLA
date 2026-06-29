@@ -204,7 +204,6 @@ export const toFrontendToolSchema = <TContext, THandlerContext>(
 export const executeAiToolDefinition = async <TContext, THandlerContext extends {
     toolRunId?: string;
     toolName?: string;
-    sendToolOutput?: ToolOutputEmitter;
 }>(
     definition: AiToolDefinition<TContext, THandlerContext>,
     args: Record<string, unknown>,
@@ -215,7 +214,6 @@ export const executeAiToolDefinition = async <TContext, THandlerContext extends 
     const output = createToolOutputController(
         definition.name,
         runId,
-        handlerContext.sendToolOutput,
     );
 
     try {
