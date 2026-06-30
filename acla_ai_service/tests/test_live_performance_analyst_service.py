@@ -39,7 +39,9 @@ def test_agent_behavior_knowledge_is_loaded():
     reload()
 
     for name in (
-        "main_chatbot",
+        "live",
+        "recorded",
+        "user_summary",
         "track_guide",
         "overtake",
         "live_performance_analyst",
@@ -47,9 +49,10 @@ def test_agent_behavior_knowledge_is_loaded():
         doc = agent_behavior(name)
         assert doc is not None
         assert doc["_raw_body"]
+    assert agent_behavior("main_chatbot") is None
 
 
-def test_system_prompt_defaults_to_main_chatbot_knowledge():
+def test_system_prompt_defaults_to_live_session_knowledge():
     reload()
 
     prompt = pipecat_pipeline._build_system_prompt({})
@@ -58,34 +61,82 @@ def test_system_prompt_defaults_to_main_chatbot_knowledge():
     assert "Procedure plan mode:" in prompt
     assert "Emotion signaling" in prompt
     assert "Transcript resilience" in prompt
-    assert "Main chatbot startup behavior:" in prompt
+    assert "Live chatbot session startup behavior:" in prompt
+    assert "Recorded chatbot session startup behavior:" not in prompt
+    assert "User summary chatbot session startup behavior:" not in prompt
     assert "Track Guide agent startup behavior:" not in prompt
     assert "Overtake agent startup behavior:" not in prompt
     assert "Live Performance Analyst startup behavior:" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("session_mode", "included", "excluded"),
+    [
+        (
+            "live",
+            "Live chatbot session startup behavior:",
+            [
+                "Recorded chatbot session startup behavior:",
+                "User summary chatbot session startup behavior:",
+            ],
+        ),
+        (
+            "recorded",
+            "Recorded chatbot session startup behavior:",
+            [
+                "Live chatbot session startup behavior:",
+                "User summary chatbot session startup behavior:",
+            ],
+        ),
+        (
+            "user_summary",
+            "User summary chatbot session startup behavior:",
+            [
+                "Live chatbot session startup behavior:",
+                "Recorded chatbot session startup behavior:",
+            ],
+        ),
+    ],
+)
+def test_system_prompt_uses_one_chatbot_session_mode_knowledge(session_mode, included, excluded):
+    reload()
+
+    prompt = pipecat_pipeline._build_system_prompt({
+        "session_mode": session_mode,
+    })
+
+    assert included in prompt
+    for text in excluded:
+        assert text not in prompt
 
 
 def test_system_prompt_uses_one_sub_agent_startup_knowledge():
     reload()
 
     prompt = pipecat_pipeline._build_system_prompt({
+        "session_mode": "recorded",
         "agent_mode": "track_guide",
     })
 
     assert '"agent_mode": "track_guide"' in prompt
     assert "Track Guide agent startup behavior:" in prompt
-    assert "Main chatbot startup behavior:" not in prompt
+    assert "Live chatbot session startup behavior:" not in prompt
+    assert "Recorded chatbot session startup behavior:" not in prompt
+    assert "User summary chatbot session startup behavior:" not in prompt
     assert "Overtake agent startup behavior:" not in prompt
     assert "Live Performance Analyst startup behavior:" not in prompt
 
 
-def test_system_prompt_unknown_agent_mode_falls_back_to_main_chatbot(caplog):
+def test_system_prompt_unknown_agent_mode_falls_back_to_session_mode(caplog):
     reload()
 
     prompt = pipecat_pipeline._build_system_prompt({
+        "session_mode": "recorded",
         "agent_mode": "mystery_mode",
     })
 
-    assert "Main chatbot startup behavior:" in prompt
+    assert "Recorded chatbot session startup behavior:" in prompt
+    assert "Live chatbot session startup behavior:" not in prompt
     assert "Track Guide agent startup behavior:" not in prompt
     assert "Unknown voice agent_mode" in caplog.text
 
