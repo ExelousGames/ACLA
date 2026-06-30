@@ -9,7 +9,7 @@ import pandas as pd
 from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
 from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING, LABEL_NAME_TO_ID
 from app.integrations.backend.client import backend_service
-from app.ml.segment_classifier.service import segment_classifier
+from app.ml.model_hub import get_segment_classifier
 
 
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
@@ -243,7 +243,7 @@ def _scan_window(
     track_id = _track_id(session_meta.get("map"))
     track_summary = _ensure_track(summary, track_id, str(session_meta.get("map") or track_id))
     df = pd.DataFrame(rows)
-    predicted_segments = segment_classifier.scan_telemetry_data(df)
+    predicted_segments = get_segment_classifier().scan_telemetry_data(df)
     session_id = str(session_meta.get("sessionId") or "")
 
     for segment in predicted_segments:

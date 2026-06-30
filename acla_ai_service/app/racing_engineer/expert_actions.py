@@ -13,8 +13,12 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from app.shared.telemetry import FeatureProcessor
 from app.local_llm.local_llm import GenerationRequest
+from app.ml.model_hub import (
+    get_expert_imitation_learning,
+    get_segment_classifier,
+    get_tire_grip_analysis,
+)
 from app.ml.prompts import generate_llm_prompt_from_labels
-from app.ml.segment_classifier.service import segment_classifier
 
 if TYPE_CHECKING:
     from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
@@ -47,27 +51,14 @@ async def predict_expert_actions(
 
         chunk_imitation_features = []
         try:
-            expert_service, _ = await service.model_cache_service.get_model_or_fetch(
-                model_type="imitation_learning",
-                model_subtype="imitation_model_data",
-                service_instance=service._expert_service,
-                deserializer_func=service._expert_service.deserialize_imitation_model,
-                backend_fetcher=service.backend_service.getCompleteActiveModelData,
-            )
+            expert_service = get_expert_imitation_learning()
             chunk_imitation_features = expert_service.extract_expert_state_for_telemetry(
                 [processed_telemetry_dict]
             )
         except Exception as e:
             raise RuntimeError(f"Failed to extract imitation features: {str(e)}")
 
-        chunk_grip_features = []
-        tire_grip_service, _ = await service.model_cache_service.get_model_or_fetch(
-            model_type="tire_grip_analysis",
-            model_subtype="tire_grip_model_data",
-            service_instance=service._tire_grip_service,
-            deserializer_func=service._tire_grip_service.deserialize_tire_grip_model,
-            backend_fetcher=service.backend_service.getCompleteActiveModelData,
-        )
+        tire_grip_service = get_tire_grip_analysis()
         chunk_grip_features = await tire_grip_service.extract_tire_grip_features(
             [processed_telemetry_dict]
         )
@@ -86,7 +77,7 @@ async def predict_expert_actions(
             segment_metadata["user_request"] = driver_request
 
         try:
-            predicted_labels = segment_classifier.predict_segment(pd.DataFrame([processed_telemetry_dict]))
+            predicted_labels = get_segment_classifier().predict_segment(pd.DataFrame([processed_telemetry_dict]))
         except ValueError as e:
             raise RuntimeError(f"Segment classifier prediction failed: {e}")
 

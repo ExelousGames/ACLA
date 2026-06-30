@@ -15,8 +15,7 @@ from app.infra.config import settings
 from app.integrations.backend.client import backend_service
 from app.llama.health import check_llama_server
 from app.llama.process import LlamaServerProcess
-from app.ml.opportunity_forecaster.bootstrap import ensure_opportunity_forecaster_model
-from app.ml.segment_classifier.bootstrap import ensure_segment_classifier_model
+from app.ml.model_hub import hydrate_chatbot_models
 from app.startup.llama import start_chat_sidecar
 from app.api import (
     annotation_router,
@@ -78,18 +77,15 @@ async def lifespan(app: FastAPI):
         print("   - AI_SERVICE_USERNAME")
         print("   - AI_SERVICE_PASSWORD")
 
-    # Hydrate segment classifier from backend if local artifacts are missing
-    # (e.g. fresh container / named volume). Skipped when backend is down —
-    # the classifier endpoint will surface "Model not trained or found".
+    # Hydrate chatbot-facing models from the backend active model store.
+    # Skipped when backend is down; each model reports degraded readiness.
     if backend_ok:
-        if await ensure_segment_classifier_model():
-            print("🧩 segment_classifier: ready")
-        else:
-            print("🧩 segment_classifier: NOT ready (no local artifacts and no active backend payload)")
-        if await ensure_opportunity_forecaster_model():
-            print("opportunity_forecaster: ready")
-        else:
-            print("opportunity_forecaster: NOT ready (no local artifacts and no active backend payload)")
+        model_status = await hydrate_chatbot_models()
+        for model_name, is_ready in model_status.items():
+            if is_ready:
+                print(f"{model_name}: ready")
+            else:
+                print(f"{model_name}: NOT ready (backend active model payload unavailable or invalid)")
 
     yield
 

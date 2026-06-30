@@ -161,13 +161,31 @@ class AIService:
 
     @property
     def segment_classifier(self):
-        """Lazy-loaded singleton — defers PyTorch + model load until first use."""
-        svc = getattr(self, "_segment_classifier_instance", None)
-        if svc is None:
-            from app.ml.segment_classifier.service import SegmentClassifierService
-            svc = SegmentClassifierService()
-            self._segment_classifier_instance = svc
-        return svc
+        """Shared chatbot model hub singleton."""
+        from app.ml.model_hub import get_segment_classifier
+
+        return get_segment_classifier()
+
+    @property
+    def opportunity_forecaster(self):
+        """Shared chatbot model hub singleton."""
+        from app.ml.model_hub import get_opportunity_forecaster
+
+        return get_opportunity_forecaster()
+
+    @property
+    def expert_imitation_learning(self):
+        """Shared chatbot model hub singleton."""
+        from app.ml.model_hub import get_expert_imitation_learning
+
+        return get_expert_imitation_learning()
+
+    @property
+    def tire_grip_analysis(self):
+        """Shared chatbot model hub singleton."""
+        from app.ml.model_hub import get_tire_grip_analysis
+
+        return get_tire_grip_analysis()
 
     async def _classify_segment_impl(self, telemetry_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Run :py:meth:`SegmentClassifierService.predict_segment` over rows.

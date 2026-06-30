@@ -327,6 +327,8 @@ class ExpertImitateLearningService:
         decoded = base64.b64decode(model_data.encode('utf-8'))
         return pickle.loads(decoded)
 
+expert_imitation_learning = ExpertImitateLearningService()
+
 
 if __name__ == "__main__":
     service = ExpertImitateLearningService()

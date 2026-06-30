@@ -10,8 +10,7 @@ import asyncio
 import pandas as pd
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.racing_engineer.expert_actions import predict_expert_actions
-from app.ml.segment_classifier.service import segment_classifier
-from app.ml.opportunity_forecaster import opportunity_forecaster
+from app.ml.model_hub import get_opportunity_forecaster, get_segment_classifier
 from app.services.user_session_analysis import analyze_user_sessions
 from app.shared.label_hierarchy import build_track_area_segments
 from app.shared.labels import (
@@ -142,7 +141,7 @@ async def get_opportunity_forecast(request: OpportunityForecastRequest) -> Dict[
         if not request.telemetry_data:
             raise HTTPException(status_code=400, detail="telemetry_data is required")
 
-        result = opportunity_forecaster.forecast(
+        result = get_opportunity_forecaster().forecast(
             request.telemetry_data,
             horizon_seconds=request.horizon_seconds or 10.0,
             top_k=request.top_k or 3,
@@ -206,7 +205,7 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             raise HTTPException(status_code=400, detail="telemetry_data is required")
 
         dataframe = pd.DataFrame(request.telemetry_data)
-        predicted_segments = segment_classifier.scan_telemetry_data(dataframe)
+        predicted_segments = get_segment_classifier().scan_telemetry_data(dataframe)
         raw_segments = []
 
         for segment in predicted_segments:

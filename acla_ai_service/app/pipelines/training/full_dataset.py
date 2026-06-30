@@ -9,8 +9,7 @@ import json
 import base64
 import logging
 from dataclasses import dataclass
-from app.features.tire_grip import TireGripAnalysisService
-from app.ml.imitation.service import ExpertImitateLearningService
+from app.ml.model_hub import get_expert_imitation_learning, get_tire_grip_analysis
 import numpy as np
 import joblib
 import warnings
@@ -131,9 +130,9 @@ class Full_dataset_TelemetryMLService:
         self.pipeline_config = pipeline_config if pipeline_config is not None else TrainingPipelineConfig()
         self.cache_config = self.pipeline_config
 
-        # Reusable service instances
-        self._expert_service = ExpertImitateLearningService(logger=self.logger)
-        self._tire_grip_service = TireGripAnalysisService()
+        # Reusable runtime services are provided by the central chatbot model hub.
+        self._expert_service = get_expert_imitation_learning()
+        self._tire_grip_service = get_tire_grip_analysis()
 
         # Clear entire cache to ensure we start fresh with model instances only
         self.model_cache_service.clear()
