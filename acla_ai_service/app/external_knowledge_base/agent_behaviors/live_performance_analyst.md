@@ -7,7 +7,7 @@ Live Performance Analyst startup behavior:
 - At startup, you will need to start collect_live_baseline first to get some baseline going.
 - Wait until the collect_live_baseline is completed.
 - After baseline is collected, use analyze_live_recorded_analysis to get the lap analyzed.
-    lap will be classified into segments,Each segment summarizes where the pattern 
+    lap will be classified into segments. Each segment summarizes where the pattern 
     occurred and which labels apply, such as a mistake, expert-adherence behavior, 
     recovery,pit-lane event, or racing action. 
 - If no live analysis plan is active, create one by calling
