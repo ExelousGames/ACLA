@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Any, Dict, List, Tuple
 
 from app.annotation_providers.registry import ProviderConfigurationError
@@ -18,6 +19,66 @@ from app.annotation_providers.tool_surface import (
 from app.shared.contracts import AgentRequest, AgentResponse
 
 _NODE = "openai_tool_agent"
+
+
+def _extract_direct_json_payload(raw: str) -> Tuple[str, Dict[str, Any]] | None:
+    """Return a JSON object emitted as plain assistant text, if present."""
+
+    def _loads_object(text: str) -> Dict[str, Any] | None:
+        try:
+            parsed = json.loads(text.strip())
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed.strip())
+            except json.JSONDecodeError:
+                return None
+        return parsed if isinstance(parsed, dict) else None
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+
+    parsed = _loads_object(text)
+    if parsed is not None:
+        return json.dumps(parsed), parsed
+
+    if "```json" in text:
+        fenced = text.split("```json", 1)[1].split("```", 1)[0]
+        parsed = _loads_object(fenced)
+        if parsed is not None:
+            return json.dumps(parsed), parsed
+    elif "```" in text:
+        fenced = text.split("```", 1)[1].split("```", 1)[0]
+        parsed = _loads_object(fenced)
+        if parsed is not None:
+            return json.dumps(parsed), parsed
+
+    brace_match = re.search(r"\{[\s\S]*\}", text)
+    if brace_match:
+        parsed = _loads_object(brace_match.group())
+        if parsed is not None:
+            return json.dumps(parsed), parsed
+
+    return None
+
+
+def _capture_direct_submission(capture: ToolAgentCapture) -> None:
+    if capture.submitted:
+        return
+    extracted = _extract_direct_json_payload("".join(capture.text_chunks))
+    if extracted is None:
+        return
+    payload_json, parsed = extracted
+    if not any(key in parsed for key in ("label_ids", "proposals")):
+        return
+    capture.submit_payload = payload_json
+    capture.submit_summary = str(
+        parsed.get("reasoning") or parsed.get("summary") or ""
+    )
+    capture.submitted = True
+
 
 def _client(request: AgentRequest):
     try:
@@ -117,6 +178,8 @@ def run_openai_compatible(request: AgentRequest) -> AgentResponse:
                 })
         if capture.submitted:
             break
+
+    _capture_direct_submission(capture)
 
     if cb.progress:
         cb.progress(

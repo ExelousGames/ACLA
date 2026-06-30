@@ -32,6 +32,12 @@ def render_annotation_provider_config(
         key=f"{key_prefix}_provider",
     )
     st.caption(provider.description)
+    if not provider.configured:
+        missing = ", ".join(provider.required_settings) or "provider configuration"
+        st.warning(
+            f"{provider.label} is available to configure, but cannot run until "
+            f"{missing} is set."
+        )
 
     model = provider.default_model_id()
     model_lookup = {m.id: m for m in provider.models}
