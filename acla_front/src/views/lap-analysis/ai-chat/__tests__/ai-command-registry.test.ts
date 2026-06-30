@@ -183,6 +183,14 @@ describe('ai command registry user summary tools', () => {
             },
             { sendObservation: jest.fn() },
         );
+        const bareTyreResult = await registry.query_telemetry_metric(
+            {
+                fields: "['tyre_pressure_front_left', 'tyre_pressure_front_right', 'tyre_pressure_rear_left', 'tyre_pressure_rear_right']",
+                scope: { type: 'now' },
+                reduce: 'avg',
+            },
+            { sendObservation: jest.fn() },
+        );
 
         expect(fuelResult).toMatchObject({
             status: 'complete',
@@ -191,6 +199,15 @@ describe('ai command registry user summary tools', () => {
             },
         });
         expect(tireResult).toMatchObject({
+            status: 'complete',
+            payload: {
+                Physics_wheel_pressure_front_left: 26.1,
+                Physics_wheel_pressure_front_right: 26.2,
+                Physics_wheel_pressure_rear_left: 25.9,
+                Physics_wheel_pressure_rear_right: 26,
+            },
+        });
+        expect(bareTyreResult).toMatchObject({
             status: 'complete',
             payload: {
                 Physics_wheel_pressure_front_left: 26.1,
