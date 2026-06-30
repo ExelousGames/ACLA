@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
     detectLiveSessionType,
     getTelemetryCar,
@@ -6,13 +6,20 @@ import {
     getTelemetryPosition,
     getTelemetryTrack,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
+import {
+    createToolOutputController,
+    type ToolOutputController,
+    type ToolOutputEmitter,
+} from './ai-tool-base';
 
 export type BaselineCollectionTag = {
     status: 'waiting_for_start' | 'collecting' | 'complete';
-    ready: boolean;
     progress_percent: number;
     detail: string;
-    snapshot: Record<string, any>;
+    track: string | null;
+    car: string | null;
+    current_lap: number | null;
+    baseline_lap: number | null;
 };
 
 export type BaselineLapRecord = {
@@ -32,6 +39,7 @@ type BaselineCollectionTrackerProps = {
     sessionMode: 'live' | 'recorded' | 'user_summary';
     onTagChange: (tag: BaselineCollectionTag | null) => void;
     onLapRecordChange: (record: BaselineLapRecord | null) => void;
+    onToolOutput?: ToolOutputEmitter;
 };
 
 type BaselineRecorderState = {
@@ -158,12 +166,38 @@ export const buildBaselineCollectionTag = (
 
     return {
         status,
-        ready,
         progress_percent: progress,
         detail,
-        snapshot,
+        track: typeof snapshot.track === 'string' ? snapshot.track : null,
+        car: typeof snapshot.car === 'string' ? snapshot.car : null,
+        current_lap: Number.isFinite(Number(snapshot.current_lap))
+            ? Number(snapshot.current_lap)
+            : null,
+        baseline_lap: Number.isFinite(Number(snapshot.baseline_lap))
+            ? Number(snapshot.baseline_lap)
+            : null,
     };
 };
+
+export const buildBaselineCollectionToolPayload = (
+    tag: BaselineCollectionTag | null,
+    record: BaselineLapRecord | null,
+) => {
+    const message = record
+        ? 'Baseline complete. Cached lap record is ready.'
+        : tag?.detail ?? 'Waiting for baseline collection to start.';
+
+    return {
+        progress_percent: record ? 100 : tag?.progress_percent ?? 0,
+        status: record ? 'complete' : tag?.status ?? 'waiting_for_start',
+        car: record?.car ?? tag?.car ?? null,
+        track: record?.track ?? tag?.track ?? null,
+        message,
+    };
+};
+
+const createBaselineToolRunId = (): string =>
+    `collect_live_baseline-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
 export const BaselineCollectionTracker = ({
     enabled,
@@ -171,13 +205,53 @@ export const BaselineCollectionTracker = ({
     sessionMode,
     onTagChange,
     onLapRecordChange,
+    onToolOutput,
 }: BaselineCollectionTrackerProps) => {
     const recorderRef = useRef<BaselineRecorderState>(createEmptyRecorderState());
+    const toolOutputRef = useRef<ToolOutputController | null>(null);
+    const toolOutputEmitterRef = useRef<ToolOutputEmitter | undefined>(onToolOutput);
+    const lastToolOutputKeyRef = useRef<string>('');
+
+    useEffect(() => {
+        toolOutputEmitterRef.current = onToolOutput;
+    }, [onToolOutput]);
+
+    const resetToolOutput = useCallback(() => {
+        toolOutputRef.current = null;
+        lastToolOutputKeyRef.current = '';
+    }, []);
+
+    const getToolOutput = useCallback(() => {
+        if (!toolOutputRef.current) {
+            toolOutputRef.current = createToolOutputController(
+                'collect_live_baseline',
+                createBaselineToolRunId(),
+                (envelope, options) => toolOutputEmitterRef.current?.(envelope, options),
+            );
+        }
+        return toolOutputRef.current;
+    }, []);
+
+    const emitBaselineToolOutput = useCallback((record: BaselineLapRecord | null) => {
+        if (!toolOutputEmitterRef.current || !record) return;
+
+        const payload = buildBaselineCollectionToolPayload(null, record);
+        const outputKey = [
+            'final',
+            payload.status,
+            record.id,
+        ].join(':');
+        if (outputKey === lastToolOutputKeyRef.current) return;
+        lastToolOutputKeyRef.current = outputKey;
+
+        getToolOutput().final(payload, { message: payload.message });
+    }, [getToolOutput]);
 
     useEffect(() => {
         const resetRecorder = () => {
             recorderRef.current = createEmptyRecorderState();
             onLapRecordChange(null);
+            resetToolOutput();
         };
 
         if (sessionMode !== 'live' || !enabled) {
@@ -253,11 +327,14 @@ export const BaselineCollectionTracker = ({
         const snapshot = state.completedRecord?.snapshot ?? buildRecorderSnapshot(state);
         const tag = buildBaselineCollectionTag(snapshot);
         onTagChange(tag);
+        emitBaselineToolOutput(state.completedRecord);
     }, [
         enabled,
         liveData,
         onLapRecordChange,
         onTagChange,
+        emitBaselineToolOutput,
+        resetToolOutput,
         sessionMode,
     ]);
 

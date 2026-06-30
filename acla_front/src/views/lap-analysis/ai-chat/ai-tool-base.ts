@@ -105,7 +105,9 @@ const createEnvelope = (
         progressPercent?: number;
     } = {},
 ): ToolOutputEnvelope => {
-    const payloadRecord = isRecord(payload) ? payload : {};
+    const payloadRecord = toolName === 'collect_live_baseline'
+        ? {}
+        : isRecord(payload) ? payload : {};
     const payloadError = getPayloadError(payload);
     const envelope: ToolOutputEnvelope = {
         ...payloadRecord,

@@ -224,6 +224,10 @@ export const mapBackendToolEventForUi = (_parsed: unknown): VoiceEvent | null =>
     return null;
 };
 
+const shouldSuppressFrontendToolStartedEvent = (name: string): boolean => (
+    name === 'collect_live_baseline'
+);
+
 export const executeSubscribedFrontendTool = async ({
     call,
     handlers,
@@ -245,14 +249,16 @@ export const executeSubscribedFrontendTool = async ({
         return { id, name, ok: false, error };
     }
 
-    emitEvent?.({
-        kind: 'tool_event',
-        runId: id,
-        name,
-        title,
-        status: 'started',
-        arguments: args,
-    });
+    if (!shouldSuppressFrontendToolStartedEvent(name)) {
+        emitEvent?.({
+            kind: 'tool_event',
+            runId: id,
+            name,
+            title,
+            status: 'started',
+            arguments: args,
+        });
+    }
 
     const handler = handlers[name];
     const scopedContext: ToolHandlerContext = {

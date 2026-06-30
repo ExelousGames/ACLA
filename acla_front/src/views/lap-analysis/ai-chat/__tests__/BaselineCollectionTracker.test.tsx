@@ -45,18 +45,24 @@ describe('BaselineCollectionTracker', () => {
             0.98,
         ]);
         expect(tags.at(-1)).toMatchObject({
-            ready: true,
             progress_percent: 100,
             status: 'complete',
+            car: 'Ferrari 296',
+            track: 'brands_hatch',
         });
+        expect(tags.at(-1)).not.toHaveProperty('ready');
+        expect(tags.at(-1)).not.toHaveProperty('snapshot');
 
         rerender(<BaselineCollectionTracker {...props} liveData={null} />);
 
         expect(tags.at(-1)).toMatchObject({
-            ready: true,
             progress_percent: 100,
             status: 'complete',
+            car: 'Ferrari 296',
+            track: 'brands_hatch',
         });
+        expect(tags.at(-1)).not.toHaveProperty('ready');
+        expect(tags.at(-1)).not.toHaveProperty('snapshot');
         expect(records.filter(Boolean).at(-1)).toBe(completedRecord);
     });
 
@@ -82,9 +88,54 @@ describe('BaselineCollectionTracker', () => {
             sample_count: 3,
         });
         expect(tags.at(-1)).toMatchObject({
-            ready: true,
             progress_percent: 100,
             status: 'complete',
+            car: 'Ferrari 296',
+            track: 'brands_hatch',
         });
+        expect(tags.at(-1)).not.toHaveProperty('ready');
+        expect(tags.at(-1)).not.toHaveProperty('snapshot');
+    });
+
+    it('emits a compact public tool result when the baseline completes', () => {
+        const outputs: any[] = [];
+        const props = {
+            enabled: true,
+            liveData: makeSample(0, 0.001, 10),
+            sessionMode: 'live' as const,
+            onTagChange: jest.fn(),
+            onLapRecordChange: jest.fn(),
+            onToolOutput: (output: any) => outputs.push(output),
+        };
+
+        const { rerender } = render(<BaselineCollectionTracker {...props} />);
+        rerender(<BaselineCollectionTracker {...props} liveData={makeSample(0, 0.4, 40000)} />);
+        rerender(<BaselineCollectionTracker {...props} liveData={makeSample(0, 0.98, 98000)} />);
+        rerender(<BaselineCollectionTracker {...props} liveData={makeSample(1, 0.001, 5)} />);
+
+        expect(outputs.at(-1)).toMatchObject({
+            status: 'complete',
+            progress_percent: 100,
+            message: 'Baseline complete. Cached lap record is ready.',
+            tool_name: 'collect_live_baseline',
+            final: true,
+            payload: {
+                progress_percent: 100,
+                status: 'complete',
+                car: 'Ferrari 296',
+                track: 'brands_hatch',
+                message: 'Baseline complete. Cached lap record is ready.',
+            },
+        });
+        expect(Object.keys(outputs.at(-1).payload).sort()).toEqual([
+            'car',
+            'message',
+            'progress_percent',
+            'status',
+            'track',
+        ]);
+        expect(outputs.at(-1)).not.toHaveProperty('baseline');
+        expect(outputs.at(-1)).not.toHaveProperty('snapshot');
+        expect(outputs.at(-1)).not.toHaveProperty('source');
     });
 });

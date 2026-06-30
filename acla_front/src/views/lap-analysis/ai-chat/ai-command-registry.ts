@@ -35,14 +35,17 @@ import {
 } from 'views/user-summary/user-summary-model';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
+    buildBaselineCollectionToolPayload,
     type BaselineLapRecord,
     type BaselineCollectionTag,
 } from './BaselineCollectionTracker';
 import {
     AiToolDefinition,
     ToolOutputController,
-    createToolOutputController,
+    type ToolOutputEmitter,
+    type ToolOutputEnvelope,
     executeAiToolDefinition,
+    getToolEnvelopeError,
     toFrontendToolSchema,
 } from './ai-tool-base';
 
@@ -91,6 +94,7 @@ export interface AiCommandRegistryContext {
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
+    setBaselineCollectionEnabled?: (enabled: boolean) => void;
     advanceProcedurePlanStep?: (reason?: string) => {
         status: string;
         current_request?: number;
@@ -104,6 +108,8 @@ export interface AiCommandRegistryContext {
     setProcedurePlan?: (plan: ProcedurePlan | null) => void;
     getBaselineCollectionTag?: () => BaselineCollectionTag | null;
     getBaselineLapRecord?: () => BaselineLapRecord | null;
+    getBaselineToolOutput?: () => ToolOutputEnvelope | null;
+    subscribeBaselineToolOutput?: (listener: ToolOutputEmitter) => () => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     startAgentSession?: (
         agentMode: AgentSessionMode,
@@ -189,7 +195,6 @@ const LIVE_ANALYST_MIN_INTERVAL_SECONDS = 2;
 const LIVE_ANALYST_MAX_INTERVAL_SECONDS = 12;
 const LIVE_RECORDED_ANALYSIS_TIMEOUT_MS = 120000;
 const LIVE_RECORDED_ANALYSIS_ENDPOINT = '/racing-session/analyze-live-recorded-analysis';
-const BASELINE_COLLECTION_TOOL_POLL_MS = 250;
 const DEFAULT_BASELINE_COLLECTION_TIMEOUT_SECONDS = 600;
 const MIN_BASELINE_COLLECTION_TIMEOUT_SECONDS = 30;
 const MAX_BASELINE_COLLECTION_TIMEOUT_SECONDS = 900;
@@ -1132,11 +1137,10 @@ const buildLiveAnalystSnapshot = (context: AiCommandRegistryContext): Record<str
 
     return {
         ...(snapshot ?? {}),
-        ...(tag?.snapshot ?? {}),
         baseline_ready: ready,
         baseline_collection_started: ready || tag?.status === 'collecting',
         baseline_progress_percent: ready ? 100 : tag?.progress_percent ?? snapshot?.baseline_progress_percent ?? 0,
-        baseline_lap: record?.lap ?? tag?.snapshot?.baseline_lap ?? snapshot?.baseline_lap ?? null,
+        baseline_lap: record?.lap ?? tag?.baseline_lap ?? snapshot?.baseline_lap ?? null,
         baseline_record_sample_count: record?.sample_count ?? 0,
     };
 };
@@ -1183,31 +1187,6 @@ const buildLiveAnalystPlanError = (
     message,
 });
 
-const buildBaselineCollectionToolPayload = (
-    tag: BaselineCollectionTag | null,
-    record: BaselineLapRecord | null,
-) => ({
-    status: record ? 'complete' : tag?.status ?? 'waiting_for_start',
-    source: 'baseline_collection',
-    agent_mode: 'live_performance_analyst',
-    ready: Boolean(record),
-    progress_percent: record ? 100 : tag?.progress_percent ?? 0,
-    detail: record
-        ? 'Baseline complete. Cached lap record is ready.'
-        : tag?.detail ?? 'Waiting for baseline collection to start.',
-    snapshot: record?.snapshot ?? tag?.snapshot ?? null,
-    baseline: record
-        ? {
-            id: record.id,
-            lap: record.lap,
-            track: record.track,
-            car: record.car,
-            sample_count: record.sample_count,
-            captured_at: record.captured_at,
-        }
-        : null,
-});
-
 const getBaselineCollectionTimeoutMs = (args: Record<string, any>): number => {
     const seconds = toPositiveNumber(args.timeout_seconds) ?? DEFAULT_BASELINE_COLLECTION_TIMEOUT_SECONDS;
     return Math.min(
@@ -1216,74 +1195,102 @@ const getBaselineCollectionTimeoutMs = (args: Record<string, any>): number => {
     ) * 1000;
 };
 
-const getBaselineCollectionToolPayload = (context: AiCommandRegistryContext) => (
+const getCurrentBaselineCollectionPayload = (context: AiCommandRegistryContext) => (
     buildBaselineCollectionToolPayload(
         context.getBaselineCollectionTag?.() ?? null,
         getCachedBaselineLapRecord(context),
     )
 );
 
-const collectBaselineLapThroughComponent = async (
+const finishBaselineCollectionFromEnvelope = (
+    envelope: ToolOutputEnvelope,
+    output: ToolOutputController,
+) => {
+    const envelopeError = getToolEnvelopeError(envelope);
+    if (envelopeError) {
+        return output.error(envelopeError, envelope.payload, { message: envelope.message });
+    }
+    return output.final(envelope.payload, { message: envelope.message });
+};
+
+const collectBaselineLapFromTrackerOutput = async (
     context: AiCommandRegistryContext,
     args: Record<string, any>,
     output: ToolOutputController,
-) => {
+): Promise<ToolOutputEnvelope> => {
     const unavailable = buildLiveAnalystUnavailable(context);
     if (unavailable) return output.error(unavailable.error || 'baseline_collection_unavailable', unavailable);
 
     context.setLivePerformanceAnalystEnabled?.(true);
+    context.setBaselineCollectionEnabled?.(true);
     context.setAgentTagActive?.('Live Analyst', true);
 
-    const initial = getBaselineCollectionToolPayload(context);
-    if (initial.status === 'complete') {
-        return output.final(initial);
+    const initial = context.getBaselineToolOutput?.() ?? null;
+    if (initial?.tool_name === 'collect_live_baseline') {
+        if (initial.final) {
+            return finishBaselineCollectionFromEnvelope(initial, output);
+        }
+    }
+
+    const initialPayload = getCurrentBaselineCollectionPayload(context);
+    if (initialPayload.status === 'complete') {
+        return output.final(initialPayload);
     }
 
     const timeoutMs = getBaselineCollectionTimeoutMs(args);
-    const startedAt = Date.now();
-    let lastProgressKey = '';
-
+    const subscribe = context.subscribeBaselineToolOutput;
     return new Promise((resolve) => {
-        const intervalId = setInterval(() => {
-            const payload = getBaselineCollectionToolPayload(context);
-            const progressKey = [
-                payload.status,
-                payload.progress_percent,
-                payload.detail,
-                payload.baseline ? (payload.baseline as Record<string, unknown>).id : '',
-            ].join(':');
+        let settled = false;
+        let unsubscribe: () => void = () => undefined;
 
-            if (payload.status === 'complete') {
-                clearInterval(intervalId);
-                resolve(output.final(payload));
+        const settle = (result: ToolOutputEnvelope) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutId);
+            unsubscribe();
+            resolve(result);
+        };
+
+        const handleEnvelope: ToolOutputEmitter = (envelope) => {
+            if (envelope.tool_name !== 'collect_live_baseline') {
                 return;
             }
 
-            if (progressKey !== lastProgressKey) {
-                lastProgressKey = progressKey;
-                output.progress(payload, {
-                    progressPercent: payload.progress_percent,
-                    message: payload.detail,
-                });
+            if (envelope.final) {
+                settle(finishBaselineCollectionFromEnvelope(envelope, output));
+                return;
             }
+        };
 
-            if (Date.now() - startedAt >= timeoutMs) {
-                clearInterval(intervalId);
-                const timeoutPayload = {
-                    status: 'error',
-                    error: 'baseline_collection_timeout',
-                    source: 'baseline_collection',
-                    agent_mode: 'live_performance_analyst',
-                    progress: payload,
-                    message: 'Baseline collection did not complete before the tool timeout.',
-                };
-                resolve(output.error(
-                    'baseline_collection_timeout',
-                    timeoutPayload,
-                    { message: timeoutPayload.message },
-                ));
+        const timeoutId = setTimeout(() => {
+            const progress = context.getBaselineToolOutput?.()?.payload
+                ?? getCurrentBaselineCollectionPayload(context);
+            const progressRecord = progress && typeof progress === 'object' && !Array.isArray(progress)
+                ? progress as Record<string, any>
+                : {};
+            const timeoutPayload = {
+                status: 'error',
+                error: 'baseline_collection_timeout',
+                progress_percent: Number(progressRecord.progress_percent ?? 0),
+                car: typeof progressRecord.car === 'string' ? progressRecord.car : null,
+                track: typeof progressRecord.track === 'string' ? progressRecord.track : null,
+                message: 'Baseline collection did not complete before the tool timeout.',
+            };
+            settle(output.error(
+                'baseline_collection_timeout',
+                timeoutPayload,
+                { message: timeoutPayload.message },
+            ));
+        }, timeoutMs);
+
+        if (subscribe) {
+            unsubscribe = subscribe(handleEnvelope);
+            const current = context.getBaselineToolOutput?.();
+            if (current) {
+                handleEnvelope(current, { final: current.final });
             }
-        }, BASELINE_COLLECTION_TOOL_POLL_MS);
+            return;
+        }
     });
 };
 
@@ -1713,14 +1720,6 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
         };
     },
 
-    async collect_live_baseline(args, ctx) {
-        const output = createToolOutputController(
-            'collect_live_baseline',
-            ctx.toolRunId || `collect_live_baseline-${Date.now()}`,
-        );
-        return collectBaselineLapThroughComponent(context, args, output);
-    },
-
     async analyze_live_recorded_analysis(args) {
         const unavailable = buildLiveAnalystUnavailable(context);
         if (unavailable) return unavailable;
@@ -2080,7 +2079,7 @@ const createAiToolDefinition = (
         visibility: getToolVisibility(name),
         execute: async (args, context, output, handlerContext) => {
             if (name === 'collect_live_baseline') {
-                return collectBaselineLapThroughComponent(context, args, output);
+                return collectBaselineLapFromTrackerOutput(context, args, output);
             }
 
             const rawRegistry = createRawAiCommandRegistry(context);

@@ -834,7 +834,10 @@ describe('ai command registry live performance analyst tools', () => {
     });
 
     it('collects baseline through the subscribed tool result channel', async () => {
-        const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry();
+        const setBaselineCollectionEnabled = jest.fn();
+        const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry({
+            setBaselineCollectionEnabled,
+        });
 
         const result = await registry.collect_live_baseline(
             {},
@@ -843,26 +846,23 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(result).toMatchObject({
             status: 'complete',
-            source: 'baseline_collection',
-            agent_mode: 'live_performance_analyst',
-            ready: true,
             progress_percent: 100,
+            message: 'Baseline complete. Cached lap record is ready.',
             final: true,
             tool_name: 'collect_live_baseline',
-            payload: expect.objectContaining({
+            payload: {
+                progress_percent: 100,
                 status: 'complete',
-                source: 'baseline_collection',
-                ready: true,
-            }),
-            baseline: {
-                id: expect.any(String),
-                lap: 0,
-                track: 'brands_hatch',
                 car: 'Ferrari 296',
-                sample_count: expect.any(Number),
+                track: 'brands_hatch',
+                message: 'Baseline complete. Cached lap record is ready.',
             },
         });
+        expect(result).not.toHaveProperty('source');
+        expect(result).not.toHaveProperty('agent_mode');
+        expect(result).not.toHaveProperty('baseline');
         expect(livePerformanceAnalystState.enabled).toBe(true);
+        expect(setBaselineCollectionEnabled).toHaveBeenCalledWith(true);
     });
 
     it('returns baseline timeout through the subscribed tool result channel', async () => {
@@ -904,13 +904,14 @@ describe('ai command registry live performance analyst tools', () => {
                 error: 'baseline_collection_timeout',
                 final: true,
                 tool_name: 'collect_live_baseline',
-                payload: expect.objectContaining({
+                payload: {
                     status: 'error',
-                    progress: expect.objectContaining({
-                        source: 'baseline_collection',
-                        ready: false,
-                    }),
-                }),
+                    error: 'baseline_collection_timeout',
+                    progress_percent: 35,
+                    car: 'Ferrari 296',
+                    track: 'brands_hatch',
+                    message: 'Baseline collection did not complete before the tool timeout.',
+                },
             });
         } finally {
             jest.useRealTimers();
@@ -1635,6 +1636,7 @@ describe('ai command registry live performance analyst tools', () => {
             lastObservationAt: 0,
             lastSpokenAt: 0,
         };
+        const setBaselineCollectionEnabled = jest.fn();
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
             sessionIntelligence,
@@ -1648,6 +1650,7 @@ describe('ai command registry live performance analyst tools', () => {
             startTrackGuide: jest.fn(),
             setTrackGuideEnabled: jest.fn(),
             setLivePerformanceAnalystEnabled: jest.fn(),
+            setBaselineCollectionEnabled,
             getOpportunityTelemetryRows: () => [],
         };
         const sendObservation = jest.fn();
@@ -1671,6 +1674,7 @@ describe('ai command registry live performance analyst tools', () => {
                 },
             },
         });
+        expect(setBaselineCollectionEnabled).not.toHaveBeenCalled();
         expect(sendObservation).toHaveBeenCalledTimes(1);
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
