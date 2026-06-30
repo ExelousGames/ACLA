@@ -56,6 +56,19 @@ _FUNCTION_TAG_RE = re.compile(
     r"^<function=([A-Za-z_]\w*)>\s*(.*?)\s*</function>$",
     re.DOTALL,
 )
+_SHARED_STARTUP_BEHAVIORS = (
+    "tool_use",
+    "procedure_plan",
+    "emotion",
+    "transcript_resilience",
+)
+_DEFAULT_AGENT_BEHAVIOR = "main_chatbot"
+_VALID_AGENT_BEHAVIORS = frozenset([
+    _DEFAULT_AGENT_BEHAVIOR,
+    "track_guide",
+    "overtake",
+    "live_performance_analyst",
+])
 
 
 # ----------------------------------------------------------------------
@@ -84,6 +97,67 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
         "Use this context to decide which tools are appropriate. "
         "Fetch detailed data with tools instead of inventing it."
     )
+
+
+def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> str:
+    context = session_context if isinstance(session_context, dict) else {}
+    raw_mode = context.get("agent_mode")
+    if raw_mode is None or str(raw_mode).strip() == "":
+        return _DEFAULT_AGENT_BEHAVIOR
+
+    agent_mode = str(raw_mode).strip()
+    if agent_mode in _VALID_AGENT_BEHAVIORS:
+        return agent_mode
+
+    LOGGER.warning(
+        "Unknown voice agent_mode %r; falling back to %s",
+        agent_mode,
+        _DEFAULT_AGENT_BEHAVIOR,
+    )
+    return _DEFAULT_AGENT_BEHAVIOR
+
+
+def _raw_knowledge_doc(doc: Any) -> str:
+    if not isinstance(doc, dict):
+        return ""
+    return str(doc.get("_raw_body") or "").strip()
+
+
+def _build_startup_knowledge_prompt(
+    session_context: Optional[Dict[str, Any]],
+) -> str:
+    """Return shared + one agent-specific startup knowledge bundle."""
+    from app.external_knowledge_base import (
+        agent_behavior as _agent_behavior,
+        behavior as _behavior,
+    )
+
+    sections: List[str] = []
+    for behavior_name in _SHARED_STARTUP_BEHAVIORS:
+        section = _raw_knowledge_doc(_behavior(behavior_name))
+        if section:
+            sections.append(section)
+
+    agent_name = _startup_agent_behavior_name(session_context)
+    agent_section = _raw_knowledge_doc(_agent_behavior(agent_name))
+    if agent_section:
+        sections.append(agent_section)
+    else:
+        LOGGER.warning("Missing startup agent behavior doc: %s", agent_name)
+
+    return "\n\n".join(sections)
+
+
+def _build_system_prompt(session_context: Optional[Dict[str, Any]]) -> str:
+    system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
+    session_context_prompt = _format_session_context_for_prompt(session_context)
+    if session_context_prompt:
+        system_prompt = f"{system_prompt.rstrip()}\n\n{session_context_prompt}"
+
+    startup_knowledge = _build_startup_knowledge_prompt(session_context)
+    if startup_knowledge:
+        system_prompt = f"{system_prompt.rstrip()}\n\n{startup_knowledge}"
+    return system_prompt
 
 
 _PLAN_REQUEST_FIELDS = (
@@ -1032,18 +1106,9 @@ async def build_voice_pipeline_task(
     # engineer prompt has no {track}/{car} placeholders — the LLM doesn't
     # carry that state; it responds to what the driver says.
     #
-    # Append behavior specs loaded from the skills corpus so the instructions
-    # live in editable .md files, not in Python code.
-    from app.external_knowledge_base import behavior as _skill_behavior
-    system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
-    session_context_prompt = _format_session_context_for_prompt(session_config.session_context)
-    if session_context_prompt:
-        system_prompt = f"{system_prompt.rstrip()}\n\n{session_context_prompt}"
-    for _behavior_name in ("tool_use", "procedure_plan", "live_performance_analyst", "emotion", "transcript_resilience"):
-        _skill = _skill_behavior(_behavior_name)
-        _section = _skill.get("_raw_body", "") if _skill else ""
-        if _section:
-            system_prompt = f"{system_prompt.rstrip()}\n\n{_section}"
+    # Startup behavior docs live in editable .md files. Each new socket gets
+    # shared chatbot rules plus exactly one agent-specific role document.
+    system_prompt = _build_system_prompt(session_config.session_context)
 
     context = LLMContext(
         messages=[{"role": "system", "content": system_prompt}],

@@ -254,6 +254,13 @@ def behavior(name: str) -> Optional[dict]:
     return _load_category("behaviors").get(name)
 
 
+def agent_behavior(name: str) -> Optional[dict]:
+    """Return the startup behavior spec for one chatbot session role."""
+    if not name:
+        return None
+    return _load_category("agent_behaviors").get(_slug(name))
+
+
 def tool(name: str) -> Optional[dict]:
     """Return the LLM-facing usage doc for one voice tool by function name.
 
@@ -390,4 +397,14 @@ def reload() -> None:
         LOGGER.exception("racing_engineer: failed to reset KB registry")
 
 
-__all__ = ["label", "feature", "behavior", "tool", "track", "track_guide", "search", "reload"]
+__all__ = [
+    "label",
+    "feature",
+    "behavior",
+    "agent_behavior",
+    "tool",
+    "track",
+    "track_guide",
+    "search",
+    "reload",
+]

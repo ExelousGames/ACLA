@@ -3,7 +3,7 @@ import types
 
 import pytest
 
-from app.external_knowledge_base import behavior, reload, tool
+from app.external_knowledge_base import agent_behavior, behavior, reload, tool
 from app.racing_engineer.service import AIService, _live_section_stats
 from app.voice import pipecat_pipeline
 
@@ -25,14 +25,69 @@ def test_live_performance_tool_knowledge_is_loaded():
     assert "focus_name" not in tool("set_procedure_plan")["_raw_body"]
     assert "request's `payload`" in tool("set_procedure_plan")["_raw_body"]
     assert "advance_plan_step" in behavior("procedure_plan")["_raw_body"]
-    assert "collecting_baseline" in behavior("live_performance_analyst")["_raw_body"]
-    assert "get_live_focus_section" not in behavior("live_performance_analyst")["_raw_body"]
-    assert "live_analysis_plan_started" in behavior("live_performance_analyst")["_raw_body"]
-    assert "calling `set_procedure_plan`" in behavior("live_performance_analyst")["_raw_body"]
-    assert "baseline_collection" in behavior("live_performance_analyst")["_raw_body"]
-    assert "live_recorded_analysis" in behavior("live_performance_analyst")["_raw_body"]
-    assert "Do not expect the\n  frontend to provide this startup plan" in behavior("live_performance_analyst")["_raw_body"]
-    assert "Do not fall back to live lap or section classification" in behavior("live_performance_analyst")["_raw_body"]
+    assert "collecting_baseline" in agent_behavior("live_performance_analyst")["_raw_body"]
+    assert "get_live_focus_section" not in agent_behavior("live_performance_analyst")["_raw_body"]
+    assert "live_analysis_plan_started" in agent_behavior("live_performance_analyst")["_raw_body"]
+    assert "calling\n  `set_procedure_plan`" in agent_behavior("live_performance_analyst")["_raw_body"]
+    assert "baseline_collection" in agent_behavior("live_performance_analyst")["_raw_body"]
+    assert "live_recorded_analysis" in agent_behavior("live_performance_analyst")["_raw_body"]
+    assert "Do not expect the\n  frontend to provide this startup plan" in agent_behavior("live_performance_analyst")["_raw_body"]
+    assert "Do not fall back to live lap or section classification" in agent_behavior("live_performance_analyst")["_raw_body"]
+
+
+def test_agent_behavior_knowledge_is_loaded():
+    reload()
+
+    for name in (
+        "main_chatbot",
+        "track_guide",
+        "overtake",
+        "live_performance_analyst",
+    ):
+        doc = agent_behavior(name)
+        assert doc is not None
+        assert doc["_raw_body"]
+
+
+def test_system_prompt_defaults_to_main_chatbot_knowledge():
+    reload()
+
+    prompt = pipecat_pipeline._build_system_prompt({})
+
+    assert "Tool use:" in prompt
+    assert "Procedure plan mode:" in prompt
+    assert "Emotion signaling" in prompt
+    assert "Transcript resilience" in prompt
+    assert "Main chatbot startup behavior:" in prompt
+    assert "Track Guide agent startup behavior:" not in prompt
+    assert "Overtake agent startup behavior:" not in prompt
+    assert "Live Performance Analyst startup behavior:" not in prompt
+
+
+def test_system_prompt_uses_one_sub_agent_startup_knowledge():
+    reload()
+
+    prompt = pipecat_pipeline._build_system_prompt({
+        "agent_mode": "track_guide",
+    })
+
+    assert '"agent_mode": "track_guide"' in prompt
+    assert "Track Guide agent startup behavior:" in prompt
+    assert "Main chatbot startup behavior:" not in prompt
+    assert "Overtake agent startup behavior:" not in prompt
+    assert "Live Performance Analyst startup behavior:" not in prompt
+
+
+def test_system_prompt_unknown_agent_mode_falls_back_to_main_chatbot(caplog):
+    reload()
+
+    prompt = pipecat_pipeline._build_system_prompt({
+        "agent_mode": "mystery_mode",
+    })
+
+    assert "Main chatbot startup behavior:" in prompt
+    assert "Track Guide agent startup behavior:" not in prompt
+    assert "Unknown voice agent_mode" in caplog.text
 
 
 def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
