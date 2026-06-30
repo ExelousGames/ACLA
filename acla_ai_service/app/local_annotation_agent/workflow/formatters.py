@@ -107,7 +107,7 @@ def _format_preflight_labels(content: Any) -> str:
             desc = desc[:237] + "..."
         lines.append(
             f"- {entry.get('id')} | {entry.get('name', '')} "
-            f"| type={entry.get('type')} | score={entry.get('score')}"
+            f"| type={entry.get('type')}"
             + (f" — {desc}" if desc else "")
         )
     return "\n".join(lines)
@@ -126,7 +126,7 @@ def _format_preflight_context(content: Any) -> str:
         lines.append("Tool output tags: " + ", ".join(str(tag) for tag in tags[:40]))
     summaries = content.get("semantic_summaries") or []
     if summaries:
-        lines.append("Semantic summaries:")
+        lines.append("Preflight fact sentences:")
         lines.extend(f"- {summary}" for summary in summaries[:20])
     candidate_ids = content.get("label_candidate_ids") or []
     if candidate_ids:

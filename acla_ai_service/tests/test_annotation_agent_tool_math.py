@@ -65,6 +65,30 @@ def test_time_difference_uses_exact_expert_time_difference_column():
     assert result is not None
     assert result["extra"]["unit"] == "ms"
     assert result["extra"]["delta_value"] == 200.0
+    assert result["extra"]["start_trend"]["start_iloc"] == 10
+    assert result["extra"]["start_trend"]["end_iloc"] == 13
+    assert result["extra"]["start_trend"]["direction"] == "rising"
+    assert result["extra"]["overall_point_trend"]["direction"] == "rising"
+    assert result["extra"]["rising_steps"] == 3
+
+
+def test_compute_slope_uses_finite_point_by_point_samples_inside_range():
+    df = pd.DataFrame(
+        {"expert_time_difference": [np.nan, 100.0, 150.0, 120.0, np.nan]},
+        index=range(20, 25),
+    )
+
+    result = _query_compute_slope(df, 20, 24, "expert_time_difference")
+
+    assert result is not None
+    assert result["samples"] == [
+        {"iloc": 21, "value": 100.0},
+        {"iloc": 23, "value": 120.0},
+    ]
+    assert result["extra"]["delta_iloc"] == 2.0
+    assert result["extra"]["point_trend_runs"][0]["direction"] == "rising"
+    assert result["extra"]["point_trend_runs"][1]["direction"] == "falling"
+    assert result["extra"]["overall_point_trend"]["direction"] == "rising"
 
 
 def test_time_difference_to_expert_alias_is_not_used():
@@ -230,6 +254,41 @@ def test_trajectory_offset_uses_generic_slope_shape_detection():
     assert result["extra"]["slope_shape"] == "slope_decreasing_over_section"
 
 
+def test_speed_difference_uses_derivative_for_recovery_shape():
+    df = pd.DataFrame(
+        {
+            "speed_difference": [
+                25.0,
+                18.0,
+                12.0,
+                7.0,
+                3.0,
+                0.0,
+                -2.0,
+                -3.0,
+            ],
+        },
+        index=range(70, 78),
+    )
+
+    result = _query_compute_slope(df, 70, 77, "speed_difference")
+
+    assert result is not None
+    assert result["extra"]["total_change_domain_direction"] == "speed_gap_decreasing"
+    assert result["extra"]["slope_shape"] == "slope_increasing_over_section"
+
+    tags = _query_semantic_tags(
+        {
+            "graph_id": "speed_delta",
+            "query_id": "compute_slope",
+            "params": {"column": "speed_difference"},
+        },
+        result,
+    )
+    assert "speed gap closing" in tags
+    assert "speed gap slope increasing over section" in tags
+
+
 def test_locate_circuit_section_filters_by_circuit_id():
     df = pd.DataFrame(
         {"Graphics_normalized_car_position": [0.95, 0.96, 0.97]},
@@ -353,9 +412,11 @@ def test_preflight_trajectory_offset_summary_separates_side_from_distance():
     )
 
     assert result is not None
-    assert "expert_line_relation=converging_to_expert_line" in prompt
-    assert "absolute_offset_start=5.0 m" in prompt
-    assert "absolute_offset_end=1.0 m" in prompt
+    assert "the expert-line relation is converging to expert line" in prompt
+    assert "absolute offset starts at 5 m" in prompt
+    assert "ends at 1 m" in prompt
+    assert "Required tool outputs" not in prompt
+    assert "```json" not in prompt
     absolute_offset = output["analysis"]["absolute_offset"]
     assert absolute_offset["moves_toward_expert_line"] is True
 
@@ -2339,7 +2400,7 @@ def test_lap_preflight_calculates_player_speed_investigation(monkeypatch):
         for spec in captured["query_specs"]
         if "column" in spec.get("params", {})
     ]
-    assert "speed_difference" not in columns
+    assert columns.count("speed_difference") == 2
     assert columns.count("Physics_speed_kmh") == 4
     assert columns.count("trajectory_offset") == 3
     assert any(
@@ -2356,6 +2417,14 @@ def test_lap_preflight_calculates_player_speed_investigation(monkeypatch):
     )
     assert any(
         spec["tool_id"] == "query_telemetry.compute_slope.player_speed"
+        for spec in captured["query_specs"]
+    )
+    assert any(
+        spec["tool_id"] == "query_telemetry.find_trend_runs.speed_difference"
+        for spec in captured["query_specs"]
+    )
+    assert any(
+        spec["tool_id"] == "query_telemetry.compute_slope.speed_difference"
         for spec in captured["query_specs"]
     )
     assert any(
@@ -2385,9 +2454,48 @@ def test_preflight_expert_time_summary_uses_slope_shape():
     results = _run_queries(df, 100, 107)
     prompt = _prompt_block("lap", 100, 107, results, [], [])
 
-    assert "do not decide mistake/recovery from the raw endpoint difference" in prompt
-    assert "slope_shape=reversing_to_falling_within_section" in prompt
+    assert "Start trend: the time gap is trending up from index 100 to 104" in prompt
+    assert "Growth index ranges: index 100 to 104" in prompt
+    assert "Shrink index ranges: index 104 to 107" in prompt
+    assert "Overall trend: the time gap is trending up" in prompt
+    assert "Slope shape: reversing to falling within section" in prompt
     assert "end_moves_toward_zero" not in prompt
+    assert "tool_results_json" not in prompt
+
+
+def test_preflight_speed_gap_summary_uses_point_trend_indexes():
+    df = pd.DataFrame(
+        {
+            "speed_difference": [
+                20.0,
+                15.0,
+                10.0,
+                12.0,
+                14.0,
+                8.0,
+                4.0,
+                2.0,
+            ],
+        },
+        index=range(200, 208),
+    )
+    query_specs = (
+        {
+            "tool_id": "query_telemetry.compute_slope.speed_difference",
+            "graph_id": "speed_delta",
+            "query_id": "compute_slope",
+            "params": {"column": "speed_difference"},
+        },
+    )
+
+    results = _run_queries(df, 200, 207, query_specs=query_specs)
+    prompt = _prompt_block("lap", 200, 207, results, [], [])
+
+    assert "Start trend: the speed gap is trending down from index 200 to 202" in prompt
+    assert "Growth index ranges: index 202 to 204" in prompt
+    assert "Shrink index ranges: index 200 to 202" in prompt
+    assert "index 204 to 207" in prompt
+    assert "Overall trend: the speed gap is trending down" in prompt
 
 
 def test_preflight_trend_run_summary_uses_time_delta_selected_terms():
@@ -2399,11 +2507,12 @@ def test_preflight_trend_run_summary_uses_time_delta_selected_terms():
     results = _run_queries(df, 10, 14)
     prompt = _prompt_block("lap", 10, 14, results, [], [])
 
-    assert "selected_gap_increase_run=" in prompt
+    assert "The selected losing time run spans" in prompt
     assert "selected_losing_time_run" not in prompt
     assert "losing_time_run" not in prompt
-    assert "verdict=time_gap_rising" in prompt
+    assert "The time-gap trend verdict was time gap rising" in prompt
     assert "time_gap_rising_run" not in prompt
+    assert "Required tool outputs" not in prompt
     assert "strong" + "est" not in prompt.lower()
 
 

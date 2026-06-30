@@ -33,6 +33,31 @@ LAP_PREFLIGHT_QUERY_SPECS = (
             "tighter than expert",
         ],
     },
+    {
+        "tool_id": "query_telemetry.find_trend_runs.speed_difference",
+        "graph_id": "speed_delta",
+        "query_id": "find_trend_runs",
+        "params": {
+            "column": "speed_difference",
+            "smoothing_window": 1,
+        },
+        "tags": [
+            "speed gap trend run",
+            "speed gap recovery",
+            "speed gap closing",
+        ],
+    },
+    {
+        "tool_id": "query_telemetry.compute_slope.speed_difference",
+        "graph_id": "speed_delta",
+        "query_id": "compute_slope",
+        "params": {"column": "speed_difference"},
+        "tags": [
+            "speed gap derivative",
+            "speed gap recovery",
+            "speed gap slope shape",
+        ],
+    },
 )
 
 

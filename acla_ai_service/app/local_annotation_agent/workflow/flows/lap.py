@@ -427,9 +427,8 @@ def _tool_agent_task_prompt(
         "\n"
         "### How to work\n"
         "1. Use the Required Upfront Annotation Preflight block as the "
-        "primary evidence package. It already contains deterministic tool "
-        "outputs, tool output tags, and semantic label candidates from "
-        "hybrid search.\n"
+        "primary evidence package. It contains deterministic fact sentences, "
+        "search tags, and semantic label candidates from hybrid search.\n"
         "2. Use `search_annotation_guidance` or extra data tools only for a "
         "specific missing detail, not to rediscover the basic analysis path "
         "already covered by preflight.\n"
@@ -493,8 +492,9 @@ def _tool_agent_task_prompt(
         f"- {LAP_REASONING_NOTE_RULE}\n" +
         mode_submit_rule +
         "- For time-delta and offset evidence, cite deterministic tool "
-        "verdict fields (unit and whole-section slope-shape trend); do not "
-        "create strength judgments from raw numbers.\n"
+        "preflight fact sentences, including units and whole-section "
+        "slope-shape trends when present; do not create strength judgments "
+        "from raw numbers.\n"
         f"- {_segment_type_label_rule()}\n"
         "- Sub-labels require their parent main label in `label_ids`.\n"
         "- One proposal per session — do NOT annotate downstream sections.\n"

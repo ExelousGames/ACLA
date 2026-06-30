@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -312,21 +311,6 @@ def build_preflight_context(
 
     attachments = [
         Attachment(
-            name=f"init.preflight_tool.{tool_id}",
-            kind="structured",
-            label=f"Preflight Tool: {tool_id}",
-            content={
-                "tool_id": tool_id,
-                "range": [s, e],
-                "tags": _semantic_tags(tool_id, content),
-                "result": _semantic_tool_output(tool_id, content),
-            },
-            content_schema="annotation_preflight_tool",
-        )
-        for tool_id, content in tool_outputs
-    ]
-    attachments.extend([
-        Attachment(
             name="init.preflight_label_candidates",
             kind="structured",
             label="Preflight Semantic Label Candidates",
@@ -355,7 +339,7 @@ def build_preflight_context(
             },
             content_schema="annotation_preflight_context",
         ),
-    ])
+    ]
 
     return PreflightContext(
         prompt_block=_prompt_block(
@@ -969,18 +953,14 @@ def _evidence_text(
     extra_query_terms: List[str],
 ) -> str:
     parts = [
-        f"flow={flow}",
-        f"range=[{start},{end}]",
+        f"Flow: {flow}",
+        f"Range: [{start}, {end}]",
         "tool_output_tags: " + ", ".join(tags),
-        "semantic_summaries: " + " | ".join(semantic_summaries),
-        "parent_main_labels: " + _label_text(parent_main_labels),
-        "eligible_behavior_labels: " + _label_text(eligible_behavior_label_ids),
-        "fixed_labels: " + _label_text(fixed_label_ids),
-        "extra_terms: " + " ".join(str(term) for term in extra_query_terms),
-        "tool_results_json: " + json.dumps(
-            _semantic_tool_outputs(tool_outputs),
-            default=str,
-        ),
+        "Preflight fact sentences: " + " ".join(semantic_summaries),
+        "Parent main labels: " + _label_text(parent_main_labels),
+        "Eligible behavior labels: " + _label_text(eligible_behavior_label_ids),
+        "Fixed labels: " + _label_text(fixed_label_ids),
+        "Extra terms: " + " ".join(str(term) for term in extra_query_terms),
     ]
     return "\n".join(part for part in parts if not part.endswith(": "))[:12000]
 
@@ -997,16 +977,20 @@ def _prompt_block(
     semantic_summaries = list(semantic_summaries or [])
     lines = [
         "#### Required Upfront Annotation Preflight",
-        "The system already ran the required deterministic tool group before this AI step.",
-        f"Flow: {flow}",
-        f"Range: [{start}, {end}]",
-        "Use these tool results and semantic label candidates as the primary analysis context. "
-        "Call tools only to resolve a specific missing detail.",
+        "The system already ran deterministic tools and converted their "
+        "results into human-readable fact sentences.",
+        "These preflight sentences do not identify labels. They only provide "
+        "facts with indices and values when available. The label catalog is "
+        "the only place that judges which label fits.",
+        "Use these preflight fact sentences and semantic label candidates as "
+        "the primary analysis context. Call tools only to resolve a specific "
+        "missing detail.",
+        f"The {flow} range is [{start}, {end}].",
         "",
-        "Tool output tags:",
+        "Search tags for targeted re-query:",
         ", ".join(tags) if tags else "(none)",
         "",
-        "Semantic summaries:",
+        "Preflight fact sentences:",
     ]
     if semantic_summaries:
         lines.extend(f"- {summary}" for summary in semantic_summaries)
@@ -1017,13 +1001,6 @@ def _prompt_block(
         "Semantic label candidates from hybrid search:",
     ])
     lines.extend(_candidate_lines(candidates))
-    lines.extend(["", "Required tool outputs:"])
-    for tool_id, content in tool_outputs:
-        summary = _preflight_tool_summary(tool_id, content)
-        if summary:
-            lines.append(summary)
-        display_content = _semantic_tool_output(tool_id, content)
-        lines.append(f"##### {tool_id}\n```json\n{_json(display_content, 2200)}\n```")
     return "\n".join(lines)
 
 
@@ -1081,9 +1058,11 @@ def _preflight_pair_summaries(
             else "aligned with"
         )
         out.append(
-            f"{label}: {player_phrase}={player_value} at {player.get('iloc')}; "
-            f"{expert_phrase}={expert_value} at {expert.get('iloc')}; "
-            f"player is {relation} expert by {abs(delta):.3g}"
+            f"For {label}, the {player_phrase} was "
+            f"{_measurement(player_value)} at iloc {player.get('iloc')}, "
+            f"while the {expert_phrase} was {_measurement(expert_value)} "
+            f"at iloc {expert.get('iloc')}; the player was {relation} "
+            f"the expert by {_measurement(abs(delta))}."
         )
     return out
 
@@ -1129,12 +1108,12 @@ def _preflight_named_tool_summary(
         phases = content.get("phases")
         if isinstance(phases, list) and phases:
             spans = [
-                f"{p.get('entry')}->{p.get('apex')}->{p.get('exit')}"
+                f"entry {p.get('entry')}, apex {p.get('apex')}, exit {p.get('exit')}"
                 for p in phases[:4]
                 if isinstance(p, dict)
             ]
-            return "expert phases: " + "; ".join(spans)
-        return "expert phases: no corner arc detected"
+            return "Expert phase markers were found: " + "; ".join(spans) + "."
+        return "Expert phase detection found no corner arc in this range."
     if tool_id == "measure_segment_shape":
         base = content.get("base_segment_shape")
         if isinstance(base, dict):
@@ -1142,25 +1121,29 @@ def _preflight_named_tool_summary(
             shape_key = base.get("shape_key")
             reason = base.get("reason")
             return (
-                f"segment shape: role={role}; shape_key={shape_key}; "
-                f"reason={reason}"
+                "Segment shape was classified as "
+                f"{_humanize_value(shape_key)} with role {_humanize_value(role)}"
+                + (f" because {reason}." if reason else ".")
             )
     if tool_id == "locate_circuit_section":
         best = content.get("best_match")
         if isinstance(best, dict):
             return (
-                "circuit section: "
-                f"{best.get('label_id')} {best.get('name')} "
-                f"(overlap={best.get('overlap_fraction')})"
+                "The best circuit-section match was "
+                f"{best.get('label_id')} {best.get('name')} with overlap "
+                f"{_measurement(best.get('overlap_fraction'))}."
             )
         if content.get("is_ambiguous"):
-            return "circuit section: ambiguous; inspect top_matches"
+            return (
+                "Circuit-section location was ambiguous; inspect the top "
+                "matches if section choice matters."
+            )
     if tool_id == "classify_opponent_interaction":
         return (
-            "opponent interaction: "
-            f"outcome={content.get('outcome')}; "
-            f"confidence={content.get('confidence_level')}; "
-            f"primary_slot={content.get('primary_slot_for_role')}"
+            "Opponent interaction was classified as "
+            f"{_humanize_value(content.get('outcome'))} with "
+            f"{_humanize_value(content.get('confidence_level'))} confidence; "
+            f"the primary opponent slot was {content.get('primary_slot_for_role')}."
         )
     if tool_id == "find_nearest_opponent":
         slot = content.get("slot") or content.get("nearest_slot")
@@ -1168,8 +1151,8 @@ def _preflight_named_tool_summary(
         iloc = content.get("min_distance_iloc")
         if slot is not None or distance is not None:
             return (
-                "nearest opponent: "
-                f"slot={slot}; min_distance_m={distance}; iloc={iloc}"
+                f"The nearest opponent was slot {slot}, reaching "
+                f"{_measurement(distance, 'm')} at iloc {iloc}."
             )
     return None
 
@@ -1183,40 +1166,42 @@ def _preflight_trend_runs_summary(
     if not isinstance(extra, dict):
         return None
     if column != "expert_time_difference":
-        return _preflight_generic_trend_runs_summary(tool_id, extra)
+        return _preflight_generic_trend_runs_summary(tool_id, extra, column)
     unit = extra.get("unit")
     selected_gap_increase, selected_gap_decrease = _time_delta_selected_runs(extra)
     parts = [
-        f"{tool_id}: verdict={_time_delta_trend_verdict(extra)}",
+        "The time-gap trend verdict was "
+        f"{_humanize_value(_time_delta_trend_verdict(extra))}.",
     ]
     if isinstance(selected_gap_increase, dict):
         parts.append(
-            "selected_gap_increase_run="
-            f"{selected_gap_increase.get('start_iloc')}->"
-            f"{selected_gap_increase.get('end_iloc')} "
-            f"delta={selected_gap_increase.get('gap_change')} {unit}"
+            "The selected losing time run spans iloc "
+            f"{selected_gap_increase.get('start_iloc')} to "
+            f"{selected_gap_increase.get('end_iloc')} and changes by "
+            f"{_measurement(selected_gap_increase.get('gap_change'), unit)}."
         )
     if isinstance(selected_gap_decrease, dict):
         parts.append(
-            "selected_gap_decrease_run="
-            f"{selected_gap_decrease.get('start_iloc')}->"
-            f"{selected_gap_decrease.get('end_iloc')} "
-            f"delta={selected_gap_decrease.get('gap_change')} {unit}"
+            "The selected recovering time run spans iloc "
+            f"{selected_gap_decrease.get('start_iloc')} to "
+            f"{selected_gap_decrease.get('end_iloc')} and changes by "
+            f"{_measurement(selected_gap_decrease.get('gap_change'), unit)}."
         )
     if len(parts) == 1:
-        parts.append("no trend run")
-    return "; ".join(parts)
+        parts.append("No time-gap trend run was selected.")
+    return " ".join(parts)
 
 
 def _preflight_generic_trend_runs_summary(
     tool_id: str,
     extra: Dict[str, Any],
+    column: str,
 ) -> Optional[str]:
     unit = extra.get("unit")
     analysis = _trend_run_analysis({"extra": extra})
     verdict = analysis.get("local_curve_verdict") or analysis.get("verdict")
     parts = [
-        f"{tool_id}: verdict={verdict}",
+        f"The {_humanize_value(column)} trend verdict was {_humanize_value(verdict)}.",
     ]
     runs = analysis.get("runs")
     if isinstance(runs, list) and runs:
@@ -1225,25 +1210,26 @@ def _preflight_generic_trend_runs_summary(
             if not isinstance(run, dict):
                 continue
             run_parts.append(
-                f"{run.get('start_iloc')}->{run.get('end_iloc')} "
-                f"{run.get('direction')} delta={run.get('change')} {unit}"
+                f"iloc {run.get('start_iloc')} to {run.get('end_iloc')} "
+                f"{_humanize_value(run.get('direction'))} by "
+                f"{_measurement(run.get('change'), unit)}"
             )
         if run_parts:
-            parts.append("local_curve_runs=" + " | ".join(run_parts))
+            parts.append("Local curve runs were " + "; ".join(run_parts) + ".")
         if len(runs) > 6:
-            parts.append(f"additional_runs={len(runs) - 6}")
+            parts.append(f"{len(runs) - 6} additional local curve runs were omitted.")
     else:
-        parts.append("no local curve run")
+        parts.append("No local curve run was detected.")
     selected = analysis.get("selected_run")
     if not isinstance(selected, dict):
         selected = analysis.get("selected_local_run")
     if isinstance(selected, dict):
         parts.append(
-            "largest_local_change="
-            f"{selected.get('start_iloc')}->{selected.get('end_iloc')} "
-            f"delta={selected.get('change')} {unit}"
+            "The largest local change spans iloc "
+            f"{selected.get('start_iloc')} to {selected.get('end_iloc')} "
+            f"and changes by {_measurement(selected.get('change'), unit)}."
         )
-    return "; ".join(parts)
+    return " ".join(parts)
 
 
 def _preflight_extremum_summary(
@@ -1259,7 +1245,85 @@ def _preflight_extremum_summary(
     iloc = result.get("iloc")
     extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
     unit = extra.get("unit")
-    return f"{tool_id}: {column} {kind}={value} {unit} at iloc={iloc}"
+    return (
+        f"The {_humanize_value(column)} {kind} was "
+        f"{_measurement(value, unit)} at iloc {iloc}."
+    )
+
+
+def _preflight_gap_slope_summary(
+    column: str,
+    extra: Dict[str, Any],
+    moves_toward_zero: Any,
+) -> str:
+    subject = "time gap" if column == "expert_time_difference" else "speed gap"
+    unit = extra.get("unit")
+    start = extra.get("start_trend")
+    overall = extra.get("overall_point_trend")
+    overall = overall if isinstance(overall, dict) else {}
+    overall_direction = overall.get("direction") or extra.get("total_change_direction")
+    runs = extra.get("point_trend_runs")
+    runs = runs if isinstance(runs, list) else []
+
+    parts: List[str] = []
+    if isinstance(start, dict):
+        parts.append(
+            f"Start trend: the {subject} is "
+            f"{_trend_phrase(start.get('direction'))} from index "
+            f"{start.get('start_iloc')} to {start.get('end_iloc')} "
+            f"({_measurement(start.get('delta_value'), unit)})."
+        )
+    else:
+        parts.append(f"Start trend: the {subject} is unknown.")
+
+    parts.append(
+        "Growth index ranges: "
+        f"{_trend_ranges(runs, 'rising', unit)}."
+    )
+    parts.append(
+        "Shrink index ranges: "
+        f"{_trend_ranges(runs, 'falling', unit)}."
+    )
+    parts.append(
+        f"Overall trend: the {subject} is {_trend_phrase(overall_direction)} "
+        f"with net point-by-point change "
+        f"{_measurement(extra.get('delta_value'), unit)} and mean slope "
+        f"{_measurement(extra.get('slope'), extra.get('slope_unit'))}."
+    )
+    parts.append(
+        f"Slope shape: {_humanize_value(extra.get('slope_shape'))}; "
+        f"movement toward zero: {_yes_no_unknown(moves_toward_zero)}."
+    )
+    return " ".join(parts)
+
+
+def _trend_phrase(direction: Any) -> str:
+    if direction == "rising":
+        return "trending up"
+    if direction == "falling":
+        return "trending down"
+    if direction in {"flat", "stable"}:
+        return "stable"
+    return "unknown"
+
+
+def _trend_ranges(runs: List[Any], direction: str, unit: Any) -> str:
+    selected = [
+        run for run in runs
+        if isinstance(run, dict) and run.get("direction") == direction
+    ]
+    if not selected:
+        return "none"
+    ranges = [
+        (
+            f"index {run.get('start_iloc')} to {run.get('end_iloc')} "
+            f"({_measurement(run.get('delta_value'), unit)})"
+        )
+        for run in selected[:6]
+    ]
+    if len(selected) > 6:
+        ranges.append(f"{len(selected) - 6} more")
+    return "; ".join(ranges)
 
 
 def _preflight_slope_summary(
@@ -1275,17 +1339,9 @@ def _preflight_slope_summary(
         zero.get("moves_toward_zero") if isinstance(zero, dict) else None
     )
     if column == "expert_time_difference":
-        return (
-            f"{tool_id} slope verdict: "
-            f"total_gap_change={extra.get('delta_value')} {extra.get('unit')}; "
-            "total_gap_direction="
-            f"{_time_delta_gap_direction(extra.get('total_change_direction'), extra.get('delta_value'))}; "
-            "total_gap_threshold_state="
-            f"{_time_delta_threshold_state(extra.get('total_change_is_label_significant'))}; "
-            f"moves_toward_zero={moves_toward_zero}; "
-            f"slope_shape={extra.get('slope_shape')}; "
-            "do not decide mistake/recovery from the raw endpoint difference"
-        )
+        return _preflight_gap_slope_summary(column, extra, moves_toward_zero)
+    if column == "speed_difference":
+        return _preflight_gap_slope_summary(column, extra, moves_toward_zero)
     if column == "trajectory_offset":
         start_abs = zero.get("start_abs") if isinstance(zero, dict) else None
         end_abs = zero.get("end_abs") if isinstance(zero, dict) else None
@@ -1298,24 +1354,27 @@ def _preflight_slope_summary(
             else "unknown"
         )
         return (
-            f"{tool_id} slope verdict: "
-            f"signed_total_change={extra.get('delta_value')} {extra.get('unit')}; "
-            f"signed_side_direction={extra.get('total_change_domain_direction')}; "
-            f"absolute_offset_start={start_abs} {extra.get('unit')}; "
-            f"absolute_offset_end={end_abs} {extra.get('unit')}; "
-            f"absolute_offset_min={min_abs} {extra.get('unit')}; "
-            f"expert_line_relation={expert_line_relation}; "
-            f"slope_shape={extra.get('slope_shape')}"
+            "The trajectory-offset slope shows a signed total change of "
+            f"{_measurement(extra.get('delta_value'), extra.get('unit'))}; "
+            "the side direction is "
+            f"{_humanize_value(extra.get('total_change_domain_direction'))}; "
+            "absolute offset starts at "
+            f"{_measurement(start_abs, extra.get('unit'))}, ends at "
+            f"{_measurement(end_abs, extra.get('unit'))}, and has a minimum of "
+            f"{_measurement(min_abs, extra.get('unit'))}; "
+            f"the expert-line relation is {_humanize_value(expert_line_relation)}; "
+            f"the slope shape is {_humanize_value(extra.get('slope_shape'))}."
         )
     return (
-        f"{tool_id} slope verdict: "
-        f"total_change={extra.get('delta_value')} {extra.get('unit')}; "
-        f"total_change_direction={extra.get('total_change_direction')}; "
-        "total_change_domain_direction="
-        f"{extra.get('total_change_domain_direction')}; "
-        f"total_change_is_label_significant={extra.get('total_change_is_label_significant')}; "
-        f"moves_toward_zero={moves_toward_zero}; "
-        f"slope_shape={extra.get('slope_shape')}"
+        f"The {_humanize_value(column)} slope shows a total change of "
+        f"{_measurement(extra.get('delta_value'), extra.get('unit'))}; "
+        f"the numeric direction is {_humanize_value(extra.get('total_change_direction'))}; "
+        "the domain direction is "
+        f"{_humanize_value(extra.get('total_change_domain_direction'))}; "
+        "label-threshold significance is "
+        f"{_yes_no_unknown(extra.get('total_change_is_label_significant'))}; "
+        f"movement toward zero is {_yes_no_unknown(moves_toward_zero)}; "
+        f"the slope shape is {_humanize_value(extra.get('slope_shape'))}."
     )
 
 
@@ -1348,7 +1407,7 @@ def _preflight_threshold_summary(
     ]
     if missing:
         parts.append("no crossing for " + ", ".join(missing))
-    return f"{tool_id}: " + "; ".join(parts)
+    return "Threshold crossing evidence found that " + "; ".join(parts) + "."
 
 
 def _threshold_player_vs_expert(rows: List[Dict[str, Any]]) -> Optional[str]:
@@ -1387,15 +1446,16 @@ def _preflight_dips_summary(
     if not isinstance(samples, list):
         return None
     if not samples:
-        return f"{tool_id}: no {column} modulation dip detected"
+        return f"No {_humanize_value(column)} modulation dip was detected."
     dips = [
-        f"iloc={sample.get('iloc')} depth={sample.get('depth')}"
+        f"iloc {sample.get('iloc')} with depth {_measurement(sample.get('depth'))}"
         for sample in samples[:4]
         if isinstance(sample, dict)
     ]
     return (
-        f"{tool_id}: {n_dips} {column} modulation dip(s); "
+        f"{n_dips} {_humanize_value(column)} modulation dip(s) were detected: "
         + "; ".join(dips)
+        + "."
     )
 
 
@@ -1409,11 +1469,13 @@ def _preflight_trajectory_similarity_summary(
     peak = extra.get("peak_line_separation")
     peak = peak if isinstance(peak, dict) else {}
     return (
-        f"{tool_id}: similarity_score={extra.get('similarity_score')}; "
-        f"line_separation_gain_m={extra.get('line_separation_gain_m')}; "
-        f"peak_line_separation_m={peak.get('value_m')} at iloc={peak.get('iloc')}; "
-        f"mean_line_separation_m={extra.get('mean_line_separation_m')}; "
-        f"longest_widening_run_steps={extra.get('longest_widening_run_steps')}"
+        "Trajectory similarity scored "
+        f"{_measurement(extra.get('similarity_score'))}; line separation gained "
+        f"{_measurement(extra.get('line_separation_gain_m'), 'm')}; peak line "
+        f"separation was {_measurement(peak.get('value_m'), 'm')} at iloc "
+        f"{peak.get('iloc')}; mean line separation was "
+        f"{_measurement(extra.get('mean_line_separation_m'), 'm')}; the longest "
+        f"widening run lasted {extra.get('longest_widening_run_steps')} steps."
     )
 
 
@@ -1427,7 +1489,7 @@ def _candidate_lines(candidates: List[Dict[str, Any]]) -> List[str]:
             desc = desc[:217] + "..."
         lines.append(
             f"- `{c['id']}` {c.get('name', '')} "
-            f"(type={c.get('type')}, score={c.get('score')})"
+            f"({_humanize_value(c.get('type'))})"
             + (f": {desc}" if desc else "")
         )
     return lines
@@ -1467,15 +1529,6 @@ def _semantic_tags(tool_id: str, content: Dict[str, Any]) -> List[str]:
         ),
         *_tags(analysis),
     ])[:80]
-
-
-def _semantic_tool_outputs(
-    tool_outputs: List[Tuple[str, Dict[str, Any]]],
-) -> List[Tuple[str, Dict[str, Any]]]:
-    return [
-        (tool_id, _semantic_tool_output(tool_id, content))
-        for tool_id, content in tool_outputs
-    ]
 
 
 def _semantic_tool_output(tool_id: str, content: Dict[str, Any]) -> Dict[str, Any]:
@@ -1619,6 +1672,9 @@ def _slope_analysis(result: Dict[str, Any], column: str = "") -> Dict[str, Any]:
         },
         "slope_shape": extra.get("slope_shape"),
     }
+    point = _point_trend_analysis(extra, unit)
+    if point:
+        analysis["point_trend"] = point
     if column == "trajectory_offset" and isinstance(zero, dict):
         analysis["absolute_offset"] = {
             "start": zero.get("start_abs"),
@@ -1819,7 +1875,7 @@ def _time_delta_trend_run_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
 def _time_delta_slope_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
     unit = extra.get("unit")
     zero = extra.get("near_zero_summary")
-    return {
+    analysis = {
         "unit": unit,
         "total_gap_change": {
             "value": extra.get("delta_value"),
@@ -1837,6 +1893,43 @@ def _time_delta_slope_analysis(extra: Dict[str, Any]) -> Dict[str, Any]:
         },
         "slope_shape": extra.get("slope_shape"),
     }
+    point = _point_trend_analysis(extra, unit)
+    if point:
+        analysis["point_trend"] = point
+    return analysis
+
+
+def _point_trend_analysis(extra: Dict[str, Any], unit: Any) -> Dict[str, Any]:
+    runs = extra.get("point_trend_runs")
+    point_runs = [
+        _generic_trend_run(run, unit)
+        for run in runs
+        if isinstance(run, dict)
+    ] if isinstance(runs, list) else []
+    point_runs = [run for run in point_runs if run]
+    overall = extra.get("overall_point_trend")
+    overall = overall if isinstance(overall, dict) else {}
+    analysis: Dict[str, Any] = {
+        "overall": {
+            "direction": overall.get("direction"),
+            "domain_direction": overall.get("domain_direction"),
+            "net_change": extra.get("delta_value"),
+            "mean_slope": extra.get("slope"),
+            "unit": unit,
+            "slope_unit": extra.get("slope_unit"),
+        },
+        "step_counts": {
+            "rising": extra.get("rising_steps"),
+            "falling": extra.get("falling_steps"),
+            "flat": extra.get("flat_steps"),
+        },
+    }
+    start = extra.get("start_trend")
+    if isinstance(start, dict):
+        analysis["start_trend"] = _generic_trend_run(start, unit)
+    if point_runs:
+        analysis["runs"] = point_runs
+    return analysis
 
 
 def _time_delta_run(value: Any, unit: Any) -> Optional[Dict[str, Any]]:
@@ -1881,9 +1974,29 @@ def _label_text(label_ids: Sequence[str]) -> str:
     )
 
 
-def _json(value: Any, max_chars: int) -> str:
-    text = json.dumps(value, indent=2, sort_keys=True, default=str)
-    return text if len(text) <= max_chars else text[: max_chars - 3] + "..."
+def _measurement(value: Any, unit: Any = None) -> str:
+    if isinstance(value, (int, float)):
+        text = f"{float(value):.3f}".rstrip("0").rstrip(".")
+    elif value is None:
+        text = "unknown"
+    else:
+        text = str(value)
+    unit_text = str(unit or "").strip()
+    return f"{text} {unit_text}".strip()
+
+
+def _humanize_value(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    return str(value).replace("_", " ")
+
+
+def _yes_no_unknown(value: Any) -> str:
+    if value is True:
+        return "yes"
+    if value is False:
+        return "no"
+    return "unknown"
 
 
 def _dedupe(values: Iterable[str]) -> List[str]:

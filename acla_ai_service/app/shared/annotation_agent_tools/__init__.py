@@ -3436,7 +3436,7 @@ def _slope_shape_smoothing_window(length: int) -> int:
 
 
 def _slope_shape(arr: np.ndarray, overall_slope: float, column: str) -> str:
-    """Classify whole-section first-derivative shape for a telemetry range."""
+    """Classify whole-section shape from the smoothed first derivative."""
     finite_locs = np.where(np.isfinite(arr))[0]
     if len(finite_locs) < 3:
         return "slope_steady_over_section"
@@ -3453,42 +3453,152 @@ def _slope_shape(arr: np.ndarray, overall_slope: float, column: str) -> str:
     if len(finite_locs) < 3:
         return "slope_steady_over_section"
 
+    positions = finite_locs.astype(float)
     values = smooth[finite_locs]
-    delta_i = np.diff(finite_locs.astype(float))
-    valid = delta_i > 0
-    if not np.any(valid):
+    derivative = np.gradient(values, positions)
+    derivative = derivative[np.isfinite(derivative)]
+    if len(derivative) < 2:
         return "slope_steady_over_section"
 
-    local_slopes = np.diff(values)[valid] / delta_i[valid]
-    local_slopes = local_slopes[np.isfinite(local_slopes)]
-    if len(local_slopes) < 2:
-        return "slope_steady_over_section"
-
-    shape_window = _slope_shape_window(len(local_slopes))
-    early_slope = float(np.nanmedian(local_slopes[:shape_window]))
-    late_slope = float(np.nanmedian(local_slopes[-shape_window:]))
-    if not (np.isfinite(early_slope) and np.isfinite(late_slope)):
+    shape_window = _slope_shape_window(len(derivative))
+    early_derivative = float(np.nanmedian(derivative[:shape_window]))
+    late_derivative = float(np.nanmedian(derivative[-shape_window:]))
+    if not (np.isfinite(early_derivative) and np.isfinite(late_derivative)):
         return "slope_steady_over_section"
 
     meta = _column_semantics(column)
     range_len = max(float(finite_locs[-1] - finite_locs[0]), 1.0)
     absolute_guard = float(meta["label_significant_delta_abs"]) / range_len
-    baseline = max(abs(float(overall_slope)), abs(early_slope), abs(late_slope))
+    baseline = max(
+        abs(float(overall_slope)),
+        abs(early_derivative),
+        abs(late_derivative),
+    )
     relative_guard = baseline * 0.25
     slope_guard = max(absolute_guard, relative_guard, 1e-9)
 
-    if abs(early_slope) > slope_guard and abs(late_slope) > slope_guard:
-        if early_slope > 0 and late_slope < 0:
+    if abs(early_derivative) > slope_guard and abs(late_derivative) > slope_guard:
+        if early_derivative > 0 and late_derivative < 0:
             return "reversing_to_falling_within_section"
-        if early_slope < 0 and late_slope > 0:
+        if early_derivative < 0 and late_derivative > 0:
             return "reversing_to_rising_within_section"
 
-    slope_change = late_slope - early_slope
+    slope_change = late_derivative - early_derivative
     if abs(slope_change) < slope_guard:
         return "slope_steady_over_section"
     if slope_change < 0:
         return "slope_decreasing_over_section"
     return "slope_increasing_over_section"
+
+
+def _empty_point_trend() -> Dict[str, Any]:
+    return {
+        "slope": None,
+        "delta_value": None,
+        "delta_iloc": None,
+        "overall": {"direction": "flat", "domain_direction": "stable"},
+        "start_trend": None,
+        "runs": [],
+        "rising_steps": 0,
+        "falling_steps": 0,
+        "flat_steps": 0,
+        "start_sample": None,
+        "end_sample": None,
+    }
+
+
+def _signed_trend(delta: float, meta: Dict[str, Any], eps: float) -> Tuple[str, str]:
+    if delta > eps:
+        return "rising", str(meta["positive_label"])
+    if delta < -eps:
+        return "falling", str(meta["negative_label"])
+    return "flat", "stable"
+
+
+def _point_trend_runs(
+    arr: np.ndarray,
+    start_index: int,
+    column: str,
+) -> Dict[str, Any]:
+    finite_locs = np.where(np.isfinite(arr))[0]
+    if len(finite_locs) < 2:
+        return _empty_point_trend()
+
+    values = arr[finite_locs]
+    ilocs = finite_locs + int(start_index)
+    iloc_deltas = np.diff(ilocs.astype(float))
+    value_deltas = np.diff(values)
+    valid = np.isfinite(value_deltas) & np.isfinite(iloc_deltas) & (iloc_deltas > 0)
+    if not np.any(valid):
+        return _empty_point_trend()
+
+    meta = _column_semantics(column)
+    eps = 1e-9
+    step_slopes = value_deltas[valid] / iloc_deltas[valid]
+    delta_value = float(np.sum(value_deltas[valid]))
+    delta_iloc = float(ilocs[-1] - ilocs[0])
+    signs = np.where(value_deltas > eps, 1, np.where(value_deltas < -eps, -1, 0))
+
+    primitive: List[Dict[str, int]] = []
+    run_start = 0
+    current = int(signs[0])
+    for i in range(1, len(signs)):
+        sign = int(signs[i])
+        if sign == current:
+            continue
+        primitive.append({"sign": current, "start": run_start, "end": i})
+        run_start = i
+        current = sign
+    primitive.append({"sign": current, "start": run_start, "end": len(signs)})
+
+    runs: List[Dict[str, Any]] = []
+    for primitive_run in primitive:
+        start_pos = int(primitive_run["start"])
+        end_pos = int(primitive_run["end"])
+        start_iloc = int(ilocs[start_pos])
+        end_iloc = int(ilocs[end_pos])
+        start_value = float(values[start_pos])
+        end_value = float(values[end_pos])
+        run_delta = end_value - start_value
+        run_iloc_delta = float(end_iloc - start_iloc)
+        run_slope = run_delta / run_iloc_delta if run_iloc_delta > 0 else 0.0
+        classification = _classify_delta(run_delta, column)
+        run_direction, domain_direction = _signed_trend(run_delta, meta, eps)
+        runs.append({
+            "start_iloc": start_iloc,
+            "end_iloc": end_iloc,
+            "start_value": start_value,
+            "end_value": end_value,
+            "delta_value": run_delta,
+            "slope": run_slope,
+            "direction": run_direction,
+            "domain_direction": domain_direction,
+            "significance": classification["significance"],
+            "is_label_significant": classification["is_label_significant"],
+            "role": _trend_role(column, run_direction),
+        })
+
+    overall = _classify_delta(delta_value, column)
+    overall_direction, overall_domain_direction = _signed_trend(delta_value, meta, eps)
+    return {
+        "slope": float(np.nanmean(step_slopes)),
+        "delta_value": delta_value,
+        "delta_iloc": delta_iloc,
+        "overall": {
+            "direction": overall_direction,
+            "domain_direction": overall_domain_direction,
+            "significance": overall["significance"],
+            "is_label_significant": overall["is_label_significant"],
+            "thresholds": overall["thresholds"],
+        },
+        "start_trend": runs[0] if runs else None,
+        "runs": runs,
+        "rising_steps": int(np.sum(value_deltas[valid] > eps)),
+        "falling_steps": int(np.sum(value_deltas[valid] < -eps)),
+        "flat_steps": int(np.sum(np.abs(value_deltas[valid]) <= eps)),
+        "start_sample": {"iloc": int(ilocs[0]), "value": float(values[0])},
+        "end_sample": {"iloc": int(ilocs[-1]), "value": float(values[-1])},
+    }
 
 
 def _trend_role(column: str, direction: str) -> str:
@@ -3654,15 +3764,15 @@ def _query_compute_slope(
     df: pd.DataFrame, start_index: int, end_index: int,
     column: str,
 ) -> Optional[Dict[str, Any]]:
-    """Slope of <column> across the zoom range.
+    """Point-by-point slope of <column> across the zoom range.
 
-    Returns ``{iloc, value, samples, extra}`` where ``value`` is the slope
-    ``(arr[end] - arr[start]) / (end_index - start_index)``, ``samples``
-    documents the two range endpoints, and ``extra`` carries the raw
-    deltas. ``iloc`` is set to ``end_index`` so the synthesizer can cite
-    the slope at the end of the interval. Returns ``None`` when the column
-    is missing, the range collapses to a single iloc, or either endpoint
-    is non-finite.
+    Returns ``{iloc, value, samples, extra}`` where ``value`` is the mean
+    point-to-point slope. ``samples`` documents the two range endpoints,
+    and ``extra`` carries the point-by-point runs and aggregate trend.
+    ``iloc`` is set to ``end_index`` so the synthesizer can cite the slope
+    at the end of the interval. Returns ``None`` when the column is missing,
+    the range collapses to a single iloc, or fewer than two finite samples
+    are available.
     """
     a_idx = int(start_index)
     b_idx = int(end_index)
@@ -3672,21 +3782,25 @@ def _query_compute_slope(
     arr = _resolve_column(column, segment)
     if arr is None or len(arr) < 2:
         return None
-    va, vb = arr[0], arr[-1]
-    if not (np.isfinite(va) and np.isfinite(vb)):
-        return None
-    delta_v = float(vb - va)
-    delta_i = float(b_idx - a_idx)
-    slope = delta_v / delta_i
     meta = _column_semantics(column)
-    overall_class = _classify_delta(delta_v, column)
+    point_trend = _point_trend_runs(arr, a_idx, column)
+    delta_v = point_trend["delta_value"]
+    slope = point_trend["slope"]
+    if delta_v is None or slope is None:
+        return None
+    start_sample = point_trend["start_sample"]
+    end_sample = point_trend["end_sample"]
+    if not isinstance(start_sample, dict) or not isinstance(end_sample, dict):
+        return None
+    delta_i = point_trend["delta_iloc"]
+    overall_class = point_trend["overall"]
     zero_context = _series_zero_context(arr, column)
     return {
         "iloc": b_idx,
         "value": slope,
         "samples": [
-            {"iloc": a_idx, "value": float(va)},
-            {"iloc": b_idx, "value": float(vb)},
+            start_sample,
+            end_sample,
         ],
         "extra": {
             "unit": meta["unit"],
@@ -3699,6 +3813,12 @@ def _query_compute_slope(
             "total_change_significance": overall_class["significance"],
             "total_change_is_label_significant": overall_class["is_label_significant"],
             "slope_shape": _slope_shape(arr, slope, column),
+            "start_trend": point_trend["start_trend"],
+            "point_trend_runs": point_trend["runs"],
+            "overall_point_trend": point_trend["overall"],
+            "rising_steps": point_trend["rising_steps"],
+            "falling_steps": point_trend["falling_steps"],
+            "flat_steps": point_trend["flat_steps"],
             "thresholds": overall_class["thresholds"],
             "near_zero_summary": zero_context,
         },
@@ -4239,12 +4359,12 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
     },
     {
         "id": "compute_slope",
-        "label": "Slope across the range",
+        "label": "Point-by-point slope across the range",
         "description": (
-            "Slope of <column> from the start to the end of <range> "
-            "(value-delta / iloc-delta), plus deterministic unit, "
-            "significance, near-zero, and whole-section slope-shape "
-            "verdicts. "
+            "Slope of <column> from point-by-point value changes across "
+            "<range>, plus start trend, local up/down index ranges, "
+            "overall trend, significance, near-zero, and whole-section "
+            "slope-shape verdicts. "
             "For `expert_time_difference`, this answers whether the whole "
             "range loses or gains time; a positive but flat value means the "
             "player is already behind, not that a new mistake happened."
