@@ -223,19 +223,6 @@ const getAgentDisplayName = (agentMode?: AgentSessionMode | null): string => {
     return 'Agent';
 };
 
-const getAgentWelcomeContent = (agentMode: AgentSessionMode): string => {
-    if (agentMode === 'track_guide') {
-        return 'Track Guide session ready. This child session owns corner-by-corner live guidance.';
-    }
-    if (agentMode === 'overtake') {
-        return 'Overtake session ready. This child session owns traffic and passing opportunity guidance.';
-    }
-    if (agentMode === 'live_performance_analyst') {
-        return 'Live Analyst session ready. This child session owns baseline collection, focus selection, and live coaching.';
-    }
-    return 'Agent session ready.';
-};
-
 const findTriggeredCorners = (
     corners: CornerDefinition[],
     lastPos: number,
@@ -899,13 +886,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         };
         activeAgentSessionRef.current = nextSession;
         setActiveAgentSession(nextSession);
-        setAgentMessages([{
-            id: 'agent-welcome',
-            content: getAgentWelcomeContent(agentMode),
-            isUser: false,
-            timestamp: new Date(),
-            kind: 'chat',
-        }]);
+        setAgentMessages([]);
         setAgentTag(getAgentDisplayName(agentMode), true);
         broadcastPillMessage('', {
             name: getAgentDisplayName(agentMode),
@@ -1492,41 +1473,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             lastGuidanceTimestampRef.current = now;
         }
     }, [analysisContext?.latestGuidanceMessage, generateUniqueId, setMessages, TrackGuideEnabled]);
-
-    const welcomeContent = useMemo(() => {
-        const selectedSessionName = (analysisContext?.sessionSelected as Record<string, any> | null)?.session_name;
-        if (sessionMode === 'recorded') {
-            return selectedSessionName
-                ? `Recorded session assistant ready for ${selectedSessionName}. Questions will use saved playback, AI analysis, and session metadata.`
-                : 'Recorded session assistant ready. Questions will use saved playback, AI analysis, and session metadata.';
-        }
-        if (sessionMode === 'user_summary') {
-            return 'User summary assistant ready. Questions will use saved practice summary and aggregate session history.';
-        }
-        return 'Live session assistant ready. Questions will use streaming telemetry context.';
-    }, [analysisContext?.sessionSelected, sessionMode]);
-
-    useEffect(() => {
-        setMainMessages((previous) => {
-            const welcomeMessage: Message = {
-                id: 'welcome',
-                content: welcomeContent,
-                isUser: false,
-                timestamp: new Date(),
-                kind: 'chat',
-            };
-
-            if (previous.length === 0) {
-                return [welcomeMessage];
-            }
-
-            if (previous[0].id === 'welcome' && previous[0].content !== welcomeContent) {
-                return [{ ...previous[0], content: welcomeContent, timestamp: new Date() }, ...previous.slice(1)];
-            }
-
-            return previous;
-        });
-    }, [welcomeContent]);
 
     useEffect(() => {
         const liveData = analysisContext?.liveData as Record<string, any> | null;
