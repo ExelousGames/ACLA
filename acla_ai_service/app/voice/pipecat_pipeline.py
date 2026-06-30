@@ -62,9 +62,13 @@ _SHARED_STARTUP_BEHAVIORS = (
     "emotion",
     "transcript_resilience",
 )
-_DEFAULT_AGENT_BEHAVIOR = "main_chatbot"
-_VALID_AGENT_BEHAVIORS = frozenset([
-    _DEFAULT_AGENT_BEHAVIOR,
+_DEFAULT_CHATBOT_SESSION_MODE = "live"
+_SESSION_MODE_AGENT_BEHAVIORS = {
+    "live": "live",
+    "recorded": "recorded",
+    "user_summary": "user_summary",
+}
+_VALID_CHILD_AGENT_BEHAVIORS = frozenset([
     "track_guide",
     "overtake",
     "live_performance_analyst",
@@ -102,19 +106,34 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
 def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> str:
     context = session_context if isinstance(session_context, dict) else {}
     raw_mode = context.get("agent_mode")
+    raw_session_mode = context.get("session_mode")
+
+    session_mode = (
+        str(raw_session_mode).strip()
+        if raw_session_mode is not None and str(raw_session_mode).strip()
+        else _DEFAULT_CHATBOT_SESSION_MODE
+    )
+    if session_mode not in _SESSION_MODE_AGENT_BEHAVIORS:
+        LOGGER.warning(
+            "Unknown voice session_mode %r; falling back to %s",
+            session_mode,
+            _DEFAULT_CHATBOT_SESSION_MODE,
+        )
+        session_mode = _DEFAULT_CHATBOT_SESSION_MODE
+
     if raw_mode is None or str(raw_mode).strip() == "":
-        return _DEFAULT_AGENT_BEHAVIOR
+        return _SESSION_MODE_AGENT_BEHAVIORS[session_mode]
 
     agent_mode = str(raw_mode).strip()
-    if agent_mode in _VALID_AGENT_BEHAVIORS:
+    if agent_mode in _VALID_CHILD_AGENT_BEHAVIORS:
         return agent_mode
 
     LOGGER.warning(
-        "Unknown voice agent_mode %r; falling back to %s",
+        "Unknown voice agent_mode %r; falling back to session_mode %s",
         agent_mode,
-        _DEFAULT_AGENT_BEHAVIOR,
+        session_mode,
     )
-    return _DEFAULT_AGENT_BEHAVIOR
+    return _SESSION_MODE_AGENT_BEHAVIORS[session_mode]
 
 
 def _raw_knowledge_doc(doc: Any) -> str:
