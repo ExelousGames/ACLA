@@ -119,9 +119,9 @@ def _enabled_ids(all_ids: Iterable[str]) -> List[str]:
     explicit = _csv(settings.annotation_enabled_providers)
     if explicit:
         return [provider_id for provider_id in explicit if provider_id in all_id_set]
-    ids = ["claude_cli"]
+    ids = ["claude_cli", "openai"]
     for provider in _all_providers():
-        if provider.id == "claude_cli":
+        if provider.id in ids:
             continue
         if provider.configured:
             ids.append(provider.id)

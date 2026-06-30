@@ -3,8 +3,7 @@ name: query_telemetry_metric
 title: Querying telemetry
 description: >
   Read reduced telemetry metrics over a live scope. Use for direct numeric
-  questions about recent or scoped telemetry, not for classifier-style driving
-  diagnosis.
+  questions about recent or scoped telemetry.
 parameters:
   fields:
     description: Use actual telemetry row names exactly as listed below. Do not invent display aliases.
@@ -16,18 +15,25 @@ parameters:
 
 ## Usage notes
 
-This tool returns reduced metrics only. It should not expose raw telemetry rows
-to the LLM.
+This tool returns reduced metrics only. 
 
 Use the actual telemetry row names directly in `fields`. Do not use UI/display
-aliases or camel-case convenience names; those are not telemetry rows. For fuel
-and tyre-pressure questions, use:
+aliases or camel-case convenience names; those are not telemetry rows. 
 
+## For fuel 
 - `Physics_fuel`
+
+## tyre-pressure questions
 - `Physics_wheel_pressure_front_left`
 - `Physics_wheel_pressure_front_right`
 - `Physics_wheel_pressure_rear_left`
 - `Physics_wheel_pressure_rear_right`
+
+
+## Weather 
+- `Graphcis_rain_intensity`
+  values: no rain - 0, drizzle - 1, light rain - 2, medium rain - 3, heavy rain - 4, thunderstrom -5
+
 
 ## Common row names
 
