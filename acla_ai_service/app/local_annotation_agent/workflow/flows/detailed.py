@@ -265,8 +265,6 @@ def _embedding_candidates_prompt_block(candidates: List[Dict[str, Any]]) -> str:
 
     for entry in candidates:
         desc = str(entry.get("description") or "").strip()
-        if len(desc) > 300:
-            desc = desc[:297] + "..."
         row = (
             f"- `{entry.get('id')}` ({entry.get('name', '')}) "
             f"| type={entry.get('type')} | score={entry.get('score')}"

@@ -1485,8 +1485,6 @@ def _candidate_lines(candidates: List[Dict[str, Any]]) -> List[str]:
     lines: List[str] = []
     for c in candidates:
         desc = str(c.get("description") or "").strip()
-        if len(desc) > 220:
-            desc = desc[:217] + "..."
         lines.append(
             f"- `{c['id']}` {c.get('name', '')} "
             f"({_humanize_value(c.get('type'))})"

@@ -103,8 +103,6 @@ def _format_preflight_labels(content: Any) -> str:
         if not isinstance(entry, dict):
             continue
         desc = str(entry.get("description") or "").strip()
-        if len(desc) > 240:
-            desc = desc[:237] + "..."
         lines.append(
             f"- {entry.get('id')} | {entry.get('name', '')} "
             f"| type={entry.get('type')}"
