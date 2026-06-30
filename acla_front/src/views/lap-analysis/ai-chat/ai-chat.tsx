@@ -36,14 +36,12 @@ import {
 } from './ai-chat-plan';
 import {
     BaselineCollectionTracker,
-    type BaselineLapRecord,
-    type BaselineCollectionTag,
 } from './BaselineCollectionTracker';
+import { useBaselineCollectionRuntime } from './BaselineCollectionRuntime';
 import {
     getToolEnvelopeError,
     isToolOutputEnvelope,
     type ToolOutputEnvelope,
-    type ToolOutputEmitter,
 } from './ai-tool-base';
 
 type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
@@ -261,9 +259,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
-    const [baselineCollectionEnabled, setBaselineCollectionEnabled] = useState(false);
     const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlan | null>(null);
-    const [baselineCollectionTag, setBaselineCollectionTag] = useState<BaselineCollectionTag | null>(null);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
@@ -319,10 +315,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const trackGuideRunTokenRef = useRef(0);
     const activeAgentTagsRef = useRef<string[]>([]);
     const activeAgentSessionRef = useRef<AgentSessionInfo | null>(null);
-    const baselineCollectionTagRef = useRef<BaselineCollectionTag | null>(null);
-    const baselineLapRecordRef = useRef<BaselineLapRecord | null>(null);
-    const baselineToolOutputRef = useRef<ToolOutputEnvelope | null>(null);
-    const baselineToolOutputListenersRef = useRef<Set<ToolOutputEmitter>>(new Set());
     const agentVoiceStopRef = useRef<() => void>(() => undefined);
     const mainVoiceStopRef = useRef<() => void>(() => undefined);
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
@@ -415,28 +407,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         activeAgentTagsRef.current = [];
         broadcastPillMessage('', { tags: [] });
     }, [broadcastPillMessage]);
-
-    const handleBaselineCollectionTagChange = useCallback((tag: BaselineCollectionTag | null) => {
-        baselineCollectionTagRef.current = tag;
-        setBaselineCollectionTag(tag);
-    }, []);
-
-    const getBaselineCollectionTag = useCallback(() => baselineCollectionTagRef.current, []);
-
-    const handleBaselineLapRecordChange = useCallback((record: BaselineLapRecord | null) => {
-        baselineLapRecordRef.current = record;
-    }, []);
-
-    const getBaselineLapRecord = useCallback(() => baselineLapRecordRef.current, []);
-
-    const getBaselineToolOutput = useCallback(() => baselineToolOutputRef.current, []);
-
-    const subscribeBaselineToolOutput = useCallback((listener: ToolOutputEmitter) => {
-        baselineToolOutputListenersRef.current.add(listener);
-        return () => {
-            baselineToolOutputListenersRef.current.delete(listener);
-        };
-    }, []);
 
     const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
         if (!enabled) {
@@ -634,11 +604,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, [handleSessionVoiceEvent]);
 
     const handleBaselineToolOutput = useCallback((envelope: ToolOutputEnvelope) => {
-        baselineToolOutputRef.current = envelope;
-        baselineToolOutputListenersRef.current.forEach((listener) => {
-            listener(envelope, { final: envelope.final });
-        });
-
         const envelopeError = getToolEnvelopeError(envelope);
         if (!envelope.final && !envelopeError) {
             return;
@@ -655,6 +620,18 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             error: envelopeError,
         }, activeAgentSessionRef.current ? 'agent' : 'main');
     }, [handleSessionVoiceEvent]);
+
+    const baselineCollectionRuntime = useBaselineCollectionRuntime({
+        onToolOutput: handleBaselineToolOutput,
+    });
+    const baselineCollectionEnabled = baselineCollectionRuntime.enabled;
+    const baselineCollectionTag = baselineCollectionRuntime.tag;
+    const setBaselineCollectionEnabled = baselineCollectionRuntime.setEnabled;
+    const getBaselineCollectionTag = baselineCollectionRuntime.getTag;
+    const getBaselineLapRecord = baselineCollectionRuntime.getLapRecord;
+    const getBaselineToolOutput = baselineCollectionRuntime.getToolOutput;
+    const subscribeBaselineToolOutput = baselineCollectionRuntime.subscribeToolOutput;
+    const restartBaselineCollection = baselineCollectionRuntime.restart;
 
     const startTrackGuide = useCallback(() => {
         trackGuideRunTokenRef.current += 1;
@@ -820,7 +797,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setBaselineCollectionEnabled(false);
         procedurePlanOptedOutRef.current = false;
         clearProcedurePlan();
-    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, setLivePerformanceAnalystAgentEnabled]);
+    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, setBaselineCollectionEnabled, setLivePerformanceAnalystAgentEnabled]);
 
     const resetOvertakeRuntime = useCallback(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
@@ -950,6 +927,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         setBaselineCollectionEnabled,
+        restartBaselineCollection,
         advanceProcedurePlanStep,
         getBaselineCollectionTag,
         getBaselineLapRecord,
@@ -986,6 +964,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getBaselineToolOutput,
         subscribeBaselineToolOutput,
         getProcedurePlan,
+        restartBaselineCollection,
         resolvedSessionId,
         sessionMode,
         setAgentTag,
@@ -1043,6 +1022,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         setBaselineCollectionEnabled,
+        restartBaselineCollection,
         advanceProcedurePlanStep,
         getBaselineCollectionTag,
         getBaselineLapRecord,
@@ -1078,6 +1058,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getBaselineToolOutput,
         subscribeBaselineToolOutput,
         getProcedurePlan,
+        restartBaselineCollection,
         resolvedSessionId,
         sessionMode,
         setAgentTag,
@@ -1181,6 +1162,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 setTrackGuideEnabled: setTrackGuideAgentEnabled,
                 setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
                 setBaselineCollectionEnabled,
+                restartBaselineCollection,
                 advanceProcedurePlanStep,
                 getBaselineCollectionTag,
                 getBaselineLapRecord,
@@ -1223,6 +1205,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getBaselineToolOutput,
         subscribeBaselineToolOutput,
         getProcedurePlan,
+        restartBaselineCollection,
         resolvedSessionId,
         sessionMode,
         setAgentTag,
@@ -1714,12 +1697,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     return (
         <div className="ai-chat">
             <BaselineCollectionTracker
-                enabled={baselineCollectionEnabled}
+                {...baselineCollectionRuntime.trackerProps}
                 liveData={analysisContext?.liveData as Record<string, any> | null}
                 sessionMode={sessionMode}
-                onTagChange={handleBaselineCollectionTagChange}
-                onLapRecordChange={handleBaselineLapRecordChange}
-                onToolOutput={handleBaselineToolOutput}
             />
             <div className="ai-chat__grid-bg" aria-hidden="true" />
 

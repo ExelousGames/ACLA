@@ -138,4 +138,73 @@ describe('BaselineCollectionTracker', () => {
         expect(outputs.at(-1)).not.toHaveProperty('snapshot');
         expect(outputs.at(-1)).not.toHaveProperty('source');
     });
+
+    it('clears completed baseline state and emits a fresh tool result after restart', () => {
+        const tags: Array<BaselineCollectionTag | null> = [];
+        const records: Array<BaselineLapRecord | null> = [];
+        const outputs: any[] = [];
+        const props = {
+            enabled: true,
+            restartToken: 0,
+            liveData: makeSample(0, 0.001, 10),
+            sessionMode: 'live' as const,
+            onTagChange: (tag: BaselineCollectionTag | null) => tags.push(tag),
+            onLapRecordChange: (record: BaselineLapRecord | null) => records.push(record),
+            onToolOutput: (output: any) => outputs.push(output),
+        };
+
+        const { rerender } = render(<BaselineCollectionTracker {...props} />);
+        rerender(<BaselineCollectionTracker {...props} liveData={makeSample(0, 0.4, 40000)} />);
+        rerender(<BaselineCollectionTracker {...props} liveData={makeSample(0, 0.98, 98000)} />);
+        rerender(<BaselineCollectionTracker {...props} liveData={makeSample(1, 0.001, 5)} />);
+
+        const firstRunId = outputs.at(-1).run_id;
+        expect(outputs).toHaveLength(1);
+        expect(records.filter(Boolean).at(-1)).toMatchObject({ lap: 0 });
+
+        rerender(
+            <BaselineCollectionTracker
+                {...props}
+                restartToken={1}
+                liveData={null}
+            />
+        );
+
+        expect(outputs).toHaveLength(1);
+        expect(records.at(-1)).toBeNull();
+        expect(tags.some((tag) => tag === null)).toBe(true);
+
+        rerender(
+            <BaselineCollectionTracker
+                {...props}
+                restartToken={1}
+                liveData={makeSample(2, 0.001, 10)}
+            />
+        );
+        rerender(
+            <BaselineCollectionTracker
+                {...props}
+                restartToken={1}
+                liveData={makeSample(2, 0.45, 45000)}
+            />
+        );
+        rerender(
+            <BaselineCollectionTracker
+                {...props}
+                restartToken={1}
+                liveData={makeSample(2, 0.99, 99000)}
+            />
+        );
+        rerender(
+            <BaselineCollectionTracker
+                {...props}
+                restartToken={1}
+                liveData={makeSample(3, 0.001, 5)}
+            />
+        );
+
+        expect(outputs).toHaveLength(2);
+        expect(outputs.at(-1).run_id).not.toBe(firstRunId);
+        expect(records.filter(Boolean).at(-1)).toMatchObject({ lap: 2 });
+    });
 });

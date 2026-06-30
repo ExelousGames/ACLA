@@ -799,6 +799,7 @@ describe('ai command registry live performance analyst tools', () => {
     it('advertises generic live agent session tools only in live mode', () => {
         const liveToolNames = getFrontendToolSchemasForSessionMode('live').map((tool) => tool.name);
         const recordedToolNames = getFrontendToolSchemasForSessionMode('recorded').map((tool) => tool.name);
+        const userSummaryToolNames = getFrontendToolSchemasForSessionMode('user_summary').map((tool) => tool.name);
 
         expect(liveToolNames).toEqual(expect.arrayContaining([
             'start_agent_session',
@@ -807,6 +808,7 @@ describe('ai command registry live performance analyst tools', () => {
             'get_live_focus_section',
             'get_live_section_history',
             'collect_live_baseline',
+            'restart_live_baseline',
             'advance_plan_step',
             'set_procedure_plan',
             'clear_procedure_plan',
@@ -824,6 +826,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(recordedToolNames).not.toEqual(expect.arrayContaining([
             'start_live_performance_analysis',
             'get_live_session_snapshot',
+            'restart_live_baseline',
         ]));
         expect(recordedToolNames).toEqual(expect.arrayContaining([
             'stop_agent_session',
@@ -831,12 +834,17 @@ describe('ai command registry live performance analyst tools', () => {
             'set_procedure_plan',
             'clear_procedure_plan',
         ]));
+        expect(userSummaryToolNames).not.toEqual(expect.arrayContaining([
+            'restart_live_baseline',
+        ]));
     });
 
     it('collects baseline through the subscribed tool result channel', async () => {
         const setBaselineCollectionEnabled = jest.fn();
+        const restartBaselineCollection = jest.fn();
         const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry({
             setBaselineCollectionEnabled,
+            restartBaselineCollection,
         });
 
         const result = await registry.collect_live_baseline(
@@ -863,6 +871,36 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).not.toHaveProperty('baseline');
         expect(livePerformanceAnalystState.enabled).toBe(true);
         expect(setBaselineCollectionEnabled).toHaveBeenCalledWith(true);
+        expect(restartBaselineCollection).not.toHaveBeenCalled();
+    });
+
+    it('restarts live baseline collection through a separate AI command', async () => {
+        const setBaselineCollectionEnabled = jest.fn();
+        const restartBaselineCollection = jest.fn();
+        const { registry } = createLiveAnalystRegistry({
+            setBaselineCollectionEnabled,
+            restartBaselineCollection,
+        });
+
+        const result = await registry.restart_live_baseline(
+            {},
+            { sendObservation: jest.fn() },
+        );
+
+        expect(restartBaselineCollection).toHaveBeenCalledTimes(1);
+        expect(setBaselineCollectionEnabled).toHaveBeenCalledWith(true);
+        expect(result).toMatchObject({
+            status: 'restarted',
+            progress_percent: 0,
+            message: 'Baseline collection restarted.',
+            final: true,
+            tool_name: 'restart_live_baseline',
+            payload: {
+                status: 'restarted',
+                progress_percent: 0,
+                message: 'Baseline collection restarted.',
+            },
+        });
     });
 
     it('returns baseline timeout through the subscribed tool result channel', async () => {

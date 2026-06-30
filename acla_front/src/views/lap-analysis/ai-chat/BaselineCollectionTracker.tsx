@@ -35,6 +35,7 @@ export type BaselineLapRecord = {
 
 type BaselineCollectionTrackerProps = {
     enabled: boolean;
+    restartToken?: number;
     liveData: Record<string, any> | null | undefined;
     sessionMode: 'live' | 'recorded' | 'user_summary';
     onTagChange: (tag: BaselineCollectionTag | null) => void;
@@ -201,6 +202,7 @@ const createBaselineToolRunId = (): string =>
 
 export const BaselineCollectionTracker = ({
     enabled,
+    restartToken,
     liveData,
     sessionMode,
     onTagChange,
@@ -211,6 +213,7 @@ export const BaselineCollectionTracker = ({
     const toolOutputRef = useRef<ToolOutputController | null>(null);
     const toolOutputEmitterRef = useRef<ToolOutputEmitter | undefined>(onToolOutput);
     const lastToolOutputKeyRef = useRef<string>('');
+    const restartTokenRef = useRef(restartToken);
 
     useEffect(() => {
         toolOutputEmitterRef.current = onToolOutput;
@@ -220,6 +223,13 @@ export const BaselineCollectionTracker = ({
         toolOutputRef.current = null;
         lastToolOutputKeyRef.current = '';
     }, []);
+
+    const resetRecorder = useCallback(() => {
+        recorderRef.current = createEmptyRecorderState();
+        onTagChange(null);
+        onLapRecordChange(null);
+        resetToolOutput();
+    }, [onLapRecordChange, onTagChange, resetToolOutput]);
 
     const getToolOutput = useCallback(() => {
         if (!toolOutputRef.current) {
@@ -248,14 +258,16 @@ export const BaselineCollectionTracker = ({
     }, [getToolOutput]);
 
     useEffect(() => {
-        const resetRecorder = () => {
-            recorderRef.current = createEmptyRecorderState();
-            onLapRecordChange(null);
-            resetToolOutput();
-        };
+        if (restartTokenRef.current === restartToken) {
+            return;
+        }
 
+        restartTokenRef.current = restartToken;
+        resetRecorder();
+    }, [resetRecorder, restartToken]);
+
+    useEffect(() => {
         if (sessionMode !== 'live' || !enabled) {
-            onTagChange(null);
             resetRecorder();
             return;
         }
@@ -334,7 +346,7 @@ export const BaselineCollectionTracker = ({
         onLapRecordChange,
         onTagChange,
         emitBaselineToolOutput,
-        resetToolOutput,
+        resetRecorder,
         sessionMode,
     ]);
 

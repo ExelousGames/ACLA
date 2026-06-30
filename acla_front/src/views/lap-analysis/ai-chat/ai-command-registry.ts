@@ -95,6 +95,7 @@ export interface AiCommandRegistryContext {
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
     setBaselineCollectionEnabled?: (enabled: boolean) => void;
+    restartBaselineCollection?: () => void;
     advanceProcedurePlanStep?: (reason?: string) => {
         status: string;
         current_request?: number;
@@ -829,6 +830,12 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         required: [],
     },
     {
+        name: 'restart_live_baseline',
+        description: 'Restart the dedicated live baseline collection buffer so the next collect_live_baseline call records a fresh baseline lap.',
+        properties: {},
+        required: [],
+    },
+    {
         name: 'analyze_live_recorded_analysis',
         description: 'Submit the already recorded baseline lap to live recorded analysis and return the compact classifier result. Returns an error until baseline collection has recorded a cached lap.',
         properties: {
@@ -1056,6 +1063,7 @@ const LIVE_TOOL_NAMES = [
     'get_live_focus_section',
     'get_live_section_history',
     'collect_live_baseline',
+    'restart_live_baseline',
     'analyze_live_recorded_analysis',
     'get_next_corner',
     'query_telemetry_metric',
@@ -1292,6 +1300,34 @@ const collectBaselineLapFromTrackerOutput = async (
             return;
         }
     });
+};
+
+const restartLiveBaselineCollection = (
+    context: AiCommandRegistryContext,
+    output: ToolOutputController,
+): ToolOutputEnvelope => {
+    const unavailable = buildLiveAnalystUnavailable(context);
+    if (unavailable) {
+        return output.error(unavailable.error || 'baseline_restart_unavailable', unavailable);
+    }
+
+    if (!context.restartBaselineCollection) {
+        return output.error('baseline_restart_unavailable', {
+            status: 'error',
+            error: 'baseline_restart_unavailable',
+            message: 'Baseline restart is not available in this view.',
+        });
+    }
+
+    context.restartBaselineCollection();
+    context.setBaselineCollectionEnabled?.(true);
+
+    const payload = {
+        status: 'restarted',
+        progress_percent: 0,
+        message: 'Baseline collection restarted.',
+    };
+    return output.final(payload, { message: payload.message });
 };
 
 const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
@@ -2019,6 +2055,7 @@ const ALL_AI_TOOL_NAMES = [
     'get_live_focus_section',
     'get_live_section_history',
     'collect_live_baseline',
+    'restart_live_baseline',
     'analyze_live_recorded_analysis',
     'set_procedure_plan',
     'advance_plan_step',
@@ -2080,6 +2117,9 @@ const createAiToolDefinition = (
         execute: async (args, context, output, handlerContext) => {
             if (name === 'collect_live_baseline') {
                 return collectBaselineLapFromTrackerOutput(context, args, output);
+            }
+            if (name === 'restart_live_baseline') {
+                return restartLiveBaselineCollection(context, output);
             }
 
             const rawRegistry = createRawAiCommandRegistry(context);
