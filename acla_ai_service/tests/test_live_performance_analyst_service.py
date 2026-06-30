@@ -19,6 +19,16 @@ def test_live_performance_tool_knowledge_is_loaded():
     assert tool("set_procedure_plan")["title"] == "Setting procedure plan"
     assert tool("get_live_focus_section")["title"] == "Analyzing focus section"
     assert "show_map_arguments" in tool("get_live_focus_section")["_raw_body"]
+    assert tool("analyze_live_recorded_analysis")["title"] == "Analyzing baseline lap"
+    assert "lap records to the recorded-session classifier" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "compact classifier result" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "telemetry row counts" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "A classified segment is a short portion of the baseline lap" in " ".join(tool("analyze_live_recorded_analysis")["_raw_body"].split())
+    assert "marked with driving labels" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "does not expose raw" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "telemetry rows" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "Do not use `run_recorded_ai_analysis`" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "Do not use `classify_live_section` for baseline analysis" in tool("analyze_live_recorded_analysis")["_raw_body"]
     assert tool("classify_live_section")["title"] == "Classifying live section"
     assert "active Live Performance Analyst focus section" in tool("classify_live_section")["description"]
     assert "requests" in tool("set_procedure_plan")["_raw_body"]
