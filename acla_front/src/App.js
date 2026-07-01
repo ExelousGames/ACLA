@@ -1,5 +1,5 @@
 import './App.css';
-import React, { useState } from 'react';
+import React from 'react';
 import LoginUser from 'views/login-user/login-user';
 import RegisterUser from 'views/register-user/register-user';
 import AuthProvider from "hooks/AuthProvider";
@@ -12,8 +12,9 @@ import AiLabelsProvider from 'contexts/AiLabelsContext'
 import UserSummaryProvider from 'contexts/UserSummaryContext'
 import CircuitMapsProvider from 'contexts/CircuitMapsContext'
 import LandingPage from 'views/landing-page/LandingPage'
-import FloatingChat from 'views/floating-chat/FloatingChat'
 import { useAuth } from 'hooks/AuthProvider'
+
+const FloatingChat = React.lazy(() => import('views/floating-chat/FloatingChat'));
 
 /* Redirects authenticated users away from public pages to dashboard */
 const PublicRoute = ({ children }) => {
@@ -41,7 +42,11 @@ function App() {
   if (typeof window !== 'undefined' && window.location.hash.startsWith('#/floating-chat')) {
     // Render bare — no .App wrapper, since .App paints a full-viewport
     // background that would defeat the Electron window's transparency.
-    return <FloatingChat />;
+    return (
+      <React.Suspense fallback={null}>
+        <FloatingChat />
+      </React.Suspense>
+    );
   }
 
   return (
