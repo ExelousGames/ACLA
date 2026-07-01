@@ -1,6 +1,7 @@
 import {
     advanceProcedurePlan,
     buildProcedurePlan,
+    getProcedurePlanUpdateKey,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
@@ -336,6 +337,51 @@ describe('advanceProcedurePlan', () => {
                 ],
             },
         });
+    });
+});
+
+describe('getProcedurePlanUpdateKey', () => {
+    it('treats identical plan states as the same update', () => {
+        const plan = {
+            goal: 'Run live analysis.',
+            currentStep: 0,
+            requests: [
+                {
+                    type: 'tool_call',
+                    title: 'Collect baseline',
+                    name: 'collect_live_baseline',
+                    status: 'running' as const,
+                    payload: { b: 2, a: { d: 4, c: 3 } },
+                },
+            ],
+        };
+
+        expect(getProcedurePlanUpdateKey(plan)).toBe(getProcedurePlanUpdateKey({
+            ...plan,
+            requests: [
+                {
+                    ...plan.requests[0],
+                    payload: { a: { c: 3, d: 4 }, b: 2 },
+                },
+            ],
+        }));
+    });
+
+    it('changes when a plan step status changes', () => {
+        const pendingPlan = {
+            goal: 'Run live analysis.',
+            currentStep: 0,
+            requests: [
+                { type: 'tool_call', title: 'Collect baseline', status: 'pending' as const },
+            ],
+        };
+
+        expect(getProcedurePlanUpdateKey(pendingPlan)).not.toBe(getProcedurePlanUpdateKey({
+            ...pendingPlan,
+            requests: [
+                { ...pendingPlan.requests[0], status: 'running' as const },
+            ],
+        }));
     });
 });
 

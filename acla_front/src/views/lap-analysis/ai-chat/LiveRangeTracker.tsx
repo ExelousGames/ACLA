@@ -58,6 +58,7 @@ type LiveRangeTrackerProps = {
     sessionIntelligence?: SessionIntelligence | null;
     sendObservation?: (data: Record<string, unknown>) => boolean;
     resolveLabel?: (labelId: string) => string | undefined;
+    onStateChange?: (tracker: LiveRangeTrackerState | null) => void;
 };
 
 const TRACKER_EMPTY_RESULT: LiveRangeTrackerToolResult = {
@@ -187,20 +188,97 @@ const errorResult = (message: string, tracker: LiveRangeTrackerState | null): Li
 
 const formatPosition = (value: number): string => value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
 
+type LiveRangeTrackerDisplayProps = {
+    tracker: LiveRangeTrackerState | null;
+    surface?: 'chat' | 'pill';
+    resolveLabel?: (labelId: string) => string | undefined;
+};
+
+export const LiveRangeTrackerDisplay: React.FC<LiveRangeTrackerDisplayProps> = ({
+    tracker,
+    surface = 'chat',
+    resolveLabel,
+}) => {
+    if (!tracker || tracker.ranges.length === 0) {
+        return null;
+    }
+
+    const ranges = surface === 'pill'
+        ? tracker.ranges.slice(0, 3)
+        : tracker.ranges;
+
+    return (
+        <div className={`ai-chat__range-tracker ai-chat__range-tracker--${surface}`} aria-label="Live tracked ranges">
+            <div className="ai-chat__range-tracker-head">
+                <div>
+                    <span className="ai-chat__range-tracker-kicker">RANGE TRACKER</span>
+                    <div className="ai-chat__range-tracker-title">
+                        {tracker.ranges.length} tracked range{tracker.ranges.length === 1 ? '' : 's'}
+                    </div>
+                </div>
+                <span className={`ai-chat__range-tracker-state ai-chat__range-tracker-state--${tracker.status}`}>
+                    {tracker.status}
+                </span>
+            </div>
+            <ul className="ai-chat__range-list">
+                {ranges.map((range) => (
+                    <li key={range.id} className={`ai-chat__range-item ai-chat__range-item--${range.lifecycle_status}`}>
+                        <div className="ai-chat__range-item-main">
+                            <span className="ai-chat__range-item-name">{range.label || range.id}</span>
+                            <span className="ai-chat__range-item-pos">
+                                {formatPosition(range.start_position)}-{formatPosition(range.end_position)}
+                            </span>
+                            <span className="ai-chat__range-item-status">{range.lifecycle_status}</span>
+                        </div>
+                        {surface === 'chat' && range.parent_segment && (
+                            <div className="ai-chat__range-segment">
+                                <span>Parent</span>
+                                <strong>{range.parent_segment.labels.map((label) => resolveLabel?.(label) || label).join(', ') || 'Unlabeled'}</strong>
+                                <em>{range.parent_segment.start_index}-{range.parent_segment.end_index}</em>
+                            </div>
+                        )}
+                        {surface === 'chat' && range.child_segments.length > 0 && (
+                            <div className="ai-chat__range-children">
+                                {range.child_segments.map((child, index) => (
+                                    <div className="ai-chat__range-segment" key={`${range.id}-${index}-${child.start_index}-${child.end_index}`}>
+                                        <span>Child</span>
+                                        <strong>{child.labels.map((label) => resolveLabel?.(label) || label).join(', ') || 'Unlabeled'}</strong>
+                                        <em>{child.start_index}-{child.end_index}</em>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                        {range.error && (
+                            <div className="ai-chat__range-error">{range.error}</div>
+                        )}
+                    </li>
+                ))}
+            </ul>
+        </div>
+    );
+};
+
 const LiveRangeTracker = forwardRef<LiveRangeTrackerHandle, LiveRangeTrackerProps>(({
     liveData,
     sessionMode = 'live',
     sessionIntelligence,
     sendObservation,
     resolveLabel,
+    onStateChange,
 }, ref) => {
     const [tracker, setTracker] = useState<LiveRangeTrackerState | null>(null);
     const trackerRef = useRef<LiveRangeTrackerState | null>(null);
     const lastPositionRef = useRef<number | undefined>(undefined);
+    const onStateChangeRef = useRef<typeof onStateChange>(onStateChange);
+
+    useEffect(() => {
+        onStateChangeRef.current = onStateChange;
+    }, [onStateChange]);
 
     const commitTracker = (next: LiveRangeTrackerState | null): LiveRangeTrackerToolResult => {
         trackerRef.current = next;
         setTracker(next);
+        onStateChangeRef.current?.(next);
         return resultForTracker(next);
     };
 
@@ -415,58 +493,11 @@ const LiveRangeTracker = forwardRef<LiveRangeTrackerHandle, LiveRangeTrackerProp
         commitTracker(nextTracker);
     }, [liveData, sendObservation, sessionIntelligence, sessionMode]);
 
-    if (!tracker || tracker.ranges.length === 0) {
-        return null;
-    }
-
     return (
-        <div className="ai-chat__range-tracker" aria-label="Live tracked ranges">
-            <div className="ai-chat__range-tracker-head">
-                <div>
-                    <span className="ai-chat__range-tracker-kicker">RANGE TRACKER</span>
-                    <div className="ai-chat__range-tracker-title">
-                        {tracker.ranges.length} tracked range{tracker.ranges.length === 1 ? '' : 's'}
-                    </div>
-                </div>
-                <span className={`ai-chat__range-tracker-state ai-chat__range-tracker-state--${tracker.status}`}>
-                    {tracker.status}
-                </span>
-            </div>
-            <ul className="ai-chat__range-list">
-                {tracker.ranges.map((range) => (
-                    <li key={range.id} className={`ai-chat__range-item ai-chat__range-item--${range.lifecycle_status}`}>
-                        <div className="ai-chat__range-item-main">
-                            <span className="ai-chat__range-item-name">{range.label || range.id}</span>
-                            <span className="ai-chat__range-item-pos">
-                                {formatPosition(range.start_position)}-{formatPosition(range.end_position)}
-                            </span>
-                            <span className="ai-chat__range-item-status">{range.lifecycle_status}</span>
-                        </div>
-                        {range.parent_segment && (
-                            <div className="ai-chat__range-segment">
-                                <span>Parent</span>
-                                <strong>{range.parent_segment.labels.map((label) => resolveLabel?.(label) || label).join(', ') || 'Unlabeled'}</strong>
-                                <em>{range.parent_segment.start_index}-{range.parent_segment.end_index}</em>
-                            </div>
-                        )}
-                        {range.child_segments.length > 0 && (
-                            <div className="ai-chat__range-children">
-                                {range.child_segments.map((child, index) => (
-                                    <div className="ai-chat__range-segment" key={`${range.id}-${index}-${child.start_index}-${child.end_index}`}>
-                                        <span>Child</span>
-                                        <strong>{child.labels.map((label) => resolveLabel?.(label) || label).join(', ') || 'Unlabeled'}</strong>
-                                        <em>{child.start_index}-{child.end_index}</em>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                        {range.error && (
-                            <div className="ai-chat__range-error">{range.error}</div>
-                        )}
-                    </li>
-                ))}
-            </ul>
-        </div>
+        <LiveRangeTrackerDisplay
+            tracker={tracker}
+            resolveLabel={resolveLabel}
+        />
     );
 });
 

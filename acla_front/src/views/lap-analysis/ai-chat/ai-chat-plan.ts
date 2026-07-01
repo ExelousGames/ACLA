@@ -39,6 +39,38 @@ export type ProcedurePlanAdvanceResult = {
 
 const PROCEDURE_PLAN_DONE_STATUSES: readonly ProcedurePlanStepStatus[] = ['complete', 'skipped'];
 
+const toStablePlanValue = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+        return value.map(toStablePlanValue);
+    }
+    if (value && typeof value === 'object') {
+        return Object.keys(value as Record<string, unknown>)
+            .sort()
+            .reduce<Record<string, unknown>>((acc, key) => {
+                acc[key] = toStablePlanValue((value as Record<string, unknown>)[key]);
+                return acc;
+            }, {});
+    }
+    return value;
+};
+
+export const getProcedurePlanUpdateKey = (plan: ProcedurePlan): string => (
+    JSON.stringify({
+        goal: plan.goal,
+        currentStep: plan.currentStep,
+        requests: plan.requests.map((request) => ({
+            type: request.type,
+            title: request.title,
+            name: request.name,
+            status: request.status,
+            detail: request.detail,
+            method: request.method,
+            url: request.url,
+            payload: toStablePlanValue(request.payload),
+        })),
+    })
+);
+
 export const isProcedurePlanStartEvent = (sourceEvent?: string): boolean => (
     typeof sourceEvent === 'string'
     && (

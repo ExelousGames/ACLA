@@ -96,7 +96,12 @@ const formatPercent = (value?: number) => (
     value === undefined ? null : `${Math.round(value * 100)}%`
 );
 
-const AiMapToolDisplay: React.FC<{ display: AiMapDisplayPayload }> = ({ display }) => {
+type AiMapToolDisplayProps = {
+    display: AiMapDisplayPayload;
+    surface?: 'chat' | 'pill';
+};
+
+const AiMapToolDisplay: React.FC<AiMapToolDisplayProps> = ({ display, surface = 'chat' }) => {
     const renderData = useMemo(() => {
         const map = display.map;
         if (!map || display.status !== 'ready') return null;
@@ -156,7 +161,7 @@ const AiMapToolDisplay: React.FC<{ display: AiMapDisplayPayload }> = ({ display 
 
     if (!renderData) {
         return (
-            <div className="ai-chat__map-card ai-chat__map-card--empty">
+            <div className={`ai-chat__map-card ai-chat__map-card--empty ai-chat__map-card--${surface}`}>
                 <div className="ai-chat__map-head">
                     <span>{display.title || 'Map'}</span>
                 </div>
@@ -169,7 +174,7 @@ const AiMapToolDisplay: React.FC<{ display: AiMapDisplayPayload }> = ({ display 
     }
 
     return (
-        <div className="ai-chat__map-card">
+        <div className={`ai-chat__map-card ai-chat__map-card--${surface}`}>
             <div className="ai-chat__map-head">
                 <span>{display.title || display.map?.circuit_name || 'Map'}</span>
                 {display.map?.circuit_name && (

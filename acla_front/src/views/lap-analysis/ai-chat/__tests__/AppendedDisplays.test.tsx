@@ -1,0 +1,94 @@
+import { render, screen } from '@testing-library/react';
+import BaselineProgressDisplay from '../BaselineProgressDisplay';
+import ProcedurePlanDisplay from '../ProcedurePlanDisplay';
+import ToolMessageDisplay from '../ToolMessageDisplay';
+import { LiveRangeTrackerDisplay } from '../LiveRangeTracker';
+
+describe('appended AI display components', () => {
+    it('renders baseline progress on both chat and pill surfaces', () => {
+        render(
+            <BaselineProgressDisplay
+                surface="pill"
+                tag={{
+                    status: 'collecting',
+                    progress_percent: 42,
+                    detail: 'Lap 1 baseline',
+                    track: 'brands_hatch',
+                    car: 'Ferrari 296',
+                    current_lap: 0,
+                    baseline_lap: 0,
+                }}
+            />,
+        );
+
+        expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '42');
+        expect(screen.getByText('Lap 1 baseline')).toBeInTheDocument();
+    });
+
+    it('renders a compact procedure plan without the chat clear button', () => {
+        render(
+            <ProcedurePlanDisplay
+                surface="pill"
+                plan={{
+                    goal: 'Collect a clean baseline',
+                    currentStep: 1,
+                    requests: [
+                        { type: 'tool_call', title: 'Start baseline', status: 'complete' },
+                        { type: 'tool_call', title: 'Analyze baseline', status: 'running' },
+                        { type: 'driver_action', title: 'Run next lap', status: 'pending' },
+                    ],
+                }}
+                onClear={jest.fn()}
+            />,
+        );
+
+        expect(screen.getByText('Collect a clean baseline')).toBeInTheDocument();
+        expect(screen.getByText('Analyze baseline')).toBeInTheDocument();
+        expect(screen.queryByLabelText('Dismiss the visible plan')).not.toBeInTheDocument();
+    });
+
+    it('renders tool status without debug output in pill mode', () => {
+        render(
+            <ToolMessageDisplay
+                surface="pill"
+                debugMode
+                tool={{
+                    name: 'collect_live_baseline',
+                    title: 'Baseline complete',
+                    status: 'completed',
+                    ok: true,
+                    result: { hidden: true },
+                }}
+            />,
+        );
+
+        expect(screen.getByText('Baseline complete')).toBeInTheDocument();
+        expect(screen.queryByText('collect_live_baseline')).not.toBeInTheDocument();
+    });
+
+    it('renders a compact live range tracker state', () => {
+        render(
+            <LiveRangeTrackerDisplay
+                surface="pill"
+                tracker={{
+                    status: 'open',
+                    created_at: 1,
+                    updated_at: 2,
+                    ranges: [
+                        {
+                            id: 'range-1',
+                            label: 'Turn exit',
+                            start_position: 0.1,
+                            end_position: 0.2,
+                            lifecycle_status: 'classifying',
+                            child_segments: [],
+                        },
+                    ],
+                }}
+            />,
+        );
+
+        expect(screen.getByText('Turn exit')).toBeInTheDocument();
+        expect(screen.getByText('classifying')).toBeInTheDocument();
+    });
+});

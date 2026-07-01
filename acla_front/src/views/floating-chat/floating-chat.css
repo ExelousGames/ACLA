@@ -74,6 +74,13 @@ html, body, #root, .App {
     will-change: width;
 }
 
+.pill.rich {
+    --h: var(--target-h, 180px);
+    --avatar: 52px;
+    align-items: flex-start;
+    border-radius: 24px;
+}
+
 /* Drag the window from the pill while idle; clicks-to-dismiss when open.
  * (Drag regions absorb clicks on Windows, so we toggle by state.) */
 .pill:not(.open) {
@@ -97,6 +104,11 @@ html, body, #root, .App {
 .pill.open {
     width: var(--target-w, 520px);
     padding-right: 26px;
+}
+
+.pill.open.rich {
+    width: var(--target-w, 420px);
+    padding-right: 14px;
 }
 
 .pill.tagged:not(.open) {
@@ -164,6 +176,7 @@ html, body, #root, .App {
     transform: translateX(-8px);
     transition: opacity 220ms ease, transform 400ms cubic-bezier(.2, .9, .2, 1);
     white-space: nowrap;
+    overflow: hidden;
 }
 
 .pill.open .body {
@@ -223,6 +236,103 @@ html, body, #root, .App {
     display: none;
 }
 
+.pill.rich .body {
+    gap: 6px;
+    padding-top: 4px;
+    white-space: normal;
+}
+
+.pill.rich .msg {
+    display: block;
+    max-height: 36px;
+    font-size: 12px;
+    line-height: 1.35;
+    font-weight: 500;
+    color: rgba(243, 238, 251, 0.88);
+    white-space: normal;
+}
+
+.pill .rich-body {
+    width: 100%;
+    max-height: calc(var(--target-h, 180px) - 28px);
+    overflow: hidden;
+}
+
+.pill .ai-chat__baseline-progress--pill,
+.pill .ai-chat__plan--pill,
+.pill .ai-chat__range-tracker--pill,
+.pill .ai-chat__map-card--pill,
+.pill .ai-chat__tool--pill {
+    width: 100%;
+    margin: 0;
+    border-radius: 14px;
+}
+
+.pill .ai-chat__baseline-progress--pill {
+    padding: 8px 10px;
+}
+
+.pill .ai-chat__baseline-progress--pill .ai-chat__baseline-progress-detail,
+.pill .ai-chat__plan--pill .ai-chat__plan-step-detail {
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.pill .ai-chat__plan--pill {
+    padding: 9px 10px;
+}
+
+.pill .ai-chat__plan--pill .ai-chat__plan-goal,
+.pill .ai-chat__range-tracker--pill .ai-chat__range-tracker-title {
+    font-size: 12px;
+}
+
+.pill .ai-chat__plan--pill .ai-chat__plan-list,
+.pill .ai-chat__range-tracker--pill .ai-chat__range-list {
+    gap: 5px;
+    margin-top: 8px;
+}
+
+.pill .ai-chat__plan--pill .ai-chat__plan-step,
+.pill .ai-chat__range-tracker--pill .ai-chat__range-item {
+    font-size: 11px;
+}
+
+.pill .ai-chat__range-tracker--pill {
+    padding: 9px 10px;
+}
+
+.pill .ai-chat__range-tracker--pill .ai-chat__range-item-main {
+    grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.pill .ai-chat__range-tracker--pill .ai-chat__range-item-status {
+    grid-column: 1 / -1;
+}
+
+.pill .ai-chat__map-card--pill {
+    width: 100%;
+}
+
+.pill .ai-chat__map-card--pill .ai-chat__map-head,
+.pill .ai-chat__map-card--pill .ai-chat__map-foot {
+    padding: 7px 9px;
+    font-size: 10px;
+}
+
+.pill .ai-chat__map-card--pill .ai-chat__map-svg {
+    height: 132px;
+}
+
+.pill .ai-chat__tool-wrap--pill {
+    width: 100%;
+}
+
+.pill .ai-chat__tool--pill {
+    padding: 8px 10px;
+    font-size: 10px;
+}
+
 /* Inner ribbon — slides left so the latest typed character is always
  * visible. The transition makes the roll smooth between typewriter ticks;
  * it's tuned slightly above the type interval (28ms) so the motion looks
@@ -232,6 +342,16 @@ html, body, #root, .App {
     white-space: nowrap;
     will-change: transform;
     transition: transform 120ms linear;
+}
+
+.pill.rich .msg-inner {
+    display: -webkit-box;
+    white-space: normal;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    transform: none !important;
+    transition: none;
 }
 
 .pill .caret {

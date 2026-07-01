@@ -1,5 +1,13 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import '../lap-analysis/ai-chat/ai-chat.css';
 import './floating-chat.css';
+import AiMapToolDisplay, { type AiMapDisplayPayload } from 'views/lap-analysis/ai-chat/AiMapToolDisplay';
+import BaselineProgressDisplay from 'views/lap-analysis/ai-chat/BaselineProgressDisplay';
+import ProcedurePlanDisplay from 'views/lap-analysis/ai-chat/ProcedurePlanDisplay';
+import ToolMessageDisplay, { type ToolMessageDisplayData } from 'views/lap-analysis/ai-chat/ToolMessageDisplay';
+import { LiveRangeTrackerDisplay, type LiveRangeTrackerState } from 'views/lap-analysis/ai-chat/LiveRangeTracker';
+import type { BaselineCollectionTag } from 'views/lap-analysis/ai-chat/BaselineCollectionTracker';
+import type { ProcedurePlan } from 'views/lap-analysis/ai-chat/ai-chat-plan';
 
 /**
  * AI Chat Pill — ambient overlay for the always-on-top Electron window.
@@ -20,12 +28,15 @@ const POST_TYPE_HOLD_MS = 3800;
 const EMOTE_HOLD_MS = 3000;
 const MIN_W = 220;
 const MAX_W = 620;
+const RICH_W = 420;
+const MIN_H = 72;
 // Match the source prototype's measurement: pill-height (72 = left-pad +
 // avatar + right-pad at idle) + body left margin (16) + open right padding
 // (26) + a little buffer (8) = 122.
 const CHROME = 72 + 16 + 26 + 8;
 
 interface PillPayload {
+    kind: 'message' | 'tool' | 'baseline' | 'map' | 'plan' | 'range';
     text: string;
     ts: number;
     /** Optional override label for the name line; defaults to "ACLA". */
@@ -34,6 +45,7 @@ interface PillPayload {
     emotion?: string;
     /** Active agent tags to display beside the assistant label. */
     tags?: string[];
+    data?: unknown;
 }
 
 const parsePayload = (raw: string | null): PillPayload | null => {
@@ -41,18 +53,21 @@ const parsePayload = (raw: string | null): PillPayload | null => {
     try {
         const obj = JSON.parse(raw);
         const text = typeof obj?.text === 'string' ? obj.text.trim() : '';
+        const kind = typeof obj?.kind === 'string' ? obj.kind : 'message';
         const tags = Array.isArray(obj.tags)
             ? obj.tags.filter((tag: unknown): tag is string => typeof tag === 'string' && !!tag.trim())
             : typeof obj.tag === 'string' && obj.tag.trim()
                 ? [obj.tag]
                 : undefined;
-        if (text || tags) {
+        if (text || tags || obj?.data) {
             return {
+                kind: ['tool', 'baseline', 'map', 'plan', 'range'].includes(kind) ? kind as PillPayload['kind'] : 'message',
                 text,
                 ts: Number(obj.ts) || Date.now(),
                 name: typeof obj.name === 'string' ? obj.name : undefined,
                 emotion: typeof obj.emotion === 'string' ? obj.emotion : undefined,
                 tags,
+                data: obj.data,
             };
         }
     } catch {
@@ -66,12 +81,23 @@ const readEmotionGifs = (): Record<string, string> => {
     catch { return {}; }
 };
 
+const getRichPayloadHeight = (payload: PillPayload): number => {
+    if (payload.kind === 'map') return 260;
+    if (payload.kind === 'plan') return 220;
+    if (payload.kind === 'range') return 210;
+    if (payload.kind === 'baseline') return 136;
+    if (payload.kind === 'tool') return 118;
+    return MIN_H;
+};
+
 const FloatingChat: React.FC = () => {
     const [open, setOpen] = useState(false);
     const [displayText, setDisplayText] = useState('');
+    const [richPayload, setRichPayload] = useState<PillPayload | null>(null);
     const [showCaret, setShowCaret] = useState(false);
     const [name, setName] = useState('ACLA');
     const [targetWidth, setTargetWidth] = useState<number>(MIN_W);
+    const [targetHeight, setTargetHeight] = useState<number>(MIN_H);
     const [currentEmotion, setCurrentEmotion] = useState<string | null>(null);
     const [agentTags, setAgentTags] = useState<string[]>([]);
     const [emotionGifs, setEmotionGifs] = useState<Record<string, string>>(readEmotionGifs);
@@ -133,12 +159,14 @@ const FloatingChat: React.FC = () => {
         clearTimers();
         const tags = latestAgentTagsRef.current;
         setTargetWidth(tags.length ? measure('', tags) : MIN_W);
+        setTargetHeight(MIN_H);
         setOpen(false);
         setShowCaret(false);
         // Wait for the collapse transition to finish before clearing text so
         // it doesn't peek through the avatar.
         window.setTimeout(() => {
             setDisplayText('');
+            setRichPayload(null);
             setCurrentEmotion(null);
             resetScroll();
         }, 400);
@@ -152,10 +180,13 @@ const FloatingChat: React.FC = () => {
 
     const speak = useCallback((text: string, displayName?: string, emotion?: string, tags: string[] = []) => {
         clearTimers();
+        setRichPayload(null);
+        setTargetHeight(MIN_H);
         setName(displayName || 'ACLA');
         setCurrentEmotion(emotion ?? null);
         setPersistentTags(tags);
-        if (!text.trim()) {
+        const cleanText = text.trim();
+        if (!cleanText) {
             setShowCaret(false);
             setDisplayText('');
             setOpen(false);
@@ -190,6 +221,25 @@ const FloatingChat: React.FC = () => {
         }, TYPE_INTERVAL_MS);
     }, [clearTimers, measure, setPersistentTags, shrink]);
 
+    const showPayload = useCallback((payload: PillPayload) => {
+        if (payload.kind === 'message') {
+            speak(payload.text, payload.name, payload.emotion, payload.tags);
+            return;
+        }
+
+        clearTimers();
+        setName(payload.name || 'ACLA');
+        setCurrentEmotion(payload.emotion ?? null);
+        setPersistentTags(payload.tags);
+        setDisplayText(payload.text.trim());
+        setShowCaret(false);
+        setRichPayload(payload);
+        setTargetWidth(RICH_W);
+        setTargetHeight(getRichPayloadHeight(payload));
+        setOpen(true);
+        hideTimerRef.current = window.setTimeout(shrink, POST_TYPE_HOLD_MS);
+    }, [clearTimers, setPersistentTags, shrink, speak]);
+
     // Subscribe to cross-window messages. The 'storage' event only fires in
     // OTHER windows that share the same origin/partition — perfect for the
     // main app → pill broadcast.
@@ -219,14 +269,14 @@ const FloatingChat: React.FC = () => {
             if (!payload) return;
             if (payload.ts <= lastTsRef.current) return;
             lastTsRef.current = payload.ts;
-            speak(payload.text, payload.name, payload.emotion, payload.tags);
+            showPayload(payload);
         };
         window.addEventListener('storage', onStorage);
         return () => {
             window.removeEventListener('storage', onStorage);
             clearTimers();
         };
-    }, [clearTimers, measure, speak]);
+    }, [clearTimers, measure, showPayload]);
 
     // Roll the typed text after every paint so the caret stays visible.
     // useLayoutEffect runs synchronously post-DOM mutation, so we measure
@@ -235,7 +285,31 @@ const FloatingChat: React.FC = () => {
         updateScroll();
     }, [displayText, open]);
 
+    const renderRichPayload = () => {
+        if (!richPayload || richPayload.kind === 'message') return null;
+        if (!richPayload.data) return null;
+
+        if (richPayload.kind === 'baseline') {
+            return <BaselineProgressDisplay tag={richPayload.data as BaselineCollectionTag} surface="pill" />;
+        }
+        if (richPayload.kind === 'map') {
+            return <AiMapToolDisplay display={richPayload.data as AiMapDisplayPayload} surface="pill" />;
+        }
+        if (richPayload.kind === 'plan') {
+            return <ProcedurePlanDisplay plan={richPayload.data as ProcedurePlan} surface="pill" />;
+        }
+        if (richPayload.kind === 'range') {
+            return <LiveRangeTrackerDisplay tracker={richPayload.data as LiveRangeTrackerState} surface="pill" />;
+        }
+        if (richPayload.kind === 'tool') {
+            return <ToolMessageDisplay tool={richPayload.data as ToolMessageDisplayData} surface="pill" />;
+        }
+
+        return null;
+    };
+
     const tagged = agentTags.length > 0;
+    const rich = Boolean(richPayload && richPayload.kind !== 'message');
 
     // Track the OS window size to the pill so there's no transparent area
     // outside the pill (which would show the title bar of whatever sits
@@ -248,12 +322,12 @@ const FloatingChat: React.FC = () => {
         const resize = api?.resizeFloatingChat;
         if (!resize) return;
         if (open || tagged) {
-            resize(targetWidth, 72);
+            resize(targetWidth, targetHeight);
             return;
         }
-        const t = window.setTimeout(() => resize(72, 72), 720);
+        const t = window.setTimeout(() => resize(72, MIN_H), 720);
         return () => window.clearTimeout(t);
-    }, [open, tagged, targetWidth]);
+    }, [open, tagged, targetHeight, targetWidth]);
 
     // Click the pill itself to dismiss when it's open.
     const handlePillClick = () => {
@@ -262,12 +336,13 @@ const FloatingChat: React.FC = () => {
 
     const pillStyle: React.CSSProperties = {
         ['--target-w' as any]: `${targetWidth}px`,
+        ['--target-h' as any]: `${targetHeight}px`,
     };
 
     return (
         <div className="floating-pill-stage">
             <div
-                className={`pill${open ? ' open' : ''}${tagged ? ' tagged' : ''}`}
+                className={`pill${open ? ' open' : ''}${tagged ? ' tagged' : ''}${rich ? ' rich' : ''}`}
                 style={pillStyle}
                 onClick={handlePillClick}
                 aria-live="polite"
@@ -292,6 +367,11 @@ const FloatingChat: React.FC = () => {
                             {showCaret && <span className="caret" />}
                         </span>
                     </div>
+                    {rich && (
+                        <div className="rich-body">
+                            {renderRichPayload()}
+                        </div>
+                    )}
                 </div>
             </div>
             <span className="sizer" ref={sizerRef} aria-hidden="true" />

@@ -24,10 +24,14 @@ import type {
     OpportunityAgentState,
 } from './ai-command-registry';
 import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
-import AiMapToolDisplay, { AiMapDisplayPayload } from './AiMapToolDisplay';
+import { AiMapDisplayPayload } from './AiMapToolDisplay';
+import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
+import BaselineProgressDisplay from './BaselineProgressDisplay';
+import ProcedurePlanDisplay from './ProcedurePlanDisplay';
 import {
     advanceProcedurePlan,
     buildProcedurePlan,
+    getProcedurePlanUpdateKey,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
@@ -39,6 +43,7 @@ import {
 } from './BaselineCollectionTracker';
 import LiveRangeTracker, {
     type LiveRangeTrackerHandle,
+    type LiveRangeTrackerState,
 } from './LiveRangeTracker';
 import { useBaselineCollectionRuntime } from './BaselineCollectionRuntime';
 import {
@@ -64,17 +69,7 @@ function extractEmotion(text: string): { emotion: Emotion | null; cleanText: str
     return { emotion: null, cleanText: text };
 }
 
-const formatToolDebugResult = (result: unknown): string | null => {
-    if (result === undefined) return null;
-    try {
-        const json = JSON.stringify(result, null, 2);
-        return json.length > 4000 ? `${json.slice(0, 4000)}\n... truncated` : json;
-    } catch {
-        return String(result);
-    }
-};
-
-type MessageKind = 'chat' | 'tool';
+type MessageKind = AiChatDisplayMessage['kind'];
 
 interface Message {
     id: string;
@@ -107,14 +102,6 @@ interface AiChatProps {
 
 const formatClock = (d: Date) =>
     `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
-
-const getProcedurePlanRequestMeta = (request: ProcedurePlan['requests'][number]): string => {
-    const parts = [
-        request.type,
-        request.status,
-    ].filter((part): part is string => Boolean(part));
-    return parts.join(' · ');
-};
 
 const OverlayIcon = ({ size = 14 }: { size?: number }) => (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -324,6 +311,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
     const planToolRunsRef = useRef<Set<string>>(new Set());
+    const lastBroadcastedProcedurePlanKeyRef = useRef<string | null>(null);
     const liveRangeTrackerRef = useRef<LiveRangeTrackerHandle | null>(null);
 
     useEffect(() => {
@@ -358,21 +346,25 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
     }, []);
 
-    const displayMapInChat = useCallback((display: AiMapDisplayPayload) => {
-        const fallbackText = display.status === 'unavailable'
-            ? 'Map is not available'
-            : display.note || display.title || display.map?.circuit_name || 'Map';
-        setMessages(prev => prev
-            .filter(m => !m.isLoading)
-            .concat({
-                id: generateUniqueId('map'),
-                content: fallbackText,
-                isUser: false,
-                timestamp: new Date(),
-                kind: 'chat',
-                mapDisplay: display,
+    const broadcastPillPayload = useCallback((
+        payload: {
+            kind: 'message' | 'tool' | 'baseline' | 'map' | 'plan' | 'range';
+            text?: string;
+            data?: unknown;
+            emotion?: Emotion | null;
+            tags?: string[];
+            name?: string;
+        },
+    ) => {
+        try {
+            localStorage.setItem('acla-pill-msg', JSON.stringify({
+                ...payload,
+                ts: Date.now(),
+                emotion: payload.emotion ?? undefined,
+                tags: payload.tags ?? activeAgentTagsRef.current,
             }));
-    }, [generateUniqueId, setMessages]);
+        } catch { /* ignore storage write failures */ }
+    }, []);
 
     const broadcastPillMessage = useCallback((text: string, options: { emotion?: Emotion | null; tags?: string[]; name?: string } = {}) => {
         try {
@@ -384,16 +376,37 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 .trim()
                 .slice(0, 280);
             if (pillText || options.tags !== undefined) {
-                localStorage.setItem('acla-pill-msg', JSON.stringify({
+                broadcastPillPayload({
+                    kind: 'message',
                     text: pillText,
-                    ts: Date.now(),
                     name: options.name,
                     emotion: options.emotion ?? undefined,
                     tags: options.tags ?? activeAgentTagsRef.current,
-                }));
+                });
             }
         } catch { /* ignore storage write failures */ }
-    }, []);
+    }, [broadcastPillPayload]);
+
+    const displayMapInChat = useCallback((display: AiMapDisplayPayload) => {
+        const fallbackText = display.status === 'unavailable'
+            ? 'Map is not available'
+            : display.note || display.title || display.map?.circuit_name || 'Map';
+        broadcastPillPayload({
+            kind: 'map',
+            text: fallbackText,
+            data: display,
+        });
+        setMessages(prev => prev
+            .filter(m => !m.isLoading)
+            .concat({
+                id: generateUniqueId('map'),
+                content: fallbackText,
+                isUser: false,
+                timestamp: new Date(),
+                kind: 'chat',
+                mapDisplay: display,
+            }));
+    }, [broadcastPillPayload, generateUniqueId, setMessages]);
 
     const setAgentTag = useCallback((tag: string, active: boolean) => {
         const current = activeAgentTagsRef.current;
@@ -430,7 +443,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }
         procedurePlanRef.current = plan;
         setProcedurePlanState(plan);
-    }, []);
+        if (!plan) {
+            lastBroadcastedProcedurePlanKeyRef.current = null;
+            return;
+        }
+
+        const planKey = getProcedurePlanUpdateKey(plan);
+        if (planKey === lastBroadcastedProcedurePlanKeyRef.current) {
+            return;
+        }
+        lastBroadcastedProcedurePlanKeyRef.current = planKey;
+
+        broadcastPillPayload({
+            kind: 'plan',
+            text: plan.requests[plan.currentStep]?.title || plan.goal,
+            data: plan,
+        });
+    }, [broadcastPillPayload]);
 
     const advanceProcedurePlanStep = useCallback((reason?: string) => {
         const current = procedurePlanRef.current;
@@ -549,6 +578,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 ok: event.ok,
                 error: event.error,
             });
+            broadcastPillPayload({
+                kind: 'tool',
+                text: event.title,
+                data: {
+                    runId: event.runId,
+                    name: event.name,
+                    title: event.title,
+                    status: event.status,
+                    ok: event.ok,
+                    error: event.error ?? null,
+                    result: event.result,
+                },
+            });
             setTargetMessages(prev => {
                 for (let i = prev.length - 1; i >= 0; i--) {
                     const m = prev[i];
@@ -593,6 +635,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }
     }, [
         broadcastPillMessage,
+        broadcastPillPayload,
         clearProcedurePlan,
         generateUniqueId,
         optOutProcedurePlan,
@@ -636,6 +679,24 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const getBaselineToolOutput = baselineCollectionRuntime.getToolOutput;
     const subscribeBaselineToolOutput = baselineCollectionRuntime.subscribeToolOutput;
     const restartBaselineCollection = baselineCollectionRuntime.restart;
+
+    useEffect(() => {
+        if (!baselineCollectionEnabled || !baselineCollectionTag) return;
+        broadcastPillPayload({
+            kind: 'baseline',
+            text: baselineCollectionTag.detail,
+            data: baselineCollectionTag,
+        });
+    }, [baselineCollectionEnabled, baselineCollectionTag, broadcastPillPayload]);
+
+    const handleLiveRangeTrackerStateChange = useCallback((tracker: LiveRangeTrackerState | null) => {
+        if (!tracker || tracker.ranges.length === 0) return;
+        broadcastPillPayload({
+            kind: 'range',
+            text: `${tracker.ranges.length} tracked range${tracker.ranges.length === 1 ? '' : 's'}`,
+            data: tracker,
+        });
+    }, [broadcastPillPayload]);
 
     const startTrackGuide = useCallback(() => {
         trackGuideRunTokenRef.current += 1;
@@ -1947,27 +2008,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     </div>
 
                     {baselineCollectionEnabled && baselineCollectionTag && (
-                        <div className="ai-chat__baseline-progress" aria-label="Baseline collection progress">
-                            <div className="ai-chat__baseline-progress-head">
-                                <span>BASELINE</span>
-                                <span>{Math.round(baselineCollectionTag.progress_percent)}%</span>
-                            </div>
-                            <div
-                                className="ai-chat__baseline-progress-track"
-                                role="progressbar"
-                                aria-valuenow={Math.round(baselineCollectionTag.progress_percent)}
-                                aria-valuemin={0}
-                                aria-valuemax={100}
-                            >
-                                <div
-                                    className="ai-chat__baseline-progress-fill"
-                                    style={{ width: `${Math.round(baselineCollectionTag.progress_percent)}%` }}
-                                />
-                            </div>
-                            <div className="ai-chat__baseline-progress-detail">
-                                {baselineCollectionTag.detail}
-                            </div>
-                        </div>
+                        <BaselineProgressDisplay tag={baselineCollectionTag} />
                     )}
 
                     <LiveRangeTracker
@@ -1977,135 +2018,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         sessionIntelligence={analysisContext?.sessionIntelligence}
                         sendObservation={sendLiveRangeTrackerObservation}
                         resolveLabel={getLabelName}
+                        onStateChange={handleLiveRangeTrackerStateChange}
                     />
 
                     {procedurePlan && (
-                        <div className="ai-chat__plan" aria-label="Procedure plan">
-                            <div className="ai-chat__plan-head">
-                                <div>
-                                    <span className="ai-chat__plan-kicker">PLAN</span>
-                                    <div className="ai-chat__plan-goal">{procedurePlan.goal}</div>
-                                </div>
-                                <button
-                                    type="button"
-                                    className="ai-chat__plan-clear"
-                                    onClick={clearProcedurePlan}
-                                    title="Dismiss the visible plan"
-                                    aria-label="Dismiss the visible plan"
-                                >
-                                    &times;
-                                </button>
-                            </div>
-                            <ul className="ai-chat__plan-list">
-                                {procedurePlan.requests.map((request, index) => {
-                                    const isActive = index === procedurePlan.currentStep;
-                                    const isDone = index < procedurePlan.currentStep;
-                                    const meta = getProcedurePlanRequestMeta(request);
-                                    return (
-                                        <li
-                                            key={`${index}-${request.type}-${request.title}`}
-                                            className={[
-                                                'ai-chat__plan-step',
-                                                isActive ? 'ai-chat__plan-step--active' : '',
-                                                isDone ? 'ai-chat__plan-step--done' : '',
-                                            ].filter(Boolean).join(' ')}
-                                        >
-                                            <span className="ai-chat__plan-step-dot" aria-hidden="true" />
-                                            <span className="ai-chat__plan-step-text">
-                                                <span>{request.title}</span>
-                                                {meta && (
-                                                    <span className="ai-chat__plan-step-meta">{meta}</span>
-                                                )}
-                                                {request.detail && (
-                                                    <span className="ai-chat__plan-step-detail">{request.detail}</span>
-                                                )}
-                                            </span>
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        </div>
+                        <ProcedurePlanDisplay plan={procedurePlan} onClear={clearProcedurePlan} />
                     )}
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
-                        {messages.map((message) => {
-                            // Tool-call messages
-                            if (message.kind === 'tool' && message.tool) {
-                                const t = message.tool;
-                                const isError = t.status === 'completed' && t.ok === false;
-                                const isRunning = t.status === 'started';
-                                const mod = isError ? 'ai-chat__tool--error'
-                                    : isRunning ? 'ai-chat__tool--running'
-                                    : 'ai-chat__tool--ok';
-                                const debugResult = debugMode ? formatToolDebugResult(t.result) : null;
-                                return (
-                                    <div key={message.id}>
-                                        <div className={`ai-chat__tool ${mod}`}>
-                                            <span className="ai-chat__tool-icon">
-                                                {isRunning ? '⟳' : isError ? '✕' : '✓'}
-                                            </span>
-                                            <span>{t.title}</span>
-                                            <span className="ai-chat__tool-stamp">
-                                                {message.timestamp.toLocaleTimeString()}
-                                            </span>
-                                        </div>
-                                        {isError && t.error && (
-                                            <div className="ai-chat__tool-detail" style={{ color: 'var(--lp-red)' }}>
-                                                {t.error}
-                                            </div>
-                                        )}
-                                        {debugMode && (
-                                            <div className="ai-chat__tool-detail">{t.name}</div>
-                                        )}
-                                        {debugResult && (
-                                            <pre className="ai-chat__tool-result">{debugResult}</pre>
-                                        )}
-                                    </div>
-                                );
-                            }
-
-                            const role: 'driver' | 'acla' | 'guidance' = message.isUser
-                                ? 'driver'
-                                : message.id.includes('guidance') ? 'guidance' : 'acla';
-                            const avatarLabel = role === 'driver'
-                                ? 'YOU'
-                                : role === 'guidance'
-                                    ? 'TARGET'
-                                    : activeAgentSession ? 'LA' : 'AI';
-                            const whoLabel = role === 'driver' ? 'YOU'
-                                : role === 'guidance' ? 'LIVE GUIDANCE'
-                                : activeAgentSession ? getAgentDisplayName(activeAgentSession.agentMode).toUpperCase() : 'ACLA';
-
-                            return (
-                                <div key={message.id} className={`ai-chat__msg ai-chat__msg--${role}`}>
-                                    <div className="ai-chat__msg-avatar">{avatarLabel}</div>
-                                    <div className="ai-chat__msg-body">
-                                        <div className="ai-chat__msg-meta">
-                                            <span className="ai-chat__msg-who">{whoLabel}</span>
-                                            <span className="ai-chat__msg-stamp">
-                                                {message.timestamp.toLocaleTimeString()}
-                                            </span>
-                                        </div>
-
-                                        {message.isLoading ? (
-                                            <div className="ai-chat__typing">
-                                                <span className="ai-chat__typing-dot" />
-                                                <span className="ai-chat__typing-dot" />
-                                                <span className="ai-chat__typing-dot" />
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <div className="ai-chat__msg-text">{message.content}</div>
-                                                {message.mapDisplay && (
-                                                    <AiMapToolDisplay display={message.mapDisplay} />
-                                                )}
-
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        })}
+                        {messages.map((message) => (
+                            <AiMessageDisplay
+                                key={message.id}
+                                message={message}
+                                debugMode={debugMode}
+                                assistantAvatarLabel={activeAgentSession ? 'LA' : 'AI'}
+                                assistantWhoLabel={activeAgentSession ? getAgentDisplayName(activeAgentSession.agentMode).toUpperCase() : 'ACLA'}
+                            />
+                        ))}
                         <div ref={messagesEndRef} />
                     </div>
                 </section>
