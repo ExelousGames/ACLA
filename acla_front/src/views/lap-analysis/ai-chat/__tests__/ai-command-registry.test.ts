@@ -19,8 +19,7 @@ import {
     AiCommandRegistryContext,
     createAiCommandRegistry,
     frontendToolDefinitions,
-    frontendToolSchemas,
-    getFrontendToolSchemasForSessionMode,
+    getFrontendToolNamesForSessionMode,
     startAgentRuntime,
 } from '../ai-command-registry';
 import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-analysis';
@@ -127,21 +126,21 @@ describe('ai command registry user summary tools', () => {
                 name: 'collect_live_baseline',
                 visibility: 'public',
                 execute: expect.any(Function),
-                schema: expect.objectContaining({
-                    properties: expect.any(Object),
-                    required: expect.any(Array),
-                }),
+                schema: { properties: {}, required: [] },
+                required: [],
             }),
         ]));
     });
 
-    it('derives advertised frontend schemas from AI tool definitions', () => {
+    it('derives advertised frontend tool names from AI tool definitions', () => {
         const definitionNames = new Set(frontendToolDefinitions.map((tool) => tool.name));
 
-        expect(frontendToolSchemas.every((schema) => definitionNames.has(schema.name))).toBe(true);
-        expect(getFrontendToolSchemasForSessionMode('live').every((schema) => (
+        expect(getFrontendToolNamesForSessionMode('live').every((name) => (
+            definitionNames.has(name)
+        ))).toBe(true);
+        expect(getFrontendToolNamesForSessionMode('live').every((name) => (
             frontendToolDefinitions.some((tool) => (
-                tool.name === schema.name
+                tool.name === name
                 && tool.visibility !== 'internal'
                 && tool.sessionModes.includes('live')
             ))
@@ -149,8 +148,8 @@ describe('ai command registry user summary tools', () => {
     });
 
     it('advertises live range tracker tools only in live mode', () => {
-        const liveToolNames = getFrontendToolSchemasForSessionMode('live').map((tool) => tool.name);
-        const recordedToolNames = getFrontendToolSchemasForSessionMode('recorded').map((tool) => tool.name);
+        const liveToolNames = getFrontendToolNamesForSessionMode('live');
+        const recordedToolNames = getFrontendToolNamesForSessionMode('recorded');
 
         expect(liveToolNames).toEqual(expect.arrayContaining([
             'set_live_range_tracker',
@@ -281,16 +280,16 @@ describe('ai command registry user summary tools', () => {
         });
     });
 
-    it('exposes a frontend schema for searching map-level user summary', () => {
-        expect(frontendToolSchemas.some((tool) => tool.name === 'search_user_summary_map_level')).toBe(true);
+    it('registers the map-level user summary search tool', () => {
+        expect(frontendToolDefinitions.some((tool) => tool.name === 'search_user_summary_map_level')).toBe(true);
     });
 
-    it('exposes a frontend schema for listing available user summary maps', () => {
-        expect(frontendToolSchemas.some((tool) => tool.name === 'get_available_user_summary_maps')).toBe(true);
+    it('registers the available user summary maps tool', () => {
+        expect(frontendToolDefinitions.some((tool) => tool.name === 'get_available_user_summary_maps')).toBe(true);
     });
 
-    it('exposes a frontend schema for displaying maps in chat', () => {
-        expect(frontendToolSchemas.some((tool) => tool.name === 'show_map')).toBe(true);
+    it('registers the map display tool', () => {
+        expect(frontendToolDefinitions.some((tool) => tool.name === 'show_map')).toBe(true);
     });
 
     it('displays a requested circuit map through the frontend callback', async () => {
@@ -562,14 +561,14 @@ describe('ai command registry recorded session tools', () => {
         };
     };
 
-    it('exposes frontend schemas for recorded session analysis tools', () => {
-        expect(frontendToolSchemas.some((tool) => tool.name === 'run_recorded_ai_analysis')).toBe(true);
-        expect(frontendToolSchemas.some((tool) => tool.name === 'get_recorded_session_analysis')).toBe(true);
-        expect(frontendToolSchemas.some((tool) => tool.name === 'get_recorded_session_context')).toBe(true);
+    it('registers recorded session analysis tools', () => {
+        expect(frontendToolDefinitions.some((tool) => tool.name === 'run_recorded_ai_analysis')).toBe(true);
+        expect(frontendToolDefinitions.some((tool) => tool.name === 'get_recorded_session_analysis')).toBe(true);
+        expect(frontendToolDefinitions.some((tool) => tool.name === 'get_recorded_session_context')).toBe(true);
     });
 
     it('advertises recorded-session and user-summary tools in recorded mode', () => {
-        const toolNames = getFrontendToolSchemasForSessionMode('recorded').map((tool) => tool.name);
+        const toolNames = getFrontendToolNamesForSessionMode('recorded');
 
         expect(toolNames).toEqual(expect.arrayContaining([
             'show_map',
@@ -860,9 +859,9 @@ describe('ai command registry live performance analyst tools', () => {
     };
 
     it('advertises generic live agent session tools only in live mode', () => {
-        const liveToolNames = getFrontendToolSchemasForSessionMode('live').map((tool) => tool.name);
-        const recordedToolNames = getFrontendToolSchemasForSessionMode('recorded').map((tool) => tool.name);
-        const userSummaryToolNames = getFrontendToolSchemasForSessionMode('user_summary').map((tool) => tool.name);
+        const liveToolNames = getFrontendToolNamesForSessionMode('live');
+        const recordedToolNames = getFrontendToolNamesForSessionMode('recorded');
+        const userSummaryToolNames = getFrontendToolNamesForSessionMode('user_summary');
 
         expect(liveToolNames).toEqual(expect.arrayContaining([
             'start_agent_session',
@@ -1079,10 +1078,10 @@ describe('ai command registry live performance analyst tools', () => {
     });
 
     it('advertises shared runtime tools inside an agent session without recursive or dedicated agent controls', () => {
-        const toolNames = getFrontendToolSchemasForSessionMode('live', {
+        const toolNames = getFrontendToolNamesForSessionMode('live', {
             conversationRole: 'agent',
             agentMode: 'live_performance_analyst',
-        }).map((tool) => tool.name);
+        });
 
         expect(toolNames).toEqual(expect.arrayContaining([
             'get_live_session_snapshot',
@@ -2214,3 +2213,4 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 });
+

@@ -194,15 +194,6 @@ export const getToolEnvelopeError = (envelope: ToolOutputEnvelope): string | nul
     return envelope.status === 'error' ? envelope.message || 'Tool failed.' : null;
 };
 
-export const toFrontendToolSchema = <TContext, THandlerContext>(
-    definition: AiToolDefinition<TContext, THandlerContext>,
-) => ({
-    name: definition.name,
-    description: definition.description,
-    properties: definition.schema.properties,
-    required: definition.required,
-});
-
 export const executeAiToolDefinition = async <TContext, THandlerContext extends {
     toolRunId?: string;
     toolName?: string;
@@ -244,3 +235,4 @@ export const executeAiToolDefinition = async <TContext, THandlerContext extends 
         });
     }
 };
+

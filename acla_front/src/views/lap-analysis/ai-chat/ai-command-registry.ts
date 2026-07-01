@@ -2,7 +2,7 @@ import apiService from 'services/api.service';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
 import { getAccTelemetryTrackKey } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
-import { ToolHandlerContext, FrontendToolSchema } from 'views/lap-analysis/ai-chat/use-voice-conversation';
+import { ToolHandlerContext } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import { AiMapDisplayPayload, AiMapSectionSelection } from './AiMapToolDisplay';
 import {
@@ -46,7 +46,6 @@ import {
     type ToolOutputEnvelope,
     executeAiToolDefinition,
     getToolEnvelopeError,
-    toFrontendToolSchema,
 } from './ai-tool-base';
 import type { LiveRangeTrackerToolResult } from './LiveRangeTracker';
 
@@ -155,42 +154,8 @@ export interface LivePerformanceAnalystState {
 }
 
 // Frontend-implemented tool capabilities. This file owns executable browser
-// handlers and JSON parameter shapes only; LLM-facing tool instructions live
-// in the AI service external knowledge base.
-// JSON-Schema for QueryScope (see session-intelligence/types.ts). Shared
-// shape between `query_telemetry_metric` (frontend) and `analyze_telemetry`
-// (server).
-//
-// Flat shape with a `type` enum discriminator. The per-type field coupling
-// (e.g. `type='lap'` requires `lap`) is enforced by `_validate_scope` in
-// app/pipelines/chat/__init__.py before tool dispatch, not in JSON Schema.
-// Reason: Groq llama-3.3-70b's tool-call validator rejects oneOf+const
-// discriminated unions when the model picks an invalid type — the whole
-// turn fails server-side. A single flat object with an enum on `type` is
-// the shape Groq and similar providers handle reliably.
-export const QUERY_SCOPE_SCHEMA = {
-    type: 'object',
-    properties: {
-        type: {
-            type: 'string',
-            enum: ['now', 'last_seconds', 'event', 'lap', 'range'],
-        },
-        seconds: { type: 'number' },
-        eventType: { type: 'string', enum: ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'] },
-        which: { type: 'string', enum: ['last', 'current'] },
-        lap: {
-            oneOf: [
-                { type: 'string', enum: ['current', 'last'] },
-                { type: 'integer' },
-            ],
-        },
-        start: { type: 'integer' },
-        end: { type: 'integer' },
-    },
-    required: ['type'],
-    additionalProperties: false,
-} as const;
-
+// handlers only; LLM-facing tool metadata is injected by the backend voice
+// gateway from its frontend application tool registry.
 const DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS = 5;
 const OVERTAKE_AGENT_MIN_INTERVAL_SECONDS = 2;
 const OVERTAKE_AGENT_MAX_INTERVAL_SECONDS = 15;
@@ -780,368 +745,6 @@ const searchUserSummaryMapLevel = (
     };
 };
 
-export const frontendToolSchemas: FrontendToolSchema[] = [
-    {
-        name: 'start_agent_session',
-        description: 'Start a separate child AI agent session. The user should interact with that child session while it is active.',
-        properties: {
-            agent_mode: {
-                type: 'string',
-                enum: ['track_guide', 'overtake', 'live_performance_analyst'],
-                description: 'Agent profile to start. Use this for every live child agent instead of dedicated agent start tools.',
-            },
-        },
-        required: ['agent_mode'],
-    },
-    {
-        name: 'stop_agent_session',
-        description: 'Stop the active child AI agent session and return focus to the main assistant. Use this for every live child agent instead of dedicated agent stop tools.',
-        properties: {
-            agent_session_id: {
-                type: 'string',
-                description: 'Optional frontend child session id. Defaults to the active agent session.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'get_live_session_snapshot',
-        description: 'Return compact live session state, including lap readiness and detected session type.',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'get_live_focus_section',
-        description: 'Return the current live analyst focus section, timing, and map-display arguments when available.',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'get_live_section_history',
-        description: 'Return compact live section classifications already recorded by the AI service.',
-        properties: {
-            limit: {
-                type: 'integer',
-                description: 'Maximum number of compact classifications to return.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'set_live_range_tracker',
-        description: 'Create or replace the single live range tracker with normalized start/end ranges. The tracker monitors live telemetry and requests classification after each range end is crossed.',
-        properties: {
-            ranges: {
-                type: 'array',
-                description: 'Tracked normalized ranges. Each range needs start_position and end_position from 0 to 1.',
-                items: {
-                    type: 'object',
-                    properties: {
-                        id: { type: 'string' },
-                        label: { type: 'string' },
-                        start_position: { type: 'number' },
-                        end_position: { type: 'number' },
-                    },
-                    required: ['start_position', 'end_position'],
-                },
-            },
-        },
-        required: ['ranges'],
-    },
-    {
-        name: 'update_live_range_tracker',
-        description: 'Update the live range tracker. Use action=record_classification after the classifier determines the tracked range status.',
-        properties: {
-            action: {
-                type: 'string',
-                enum: ['update_ranges', 'remove_ranges', 'record_classification', 'close'],
-            },
-            ranges: {
-                type: 'array',
-                description: 'Ranges for update_ranges.',
-                items: {
-                    type: 'object',
-                    properties: {
-                        id: { type: 'string' },
-                        label: { type: 'string' },
-                        start_position: { type: 'number' },
-                        end_position: { type: 'number' },
-                    },
-                },
-            },
-            range_ids: {
-                type: 'array',
-                description: 'Range ids for remove_ranges.',
-                items: { type: 'string' },
-            },
-            range_id: {
-                type: 'string',
-                description: 'Range id for record_classification.',
-            },
-            classifier_status: {
-                type: 'string',
-                description: 'Classifier-derived status for the tracked range.',
-            },
-            parent_segment: {
-                type: 'object',
-                description: 'Parent segment with its own labels and optional start/end indexes.',
-            },
-            child_segments: {
-                type: 'array',
-                description: 'Child segments with labels, start_index, and end_index.',
-                items: {
-                    type: 'object',
-                    properties: {
-                        labels: {
-                            type: 'array',
-                            items: { type: 'string' },
-                        },
-                        start_index: { type: 'integer' },
-                        end_index: { type: 'integer' },
-                    },
-                    required: ['labels', 'start_index', 'end_index'],
-                },
-            },
-        },
-        required: ['action'],
-    },
-    {
-        name: 'get_live_range_tracker',
-        description: 'View the current live range tracker, including tracked ranges, lifecycle states, classifier status, parent labels, and child segment labels/indexes.',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'collect_live_baseline',
-        description: 'Collect one complete live baseline lap through the dedicated baseline UI component and return the cached baseline lap record when complete.',
-        properties: {
-            timeout_seconds: {
-                type: 'integer',
-                description: 'Maximum time to wait for the baseline lap to complete. Defaults to 600 seconds.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'restart_live_baseline',
-        description: 'Restart the dedicated live baseline collection buffer so the next collect_live_baseline call records a fresh baseline lap.',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'analyze_live_recorded_analysis',
-        description: 'Submit the already recorded baseline lap to live recorded analysis and return classified sections with time gaps when available. Returns an error until baseline collection has recorded a cached lap.',
-        properties: {
-            limit: {
-                type: 'integer',
-                description: 'Maximum number of classified segments to return.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'advance_plan_step',
-        description: 'Report that the current visible procedure plan request is complete so the UI can move to the next request.',
-        properties: {
-            reason: {
-                type: 'string',
-                description: 'Short reason the current plan request is complete.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'clear_procedure_plan',
-        description: 'Clear or terminate the visible procedure plan UI when the plan is no longer useful.',
-        properties: {
-            reason: {
-                type: 'string',
-                description: 'Optional short reason the visible plan should be cleared.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'set_procedure_plan',
-        description: 'Create or replace the visible procedure plan UI with an AI-authored list of requests. Requests with type "tool_call" and a name are executed through the active AI session subscription.',
-        properties: {
-            goal: {
-                type: 'string',
-                description: 'Short goal shown above the request list.',
-            },
-            current_request: {
-                type: 'integer',
-                description: 'Zero-based index of the active request.',
-            },
-            requests: {
-                type: 'array',
-                description: 'Ordered list of requests the assistant plans to perform or ask the UI/backend to perform.',
-                items: {
-                    type: 'object',
-                    properties: {
-                        type: { type: 'string' },
-                        title: { type: 'string' },
-                        name: {
-                            type: 'string',
-                            description: 'Tool name for tool_call requests. The active AI session subscribes to this tool run and receives the final result.',
-                        },
-                        status: {
-                            type: 'string',
-                            enum: ['pending', 'running', 'complete', 'blocked', 'failed', 'skipped'],
-                        },
-                        detail: { type: 'string' },
-                        payload: {
-                            type: 'object',
-                            description: 'Tool arguments for tool_call requests, optionally wrapped in arguments, args, or parameters.',
-                        },
-                    },
-                    required: ['type', 'title'],
-                },
-            },
-        },
-        required: ['goal', 'requests'],
-    },
-    {
-        name: 'get_next_corner',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'query_telemetry_metric',
-        properties: {
-            fields: {
-                type: 'array',
-                items: { type: 'string' },
-            },
-            scope: QUERY_SCOPE_SCHEMA,
-            reduce: {
-                type: 'string',
-                enum: ['avg', 'min', 'max', 'stats'],
-            },
-        },
-        required: ['fields', 'scope', 'reduce'],
-    },
-    {
-        name: 'get_event_log',
-        properties: {
-            eventType: {
-                type: 'string',
-                enum: ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'],
-            },
-            scope: {
-                type: 'string',
-                enum: ['last', 'last_n', 'lap_current', 'lap_last', 'all'],
-            },
-            n: {
-                type: 'integer',
-            },
-        },
-        required: ['eventType', 'scope'],
-    },
-    {
-        name: 'get_user_summary_map_level',
-        properties: {
-            map_id: {
-                type: 'string',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'get_available_user_summary_maps',
-        properties: {},
-        required: [],
-    },
-    {
-        name: 'search_user_summary_map_level',
-        properties: {
-            query: {
-                type: 'string',
-            },
-            limit: {
-                type: 'integer',
-            },
-        },
-        required: ['query'],
-    },
-    {
-        name: 'show_map',
-        description: 'Display a circuit map in the chat transcript, optionally highlighting a normalized lap section.',
-        properties: {
-            map_id: {
-                type: 'string',
-                description: 'Circuit map id to display. Prefer this when a map id is known.',
-            },
-            source_track_key: {
-                type: 'string',
-                description: 'ACC source track key such as brands_hatch, monza, or spa.',
-            },
-            map_name: {
-                type: 'string',
-                description: 'Human-readable map or circuit name when no id/key is known.',
-            },
-            section_start: {
-                type: 'number',
-                description: 'Start of the highlighted section as normalized lap position from 0 to 1.',
-            },
-            section_end: {
-                type: 'number',
-                description: 'End of the highlighted section as normalized lap position from 0 to 1. Values wrapping across start/finish are allowed.',
-            },
-            section_label: {
-                type: 'string',
-                description: 'Short label for the highlighted section.',
-            },
-            title: {
-                type: 'string',
-                description: 'Short title shown above the map.',
-            },
-            note: {
-                type: 'string',
-                description: 'Brief note shown below the map.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'run_recorded_ai_analysis',
-        description: 'Run or retrieve the AI segment analysis for the currently selected recorded session.',
-        properties: {
-            force: {
-                type: 'boolean',
-                description: 'When true, rerun analysis even if a cached result is available.',
-            },
-            limit: {
-                type: 'integer',
-                description: 'Maximum number of compact classified segments to return.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'get_recorded_session_analysis',
-        description: 'Return the shared AI segment analysis for the currently selected recorded session.',
-        properties: {
-            limit: {
-                type: 'integer',
-                description: 'Maximum number of compact classified segments to return.',
-            },
-        },
-        required: [],
-    },
-    {
-        name: 'get_recorded_session_context',
-        description: 'Return compact selected recorded-session, playback, and AI-analysis context.',
-        properties: {
-            limit: {
-                type: 'integer',
-                description: 'Maximum number of compact classified segments to include.',
-            },
-        },
-        required: [],
-    },
-];
-
 const COMMON_TOOL_NAMES = [
     'show_map',
     'set_procedure_plan',
@@ -1178,13 +781,13 @@ const RECORDED_TOOL_NAMES = [
     'get_recorded_session_context',
 ] as const;
 
-export const getFrontendToolSchemasForSessionMode = (
+export const getFrontendToolNamesForSessionMode = (
     sessionMode: AiCommandRegistryContext['sessionMode'] = 'live',
     options: {
         conversationRole?: AgentSessionRole;
         agentMode?: AgentSessionMode | null;
     } = {},
-): FrontendToolSchema[] => {
+): string[] => {
     if (options.conversationRole === 'agent') {
         const agentAllowedNames = new Set<string>([
             ...COMMON_TOOL_NAMES,
@@ -1193,7 +796,7 @@ export const getFrontendToolSchemasForSessionMode = (
         ]);
         return frontendToolDefinitions
             .filter((tool) => tool.visibility !== 'internal' && agentAllowedNames.has(tool.name))
-            .map(toFrontendToolSchema);
+            .map((tool) => tool.name);
     }
 
     const allowedNames: Set<string> = sessionMode === 'recorded'
@@ -1204,7 +807,7 @@ export const getFrontendToolSchemasForSessionMode = (
 
     return frontendToolDefinitions
         .filter((tool) => tool.visibility !== 'internal' && allowedNames.has(tool.name))
-        .map(toFrontendToolSchema);
+        .map((tool) => tool.name);
 };
 
 const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext) => (
@@ -1702,9 +1305,8 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
 
     // ── Telemetry ─────────────────────────────────────────────────────────────
 
-    // Constrained-reduce variant exposed to the LLM. The schema enforces
-    // reduce ∈ {avg,min,max,stats}; we defensively swap any other value
-    // for 'stats' so an invalid prompt can't leak rows.
+    // Constrained-reduce variant. Clamp invalid reduce values to 'stats'
+    // so a bad tool call can't leak rows.
     async query_telemetry_metric(args) {
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
         const si = context.sessionIntelligence;
@@ -1720,7 +1322,7 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
 
     // Server-internal: backs analyze_telemetry. Returns raw rows over the
     // WS relay so the server-side classifier can consume them. NOT exposed
-    // to the LLM (absent from the voice tool schema) — rows must never
+    // to the LLM (absent from the backend tool registry) - rows must never
     // enter the LLM context.
     async _get_telemetry_for_scope(args) {
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
@@ -2210,7 +1812,12 @@ const ALL_AI_TOOL_NAMES = [
     'disable_ui_component',
 ] as const;
 
-const frontendToolSchemaByName = new Map(frontendToolSchemas.map((schema) => [schema.name, schema]));
+const PUBLIC_TOOL_NAMES = new Set<string>([
+    ...COMMON_TOOL_NAMES,
+    ...LIVE_TOOL_NAMES,
+    ...USER_SUMMARY_TOOL_NAMES,
+    ...RECORDED_TOOL_NAMES,
+]);
 
 const getToolSessionModes = (
     name: typeof ALL_AI_TOOL_NAMES[number],
@@ -2232,21 +1839,16 @@ const getToolSessionModes = (
 const getToolVisibility = (
     name: typeof ALL_AI_TOOL_NAMES[number],
 ): 'public' | 'internal' => (
-    frontendToolSchemaByName.has(name) ? 'public' : 'internal'
+    PUBLIC_TOOL_NAMES.has(name) ? 'public' : 'internal'
 );
 
 const createAiToolDefinition = (
     name: typeof ALL_AI_TOOL_NAMES[number],
 ): AiCommandToolDefinition => {
-    const schema = frontendToolSchemaByName.get(name);
     return {
         name,
-        description: schema?.description,
-        schema: {
-            properties: schema?.properties ?? {},
-            required: schema?.required ?? [],
-        },
-        required: schema?.required ?? [],
+        schema: { properties: {}, required: [] },
+        required: [],
         sessionModes: getToolSessionModes(name),
         visibility: getToolVisibility(name),
         execute: async (args, context, output, handlerContext) => {
@@ -2290,3 +1892,4 @@ export const createAiCommandRegistry = (
 
     return registry;
 };
+

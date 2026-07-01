@@ -19,7 +19,7 @@ _LAP_KEYWORDS = {"current", "last"}
 def _validate_scope(scope: Any) -> Optional[str]:
     """Validate a QueryScope object received from the LLM.
 
-    The frontend-owned JSON Schema (QUERY_SCOPE_SCHEMA in ai-command-registry.ts)
+    The backend-injected JSON Schema (FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA)
     is a flat object with a `type` enum — it doesn't encode the per-type field
     coupling because Groq llama-3.3-70b can't reliably emit oneOf+const
     discriminated unions. This validator enforces the coupling server-side
@@ -519,3 +519,4 @@ def _live_section_stats(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, float
                 "avg": round(sum(values) / len(values), 3),
             }
     return out
+

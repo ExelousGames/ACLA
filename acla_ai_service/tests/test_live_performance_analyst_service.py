@@ -3,39 +3,14 @@ import types
 
 import pytest
 
-from app.external_knowledge_base import agent_behavior, behavior, reload, tool
+from app.external_knowledge_base import agent_behavior, behavior, reload
 from app.racing_engineer.service import AIService, _live_section_stats
 from app.voice import pipecat_pipeline
 
 
-def test_live_performance_tool_knowledge_is_loaded():
+def test_live_performance_agent_behavior_knowledge_is_loaded():
     reload()
 
-    assert tool("start_agent_session")["title"] == "Starting agent mode"
-    assert tool("stop_agent_session")["title"] == "Stopping agent mode"
-    assert "live_performance_analyst" in tool("start_agent_session")["_raw_body"]
-    assert tool("start_live_performance_analysis") is None
-    assert tool("stop_per_turn_coaching") is None
-    assert tool("set_procedure_plan")["title"] == "Setting procedure plan"
-    assert tool("get_live_focus_section")["title"] == "Analyzing focus section"
-    assert "show_map_arguments" in tool("get_live_focus_section")["_raw_body"]
-    assert tool("analyze_live_recorded_analysis")["title"] == "Analyzing baseline lap"
-    assert "lap records to the recorded-session classifier" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "compact analysis result" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "time_gap" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "top 3" not in tool("analyze_live_recorded_analysis")["_raw_body"].lower()
-    assert "telemetry row counts" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "A classified segment is a short portion of the baseline lap" in " ".join(tool("analyze_live_recorded_analysis")["_raw_body"].split())
-    assert "marked with driving labels" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "does not expose raw" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "telemetry rows" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "Do not use `run_recorded_ai_analysis`" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "Do not use `classify_live_section` for baseline analysis" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert tool("classify_live_section")["title"] == "Classifying live section"
-    assert "active Live Performance Analyst focus section" in tool("classify_live_section")["description"]
-    assert "requests" in tool("set_procedure_plan")["_raw_body"]
-    assert "focus_name" not in tool("set_procedure_plan")["_raw_body"]
-    assert "request's `payload`" in tool("set_procedure_plan")["_raw_body"]
     assert "advance_plan_step" in behavior("procedure_plan")["_raw_body"]
     assert "collecting_baseline" in agent_behavior("live_performance_analyst")["_raw_body"]
     assert "get_live_focus_section" not in agent_behavior("live_performance_analyst")["_raw_body"]
@@ -165,11 +140,22 @@ def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
     fake_module.FunctionSchema = FakeFunctionSchema
     monkeypatch.setitem(sys.modules, "pipecat.adapters.schemas.function_schema", fake_module)
 
-    schemas = pipecat_pipeline._build_server_tool_schemas({"type": "object"})
+    schemas = pipecat_pipeline._build_server_tool_schemas(
+        {"type": "object"},
+        {
+            "classify_live_section": {
+                "description": "Classify the active Live Performance Analyst focus section.",
+                "parameters": {
+                    "section_id": {"description": "Known section id."},
+                },
+            },
+        },
+    )
     live_schema = next(schema for schema in schemas if schema.name == "classify_live_section")
 
     assert "Live Performance Analyst" in live_schema.description
     assert set(live_schema.properties) == {"section_id", "section_name", "lap"}
+    assert live_schema.properties["section_id"]["description"] == "Known section id."
 
 
 def test_frontend_tool_schema_exposes_advance_plan_step(monkeypatch):
@@ -184,14 +170,25 @@ def test_frontend_tool_schema_exposes_advance_plan_step(monkeypatch):
     fake_module.FunctionSchema = FakeFunctionSchema
     monkeypatch.setitem(sys.modules, "pipecat.adapters.schemas.function_schema", fake_module)
 
-    reload()
     schemas = pipecat_pipeline._build_frontend_tool_schemas([
         {
             "name": "advance_plan_step",
             "properties": {"reason": {"type": "string"}},
             "required": [],
         },
-    ])
+    ], {
+        "advance_plan_step": {
+            "description": (
+                "Report that the current visible procedure plan request is complete "
+                "so the frontend can execute the next tool_call."
+            ),
+            "parameters": {
+                "reason": {
+                    "description": "Optional short reason the current plan request is complete.",
+                },
+            },
+        },
+    })
     schema = schemas[0]
 
     assert schema.name == "advance_plan_step"

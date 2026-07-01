@@ -329,27 +329,23 @@ def _prettify(name: str) -> str:
     return name.replace("_", " ").strip().capitalize()
 
 
-def _tool_doc(name: str) -> Dict[str, Any]:
-    from app.external_knowledge_base import tool as _tool_knowledge
-
-    doc = _tool_knowledge(name)
-    return doc if isinstance(doc, dict) else {}
-
-
-def _tool_description(name: str) -> str:
-    description = _tool_doc(name).get("description")
+def _tool_description(name: str, tool_metadata: Dict[str, Dict[str, Any]]) -> str:
+    description = tool_metadata.get(name, {}).get("description")
     return str(description).strip() if description else ""
 
 
-def _tool_title(name: str) -> str:
-    title = _tool_doc(name).get("title")
+def _tool_title(name: str, tool_metadata: Dict[str, Dict[str, Any]]) -> str:
+    title = tool_metadata.get(name, {}).get("title")
     return str(title).strip() if title else (_SERVER_TOOL_TITLES.get(name) or _prettify(name))
 
 
-def _with_parameter_docs(tool_name: str, properties: Dict[str, Any]) -> Dict[str, Any]:
-    """Overlay parameter descriptions from external KB tool docs."""
-    doc = _tool_doc(tool_name)
-    params = doc.get("parameters")
+def _with_parameter_docs(
+    tool_name: str,
+    properties: Dict[str, Any],
+    tool_metadata: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Overlay parameter descriptions from backend-injected tool metadata."""
+    params = tool_metadata.get(tool_name, {}).get("parameters")
     if not isinstance(params, dict):
         return properties
 
@@ -375,15 +371,18 @@ def _with_parameter_docs(tool_name: str, properties: Dict[str, Any]) -> Dict[str
     return out
 
 
-def _build_server_tool_schemas(query_scope_schema: Optional[Dict[str, Any]]):
+def _build_server_tool_schemas(
+    query_scope_schema: Optional[Dict[str, Any]],
+    tool_metadata: Dict[str, Dict[str, Any]],
+):
     """Pipecat FunctionSchemas for the server-implemented tools only.
 
     Frontend executable capability shapes come in over the WS handshake
     (see :mod:`app.api.voice`) and are built in
     :func:`_build_frontend_tool_schemas`. Tool-use text for both server and
-    frontend tools comes from the external knowledge base.
+    frontend tools comes from backend-injected handshake metadata.
 
-    ``query_scope_schema`` is the frontend-owned JSON Schema shape for
+    ``query_scope_schema`` is the backend-injected JSON Schema shape for
     QueryScope; server-side tools whose params reference a scope
     (``analyze_telemetry``) consume it from the handshake. Missing is a hard
     error, with no silent fallback to a Python-defined shape.
@@ -399,63 +398,86 @@ def _build_server_tool_schemas(query_scope_schema: Optional[Dict[str, Any]]):
     return [
         FunctionSchema(
             name="analyze_telemetry",
-            description=_tool_description("analyze_telemetry"),
-            properties=_with_parameter_docs("analyze_telemetry", {"scope": query_scope_schema}),
+            description=_tool_description("analyze_telemetry", tool_metadata),
+            properties=_with_parameter_docs(
+                "analyze_telemetry",
+                {"scope": query_scope_schema},
+                tool_metadata,
+            ),
             required=["scope"],
         ),
         FunctionSchema(
             name="classify_live_section",
-            description=_tool_description("classify_live_section"),
-            properties=_with_parameter_docs("classify_live_section", {
-                "section_id": {"type": "string"},
-                "section_name": {"type": "string"},
-                "lap": {"type": "string"},
-            }),
+            description=_tool_description("classify_live_section", tool_metadata),
+            properties=_with_parameter_docs(
+                "classify_live_section",
+                {
+                    "section_id": {"type": "string"},
+                    "section_name": {"type": "string"},
+                    "lap": {"type": "string"},
+                },
+                tool_metadata,
+            ),
             required=[],
         ),
         FunctionSchema(
             name="explain_label",
-            description=_tool_description("explain_label"),
-            properties=_with_parameter_docs("explain_label", {
-                "label_id": {
-                    "type": "string",
+            description=_tool_description("explain_label", tool_metadata),
+            properties=_with_parameter_docs(
+                "explain_label",
+                {
+                    "label_id": {
+                        "type": "string",
+                    },
                 },
-            }),
+                tool_metadata,
+            ),
             required=["label_id"],
         ),
         FunctionSchema(
             name="get_track_knowledge",
-            description=_tool_description("get_track_knowledge"),
-            properties=_with_parameter_docs("get_track_knowledge", {
-                "track": {
-                    "type": "string",
+            description=_tool_description("get_track_knowledge", tool_metadata),
+            properties=_with_parameter_docs(
+                "get_track_knowledge",
+                {
+                    "track": {
+                        "type": "string",
+                    },
+                    "corner": {
+                        "type": "string",
+                    },
                 },
-                "corner": {
-                    "type": "string",
-                },
-            }),
+                tool_metadata,
+            ),
             required=["track"],
         ),
         FunctionSchema(
             name="search_racing_knowledge",
-            description=_tool_description("search_racing_knowledge"),
-            properties=_with_parameter_docs("search_racing_knowledge", {
-                "query": {"type": "string"},
-                "top_k": {"type": "integer"},
-            }),
+            description=_tool_description("search_racing_knowledge", tool_metadata),
+            properties=_with_parameter_docs(
+                "search_racing_knowledge",
+                {
+                    "query": {"type": "string"},
+                    "top_k": {"type": "integer"},
+                },
+                tool_metadata,
+            ),
             required=["query"],
         ),
     ]
 
 
-def _build_frontend_tool_schemas(frontend_tools: Iterable[Dict[str, Any]]) -> List[Any]:
-    """Convert the frontend's tool descriptors into Pipecat FunctionSchemas.
+def _build_frontend_tool_schemas(
+    frontend_tools: Iterable[Dict[str, Any]],
+    tool_metadata: Dict[str, Dict[str, Any]],
+) -> List[Any]:
+    """Convert backend-injected frontend tool descriptors into Pipecat FunctionSchemas.
 
     Each ``frontend_tools`` entry is a plain dict with ``name``, ``properties``
     and ``required`` (mirrors FunctionSchema's constructor). LLM-facing text is
-    loaded from ``external_knowledge_base/tools`` by tool name.
+    loaded from backend-injected ``tool_metadata`` by tool name.
     Entries missing ``name`` are skipped with a warning — defensive against
-    a misbehaving frontend, since this is an untrusted boundary.
+    a malformed handshake, since this is an untrusted boundary.
     """
     from pipecat.adapters.schemas.function_schema import FunctionSchema
 
@@ -467,20 +489,27 @@ def _build_frontend_tool_schemas(frontend_tools: Iterable[Dict[str, Any]]) -> Li
             continue
         schemas.append(FunctionSchema(
             name=name,
-            description=_tool_description(name),
-            properties=_with_parameter_docs(name, dict(tool.get("properties") or {})),
+            description=_tool_description(name, tool_metadata),
+            properties=_with_parameter_docs(
+                name,
+                dict(tool.get("properties") or {}),
+                tool_metadata,
+            ),
             required=list(tool.get("required") or []),
         ))
     return schemas
 
 
-def _build_title_map(frontend_tools: Iterable[Dict[str, Any]]) -> Dict[str, str]:
-    """Build tool-event titles from knowledge-base tool docs."""
-    titles = {name: _tool_title(name) for name in _SERVER_TOOL_TITLES}
+def _build_title_map(
+    frontend_tools: Iterable[Dict[str, Any]],
+    tool_metadata: Dict[str, Dict[str, Any]],
+) -> Dict[str, str]:
+    """Build tool-event titles from backend-injected tool metadata."""
+    titles = {name: _tool_title(name, tool_metadata) for name in _SERVER_TOOL_TITLES}
     for tool in frontend_tools:
         name = tool.get("name")
         if isinstance(name, str) and name:
-            titles[name] = _tool_title(name)
+            titles[name] = _tool_title(name, tool_metadata)
     return titles
 
 
@@ -971,6 +1000,7 @@ async def build_voice_pipeline_task(
     tool_executor: Any,
     *,
     frontend_tools: Optional[List[Dict[str, Any]]] = None,
+    tool_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
     query_scope_schema: Optional[Dict[str, Any]] = None,
 ):
     """Build a Pipecat PipelineTask bound to the given WebSocket.
@@ -1101,16 +1131,20 @@ async def build_voice_pipeline_task(
     #   * server-side tools, whose executable schemas live in Python next to
     #     their executor.
     #   * frontend-side tools, whose executable capability shapes arrive over
-    #     the WS handshake from api/voice.py.
-    # Tool-use instructions for both buckets come from the AI service external
-    # knowledge base. The handler dispatches by name: frontend names go through
+    #     the WS handshake after backend gateway injection.
+    # Tool-use metadata for both buckets arrives over the WS handshake after
+    # backend gateway injection. The handler dispatches by name: frontend names go through
     # the WS tool relay; everything else goes through ``tool_executor``.
     fe_tools = frontend_tools or []
+    metadata = tool_metadata or {}
     frontend_tool_names = frozenset(
         t["name"] for t in fe_tools if isinstance(t.get("name"), str)
     )
-    tool_schemas = _build_server_tool_schemas(query_scope_schema) + _build_frontend_tool_schemas(fe_tools)
-    tool_titles = _build_title_map(fe_tools)
+    tool_schemas = (
+        _build_server_tool_schemas(query_scope_schema, metadata)
+        + _build_frontend_tool_schemas(fe_tools, metadata)
+    )
+    tool_titles = _build_title_map(fe_tools, metadata)
     tools = ToolsSchema(standard_tools=tool_schemas)
 
     tool_handler, dispatch_tool = _make_tool_handler(
@@ -1300,6 +1334,7 @@ async def run_voice_session(
     tool_executor: Any,
     *,
     frontend_tools: Optional[List[Dict[str, Any]]] = None,
+    tool_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
     query_scope_schema: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
@@ -1320,6 +1355,7 @@ async def run_voice_session(
     task = await build_voice_pipeline_task(
         websocket, session_config, tool_executor,
         frontend_tools=frontend_tools,
+        tool_metadata=tool_metadata,
         query_scope_schema=query_scope_schema,
     )
     runner = PipelineRunner()
@@ -1328,3 +1364,4 @@ async def run_voice_session(
     finally:
         get_relay().unbind(websocket)
         LOGGER.info("Voice session ended (user=%s)", session_config.user_id)
+

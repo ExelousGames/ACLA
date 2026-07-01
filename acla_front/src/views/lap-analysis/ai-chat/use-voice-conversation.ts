@@ -45,17 +45,6 @@ export type FrontendToolHandler = (
     ctx: ToolHandlerContext,
 ) => Promise<unknown> | unknown;
 
-/** Capability shape for one frontend-implemented tool. Sent to the AI
- *  service on WS open so it can merge executable frontend parameter shapes
- *  with LLM-facing instructions from its external knowledge base. */
-export interface FrontendToolSchema {
-    name: string;
-    description?: string;
-    /** JSON-Schema-style `properties` object. */
-    properties: Record<string, unknown>;
-    required: string[];
-}
-
 export type AiSessionContext = Record<string, unknown>;
 export type ConversationRole = 'main' | 'agent';
 
@@ -93,14 +82,6 @@ export interface VoiceConversationOptions {
      *  hook over the WS via a `tool_call` text frame; we dispatch by
      *  name. Missing handler → automatic `tool_error`. */
     toolHandlers?: Record<string, FrontendToolHandler>;
-    /** Capabilities for frontend-implemented tools. Sent to the AI service
-     *  as the first text frame on WS open; the service supplies tool-use
-     *  instructions from its external knowledge base. */
-    frontendTools?: FrontendToolSchema[];
-    /** QueryScope JSON Schema shape. Backend tools whose parameters reference
-     *  a query scope (e.g. analyze_telemetry) consume this executable data
-     *  shape from the WS handshake instead of re-declaring it in Python. */
-    querySchemaScope?: object;
     /** Compact frontend view/session state injected into the backend system
      *  context before the LLM chooses tools. */
     sessionContext?: AiSessionContext;
@@ -335,12 +316,6 @@ export function useVoiceConversation(
     const sessionContextRef = useRef<AiSessionContext | null>(
         options.sessionContext ?? null,
     );
-    const frontendToolsRef = useRef<FrontendToolSchema[]>(
-        options.frontendTools || [],
-    );
-    const querySchemaScopeRef = useRef<object | null>(
-        options.querySchemaScope ?? null,
-    );
 
     /**
      * Open the backend voice WS through apiService — same baseURL + JWT
@@ -404,13 +379,6 @@ export function useVoiceConversation(
             console.warn('[voice] session_context update failed:', err);
         }
     }, [options.sessionContext]);
-    useEffect(() => {
-        frontendToolsRef.current = options.frontendTools || [];
-    }, [options.frontendTools]);
-    useEffect(() => {
-        querySchemaScopeRef.current = options.querySchemaScope ?? null;
-    }, [options.querySchemaScope]);
-
     const resetMicLevel = useCallback(() => {
         if (micLevelFrameRef.current !== null) {
             window.cancelAnimationFrame(micLevelFrameRef.current);
@@ -620,11 +588,10 @@ export function useVoiceConversation(
 
             ws.onopen = () => {
                 clearConnectTimeout();
-                // First text frame on every voice session: hand the AI
-                // service the frontend-implemented tool capability shapes.
-                // The backend blocks the pipeline build until this arrives,
-                // then enriches them with external knowledge-base tool
-                // instructions before exposing them to the LLM.
+                // First text frame on every voice session: hand the backend
+                // compact runtime context. The backend injects the full
+                // frontend application tool registry before relaying this to
+                // the AI service.
                 try {
                     const metadata = buildVoiceSessionMetadata({
                         agentMode: options.agentMode,
@@ -636,8 +603,6 @@ export function useVoiceConversation(
                         type: 'frontend_info',
                         ...metadata,
                         session_context: sessionContextRef.current,
-                        tools: frontendToolsRef.current,
-                        query_scope_schema: querySchemaScopeRef.current,
                     }));
                 } catch (err) {
                     console.warn('[voice] frontend_info send failed:', err);
@@ -907,3 +872,4 @@ export function useVoiceConversation(
         executeToolCall,
     };
 }
+

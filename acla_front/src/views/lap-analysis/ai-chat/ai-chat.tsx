@@ -9,8 +9,6 @@ import { detectEnvironment } from 'utils/environment';
 import apiService from 'services/api.service';
 import {
     createAiCommandRegistry,
-    getFrontendToolSchemasForSessionMode,
-    QUERY_SCOPE_SCHEMA,
     startAgentRuntime,
 } from './ai-command-registry';
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
@@ -829,18 +827,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         userSummaryLoading,
     ]);
 
-    const frontendTools = useMemo(
-        () => getFrontendToolSchemasForSessionMode(sessionMode, { conversationRole: 'main' }),
-        [sessionMode],
-    );
-    const agentFrontendTools = useMemo(
-        () => getFrontendToolSchemasForSessionMode(sessionMode, {
-            conversationRole: 'agent',
-            agentMode: activeAgentSession?.agentMode,
-        }),
-        [activeAgentSession?.agentMode, sessionMode],
-    );
-    const inactiveAgentFrontendTools = useMemo(() => [], []);
     const inactiveAgentToolHandlers = useMemo(() => ({}), []);
     const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
@@ -1072,8 +1058,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         clientSessionId: mainClientSessionIdRef.current,
         sessionContext: aiSessionContext,
         onEvent: handleMainVoiceEvent,
-        frontendTools,
-        querySchemaScope: QUERY_SCOPE_SCHEMA,
         toolHandlers,
     });
     const agentSessionContext = useMemo(() => (
@@ -1173,8 +1157,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         agentMode: activeAgentSession?.agentMode,
         sessionContext: agentSessionContext || undefined,
         onEvent: handleAgentVoiceEvent,
-        frontendTools: activeAgentSession ? agentFrontendTools : inactiveAgentFrontendTools,
-        querySchemaScope: QUERY_SCOPE_SCHEMA,
         toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
     });
     const sendAgentVoiceObservation = agentVoiceConversation.sendObservation;

@@ -7,6 +7,11 @@ import {
 import { IncomingMessage } from 'http';
 import { URL } from 'url';
 import { WebSocket as WsClient, RawData } from 'ws';
+import {
+    FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
+    getAiToolMetadataForSessionContext,
+    getFrontendApplicationToolsForSessionContext,
+} from '../shared/ai/frontend-application-tool-registry';
 
 /**
  * Voice WS gateway — backend edge for /voice/stream.
@@ -18,9 +23,9 @@ import { WebSocket as WsClient, RawData } from 'ws';
  * AI service stays auth-free on its private port.
  *
  * The gateway does NOT use `@SubscribeMessage` — this is a frame-level
- * passthrough proxy (binary PCM audio + JSON tool relay frames). We
- * subscribe to raw `message` events on the client and pipe them to
- * upstream unchanged, in both directions.
+ * proxy (binary PCM audio + JSON tool relay frames). It enriches the
+ * initial frontend_info frame with the backend-owned frontend application
+ * tool registry, then pipes subsequent frames through in both directions.
  */
 @WebSocketGateway({ path: '/voice/stream' })
 export class VoiceGateway implements OnGatewayConnection {
@@ -67,6 +72,38 @@ export class VoiceGateway implements OnGatewayConnection {
         return `${proto}//${httpUrl.host}`;
     }
 
+    private withBackendToolRegistry(data: RawData, isBinary: boolean): { data: RawData | string; isBinary: boolean } {
+        if (isBinary) {
+            return { data, isBinary };
+        }
+
+        const text = typeof data === 'string' ? data : data.toString();
+        let payload: any;
+        try {
+            payload = JSON.parse(text);
+        } catch {
+            return { data, isBinary };
+        }
+
+        if (!payload || payload.type !== 'frontend_info') {
+            return { data, isBinary };
+        }
+
+        const sessionContext = payload.session_context && typeof payload.session_context === 'object'
+            ? payload.session_context
+            : {};
+
+        return {
+            data: JSON.stringify({
+                ...payload,
+                tools: getFrontendApplicationToolsForSessionContext(sessionContext),
+                tool_metadata: getAiToolMetadataForSessionContext(sessionContext),
+                query_scope_schema: FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
+            }),
+            isBinary: false,
+        };
+    }
+
     private bridge(client: WsClient, userId: string, sessionId: string): void {
         const params = new URLSearchParams();
         params.set('user_id', userId);
@@ -77,7 +114,7 @@ export class VoiceGateway implements OnGatewayConnection {
 
         // Hold client → upstream messages until upstream finishes opening —
         // the browser audio worklet starts pushing PCM frames immediately.
-        const queue: Array<{ data: RawData; isBinary: boolean }> = [];
+        const queue: Array<{ data: RawData | string; isBinary: boolean }> = [];
         let upstreamOpen = false;
 
         const closeBoth = (code?: number, reason?: string): void => {
@@ -108,12 +145,13 @@ export class VoiceGateway implements OnGatewayConnection {
         });
 
         client.on('message', (data, isBinary) => {
+            const next = this.withBackendToolRegistry(data, isBinary);
             if (!upstreamOpen) {
-                queue.push({ data, isBinary });
+                queue.push(next);
                 return;
             }
             if (upstream.readyState === WsClient.OPEN) {
-                upstream.send(data, { binary: isBinary });
+                upstream.send(next.data, { binary: next.isBinary });
             }
         });
 

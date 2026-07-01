@@ -186,14 +186,16 @@ async def voice_stream(
 
     # ── Handshake: frontend declares executable tool capabilities ─────────
     # The first text frame on every voice session must be
-    # ``{"type": "frontend_info", "tools": [...]}``. The frontend owns
-    # browser-side executable capability shapes; the AI service enriches them
-    # with external knowledge-base tool instructions before building the LLM's
-    # tool surface.
+    # ``{"type": "frontend_info", "tools": [...]}``. The backend gateway injects
+    # browser-side executable capability shapes and LLM-facing metadata before
+    # the AI service builds the LLM's tool surface.
     # Audio frames before the handshake are dropped (we haven't built the
     # pipeline yet anyway).
     try:
-        frontend_tools, query_scope_schema, session_context = await _await_frontend_info(websocket, timeout=5.0)
+        frontend_tools, tool_metadata, query_scope_schema, session_context = await _await_frontend_info(
+            websocket,
+            timeout=5.0,
+        )
     except _HandshakeError as exc:
         LOGGER.warning(
             "Voice WS handshake failed (user=%s): %s", user_id, exc,
@@ -240,6 +242,7 @@ async def voice_stream(
         await run_voice_session(
             filtered_ws, config, tool_executor,
             frontend_tools=frontend_tools,
+            tool_metadata=tool_metadata,
             query_scope_schema=query_scope_schema,
         )
     except WebSocketDisconnect:
@@ -258,15 +261,17 @@ class _HandshakeError(Exception):
 
 async def _await_frontend_info(
     websocket: WebSocket, *, timeout: float,
-) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]:
     """Receive and parse the first text frame as ``frontend_info``.
 
-    Returns ``(tools, query_scope_schema, session_context)``. ``tools`` is the
-    (possibly empty) list of frontend tool capability schemas.
-    ``query_scope_schema`` is the frontend-owned JSON Schema for QueryScope
-    (consumed by server-side tools whose params reference a scope, e.g.
-    ``analyze_telemetry``); may be ``None`` if the frontend didn't send one.
-    ``session_context`` is compact frontend view/session state. Raises
+    Returns ``(tools, tool_metadata, query_scope_schema, session_context)``.
+    ``tools`` is the (possibly empty) list of backend-injected frontend tool
+    capability schemas. ``tool_metadata`` is backend-injected LLM-facing
+    titles, descriptions, and parameter wording for both server and frontend
+    tools. ``query_scope_schema`` is the backend-injected JSON Schema for
+    QueryScope (consumed by server-side tools whose params reference a scope,
+    e.g. ``analyze_telemetry``); may be ``None`` if the gateway did not inject
+    one. ``session_context`` is compact frontend view/session state. Raises
     :class:`_HandshakeError` on timeout, non-text first frame, malformed
     JSON, wrong ``type``, or invalid ``tools`` shape.
 
@@ -310,6 +315,19 @@ async def _await_frontend_info(
         if not isinstance(tools, list) or not all(isinstance(t, dict) for t in tools):
             raise _HandshakeError("frontend_info: 'tools' must be a list of objects")
 
+        raw_tool_metadata = payload.get("tool_metadata")
+        if raw_tool_metadata is None:
+            raw_tool_metadata = {}
+        if not isinstance(raw_tool_metadata, dict):
+            raise _HandshakeError("frontend_info: 'tool_metadata' must be an object or null")
+        tool_metadata: Dict[str, Dict[str, Any]] = {}
+        for name, metadata in raw_tool_metadata.items():
+            if not isinstance(name, str) or not isinstance(metadata, dict):
+                raise _HandshakeError(
+                    "frontend_info: 'tool_metadata' must map tool names to objects"
+                )
+            tool_metadata[name] = metadata
+
         query_scope_schema = payload.get("query_scope_schema")
         if query_scope_schema is not None and not isinstance(query_scope_schema, dict):
             raise _HandshakeError(
@@ -325,7 +343,7 @@ async def _await_frontend_info(
             raise _HandshakeError(
                 "frontend_info: 'session_context.session_mode' must be 'live', 'recorded', 'user_summary', or omitted"
             )
-        return tools, query_scope_schema, session_context
+        return tools, tool_metadata, query_scope_schema, session_context
 
 
 class _TextFilteringWebSocket:
@@ -411,3 +429,4 @@ class _TextFilteringWebSocket:
                 yield await self.receive_text()
         except Exception:
             return
+
