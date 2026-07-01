@@ -269,9 +269,9 @@ async def _await_frontend_info(
     capability schemas. ``tool_metadata`` is backend-injected LLM-facing
     titles, descriptions, and parameter wording for both server and frontend
     tools. ``query_scope_schema`` is the backend-injected JSON Schema for
-    QueryScope (consumed by server-side tools whose params reference a scope,
-    e.g. ``analyze_telemetry``); may be ``None`` if the gateway did not inject
-    one. ``session_context`` is compact frontend view/session state. Raises
+    QueryScope and is passed through for compatibility with frontend tool
+    descriptors; it may be ``None``. ``session_context`` is compact frontend
+    view/session state. Raises
     :class:`_HandshakeError` on timeout, non-text first frame, malformed
     JSON, wrong ``type``, or invalid ``tools`` shape.
 

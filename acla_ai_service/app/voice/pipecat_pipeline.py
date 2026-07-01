@@ -317,8 +317,6 @@ class VoiceSessionConfig:
 # External KB tool docs are the title source of truth; this map is the
 # server-side fallback for server-implemented tools only.
 _SERVER_TOOL_TITLES: Dict[str, str] = {
-    "analyze_telemetry": "Analyzing telemetry",
-    "classify_live_section": "Classifying live section",
     "explain_label": "Looking up the term",
     "get_track_knowledge": "Pulling track notes",
     "search_racing_knowledge": "Searching racing knowledge",
@@ -382,44 +380,12 @@ def _build_server_tool_schemas(
     :func:`_build_frontend_tool_schemas`. Tool-use text for both server and
     frontend tools comes from backend-injected handshake metadata.
 
-    ``query_scope_schema`` is the backend-injected JSON Schema shape for
-    QueryScope; server-side tools whose params reference a scope
-    (``analyze_telemetry``) consume it from the handshake. Missing is a hard
-    error, with no silent fallback to a Python-defined shape.
     """
-    if not query_scope_schema:
-        raise ValueError(
-            "_build_server_tool_schemas: query_scope_schema is required "
-            "(must come from the WS frontend_info handshake)"
-        )
+    _ = query_scope_schema
 
     from pipecat.adapters.schemas.function_schema import FunctionSchema
 
     return [
-        FunctionSchema(
-            name="analyze_telemetry",
-            description=_tool_description("analyze_telemetry", tool_metadata),
-            properties=_with_parameter_docs(
-                "analyze_telemetry",
-                {"scope": query_scope_schema},
-                tool_metadata,
-            ),
-            required=["scope"],
-        ),
-        FunctionSchema(
-            name="classify_live_section",
-            description=_tool_description("classify_live_section", tool_metadata),
-            properties=_with_parameter_docs(
-                "classify_live_section",
-                {
-                    "section_id": {"type": "string"},
-                    "section_name": {"type": "string"},
-                    "lap": {"type": "string"},
-                },
-                tool_metadata,
-            ),
-            required=[],
-        ),
         FunctionSchema(
             name="explain_label",
             description=_tool_description("explain_label", tool_metadata),
@@ -585,7 +551,7 @@ def _make_tool_handler(
                 # Server-side path. Context carries the connect-time IDs;
                 # track/car are intentionally absent (LLM fetches via tool).
                 # ``_conn`` is an opaque handle that server-side composite
-                # tools (e.g. analyze_telemetry) use to relay back to the
+                # helpers use to relay back to the
                 # frontend via the same WS — underscore-prefixed because
                 # it's a server-internal channel, not part of the OpenAI
                 # context schema.
@@ -1342,8 +1308,7 @@ async def run_voice_session(
     Returns when the WS closes or the pipeline exits. Caller is responsible
     for any auth/lifecycle concerns around `websocket`, supplying a
     ``tool_executor`` (typically AIService._execute_function), and passing
-    ``frontend_tools`` plus ``query_scope_schema`` from the WS handshake
-    (see :mod:`app.api.voice`).
+    ``frontend_tools`` from the WS handshake (see :mod:`app.api.voice`).
 
     Also unbinds the WebSocket from :mod:`app.voice.tool_relay` on exit so
     in-flight tool-call futures are cancelled cleanly.

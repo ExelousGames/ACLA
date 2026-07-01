@@ -2,59 +2,13 @@
 AI Service for natural language processing and conversation
 """
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 import asyncio
 import logging
 from openai import AsyncOpenAI
 from app.infra.config import settings
 
 LOGGER = logging.getLogger(__name__)
-
-
-_EVENT_TYPES = {"CORNER", "STRAIGHT", "CRASHED", "OVERTAKE"}
-_EVENT_WHICH = {"last", "current"}
-_LAP_KEYWORDS = {"current", "last"}
-
-
-def _validate_scope(scope: Any) -> Optional[str]:
-    """Validate a QueryScope object received from the LLM.
-
-    The backend-injected JSON Schema (FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA)
-    is a flat object with a `type` enum — it doesn't encode the per-type field
-    coupling because Groq llama-3.3-70b can't reliably emit oneOf+const
-    discriminated unions. This validator enforces the coupling server-side
-    and returns a human-readable error string so the LLM can retry with a
-    corrected call. Returns None if valid.
-    """
-    if not isinstance(scope, dict):
-        return "scope must be an object"
-    t = scope.get("type")
-    if t == "now":
-        return None
-    if t == "last_seconds":
-        sec = scope.get("seconds")
-        if not isinstance(sec, (int, float)) or sec <= 0:
-            return "scope.type='last_seconds' requires positive 'seconds' (number)"
-        return None
-    if t == "event":
-        if scope.get("eventType") not in _EVENT_TYPES:
-            return f"scope.type='event' requires 'eventType' in {sorted(_EVENT_TYPES)}"
-        if scope.get("which") not in _EVENT_WHICH:
-            return f"scope.type='event' requires 'which' in {sorted(_EVENT_WHICH)}"
-        return None
-    if t == "lap":
-        lap = scope.get("lap")
-        if not (lap in _LAP_KEYWORDS or isinstance(lap, int)):
-            return "scope.type='lap' requires 'lap' as 'current', 'last', or an integer"
-        return None
-    if t == "range":
-        start, end = scope.get("start"), scope.get("end")
-        if not isinstance(start, int) or not isinstance(end, int):
-            return "scope.type='range' requires integer 'start' and 'end'"
-        if start >= end:
-            return "scope.type='range' requires start < end"
-        return None
-    return "scope.type must be one of: now, last_seconds, event, lap, range"
 
 
 class AIService:
@@ -99,7 +53,7 @@ class AIService:
             self.chat_model = settings.llama_model_name
 
     async def _execute_function(self, function_name: str, arguments: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Execute the called function to retrieve data from local AI models and telemetry systems
+        """Execute server-side racing-engineer knowledge tools.
         
         FUNCTION OUTPUT SEPARATION:
         ┌─────────────────────────────────────────────────────────────────┐
@@ -120,19 +74,6 @@ class AIService:
         """
         try:
             # ── Racing-engineer server-side tools ──────────────────────────
-            if function_name == "analyze_telemetry":
-                return await self._composite_analyze_scope(
-                    scope=arguments.get("scope") or {},
-                    conn=(context or {}).get("_conn"),
-                )
-            if function_name == "classify_live_section":
-                return await self._classify_live_section_impl(
-                    conn=(context or {}).get("_conn"),
-                    section_id=str(arguments.get("section_id") or "").strip(),
-                    section_name=(str(arguments.get("section_name")).strip()
-                                  if arguments.get("section_name") else None),
-                    lap=arguments.get("lap", "last"),
-                )
             if function_name == "explain_label":
                 return await self._explain_label_impl(
                     label_id=str(arguments.get("label_id") or "").strip(),
@@ -158,69 +99,6 @@ class AIService:
     # ------------------------------------------------------------------
     # Phase 1 racing-engineer tool implementations
     # ------------------------------------------------------------------
-
-    @property
-    def segment_classifier(self):
-        """Shared chatbot model hub singleton."""
-        from app.ml.model_hub import get_segment_classifier
-
-        return get_segment_classifier()
-
-    @property
-    def opportunity_forecaster(self):
-        """Shared chatbot model hub singleton."""
-        from app.ml.model_hub import get_opportunity_forecaster
-
-        return get_opportunity_forecaster()
-
-    @property
-    def expert_imitation_learning(self):
-        """Shared chatbot model hub singleton."""
-        from app.ml.model_hub import get_expert_imitation_learning
-
-        return get_expert_imitation_learning()
-
-    @property
-    def tire_grip_analysis(self):
-        """Shared chatbot model hub singleton."""
-        from app.ml.model_hub import get_tire_grip_analysis
-
-        return get_tire_grip_analysis()
-
-    async def _classify_segment_impl(self, telemetry_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Run :py:meth:`SegmentClassifierService.predict_segment` over rows.
-
-        Returns labels with both raw ids (under ``_label_ids`` — side product)
-        and natural-language names (under ``labels`` — what the LLM sees) so
-        the LLM never speaks codes aloud.
-        """
-        if not telemetry_rows:
-            return {"labels": [], "_label_ids": []}
-        import asyncio as _asyncio
-        import pandas as _pd
-        from app.shared.labels import LABEL_MAPPING
-
-        def _run() -> List[str]:
-            df = _pd.DataFrame(telemetry_rows)
-            return list(self.segment_classifier.predict_segment(df) or [])
-
-        try:
-            label_ids = await _asyncio.to_thread(_run)
-        except Exception as exc:
-            svc = self.segment_classifier
-            present = {
-                p.name: p.exists()
-                for p in (svc.model_path, svc.mlb_path, svc.scaler_path)
-            }
-            print(
-                f"[classifier-debug] models_directory={svc.models_directory} "
-                f"expected_files={present}",
-                flush=True,
-            )
-            return {"error": f"classifier failed: {exc}"}
-
-        names = [LABEL_MAPPING.get(lid, lid) for lid in label_ids]
-        return {"labels": names, "_label_ids": label_ids}
 
     async def _explain_label_impl(self, label_id: str) -> Dict[str, Any]:
         """Fetch the racing-engineer concept doc for one action label.
@@ -316,207 +194,4 @@ class AIService:
             LOGGER.exception("search_racing_knowledge failed")
             return {"error": f"knowledge search failed: {exc}"}
         return {"query": query, "hits": hits}
-
-    async def _composite_analyze_scope(self, scope: Dict[str, Any], conn: Any) -> Dict[str, Any]:
-        """Canonical analyze flow for any QueryScope shape.
-
-        Relays the server-internal ``_get_telemetry_for_scope`` frontend
-        handler to fetch rows for the scope, classifies in-process, then
-        resolves each detected label against the racing-engineer corpus.
-        Rows never re-enter the LLM context — only the labels do.
-        """
-        err = _validate_scope(scope)
-        if err is not None:
-            return {"error": err}
-        return await self._composite_analyze(
-            conn=conn,
-            frontend_tool="_get_telemetry_for_scope",
-            frontend_args={"scope": scope},
-            scope_summary={"scope": scope},
-        )
-
-    async def _classify_live_section_impl(
-        self,
-        *,
-        conn: Any,
-        section_id: str,
-        section_name: Optional[str],
-        lap: Any,
-    ) -> Dict[str, Any]:
-        """Classify one live track-section window and record it in the frontend.
-
-        This is the live analyst bridge: the LLM sees only this compact tool,
-        while raw section rows travel over the internal frontend relay and are
-        consumed here by the segment classifier.
-        """
-        if not section_id and not section_name:
-            return {"error": "section_id or section_name is required"}
-
-        args: Dict[str, Any] = {"lap": lap or "last"}
-        if section_id:
-            args["section_id"] = section_id
-        if section_name:
-            args["section_name"] = section_name
-
-        return await self._composite_analyze(
-            conn=conn,
-            frontend_tool="_get_live_section_telemetry",
-            frontend_args=args,
-            scope_summary={
-                "live_section": {
-                    "section_id": section_id,
-                    "section_name": section_name,
-                    "lap": lap or "last",
-                },
-            },
-            record_live_classification=True,
-        )
-
-    async def _composite_analyze(
-        self,
-        *,
-        conn: Any,
-        frontend_tool: str,
-        frontend_args: Dict[str, Any],
-        scope_summary: Dict[str, Any],
-        record_live_classification: bool = False,
-    ) -> Dict[str, Any]:
-        """Shared chain backing the analyze_* composites.
-
-        relay the named frontend tool → unwrap ``rows`` → classify → look
-        up each detected label in the racing-engineer corpus → return the
-        bundled payload. Errors at any step return ``{"error": ...}`` so
-        the LLM can verbalize cleanly via the system prompt's "if the
-        link is down, say so" rule.
-        """
-        if conn is None:
-            return {"error": "no_connection_bound"}
-
-        from app.voice.tool_relay import get_relay
-        relay = get_relay()
-
-        telemetry_resp = await relay.dispatch(conn, frontend_tool, frontend_args)
-        if not isinstance(telemetry_resp, dict) or "error" in telemetry_resp:
-            return {
-                "error": (telemetry_resp or {}).get("error", "telemetry_unavailable"),
-            }
-
-        # `result` fallback: tool_relay wraps non-dict frontend returns
-        # (e.g. a bare list) as {"result": [...]} — accept that shape too.
-        _result = telemetry_resp.get("result")
-        rows = (
-            telemetry_resp.get("rows")
-            or telemetry_resp.get("telemetry_rows")
-            or (_result if isinstance(_result, list) else [])
-        )
-        if not rows:
-            return {
-                "telemetry_summary": {"rows": 0, **scope_summary},
-                "labels": [],
-            }
-
-        classify_result = await self._classify_segment_impl(rows)
-        if "error" in classify_result:
-            return classify_result
-
-        from app.shared.labels import LABEL_MAPPING, LABEL_NAME_TO_ID
-
-        labels_out: List[Dict[str, Any]] = []
-        for name in classify_result.get("labels", []):
-            label_id = LABEL_NAME_TO_ID.get(name, name)
-            entry = await self._explain_label_impl(label_id)
-            labels_out.append({
-                "name": entry.get("name", name),
-                "definition": entry.get("definition", ""),
-                **({"solution": entry["solution"]} if entry.get("solution") else {}),
-            })
-
-        payload: Dict[str, Any] = {
-            "telemetry_summary": {"rows": len(rows), **scope_summary},
-            "labels": labels_out,
-            "_label_ids": classify_result.get("_label_ids", []),
-        }
-
-        if record_live_classification:
-            label_ids = [str(label_id) for label_id in classify_result.get("_label_ids", [])]
-            parent_labels = [
-                label_id for label_id in label_ids
-                if label_id in {"MSP", "MSR", "EA", "RM", "PS", "O", "OD"}
-            ]
-            child_labels = [
-                LABEL_MAPPING.get(label_id, label_id)
-                for label_id in label_ids
-                if label_id not in {"MSP", "MSR", "EA", "RM", "PS", "O", "OD"}
-                and not label_id.startswith("ST")
-            ]
-            mistake_count = sum(
-                1 for label_id in label_ids
-                if label_id in {"MSP", "MSR"} or label_id.startswith(("MSP", "MSR"))
-            )
-            expert_count = sum(
-                1 for label_id in label_ids
-                if label_id == "EA" or label_id.startswith("EA")
-            )
-            severity = round(min(5.0, mistake_count + (0.5 if "RM" in parent_labels else 0.0)), 3)
-            confidence = round(min(0.95, 0.45 + (0.08 * len(label_ids)) + min(len(rows), 200) / 1000), 3)
-
-            section = telemetry_resp.get("section") if isinstance(telemetry_resp.get("section"), dict) else {}
-            lap_value = telemetry_resp.get("lap")
-            record_args = {
-                "section_id": section.get("id") or frontend_args.get("section_id"),
-                "section_name": section.get("name") or frontend_args.get("section_name"),
-                "lap": lap_value if lap_value is not None else frontend_args.get("lap"),
-                "start_sample_idx": telemetry_resp.get("startSampleIdx", telemetry_resp.get("start_sample_idx", 0)),
-                "end_sample_idx": telemetry_resp.get("endSampleIdx", telemetry_resp.get("end_sample_idx", 0)),
-                "mistake_count": mistake_count,
-                "expert_adherence_count": expert_count,
-                "severity": severity,
-                "confidence": confidence,
-                "parent_label": LABEL_MAPPING.get(parent_labels[0], parent_labels[0]) if parent_labels else None,
-                "child_labels": child_labels,
-                "telemetry_stats": _live_section_stats(rows),
-            }
-
-            from app.voice.tool_relay import get_relay
-            recorded = await get_relay().dispatch(
-                conn,
-                "_record_live_section_classification",
-                record_args,
-            )
-            if isinstance(recorded, dict) and "error" in recorded:
-                payload["recording_error"] = recorded.get("error")
-            else:
-                payload["classification"] = (
-                    recorded.get("classification") if isinstance(recorded, dict) else record_args
-                )
-                payload["focus"] = recorded.get("focus") if isinstance(recorded, dict) else None
-                payload["comparison"] = recorded.get("comparison") if isinstance(recorded, dict) else None
-
-        return payload
-
-
-def _live_section_stats(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, float]]:
-    """Small LLM-safe telemetry summary for live section comparison."""
-    aliases = {
-        "speed": ("Physics_speed_kmh", "Physics_speed", "speed_kmh", "speed"),
-        "brake": ("Physics_brake", "brake", "brake_pressure"),
-        "throttle": ("Physics_gas", "Physics_throttle", "throttle", "gas"),
-        "steer": ("Physics_steer_angle", "Physics_steer", "steer", "steering"),
-    }
-    out: Dict[str, Dict[str, float]] = {}
-    for name, keys in aliases.items():
-        values: List[float] = []
-        for row in rows:
-            for key in keys:
-                value = row.get(key)
-                if isinstance(value, (int, float)):
-                    values.append(float(value))
-                    break
-        if values:
-            out[name] = {
-                "min": round(min(values), 3),
-                "max": round(max(values), 3),
-                "avg": round(sum(values) / len(values), 3),
-            }
-    return out
 

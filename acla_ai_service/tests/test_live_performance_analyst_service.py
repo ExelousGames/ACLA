@@ -4,7 +4,6 @@ import types
 import pytest
 
 from app.external_knowledge_base import agent_behavior, behavior, reload
-from app.racing_engineer.service import AIService, _live_section_stats
 from app.voice import pipecat_pipeline
 
 
@@ -128,7 +127,7 @@ def test_system_prompt_unknown_agent_mode_falls_back_to_session_mode(caplog):
     assert "Unknown voice agent_mode" in caplog.text
 
 
-def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
+def test_server_tool_schema_excludes_frontend_telemetry_tools(monkeypatch):
     class FakeFunctionSchema:
         def __init__(self, name, description, properties, required):
             self.name = name
@@ -141,21 +140,21 @@ def test_server_tool_schema_exposes_live_section_classifier(monkeypatch):
     monkeypatch.setitem(sys.modules, "pipecat.adapters.schemas.function_schema", fake_module)
 
     schemas = pipecat_pipeline._build_server_tool_schemas(
-        {"type": "object"},
+        None,
         {
+            "analyze_telemetry": {
+                "description": "Analyze telemetry from the frontend.",
+            },
             "classify_live_section": {
                 "description": "Classify the active Live Performance Analyst focus section.",
-                "parameters": {
-                    "section_id": {"description": "Known section id."},
-                },
             },
         },
     )
-    live_schema = next(schema for schema in schemas if schema.name == "classify_live_section")
 
-    assert "Live Performance Analyst" in live_schema.description
-    assert set(live_schema.properties) == {"section_id", "section_name", "lap"}
-    assert live_schema.properties["section_id"]["description"] == "Known section id."
+    names = {schema.name for schema in schemas}
+    assert "analyze_telemetry" not in names
+    assert "classify_live_section" not in names
+    assert {"explain_label", "get_track_knowledge", "search_racing_knowledge"} <= names
 
 
 def test_frontend_tool_schema_exposes_advance_plan_step(monkeypatch):
@@ -230,37 +229,3 @@ def test_observation_prompt_includes_generic_plan_mode_contract():
     assert "classify_live_section" not in prompt
 
 
-@pytest.mark.asyncio
-async def test_classify_live_section_uses_hidden_frontend_telemetry_tool(monkeypatch):
-    service = object.__new__(AIService)
-    captured = {}
-
-    async def fake_composite(**kwargs):
-        captured.update(kwargs)
-        return {"status": "ok"}
-
-    monkeypatch.setattr(service, "_composite_analyze", fake_composite)
-
-    result = await service._classify_live_section_impl(
-        conn=object(),
-        section_id="brands_hatch2",
-        section_name=None,
-        lap="last",
-    )
-
-    assert result == {"status": "ok"}
-    assert captured["frontend_tool"] == "_get_live_section_telemetry"
-    assert captured["frontend_args"] == {"lap": "last", "section_id": "brands_hatch2"}
-    assert captured["record_live_classification"] is True
-
-
-def test_live_section_stats_are_compact_and_numeric_only():
-    stats = _live_section_stats([
-        {"Physics_speed_kmh": 100, "Physics_brake": 0.2, "noise": "x"},
-        {"Physics_speed_kmh": 120, "Physics_brake": 0.6, "noise": "y"},
-    ])
-
-    assert stats == {
-        "speed": {"min": 100.0, "max": 120.0, "avg": 110.0},
-        "brake": {"min": 0.2, "max": 0.6, "avg": 0.4},
-    }

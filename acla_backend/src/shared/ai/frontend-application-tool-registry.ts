@@ -408,47 +408,6 @@ export const FRONTEND_APPLICATION_TOOLS = [
         },
         required: [],
     },
-    {
-        name: 'explain_label',
-        description: 'Fetch the definition for one action label. For mistake labels, also fetch the solution. Use when the driver asks what a label means or how to fix a named mistake.',
-        properties: {
-            label_id: {
-                type: 'string',
-                description: 'Label id or natural label name, such as MSP44 or Oversteering at entry.',
-            },
-        },
-        required: ['label_id'],
-    },
-    {
-        name: 'get_track_knowledge',
-        description: 'Retrieve curated per-track notes. Omit corner to get the overview and available corner names; pass a corner name to get just that section.',
-        properties: {
-            track: {
-                type: 'string',
-                description: 'Track id, such as spa or silverstone.',
-            },
-            corner: {
-                type: 'string',
-                description: 'Optional corner name, such as Eau Rouge.',
-            },
-        },
-        required: ['track'],
-    },
-    {
-        name: 'search_racing_knowledge',
-        description: 'Semantic search over driver transcripts, race reports, label docs, telemetry feature notes, and theory notes. Use for cross-cutting questions where the right document is not obvious.',
-        properties: {
-            query: {
-                type: 'string',
-                description: 'Free-text question or topic.',
-            },
-            top_k: {
-                type: 'integer',
-                description: 'Number of snippets to return. Defaults to 5.',
-            },
-        },
-        required: ['query'],
-    },
 ] as const;
 
 type FrontendApplicationToolName = typeof FRONTEND_APPLICATION_TOOLS[number]['name'];
@@ -487,9 +446,6 @@ const FRONTEND_APPLICATION_TOOL_TITLES: Record<FrontendApplicationToolName, stri
     get_recorded_session_context: 'Reading recorded session context',
     analyze_telemetry: 'Analyzing telemetry',
     classify_live_section: 'Classifying live section',
-    explain_label: 'Looking up the term',
-    get_track_knowledge: 'Pulling track notes',
-    search_racing_knowledge: 'Searching racing knowledge',
 };
 
 const FRONTEND_APPLICATION_TOOL_DESCRIPTION_OVERRIDES: Partial<Record<FrontendApplicationToolName, string>> = {
@@ -502,9 +458,6 @@ const COMMON_TOOL_NAMES = new Set<FrontendApplicationToolName>([
     'advance_plan_step',
     'clear_procedure_plan',
     'stop_agent_session',
-    'explain_label',
-    'get_track_knowledge',
-    'search_racing_knowledge',
 ]);
 
 const LIVE_TOOL_NAMES = new Set<FrontendApplicationToolName>([

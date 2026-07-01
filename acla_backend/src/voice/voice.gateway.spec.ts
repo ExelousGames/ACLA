@@ -52,7 +52,7 @@ describe('VoiceGateway', () => {
         ]));
     });
 
-    it('advertises AI-service request helpers as frontend tools', () => {
+    it('advertises only frontend-held AI request helpers as frontend tools', () => {
         const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
             type: 'frontend_info',
             session_context: { session_mode: 'recorded' },
@@ -63,6 +63,8 @@ describe('VoiceGateway', () => {
 
         expect(toolNames).toEqual(expect.arrayContaining([
             'analyze_telemetry',
+        ]));
+        expect(toolNames).not.toEqual(expect.arrayContaining([
             'explain_label',
             'get_track_knowledge',
             'search_racing_knowledge',
