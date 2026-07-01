@@ -375,6 +375,80 @@ export const FRONTEND_APPLICATION_TOOLS = [
         },
         required: [],
     },
+    {
+        name: 'analyze_telemetry',
+        description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use only for live or recorded raw telemetry windows, such as "what just happened", "why did I lose time there on this lap", or "how was lap N".',
+        properties: {
+            scope: {
+                ...FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
+                description: 'Telemetry time window to classify.',
+            },
+        },
+        required: ['scope'],
+    },
+    {
+        name: 'classify_live_section',
+        description: 'Classify the active Live Performance Analyst focus section after the driver passes through it again. This frontend tool brings the telemetry window to the AI service, records a compact comparison in section history, and returns only compact labels, stats, focus, and comparison data.',
+        properties: {
+            section_id: {
+                type: 'string',
+                description: 'Known track section id from the live analyst observation or get_live_focus_section result.',
+            },
+            section_name: {
+                type: 'string',
+                description: 'Optional section name if an id is not available.',
+            },
+            lap: {
+                oneOf: [
+                    { type: 'string', enum: ['last'] },
+                    { type: 'integer' },
+                ],
+                description: 'Lap to classify for the active focus section. Use "last" for the most recent completed pass, or a specific lap number when supplied by the observation.',
+            },
+        },
+        required: [],
+    },
+    {
+        name: 'explain_label',
+        description: 'Fetch the definition for one action label. For mistake labels, also fetch the solution. Use when the driver asks what a label means or how to fix a named mistake.',
+        properties: {
+            label_id: {
+                type: 'string',
+                description: 'Label id or natural label name, such as MSP44 or Oversteering at entry.',
+            },
+        },
+        required: ['label_id'],
+    },
+    {
+        name: 'get_track_knowledge',
+        description: 'Retrieve curated per-track notes. Omit corner to get the overview and available corner names; pass a corner name to get just that section.',
+        properties: {
+            track: {
+                type: 'string',
+                description: 'Track id, such as spa or silverstone.',
+            },
+            corner: {
+                type: 'string',
+                description: 'Optional corner name, such as Eau Rouge.',
+            },
+        },
+        required: ['track'],
+    },
+    {
+        name: 'search_racing_knowledge',
+        description: 'Semantic search over driver transcripts, race reports, label docs, telemetry feature notes, and theory notes. Use for cross-cutting questions where the right document is not obvious.',
+        properties: {
+            query: {
+                type: 'string',
+                description: 'Free-text question or topic.',
+            },
+            top_k: {
+                type: 'integer',
+                description: 'Number of snippets to return. Defaults to 5.',
+            },
+        },
+        required: ['query'],
+    },
 ] as const;
 
 type FrontendApplicationToolName = typeof FRONTEND_APPLICATION_TOOLS[number]['name'];
@@ -411,76 +485,16 @@ const FRONTEND_APPLICATION_TOOL_TITLES: Record<FrontendApplicationToolName, stri
     run_recorded_ai_analysis: 'Running recorded session AI analysis',
     get_recorded_session_analysis: 'Reading recorded AI analysis',
     get_recorded_session_context: 'Reading recorded session context',
+    analyze_telemetry: 'Analyzing telemetry',
+    classify_live_section: 'Classifying live section',
+    explain_label: 'Looking up the term',
+    get_track_knowledge: 'Pulling track notes',
+    search_racing_knowledge: 'Searching racing knowledge',
 };
 
 const FRONTEND_APPLICATION_TOOL_DESCRIPTION_OVERRIDES: Partial<Record<FrontendApplicationToolName, string>> = {
     get_next_corner: 'Return the name and normalized distance of the next corner ahead. Use for live questions about what corner is coming up.',
 };
-
-const AI_SERVICE_SERVER_TOOLS = [
-    {
-        name: 'analyze_telemetry',
-        title: 'Analyzing telemetry',
-        description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use only for live or recorded raw telemetry windows, such as "what just happened", "why did I lose time there on this lap", or "how was lap N".',
-        parameters: {
-            scope: {
-                description: 'Telemetry time window to classify.',
-            },
-        },
-    },
-    {
-        name: 'classify_live_section',
-        title: 'Classifying live section',
-        description: 'Classify the active Live Performance Analyst focus section after the driver passes through it again. This server-side tool runs the segment classifier, records a compact comparison in the frontend section history, and returns only compact labels, stats, focus, and comparison data.',
-        parameters: {
-            section_id: {
-                description: 'Known track section id from the live analyst observation or get_live_focus_section result.',
-            },
-            section_name: {
-                description: 'Optional section name if an id is not available.',
-            },
-            lap: {
-                description: 'Lap to classify for the active focus section. Use "last" for the most recent completed pass, or a specific lap number when supplied by the observation.',
-            },
-        },
-    },
-    {
-        name: 'explain_label',
-        title: 'Looking up the term',
-        description: 'Fetch the definition for one action label. For mistake labels, also fetch the solution. Use when the driver asks what a label means or how to fix a named mistake.',
-        parameters: {
-            label_id: {
-                description: 'Label id or natural label name, such as MSP44 or Oversteering at entry.',
-            },
-        },
-    },
-    {
-        name: 'get_track_knowledge',
-        title: 'Pulling track notes',
-        description: 'Retrieve curated per-track notes. Omit corner to get the overview and available corner names; pass a corner name to get just that section.',
-        parameters: {
-            track: {
-                description: 'Track id, such as spa or silverstone.',
-            },
-            corner: {
-                description: 'Optional corner name, such as Eau Rouge.',
-            },
-        },
-    },
-    {
-        name: 'search_racing_knowledge',
-        title: 'Searching racing knowledge',
-        description: 'Semantic search over driver transcripts, race reports, label docs, telemetry feature notes, and theory notes. Use for cross-cutting questions where the right document is not obvious.',
-        parameters: {
-            query: {
-                description: 'Free-text question or topic.',
-            },
-            top_k: {
-                description: 'Number of snippets to return. Defaults to 5.',
-            },
-        },
-    },
-] as const;
 
 const COMMON_TOOL_NAMES = new Set<FrontendApplicationToolName>([
     'show_map',
@@ -488,6 +502,9 @@ const COMMON_TOOL_NAMES = new Set<FrontendApplicationToolName>([
     'advance_plan_step',
     'clear_procedure_plan',
     'stop_agent_session',
+    'explain_label',
+    'get_track_knowledge',
+    'search_racing_knowledge',
 ]);
 
 const LIVE_TOOL_NAMES = new Set<FrontendApplicationToolName>([
@@ -500,6 +517,8 @@ const LIVE_TOOL_NAMES = new Set<FrontendApplicationToolName>([
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
+    'analyze_telemetry',
+    'classify_live_section',
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
@@ -515,6 +534,7 @@ const RECORDED_TOOL_NAMES = new Set<FrontendApplicationToolName>([
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
+    'analyze_telemetry',
 ]);
 
 const isFrontendApplicationSessionMode = (
@@ -613,14 +633,6 @@ export const getAiToolMetadataForSessionContext = (
     sessionContext: Record<string, unknown> | null | undefined,
 ): Record<string, AiToolMetadata> => {
     const metadata: Record<string, AiToolMetadata> = {};
-
-    AI_SERVICE_SERVER_TOOLS.forEach((tool) => {
-        metadata[tool.name] = {
-            title: tool.title,
-            description: tool.description,
-            parameters: tool.parameters,
-        };
-    });
 
     getFrontendApplicationToolsForSessionContext(sessionContext).forEach((tool) => {
         metadata[tool.name] = getFrontendToolMetadata(tool);

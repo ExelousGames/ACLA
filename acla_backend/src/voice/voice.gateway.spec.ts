@@ -47,8 +47,27 @@ describe('VoiceGateway', () => {
         ]));
         expect(toolNames).not.toEqual(expect.arrayContaining([
             'start_agent_session',
+            'classify_live_section',
             'restart_live_baseline',
         ]));
+    });
+
+    it('advertises AI-service request helpers as frontend tools', () => {
+        const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
+            type: 'frontend_info',
+            session_context: { session_mode: 'recorded' },
+        })), false);
+
+        const payload = JSON.parse(frame.data.toString());
+        const toolNames = payload.tools.map((tool: { name: string }) => tool.name);
+
+        expect(toolNames).toEqual(expect.arrayContaining([
+            'analyze_telemetry',
+            'explain_label',
+            'get_track_knowledge',
+            'search_racing_knowledge',
+        ]));
+        expect(payload.tool_metadata.analyze_telemetry.title).toBe('Analyzing telemetry');
     });
 
     it('passes non-handshake text frames through unchanged', () => {
