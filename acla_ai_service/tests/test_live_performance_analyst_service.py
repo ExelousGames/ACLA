@@ -148,6 +148,14 @@ def test_server_tool_schema_excludes_frontend_telemetry_tools(monkeypatch):
             "classify_live_section": {
                 "description": "Classify the active Live Performance Analyst focus section.",
             },
+            "explain_label": {
+                "description": "Wrong frontend-era description.",
+                "parameters": {
+                    "label_id": {
+                        "description": "Wrong frontend-era parameter doc.",
+                    },
+                },
+            },
         },
     )
 
@@ -155,6 +163,16 @@ def test_server_tool_schema_excludes_frontend_telemetry_tools(monkeypatch):
     assert "analyze_telemetry" not in names
     assert "classify_live_section" not in names
     assert {"explain_label", "get_track_knowledge", "search_racing_knowledge"} <= names
+
+    by_name = {schema.name: schema for schema in schemas}
+    assert "ACLA racing label" in by_name["explain_label"].description
+    assert "Wrong frontend-era description" not in by_name["explain_label"].description
+    assert "ACLA track notes" in by_name["get_track_knowledge"].description
+    assert "ACLA racing knowledge corpus" in by_name["search_racing_knowledge"].description
+    assert "label code" in by_name["explain_label"].properties["label_id"]["description"]
+    assert "Wrong frontend-era parameter doc" not in by_name["explain_label"].properties["label_id"]["description"]
+    assert "track id" in by_name["get_track_knowledge"].properties["track"]["description"]
+    assert "natural-language" in by_name["search_racing_knowledge"].properties["query"]["description"]
 
 
 def test_frontend_tool_schema_exposes_advance_plan_step(monkeypatch):

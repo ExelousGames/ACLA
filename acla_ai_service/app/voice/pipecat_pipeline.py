@@ -314,12 +314,54 @@ class VoiceSessionConfig:
 # sees these in a "tool box" while the LLM is calling the function — they
 # should read like a brief status line, not the raw function name.
 #
-# External KB tool docs are the title source of truth; this map is the
-# server-side fallback for server-implemented tools only.
+# Server-side tool docs are defined here because these tools are implemented
+# by the AI service, not by frontend-executable capabilities.
 _SERVER_TOOL_TITLES: Dict[str, str] = {
     "explain_label": "Looking up the term",
     "get_track_knowledge": "Pulling track notes",
     "search_racing_knowledge": "Searching racing knowledge",
+}
+
+_SERVER_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
+    "explain_label": {
+        "description": (
+            "Look up an ACLA racing label or label code and return its "
+            "plain-English definition and, when available, a coaching fix."
+        ),
+        "parameters": {
+            "label_id": (
+                "The label code or human-readable label name, for example "
+                "'MSP44' or 'Oversteering at entry'."
+            ),
+        },
+    },
+    "get_track_knowledge": {
+        "description": (
+            "Fetch keyed ACLA track notes for a known circuit, optionally "
+            "focused on a specific corner."
+        ),
+        "parameters": {
+            "track": (
+                "The lowercase track id from the ACLA track corpus, such as "
+                "'spa'."
+            ),
+            "corner": (
+                "Optional corner name or section to focus on, such as "
+                "'Eau Rouge'."
+            ),
+        },
+    },
+    "search_racing_knowledge": {
+        "description": (
+            "Search the ACLA racing knowledge corpus for free-text questions, "
+            "driving theory, setup advice, track guidance, or knowledge that "
+            "does not have an exact label or track id."
+        ),
+        "parameters": {
+            "query": "The natural-language racing question or topic to search for.",
+            "top_k": "Optional maximum number of knowledge chunks to return.",
+        },
+    },
 }
 
 
@@ -329,6 +371,11 @@ def _prettify(name: str) -> str:
 
 def _tool_description(name: str, tool_metadata: Dict[str, Dict[str, Any]]) -> str:
     description = tool_metadata.get(name, {}).get("description")
+    return str(description).strip() if description else ""
+
+
+def _server_tool_description(name: str) -> str:
+    description = _SERVER_TOOL_METADATA.get(name, {}).get("description")
     return str(description).strip() if description else ""
 
 
@@ -342,11 +389,28 @@ def _with_parameter_docs(
     properties: Dict[str, Any],
     tool_metadata: Dict[str, Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Overlay parameter descriptions from backend-injected tool metadata."""
+    """Overlay parameter descriptions from frontend tool metadata."""
     params = tool_metadata.get(tool_name, {}).get("parameters")
     if not isinstance(params, dict):
         return properties
 
+    return _with_docs_from_params(properties, params)
+
+
+def _with_server_parameter_docs(
+    tool_name: str,
+    properties: Dict[str, Any],
+) -> Dict[str, Any]:
+    params = _SERVER_TOOL_METADATA.get(tool_name, {}).get("parameters")
+    if not isinstance(params, dict):
+        return properties
+    return _with_docs_from_params(properties, params)
+
+
+def _with_docs_from_params(
+    properties: Dict[str, Any],
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for name, schema in properties.items():
         if not isinstance(schema, dict):
@@ -377,8 +441,9 @@ def _build_server_tool_schemas(
 
     Frontend executable capability shapes come in over the WS handshake
     (see :mod:`app.api.voice`) and are built in
-    :func:`_build_frontend_tool_schemas`. Tool-use text for both server and
-    frontend tools comes from backend-injected handshake metadata.
+    :func:`_build_frontend_tool_schemas`. These server tools are owned by the
+    AI service, so their LLM-facing text is defined locally instead of coming
+    from handshake metadata.
 
     """
     _ = query_scope_schema
@@ -388,22 +453,21 @@ def _build_server_tool_schemas(
     return [
         FunctionSchema(
             name="explain_label",
-            description=_tool_description("explain_label", tool_metadata),
-            properties=_with_parameter_docs(
+            description=_server_tool_description("explain_label"),
+            properties=_with_server_parameter_docs(
                 "explain_label",
                 {
                     "label_id": {
                         "type": "string",
                     },
                 },
-                tool_metadata,
             ),
             required=["label_id"],
         ),
         FunctionSchema(
             name="get_track_knowledge",
-            description=_tool_description("get_track_knowledge", tool_metadata),
-            properties=_with_parameter_docs(
+            description=_server_tool_description("get_track_knowledge"),
+            properties=_with_server_parameter_docs(
                 "get_track_knowledge",
                 {
                     "track": {
@@ -413,20 +477,18 @@ def _build_server_tool_schemas(
                         "type": "string",
                     },
                 },
-                tool_metadata,
             ),
             required=["track"],
         ),
         FunctionSchema(
             name="search_racing_knowledge",
-            description=_tool_description("search_racing_knowledge", tool_metadata),
-            properties=_with_parameter_docs(
+            description=_server_tool_description("search_racing_knowledge"),
+            properties=_with_server_parameter_docs(
                 "search_racing_knowledge",
                 {
                     "query": {"type": "string"},
                     "top_k": {"type": "integer"},
                 },
-                tool_metadata,
             ),
             required=["query"],
         ),
@@ -1098,9 +1160,10 @@ async def build_voice_pipeline_task(
     #     their executor.
     #   * frontend-side tools, whose executable capability shapes arrive over
     #     the WS handshake after backend gateway injection.
-    # Tool-use metadata for both buckets arrives over the WS handshake after
-    # backend gateway injection. The handler dispatches by name: frontend names go through
-    # the WS tool relay; everything else goes through ``tool_executor``.
+    # Tool-use metadata for server tools is owned here; frontend tool metadata
+    # arrives over the WS handshake. The handler dispatches by name: frontend
+    # names go through the WS tool relay; everything else goes through
+    # ``tool_executor``.
     fe_tools = frontend_tools or []
     metadata = tool_metadata or {}
     frontend_tool_names = frozenset(
