@@ -745,71 +745,6 @@ const searchUserSummaryMapLevel = (
     };
 };
 
-const COMMON_TOOL_NAMES = [
-    'show_map',
-    'set_procedure_plan',
-    'advance_plan_step',
-    'clear_procedure_plan',
-    'stop_agent_session',
-] as const;
-
-const LIVE_TOOL_NAMES = [
-    'start_agent_session',
-    'get_live_session_snapshot',
-    'get_live_focus_section',
-    'get_live_section_history',
-    'set_live_range_tracker',
-    'update_live_range_tracker',
-    'get_live_range_tracker',
-    'collect_live_baseline',
-    'restart_live_baseline',
-    'analyze_live_recorded_analysis',
-    'get_next_corner',
-    'query_telemetry_metric',
-    'get_event_log',
-] as const;
-
-const USER_SUMMARY_TOOL_NAMES = [
-    'get_user_summary_map_level',
-    'get_available_user_summary_maps',
-    'search_user_summary_map_level',
-] as const;
-
-const RECORDED_TOOL_NAMES = [
-    'run_recorded_ai_analysis',
-    'get_recorded_session_analysis',
-    'get_recorded_session_context',
-] as const;
-
-export const getFrontendToolNamesForSessionMode = (
-    sessionMode: AiCommandRegistryContext['sessionMode'] = 'live',
-    options: {
-        conversationRole?: AgentSessionRole;
-        agentMode?: AgentSessionMode | null;
-    } = {},
-): string[] => {
-    if (options.conversationRole === 'agent') {
-        const agentAllowedNames = new Set<string>([
-            ...COMMON_TOOL_NAMES,
-            ...LIVE_TOOL_NAMES.filter((name) => name !== 'start_agent_session'),
-            ...USER_SUMMARY_TOOL_NAMES,
-        ]);
-        return frontendToolDefinitions
-            .filter((tool) => tool.visibility !== 'internal' && agentAllowedNames.has(tool.name))
-            .map((tool) => tool.name);
-    }
-
-    const allowedNames: Set<string> = sessionMode === 'recorded'
-        ? new Set<string>([...COMMON_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES, ...RECORDED_TOOL_NAMES])
-        : sessionMode === 'user_summary'
-            ? new Set<string>([...COMMON_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES])
-            : new Set<string>([...COMMON_TOOL_NAMES, ...LIVE_TOOL_NAMES, ...USER_SUMMARY_TOOL_NAMES]);
-
-    return frontendToolDefinitions
-        .filter((tool) => tool.visibility !== 'internal' && allowedNames.has(tool.name))
-        .map((tool) => tool.name);
-};
-
 const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext) => (
     !isLiveSessionContext(context)
         ? { status: 'error', error: getLiveToolsUnavailableError(context) }
@@ -1400,19 +1335,6 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
         return si.getNextCorner() ?? { error: 'no_corner_data' };
     },
 
-    async get_live_session_snapshot() {
-        const unavailable = buildLiveAnalystUnavailable(context);
-        if (unavailable) return unavailable;
-
-        const agent = getLiveAnalystState(context);
-        return {
-            status: 'ready',
-            agent_mode: 'live_performance_analyst',
-            enabled: agent.enabled,
-            snapshot: context.sessionIntelligence!.getLiveSessionSnapshot(),
-        };
-    },
-
     async get_live_focus_section() {
         const unavailable = buildLiveAnalystUnavailable(context);
         if (unavailable) return unavailable;
@@ -1785,7 +1707,6 @@ const ALL_AI_TOOL_NAMES = [
     'get_available_user_summary_maps',
     'search_user_summary_map_level',
     'get_next_corner',
-    'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
     'set_live_range_tracker',
@@ -1812,36 +1733,6 @@ const ALL_AI_TOOL_NAMES = [
     'disable_ui_component',
 ] as const;
 
-const PUBLIC_TOOL_NAMES = new Set<string>([
-    ...COMMON_TOOL_NAMES,
-    ...LIVE_TOOL_NAMES,
-    ...USER_SUMMARY_TOOL_NAMES,
-    ...RECORDED_TOOL_NAMES,
-]);
-
-const getToolSessionModes = (
-    name: typeof ALL_AI_TOOL_NAMES[number],
-): Array<'live' | 'recorded' | 'user_summary'> => {
-    if ((RECORDED_TOOL_NAMES as readonly string[]).includes(name)) {
-        return ['recorded'];
-    }
-    if (
-        (LIVE_TOOL_NAMES as readonly string[]).includes(name)
-        || name === '_get_telemetry_for_scope'
-        || name === '_get_live_section_telemetry'
-        || name === '_record_live_section_classification'
-    ) {
-        return ['live'];
-    }
-    return ['live', 'recorded', 'user_summary'];
-};
-
-const getToolVisibility = (
-    name: typeof ALL_AI_TOOL_NAMES[number],
-): 'public' | 'internal' => (
-    PUBLIC_TOOL_NAMES.has(name) ? 'public' : 'internal'
-);
-
 const createAiToolDefinition = (
     name: typeof ALL_AI_TOOL_NAMES[number],
 ): AiCommandToolDefinition => {
@@ -1849,8 +1740,6 @@ const createAiToolDefinition = (
         name,
         schema: { properties: {}, required: [] },
         required: [],
-        sessionModes: getToolSessionModes(name),
-        visibility: getToolVisibility(name),
         execute: async (args, context, output, handlerContext) => {
             if (name === 'collect_live_baseline') {
                 return collectBaselineLapFromTrackerOutput(context, args, output);

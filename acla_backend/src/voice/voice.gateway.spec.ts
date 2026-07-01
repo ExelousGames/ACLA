@@ -47,7 +47,6 @@ describe('VoiceGateway', () => {
         ]));
         expect(toolNames).not.toEqual(expect.arrayContaining([
             'start_agent_session',
-            'get_live_session_snapshot',
             'restart_live_baseline',
         ]));
     });

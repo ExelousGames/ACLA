@@ -19,7 +19,6 @@ import {
     AiCommandRegistryContext,
     createAiCommandRegistry,
     frontendToolDefinitions,
-    getFrontendToolNamesForSessionMode,
     startAgentRuntime,
 } from '../ai-command-registry';
 import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-analysis';
@@ -124,7 +123,6 @@ describe('ai command registry user summary tools', () => {
         expect(frontendToolDefinitions).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 name: 'collect_live_baseline',
-                visibility: 'public',
                 execute: expect.any(Function),
                 schema: { properties: {}, required: [] },
                 required: [],
@@ -132,35 +130,21 @@ describe('ai command registry user summary tools', () => {
         ]));
     });
 
-    it('derives advertised frontend tool names from AI tool definitions', () => {
+    it('keeps frontend command registration separate from advertised tool grouping', () => {
+        const registry = createRegistry();
         const definitionNames = new Set(frontendToolDefinitions.map((tool) => tool.name));
 
-        expect(getFrontendToolNamesForSessionMode('live').every((name) => (
-            definitionNames.has(name)
-        ))).toBe(true);
-        expect(getFrontendToolNamesForSessionMode('live').every((name) => (
-            frontendToolDefinitions.some((tool) => (
-                tool.name === name
-                && tool.visibility !== 'internal'
-                && tool.sessionModes.includes('live')
-            ))
-        ))).toBe(true);
-    });
-
-    it('advertises live range tracker tools only in live mode', () => {
-        const liveToolNames = getFrontendToolNamesForSessionMode('live');
-        const recordedToolNames = getFrontendToolNamesForSessionMode('recorded');
-
-        expect(liveToolNames).toEqual(expect.arrayContaining([
+        expect(Object.keys(registry).every((name) => definitionNames.has(name))).toBe(true);
+        expect(registry).toEqual(expect.objectContaining([
             'set_live_range_tracker',
             'update_live_range_tracker',
             'get_live_range_tracker',
-        ]));
-        expect(recordedToolNames).not.toEqual(expect.arrayContaining([
-            'set_live_range_tracker',
-            'update_live_range_tracker',
-            'get_live_range_tracker',
-        ]));
+            '_get_live_section_telemetry',
+            'run_recorded_ai_analysis',
+        ].reduce<Record<string, unknown>>((handlers, name) => {
+            handlers[name] = expect.any(Function);
+            return handlers;
+        }, {})));
     });
 
     it('routes live range tracker tools to component-owned callbacks', async () => {
@@ -335,6 +319,9 @@ describe('ai command registry user summary tools', () => {
 
         expect(result).toMatchObject({
             status: 'displayed',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'displayed',
             map_id: 'brands_hatch',
             circuit_name: 'Brands Hatch GP',
         });
@@ -389,6 +376,9 @@ describe('ai command registry user summary tools', () => {
 
         expect(result).toMatchObject({
             status: 'ready',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'ready',
             map_count: 2,
             map_options: [
                 'Brands Hatch GP (brands_hatch) - 3 analyzed sessions',
@@ -424,6 +414,9 @@ describe('ai command registry user summary tools', () => {
 
         expect(result).toMatchObject({
             status: 'ready',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'ready',
             query: 'brands hatch',
             match_count: 1,
             maps: [
@@ -443,6 +436,9 @@ describe('ai command registry user summary tools', () => {
 
         expect(result).toMatchObject({
             status: 'ready',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'ready',
             match_count: 1,
             maps: [
                 {
@@ -459,7 +455,7 @@ describe('ai command registry user summary tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(result.maps[0].sections).toEqual(expect.arrayContaining([
+        expect((result.payload as any).maps[0].sections).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 id: 'brands_hatch2',
                 mistake_segments: [
@@ -474,7 +470,7 @@ describe('ai command registry user summary tools', () => {
                 ],
             }),
         ]));
-        expect(result.maps[0].top_mistake_sections[0]).toEqual(expect.objectContaining({
+        expect((result.payload as any).maps[0].top_mistake_sections[0]).toEqual(expect.objectContaining({
             id: 'brands_hatch2',
             mistake_segments: expect.any(Array),
         }));
@@ -567,27 +563,6 @@ describe('ai command registry recorded session tools', () => {
         expect(frontendToolDefinitions.some((tool) => tool.name === 'get_recorded_session_context')).toBe(true);
     });
 
-    it('advertises recorded-session and user-summary tools in recorded mode', () => {
-        const toolNames = getFrontendToolNamesForSessionMode('recorded');
-
-        expect(toolNames).toEqual(expect.arrayContaining([
-            'show_map',
-            'run_recorded_ai_analysis',
-            'get_recorded_session_analysis',
-            'get_recorded_session_context',
-            'get_user_summary_map_level',
-            'get_available_user_summary_maps',
-            'search_user_summary_map_level',
-        ]));
-        expect(toolNames).not.toEqual(expect.arrayContaining([
-            'query_telemetry_metric',
-            'get_event_log',
-            'start_live_performance_analysis',
-            'stop_per_turn_coaching',
-            'get_live_session_snapshot',
-        ]));
-    });
-
     it('runs recorded AI analysis through the shared context action', async () => {
         const { analysisContext, registry } = createRecordedRegistry();
 
@@ -598,6 +573,9 @@ describe('ai command registry recorded session tools', () => {
 
         expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: true });
         expect(result).toMatchObject({
+            status: 'ready',
+        });
+        expect(result.payload).toMatchObject({
             status: 'ready',
             session_id: 'session-1',
             analysis: {
@@ -623,6 +601,9 @@ describe('ai command registry recorded session tools', () => {
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
         expect(result).toMatchObject({
             status: 'ready',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'ready',
             analysis: {
                 returned_segment_count: 1,
                 samples_analyzed: 120,
@@ -639,6 +620,9 @@ describe('ai command registry recorded session tools', () => {
         );
 
         expect(result).toMatchObject({
+            status: 'ready',
+        });
+        expect(result.payload).toMatchObject({
             status: 'ready',
             selected_session: {
                 id: 'session-1',
@@ -714,6 +698,9 @@ describe('ai command registry recorded session tools', () => {
         );
 
         expect(result).toMatchObject({
+            status: 'ready',
+        });
+        expect(result.payload).toMatchObject({
             status: 'ready',
             map_count: 1,
             maps: [
@@ -858,49 +845,6 @@ describe('ai command registry live performance analyst tools', () => {
         };
     };
 
-    it('advertises generic live agent session tools only in live mode', () => {
-        const liveToolNames = getFrontendToolNamesForSessionMode('live');
-        const recordedToolNames = getFrontendToolNamesForSessionMode('recorded');
-        const userSummaryToolNames = getFrontendToolNamesForSessionMode('user_summary');
-
-        expect(liveToolNames).toEqual(expect.arrayContaining([
-            'start_agent_session',
-            'stop_agent_session',
-            'get_live_session_snapshot',
-            'get_live_focus_section',
-            'get_live_section_history',
-            'collect_live_baseline',
-            'restart_live_baseline',
-            'advance_plan_step',
-            'set_procedure_plan',
-            'clear_procedure_plan',
-        ]));
-        expect(liveToolNames).not.toEqual(expect.arrayContaining([
-            '_get_live_section_telemetry',
-            '_record_live_section_classification',
-            'start_per_turn_coaching',
-            'stop_per_turn_coaching',
-            'start_overtake_agent',
-            'stop_overtake_agent',
-            'start_live_performance_analysis',
-            'stop_live_performance_analysis',
-        ]));
-        expect(recordedToolNames).not.toEqual(expect.arrayContaining([
-            'start_live_performance_analysis',
-            'get_live_session_snapshot',
-            'restart_live_baseline',
-        ]));
-        expect(recordedToolNames).toEqual(expect.arrayContaining([
-            'stop_agent_session',
-            'advance_plan_step',
-            'set_procedure_plan',
-            'clear_procedure_plan',
-        ]));
-        expect(userSummaryToolNames).not.toEqual(expect.arrayContaining([
-            'restart_live_baseline',
-        ]));
-    });
-
     it('collects baseline through the subscribed tool result channel', async () => {
         const setBaselineCollectionEnabled = jest.fn();
         const restartBaselineCollection = jest.fn();
@@ -1042,6 +986,9 @@ describe('ai command registry live performance analyst tools', () => {
         );
         expect(result).toMatchObject({
             status: 'started',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'started',
             conversation_role: 'agent',
             agent_mode: 'live_performance_analyst',
             agent_session_id: 'agent-1',
@@ -1071,31 +1018,13 @@ describe('ai command registry live performance analyst tools', () => {
         expect(startAgentSession).toHaveBeenCalledWith('track_guide', { agent_mode: 'track_guide' });
         expect(result).toMatchObject({
             status: 'started',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'started',
             conversation_role: 'agent',
             agent_mode: 'track_guide',
             agent_session_id: 'agent-track_guide',
         });
-    });
-
-    it('advertises shared runtime tools inside an agent session without recursive or dedicated agent controls', () => {
-        const toolNames = getFrontendToolNamesForSessionMode('live', {
-            conversationRole: 'agent',
-            agentMode: 'live_performance_analyst',
-        });
-
-        expect(toolNames).toEqual(expect.arrayContaining([
-            'get_live_session_snapshot',
-            'stop_agent_session',
-        ]));
-        expect(toolNames).not.toEqual(expect.arrayContaining([
-            'start_agent_session',
-            'start_per_turn_coaching',
-            'stop_per_turn_coaching',
-            'start_overtake_agent',
-            'stop_overtake_agent',
-            'start_live_performance_analysis',
-            'stop_live_performance_analysis',
-        ]));
     });
 
     it('lets the assistant advance the visible procedure plan request', async () => {
@@ -1126,8 +1055,6 @@ describe('ai command registry live performance analyst tools', () => {
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first step completed');
         expect(result).toMatchObject({
             status: 'advanced',
-            current_step: 1,
-            step: 'Compare the next pass.',
             final: true,
             payload: {
                 status: 'advanced',
@@ -1183,6 +1110,9 @@ describe('ai command registry live performance analyst tools', () => {
         }));
         expect(result).toMatchObject({
             status: 'ready',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'ready',
             goal: 'Improve Druids entry.',
             request_count: 2,
             current_request: 0,
@@ -1203,7 +1133,6 @@ describe('ai command registry live performance analyst tools', () => {
         expect(clearProcedurePlan).toHaveBeenCalledTimes(1);
         expect(result).toMatchObject({
             status: 'cleared',
-            reason: 'plan is complete',
             final: true,
             payload: {
                 status: 'cleared',
@@ -1240,8 +1169,6 @@ describe('ai command registry live performance analyst tools', () => {
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first task complete');
         expect(result).toMatchObject({
             status: 'advanced',
-            current_step: 1,
-            step: 'Run the worker.',
             final: true,
             payload: {
                 status: 'advanced',
@@ -1265,7 +1192,7 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'tool_call',
-                        name: 'get_live_session_snapshot',
+                        name: 'get_live_focus_section',
                         status: 'pending',
                         title: 'Read live session state.',
                     },
@@ -1284,8 +1211,6 @@ describe('ai command registry live performance analyst tools', () => {
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('snapshot requested');
         expect(result).toMatchObject({
             status: 'advanced',
-            current_step: 1,
-            step: 'Use the snapshot.',
             final: true,
             payload: {
                 status: 'advanced',
@@ -1309,7 +1234,7 @@ describe('ai command registry live performance analyst tools', () => {
                 requests: [
                     {
                         type: 'tool_call',
-                        name: 'get_live_session_snapshot',
+                        name: 'get_live_focus_section',
                         status: 'pending',
                         title: 'Show current state.',
                     },
@@ -1326,8 +1251,6 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(result).toMatchObject({
             status: 'complete',
-            current_step: 0,
-            step: 'Show current state.',
             final: true,
             payload: {
                 status: 'complete',
@@ -1410,6 +1333,9 @@ describe('ai command registry live performance analyst tools', () => {
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('skip ahead');
         expect(result).toMatchObject({
             status: 'advanced',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'advanced',
             current_step: 2,
         });
     });
@@ -1490,6 +1416,9 @@ describe('ai command registry live performance analyst tools', () => {
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline step completed');
         expect(result).toMatchObject({
             status: 'advanced',
+        });
+        expect(result.payload).toMatchObject({
+            status: 'advanced',
             current_step: 1,
         });
     });
@@ -1569,16 +1498,18 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         )).resolves.toMatchObject({
             status: 'ready',
-            source: 'baseline_lap_record',
-            baseline: {
-                id: cachedRecord.id,
-                lap: 0,
-                sample_count: 2,
-            },
-            analysis: {
-                samples_analyzed: 2,
-                segment_count: 1,
-                returned_segment_count: 1,
+            payload: {
+                source: 'baseline_lap_record',
+                baseline: {
+                    id: cachedRecord.id,
+                    lap: 0,
+                    sample_count: 2,
+                },
+                analysis: {
+                    samples_analyzed: 2,
+                    segment_count: 1,
+                    returned_segment_count: 1,
+                },
             },
         });
         expect(apiService.post).toHaveBeenCalledWith('/racing-session/analyze-live-recorded-analysis', {
@@ -1616,8 +1547,6 @@ describe('ai command registry live performance analyst tools', () => {
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first task complete');
         expect(result).toMatchObject({
             status: 'advanced',
-            current_step: 1,
-            step: 'Run the worker.',
             final: true,
             payload: {
                 status: 'advanced',
@@ -1625,27 +1554,6 @@ describe('ai command registry live performance analyst tools', () => {
                 step: 'Run the worker.',
             },
             tool_name: 'advance_plan_step',
-        });
-    });
-
-    it('returns compact live session snapshot state', async () => {
-        const { registry } = createLiveAnalystRegistry();
-
-        const result = await registry.get_live_session_snapshot(
-            {},
-            { sendObservation: jest.fn() },
-        );
-
-        expect(result).toMatchObject({
-            status: 'ready',
-            snapshot: {
-                track: 'brands_hatch',
-                car: 'Ferrari 296',
-                completed_laps: 1,
-                baseline_ready: true,
-                baseline_lap: 0,
-                live_session_type: 'solo_practice',
-            },
         });
     });
 
@@ -1705,16 +1613,20 @@ describe('ai command registry live performance analyst tools', () => {
         expect(focusResult).toMatchObject({
             status: 'error',
             error: 'baseline_collection_incomplete',
-            snapshot: {
-                baseline_ready: false,
-            },
+            payload: expect.objectContaining({
+                snapshot: expect.objectContaining({
+                    baseline_ready: false,
+                }),
+            }),
         });
         expect(telemetryResult).toMatchObject({
             status: 'error',
             error: 'baseline_collection_incomplete',
-            snapshot: {
-                baseline_ready: false,
-            },
+            payload: expect.objectContaining({
+                snapshot: expect.objectContaining({
+                    baseline_ready: false,
+                }),
+            }),
         });
     });
 
@@ -1888,7 +1800,9 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(result).toMatchObject({
             status: 'advanced',
-            current_request: 1,
+            payload: expect.objectContaining({
+                current_request: 1,
+            }),
         });
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline complete');
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
@@ -1982,25 +1896,27 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(result).toMatchObject({
             status: 'ready',
-            source: 'baseline_lap_record',
-            analysis: {
-                expert_time_available: true,
-                segments: [
-                    expect.objectContaining({
-                        child_segments: [
-                            expect.objectContaining({
-                                start_index: 0,
-                                end_index: 2,
-                                time_gap: {
-                                    start_ms: 0,
-                                    end_ms: 125,
-                                    delta_ms: 125,
-                                },
-                            }),
-                        ],
-                    }),
-                ],
-            },
+            payload: expect.objectContaining({
+                source: 'baseline_lap_record',
+                analysis: expect.objectContaining({
+                    expert_time_available: true,
+                    segments: [
+                        expect.objectContaining({
+                            child_segments: [
+                                expect.objectContaining({
+                                    start_index: 0,
+                                    end_index: 2,
+                                    time_gap: {
+                                        start_ms: 0,
+                                        end_ms: 125,
+                                        delta_ms: 125,
+                                    },
+                                }),
+                            ],
+                        }),
+                    ],
+                }),
+            }),
         });
         expect(apiService.post).toHaveBeenCalledWith(
             '/racing-session/analyze-live-recorded-analysis',
@@ -2129,9 +2045,11 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'error',
             error: 'baseline_lap_record_required',
-            snapshot: {
-                baseline_ready: false,
-            },
+            payload: expect.objectContaining({
+                snapshot: expect.objectContaining({
+                    baseline_ready: false,
+                }),
+            }),
         });
         expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
             event: 'baseline_lap_record_required',
@@ -2166,13 +2084,11 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(result).toMatchObject({
-            status: 'ready',
-            section: {
-                name: 'T1 Paddock Hill Bend',
-            },
-            rows: expect.any(Array),
+        expect(result).toMatchObject({ status: 'ready' });
+        expect((result.payload as any).section).toMatchObject({
+            name: 'T1 Paddock Hill Bend',
         });
+        expect((result.payload as any).rows).toEqual(expect.any(Array));
     });
 
     it('returns show_map arguments for the selected analyst focus section', async () => {
@@ -2198,17 +2114,15 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect(result).toMatchObject({
-            status: 'ready',
-            focus: {
-                section: {
-                    name: 'T2 Druids',
-                },
-                show_map_arguments: {
-                    section_start: 0.11,
-                    section_end: 0.18,
-                    section_label: 'T2 Druids',
-                },
+        expect(result).toMatchObject({ status: 'ready' });
+        expect((result.payload as any).focus).toMatchObject({
+            section: {
+                name: 'T2 Druids',
+            },
+            show_map_arguments: {
+                section_start: 0.11,
+                section_end: 0.18,
+                section_label: 'T2 Druids',
             },
         });
     });

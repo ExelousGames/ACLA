@@ -27,8 +27,6 @@ export type ToolOutputController = {
     getFinalOutput: () => ToolOutputEnvelope | null;
 };
 
-export type AiToolVisibility = 'public' | 'agent' | 'internal';
-
 export type AiToolSchema = {
     properties: Record<string, unknown>;
     required: string[];
@@ -39,9 +37,6 @@ export type AiToolDefinition<TContext, THandlerContext> = {
     description?: string;
     schema: AiToolSchema;
     required: string[];
-    sessionModes: Array<'live' | 'recorded' | 'user_summary'>;
-    agentModes?: Array<'track_guide' | 'overtake' | 'live_performance_analyst'>;
-    visibility: AiToolVisibility;
     execute: (
         args: Record<string, unknown>,
         context: TContext,
@@ -105,12 +100,8 @@ const createEnvelope = (
         progressPercent?: number;
     } = {},
 ): ToolOutputEnvelope => {
-    const payloadRecord = toolName === 'collect_live_baseline'
-        ? {}
-        : isRecord(payload) ? payload : {};
     const payloadError = getPayloadError(payload);
     const envelope: ToolOutputEnvelope = {
-        ...payloadRecord,
         tool_name: toolName,
         run_id: runId,
         status: options.error || payloadError ? 'error' : getPayloadStatus(payload, fallbackStatus),

@@ -46,12 +46,6 @@ export const FRONTEND_APPLICATION_TOOLS = [
         required: [],
     },
     {
-        name: 'get_live_session_snapshot',
-        description: 'Return compact live session state, including lap readiness and detected session type.',
-        properties: {},
-        required: [],
-    },
-    {
         name: 'get_live_focus_section',
         description: 'Return the current live analyst focus section, timing, and map-display arguments when available.',
         properties: {},
@@ -396,7 +390,6 @@ type AiToolMetadata = {
 const FRONTEND_APPLICATION_TOOL_TITLES: Record<FrontendApplicationToolName, string> = {
     start_agent_session: 'Starting agent mode',
     stop_agent_session: 'Stopping agent mode',
-    get_live_session_snapshot: 'Reading live session',
     get_live_focus_section: 'Analyzing focus section',
     get_live_section_history: 'Reading section history',
     set_live_range_tracker: 'Setting live range tracker',
@@ -499,7 +492,6 @@ const COMMON_TOOL_NAMES = new Set<FrontendApplicationToolName>([
 
 const LIVE_TOOL_NAMES = new Set<FrontendApplicationToolName>([
     'start_agent_session',
-    'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
     'set_live_range_tracker',
