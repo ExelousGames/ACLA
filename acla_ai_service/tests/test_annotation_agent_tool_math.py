@@ -15,6 +15,7 @@ from app.shared.annotation_agent_tools import (
 )
 from app.local_annotation_agent.workflow.preflight import (
     PreflightContext,
+    _preflight_gap_slope_summary,
     _prompt_block,
     _query_semantic_tags,
     _run_queries,
@@ -419,6 +420,93 @@ def test_preflight_trajectory_offset_summary_separates_side_from_distance():
     assert "```json" not in prompt
     absolute_offset = output["analysis"]["absolute_offset"]
     assert absolute_offset["moves_toward_expert_line"] is True
+
+
+def test_trajectory_offset_derivative_finds_merge_and_move_away_runs():
+    df = pd.DataFrame(
+        {"trajectory_offset": [-5.0, -3.0, -1.0, -2.0, -4.0]},
+        index=range(10, 15),
+    )
+
+    result = _query_compute_slope(df, 10, 14, "trajectory_offset")
+
+    assert result is not None
+    derivative = result["extra"]["absolute_offset_derivative"]
+    assert derivative["overall"]["direction"] == "merge_to_expert_line"
+    assert derivative["merge_runs"] == [
+        {
+            "start_iloc": 10,
+            "end_iloc": 12,
+            "start_abs": 5.0,
+            "end_abs": 1.0,
+            "delta_abs": -4.0,
+            "derivative": -2.0,
+            "direction": "merge_to_expert_line",
+            "role": "merge_to_expert_line",
+            "is_label_significant": True,
+        }
+    ]
+    assert derivative["move_away_runs"] == [
+        {
+            "start_iloc": 12,
+            "end_iloc": 14,
+            "start_abs": 1.0,
+            "end_abs": 4.0,
+            "delta_abs": 3.0,
+            "derivative": 1.5,
+            "direction": "move_away_from_expert_line",
+            "role": "move_away_from_expert_line",
+            "is_label_significant": True,
+        }
+    ]
+
+
+def test_preflight_trajectory_offset_summary_reports_derivative_ranges():
+    df = pd.DataFrame(
+        {"trajectory_offset": [-5.0, -3.0, -1.0, -2.0, -4.0]},
+        index=range(10, 15),
+    )
+
+    result = _query_compute_slope(df, 10, 14, "trajectory_offset")
+    content = {
+        "graph_id": "trajectory_offset",
+        "query_id": "compute_slope",
+        "params": {"column": "trajectory_offset"},
+        "semantic_target": "trajectory offset",
+        "semantic_tags": [],
+        "result": result,
+    }
+    prompt = _prompt_block(
+        "lap",
+        10,
+        14,
+        [("query_telemetry.compute_slope.trajectory_offset", content)],
+        [],
+        [],
+    )
+    output = _semantic_tool_output(
+        "query_telemetry.compute_slope.trajectory_offset",
+        content,
+    )
+    tags = _query_semantic_tags(
+        {
+            "graph_id": "trajectory_offset",
+            "query_id": "compute_slope",
+            "params": {"column": "trajectory_offset"},
+        },
+        result,
+    )
+
+    assert result is not None
+    assert "merge ranges index 10 to 12 (-4 m)" in prompt
+    assert "move-away ranges index 12 to 14 (3 m)" in prompt
+    assert "overall expert-line trend merging toward the expert line" in prompt
+    derivative = output["analysis"]["absolute_offset_derivative"]
+    assert derivative["overall"]["direction"] == "merge_to_expert_line"
+    assert derivative["merge_runs"][0]["start_iloc"] == 10
+    assert derivative["move_away_runs"][0]["end_iloc"] == 14
+    assert "trajectory offset merges toward expert line" in tags
+    assert "trajectory offset moves away from expert line" in tags
 
 
 def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
@@ -2371,7 +2459,7 @@ def test_preflight_context_formatter_displays_evidence_sentences():
     assert "throttle release onset later than expert" in rendered
 
 
-def test_lap_preflight_calculates_player_speed_investigation(monkeypatch):
+def test_lap_preflight_skips_player_speed_investigation(monkeypatch):
     captured = {}
     sentinel = object()
 
@@ -2401,24 +2489,13 @@ def test_lap_preflight_calculates_player_speed_investigation(monkeypatch):
         if "column" in spec.get("params", {})
     ]
     assert columns.count("speed_difference") == 2
-    assert columns.count("Physics_speed_kmh") == 4
+    assert columns.count("Physics_speed_kmh") == 0
     assert columns.count("trajectory_offset") == 3
-    assert any(
-        spec["tool_id"] == "query_telemetry.find_extremum.player_speed.max"
-        for spec in captured["query_specs"]
-    )
-    assert any(
-        spec["tool_id"] == "query_telemetry.find_extremum.player_speed.min"
-        for spec in captured["query_specs"]
-    )
-    assert any(
-        spec["tool_id"] == "query_telemetry.find_trend_runs.player_speed"
-        for spec in captured["query_specs"]
-    )
-    assert any(
-        spec["tool_id"] == "query_telemetry.compute_slope.player_speed"
-        for spec in captured["query_specs"]
-    )
+    tool_ids = {spec["tool_id"] for spec in captured["query_specs"]}
+    assert "query_telemetry.find_extremum.player_speed.max" not in tool_ids
+    assert "query_telemetry.find_extremum.player_speed.min" not in tool_ids
+    assert "query_telemetry.find_trend_runs.player_speed" not in tool_ids
+    assert "query_telemetry.compute_slope.player_speed" not in tool_ids
     assert any(
         spec["tool_id"] == "query_telemetry.find_trend_runs.speed_difference"
         for spec in captured["query_specs"]
@@ -2454,13 +2531,52 @@ def test_preflight_expert_time_summary_uses_slope_shape():
     results = _run_queries(df, 100, 107)
     prompt = _prompt_block("lap", 100, 107, results, [], [])
 
-    assert "Start trend: the time gap is trending up from index 100 to 104" in prompt
-    assert "Growth index ranges: index 100 to 104" in prompt
-    assert "Shrink index ranges: index 104 to 107" in prompt
-    assert "Overall trend: the time gap is trending up" in prompt
-    assert "Slope shape: reversing to falling within section" in prompt
+    assert "Time gap value starts increasing from index 100 to 104" in prompt
+    assert "Time gap value runs: increases index 100 to 104" in prompt
+    assert "decreases index 104 to 107" in prompt
+    assert "Time gap value overall is increasing" in prompt
+    assert (
+        "Loss-rate shape: gap value reverses from increasing to decreasing "
+        "within the section"
+    ) in prompt
     assert "end_moves_toward_zero" not in prompt
     assert "tool_results_json" not in prompt
+
+
+def test_preflight_expert_time_summary_separates_gap_value_from_loss_rate():
+    summary = _preflight_gap_slope_summary(
+        "expert_time_difference",
+        {
+            "unit": "ms",
+            "slope_unit": "ms/iloc",
+            "start_trend": {
+                "direction": "rising",
+                "start_iloc": 0,
+                "end_iloc": 6,
+                "delta_value": 4000.24,
+            },
+            "overall_point_trend": {"direction": "rising"},
+            "point_trend_runs": [
+                {
+                    "direction": "rising",
+                    "start_iloc": 0,
+                    "end_iloc": 6,
+                    "delta_value": 4000.24,
+                }
+            ],
+            "delta_value": 4000.24,
+            "slope": 666.71,
+            "slope_shape": "slope_decreasing_over_section",
+        },
+        True,
+    )
+
+    assert "Time gap value overall is increasing" in summary
+    assert (
+        "Loss-rate shape: gap growth is slowing, which can still mean the gap "
+        "value is increasing"
+    ) in summary
+    assert "toward zero: yes" in summary
 
 
 def test_preflight_speed_gap_summary_uses_point_trend_indexes():
@@ -2491,11 +2607,11 @@ def test_preflight_speed_gap_summary_uses_point_trend_indexes():
     results = _run_queries(df, 200, 207, query_specs=query_specs)
     prompt = _prompt_block("lap", 200, 207, results, [], [])
 
-    assert "Start trend: the speed gap is trending down from index 200 to 202" in prompt
-    assert "Growth index ranges: index 202 to 204" in prompt
-    assert "Shrink index ranges: index 200 to 202" in prompt
+    assert "Speed gap value starts decreasing from index 200 to 202" in prompt
+    assert "Speed gap value runs: increases index 202 to 204" in prompt
+    assert "decreases index 200 to 202" in prompt
     assert "index 204 to 207" in prompt
-    assert "Overall trend: the speed gap is trending down" in prompt
+    assert "Speed gap value overall is decreasing" in prompt
 
 
 def test_preflight_trend_run_summary_uses_time_delta_selected_terms():

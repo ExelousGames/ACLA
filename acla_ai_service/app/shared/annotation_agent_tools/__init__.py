@@ -3601,6 +3601,108 @@ def _point_trend_runs(
     }
 
 
+def _trajectory_abs_offset_derivative(
+    arr: np.ndarray,
+    start_index: int,
+) -> Dict[str, Any]:
+    finite_locs = np.where(np.isfinite(arr))[0]
+    if len(finite_locs) < 2:
+        return {
+            "overall": {"direction": "stable"},
+            "runs": [],
+            "merge_runs": [],
+            "move_away_runs": [],
+        }
+
+    values = np.abs(arr[finite_locs])
+    ilocs = finite_locs + int(start_index)
+    deltas = np.diff(values)
+    iloc_deltas = np.diff(ilocs.astype(float))
+    valid = np.isfinite(deltas) & np.isfinite(iloc_deltas) & (iloc_deltas > 0)
+    if not np.any(valid):
+        return {
+            "overall": {"direction": "stable"},
+            "runs": [],
+            "merge_runs": [],
+            "move_away_runs": [],
+        }
+
+    near_zero_abs = float(_column_semantics("trajectory_offset")["near_zero_abs"])
+    eps = 1e-9
+    signs = np.where(deltas > eps, 1, np.where(deltas < -eps, -1, 0))
+    primitive: List[Dict[str, int]] = []
+    run_start = 0
+    current = int(signs[0])
+    for i in range(1, len(signs)):
+        sign = int(signs[i])
+        if sign == current:
+            continue
+        primitive.append({"sign": current, "start": run_start, "end": i})
+        run_start = i
+        current = sign
+    primitive.append({"sign": current, "start": run_start, "end": len(signs)})
+
+    runs: List[Dict[str, Any]] = []
+    for primitive_run in primitive:
+        start_pos = int(primitive_run["start"])
+        end_pos = int(primitive_run["end"])
+        start_iloc = int(ilocs[start_pos])
+        end_iloc = int(ilocs[end_pos])
+        start_abs = float(values[start_pos])
+        end_abs = float(values[end_pos])
+        delta_abs = end_abs - start_abs
+        run_iloc_delta = float(end_iloc - start_iloc)
+        derivative = delta_abs / run_iloc_delta if run_iloc_delta > 0 else 0.0
+        direction = (
+            "move_away_from_expert_line" if delta_abs > eps
+            else "merge_to_expert_line" if delta_abs < -eps
+            else "stable"
+        )
+        runs.append({
+            "start_iloc": start_iloc,
+            "end_iloc": end_iloc,
+            "start_abs": start_abs,
+            "end_abs": end_abs,
+            "delta_abs": delta_abs,
+            "derivative": derivative,
+            "direction": direction,
+            "role": direction,
+            "is_label_significant": abs(delta_abs) >= near_zero_abs,
+        })
+
+    total_delta = float(values[-1] - values[0])
+    total_iloc_delta = float(ilocs[-1] - ilocs[0])
+    mean_derivative = (
+        total_delta / total_iloc_delta
+        if total_iloc_delta > 0
+        else 0.0
+    )
+    overall_direction = (
+        "move_away_from_expert_line" if total_delta > eps
+        else "merge_to_expert_line" if total_delta < -eps
+        else "stable"
+    )
+    return {
+        "start_sample": {"iloc": int(ilocs[0]), "abs_offset": float(values[0])},
+        "end_sample": {"iloc": int(ilocs[-1]), "abs_offset": float(values[-1])},
+        "overall": {
+            "direction": overall_direction,
+            "delta_abs": total_delta,
+            "mean_derivative": mean_derivative,
+            "is_label_significant": abs(total_delta) >= near_zero_abs,
+        },
+        "runs": runs,
+        "merge_runs": [
+            run for run in runs
+            if run["direction"] == "merge_to_expert_line"
+        ],
+        "move_away_runs": [
+            run for run in runs
+            if run["direction"] == "move_away_from_expert_line"
+        ],
+    }
+
+
 def _trend_role(column: str, direction: str) -> str:
     if column == "expert_time_difference":
         if direction == "rising":
@@ -3795,6 +3897,33 @@ def _query_compute_slope(
     delta_i = point_trend["delta_iloc"]
     overall_class = point_trend["overall"]
     zero_context = _series_zero_context(arr, column)
+    absolute_offset_derivative = (
+        _trajectory_abs_offset_derivative(arr, a_idx)
+        if column == "trajectory_offset"
+        else None
+    )
+    extra = {
+        "unit": meta["unit"],
+        "slope_unit": f"{meta['unit']}/iloc",
+        "slope": slope,
+        "delta_value": delta_v,
+        "delta_iloc": delta_i,
+        "total_change_direction": overall_class["direction"],
+        "total_change_domain_direction": overall_class["domain_direction"],
+        "total_change_significance": overall_class["significance"],
+        "total_change_is_label_significant": overall_class["is_label_significant"],
+        "slope_shape": _slope_shape(arr, slope, column),
+        "start_trend": point_trend["start_trend"],
+        "point_trend_runs": point_trend["runs"],
+        "overall_point_trend": point_trend["overall"],
+        "rising_steps": point_trend["rising_steps"],
+        "falling_steps": point_trend["falling_steps"],
+        "flat_steps": point_trend["flat_steps"],
+        "thresholds": overall_class["thresholds"],
+        "near_zero_summary": zero_context,
+    }
+    if absolute_offset_derivative is not None:
+        extra["absolute_offset_derivative"] = absolute_offset_derivative
     return {
         "iloc": b_idx,
         "value": slope,
@@ -3802,26 +3931,7 @@ def _query_compute_slope(
             start_sample,
             end_sample,
         ],
-        "extra": {
-            "unit": meta["unit"],
-            "slope_unit": f"{meta['unit']}/iloc",
-            "slope": slope,
-            "delta_value": delta_v,
-            "delta_iloc": delta_i,
-            "total_change_direction": overall_class["direction"],
-            "total_change_domain_direction": overall_class["domain_direction"],
-            "total_change_significance": overall_class["significance"],
-            "total_change_is_label_significant": overall_class["is_label_significant"],
-            "slope_shape": _slope_shape(arr, slope, column),
-            "start_trend": point_trend["start_trend"],
-            "point_trend_runs": point_trend["runs"],
-            "overall_point_trend": point_trend["overall"],
-            "rising_steps": point_trend["rising_steps"],
-            "falling_steps": point_trend["falling_steps"],
-            "flat_steps": point_trend["flat_steps"],
-            "thresholds": overall_class["thresholds"],
-            "near_zero_summary": zero_context,
-        },
+        "extra": extra,
     }
 
 

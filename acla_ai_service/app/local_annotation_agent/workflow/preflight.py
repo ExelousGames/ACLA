@@ -173,6 +173,14 @@ _GRAPH_SEMANTIC_PROFILES: Dict[str, Dict[str, Any]] = {
             "reversing_to_rising_within_section": (
                 "trajectory offset reversing wider within section",
             ),
+            "merge_to_expert_line": (
+                "trajectory offset merges toward expert line",
+                "trajectory offset recovery toward expert line",
+            ),
+            "move_away_from_expert_line": (
+                "trajectory offset moves away from expert line",
+                "driver path separates from expert line",
+            ),
         },
         "extra_keys": (
             "verdict",
@@ -530,6 +538,8 @@ def _query_semantic_tags(
         )
     elif query_id == "compute_slope":
         tags.extend(_slope_tags(column, extra if isinstance(extra, dict) else {}))
+        if column == "trajectory_offset" and isinstance(extra, dict):
+            tags.extend(_trajectory_abs_offset_derivative_tags(extra))
     elif query_id == "measure_trajectory_similarity":
         tags.extend(
             _trajectory_similarity_tags(extra if isinstance(extra, dict) else {})
@@ -800,6 +810,32 @@ def _trajectory_similarity_tags(extra: Dict[str, Any]) -> List[str]:
         tags.extend(["line separation increasing", "trajectory divergence"])
     if isinstance(mean_separation, (int, float)) and float(mean_separation) <= 0.5:
         tags.append("driver path closely follows expert")
+    return tags
+
+
+def _trajectory_abs_offset_derivative_tags(extra: Dict[str, Any]) -> List[str]:
+    derivative = extra.get("absolute_offset_derivative")
+    if not isinstance(derivative, dict):
+        return []
+    overall = derivative.get("overall")
+    overall = overall if isinstance(overall, dict) else {}
+    runs = derivative.get("runs")
+    runs = runs if isinstance(runs, list) else []
+    directions = {
+        str(overall.get("direction") or ""),
+        *(str(run.get("direction") or "") for run in runs if isinstance(run, dict)),
+    }
+    tags: List[str] = []
+    if "merge_to_expert_line" in directions:
+        tags.extend([
+            "trajectory offset merges toward expert line",
+            "trajectory offset recovery toward expert line",
+        ])
+    if "move_away_from_expert_line" in directions:
+        tags.extend([
+            "trajectory offset moves away from expert line",
+            "driver path separates from expert line",
+        ])
     return tags
 
 
@@ -1268,33 +1304,58 @@ def _preflight_gap_slope_summary(
     parts: List[str] = []
     if isinstance(start, dict):
         parts.append(
-            f"Start trend: the {subject} is "
-            f"{_trend_phrase(start.get('direction'))} from index "
+            f"{_capitalize_sentence(subject)} value starts "
+            f"{_gap_value_phrase(start.get('direction'))} from index "
             f"{start.get('start_iloc')} to {start.get('end_iloc')} "
             f"({_measurement(start.get('delta_value'), unit)})."
         )
     else:
-        parts.append(f"Start trend: the {subject} is unknown.")
+        parts.append(f"{_capitalize_sentence(subject)} value start is unknown.")
 
     parts.append(
-        "Growth index ranges: "
-        f"{_trend_ranges(runs, 'rising', unit)}."
-    )
-    parts.append(
-        "Shrink index ranges: "
+        f"{_capitalize_sentence(subject)} value runs: increases "
+        f"{_trend_ranges(runs, 'rising', unit)}; decreases "
         f"{_trend_ranges(runs, 'falling', unit)}."
     )
     parts.append(
-        f"Overall trend: the {subject} is {_trend_phrase(overall_direction)} "
-        f"with net point-by-point change "
-        f"{_measurement(extra.get('delta_value'), unit)} and mean slope "
-        f"{_measurement(extra.get('slope'), extra.get('slope_unit'))}."
-    )
-    parts.append(
-        f"Slope shape: {_humanize_value(extra.get('slope_shape'))}; "
-        f"movement toward zero: {_yes_no_unknown(moves_toward_zero)}."
+        f"{_capitalize_sentence(subject)} value overall is {_gap_value_phrase(overall_direction)} "
+        f"by {_measurement(extra.get('delta_value'), unit)} "
+        f"(mean {_measurement(extra.get('slope'), extra.get('slope_unit'))}). "
+        f"{_gap_rate_shape_sentence(column, extra.get('slope_shape'))}; "
+        f"toward zero: {_yes_no_unknown(moves_toward_zero)}."
     )
     return " ".join(parts)
+
+
+def _capitalize_sentence(value: str) -> str:
+    return value[:1].upper() + value[1:]
+
+
+def _gap_value_phrase(direction: Any) -> str:
+    if direction == "rising":
+        return "increasing"
+    if direction == "falling":
+        return "decreasing"
+    if direction in {"flat", "stable"}:
+        return "stable"
+    return "unknown"
+
+
+def _gap_rate_shape_sentence(column: str, slope_shape: Any) -> str:
+    subject = "Loss-rate shape" if column == "expert_time_difference" else "Speed-gap rate shape"
+    if slope_shape == "slope_decreasing_over_section":
+        phrase = "gap growth is slowing, which can still mean the gap value is increasing"
+    elif slope_shape == "slope_increasing_over_section":
+        phrase = "gap growth is accelerating"
+    elif slope_shape == "slope_steady_over_section":
+        phrase = "gap change rate is steady"
+    elif slope_shape == "reversing_to_falling_within_section":
+        phrase = "gap value reverses from increasing to decreasing within the section"
+    elif slope_shape == "reversing_to_rising_within_section":
+        phrase = "gap value reverses from decreasing to increasing within the section"
+    else:
+        phrase = _humanize_value(slope_shape)
+    return f"{subject}: {phrase} (slope shape {_humanize_value(slope_shape)})"
 
 
 def _trend_phrase(direction: Any) -> str:
@@ -1326,6 +1387,57 @@ def _trend_ranges(runs: List[Any], direction: str, unit: Any) -> str:
     return "; ".join(ranges)
 
 
+def _expert_line_trend_phrase(direction: Any) -> str:
+    if direction == "merge_to_expert_line":
+        return "merging toward the expert line"
+    if direction == "move_away_from_expert_line":
+        return "moving away from the expert line"
+    if direction in {"flat", "stable"}:
+        return "stable relative to the expert line"
+    return "unknown"
+
+
+def _trajectory_abs_offset_ranges(runs: List[Any], direction: str, unit: Any) -> str:
+    selected = [
+        run for run in runs
+        if isinstance(run, dict) and run.get("direction") == direction
+    ]
+    if not selected:
+        return "none"
+    ranges = [
+        (
+            f"index {run.get('start_iloc')} to {run.get('end_iloc')} "
+            f"({_measurement(run.get('delta_abs'), unit)})"
+        )
+        for run in selected[:6]
+    ]
+    if len(selected) > 6:
+        ranges.append(f"{len(selected) - 6} more")
+    return "; ".join(ranges)
+
+
+def _trajectory_abs_offset_derivative_summary(extra: Dict[str, Any]) -> Optional[str]:
+    derivative = extra.get("absolute_offset_derivative")
+    if not isinstance(derivative, dict):
+        return None
+    overall = derivative.get("overall")
+    overall = overall if isinstance(overall, dict) else {}
+    runs = derivative.get("runs")
+    runs = runs if isinstance(runs, list) else []
+    unit = extra.get("unit")
+    return (
+        "Expert-line distance derivative: merge ranges "
+        f"{_trajectory_abs_offset_ranges(runs, 'merge_to_expert_line', unit)}; "
+        "move-away ranges "
+        f"{_trajectory_abs_offset_ranges(runs, 'move_away_from_expert_line', unit)}; "
+        "overall expert-line trend "
+        f"{_expert_line_trend_phrase(overall.get('direction'))} with net "
+        f"absolute-offset change {_measurement(overall.get('delta_abs'), unit)} "
+        "and mean derivative "
+        f"{_measurement(overall.get('mean_derivative'), extra.get('slope_unit'))}."
+    )
+
+
 def _preflight_slope_summary(
     tool_id: str,
     result: Dict[str, Any],
@@ -1353,6 +1465,7 @@ def _preflight_slope_summary(
             if moves_toward_zero is False
             else "unknown"
         )
+        derivative = _trajectory_abs_offset_derivative_summary(extra)
         return (
             "The trajectory-offset slope shows a signed total change of "
             f"{_measurement(extra.get('delta_value'), extra.get('unit'))}; "
@@ -1364,6 +1477,7 @@ def _preflight_slope_summary(
             f"{_measurement(min_abs, extra.get('unit'))}; "
             f"the expert-line relation is {_humanize_value(expert_line_relation)}; "
             f"the slope shape is {_humanize_value(extra.get('slope_shape'))}."
+            + (f" {derivative}" if derivative else "")
         )
     return (
         f"The {_humanize_value(column)} slope shows a total change of "
@@ -1681,7 +1795,62 @@ def _slope_analysis(result: Dict[str, Any], column: str = "") -> Dict[str, Any]:
             "unit": unit,
             "moves_toward_expert_line": zero.get("moves_toward_zero"),
         }
+        derivative = _trajectory_abs_offset_derivative_analysis(extra, unit)
+        if derivative:
+            analysis["absolute_offset_derivative"] = derivative
     return analysis
+
+
+def _trajectory_abs_offset_derivative_analysis(
+    extra: Dict[str, Any],
+    unit: Any,
+) -> Dict[str, Any]:
+    derivative = extra.get("absolute_offset_derivative")
+    if not isinstance(derivative, dict):
+        return {}
+    overall = derivative.get("overall")
+    overall = overall if isinstance(overall, dict) else {}
+    runs = derivative.get("runs")
+    runs = runs if isinstance(runs, list) else []
+    shaped_runs = [
+        _trajectory_abs_offset_run(run, unit)
+        for run in runs
+        if isinstance(run, dict)
+    ]
+    shaped_runs = [run for run in shaped_runs if run]
+    return {
+        "overall": {
+            "direction": overall.get("direction"),
+            "net_abs_change": overall.get("delta_abs"),
+            "mean_derivative": overall.get("mean_derivative"),
+            "unit": unit,
+            "slope_unit": extra.get("slope_unit"),
+            "is_label_significant": overall.get("is_label_significant"),
+        },
+        "merge_runs": [
+            run for run in shaped_runs
+            if run.get("direction") == "merge_to_expert_line"
+        ],
+        "move_away_runs": [
+            run for run in shaped_runs
+            if run.get("direction") == "move_away_from_expert_line"
+        ],
+        "runs": shaped_runs,
+    }
+
+
+def _trajectory_abs_offset_run(value: Dict[str, Any], unit: Any) -> Optional[Dict[str, Any]]:
+    return {
+        "start_iloc": value.get("start_iloc"),
+        "end_iloc": value.get("end_iloc"),
+        "start_abs": value.get("start_abs"),
+        "end_abs": value.get("end_abs"),
+        "change": value.get("delta_abs"),
+        "unit": unit,
+        "derivative": value.get("derivative"),
+        "direction": value.get("direction"),
+        "is_label_significant": value.get("is_label_significant"),
+    }
 
 
 def _extremum_analysis(
