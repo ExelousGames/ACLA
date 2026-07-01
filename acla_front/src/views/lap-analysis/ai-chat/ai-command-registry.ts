@@ -48,6 +48,7 @@ import {
     getToolEnvelopeError,
     toFrontendToolSchema,
 } from './ai-tool-base';
+import type { LiveRangeTrackerToolResult } from './LiveRangeTracker';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
 export type AiCommandToolDefinition = AiToolDefinition<AiCommandRegistryContext, ToolHandlerContext>;
@@ -130,6 +131,9 @@ export interface AiCommandRegistryContext {
         game: CircuitMapGame,
         sourceTrackKey: string | null | undefined,
     ) => Promise<CircuitMapDto | null>;
+    setLiveRangeTracker?: (args: Record<string, unknown>) => LiveRangeTrackerToolResult;
+    updateLiveRangeTracker?: (args: Record<string, unknown>) => LiveRangeTrackerToolResult;
+    getLiveRangeTracker?: () => LiveRangeTrackerToolResult;
     displayMap?: (display: AiMapDisplayPayload) => void;
 }
 
@@ -824,6 +828,90 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
         required: [],
     },
     {
+        name: 'set_live_range_tracker',
+        description: 'Create or replace the single live range tracker with normalized start/end ranges. The tracker monitors live telemetry and requests classification after each range end is crossed.',
+        properties: {
+            ranges: {
+                type: 'array',
+                description: 'Tracked normalized ranges. Each range needs start_position and end_position from 0 to 1.',
+                items: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string' },
+                        label: { type: 'string' },
+                        start_position: { type: 'number' },
+                        end_position: { type: 'number' },
+                    },
+                    required: ['start_position', 'end_position'],
+                },
+            },
+        },
+        required: ['ranges'],
+    },
+    {
+        name: 'update_live_range_tracker',
+        description: 'Update the live range tracker. Use action=record_classification after the classifier determines the tracked range status.',
+        properties: {
+            action: {
+                type: 'string',
+                enum: ['update_ranges', 'remove_ranges', 'record_classification', 'close'],
+            },
+            ranges: {
+                type: 'array',
+                description: 'Ranges for update_ranges.',
+                items: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string' },
+                        label: { type: 'string' },
+                        start_position: { type: 'number' },
+                        end_position: { type: 'number' },
+                    },
+                },
+            },
+            range_ids: {
+                type: 'array',
+                description: 'Range ids for remove_ranges.',
+                items: { type: 'string' },
+            },
+            range_id: {
+                type: 'string',
+                description: 'Range id for record_classification.',
+            },
+            classifier_status: {
+                type: 'string',
+                description: 'Classifier-derived status for the tracked range.',
+            },
+            parent_segment: {
+                type: 'object',
+                description: 'Parent segment with its own labels and optional start/end indexes.',
+            },
+            child_segments: {
+                type: 'array',
+                description: 'Child segments with labels, start_index, and end_index.',
+                items: {
+                    type: 'object',
+                    properties: {
+                        labels: {
+                            type: 'array',
+                            items: { type: 'string' },
+                        },
+                        start_index: { type: 'integer' },
+                        end_index: { type: 'integer' },
+                    },
+                    required: ['labels', 'start_index', 'end_index'],
+                },
+            },
+        },
+        required: ['action'],
+    },
+    {
+        name: 'get_live_range_tracker',
+        description: 'View the current live range tracker, including tracked ranges, lifecycle states, classifier status, parent labels, and child segment labels/indexes.',
+        properties: {},
+        required: [],
+    },
+    {
         name: 'collect_live_baseline',
         description: 'Collect one complete live baseline lap through the dedicated baseline UI component and return the cached baseline lap record when complete.',
         properties: {
@@ -1067,6 +1155,9 @@ const LIVE_TOOL_NAMES = [
     'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
+    'set_live_range_tracker',
+    'update_live_range_tracker',
+    'get_live_range_tracker',
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
@@ -1761,6 +1852,42 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
         };
     },
 
+    async set_live_range_tracker(args) {
+        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        if (!context.setLiveRangeTracker) {
+            return {
+                status: 'error',
+                error: 'live_range_tracker_unavailable',
+                message: 'Live range tracker UI is not mounted.',
+            };
+        }
+        return context.setLiveRangeTracker(args);
+    },
+
+    async update_live_range_tracker(args) {
+        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        if (!context.updateLiveRangeTracker) {
+            return {
+                status: 'error',
+                error: 'live_range_tracker_unavailable',
+                message: 'Live range tracker UI is not mounted.',
+            };
+        }
+        return context.updateLiveRangeTracker(args);
+    },
+
+    async get_live_range_tracker() {
+        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        if (!context.getLiveRangeTracker) {
+            return {
+                status: 'error',
+                error: 'live_range_tracker_unavailable',
+                message: 'Live range tracker UI is not mounted.',
+            };
+        }
+        return context.getLiveRangeTracker();
+    },
+
     async analyze_live_recorded_analysis(args) {
         const unavailable = buildLiveAnalystUnavailable(context);
         if (unavailable) return unavailable;
@@ -2059,6 +2186,9 @@ const ALL_AI_TOOL_NAMES = [
     'get_live_session_snapshot',
     'get_live_focus_section',
     'get_live_section_history',
+    'set_live_range_tracker',
+    'update_live_range_tracker',
+    'get_live_range_tracker',
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',

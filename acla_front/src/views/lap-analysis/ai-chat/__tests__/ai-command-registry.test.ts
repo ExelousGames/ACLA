@@ -148,6 +148,69 @@ describe('ai command registry user summary tools', () => {
         ))).toBe(true);
     });
 
+    it('advertises live range tracker tools only in live mode', () => {
+        const liveToolNames = getFrontendToolSchemasForSessionMode('live').map((tool) => tool.name);
+        const recordedToolNames = getFrontendToolSchemasForSessionMode('recorded').map((tool) => tool.name);
+
+        expect(liveToolNames).toEqual(expect.arrayContaining([
+            'set_live_range_tracker',
+            'update_live_range_tracker',
+            'get_live_range_tracker',
+        ]));
+        expect(recordedToolNames).not.toEqual(expect.arrayContaining([
+            'set_live_range_tracker',
+            'update_live_range_tracker',
+            'get_live_range_tracker',
+        ]));
+    });
+
+    it('routes live range tracker tools to component-owned callbacks', async () => {
+        const tracker = {
+            status: 'open',
+            ranges: [],
+            created_at: 1,
+            updated_at: 1,
+        };
+        const setLiveRangeTracker = jest.fn(() => ({ status: 'ready', tracker }));
+        const updateLiveRangeTracker = jest.fn(() => ({ status: 'ready', tracker }));
+        const getLiveRangeTracker = jest.fn(() => ({ status: 'ready', tracker }));
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            setLiveRangeTracker,
+            updateLiveRangeTracker,
+            getLiveRangeTracker,
+        });
+        const toolContext = { sendObservation: jest.fn() };
+
+        const setResult = await registry.set_live_range_tracker(
+            { ranges: [{ id: 'r1', start_position: 0.1, end_position: 0.2 }] },
+            toolContext,
+        );
+        const updateResult = await registry.update_live_range_tracker(
+            { action: 'close' },
+            toolContext,
+        );
+        const getResult = await registry.get_live_range_tracker({}, toolContext);
+
+        expect(setLiveRangeTracker).toHaveBeenCalledWith({
+            ranges: [{ id: 'r1', start_position: 0.1, end_position: 0.2 }],
+        });
+        expect(updateLiveRangeTracker).toHaveBeenCalledWith({ action: 'close' });
+        expect(getLiveRangeTracker).toHaveBeenCalled();
+        expect(setResult).toMatchObject({ payload: { status: 'ready', tracker } });
+        expect(updateResult).toMatchObject({ payload: { status: 'ready', tracker } });
+        expect(getResult).toMatchObject({ payload: { status: 'ready', tracker } });
+    });
+
     it('normalizes bracketed telemetry fields and common tire/fuel aliases', async () => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.tick({

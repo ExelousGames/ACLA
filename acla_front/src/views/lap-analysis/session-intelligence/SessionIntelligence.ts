@@ -45,6 +45,16 @@ type SectionTelemetryWindow = {
     rows: TelemetrySample[];
 };
 
+export type NormalizedRangeTelemetryWindow = {
+    status: 'ready' | 'empty';
+    startPosition: number;
+    endPosition: number;
+    lap: number;
+    startSampleIdx?: number;
+    endSampleIdx?: number;
+    rows: TelemetrySample[];
+};
+
 type LiveSessionSnapshot = {
     status: 'ready' | 'empty';
     track: string;
@@ -324,6 +334,53 @@ export class SessionIntelligence {
         };
     }
 
+    getTelemetryWindowForNormalizedRange(args: {
+        start_position?: number;
+        startPosition?: number;
+        end_position?: number;
+        endPosition?: number;
+        lap?: 'current' | 'last' | number;
+    }): NormalizedRangeTelemetryWindow {
+        const startPosition = this.clampNormalizedRangePosition(args.start_position ?? args.startPosition);
+        const endPosition = this.clampNormalizedRangePosition(args.end_position ?? args.endPosition);
+        const lap = this.resolveLap(args.lap ?? 'current');
+
+        const rows = this.getIndexedRows().filter(({ sample }) => {
+            const position = getTelemetryPosition(sample);
+            if (position === undefined) return false;
+
+            const sampleLap = getTelemetryLap(sample);
+            if (startPosition <= endPosition) {
+                return sampleLap === lap && position >= startPosition && position <= endPosition;
+            }
+
+            return (
+                (sampleLap === lap - 1 && position >= startPosition)
+                || (sampleLap === lap && position <= endPosition)
+            );
+        });
+
+        if (rows.length === 0) {
+            return {
+                status: 'empty',
+                startPosition,
+                endPosition,
+                lap,
+                rows: [],
+            };
+        }
+
+        return {
+            status: 'ready',
+            startPosition,
+            endPosition,
+            lap,
+            startSampleIdx: rows[0].index,
+            endSampleIdx: rows[rows.length - 1].index,
+            rows: rows.map(({ sample }) => sample),
+        };
+    }
+
     recordSectionClassification(raw: Record<string, any>): LiveSectionClassification | null {
         const section = this.resolveSection(raw.section_id || raw.sectionId, raw.section_name || raw.sectionName);
         if (!section) return null;
@@ -447,6 +504,12 @@ export class SessionIntelligence {
             (sectionId && section.id === sectionId)
             || (sectionName && section.name.toLowerCase() === sectionName.toLowerCase())
         )) ?? null;
+    }
+
+    private clampNormalizedRangePosition(value: unknown): number {
+        const parsed = Number(value);
+        if (!Number.isFinite(parsed)) return 0;
+        return Math.max(0, Math.min(1, parsed));
     }
 
     private estimateSecondsToSection(section: LiveTrackSection): number | undefined {

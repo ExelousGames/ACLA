@@ -37,6 +37,9 @@ import {
 import {
     BaselineCollectionTracker,
 } from './BaselineCollectionTracker';
+import LiveRangeTracker, {
+    type LiveRangeTrackerHandle,
+} from './LiveRangeTracker';
 import { useBaselineCollectionRuntime } from './BaselineCollectionRuntime';
 import {
     getToolEnvelopeError,
@@ -321,6 +324,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
     const planToolRunsRef = useRef<Set<string>>(new Set());
+    const liveRangeTrackerRef = useRef<LiveRangeTrackerHandle | null>(null);
 
     useEffect(() => {
         activeAgentSessionRef.current = activeAgentSession;
@@ -779,6 +783,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const inactiveAgentToolHandlers = useMemo(() => ({}), []);
     const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
+    const getMissingLiveRangeTrackerResult = useCallback(() => ({
+        status: 'error' as const,
+        tracker: null,
+        error: 'live_range_tracker_unavailable',
+        message: 'Live range tracker UI is not mounted.',
+    }), []);
+    const setLiveRangeTracker = useCallback((args: Record<string, unknown>) => (
+        liveRangeTrackerRef.current?.setTracker(args) ?? getMissingLiveRangeTrackerResult()
+    ), [getMissingLiveRangeTrackerResult]);
+    const updateLiveRangeTracker = useCallback((args: Record<string, unknown>) => (
+        liveRangeTrackerRef.current?.updateTracker(args) ?? getMissingLiveRangeTrackerResult()
+    ), [getMissingLiveRangeTrackerResult]);
+    const getLiveRangeTracker = useCallback(() => (
+        liveRangeTrackerRef.current?.getTracker() ?? getMissingLiveRangeTrackerResult()
+    ), [getMissingLiveRangeTrackerResult]);
 
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
@@ -947,6 +966,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
+        setLiveRangeTracker,
+        updateLiveRangeTracker,
+        getLiveRangeTracker,
         displayMap: displayMapInChat,
     }), [
         activeAgentSession,
@@ -957,6 +979,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
+        getLiveRangeTracker,
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
@@ -969,12 +992,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         sessionMode,
         setAgentTag,
         setBaselineCollectionEnabled,
+        setLiveRangeTracker,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
         setTrackGuideAgentEnabled,
         startAgentSession,
         startTrackGuide,
         stopAgentSession,
+        updateLiveRangeTracker,
         userSummary,
         userSummaryError,
         userSummaryLoading,
@@ -1041,6 +1066,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
+        setLiveRangeTracker,
+        updateLiveRangeTracker,
+        getLiveRangeTracker,
         displayMap: displayMapInChat,
     }), [
         activeAgentSession,
@@ -1051,6 +1079,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
+        getLiveRangeTracker,
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
@@ -1063,11 +1092,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         sessionMode,
         setAgentTag,
         setBaselineCollectionEnabled,
+        setLiveRangeTracker,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
         setTrackGuideAgentEnabled,
         startTrackGuide,
         stopAgentSession,
+        updateLiveRangeTracker,
         userSummary,
         userSummaryError,
         userSummaryLoading,
@@ -1181,6 +1212,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 getCategoryLabels,
                 getCircuitMapById,
                 getCircuitMapByTrack,
+                setLiveRangeTracker,
+                updateLiveRangeTracker,
+                getLiveRangeTracker,
                 displayMap: displayMapInChat,
             }, {}, {
                 sendObservation: agentVoiceConversation.sendObservation,
@@ -1198,6 +1232,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
+        getLiveRangeTracker,
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
@@ -1210,11 +1245,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         sessionMode,
         setAgentTag,
         setBaselineCollectionEnabled,
+        setLiveRangeTracker,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
         setTrackGuideAgentEnabled,
         startTrackGuide,
         stopAgentSession,
+        updateLiveRangeTracker,
         userSummary,
         userSummaryError,
         userSummaryLoading,
@@ -1239,6 +1276,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const vState = activeVoiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
     const micDisabled = activeVoiceConversation.micDisabled;
+    const sendActiveVoiceObservation = activeVoiceConversation.sendObservation;
+    const sendLiveRangeTrackerObservation = useCallback((
+        data: Record<string, unknown>,
+    ) => sendActiveVoiceObservation(data), [sendActiveVoiceObservation]);
     const canOpenFloatingChat = typeof window !== 'undefined'
         && Boolean((window as any).electronAPI?.openFloatingChat);
 
@@ -1928,6 +1969,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                             </div>
                         </div>
                     )}
+
+                    <LiveRangeTracker
+                        ref={liveRangeTrackerRef}
+                        liveData={analysisContext?.liveData as Record<string, any> | null}
+                        sessionMode={sessionMode}
+                        sessionIntelligence={analysisContext?.sessionIntelligence}
+                        sendObservation={sendLiveRangeTrackerObservation}
+                        resolveLabel={getLabelName}
+                    />
 
                     {procedurePlan && (
                         <div className="ai-chat__plan" aria-label="Procedure plan">
