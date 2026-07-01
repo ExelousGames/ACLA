@@ -175,7 +175,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
 );
 
 const getBaselineToolEventResult = (envelope: ToolOutputEnvelope) => {
-    const payload = isRecord(envelope.payload) ? envelope.payload : {};
+    const payload = isRecord(envelope.ui_output) ? envelope.ui_output : {};
     const rawProgress = Number(payload.progress_percent ?? envelope.progress_percent ?? 0);
 
     return {

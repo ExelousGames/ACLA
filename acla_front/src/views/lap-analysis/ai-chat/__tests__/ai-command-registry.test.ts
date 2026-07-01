@@ -189,9 +189,17 @@ describe('ai command registry user summary tools', () => {
         });
         expect(updateLiveRangeTracker).toHaveBeenCalledWith({ action: 'close' });
         expect(getLiveRangeTracker).toHaveBeenCalled();
-        expect(setResult).toMatchObject({ payload: { status: 'ready', tracker } });
-        expect(updateResult).toMatchObject({ payload: { status: 'ready', tracker } });
-        expect(getResult).toMatchObject({ payload: { status: 'ready', tracker } });
+        expect(setResult).toMatchObject({ ui_output: { status: 'ready', tracker } });
+        expect(updateResult).toMatchObject({ ui_output: { status: 'ready', tracker } });
+        expect(getResult).toMatchObject({ ui_output: { status: 'ready', tracker } });
+        expect(setResult).toMatchObject({
+            ai_output: {
+                name: 'set_live_range_tracker',
+                status: 'ready',
+                range_count: 0,
+            },
+        });
+        expect((setResult.ai_output as any)).not.toHaveProperty('tracker');
     });
 
     it('normalizes bracketed telemetry fields and common tire/fuel aliases', async () => {
@@ -240,13 +248,22 @@ describe('ai command registry user summary tools', () => {
 
         expect(fuelResult).toMatchObject({
             status: 'complete',
-            payload: {
+            ui_output: {
                 Physics_fuel: 38,
             },
+            ai_output: {
+                name: 'query_telemetry_metric',
+                status: 'complete',
+                values: {
+                    Physics_fuel: 38,
+                },
+            },
         });
+        expect((fuelResult.ai_output as any)).not.toHaveProperty('ok');
+        expect((fuelResult.ai_output as any).values).not.toHaveProperty('ok');
         expect(tireResult).toMatchObject({
             status: 'complete',
-            payload: {
+            ui_output: {
                 Physics_wheel_pressure_front_left: 26.1,
                 Physics_wheel_pressure_front_right: 26.2,
                 Physics_wheel_pressure_rear_left: 25.9,
@@ -255,7 +272,7 @@ describe('ai command registry user summary tools', () => {
         });
         expect(bareTyreResult).toMatchObject({
             status: 'complete',
-            payload: {
+            ui_output: {
                 Physics_wheel_pressure_front_left: 26.1,
                 Physics_wheel_pressure_front_right: 26.2,
                 Physics_wheel_pressure_rear_left: 25.9,
@@ -320,7 +337,7 @@ describe('ai command registry user summary tools', () => {
         expect(result).toMatchObject({
             status: 'displayed',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'displayed',
             map_id: 'brands_hatch',
             circuit_name: 'Brands Hatch GP',
@@ -377,7 +394,7 @@ describe('ai command registry user summary tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'ready',
             map_count: 2,
             map_options: [
@@ -415,7 +432,7 @@ describe('ai command registry user summary tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'ready',
             query: 'brands hatch',
             match_count: 1,
@@ -437,7 +454,7 @@ describe('ai command registry user summary tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'ready',
             match_count: 1,
             maps: [
@@ -455,7 +472,7 @@ describe('ai command registry user summary tools', () => {
             { sendObservation: jest.fn() },
         );
 
-        expect((result.payload as any).maps[0].sections).toEqual(expect.arrayContaining([
+        expect((result.ui_output as any).maps[0].sections).toEqual(expect.arrayContaining([
             expect.objectContaining({
                 id: 'brands_hatch2',
                 mistake_segments: [
@@ -470,7 +487,7 @@ describe('ai command registry user summary tools', () => {
                 ],
             }),
         ]));
-        expect((result.payload as any).maps[0].top_mistake_sections[0]).toEqual(expect.objectContaining({
+        expect((result.ui_output as any).maps[0].top_mistake_sections[0]).toEqual(expect.objectContaining({
             id: 'brands_hatch2',
             mistake_segments: expect.any(Array),
         }));
@@ -575,7 +592,7 @@ describe('ai command registry recorded session tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'ready',
             session_id: 'session-1',
             analysis: {
@@ -602,7 +619,7 @@ describe('ai command registry recorded session tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'ready',
             analysis: {
                 returned_segment_count: 1,
@@ -622,7 +639,7 @@ describe('ai command registry recorded session tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'ready',
             selected_session: {
                 id: 'session-1',
@@ -668,7 +685,7 @@ describe('ai command registry recorded session tools', () => {
             status: 'error',
             error: 'recorded_session_live_tools_unavailable',
             final: true,
-            payload: { error: 'recorded_session_live_tools_unavailable' },
+            ui_output: { error: 'recorded_session_live_tools_unavailable' },
             tool_name: 'query_telemetry_metric',
         });
     });
@@ -700,7 +717,7 @@ describe('ai command registry recorded session tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'ready',
             map_count: 1,
             maps: [
@@ -864,7 +881,7 @@ describe('ai command registry live performance analyst tools', () => {
             message: 'Baseline complete. Cached lap record is ready.',
             final: true,
             tool_name: 'collect_live_baseline',
-            payload: {
+            ui_output: {
                 progress_percent: 100,
                 status: 'complete',
                 car: 'Ferrari 296',
@@ -901,7 +918,7 @@ describe('ai command registry live performance analyst tools', () => {
             message: 'Baseline collection restarted.',
             final: true,
             tool_name: 'restart_live_baseline',
-            payload: {
+            ui_output: {
                 status: 'restarted',
                 progress_percent: 0,
                 message: 'Baseline collection restarted.',
@@ -948,7 +965,7 @@ describe('ai command registry live performance analyst tools', () => {
                 error: 'baseline_collection_timeout',
                 final: true,
                 tool_name: 'collect_live_baseline',
-                payload: {
+                ui_output: {
                     status: 'error',
                     error: 'baseline_collection_timeout',
                     progress_percent: 35,
@@ -987,7 +1004,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'started',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'started',
             conversation_role: 'agent',
             agent_mode: 'live_performance_analyst',
@@ -1019,7 +1036,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'started',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'started',
             conversation_role: 'agent',
             agent_mode: 'track_guide',
@@ -1056,7 +1073,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'advanced',
             final: true,
-            payload: {
+            ui_output: {
                 status: 'advanced',
                 current_step: 1,
                 step: 'Compare the next pass.',
@@ -1111,7 +1128,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'ready',
             goal: 'Improve Druids entry.',
             request_count: 2,
@@ -1134,7 +1151,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'cleared',
             final: true,
-            payload: {
+            ui_output: {
                 status: 'cleared',
                 reason: 'plan is complete',
             },
@@ -1170,7 +1187,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'advanced',
             final: true,
-            payload: {
+            ui_output: {
                 status: 'advanced',
                 current_step: 1,
                 step: 'Run the worker.',
@@ -1212,7 +1229,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'advanced',
             final: true,
-            payload: {
+            ui_output: {
                 status: 'advanced',
                 current_step: 1,
                 step: 'Use the snapshot.',
@@ -1252,7 +1269,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'complete',
             final: true,
-            payload: {
+            ui_output: {
                 status: 'complete',
                 current_step: 0,
                 step: 'Show current state.',
@@ -1334,7 +1351,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'advanced',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'advanced',
             current_step: 2,
         });
@@ -1417,7 +1434,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'advanced',
         });
-        expect(result.payload).toMatchObject({
+        expect(result.ui_output).toMatchObject({
             status: 'advanced',
             current_step: 1,
         });
@@ -1498,7 +1515,7 @@ describe('ai command registry live performance analyst tools', () => {
             { sendObservation: jest.fn() },
         )).resolves.toMatchObject({
             status: 'ready',
-            payload: {
+            ui_output: {
                 source: 'baseline_lap_record',
                 baseline: {
                     id: cachedRecord.id,
@@ -1548,7 +1565,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'advanced',
             final: true,
-            payload: {
+            ui_output: {
                 status: 'advanced',
                 current_step: 1,
                 step: 'Run the worker.',
@@ -1613,16 +1630,22 @@ describe('ai command registry live performance analyst tools', () => {
         expect(focusResult).toMatchObject({
             status: 'error',
             error: 'baseline_collection_incomplete',
-            payload: expect.objectContaining({
+            ui_output: expect.objectContaining({
                 snapshot: expect.objectContaining({
                     baseline_ready: false,
                 }),
             }),
+            ai_output: expect.objectContaining({
+                name: 'get_live_focus_section',
+                status: 'error',
+                error: 'baseline_collection_incomplete',
+            }),
         });
+        expect((focusResult.ai_output as any)).not.toHaveProperty('snapshot');
         expect(telemetryResult).toMatchObject({
             status: 'error',
             error: 'baseline_collection_incomplete',
-            payload: expect.objectContaining({
+            ui_output: expect.objectContaining({
                 snapshot: expect.objectContaining({
                     baseline_ready: false,
                 }),
@@ -1800,7 +1823,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(result).toMatchObject({
             status: 'advanced',
-            payload: expect.objectContaining({
+            ui_output: expect.objectContaining({
                 current_request: 1,
             }),
         });
@@ -1896,7 +1919,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(result).toMatchObject({
             status: 'ready',
-            payload: expect.objectContaining({
+            ui_output: expect.objectContaining({
                 source: 'baseline_lap_record',
                 analysis: expect.objectContaining({
                     expert_time_available: true,
@@ -2045,7 +2068,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'error',
             error: 'baseline_lap_record_required',
-            payload: expect.objectContaining({
+            ui_output: expect.objectContaining({
                 snapshot: expect.objectContaining({
                     baseline_ready: false,
                 }),
@@ -2085,10 +2108,10 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(result).toMatchObject({ status: 'ready' });
-        expect((result.payload as any).section).toMatchObject({
+        expect((result.ui_output as any).section).toMatchObject({
             name: 'T1 Paddock Hill Bend',
         });
-        expect((result.payload as any).rows).toEqual(expect.any(Array));
+        expect((result.ui_output as any).rows).toEqual(expect.any(Array));
     });
 
     it('returns show_map arguments for the selected analyst focus section', async () => {
@@ -2115,7 +2138,7 @@ describe('ai command registry live performance analyst tools', () => {
         );
 
         expect(result).toMatchObject({ status: 'ready' });
-        expect((result.payload as any).focus).toMatchObject({
+        expect((result.ui_output as any).focus).toMatchObject({
             section: {
                 name: 'T2 Druids',
             },

@@ -850,9 +850,9 @@ const finishBaselineCollectionFromEnvelope = (
 ) => {
     const envelopeError = getToolEnvelopeError(envelope);
     if (envelopeError) {
-        return output.error(envelopeError, envelope.payload, { message: envelope.message });
+        return output.error(envelopeError, envelope.ui_output, { message: envelope.message });
     }
-    return output.final(envelope.payload, { message: envelope.message });
+    return output.final(envelope.ui_output, { message: envelope.message });
 };
 
 const collectBaselineLapFromTrackerOutput = async (
@@ -905,7 +905,7 @@ const collectBaselineLapFromTrackerOutput = async (
         };
 
         const timeoutId = setTimeout(() => {
-            const progress = context.getBaselineToolOutput?.()?.payload
+            const progress = context.getBaselineToolOutput?.()?.ui_output
                 ?? getCurrentBaselineCollectionPayload(context);
             const progressRecord = progress && typeof progress === 'object' && !Array.isArray(progress)
                 ? progress as Record<string, any>
@@ -1733,6 +1733,184 @@ const ALL_AI_TOOL_NAMES = [
     'disable_ui_component',
 ] as const;
 
+const getToolUiRecord = (uiOutput: unknown): Record<string, any> => (
+    uiOutput && typeof uiOutput === 'object' && !Array.isArray(uiOutput)
+        ? uiOutput as Record<string, any>
+        : {}
+);
+
+const getToolAiStatus = (uiOutput: Record<string, any>): string => (
+    typeof uiOutput.status === 'string'
+        ? uiOutput.status
+        : uiOutput.error
+            ? 'error'
+            : 'complete'
+);
+
+const getToolAiMessage = (uiOutput: Record<string, any>, fallback: string): string => (
+    typeof uiOutput.message === 'string' && uiOutput.message.trim()
+        ? uiOutput.message
+        : fallback
+);
+
+const omitOkForAi = (value: Record<string, any>): Record<string, unknown> => {
+    const { ok: _ok, ...rest } = value;
+    return rest;
+};
+
+const summarizeMapForAi = (uiOutput: Record<string, any>) => ({
+    map_id: uiOutput.map_id ?? null,
+    circuit_name: uiOutput.circuit_name ?? null,
+    requested_map: uiOutput.requested_map ?? null,
+    resolved_by: uiOutput.resolved_by ?? null,
+    reason: uiOutput.reason ?? null,
+    section: uiOutput.section ?? null,
+});
+
+const summarizeLiveRangeForAi = (uiOutput: Record<string, any>) => {
+    const ranges = Array.isArray(uiOutput.tracker?.ranges) ? uiOutput.tracker.ranges : [];
+    return {
+        tracker_status: uiOutput.tracker?.status ?? null,
+        range_count: ranges.length,
+    };
+};
+
+const summarizeProcedureRequestForAi = (request: unknown) => {
+    const record = getToolUiRecord(request);
+    return {
+        title: record.title ?? null,
+        tool: record.name ?? record.tool ?? null,
+        status: record.status ?? null,
+    };
+};
+
+const buildToolAiOutput = (
+    name: typeof ALL_AI_TOOL_NAMES[number],
+    uiOutputValue: unknown,
+): Record<string, unknown> => {
+    const uiOutput = getToolUiRecord(uiOutputValue);
+    const status = getToolAiStatus(uiOutput);
+    const error = typeof uiOutput.error === 'string' ? uiOutput.error : undefined;
+    const output: Record<string, unknown> = {
+        name,
+        status,
+        message: getToolAiMessage(
+            uiOutput,
+            error || `${name} ${status}.`,
+        ),
+    };
+    if (error) {
+        output.error = error;
+    }
+
+    switch (name) {
+        case 'query_telemetry_metric':
+            output.values = omitOkForAi(uiOutput);
+            break;
+        case 'get_next_corner':
+            output.corner = {
+                name: uiOutput.name ?? uiOutput.corner_name ?? null,
+                from: uiOutput.from ?? null,
+                to: uiOutput.to ?? null,
+            };
+            break;
+        case 'show_map':
+            Object.assign(output, summarizeMapForAi(uiOutput));
+            break;
+        case 'set_live_range_tracker':
+        case 'update_live_range_tracker':
+        case 'get_live_range_tracker':
+            Object.assign(output, summarizeLiveRangeForAi(uiOutput));
+            break;
+        case 'set_procedure_plan':
+            output.goal = uiOutput.goal ?? null;
+            output.request_count = uiOutput.request_count ?? 0;
+            output.current_request = uiOutput.current_request ?? null;
+            output.request = summarizeProcedureRequestForAi(uiOutput.request);
+            break;
+        case 'advance_plan_step':
+            output.current_request = uiOutput.current_request ?? null;
+            output.request = summarizeProcedureRequestForAi(uiOutput.request);
+            break;
+        case 'clear_procedure_plan':
+            output.reason = uiOutput.reason ?? null;
+            break;
+        case 'get_available_user_summary_maps':
+            output.map_count = uiOutput.map_count ?? 0;
+            output.map_options = Array.isArray(uiOutput.map_options) ? uiOutput.map_options : [];
+            break;
+        case 'search_user_summary_map_level':
+            output.query = uiOutput.query ?? null;
+            output.match_count = uiOutput.match_count ?? 0;
+            output.maps = Array.isArray(uiOutput.maps)
+                ? uiOutput.maps.map((map: Record<string, any>) => ({
+                    id: map.id,
+                    name: map.name,
+                    matched_fields: map.matched_fields ?? undefined,
+                }))
+                : [];
+            break;
+        case 'get_user_summary_map_level':
+            output.map_count = uiOutput.map_count ?? 0;
+            output.maps = Array.isArray(uiOutput.maps)
+                ? uiOutput.maps.map((map: Record<string, any>) => ({
+                    id: map.id,
+                    name: map.name,
+                    section_count: map.section_count,
+                    mistake_percent: map.mistake_percent,
+                    expert_adherence_percent: map.expert_adherence_percent,
+                }))
+                : [];
+            break;
+        case 'run_recorded_ai_analysis':
+        case 'get_recorded_session_analysis':
+            output.session_id = uiOutput.session_id ?? uiOutput.analysis?.session_id ?? null;
+            output.segment_count = uiOutput.segment_count ?? uiOutput.analysis?.segment_count ?? 0;
+            output.samples_analyzed = uiOutput.samples_analyzed ?? uiOutput.analysis?.samples_analyzed ?? 0;
+            break;
+        case 'get_recorded_session_context':
+            output.session_id = uiOutput.session_id ?? null;
+            output.track = uiOutput.track ?? null;
+            output.car = uiOutput.car ?? null;
+            break;
+        case 'get_live_focus_section':
+            output.focus_section = uiOutput.focus?.section?.name ?? null;
+            output.show_map_arguments = uiOutput.focus?.show_map_arguments ?? null;
+            break;
+        case 'get_live_section_history':
+            output.history_count = Array.isArray(uiOutput.history) ? uiOutput.history.length : 0;
+            break;
+        case 'analyze_live_recorded_analysis':
+            output.source = uiOutput.source ?? null;
+            output.segment_count = uiOutput.analysis?.segment_count ?? 0;
+            output.samples_analyzed = uiOutput.analysis?.samples_analyzed ?? 0;
+            output.expert_time_available = uiOutput.analysis?.expert_time_available ?? null;
+            break;
+        case '_get_live_section_telemetry':
+            output.section = uiOutput.section
+                ? {
+                    id: uiOutput.section.id ?? null,
+                    name: uiOutput.section.name ?? null,
+                }
+                : null;
+            output.row_count = Array.isArray(uiOutput.rows) ? uiOutput.rows.length : 0;
+            break;
+        case '_record_live_section_classification':
+            output.classification = uiOutput.classification
+                ? {
+                    section_id: uiOutput.classification.sectionId ?? uiOutput.classification.section_id ?? null,
+                    section_name: uiOutput.classification.sectionName ?? uiOutput.classification.section_name ?? null,
+                    severity: uiOutput.classification.severity ?? null,
+                }
+                : null;
+            break;
+        default:
+            break;
+    }
+
+    return output;
+};
+
 const createAiToolDefinition = (
     name: typeof ALL_AI_TOOL_NAMES[number],
 ): AiCommandToolDefinition => {
@@ -1759,6 +1937,7 @@ const createAiToolDefinition = (
             }
             return handler(args, handlerContext);
         },
+        formatAiOutput: (uiOutput) => buildToolAiOutput(name, uiOutput),
     };
 };
 

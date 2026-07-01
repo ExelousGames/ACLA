@@ -119,15 +119,20 @@ describe('BaselineCollectionTracker', () => {
             message: 'Baseline complete. Cached lap record is ready.',
             tool_name: 'collect_live_baseline',
             final: true,
-            payload: {
+            ui_output: {
                 progress_percent: 100,
                 status: 'complete',
                 car: 'Ferrari 296',
                 track: 'brands_hatch',
                 message: 'Baseline complete. Cached lap record is ready.',
             },
+            ai_output: {
+                name: 'collect_live_baseline',
+                status: 'complete',
+                message: 'Baseline complete. Cached lap record is ready.',
+            },
         });
-        expect(Object.keys(outputs.at(-1).payload).sort()).toEqual([
+        expect(Object.keys(outputs.at(-1).ui_output).sort()).toEqual([
             'car',
             'message',
             'progress_percent',

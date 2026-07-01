@@ -190,11 +190,14 @@ export const extractInlineFunctionCalls = (
     return { cleanText, calls };
 };
 
-const toToolResultPayload = (result: unknown): Record<string, unknown> => (
-    result && typeof result === 'object' && !Array.isArray(result)
-        ? result as Record<string, unknown>
-        : { value: result }
-);
+const getToolResultForAi = (result: unknown): unknown => {
+    if (isToolOutputEnvelope(result)) {
+        return result.ai_output;
+    }
+    return result && typeof result === 'object' && !Array.isArray(result)
+        ? result
+        : { value: result };
+};
 
 const defaultToolRunId = () =>
     `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -260,7 +263,7 @@ export const executeSubscribedFrontendTool = async ({
         sendText({
             type: 'tool_result',
             id,
-            result: toToolResultPayload(result),
+            result: getToolResultForAi(result),
         });
         emitEvent?.({
             kind: 'tool_event',

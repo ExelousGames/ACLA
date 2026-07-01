@@ -4,7 +4,8 @@ export type ToolOutputEnvelope = {
     tool_name: string;
     run_id: string;
     status: ToolOutputStatus;
-    payload: unknown;
+    ui_output: unknown;
+    ai_output: unknown;
     message?: string;
     error?: string;
     final: boolean;
@@ -21,9 +22,19 @@ export type ToolOutputEmitter = (
 ) => void;
 
 export type ToolOutputController = {
-    progress: (payload: unknown, options?: { message?: string; progressPercent?: number }) => ToolOutputEnvelope;
-    final: (payload: unknown, options?: { message?: string }) => ToolOutputEnvelope;
-    error: (error: string, payload?: unknown, options?: { message?: string }) => ToolOutputEnvelope;
+    progress: (uiOutput: unknown, options?: {
+        message?: string;
+        progressPercent?: number;
+        aiOutput?: unknown;
+    }) => ToolOutputEnvelope;
+    final: (uiOutput: unknown, options?: {
+        message?: string;
+        aiOutput?: unknown;
+    }) => ToolOutputEnvelope;
+    error: (error: string, uiOutput?: unknown, options?: {
+        message?: string;
+        aiOutput?: unknown;
+    }) => ToolOutputEnvelope;
     getFinalOutput: () => ToolOutputEnvelope | null;
 };
 
@@ -44,39 +55,59 @@ export type AiToolDefinition<TContext, THandlerContext> = {
         handlerContext: THandlerContext,
     ) => Promise<unknown> | unknown;
     formatOutput?: (result: unknown) => unknown;
+    formatAiOutput?: (uiOutput: unknown, result: unknown) => unknown;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 );
 
-const getPayloadStatus = (
-    payload: unknown,
+const getUiOutputStatus = (
+    uiOutput: unknown,
     fallback: ToolOutputStatus,
 ): ToolOutputStatus => {
-    if (isRecord(payload) && typeof payload.status === 'string' && payload.status) {
-        return payload.status;
+    if (isRecord(uiOutput) && typeof uiOutput.status === 'string' && uiOutput.status) {
+        return uiOutput.status;
     }
     return fallback;
 };
 
-const getPayloadMessage = (payload: unknown): string | undefined => (
-    isRecord(payload) && typeof payload.message === 'string'
-        ? payload.message
+const getUiOutputMessage = (uiOutput: unknown): string | undefined => (
+    isRecord(uiOutput) && typeof uiOutput.message === 'string'
+        ? uiOutput.message
         : undefined
 );
 
-const getPayloadError = (payload: unknown): string | undefined => (
-    isRecord(payload) && typeof payload.error === 'string'
-        ? payload.error
+const getUiOutputError = (uiOutput: unknown): string | undefined => (
+    isRecord(uiOutput) && typeof uiOutput.error === 'string'
+        ? uiOutput.error
         : undefined
 );
 
-const getPayloadProgressPercent = (payload: unknown): number | undefined => {
-    if (!isRecord(payload)) return undefined;
-    const raw = payload.progress_percent ?? payload.progressPercent;
+const getUiOutputProgressPercent = (uiOutput: unknown): number | undefined => {
+    if (!isRecord(uiOutput)) return undefined;
+    const raw = uiOutput.progress_percent ?? uiOutput.progressPercent;
     const parsed = Number(raw);
     return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const buildDefaultAiOutput = (
+    toolName: string,
+    status: ToolOutputStatus,
+    message?: string,
+    error?: string,
+): Record<string, unknown> => {
+    const output: Record<string, unknown> = {
+        name: toolName,
+        status,
+    };
+    if (message) {
+        output.message = message;
+    }
+    if (error) {
+        output.error = error;
+    }
+    return output;
 };
 
 export const isToolOutputEnvelope = (value: unknown): value is ToolOutputEnvelope => (
@@ -85,31 +116,37 @@ export const isToolOutputEnvelope = (value: unknown): value is ToolOutputEnvelop
     && typeof value.run_id === 'string'
     && typeof value.status === 'string'
     && typeof value.final === 'boolean'
-    && 'payload' in value
+    && 'ui_output' in value
+    && 'ai_output' in value
 );
 
 const createEnvelope = (
     toolName: string,
     runId: string,
-    payload: unknown,
+    uiOutput: unknown,
     final: boolean,
     fallbackStatus: ToolOutputStatus,
     options: {
         message?: string;
         error?: string;
         progressPercent?: number;
+        aiOutput?: unknown;
     } = {},
 ): ToolOutputEnvelope => {
-    const payloadError = getPayloadError(payload);
+    const uiOutputError = getUiOutputError(uiOutput);
+    const status = options.error || uiOutputError ? 'error' : getUiOutputStatus(uiOutput, fallbackStatus);
+    const message = options.message ?? getUiOutputMessage(uiOutput);
+    const error = options.error ?? uiOutputError;
     const envelope: ToolOutputEnvelope = {
         tool_name: toolName,
         run_id: runId,
-        status: options.error || payloadError ? 'error' : getPayloadStatus(payload, fallbackStatus),
-        payload,
-        message: options.message ?? getPayloadMessage(payload),
-        error: options.error ?? payloadError,
+        status,
+        ui_output: uiOutput,
+        ai_output: options.aiOutput ?? buildDefaultAiOutput(toolName, status, message, error),
+        message,
+        error,
         final,
-        progress_percent: options.progressPercent ?? getPayloadProgressPercent(payload),
+        progress_percent: options.progressPercent ?? getUiOutputProgressPercent(uiOutput),
     };
 
     if (envelope.message === undefined) {
@@ -141,31 +178,31 @@ export const createToolOutputController = (
     };
 
     return {
-        progress(payload, options = {}) {
+        progress(uiOutput, options = {}) {
             return emitEnvelope(createEnvelope(
                 toolName,
                 runId,
-                payload,
+                uiOutput,
                 false,
                 'progress',
                 options,
             ));
         },
-        final(payload, options = {}) {
+        final(uiOutput, options = {}) {
             return emitEnvelope(createEnvelope(
                 toolName,
                 runId,
-                payload,
+                uiOutput,
                 true,
                 'complete',
                 options,
             ));
         },
-        error(error, payload = { status: 'error', error }, options = {}) {
+        error(error, uiOutput = { status: 'error', error }, options = {}) {
             return emitEnvelope(createEnvelope(
                 toolName,
                 runId,
-                payload,
+                uiOutput,
                 true,
                 'error',
                 {
@@ -216,7 +253,10 @@ export const executeAiToolDefinition = async <TContext, THandlerContext extends 
         const formatted = definition.formatOutput
             ? definition.formatOutput(rawResult)
             : rawResult;
-        return output.final(formatted);
+        const aiOutput = definition.formatAiOutput
+            ? definition.formatAiOutput(formatted, rawResult)
+            : undefined;
+        return output.final(formatted, { aiOutput });
     } catch (error) {
         const message = (error as Error)?.message || String(error);
         return output.error(message, {
