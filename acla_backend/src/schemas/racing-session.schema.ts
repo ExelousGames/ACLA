@@ -43,6 +43,9 @@ export class RacingSession {
     // Total number of telemetry records (allows clients to know data size quickly)
     @Prop({ required: false })
     totalDataPoints?: number;
+
+    @Prop({ default: Date.now })
+    created_date: Date;
 }
 
 export const RacingSessionSchema = SchemaFactory.createForClass(RacingSession);

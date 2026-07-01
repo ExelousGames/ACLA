@@ -6,11 +6,13 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { AuthModule } from './shared/auth/auth.module';
 import { AuthorizationModule } from './shared/authorization/authorization.module';
-import { RacingMapModule } from './modules/map/racing-map.module';
 import { RacingSessionModule } from './modules/racing-session/racing-session.module';
 import { AiModelModule as UserSessionAiModelModule } from './modules/user-session-ai-model/user-session-ai-model.module';
 import { AiModelModule } from './modules/ai-model/ai-model.module';
 import { ChunkModule } from './shared/chunk-service/chunk.module';
+import { SeedModule } from './shared/seed/seed.module';
+import { VoiceModule } from './voice/voice.module';
+import { CircuitMapModule } from './modules/circuit-map/circuit-map.module';
 
 @Module({
 
@@ -23,11 +25,13 @@ import { ChunkModule } from './shared/chunk-service/chunk.module';
     ChunkModule,
     AuthModule,
     AuthorizationModule,
-    RacingMapModule,
+    SeedModule,
     UserInfoModule,
     RacingSessionModule,
     UserSessionAiModelModule,
-    AiModelModule
+    AiModelModule,
+    VoiceModule,
+    CircuitMapModule
   ],
   controllers: [AppController],
   providers: [AppService],

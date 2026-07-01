@@ -1,0 +1,5373 @@
+"""
+Telemetry capability tools the agent box exposes to its sub-agents.
+
+Provides two categories of tool that the agent nodes can invoke:
+
+1. **Graph generation** — per-graph DataFrame builders + matplotlib
+   renderers (feature plots, trajectory plots) catalogued in
+   ``AGENT_GRAPH_DEFINITIONS``.
+2. **Deterministic queries** — the ``PIPELINE_QUERY_DEFINITIONS`` catalog
+   of structured math operations (threshold crossings, extrema, slopes,
+   onset ordering) the zoom executor runs against the graph tables to
+   extract exact ilocs / values for the synthesizer to cite.
+
+Together they let the vision-capable LLM see visual evidence while the
+executor produces verifiable numerical readings off the DataFrame.
+"""
+
+from __future__ import annotations
+
+import io
+import hashlib
+import inspect
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.collections import LineCollection
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+from app.internal_knowledge_base import skills
+
+LOGGER = logging.getLogger(__name__)
+
+_HAIRPIN_NEAR_U_TURN_MIN_DEGREES = 130.0
+
+
+def _absolute_iloc_slice(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+) -> pd.DataFrame:
+    """Return rows whose absolute iloc index is in [start_index, end_index)."""
+    s = int(start_index)
+    e = int(end_index)
+    if e <= s:
+        return df.iloc[0:0]
+    return df.loc[(df.index >= s) & (df.index < e)]
+
+
+AGENT_GRAPH_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "id": "throttle",
+        "title": "Throttle Application - ",
+        "description": "Expert vs player throttle traces.",
+    },
+    {
+        "id": "brake",
+        "title": "Brake Application - ",
+        "description": "Expert vs player brake traces.",
+    },
+    {
+        "id": "time_delta",
+        "title": "Time Difference to Expert",
+        "description": "Instantaneous time delta vs expert.",
+    },
+    {
+        "id": "speed_delta",
+        "title": "Speed Difference (Expert - Player)",
+        "description": "Speed difference between expert and player.",
+    },
+    {
+        "id": "speed",
+        "title": "Speed Trace: Expert vs Player",
+        "description": "Expert vs player speed traces.",
+    },
+    {
+        "id": "push_limit",
+        "title": "Driver Push/Limit",
+        "description": "Driver push-to-limit metric.",
+    },
+    {
+        "id": "trajectory_detailed",
+        "title": "Detailed Trajectory",
+        "description": (
+            "Close-up trajectory. Green = player, blue dashed = expert. "
+            "Expert-anchored phase markers per detected arc: yellow circle "
+            "= entry, red star = apex, green triangle = exit. Chicanes / "
+            "esses show numbered apexes (#1, #2, …) — one set of markers "
+            "per arc."
+        ),
+    },
+    {
+        "id": "trajectory_gas_brake",
+        "title": "Gas/Brake Trajectory",
+        "description": (
+            "Player trajectory coloured by throttle/brake balance "
+            "(green = full gas, red = full brake, yellow = coasting). "
+            "Mirrors the Gas/Brake colour mode in the human annotation track map."
+        ),
+    },
+    {
+        "id": "trajectory_balance",
+        "title": "Oversteer/Understeer Slip Balance",
+        "description": (
+            "Line plot over segment index of (mean |rear slip| − mean |front slip|). "
+            "Positive (red shading above zero) = oversteer (rear-slip dominant); "
+            "negative (blue shading below zero) = understeer (front-slip dominant). "
+            "Zero = balanced front/rear slip."
+        ),
+    },
+    {
+        "id": "trajectory_offset",
+        "title": "Trajectory Offset (signed)",
+        "description": (
+            "Signed perpendicular offset between player and expert lines over "
+            "segment index. Positive y = player wider than expert (toward "
+            "outside of corner); negative y = tighter (toward inside). "
+            "Expert-anchored entry/apex/exit markers placed on the offset trace."
+        ),
+    },
+    {
+        "id": "altitude_profile",
+        "title": "Altitude Profile: Expert vs Player",
+        "description": (
+            "Player and expert z-position over segment index. "
+            "Expert-anchored entry/apex/exit markers show where altitude "
+            "should be read for entry/apex/exit altitude descriptions."
+        ),
+    },
+    {
+        "id": "gear",
+        "title": "Gear Selection: Expert vs Player",
+        "description": "Expert vs player gear traces (integer steps).",
+    },
+]
+
+# ---------------------------------------------------------------------------
+# Graph generation
+# ---------------------------------------------------------------------------
+
+
+def _plot_to_image(fig) -> Image.Image:
+    """Convert a matplotlib figure to a PIL Image (PNG in memory)."""
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    buf.seek(0)
+    img = Image.open(buf).convert("RGB")
+    plt.close(fig)
+    return img
+
+
+def _create_feature_plot(
+    table: pd.DataFrame,
+    title: str,
+) -> Optional[Image.Image]:
+    """Line plot for every column in ``table`` — one labelled trace each."""
+    if table.empty or len(table.columns) == 0:
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    for col in table.columns:
+        ax.plot(table.index, table[col], label=col)
+    ax.set_title(title)
+    ax.set_xlabel("Index")
+    ax.legend()
+    ax.grid(True)
+
+    return _plot_to_image(fig)
+
+
+def _make_colored_line_collection(
+    ax,
+    x: np.ndarray,
+    y: np.ndarray,
+    values: np.ndarray,
+    cmap: str,
+    vmin: float,
+    vmax: float,
+    linewidth: float = 3,
+) -> LineCollection:
+    """Build a LineCollection whose segments are coloured by *values*."""
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    lc = LineCollection(segments, cmap=cmap, norm=norm, linewidth=linewidth)
+    # One colour value per segment — use the left endpoint's value
+    lc.set_array(values[:-1])
+    ax.add_collection(lc)
+    return lc
+
+
+# ---------------------------------------------------------------------------
+# Expert-anchored corner phase detection (compute_expert_phases tool)
+#
+# Phases are derived only from EXPERT telemetry — the player can stop or
+# drive erratically mid-corner, so player-derived phases are unreliable.
+# The same iloc identifies the same telemetry sample on both lines.
+#
+# Algorithm (track-data-free): use the expert (x, y) trace as provided,
+# compute signed parametric curvature κ = (x'·y'' − y'·x'') / (x'² + y'²)^(3/2),
+# and split the segment into arcs where |κ| exceeds a noise threshold and
+# sign(κ) is constant. Each arc yields one (entry, apex, exit) — chicanes
+# and esses naturally produce multiple arcs of opposite sign. Apex is the
+# argmax of |κ| within the arc (geometric, robust on flat-speed sweepers
+# and trail-braked corners where min-speed and apex disagree).
+# ---------------------------------------------------------------------------
+
+
+_KAPPA_FLOOR = 1e-3   # absolute κ below this is treated as noise (matches existing usage in detailed_track_map.py)
+_KAPPA_FRAC = 0.20    # arc threshold = max(_KAPPA_FLOOR, _KAPPA_FRAC * max|κ|)
+_MIN_CORNER_TURN_DEG = 10.0
+_MIN_CORNER_ARC_LENGTH_M = 4.0
+
+
+def _odd(n: int) -> int:
+    """Return *n* clipped to odd so a centred convolution window is symmetric."""
+    return n if n % 2 == 1 else n + 1
+
+
+def _moving_average(arr: np.ndarray, window: int) -> np.ndarray:
+    """Centred moving average via numpy convolution.
+
+    Uses ``mode='same'`` so output length matches input. Edge samples are
+    biased by zero-padding inside ``np.convolve`` — callers should mask
+    the first/last ``window // 2`` samples when picking peaks.
+    """
+    if window <= 1 or arr.size < window:
+        return arr.astype(float)
+    kernel = np.ones(window, dtype=float) / float(window)
+    return np.convolve(arr.astype(float), kernel, mode="same")
+
+
+def _expert_kinematics(
+    segment: pd.DataFrame,
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]]:
+    """Return parametric kinematics from the expert (x, y) trace.
+
+    Shared by ``_detect_expert_phases`` (which derives entry / apex / exit
+    ilocs from the curvature peaks) and ``_create_trajectory_offset_plot``
+    (which needs the unit tangent for cross-track error and the signed κ
+    for the wider/tighter sign flip). The expert x/y input is already
+    smoothed upstream, so this helper does not smooth position samples.
+
+    Returns ``(x, y, dx, dy, kappa, window)`` or ``None`` if the
+    segment is too short for derivative math, missing required columns,
+    or all-NaN.
+    """
+    n = len(segment)
+    if n < 2:
+        return None
+    if "expert_optimal_player_pos_x" not in segment.columns or \
+       "expert_optimal_player_pos_y" not in segment.columns:
+        return None
+
+    x = segment["expert_optimal_player_pos_x"].to_numpy(dtype=float)
+    y = segment["expert_optimal_player_pos_y"].to_numpy(dtype=float)
+    if not np.isfinite(x).any() or not np.isfinite(y).any():
+        return None
+    x = np.where(np.isfinite(x), x, np.interp(np.arange(n), np.where(np.isfinite(x))[0], x[np.isfinite(x)])) if np.isnan(x).any() else x
+    y = np.where(np.isfinite(y), y, np.interp(np.arange(n), np.where(np.isfinite(y))[0], y[np.isfinite(y)])) if np.isnan(y).any() else y
+
+    window = 1
+
+    dx = np.gradient(x)
+    dy = np.gradient(y)
+    ddx = np.gradient(dx)
+    ddy = np.gradient(dy)
+    denom = (dx * dx + dy * dy) ** 1.5
+    kappa = np.zeros_like(denom, dtype=float)
+    np.divide(dx * ddy - dy * ddx, denom, out=kappa, where=denom > 1e-9)
+
+    return x, y, dx, dy, kappa, window
+
+
+def _detect_expert_phases(
+    segment: pd.DataFrame,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """Detect corner phases from the expert position trace alone.
+
+    Returns ``(phases, smoothing_window)`` where ``phases`` is a list of
+    one dict per detected arc (empty for non-corner segments). Each dict
+    holds ilocs **relative to the segment start** (the public
+    ``compute_expert_phases`` tool shifts these into the parent frame
+    before exposing them via ``PipelineAttachment``) plus auxiliary
+    fields the VLM can use to reason about trail-braking and turn
+    direction:
+
+        {
+            "entry": int, "apex": int, "exit": int,
+            "direction": "left" | "right",
+            "kappa_peak": float,                 # signed κ at apex
+            "min_speed_iloc": int,
+            "peak_steer_iloc": int,
+            "apex_speed_disagreement": int,      # |apex - min_speed_iloc|
+        }
+
+    See module-level comment for the algorithm.
+    """
+    kin = _expert_kinematics(segment)
+    if kin is None:
+        return [], 0
+    x_ref, y_ref, dx, dy, kappa, window = kin
+    n = len(segment)
+
+    # Keep the mask structure explicit; smoothing is disabled for expert phases.
+    edge = window // 2
+    mask = np.zeros(n, dtype=bool)
+    mask[edge: n - edge] = True
+
+    abs_k = np.abs(kappa)
+    abs_k_masked = np.where(mask, abs_k, 0.0)
+    peak = float(abs_k_masked.max()) if abs_k_masked.size else 0.0
+    if peak < _KAPPA_FLOOR * 2.0:
+        return [], window  # whole segment is below the noise floor → no corner
+
+    threshold = max(_KAPPA_FLOOR, _KAPPA_FRAC * peak)
+    above = (abs_k_masked > threshold)
+    sign_k = np.sign(kappa)
+
+    # Optional speed/steer for auxiliary cross-validation fields.
+    speed = (
+        segment["expert_optimal_speed"].to_numpy(dtype=float)
+        if "expert_optimal_speed" in segment.columns else None
+    )
+    steer = (
+        segment["expert_optimal_steering"].to_numpy(dtype=float)
+        if "expert_optimal_steering" in segment.columns else None
+    )
+
+    min_arc_len = max(5, window)
+    phases: List[Dict[str, Any]] = []
+
+    i = 0
+    while i < n:
+        if not above[i]:
+            i += 1
+            continue
+        s = sign_k[i]
+        j = i
+        while j < n and above[j] and sign_k[j] == s:
+            j += 1
+        # Arc is [i, j)
+        arc_len = j - i
+        arc_peak = float(abs_k[i:j].max()) if arc_len > 0 else 0.0
+        turn_deg = _turn_angle_degrees(x_ref, y_ref, i, j - 1)
+        path_len = _arc_path_length_m(x_ref, y_ref, i, j - 1)
+        is_geometric_corner = (
+            turn_deg >= _MIN_CORNER_TURN_DEG
+            and path_len >= _MIN_CORNER_ARC_LENGTH_M
+        )
+        if (
+            arc_len >= min_arc_len
+            and arc_peak >= 2.0 * _KAPPA_FLOOR
+            and is_geometric_corner
+        ):
+            apex_local = i + int(np.argmax(abs_k[i:j]))
+            phase: Dict[str, Any] = {
+                "entry": int(i),
+                "apex": int(apex_local),
+                "exit": int(j - 1),
+                "direction": "left" if kappa[apex_local] > 0 else "right",
+                "kappa_peak": float(kappa[apex_local]),
+                "turn_angle_degrees": float(turn_deg),
+                "arc_length_m": float(path_len),
+            }
+            if speed is not None and np.isfinite(speed[i:j]).any():
+                ms = i + int(np.nanargmin(speed[i:j]))
+                phase["min_speed_iloc"] = int(ms)
+                phase["apex_speed_disagreement"] = int(abs(apex_local - ms))
+            if steer is not None and np.isfinite(steer[i:j]).any():
+                phase["peak_steer_iloc"] = int(i + int(np.nanargmax(np.abs(steer[i:j]))))
+            phases.append(phase)
+        i = j
+
+    return phases, window
+
+
+def _segment_type_label(**filters: Any) -> Dict[str, Any]:
+    from app.internal_knowledge_base.label_lookup import find_labels
+
+    matches = find_labels(type="segment_type", **filters)
+    if len(matches) != 1:
+        raise RuntimeError(
+            "segment_type knowledge lookup expected exactly one label for "
+            f"{filters!r}, found {len(matches)}"
+        )
+    doc = matches[0]
+    if not doc.get("id") or not doc.get("name"):
+        raise RuntimeError(
+            "segment_type knowledge lookup returned a label without id/name "
+            f"for {filters!r}"
+        )
+    return doc
+
+
+def _segment_shape_result(
+    *,
+    segment_type_role: str,
+    shape_key: str,
+    reason: str,
+    annotation_scope: Optional[str] = None,
+) -> Dict[str, Any]:
+    out = {
+        "segment_type_role": segment_type_role,
+        "shape_key": shape_key,
+        "reason": reason,
+    }
+    if annotation_scope is not None:
+        out["annotation_scope"] = annotation_scope
+    return out
+
+
+def compute_expert_phases(
+    df: pd.DataFrame, start_index: int, end_index: int,
+):
+    """Tool — per-arc entry / apex / exit ilocs from the expert position trace.
+
+    Computes signed parametric curvature κ on the expert (x, y) trace and
+    segments the parent slice into arcs where |κ| exceeds a
+    noise threshold with constant sign. Each arc produces one
+    (entry, apex, exit) tuple — chicanes / esses naturally yield multiple
+    arcs of opposite ``direction``. Apex is ``argmax(|κ|)`` within the
+    arc, robust on flat-speed sweepers and trail-braked corners where
+    minimum speed precedes the geometric pinch.
+
+    Returns a ``phase_indices`` attachment with shape::
+
+        {
+            "phases": [
+                { "entry", "apex", "exit", "direction",
+                  "kappa_peak", "min_speed_iloc", "peak_steer_iloc",
+                  "apex_speed_disagreement" },
+                ...
+            ],
+            "smoothing_window": int,
+        }
+
+    All ilocs are absolute parent-frame indices in
+    ``[start_index, end_index)`` — matching the feature-plot x-axis and
+    the synthesizer prompt's index range. ``phases`` is empty when no
+    arc clears the curvature threshold (pure straight, or segment too
+    short / missing position columns).
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+
+    start = int(start_index)
+    segment = _absolute_iloc_slice(df, start, int(end_index))
+    phases, window = _detect_expert_phases(segment)
+
+    iloc_fields = ("entry", "apex", "exit", "min_speed_iloc", "peak_steer_iloc")
+    shifted_phases = [
+        {
+            k: (int(v) + start if k in iloc_fields else v)
+            for k, v in phase.items()
+        }
+        for phase in phases
+    ]
+
+    return PipelineAttachment(
+        name="phase_indices",
+        kind="structured",
+        label="Phase Indices (expert-anchored)",
+        content=_round_floats({"phases": shifted_phases, "smoothing_window": int(window)}),
+    )
+
+
+def _classify_base_segment_shape(
+    phases: List[Dict[str, Any]],
+    n_rows: int,
+) -> Dict[str, Any]:
+    if not phases:
+        return _segment_shape_result(
+            segment_type_role="base_segment_shape",
+            shape_key="straight",
+            reason="No expert curvature arc cleared the corner threshold.",
+        )
+
+    if len(phases) >= 2:
+        gaps = [
+            int(phases[i + 1]["entry"]) - int(phases[i]["exit"])
+            for i in range(len(phases) - 1)
+        ]
+        close_gap = max(4, int(0.15 * max(n_rows, 1)))
+        shape_key = (
+            "consecutive_corners_no_straight"
+            if gaps and max(gaps) <= close_gap
+            else "between_consecutive_corners"
+        )
+        return _segment_shape_result(
+            segment_type_role="base_segment_shape",
+            shape_key=shape_key,
+            reason=(
+                f"{len(phases)} expert curvature arcs detected; "
+                f"inter-arc gaps={gaps} ilocs."
+            ),
+        )
+
+    phase = phases[0]
+    entry = int(phase["entry"])
+    apex = int(phase["apex"])
+    exit_ = int(phase["exit"])
+    entry_frac = entry / max(n_rows - 1, 1)
+    apex_frac = apex / max(n_rows - 1, 1)
+    exit_frac = exit_ / max(n_rows - 1, 1)
+
+    if entry_frac > 0.25 and apex_frac >= 0.85:
+        shape_key = "approach_to_corner"
+        reason = (
+            "Segment starts before the detected curvature arc and ends "
+            "before the corner apex."
+        )
+    elif apex_frac <= 0.35 and exit_frac >= 0.75:
+        shape_key = "exit_corner_to_straight"
+        reason = (
+            "Segment begins in the corner-exit phase and ends near the "
+            "corner exit; ST4 is not used for a completed corner plus a "
+            "substantial following straight."
+        )
+    elif exit_frac < 0.75:
+        shape_key = "in_corner"
+        reason = (
+            "Detected a single corner arc plus a substantial following "
+            "straight; ST4 is reserved for the corner-exit section itself."
+        )
+    elif entry_frac <= 0.15 and exit_frac >= 0.85:
+        shape_key = "in_corner"
+        reason = "One curvature arc spans most of the segment."
+    else:
+        shape_key = "in_corner"
+        reason = "One curvature arc dominates the segment."
+
+    return _segment_shape_result(
+        segment_type_role="base_segment_shape",
+        shape_key=shape_key,
+        reason=reason,
+    )
+
+
+def _turn_angle_degrees(x: np.ndarray, y: np.ndarray, entry: int, exit_: int) -> float:
+    if exit_ <= entry or x.size == 0 or y.size == 0:
+        return 0.0
+    hi_limit = min(x.size, y.size) - 1
+    lo = max(0, min(entry, hi_limit))
+    hi = max(0, min(exit_, hi_limit))
+    if hi <= lo:
+        return 0.0
+    seg_dx = np.diff(x[lo: hi + 1])
+    seg_dy = np.diff(y[lo: hi + 1])
+    finite = np.isfinite(seg_dx) & np.isfinite(seg_dy)
+    moving = finite & ((seg_dx * seg_dx + seg_dy * seg_dy) > 1e-9)
+    angles = np.unwrap(np.arctan2(seg_dy[moving], seg_dx[moving]))
+    if angles.size < 2:
+        return 0.0
+    return float(abs(angles[-1] - angles[0]) * 180.0 / np.pi)
+
+
+def _arc_path_length_m(x: np.ndarray, y: np.ndarray, entry: int, exit_: int) -> float:
+    if exit_ <= entry or x.size == 0 or y.size == 0:
+        return 0.0
+    lo = max(0, min(entry, x.size - 1))
+    hi = max(0, min(exit_, x.size - 1))
+    if hi <= lo:
+        return 0.0
+    dx = np.diff(x[lo: hi + 1])
+    dy = np.diff(y[lo: hi + 1])
+    finite = np.isfinite(dx) & np.isfinite(dy)
+    if not finite.any():
+        return 0.0
+    return float(np.sqrt(dx[finite] * dx[finite] + dy[finite] * dy[finite]).sum())
+
+
+def _hairpin_shape_metrics(
+    x: np.ndarray,
+    y: np.ndarray,
+    dx: np.ndarray,
+    dy: np.ndarray,
+    entry: int,
+    exit_: int,
+    turn_deg: float,
+) -> Dict[str, Any]:
+    arc_length_m = _arc_path_length_m(x, y, entry, exit_)
+
+    is_near_u_turn = turn_deg >= _HAIRPIN_NEAR_U_TURN_MIN_DEGREES
+    return {
+        "turn_angle_degrees": float(turn_deg),
+        "arc_length_m": float(arc_length_m),
+        "is_near_u_turn": bool(is_near_u_turn),
+        "is_hairpin": bool(is_near_u_turn),
+    }
+
+
+def _classify_corner_shape_refinement(
+    phases: List[Dict[str, Any]],
+    x: np.ndarray,
+    y: np.ndarray,
+    kappa: np.ndarray,
+    dx: np.ndarray,
+    dy: np.ndarray,
+) -> Optional[Dict[str, Any]]:
+    if not phases:
+        return None
+
+    if len(phases) >= 2:
+        directions = {str(p.get("direction")) for p in phases}
+        if len(directions) >= 2:
+            return _segment_shape_result(
+                segment_type_role="corner_shape_refinement",
+                shape_key="chicane_or_esses",
+                reason="Multiple expert curvature arcs with direction change.",
+            )
+
+    primary = max(phases, key=lambda p: abs(float(p.get("kappa_peak", 0.0))))
+    entry = int(primary["entry"])
+    exit_ = int(primary["exit"])
+    if exit_ <= entry:
+        return None
+
+    turn_deg = _turn_angle_degrees(x, y, entry, exit_)
+    hairpin_metrics = _hairpin_shape_metrics(x, y, dx, dy, entry, exit_, turn_deg)
+    if hairpin_metrics["is_hairpin"]:
+        out = _segment_shape_result(
+            segment_type_role="corner_shape_refinement",
+            shape_key="hairpin",
+            reason=(
+                "Deterministic corner-shape gate passed "
+                f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
+            ),
+        )
+        out.update(hairpin_metrics)
+        return out
+
+    arc_k = np.abs(kappa[entry: exit_ + 1])
+    arc_k = arc_k[np.isfinite(arc_k)]
+    if arc_k.size < 6:
+        return None
+
+    thirds = np.array_split(arc_k, 3)
+    first = float(np.nanmedian(thirds[0]))
+    last = float(np.nanmedian(thirds[-1]))
+    denom = max(first, last, _KAPPA_FLOOR)
+    rel_change = (last - first) / denom
+    if abs(rel_change) <= 0.25:
+        shape_key = "constant_radius"
+        reason = (
+            "Curvature stays broadly steady from entry to exit "
+            f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
+        )
+    elif rel_change < 0:
+        shape_key = "increasing_radius"
+        reason = (
+            "Curvature decreases toward exit, so radius opens up "
+            f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
+        )
+    else:
+        shape_key = "decreasing_radius"
+        reason = (
+            "Curvature increases toward exit, so radius tightens "
+            f"(turn angle {hairpin_metrics['turn_angle_degrees']:.1f} deg)."
+        )
+
+    out = _segment_shape_result(
+        segment_type_role="corner_shape_refinement",
+        shape_key=shape_key,
+        reason=reason,
+    )
+    out.update({
+        "entry_median_abs_curvature": first,
+        "exit_median_abs_curvature": last,
+        "relative_curvature_change": float(rel_change),
+        **hairpin_metrics,
+    })
+    return out
+
+
+def _altitude_columns(df: pd.DataFrame) -> List[str]:
+    cols: List[str] = []
+    if "expert_optimal_player_pos_z" in df.columns:
+        cols.append("expert_optimal_player_pos_z")
+    if "Graphics_player_pos_z" in df.columns:
+        cols.append("Graphics_player_pos_z")
+    return cols
+
+
+def _position_columns_for_altitude(altitude_col: str) -> Optional[Tuple[str, str]]:
+    if altitude_col == "expert_optimal_player_pos_z":
+        return ("expert_optimal_player_pos_x", "expert_optimal_player_pos_y")
+    if altitude_col == "Graphics_player_pos_z":
+        return ("Graphics_player_pos_x", "Graphics_player_pos_y")
+    return None
+
+
+def _classify_altitude_angle(angle_degrees: float) -> str:
+    threshold_degrees = 1.0
+    if angle_degrees > threshold_degrees:
+        return "uphill"
+    if angle_degrees < -threshold_degrees:
+        return "downhill"
+    return "level"
+
+
+def _altitude_phase_summary(
+    values: np.ndarray,
+    x_values: np.ndarray,
+    y_values: np.ndarray,
+    start: int,
+    end: int,
+) -> Optional[Dict[str, Any]]:
+    lo = max(0, min(int(start), values.size - 1))
+    hi = max(lo + 1, min(int(end), values.size))
+    span = values[lo:hi]
+    x_span = x_values[lo:hi]
+    y_span = y_values[lo:hi]
+    finite_idx = np.where(
+        np.isfinite(span) & np.isfinite(x_span) & np.isfinite(y_span)
+    )[0]
+    if finite_idx.size < 2:
+        return None
+    first_i = lo + int(finite_idx[0])
+    last_i = lo + int(finite_idx[-1])
+    delta = float(values[last_i] - values[first_i])
+    path_x = x_values[first_i:last_i + 1]
+    path_y = y_values[first_i:last_i + 1]
+    finite_path = np.isfinite(path_x) & np.isfinite(path_y)
+    if int(np.sum(finite_path)) < 2:
+        return None
+    path_x = path_x[finite_path]
+    path_y = path_y[finite_path]
+    step_distances = np.hypot(np.diff(path_x), np.diff(path_y))
+    horizontal_distance = float(np.sum(step_distances[np.isfinite(step_distances)]))
+    if horizontal_distance <= 0.0:
+        return None
+    angle_degrees = float(np.degrees(np.arctan2(delta, horizontal_distance)))
+    return {
+        "start_offset": first_i,
+        "end_offset": last_i,
+        "start_altitude_m": float(values[first_i]),
+        "end_altitude_m": float(values[last_i]),
+        "delta_m": delta,
+        "horizontal_distance_units": horizontal_distance,
+        "slope_angle_degrees": angle_degrees,
+        "trend": _classify_altitude_angle(angle_degrees),
+    }
+
+
+def measure_segment_shape(
+    df: pd.DataFrame, start_index: int, end_index: int,
+):
+    """Tool — deterministic shape and altitude summary for a segment.
+
+    Uses expert-anchored curvature phases for base shape and corner-shape
+    refinements, then reads z-position angle over entry / apex / exit windows.
+    It reports shape keys and measurements only; preflight performs any
+    label-catalog wording or retrieval.
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+
+    start = int(start_index)
+    end = int(end_index)
+    segment = _absolute_iloc_slice(df, start, end)
+    phases, window = _detect_expert_phases(segment)
+    kin = _expert_kinematics(segment)
+
+    shape: Dict[str, Any] = {
+        "range": [start, end],
+        "smoothing_window": int(window),
+        "base_segment_shape": _classify_base_segment_shape(phases, len(segment)),
+        "corner_shape_refinement": None,
+        "altitude": {
+            "source_column": None,
+            "entry": None,
+            "apex": None,
+            "exit": None,
+        },
+        "phases": [],
+    }
+
+    if kin is not None:
+        x_ref, y_ref, dx, dy, kappa, _w = kin
+        shape["corner_shape_refinement"] = _classify_corner_shape_refinement(
+            phases, x_ref, y_ref, kappa, dx, dy,
+        )
+
+    iloc_fields = ("entry", "apex", "exit", "min_speed_iloc", "peak_steer_iloc")
+    shape["phases"] = [
+        {
+            k: (int(v) + start if k in iloc_fields else v)
+            for k, v in phase.items()
+        }
+        for phase in phases
+    ]
+
+    alt_cols = _altitude_columns(segment)
+    if phases and alt_cols:
+        alt_col = alt_cols[0]
+        xy_cols = _position_columns_for_altitude(alt_col)
+        if xy_cols is None or any(col not in segment.columns for col in xy_cols):
+            return PipelineAttachment(
+                name="segment_shape_measurement",
+                kind="structured",
+                label="Segment Shape Measurement",
+                content=_round_floats(shape),
+            )
+        alt = segment[alt_col].to_numpy(dtype=float)
+        x_values = segment[xy_cols[0]].to_numpy(dtype=float)
+        y_values = segment[xy_cols[1]].to_numpy(dtype=float)
+        primary = max(phases, key=lambda p: abs(float(p.get("kappa_peak", 0.0))))
+        entry_phase = phases[0]
+        exit_phase = phases[-1]
+        apex = int(primary["apex"])
+        apex_half_window = max(2, int(0.05 * max(len(segment), 1)))
+        spans = {
+            "entry": (int(entry_phase["entry"]), int(entry_phase["apex"]) + 1),
+            "apex": (apex - apex_half_window, apex + apex_half_window + 1),
+            "exit": (int(exit_phase["apex"]), int(exit_phase["exit"]) + 1),
+        }
+        shape["altitude"]["source_column"] = alt_col
+        for phase_name, (lo, hi) in spans.items():
+            summary = _altitude_phase_summary(alt, x_values, y_values, lo, hi)
+            if summary is None:
+                continue
+            summary["start_iloc"] = int(summary.pop("start_offset")) + start
+            summary["end_iloc"] = int(summary.pop("end_offset")) + start
+            shape["altitude"][phase_name] = summary
+
+    return PipelineAttachment(
+        name="segment_shape_measurement",
+        kind="structured",
+        label="Segment Shape Measurement",
+        content=_round_floats(shape),
+    )
+
+
+def _player_heading(seg_player_x: np.ndarray, seg_player_y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-iloc unit heading vector for the player.
+
+    Smooths the player x/y trace with a centred 5-sample window (or
+    smaller on short ranges) and takes the gradient. Sign convention:
+    ``heading = (hx, hy)``; the left-perpendicular is ``(-hy, hx)``.
+    """
+    n_rows = len(seg_player_x)
+    window = min(5, n_rows)
+    if window % 2 == 0:
+        window = max(1, window - 1)
+    sx = _moving_average(seg_player_x, window)
+    sy = _moving_average(seg_player_y, window)
+    dx = np.gradient(sx)
+    dy = np.gradient(sy)
+    norm = np.sqrt(dx * dx + dy * dy)
+    norm_safe = np.where(norm > 1e-6, norm, 1e-6)
+    return dx / norm_safe, dy / norm_safe
+
+
+def _cumulative_path_distance(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Cumulative arclength along a 2D polyline."""
+    if x.size == 0:
+        return np.array([], dtype=float)
+    dx = np.diff(x)
+    dy = np.diff(y)
+    seg_len = np.sqrt(dx * dx + dy * dy)
+    return np.concatenate(([0.0], np.cumsum(seg_len)))
+
+
+def _project_points_to_reference_path(
+    point_x: np.ndarray,
+    point_y: np.ndarray,
+    ref_x: np.ndarray,
+    ref_y: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project points onto a reference polyline and return ``(s, d, idx)``.
+
+    ``s`` is arclength progress along the reference path. ``d`` is signed
+    lateral offset using the local tangent's left-normal. This is a small
+    Frenet-like projection over the current telemetry window; it avoids the
+    corner fragility of comparing cars only in the player's instantaneous
+    heading frame.
+    """
+    n_points = int(point_x.size)
+    s_out = np.full(n_points, np.nan, dtype=float)
+    d_out = np.full(n_points, np.nan, dtype=float)
+    idx_out = np.full(n_points, -1, dtype=int)
+    if n_points == 0 or ref_x.size < 2:
+        return s_out, d_out, idx_out
+
+    ref_s = _cumulative_path_distance(ref_x, ref_y)
+    for i in range(n_points):
+        px = float(point_x[i])
+        py = float(point_y[i])
+        if not (np.isfinite(px) and np.isfinite(py)):
+            continue
+
+        vx = ref_x[1:] - ref_x[:-1]
+        vy = ref_y[1:] - ref_y[:-1]
+        wx = px - ref_x[:-1]
+        wy = py - ref_y[:-1]
+        seg_len2 = vx * vx + vy * vy
+        t = np.divide(
+            wx * vx + wy * vy,
+            seg_len2,
+            out=np.zeros_like(seg_len2),
+            where=seg_len2 > 1e-9,
+        )
+        t_min = np.zeros_like(t)
+        t_max = np.ones_like(t)
+        if lo == 0 and t_min.size:
+            t_min[0] = -2.0
+        if hi == max_seg_idx + 1 and t_max.size:
+            t_max[-1] = 3.0
+        t = np.minimum(np.maximum(t, t_min), t_max)
+        proj_x = ref_x[:-1] + t * vx
+        proj_y = ref_y[:-1] + t * vy
+        dist2 = (px - proj_x) ** 2 + (py - proj_y) ** 2
+        seg_idx = int(np.nanargmin(dist2))
+        seg_len = float(np.sqrt(max(seg_len2[seg_idx], 0.0)))
+        s_out[i] = float(ref_s[seg_idx] + t[seg_idx] * seg_len)
+        cross = vx[seg_idx] * (py - proj_y[seg_idx]) - vy[seg_idx] * (px - proj_x[seg_idx])
+        sign = 1.0 if cross >= 0.0 else -1.0
+        d_out[i] = sign * float(np.sqrt(dist2[seg_idx]))
+        idx_out[i] = seg_idx
+
+    return s_out, d_out, idx_out
+
+
+def _project_points_to_local_reference_path(
+    point_x: np.ndarray,
+    point_y: np.ndarray,
+    ref_x: np.ndarray,
+    ref_y: np.ndarray,
+    *,
+    center_indices: np.ndarray,
+    search_radius: int = 30,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Project points onto a local window of a same-session reference path.
+
+    A full-range nearest projection is fragile on hairpins and nearby parallel
+    track sections. Constraining each opponent sample to the player's local
+    neighbourhood preserves along-track ordering without snapping to a distant
+    part of the same curve.
+    """
+    n_points = int(point_x.size)
+    s_out = np.full(n_points, np.nan, dtype=float)
+    d_out = np.full(n_points, np.nan, dtype=float)
+    idx_out = np.full(n_points, -1, dtype=int)
+    if n_points == 0 or ref_x.size < 2:
+        return s_out, d_out, idx_out
+
+    ref_s = _cumulative_path_distance(ref_x, ref_y)
+    vx_all = ref_x[1:] - ref_x[:-1]
+    vy_all = ref_y[1:] - ref_y[:-1]
+    seg_len2_all = vx_all * vx_all + vy_all * vy_all
+    max_seg_idx = int(ref_x.size) - 2
+
+    for i in range(n_points):
+        px = float(point_x[i])
+        py = float(point_y[i])
+        center = int(center_indices[i]) if i < len(center_indices) else i
+        if not (np.isfinite(px) and np.isfinite(py)) or center < 0:
+            continue
+
+        lo = max(0, center - int(search_radius))
+        hi = min(max_seg_idx + 1, center + int(search_radius) + 1)
+        if hi <= lo:
+            lo = max(0, min(max_seg_idx, center))
+            hi = min(max_seg_idx + 1, lo + 1)
+
+        vx = vx_all[lo:hi]
+        vy = vy_all[lo:hi]
+        seg_len2 = seg_len2_all[lo:hi]
+        wx = px - ref_x[lo:hi]
+        wy = py - ref_y[lo:hi]
+        t = np.divide(
+            wx * vx + wy * vy,
+            seg_len2,
+            out=np.zeros_like(seg_len2),
+            where=seg_len2 > 1e-9,
+        )
+        t = np.clip(t, 0.0, 1.0)
+        proj_x = ref_x[lo:hi] + t * vx
+        proj_y = ref_y[lo:hi] + t * vy
+        dist2 = (px - proj_x) ** 2 + (py - proj_y) ** 2
+        local_seg = int(np.nanargmin(dist2))
+        seg_idx = lo + local_seg
+        seg_len = float(np.sqrt(max(seg_len2_all[seg_idx], 0.0)))
+        s_out[i] = float(ref_s[seg_idx] + t[local_seg] * seg_len)
+        cross = (
+            vx_all[seg_idx] * (py - proj_y[local_seg])
+            - vy_all[seg_idx] * (px - proj_x[local_seg])
+        )
+        sign = 1.0 if cross >= 0.0 else -1.0
+        d_out[i] = sign * float(np.sqrt(dist2[local_seg]))
+        idx_out[i] = seg_idx
+
+    return s_out, d_out, idx_out
+
+
+def _relative_position_frame(
+    seg: pd.DataFrame,
+    player_x: np.ndarray,
+    player_y: np.ndarray,
+    opponent_x: np.ndarray,
+    opponent_y: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+    """Return opponent-player long/lateral gaps plus player s/d.
+
+    Project opponents onto a local window of the player's path and subtract
+    the player's same-iloc path progress. This avoids the hairpin failure mode
+    where a straight-line tangent says a car ahead around the bend is behind.
+    Fallback uses the player's instantaneous heading.
+    """
+    if player_x.size >= 3:
+        window = min(5, int(player_x.size))
+        if window % 2 == 0:
+            window = max(1, window - 1)
+        ref_x = _moving_average(player_x, window)
+        ref_y = _moving_average(player_y, window)
+        player_s, player_d, player_ref_idx = _project_points_to_local_reference_path(
+            player_x,
+            player_y,
+            ref_x,
+            ref_y,
+            center_indices=np.arange(player_x.size),
+            search_radius=3,
+        )
+        if np.isfinite(player_s).any():
+            fallback_idx = np.arange(player_x.size)
+            center_indices = np.where(player_ref_idx >= 0, player_ref_idx, fallback_idx)
+            opponent_s, opponent_d, _ = _project_points_to_local_reference_path(
+                opponent_x,
+                opponent_y,
+                ref_x,
+                ref_y,
+                center_indices=center_indices,
+                search_radius=30,
+            )
+            long_gap = opponent_s - player_s
+            lateral_gap = opponent_d - player_d
+            return long_gap, lateral_gap, player_s, player_d, "player_local_path_projection"
+
+    hx, hy = _player_heading(player_x, player_y)
+    vx = opponent_x - player_x
+    vy = opponent_y - player_y
+    long_gap = vx * hx + vy * hy
+    lateral_gap = vx * (-hy) + vy * hx
+    player_s = _cumulative_path_distance(player_x, player_y)
+    player_d = np.zeros_like(player_s)
+    return long_gap, lateral_gap, player_s, player_d, "player_heading_projection"
+
+
+def _relative_long_gap_velocity(
+    seg: pd.DataFrame,
+    signed_long_gap: np.ndarray,
+    finite: np.ndarray,
+) -> Tuple[np.ndarray, str]:
+    """Derivative of opponent-player longitudinal gap.
+
+    Positive means the opponent is moving further ahead relative to the
+    player; negative means the player is closing on / moving past the
+    opponent. Uses telemetry time when available, otherwise falls back to
+    per-sample gap change for synthetic or position-only data.
+    """
+    velocity = np.full_like(signed_long_gap, np.nan, dtype=float)
+    if signed_long_gap.size < 2:
+        return velocity, "m/sample"
+
+    delta_gap = signed_long_gap[1:] - signed_long_gap[:-1]
+    valid_pairs = (
+        finite[1:]
+        & finite[:-1]
+        & np.isfinite(signed_long_gap[1:])
+        & np.isfinite(signed_long_gap[:-1])
+    )
+
+    if "Graphics_current_time" in seg.columns:
+        time_ms = pd.to_numeric(seg["Graphics_current_time"], errors="coerce").to_numpy(dtype=float)
+        delta_s = (time_ms[1:] - time_ms[:-1]) / 1000.0
+        valid_time = np.isfinite(delta_s) & (delta_s > 1e-6)
+        np.divide(
+            delta_gap,
+            delta_s,
+            out=velocity[1:],
+            where=valid_pairs & valid_time,
+        )
+        return velocity, "m/s"
+
+    velocity[1:] = np.where(valid_pairs, delta_gap, np.nan)
+    return velocity, "m/sample"
+
+
+def _relative_velocity_threshold(
+    units: str,
+    n_rows: int,
+    *,
+    min_relative_velocity_mps: float,
+    min_role_gain_m: float,
+) -> float:
+    if units == "m/s":
+        return float(min_relative_velocity_mps)
+    return float(min_role_gain_m) / max(1, int(n_rows) - 1)
+
+
+def _nan_percentile_or_none(values: np.ndarray, percentile: float) -> Optional[float]:
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    return float(np.nanpercentile(finite, percentile))
+
+
+def _active_opponent_mask(
+    seg: pd.DataFrame,
+    slot: int,
+    opponent_x: np.ndarray,
+    opponent_y: np.ndarray,
+    player_x: np.ndarray,
+    player_y: np.ndarray,
+    *,
+    same_car_tolerance_m: float = 0.25,
+) -> np.ndarray:
+    """Active mask for a true opponent slot, excluding the player's own slot.
+
+    ``Car_{1..MAX_CARS}`` is a flattening of the raw car-coordinate array, not
+    an opponents-only table. The player's car usually remains in one of those
+    slots, while ``Graphics_player_pos_*`` stores the same coordinates again.
+    If we do not filter that slot, zero-distance self samples look like a
+    close opponent interaction.
+    """
+    active = (
+        ((opponent_x != 0.0) | (opponent_y != 0.0))
+        & np.isfinite(opponent_x)
+        & np.isfinite(opponent_y)
+    )
+    if not active.any() or player_x.size != opponent_x.size:
+        return active
+
+    distance_to_player = np.sqrt((opponent_x - player_x) ** 2 + (opponent_y - player_y) ** 2)
+    finite_distance = active & np.isfinite(distance_to_player)
+    if finite_distance.any():
+        same_car_fraction = float((distance_to_player[finite_distance] <= same_car_tolerance_m).mean())
+        if same_car_fraction >= 0.95:
+            return np.zeros_like(active, dtype=bool)
+    return active
+
+
+def find_nearest_opponent(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    max_candidates: int = 3,
+    side_by_side_max_distance_m: float = 4.0,
+    side_by_side_min_lateral_m: float = 1.25,
+    side_by_side_longitudinal_window_m: float = 6.0,
+    close_following_longitudinal_window_m: float = 30.0,
+    close_following_lateral_m: float = 6.0,
+    min_active_fraction: float = 0.3,
+):
+    """Tool — identify the most relevant opponent(s) inside an iloc range.
+
+    Reads ``Graphics_player_pos_{x,y}`` and ``Car_{1..MAX_CARS}_pos_{x,y}`` over
+    ``[start_index, end_index)``. Empty opponent slots (where both x and y
+    are exactly ``0.0`` — the flattening default in ``telemetry.py``) are
+    skipped per row. For each slot with active data, computes per-iloc 2D
+    distance, signed longitudinal gap, and lateral offset from the driver's
+    local path / heading. Positive signed gap means the opponent is ahead of
+    the driver; negative means the driver is ahead of the opponent.
+
+    Slots whose active-iloc fraction is below ``min_active_fraction``
+    are dropped. Remaining slots are ranked by minimum 2D distance; the
+    top ``max_candidates`` are returned as ``candidates``. This is a
+    supporting-detail tool; use ``classify_opponent_interaction`` for the
+    role-aware primary slot and interaction outcome.
+
+    Produces an ``opponent_context`` attachment::
+
+        {
+            "range": [start_index, end_index],
+            "data_available": bool,
+            "n_active_slots": int,
+            "candidates": [
+                {
+                    "slot": int,                       # 1..MAX_CARS
+                    "min_distance_m": float,
+                    "min_distance_iloc": int,
+                    "entry_distance_m": float,
+                    "exit_distance_m": float,
+                    "entry_signed_long_gap_m": float,  # + ⇒ opp ahead at start
+                    "exit_signed_long_gap_m": float,   # + ⇒ opp ahead at end
+                    "min_lateral_offset_m": float,
+                    "min_lateral_offset_iloc": int,
+                    "side_by_side_iloc_count": int,
+                    "close_following_iloc_count": int,
+                    "trailing_pressure_iloc_count": int,
+                    "leading_draft_iloc_count": int,
+                    "active_iloc_fraction": float,
+                    "coordinate_frame": str,
+                    "passed_by_player": bool,          # entry +, exit −
+                    "got_passed_by_opponent": bool,    # entry −, exit +
+                },
+                ...
+            ],
+        }
+
+    Empty ``candidates`` with ``data_available: False`` means the
+    required position columns are absent. Empty ``candidates`` with
+    ``data_available: True`` means no opponent was close enough / active
+    enough in the range.
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+    from app.shared.telemetry import MAX_CARS
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="opponent_context",
+            kind="structured",
+            label="Opponent Context (nearest cars in range)",
+            content=_round_floats(content),
+        )
+
+    s, e = int(start_index), int(end_index)
+    base_payload: Dict[str, Any] = {
+        "range": [s, e],
+        "data_available": False,
+        "n_active_slots": 0,
+        "candidates": [],
+    }
+
+    if "Graphics_player_pos_x" not in df.columns or "Graphics_player_pos_y" not in df.columns:
+        base_payload["message"] = (
+            "Player position columns (Graphics_player_pos_x/y) missing — "
+            "cannot compute opponent context."
+        )
+        return _attach(base_payload)
+
+    seg = _absolute_iloc_slice(df, s, e)
+    n_rows = len(seg)
+    if n_rows < 2:
+        base_payload["message"] = "Range too short for opponent context (need ≥ 2 rows)."
+        return _attach(base_payload)
+
+    player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+    player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+    if not (np.isfinite(player_x).any() and np.isfinite(player_y).any()):
+        base_payload["message"] = "Player position trace is all NaN/inf."
+        return _attach(base_payload)
+
+    candidates_raw: List[Dict[str, Any]] = []
+    n_active_slots = 0
+
+    for slot in range(1, MAX_CARS + 1):
+        col_x = f"Car_{slot}_pos_x"
+        col_y = f"Car_{slot}_pos_y"
+        if col_x not in df.columns or col_y not in df.columns:
+            continue
+        ox = seg[col_x].to_numpy(dtype=float)
+        oy = seg[col_y].to_numpy(dtype=float)
+        active_mask = _active_opponent_mask(seg, slot, ox, oy, player_x, player_y)
+        active_count = int(active_mask.sum())
+        if active_count == 0:
+            continue
+        n_active_slots += 1
+        active_fraction = active_count / n_rows
+        if active_fraction < min_active_fraction:
+            continue
+
+        vx = np.where(active_mask, ox - player_x, np.nan)
+        vy = np.where(active_mask, oy - player_y, np.nan)
+        distance = np.sqrt(vx * vx + vy * vy)
+        signed_long, lateral_signed, _player_s, _player_d, frame_name = _relative_position_frame(
+            seg, player_x, player_y, ox, oy,
+        )
+        signed_long = np.where(active_mask, signed_long, np.nan)
+        lateral_signed = np.where(active_mask, lateral_signed, np.nan)
+        lateral_abs = np.abs(lateral_signed)
+
+        finite_dist = np.isfinite(distance)
+        if not finite_dist.any():
+            continue
+
+        min_d_local = int(np.nanargmin(distance))
+        min_lat_local = int(np.nanargmin(lateral_abs))
+
+        active_ilocs = np.where(active_mask)[0]
+        entry_idx = int(active_ilocs[0])
+        exit_idx = int(active_ilocs[-1])
+        entry_long = float(signed_long[entry_idx])
+        exit_long = float(signed_long[exit_idx])
+        finite = active_mask & finite_dist & np.isfinite(signed_long) & np.isfinite(lateral_abs)
+        min_long = float(np.nanmin(signed_long[finite])) if finite.any() else entry_long
+        max_long = float(np.nanmax(signed_long[finite])) if finite.any() else exit_long
+        min_abs_long_local = int(np.nanargmin(np.abs(signed_long)))
+        pass_crossing_close = bool(
+            float(distance[min_d_local]) <= 12.0
+            and abs(float(signed_long[min_abs_long_local])) <= 18.0
+        )
+        relative_velocity, velocity_units = _relative_long_gap_velocity(seg, signed_long, finite)
+        close_velocity_mask = finite & (
+            (distance <= 12.0)
+            | (np.abs(signed_long) <= 18.0)
+        )
+        min_rel_velocity = _nan_percentile_or_none(relative_velocity[close_velocity_mask], 10)
+        max_rel_velocity = _nan_percentile_or_none(relative_velocity[close_velocity_mask], 90)
+
+        side_by_side = int((
+            finite
+            & (np.abs(signed_long) <= side_by_side_longitudinal_window_m)
+            & (lateral_abs >= side_by_side_min_lateral_m)
+            & (lateral_abs <= side_by_side_max_distance_m)
+        ).sum()
+        )
+        close_following = (
+            finite
+            & (lateral_abs <= close_following_lateral_m)
+            & (np.abs(signed_long) <= close_following_longitudinal_window_m)
+        )
+
+        candidates_raw.append({
+            "slot": int(slot),
+            "min_distance_m": float(distance[min_d_local]),
+            "min_distance_iloc": s + min_d_local,
+            "entry_distance_m": float(distance[entry_idx]),
+            "exit_distance_m": float(distance[exit_idx]),
+            "entry_signed_long_gap_m": entry_long,
+            "exit_signed_long_gap_m": exit_long,
+            "min_signed_long_gap_m": min_long,
+            "max_signed_long_gap_m": max_long,
+            "min_lateral_offset_m": float(lateral_abs[min_lat_local]),
+            "min_lateral_offset_iloc": s + min_lat_local,
+            "side_by_side_iloc_count": side_by_side,
+            "close_following_iloc_count": int(close_following.sum()),
+            "trailing_pressure_iloc_count": int((close_following & (signed_long < -1.5)).sum()),
+            "leading_draft_iloc_count": int((close_following & (signed_long > 1.5)).sum()),
+            "min_relative_long_gap_velocity": min_rel_velocity,
+            "max_relative_long_gap_velocity": max_rel_velocity,
+            "relative_velocity_units": velocity_units,
+            "active_iloc_fraction": float(active_fraction),
+            "coordinate_frame": frame_name,
+            "pass_crossing_close": pass_crossing_close,
+            "passed_by_player": bool(
+                pass_crossing_close
+                and entry_long >= -1.5
+                and exit_long < -1.5
+                and max_long > 1.5
+            ),
+            "got_passed_by_opponent": bool(
+                pass_crossing_close
+                and entry_long <= 1.5
+                and exit_long > 1.5
+                and min_long <= 1.5
+            ),
+        })
+
+    candidates_raw.sort(key=lambda c: c["min_distance_m"])
+    candidates = candidates_raw[:max_candidates]
+
+    return _attach({
+        "range": [s, e],
+        "data_available": True,
+        "n_active_slots": n_active_slots,
+        "candidates": candidates,
+    })
+
+
+def query_opponent_trajectory(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    slot: int,
+    n_samples: int = 5,
+):
+    """Tool — sample one opponent's relative trajectory at N evenly-spaced ilocs.
+
+    For opponent ``slot`` (``1..MAX_CARS``), reads
+    ``Car_{slot}_pos_{x,y}`` + ``Graphics_player_pos_{x,y}`` over
+    ``[start_index, end_index)`` and returns ``n_samples`` evenly-spaced
+    snapshots of:
+
+      * ``distance_m``           — 2D Euclidean distance
+      * ``signed_long_gap_m``    — projection along player heading
+                                    (+ ⇒ opp ahead)
+      * ``lateral_offset_m``     — signed perpendicular projection
+                                    (+ ⇒ opp on player's left of heading,
+                                    − ⇒ right)
+      * ``relative_long_gap_velocity`` — change in signed longitudinal gap
+                                    (negative ⇒ player closing on opponent,
+                                    positive ⇒ opponent pulling away/closing
+                                    from behind)
+
+    Use after ``find_nearest_opponent`` has named a candidate slot, to
+    inspect HOW the relationship evolved through the range — e.g. gap
+    closing steadily on a straight (slipstream), a step-change at apex
+    (switchback rotation), or lateral offset crossing zero
+    (line-cross during a pass).
+
+    Produces an ``opponent_trajectory`` attachment::
+
+        {
+            "range": [start_index, end_index],
+            "slot": int,
+            "data_available": bool,
+            "samples": [
+                {
+                    "iloc": int,
+                    "distance_m": float | None,
+                    "signed_long_gap_m": float | None,
+                    "lateral_offset_m": float | None,
+                    "note": str | None,
+                },
+                ...
+            ],
+        }
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+
+    slot_int = int(slot)
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="opponent_trajectory",
+            kind="structured",
+            label=f"Opponent Trajectory (slot {slot_int})",
+            content=_round_floats(content),
+        )
+
+    s, e = int(start_index), int(end_index)
+    n_samples = max(2, int(n_samples))
+    base: Dict[str, Any] = {
+        "range": [s, e],
+        "slot": slot_int,
+        "data_available": False,
+        "samples": [],
+    }
+
+    col_x = f"Car_{slot_int}_pos_x"
+    col_y = f"Car_{slot_int}_pos_y"
+    required = (col_x, col_y, "Graphics_player_pos_x", "Graphics_player_pos_y")
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        base["message"] = f"required columns missing: {missing}"
+        return _attach(base)
+
+    seg = _absolute_iloc_slice(df, s, e)
+    n_rows = len(seg)
+    if n_rows < 2:
+        base["message"] = "range too short (need ≥ 2 rows)"
+        return _attach(base)
+
+    player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+    player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+    ox = seg[col_x].to_numpy(dtype=float)
+    oy = seg[col_y].to_numpy(dtype=float)
+    active = _active_opponent_mask(seg, slot_int, ox, oy, player_x, player_y)
+    signed_long_all, lateral_all, _player_s, _player_d, frame_name = _relative_position_frame(
+        seg, player_x, player_y, ox, oy,
+    )
+    distance_all = np.sqrt((ox - player_x) ** 2 + (oy - player_y) ** 2)
+    finite = active & np.isfinite(distance_all) & np.isfinite(signed_long_all) & np.isfinite(lateral_all)
+    relative_velocity_all, velocity_units = _relative_long_gap_velocity(seg, signed_long_all, finite)
+
+    if n_samples >= n_rows:
+        sample_locals = list(range(n_rows))
+    else:
+        sample_locals = [int(v) for v in np.linspace(0, n_rows - 1, n_samples, dtype=int)]
+
+    samples: List[Dict[str, Any]] = []
+    for local in sample_locals:
+        opp_x = ox[local]
+        opp_y = oy[local]
+        is_empty = (opp_x == 0.0) and (opp_y == 0.0)
+        if is_empty or not finite[local] or not np.isfinite(opp_x) or not np.isfinite(opp_y):
+            samples.append({
+                "iloc": s + local,
+                "distance_m": None,
+                "signed_long_gap_m": None,
+                "lateral_offset_m": None,
+                "relative_long_gap_velocity": None,
+                "note": "opponent slot empty at this iloc",
+            })
+            continue
+        samples.append({
+            "iloc": s + local,
+            "distance_m": float(distance_all[local]),
+            "signed_long_gap_m": float(signed_long_all[local]),
+            "lateral_offset_m": float(lateral_all[local]),
+            "relative_long_gap_velocity": (
+                float(relative_velocity_all[local])
+                if np.isfinite(relative_velocity_all[local])
+                else None
+            ),
+        })
+
+    return _attach({
+        "range": [s, e],
+        "slot": slot_int,
+        "data_available": True,
+        "coordinate_frame": frame_name,
+        "relative_velocity_units": velocity_units,
+        "samples": samples,
+    })
+
+
+def classify_opponent_interaction(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+    close_distance_m: float = 12.0,
+    side_by_side_distance_m: float = 4.0,
+    side_by_side_min_lateral_m: float = 1.25,
+    side_by_side_longitudinal_window_m: float = 6.0,
+    close_following_longitudinal_window_m: float = 30.0,
+    close_following_lateral_m: float = 6.0,
+    longitudinal_window_m: float = 18.0,
+    pass_margin_m: float = 1.5,
+    min_role_gain_m: float = 4.0,
+    min_relative_velocity_mps: float = 0.5,
+    min_threat_overlap_ilocs: int = 3,
+    min_active_fraction: float = 0.3,
+    max_candidates: int = 5,
+):
+    """Tool — deterministic O / OD / MSR interaction classifier.
+
+    Computes opponent-relative position math over ``[start_index, end_index)``
+    and returns the opponent interaction outcome and evidence. Mapping that
+    outcome to annotation labels is handled by the annotation preflight / label
+    search layer, not by this tool.
+
+    Signed longitudinal and lateral gaps are computed from the driver's local
+    path / heading. The classifier intentionally reads only positional
+    relationship and outcome; label selection maps those facts to racing
+    sub-labels later.
+
+    Side-by-side is deliberately tighter than general close-following:
+    the opponent must be near the player's longitudinal position and offset
+    laterally enough to be alongside. A car directly behind can be very close
+    centre-to-centre, but that is following pressure, not defense.
+
+    Close-following/draft pressure is deliberately broader than side-by-side:
+    an opponent roughly in line within ``close_following_longitudinal_window_m``
+    is a relevant interaction candidate even if the cars never overlap. Steady
+    inline following is target-car context, not by itself an attack/defense
+    outcome.
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+    from app.shared.telemetry import MAX_CARS
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="opponent_interaction_classification",
+            kind="structured",
+            label="Opponent Interaction Classification",
+            content=_round_floats(content),
+        )
+
+    def _clamp01(v: float) -> float:
+        return max(0.0, min(1.0, float(v)))
+
+    def _confidence(
+        *,
+        outcome: str,
+        min_distance: float,
+        side_count: int,
+        n_rows: int,
+        gap_delta: float,
+    ) -> float:
+        close_score = 0.0
+        if min_distance <= side_by_side_distance_m:
+            close_score = 0.18
+        elif min_distance <= close_distance_m:
+            close_score = 0.12
+        side_score = min(0.15, (side_count / max(1, n_rows)) * 0.8)
+        gain_score = min(0.15, abs(gap_delta) / 30.0 * 0.15)
+        base = {
+            "pass_completed": 0.66,
+            "broken_defense": 0.66,
+            "failed_attack": 0.48,
+            "held_defense": 0.48,
+            "side_by_side": 0.34,
+            "close_following": 0.30,
+            "incidental": 0.22,
+        }.get(outcome, 0.0)
+        return _clamp01(base + close_score + side_score + gain_score)
+
+    def _confidence_level(confidence: float) -> str:
+        if confidence >= 0.82:
+            return "high"
+        if confidence >= 0.68:
+            return "medium"
+        if confidence >= 0.50:
+            return "low"
+        return "weak"
+
+    s, e = int(start_index), int(end_index)
+    base_payload: Dict[str, Any] = {
+        "range": [s, e],
+        "data_available": False,
+        "role": "unknown",
+        "outcome": "no_data",
+        "confidence": 0.0,
+        "confidence_level": "weak",
+        "primary_slot_for_role": None,
+        "candidates": [],
+        "confidence_policy": {
+            "high": "strong deterministic interaction evidence; use for label search/range evidence when player-trace evidence agrees",
+            "medium": "usable deterministic evidence; cite supporting graph/query evidence",
+            "low": "weak interaction evidence; refine range or inspect opponent trajectory before using it",
+            "weak": "do not use classifier outcome alone",
+        },
+    }
+
+    required = {"Graphics_player_pos_x", "Graphics_player_pos_y"}
+    if not required.issubset(df.columns):
+        base_payload["message"] = (
+            "Player position columns (Graphics_player_pos_x/y) missing — "
+            "cannot classify opponent interaction."
+        )
+        return _attach(base_payload)
+
+    seg = _absolute_iloc_slice(df, s, e)
+    n_rows = len(seg)
+    if n_rows < 2:
+        base_payload["message"] = "Range too short for opponent classification (need >= 2 rows)."
+        return _attach(base_payload)
+
+    player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+    player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+    if not (np.isfinite(player_x).any() and np.isfinite(player_y).any()):
+        base_payload["message"] = "Player position trace is all NaN/inf."
+        return _attach(base_payload)
+
+    candidates: List[Dict[str, Any]] = []
+    n_active_slots = 0
+
+    for slot in range(1, MAX_CARS + 1):
+        col_x = f"Car_{slot}_pos_x"
+        col_y = f"Car_{slot}_pos_y"
+        if col_x not in df.columns or col_y not in df.columns:
+            continue
+
+        ox = seg[col_x].to_numpy(dtype=float)
+        oy = seg[col_y].to_numpy(dtype=float)
+        active_mask = _active_opponent_mask(seg, slot, ox, oy, player_x, player_y)
+        active_count = int(active_mask.sum())
+        if active_count == 0:
+            continue
+        n_active_slots += 1
+        active_fraction = active_count / n_rows
+        if active_fraction < min_active_fraction:
+            continue
+
+        vx = np.where(active_mask, ox - player_x, np.nan)
+        vy = np.where(active_mask, oy - player_y, np.nan)
+        distance = np.sqrt(vx * vx + vy * vy)
+        signed_long, lateral_signed, player_s, player_d, frame_name = _relative_position_frame(
+            seg, player_x, player_y, ox, oy,
+        )
+        signed_long = np.where(active_mask, signed_long, np.nan)
+        lateral_signed = np.where(active_mask, lateral_signed, np.nan)
+        lateral_abs = np.abs(lateral_signed)
+        finite = active_mask & np.isfinite(distance) & np.isfinite(signed_long) & np.isfinite(lateral_abs)
+        if not finite.any():
+            continue
+
+        active_ilocs = np.where(finite)[0]
+        entry_idx = int(active_ilocs[0])
+        exit_idx = int(active_ilocs[-1])
+        entry_long = float(signed_long[entry_idx])
+        exit_long = float(signed_long[exit_idx])
+        min_long = float(np.nanmin(signed_long[finite]))
+        max_long = float(np.nanmax(signed_long[finite]))
+        gap_delta = exit_long - entry_long
+
+        min_d_local = int(np.nanargmin(distance))
+        min_lat_local = int(np.nanargmin(lateral_abs))
+        min_abs_long_local = int(np.nanargmin(np.abs(signed_long)))
+        relative_velocity, velocity_units = _relative_long_gap_velocity(seg, signed_long, finite)
+        velocity_threshold = _relative_velocity_threshold(
+            velocity_units,
+            n_rows,
+            min_relative_velocity_mps=min_relative_velocity_mps,
+            min_role_gain_m=min_role_gain_m,
+        )
+        pressure_velocity_mask = finite & (
+            (distance <= close_distance_m)
+            | (np.abs(signed_long) <= longitudinal_window_m)
+            | (lateral_abs <= side_by_side_distance_m)
+        )
+        attack_gap_velocity = _nan_percentile_or_none(relative_velocity[pressure_velocity_mask], 25)
+        defense_gap_velocity = _nan_percentile_or_none(relative_velocity[pressure_velocity_mask], 75)
+        attack_velocity_pressure = (
+            attack_gap_velocity is not None
+            and attack_gap_velocity <= -velocity_threshold
+            and abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+        )
+        defense_velocity_pressure = (
+            defense_gap_velocity is not None
+            and defense_gap_velocity >= velocity_threshold
+            and abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+        )
+
+        broad_side_by_side = (
+            (np.abs(signed_long) <= side_by_side_longitudinal_window_m)
+            & (lateral_abs >= side_by_side_min_lateral_m)
+            & (lateral_abs <= side_by_side_distance_m)
+        ) & finite
+        side_count = int(broad_side_by_side.sum())
+        overlap_count = int((finite & (np.abs(signed_long) <= pass_margin_m)).sum())
+        lateral_threat = (
+            finite
+            & (lateral_abs >= side_by_side_min_lateral_m)
+            & (lateral_abs <= close_following_lateral_m)
+            & (np.abs(signed_long) <= longitudinal_window_m)
+        )
+        lateral_threat_count = int(lateral_threat.sum())
+        if lateral_threat_count:
+            max_threat_long = float(np.nanmax(signed_long[lateral_threat]))
+            defense_threat_gain = max_threat_long - entry_long
+            defense_fallback_from_peak = max_threat_long - exit_long
+        else:
+            max_threat_long = float(np.nanmax(signed_long[finite]))
+            defense_threat_gain = 0.0
+            defense_fallback_from_peak = 0.0
+        sustained_overlap = side_count >= int(min_threat_overlap_ilocs)
+        close_following = (
+            (lateral_abs <= close_following_lateral_m)
+            & (np.abs(signed_long) <= close_following_longitudinal_window_m)
+        ) & finite
+        close_following_count = int(close_following.sum())
+        trailing_pressure_count = int((close_following & (signed_long < -pass_margin_m)).sum())
+        leading_draft_count = int((close_following & (signed_long > pass_margin_m)).sum())
+        close_enough = bool(
+            (float(distance[min_d_local]) <= close_distance_m)
+            or side_count > 0
+            or close_following_count > 0
+        )
+        pass_completion_margin_m = max(float(pass_margin_m), float(min_role_gain_m))
+        pass_crossing_close = bool(
+            float(distance[min_d_local]) <= close_distance_m
+            and abs(float(signed_long[min_abs_long_local])) <= longitudinal_window_m
+        )
+
+        passed_by_player = bool(
+            pass_crossing_close
+            and entry_long >= -pass_margin_m
+            and exit_long < -pass_completion_margin_m
+            and max_long > pass_margin_m
+        )
+        got_passed_by_opponent = bool(
+            pass_crossing_close
+            and entry_long <= pass_margin_m
+            and exit_long > pass_completion_margin_m
+            and min_long <= pass_margin_m
+        )
+        attack_pressure = bool(
+            entry_long > pass_margin_m
+            and close_enough
+            and not passed_by_player
+            and not got_passed_by_opponent
+            and (
+                gap_delta <= -min_role_gain_m
+                or attack_velocity_pressure
+                or (
+                    side_count > 0
+                    and abs(float(signed_long[min_abs_long_local])) <= pass_margin_m
+                )
+            )
+        )
+        defense_pressure = bool(
+            close_enough
+            and not got_passed_by_opponent
+            and exit_long <= pass_margin_m
+            and (
+                sustained_overlap
+                or (
+                    lateral_threat_count > 0
+                    and defense_threat_gain >= min_role_gain_m
+                    and max_threat_long >= -pass_margin_m
+                )
+                or (
+                    lateral_threat_count > 0
+                    and defense_velocity_pressure
+                    and max_threat_long >= -pass_margin_m
+                )
+            )
+            and (
+                defense_fallback_from_peak >= min_role_gain_m
+                or (sustained_overlap and exit_long <= -pass_margin_m)
+            )
+        )
+
+        if passed_by_player:
+            role = "attack"
+            outcome = "pass_completed"
+            reason = "opponent starts ahead and ends behind the player"
+        elif got_passed_by_opponent:
+            role = "defense"
+            outcome = "broken_defense"
+            reason = "opponent starts behind and ends ahead of the player"
+        elif attack_pressure:
+            role = "attack"
+            outcome = "failed_attack"
+            reason = "opponent remained ahead, but the player closed or went side-by-side"
+        elif defense_pressure:
+            role = "defense"
+            outcome = "held_defense"
+            reason = "opponent threatened from behind/alongside but did not get ahead by exit"
+        elif close_enough and sustained_overlap:
+            role = "side_by_side"
+            outcome = "side_by_side"
+            reason = "cars were close/alongside without a clear attack or defense outcome"
+        elif close_following_count > 0:
+            role = "following"
+            outcome = "close_following"
+            if trailing_pressure_count > 0:
+                reason = "opponent was close-following behind without a decisive held-defense pattern"
+            elif leading_draft_count > 0:
+                reason = "player was close-following the opponent ahead without a decisive attack pattern"
+            else:
+                reason = "cars were close in line without a clear pass outcome"
+        elif close_enough:
+            role = "incidental"
+            outcome = "incidental"
+            reason = "nearby car did not create a clear position-change or pressure pattern"
+        else:
+            role = "none"
+            outcome = "no_close_interaction"
+            reason = "opponent was not close enough for a decisive interaction outcome"
+
+        confidence = _confidence(
+            outcome=outcome,
+            min_distance=float(distance[min_d_local]),
+            side_count=side_count,
+            n_rows=n_rows,
+            gap_delta=gap_delta,
+        )
+        candidates.append({
+            "slot": int(slot),
+            "role": role,
+            "outcome": outcome,
+            "confidence": confidence,
+            "confidence_level": _confidence_level(confidence),
+            "reason": reason,
+            "min_distance_m": float(distance[min_d_local]),
+            "min_distance_iloc": s + min_d_local,
+            "entry_distance_m": float(distance[entry_idx]),
+            "exit_distance_m": float(distance[exit_idx]),
+            "entry_signed_long_gap_m": entry_long,
+            "exit_signed_long_gap_m": exit_long,
+            "gap_delta_m": gap_delta,
+            "min_signed_long_gap_m": min_long,
+            "max_signed_long_gap_m": max_long,
+            "min_abs_signed_long_gap_m": float(abs(signed_long[min_abs_long_local])),
+            "player_progress_m_at_entry": float(player_s[entry_idx]),
+            "player_progress_m_at_exit": float(player_s[exit_idx]),
+            "player_lateral_offset_m_at_entry": float(player_d[entry_idx]),
+            "player_lateral_offset_m_at_exit": float(player_d[exit_idx]),
+            "min_lateral_offset_m": float(lateral_abs[min_lat_local]),
+            "min_lateral_offset_iloc": s + min_lat_local,
+            "side_by_side_iloc_count": side_count,
+            "overlap_iloc_count": overlap_count,
+            "lateral_threat_iloc_count": lateral_threat_count,
+            "close_following_iloc_count": close_following_count,
+            "trailing_pressure_iloc_count": trailing_pressure_count,
+            "leading_draft_iloc_count": leading_draft_count,
+            "pass_crossing_close": pass_crossing_close,
+            "defense_threat_gain_m": defense_threat_gain,
+            "defense_fallback_from_peak_m": defense_fallback_from_peak,
+            "attack_relative_long_gap_velocity": attack_gap_velocity,
+            "defense_relative_long_gap_velocity": defense_gap_velocity,
+            "relative_velocity_threshold": float(velocity_threshold),
+            "relative_velocity_units": velocity_units,
+            "active_iloc_fraction": float(active_fraction),
+            "coordinate_frame": frame_name,
+            "passed_by_player": passed_by_player,
+            "got_passed_by_opponent": got_passed_by_opponent,
+        })
+
+    priority = {
+        "pass_completed": 6,
+        "broken_defense": 6,
+        "failed_attack": 5,
+        "held_defense": 5,
+        "side_by_side": 3,
+        "close_following": 2,
+        "incidental": 2,
+        "no_close_interaction": 1,
+    }
+    candidates.sort(
+        key=lambda c: (
+            priority.get(str(c["outcome"]), 0),
+            float(c["confidence"]),
+            -float(c["min_distance_m"]),
+        ),
+        reverse=True,
+    )
+    top = candidates[0] if candidates else None
+
+    if top is None:
+        return _attach({
+            **base_payload,
+            "data_available": True,
+            "n_active_slots": n_active_slots,
+            "outcome": "no_close_interaction",
+            "message": "No active opponent slot met the active-fraction threshold.",
+        })
+
+    return _attach({
+        "range": [s, e],
+        "data_available": True,
+        "n_active_slots": n_active_slots,
+        "role": top["role"],
+        "outcome": top["outcome"],
+        "confidence": top["confidence"],
+        "confidence_level": top["confidence_level"],
+        "primary_slot_for_role": top["slot"],
+        "targeted_car_slot": top["slot"],
+        "targeted_car_label": f"Car {top['slot']}",
+        "coordinate_frame": top["coordinate_frame"],
+        "reason": top["reason"],
+        "confidence_policy": base_payload["confidence_policy"],
+        "candidates": candidates[:max_candidates],
+    })
+
+
+NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
+
+
+def _lap_boundary_offsets(
+    pos: np.ndarray,
+    completed_laps: Optional[np.ndarray] = None,
+) -> List[int]:
+    """Offsets where a picked range crosses into a new lap."""
+    boundaries: List[int] = []
+    for offset in range(1, int(pos.size)):
+        if completed_laps is not None:
+            prev_lap = completed_laps[offset - 1]
+            cur_lap = completed_laps[offset]
+            if np.isfinite(prev_lap) and np.isfinite(cur_lap) and cur_lap != prev_lap:
+                boundaries.append(offset)
+                continue
+        prev_p = pos[offset - 1]
+        cur_p = pos[offset]
+        if np.isfinite(prev_p) and np.isfinite(cur_p) and (prev_p - cur_p) > 0.5:
+            boundaries.append(offset)
+    return boundaries
+
+
+def _split_interaction_windows_at_boundaries(
+    windows: List[Dict[str, Any]],
+    *,
+    boundaries: List[int],
+    start_index: int,
+    end_index: int,
+) -> List[Dict[str, Any]]:
+    """Split interaction windows at lap boundaries without changing event math."""
+    if not windows or not boundaries:
+        return windows
+
+    cuts = [int(start_index), *sorted(int(b) for b in boundaries), int(end_index)]
+    split: List[Dict[str, Any]] = []
+    for window in windows:
+        window_start = int(window["start_index"])
+        window_end = int(window["end_index"])
+        for cut_start, cut_end in zip(cuts, cuts[1:]):
+            clip_start = max(window_start, cut_start)
+            clip_end = min(window_end, cut_end)
+            if clip_end <= clip_start:
+                continue
+            clipped = dict(window)
+            clipped["start_index"] = int(clip_start)
+            clipped["end_index"] = int(clip_end)
+            clipped["source_window_range"] = [window_start, window_end]
+            split.append(clipped)
+    return split
+
+
+def _contiguous_true_runs(mask: np.ndarray) -> List[Tuple[int, int]]:
+    """Return inclusive-exclusive ``(start, end)`` runs where mask is true."""
+    runs: List[Tuple[int, int]] = []
+    i = 0
+    n = int(mask.size)
+    while i < n:
+        if not bool(mask[i]):
+            i += 1
+            continue
+        j = i + 1
+        while j < n and bool(mask[j]):
+            j += 1
+        runs.append((i, j))
+        i = j
+    return runs
+
+
+def _merge_close_ranges(
+    ranges: List[Tuple[int, int]],
+    *,
+    max_gap: int,
+) -> List[Tuple[int, int]]:
+    if not ranges:
+        return []
+    ranges = sorted(ranges)
+    merged: List[Tuple[int, int]] = [ranges[0]]
+    for s, e in ranges[1:]:
+        prev_s, prev_e = merged[-1]
+        if s - prev_e <= max_gap:
+            merged[-1] = (prev_s, max(prev_e, e))
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _detect_opponent_interaction_windows(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+    *,
+    close_distance_m: float = 12.0,
+    side_by_side_distance_m: float = 4.0,
+    side_by_side_min_lateral_m: float = 1.25,
+    side_by_side_longitudinal_window_m: float = 6.0,
+    close_following_longitudinal_window_m: float = 30.0,
+    close_following_lateral_m: float = 6.0,
+    longitudinal_window_m: float = 18.0,
+    pass_margin_m: float = 1.5,
+    min_role_gain_m: float = 4.0,
+    min_relative_velocity_mps: float = 0.5,
+    min_threat_overlap_ilocs: int = 3,
+    min_window_ilocs: int = 3,
+    context_padding_ilocs: int = 8,
+    event_padding_ilocs: int = 16,
+    max_event_window_ilocs: int = 80,
+    merge_gap_ilocs: int = 10,
+    min_active_fraction: float = 0.3,
+) -> List[Dict[str, Any]]:
+    """Detect opponent engagement windows for O / OD / MSR rough cuts.
+
+    Circuit-section ranges are track geometry; overtakes and defenses are
+    event geometry. This helper finds short windows where another active car
+    is close enough to affect the player's line or position, then pads them
+    so ``find_nearest_opponent`` can see entry/min/exit context in one range.
+    """
+    from app.shared.telemetry import MAX_CARS
+
+    s, e = int(start_index), int(end_index)
+    required = {"Graphics_player_pos_x", "Graphics_player_pos_y"}
+    if e - s < 2 or not required.issubset(df.columns):
+        return []
+
+    seg = _absolute_iloc_slice(df, s, e)
+    n_rows = len(seg)
+    if n_rows < 2:
+        return []
+
+    player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
+    player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
+    if not (np.isfinite(player_x).any() and np.isfinite(player_y).any()):
+        return []
+
+    windows: List[Dict[str, Any]] = []
+
+    def _range_around_focal(
+        run_start: int,
+        run_end: int,
+        focal: int,
+    ) -> Tuple[int, int]:
+        """Build a bounded local event window around an attack/defense focal point."""
+        pad = int(event_padding_ilocs)
+        max_len = max(int(min_window_ilocs), int(max_event_window_ilocs))
+        event_start = max(run_start, int(focal) - pad)
+        event_end = min(run_end, int(focal) + pad + 1)
+        if event_end - event_start > max_len:
+            half = max_len // 2
+            event_start = max(run_start, int(focal) - half)
+            event_end = min(run_end, event_start + max_len)
+            event_start = max(run_start, event_end - max_len)
+        return event_start, event_end
+
+    def _event_ranges_for_close_run(
+        *,
+        run_start: int,
+        run_end: int,
+        signed_long: np.ndarray,
+        lateral_signed: np.ndarray,
+        distance: np.ndarray,
+        relative_velocity: np.ndarray,
+        velocity_threshold: float,
+        finite: np.ndarray,
+    ) -> List[Tuple[int, int, str, str]]:
+        """Return high-signal event ranges inside one close run.
+
+        A car can sit close for a long time without an overtake/defense
+        decision happening. These ranges focus the split on gap flips or
+        meaningful gap closure instead of treating the whole close-following
+        run as the annotation target.
+        """
+        run_slice = slice(run_start, run_end)
+        finite_run = finite[run_slice]
+        if not finite_run.any():
+            return []
+
+        local_indices = np.where(finite_run)[0] + run_start
+        gaps = signed_long[local_indices]
+        if not np.isfinite(gaps).any():
+            return []
+
+        ranges: List[Tuple[int, int, str, str]] = []
+        entry_long = float(gaps[0])
+        exit_long = float(gaps[-1])
+        gap_delta = exit_long - entry_long
+        min_long = float(np.nanmin(gaps))
+        max_long = float(np.nanmax(gaps))
+        min_run_distance = float(np.nanmin(distance[local_indices]))
+        min_abs_long = float(np.nanmin(np.abs(gaps)))
+        pass_completion_margin_m = max(float(pass_margin_m), float(min_role_gain_m))
+        pass_crossing_close = bool(
+            min_run_distance <= close_distance_m
+            and min_abs_long <= longitudinal_window_m
+        )
+        passed_by_player = bool(
+            pass_crossing_close
+            and entry_long >= -pass_margin_m
+            and exit_long < -pass_completion_margin_m
+            and max_long > pass_margin_m
+        )
+        got_passed_by_opponent = bool(
+            pass_crossing_close
+            and entry_long <= pass_margin_m
+            and exit_long > pass_completion_margin_m
+            and min_long <= pass_margin_m
+        )
+        attack_velocity = _nan_percentile_or_none(relative_velocity[local_indices], 25)
+        defense_velocity = _nan_percentile_or_none(relative_velocity[local_indices], 75)
+        attack_velocity_pressure = (
+            attack_velocity is not None
+            and attack_velocity <= -velocity_threshold
+            and min_abs_long <= longitudinal_window_m
+        )
+        defense_velocity_pressure = (
+            defense_velocity is not None
+            and defense_velocity >= velocity_threshold
+            and min_abs_long <= longitudinal_window_m
+        )
+        local_lateral_abs = np.abs(lateral_signed[local_indices])
+        side_by_side_local = (
+            (np.abs(gaps) <= side_by_side_longitudinal_window_m)
+            & (local_lateral_abs >= side_by_side_min_lateral_m)
+            & (local_lateral_abs <= side_by_side_distance_m)
+        )
+        lateral_threat = (
+            (local_lateral_abs >= side_by_side_min_lateral_m)
+            & (local_lateral_abs <= close_following_lateral_m)
+            & (np.abs(gaps) <= longitudinal_window_m)
+        )
+        lateral_threat_count = int(lateral_threat.sum())
+        if lateral_threat_count:
+            max_threat_long = float(np.nanmax(gaps[lateral_threat]))
+            defense_threat_gain = max_threat_long - entry_long
+            defense_fallback_from_peak = max_threat_long - exit_long
+        else:
+            max_threat_long = float(np.nanmax(gaps))
+            defense_threat_gain = 0.0
+            defense_fallback_from_peak = 0.0
+        sustained_overlap = int(side_by_side_local.sum()) >= int(min_threat_overlap_ilocs)
+
+        if passed_by_player or got_passed_by_opponent:
+            crossing_level = -pass_margin_m if passed_by_player else pass_margin_m
+            crossing_candidates = local_indices[:-1][
+                (gaps[:-1] - crossing_level) * (gaps[1:] - crossing_level) <= 0
+            ]
+            focal = int(crossing_candidates[0]) if crossing_candidates.size else int(local_indices[np.nanargmin(np.abs(gaps))])
+            event_start, event_end = _range_around_focal(run_start, run_end, focal)
+            role = "attack" if passed_by_player else "defense"
+            outcome = "pass_completed" if passed_by_player else "broken_defense"
+            ranges.append((event_start, event_end, role, outcome))
+            return ranges
+
+        attack_threat = bool(
+            sustained_overlap
+            or lateral_threat_count >= int(min_threat_overlap_ilocs)
+        )
+        if (
+            entry_long > pass_margin_m
+            and attack_threat
+            and (gap_delta <= -min_role_gain_m or attack_velocity_pressure)
+        ):
+            focal = int(local_indices[np.nanargmin(gaps)])
+            event_start, event_end = _range_around_focal(run_start, run_end, focal)
+            ranges.append((event_start, event_end, "attack", "failed_attack"))
+            return ranges
+
+        defense_threat = bool(
+            sustained_overlap
+            or (
+                lateral_threat_count > 0
+                and defense_threat_gain >= min_role_gain_m
+                and max_threat_long >= -pass_margin_m
+            )
+            or (
+                lateral_threat_count > 0
+                and defense_velocity_pressure
+                and max_threat_long >= -pass_margin_m
+            )
+        )
+        defense_repelled = bool(
+            defense_fallback_from_peak >= min_role_gain_m
+            or (sustained_overlap and exit_long <= -pass_margin_m)
+        )
+        if defense_threat and defense_repelled and exit_long <= pass_margin_m:
+            focal = int(local_indices[np.nanargmax(gaps)])
+            event_start, event_end = _range_around_focal(run_start, run_end, focal)
+            ranges.append((event_start, event_end, "defense", "held_defense"))
+            return ranges
+
+        # Fallback for non-decisive close moments. Long steady close-following
+        # is intentionally compressed around closest approach and marked as
+        # target-car context rather than attack/defense evidence.
+        min_d_idx = int(run_start + np.nanargmin(distance[run_slice]))
+        event_start, event_end = _range_around_focal(run_start, run_end, min_d_idx)
+        side_by_side_run = (
+            (np.abs(signed_long[run_slice]) <= side_by_side_longitudinal_window_m)
+            & (np.abs(lateral_signed[run_slice]) >= side_by_side_min_lateral_m)
+            & (np.abs(lateral_signed[run_slice]) <= side_by_side_distance_m)
+        ) & finite_run
+        if int(side_by_side_run.sum()) >= int(min_threat_overlap_ilocs):
+            ranges.append((event_start, event_end, "side_by_side", "side_by_side"))
+        else:
+            ranges.append((event_start, event_end, "following", "close_following"))
+        return ranges
+
+    for slot in range(1, MAX_CARS + 1):
+        col_x = f"Car_{slot}_pos_x"
+        col_y = f"Car_{slot}_pos_y"
+        if col_x not in df.columns or col_y not in df.columns:
+            continue
+
+        ox = seg[col_x].to_numpy(dtype=float)
+        oy = seg[col_y].to_numpy(dtype=float)
+        active_mask = _active_opponent_mask(seg, slot, ox, oy, player_x, player_y)
+        active_count = int(active_mask.sum())
+        if active_count == 0 or (active_count / n_rows) < min_active_fraction:
+            continue
+
+        vx = np.where(active_mask, ox - player_x, np.nan)
+        vy = np.where(active_mask, oy - player_y, np.nan)
+        distance = np.sqrt(vx * vx + vy * vy)
+        signed_long, lateral_signed, _player_s, _player_d, frame_name = _relative_position_frame(
+            seg, player_x, player_y, ox, oy,
+        )
+        signed_long = np.where(active_mask, signed_long, np.nan)
+        lateral_signed = np.where(active_mask, lateral_signed, np.nan)
+        lateral_abs = np.abs(lateral_signed)
+        finite = active_mask & np.isfinite(distance) & np.isfinite(signed_long) & np.isfinite(lateral_abs)
+        if not finite.any():
+            continue
+        relative_velocity, velocity_units = _relative_long_gap_velocity(seg, signed_long, finite)
+        velocity_threshold = _relative_velocity_threshold(
+            velocity_units,
+            n_rows,
+            min_relative_velocity_mps=min_relative_velocity_mps,
+            min_role_gain_m=min_role_gain_m,
+        )
+
+        side_by_side = (
+            (np.abs(signed_long) <= side_by_side_longitudinal_window_m)
+            & (lateral_abs >= side_by_side_min_lateral_m)
+            & (lateral_abs <= side_by_side_distance_m)
+        )
+        close_following = (
+            (lateral_abs <= close_following_lateral_m)
+            & (np.abs(signed_long) <= close_following_longitudinal_window_m)
+        )
+        close = (distance <= close_distance_m) | side_by_side | close_following
+        close = close & finite
+
+        runs = _merge_close_ranges(
+            _contiguous_true_runs(close),
+            max_gap=int(merge_gap_ilocs),
+        )
+        for local_start, local_end in runs:
+            event_ranges = _event_ranges_for_close_run(
+                run_start=local_start,
+                run_end=local_end,
+                signed_long=signed_long,
+                lateral_signed=lateral_signed,
+                distance=distance,
+                relative_velocity=relative_velocity,
+                velocity_threshold=velocity_threshold,
+                finite=finite,
+            )
+            for event_start, event_end, event_role, event_outcome in event_ranges:
+                padded_start = max(0, event_start - int(context_padding_ilocs))
+                padded_end = min(n_rows, event_end + int(context_padding_ilocs))
+                if padded_end - padded_start > int(max_event_window_ilocs):
+                    focal = (event_start + event_end) // 2
+                    half = int(max_event_window_ilocs) // 2
+                    padded_start = max(0, focal - half)
+                    padded_end = min(n_rows, padded_start + int(max_event_window_ilocs))
+                    padded_start = max(0, padded_end - int(max_event_window_ilocs))
+                if padded_end - padded_start < int(min_window_ilocs):
+                    continue
+
+                window_slice = slice(padded_start, padded_end)
+                finite_window = finite[window_slice]
+                if not finite_window.any():
+                    continue
+                local_indices = np.where(finite_window)[0] + padded_start
+                entry_idx = int(local_indices[0])
+                exit_idx = int(local_indices[-1])
+                min_d_idx = padded_start + int(np.nanargmin(distance[window_slice]))
+                min_lat_idx = padded_start + int(np.nanargmin(lateral_abs[window_slice]))
+
+                side_count = int((side_by_side[window_slice] & finite_window).sum())
+                close_following_count = int((close_following[window_slice] & finite_window).sum())
+                trailing_pressure_count = int((
+                    close_following[window_slice]
+                    & finite_window
+                    & (signed_long[window_slice] < -pass_margin_m)
+                ).sum())
+                leading_draft_count = int((
+                    close_following[window_slice]
+                    & finite_window
+                    & (signed_long[window_slice] > pass_margin_m)
+                ).sum())
+                velocity_window = relative_velocity[window_slice]
+                min_rel_velocity = _nan_percentile_or_none(velocity_window, 10)
+                max_rel_velocity = _nan_percentile_or_none(velocity_window, 90)
+                entry_long = float(signed_long[entry_idx])
+                exit_long = float(signed_long[exit_idx])
+                min_abs_long_idx = padded_start + int(np.nanargmin(np.abs(signed_long[window_slice])))
+                pass_crossing_close = bool(
+                    float(distance[min_d_idx]) <= close_distance_m
+                    and abs(float(signed_long[min_abs_long_idx])) <= longitudinal_window_m
+                )
+                pass_completion_margin_m = max(float(pass_margin_m), float(min_role_gain_m))
+                windows.append({
+                    "start_index": int(s + padded_start),
+                    "end_index": int(s + padded_end),
+                    "slot": int(slot),
+                    "event_role": event_role,
+                    "event_outcome": event_outcome,
+                    "min_distance_m": float(distance[min_d_idx]),
+                    "min_distance_iloc": int(s + min_d_idx),
+                    "entry_signed_long_gap_m": entry_long,
+                    "exit_signed_long_gap_m": exit_long,
+                    "min_lateral_offset_m": float(lateral_abs[min_lat_idx]),
+                    "side_by_side_iloc_count": side_count,
+                    "close_following_iloc_count": close_following_count,
+                    "trailing_pressure_iloc_count": trailing_pressure_count,
+                    "leading_draft_iloc_count": leading_draft_count,
+                    "min_relative_long_gap_velocity": min_rel_velocity,
+                    "max_relative_long_gap_velocity": max_rel_velocity,
+                    "relative_velocity_threshold": float(velocity_threshold),
+                    "relative_velocity_units": velocity_units,
+                    "coordinate_frame": frame_name,
+                    "pass_crossing_close": pass_crossing_close,
+                    "passed_by_player": bool(
+                        pass_crossing_close
+                        and entry_long > 0
+                        and exit_long < -pass_completion_margin_m
+                    ),
+                    "got_passed_by_opponent": bool(
+                        pass_crossing_close
+                        and entry_long < 0
+                        and exit_long > pass_completion_margin_m
+                    ),
+                })
+
+    # Merge overlapping windows, keeping the closest-slot summary as the
+    # representative hint. The full per-slot details remain available through
+    # find_nearest_opponent once the agent inspects the merged range.
+    windows.sort(key=lambda w: (int(w["start_index"]), int(w["end_index"])))
+    merged_windows: List[Dict[str, Any]] = []
+    event_priority = {
+        "pass_completed": 5,
+        "broken_defense": 5,
+        "failed_attack": 4,
+        "held_defense": 4,
+        "side_by_side": 2,
+        "close_following": 1,
+    }
+    for window in windows:
+        if not merged_windows or int(window["start_index"]) > int(merged_windows[-1]["end_index"]) + merge_gap_ilocs:
+            merged_windows.append(dict(window))
+            continue
+        current = merged_windows[-1]
+        current["start_index"] = min(int(current["start_index"]), int(window["start_index"]))
+        current["end_index"] = max(int(current["end_index"]), int(window["end_index"]))
+        current["slots"] = sorted(set(current.get("slots", [current["slot"]]) + [window["slot"]]))
+        window_rank = event_priority.get(str(window.get("event_outcome")), 0)
+        current_rank = event_priority.get(str(current.get("event_outcome")), 0)
+        if (
+            window_rank > current_rank
+            or (
+                window_rank == current_rank
+                and float(window["min_distance_m"]) < float(current["min_distance_m"])
+            )
+        ):
+            for key in (
+                "slot", "event_role", "event_outcome",
+                "min_distance_m", "min_distance_iloc",
+                "entry_signed_long_gap_m", "exit_signed_long_gap_m",
+                "min_lateral_offset_m", "side_by_side_iloc_count",
+                "close_following_iloc_count", "trailing_pressure_iloc_count",
+                "leading_draft_iloc_count", "min_relative_long_gap_velocity",
+                "max_relative_long_gap_velocity", "relative_velocity_threshold",
+                "relative_velocity_units",
+                "coordinate_frame", "passed_by_player", "got_passed_by_opponent",
+            ):
+                current[key] = window[key]
+        else:
+            current["passed_by_player"] = bool(current.get("passed_by_player")) or bool(window.get("passed_by_player"))
+            current["got_passed_by_opponent"] = bool(current.get("got_passed_by_opponent")) or bool(window.get("got_passed_by_opponent"))
+
+    return merged_windows
+
+
+def _align_interaction_windows_with_classifier(
+    df: pd.DataFrame,
+    windows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Make rough-split window hints agree with the label-gate classifier."""
+    aligned: List[Dict[str, Any]] = []
+    for window in windows:
+        out = dict(window)
+        try:
+            att = classify_opponent_interaction(
+                df,
+                int(out["start_index"]),
+                int(out["end_index"]),
+            )
+            content = getattr(att, "content", None)
+        except Exception:
+            content = None
+
+        if isinstance(content, dict) and content.get("data_available"):
+            candidates = [
+                c for c in content.get("candidates", [])
+                if isinstance(c, dict) and c.get("slot") is not None
+            ]
+            selected = None
+            window_slot = out.get("slot")
+            if window_slot is not None:
+                selected = next(
+                    (c for c in candidates if int(c.get("slot")) == int(window_slot)),
+                    None,
+                )
+            if selected is None and candidates:
+                selected = candidates[0]
+
+            if selected is not None:
+                out["slot"] = int(selected["slot"])
+                selected_role = str(selected.get("role", out.get("event_role")))
+                selected_outcome = str(selected.get("outcome", out.get("event_outcome")))
+                preserve_following = (
+                    out.get("event_outcome") == "close_following"
+                    and selected_outcome == "failed_attack"
+                    and not bool(selected.get("passed_by_player"))
+                    and not bool(selected.get("got_passed_by_opponent"))
+                    and int(selected.get("side_by_side_iloc_count") or 0) < 3
+                    and int(selected.get("lateral_threat_iloc_count") or 0) < 3
+                )
+                if preserve_following:
+                    out["event_role"] = "following"
+                    out["event_outcome"] = "close_following"
+                else:
+                    out["event_role"] = selected_role
+                    out["event_outcome"] = selected_outcome
+                out["classifier_role"] = content.get("role")
+                out["classifier_outcome"] = content.get("outcome")
+                for key in (
+                    "entry_signed_long_gap_m",
+                    "exit_signed_long_gap_m",
+                    "min_distance_m",
+                    "min_distance_iloc",
+                    "min_lateral_offset_m",
+                    "side_by_side_iloc_count",
+                    "close_following_iloc_count",
+                    "trailing_pressure_iloc_count",
+                    "leading_draft_iloc_count",
+                    "relative_velocity_units",
+                ):
+                    if key in selected:
+                        out[key] = selected[key]
+        aligned.append(out)
+    return aligned
+
+
+def _align_interaction_segments_with_classifier(
+    df: pd.DataFrame,
+    segments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Refresh final rough-split segment hints after clipping/section merging."""
+    for segment in segments:
+        interaction = segment.get("opponent_interaction")
+        if not isinstance(interaction, dict):
+            continue
+        windows = interaction.get("windows")
+        if not isinstance(windows, list) or not windows:
+            continue
+
+        aligned_windows = _align_interaction_windows_with_classifier(df, windows)
+        interaction["windows"] = aligned_windows
+        first = next((w for w in aligned_windows if isinstance(w, dict)), None)
+        if first is not None:
+            interaction["targeted_car_slot"] = first.get("slot")
+            interaction["targeted_car_label"] = (
+                f"Car {first['slot']}" if first.get("slot") is not None else None
+            )
+            interaction["role"] = first.get("event_role")
+            interaction["outcome"] = first.get("event_outcome")
+    return segments
+
+
+def _is_following_only_interaction_window(window: Dict[str, Any]) -> bool:
+    """True for close-following context that should not become an LLM work unit."""
+    role = str(window.get("event_role") or window.get("role") or "")
+    outcome = str(window.get("event_outcome") or window.get("outcome") or "")
+    return role == "following" or outcome == "close_following"
+
+
+def get_opponent_splitter_rule_signature() -> str:
+    """Stable cache key fragment derived from splitter/classifier code."""
+    parts: List[str] = []
+    for fn in (
+        _project_points_to_local_reference_path,
+        _relative_position_frame,
+        classify_opponent_interaction,
+        _detect_opponent_interaction_windows,
+        _align_interaction_windows_with_classifier,
+        _align_interaction_segments_with_classifier,
+        _is_following_only_interaction_window,
+    ):
+        try:
+            parts.append(inspect.getsource(fn))
+        except (OSError, TypeError):
+            code = getattr(fn, "__code__", None)
+            parts.append(repr(code.co_code if code is not None else fn))
+    digest = hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def _has_active_opponent_data(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+) -> bool:
+    """True when the slice contains player + at least one other car slot.
+
+    ``Car_{1..MAX_CARS}`` includes the player's own car, so one active slot is
+    still a solo/practice slice. Two or more active slots means the session has
+    opponent telemetry available.
+    """
+    from app.shared.telemetry import MAX_CARS
+
+    seg = _absolute_iloc_slice(df, int(start_index), int(end_index))
+    if seg.empty:
+        return False
+
+    active_slots = 0
+    for slot in range(1, MAX_CARS + 1):
+        col_x = f"Car_{slot}_pos_x"
+        col_y = f"Car_{slot}_pos_y"
+        if col_x not in df.columns or col_y not in df.columns:
+            continue
+        ox = seg[col_x].to_numpy(dtype=float)
+        oy = seg[col_y].to_numpy(dtype=float)
+        active = ((ox != 0.0) | (oy != 0.0)) & np.isfinite(ox) & np.isfinite(oy)
+        if bool(active.any()):
+            active_slots += 1
+            if active_slots >= 2:
+                return True
+    return False
+
+
+def split_lap_by_circuit_sections(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    circuit_id: Optional[str] = None,
+    include_interaction_windows: bool = True,
+    interactions_only_when_opponents: bool = True,
+):
+    """Tool — partition a lap-shaped range into annotation sub-ranges.
+
+    Walks ``Graphics_normalized_car_position`` sample-by-sample across
+    ``[start_index, end_index)`` and assigns every iloc to the
+    ``circuit_section`` whose ``normalized_position_range`` contains its
+    position fraction. Consecutive ilocs that land in the same section are
+    grouped into one sub-range.
+
+    When ``include_interaction_windows`` is true and opponent samples are
+    present, the function switches to opponent-interaction mode by default:
+    it returns close engagement windows for overtake offence / defence
+    annotation. Long close-car engagements are compressed around the
+    attack/defence focal point, capped to a bounded event window, then split
+    at the circuit-section ranges they overlap with those sections attached
+    as context. Normal
+    circuit-section work units are returned only for solo sessions. This
+    keeps opponent sessions from producing EA / MSP / RM practice-driving
+    sections. Close-following-only windows are treated as context and are
+    filtered out instead of becoming LLM annotation work units. Wrap-around
+    sections (``range_end < range_start``) and lap
+    roll-over (a sample where position resets 1.0 → 0.0) are handled.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Session telemetry; must contain ``Graphics_normalized_car_position``.
+    start_index, end_index : int
+        Inclusive-exclusive parent slice. The caller picks any contiguous
+        range — the function does not assume a full lap.
+    circuit_id : str, optional
+        Restrict matching to sections whose ``parent`` equals this circuit
+        (e.g. ``"brands_hatch"``). When ``None``, every ``circuit_section``
+        with a filled range competes.
+
+    Returns
+    -------
+    PipelineAttachment ``split_lap_sections`` whose ``content`` is::
+
+        {
+            "circuit_id": <str | None>,
+            "range": [start_index, end_index],
+            "opponent_session": bool,
+            "split_mode": "circuit_sections" | "opponent_interactions_only",
+            "segments": [
+                {
+                    "start_index": int,
+                    "end_index": int,
+                    "circuit_section_id": str,  # interaction_window for racing events
+                    "circuit_section_name": str,
+                    "normalized_position_range": [float, float] | null,
+                    "coverage_fraction": 0.0..1.0,
+                    "split_basis": "circuit_section" |
+                                   "opponent_interaction",
+                    "opponent_interaction": {...} | null,
+                },
+                ...
+            ],
+            "interaction_windows": [...],
+            "unmatched_ilocs": int,   # samples that hit no defined section
+        }
+
+    Segments are ordered by ``start_index``. ``coverage_fraction`` is the
+    share of the segment's iloc span that fell inside the matched section's
+    range — informative when a section's range is narrow and the player
+    crossed in/out at the boundary.
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+    from app.internal_knowledge_base.label_lookup import find_labels
+
+    s, e = int(start_index), int(end_index)
+    splitter_signature = get_opponent_splitter_rule_signature()
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="split_lap_sections",
+            kind="structured",
+            label="Lap Split by Circuit Section",
+            content=_round_floats(content, ndigits=4),
+        )
+
+    if NORMALIZED_POSITION_COLUMN not in df.columns:
+        return _attach({
+            "error": f"column '{NORMALIZED_POSITION_COLUMN}' missing from telemetry",
+            "circuit_id": circuit_id,
+            "range": [s, e],
+            "segments": [],
+            "opponent_splitter_rule_signature": splitter_signature,
+            "unmatched_ilocs": 0,
+        })
+
+    segment = _absolute_iloc_slice(df, s, e)
+    pos = segment[NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
+    if pos.size == 0:
+        return _attach({
+            "error": "empty slice",
+            "circuit_id": circuit_id,
+            "range": [s, e],
+            "segments": [],
+            "opponent_splitter_rule_signature": splitter_signature,
+            "unmatched_ilocs": 0,
+        })
+
+    completed_laps: Optional[np.ndarray] = None
+    if "Graphics_completed_lap" in df.columns:
+        completed_laps = segment["Graphics_completed_lap"].to_numpy(dtype=float)
+    lap_boundary_ilocs = [
+        int(s + offset)
+        for offset in _lap_boundary_offsets(pos, completed_laps)
+    ]
+    lap_boundary_set = set(lap_boundary_ilocs)
+
+    interaction_windows: List[Dict[str, Any]] = []
+    following_windows_filtered = 0
+    opponent_session = False
+    if include_interaction_windows:
+        opponent_session = _has_active_opponent_data(df, s, e)
+        interaction_windows = _detect_opponent_interaction_windows(df, s, e)
+        interaction_windows = _split_interaction_windows_at_boundaries(
+            interaction_windows,
+            boundaries=lap_boundary_ilocs,
+            start_index=s,
+            end_index=e,
+        )
+        interaction_windows = _align_interaction_windows_with_classifier(
+            df,
+            interaction_windows,
+        )
+        following_windows_filtered = sum(
+            1 for w in interaction_windows if _is_following_only_interaction_window(w)
+        )
+        interaction_windows = [
+            w for w in interaction_windows
+            if not _is_following_only_interaction_window(w)
+        ]
+
+    section_filter: Dict[str, Any] = {"type": "circuit_section"}
+    if circuit_id is not None:
+        section_filter["parent"] = circuit_id
+    candidates: List[Dict[str, Any]] = []
+    for entry in find_labels(**section_filter):
+        rng = entry.get("normalized_position_range")
+        if rng is None:
+            continue
+        candidates.append({
+            "id": entry["id"],
+            "name": entry["name"],
+            "lo": float(rng[0]),
+            "hi": float(rng[1]),
+        })
+
+    def _interaction_segments_from_windows(
+        windows: List[Dict[str, Any]],
+        anchors: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        interaction_segments: List[Dict[str, Any]] = []
+
+        def _build_interaction_segment(
+            window: Dict[str, Any],
+            seg_start: int,
+            seg_end: int,
+            section_context: List[Dict[str, Any]],
+        ) -> Dict[str, Any]:
+            clipped_window = dict(window)
+            window_start = int(window["start_index"])
+            window_end = int(window["end_index"])
+            if seg_start != window_start or seg_end != window_end:
+                clipped_window["start_index"] = int(seg_start)
+                clipped_window["end_index"] = int(seg_end)
+                clipped_window["source_window_range"] = [window_start, window_end]
+            return {
+                "start_index": int(max(s, seg_start)),
+                "end_index": int(min(e, seg_end)),
+                "circuit_section_id": "interaction_window",
+                "circuit_section_name": "Racing interaction",
+                "normalized_position_range": None,
+                "coverage_fraction": 1.0,
+                "split_basis": "opponent_interaction",
+                "opponent_interaction": {
+                    "targeted_car_slot": clipped_window.get("slot"),
+                    "targeted_car_label": (
+                        f"Car {clipped_window['slot']}"
+                        if clipped_window.get("slot") is not None else None
+                    ),
+                    "windows": [clipped_window],
+                    "section_context": section_context,
+                    "reason": (
+                        "opponent session: close attack / defense "
+                        "engagement emitted as an event-shaped window; "
+                        "long engagements are split by circuit-section "
+                        "context"
+                    ),
+                },
+            }
+
+        for window in windows:
+            window_start = int(window["start_index"])
+            window_end = int(window["end_index"])
+            section_context: List[Dict[str, Any]] = []
+            for segment in anchors:
+                seg_s = int(segment["start_index"])
+                seg_e = int(segment["end_index"])
+                overlap_start = max(window_start, seg_s, s)
+                overlap_end = min(window_end, seg_e, e)
+                if overlap_end <= overlap_start:
+                    continue
+                section_context.append({
+                    "circuit_section_id": segment["circuit_section_id"],
+                    "circuit_section_name": segment["circuit_section_name"],
+                    "range": [int(overlap_start), int(overlap_end)],
+                    "normalized_position_range": segment["normalized_position_range"],
+                })
+
+            if len(section_context) <= 1:
+                interaction_segments.append(
+                    _build_interaction_segment(window, window_start, window_end, section_context)
+                )
+                continue
+
+            for context in section_context:
+                ctx_start, ctx_end = [int(v) for v in context["range"]]
+                interaction_segments.append(
+                    _build_interaction_segment(window, ctx_start, ctx_end, [context])
+                )
+        return interaction_segments
+
+    if not candidates:
+        if opponent_session and interactions_only_when_opponents and interaction_windows:
+            interaction_segments = _align_interaction_segments_with_classifier(
+                df,
+                _interaction_segments_from_windows(interaction_windows, []),
+            )
+            return _attach({
+                "circuit_id": circuit_id,
+                "range": [s, e],
+                "opponent_session": True,
+                "split_mode": "opponent_interactions_only",
+                "segments": interaction_segments,
+                "interaction_windows": interaction_windows,
+                "following_windows_filtered": int(following_windows_filtered),
+                "opponent_splitter_rule_signature": splitter_signature,
+                "unmatched_ilocs": int(pos.size),
+                "warning": (
+                    "no measured circuit_section ranges matched; emitted "
+                    "racing interaction work units anchored to the circuit"
+                ),
+            })
+        if opponent_session and interactions_only_when_opponents:
+            return _attach({
+                "circuit_id": circuit_id,
+                "range": [s, e],
+                "opponent_session": True,
+                "split_mode": "opponent_interactions_only",
+                "segments": [],
+                "interaction_windows": [],
+                "following_windows_filtered": int(following_windows_filtered),
+                "opponent_splitter_rule_signature": splitter_signature,
+                "unmatched_ilocs": int(pos.size),
+                "warning": (
+                    "opponent data was present, but only following-only "
+                    "windows were found; no LLM annotation work units emitted"
+                ),
+            })
+        return _attach({
+            "error": (
+                f"no circuit_section with a filled normalized_position_range "
+                f"matches circuit_id={circuit_id!r}"
+            ),
+            "circuit_id": circuit_id,
+            "range": [s, e],
+            "segments": [],
+            "opponent_splitter_rule_signature": splitter_signature,
+            "unmatched_ilocs": 0,
+        })
+
+    def _section_for(p: float) -> Optional[Dict[str, Any]]:
+        if not np.isfinite(p):
+            return None
+        # Wrap p into [0, 1) defensively — some sessions emit values that drift
+        # slightly past the boundary at the start/finish line.
+        p = p - np.floor(p)
+        for c in candidates:
+            lo, hi = c["lo"], c["hi"]
+            if hi >= lo:
+                if lo <= p <= hi:
+                    return c
+            else:
+                # Wrap section: [lo, 1.0] ∪ [0.0, hi]
+                if p >= lo or p <= hi:
+                    return c
+        return None
+
+    segments: List[Dict[str, Any]] = []
+    unmatched = 0
+    cur_section: Optional[Dict[str, Any]] = None
+    cur_start_iloc = s
+    matched_in_run = 0
+    def _is_lap_boundary(offset: int) -> bool:
+        return int(s + offset) in lap_boundary_set
+
+    def _close_run(end_iloc_exclusive: int) -> None:
+        nonlocal cur_section, cur_start_iloc, matched_in_run
+        if cur_section is not None and end_iloc_exclusive > cur_start_iloc:
+            length = end_iloc_exclusive - cur_start_iloc
+            segments.append({
+                "start_index": int(cur_start_iloc),
+                "end_index": int(end_iloc_exclusive),
+                "circuit_section_id": cur_section["id"],
+                "circuit_section_name": cur_section["name"],
+                "normalized_position_range": [cur_section["lo"], cur_section["hi"]],
+                "coverage_fraction": float(matched_in_run) / float(length) if length else 0.0,
+                "split_basis": "circuit_section",
+                "opponent_interaction": None,
+            })
+        cur_section = None
+        cur_start_iloc = end_iloc_exclusive
+        matched_in_run = 0
+
+    for offset, p in enumerate(pos):
+        iloc = s + offset
+        section = _section_for(p)
+        lap_boundary = _is_lap_boundary(offset)
+        if section is None:
+            unmatched += 1
+            # Keep the run open — the player may have a noisy sample.
+            if cur_section is None:
+                cur_start_iloc = iloc + 1
+            continue
+        if lap_boundary and cur_section is not None:
+            _close_run(iloc)
+        if cur_section is None:
+            cur_section = section
+            cur_start_iloc = iloc
+            matched_in_run = 1
+            continue
+        if section["id"] == cur_section["id"]:
+            matched_in_run += 1
+            continue
+        # Section changed — close the prior run, start a new one.
+        _close_run(iloc)
+        cur_section = section
+        cur_start_iloc = iloc
+        matched_in_run = 1
+    _close_run(e)
+
+    if include_interaction_windows:
+        if opponent_session and interactions_only_when_opponents:
+            segments = _interaction_segments_from_windows(interaction_windows, segments)
+        elif interaction_windows and segments:
+            assignments: Dict[int, List[Dict[str, Any]]] = {}
+            for window in interaction_windows:
+                best_idx = None
+                best_score = (-1, -1)
+                closest_iloc = int(window.get("min_distance_iloc", window["start_index"]))
+                for idx, segment in enumerate(segments):
+                    seg_s = int(segment["start_index"])
+                    seg_e = int(segment["end_index"])
+                    overlap = min(int(window["end_index"]), seg_e) - max(int(window["start_index"]), seg_s)
+                    if overlap <= 0:
+                        continue
+                    contains_closest = 1 if seg_s <= closest_iloc < seg_e else 0
+                    score = (contains_closest, overlap)
+                    if score > best_score:
+                        best_idx = idx
+                        best_score = score
+                if best_idx is not None:
+                    assignments.setdefault(best_idx, []).append(window)
+
+            for idx, overlaps in assignments.items():
+                segment = segments[idx]
+                expanded_start = min(int(segment["start_index"]), *(int(w["start_index"]) for w in overlaps))
+                expanded_end = max(int(segment["end_index"]), *(int(w["end_index"]) for w in overlaps))
+                segment["start_index"] = int(max(s, expanded_start))
+                segment["end_index"] = int(min(e, expanded_end))
+                segment["split_basis"] = "circuit_section+opponent_interaction"
+                target_slot = overlaps[0].get("slot") if overlaps else None
+                segment["opponent_interaction"] = {
+                    "targeted_car_slot": target_slot,
+                    "targeted_car_label": f"Car {target_slot}" if target_slot is not None else None,
+                    "windows": overlaps,
+                    "reason": (
+                        "section window expanded around close opponent "
+                        "engagement so O / OD / MSR labels see complete "
+                        "entry-to-exit context"
+                    ),
+                }
+        segments = _align_interaction_segments_with_classifier(df, segments)
+
+    return _attach({
+        "circuit_id": circuit_id,
+        "range": [s, e],
+        "opponent_session": bool(opponent_session),
+        "split_mode": (
+            "opponent_interactions_only"
+            if opponent_session and include_interaction_windows and interactions_only_when_opponents
+            else "circuit_sections"
+        ),
+        "segments": segments,
+        "interaction_windows": interaction_windows,
+        "following_windows_filtered": int(following_windows_filtered),
+        "opponent_splitter_rule_signature": splitter_signature,
+        "unmatched_ilocs": int(unmatched),
+    })
+
+
+def locate_circuit_section(
+    df: pd.DataFrame,
+    circuit_id: Optional[str],
+    start_index: Optional[int] = None,
+    end_index: Optional[int] = None,
+):
+    """Tool — identify which named ``circuit_section`` the segment overlaps.
+
+    Reads ``Graphics_normalized_car_position`` over ``[start_index, end_index)``
+    and compares the segment's [min, max] fraction against that circuit's
+    ``circuit_section`` labels whose ``normalized_position_range`` is filled
+    in. Returns the top matches ranked by overlap fraction (overlap / segment
+    span). Handles wrap-around sections where ``range_end < range_start``
+    (e.g. the pit straight that crosses the start/finish line).
+
+    Returns a ``circuit_section_match`` attachment with shape::
+
+        {
+            "circuit_id": <str>,
+            "segment_position_range": [seg_min, seg_max],
+            "top_matches": [
+                {"label_id", "name", "description",
+                 "section_range": [start, end],
+                 "overlap_fraction": 0.0..1.0},
+                ...
+            ],
+            "is_ambiguous": <bool>,
+            "best_match": <top entry, or None when ambiguous / empty>,
+        }
+
+    ``top_matches`` is empty when the column is missing, the circuit is
+    unknown, all values are non-finite, or no circuit_section in the catalog
+    has its range filled in yet. ``best_match`` is set ONLY when the leading
+    entry's ``overlap_fraction`` clears the runner-up by ``AMBIGUOUS_MARGIN``;
+    otherwise ``is_ambiguous`` is true and callers should resolve the
+    competing ``top_matches`` against splitter context and pit-lane evidence.
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+    from app.internal_knowledge_base.label_lookup import find_labels
+
+    # Backwards-compatible path for direct Python callers that still pass
+    # (df, start, end). Provider-facing tools should pass circuit_id first.
+    if end_index is None and start_index is not None:
+        end_index = int(start_index)
+        start_index = int(circuit_id) if circuit_id is not None else 0
+        circuit_id = None
+
+    circuit = _canonicalise_track_name(circuit_id)
+    if circuit is None and STATIC_TRACK_COLUMN in df.columns and not df.empty:
+        circuit = _canonicalise_track_name(df[STATIC_TRACK_COLUMN].iloc[0])
+
+    s, e = int(start_index), int(end_index)
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="circuit_section_match",
+            kind="structured",
+            label="Circuit Section Match",
+            content=_round_floats(content, ndigits=4),
+        )
+
+    if NORMALIZED_POSITION_COLUMN not in df.columns:
+        return _attach({
+            "circuit_id": circuit,
+            "error": f"column '{NORMALIZED_POSITION_COLUMN}' missing from telemetry",
+            "top_matches": [],
+            "is_ambiguous": False,
+            "best_match": None,
+        })
+
+    if circuit is None:
+        return _attach({
+            "circuit_id": None,
+            "error": "circuit_id is required before locating a circuit section",
+            "top_matches": [],
+            "is_ambiguous": False,
+            "best_match": None,
+        })
+
+    segment = _absolute_iloc_slice(df, s, e)
+    pos = segment[NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
+    pos = pos[np.isfinite(pos)]
+    if pos.size == 0:
+        return _attach({
+            "circuit_id": circuit,
+            "error": "no finite values in normalized position over the segment",
+            "top_matches": [],
+            "is_ambiguous": False,
+            "best_match": None,
+        })
+
+    seg_lo, seg_hi = float(pos.min()), float(pos.max())
+    seg_span = max(seg_hi - seg_lo, 1e-6)
+
+    matches: List[Dict[str, Any]] = []
+    for entry in find_labels(type="circuit_section", parent=circuit):
+        rng = entry.get("normalized_position_range")
+        if rng is None:
+            continue
+        r_lo, r_hi = rng
+        if r_hi >= r_lo:
+            overlap = max(0.0, min(seg_hi, r_hi) - max(seg_lo, r_lo))
+        else:
+            # Section wraps across the lap boundary: [r_lo, 1.0] ∪ [0.0, r_hi]
+            overlap = (
+                max(0.0, min(seg_hi, 1.0) - max(seg_lo, r_lo))
+                + max(0.0, min(seg_hi, r_hi) - max(seg_lo, 0.0))
+            )
+        if overlap <= 0:
+            continue
+        matches.append({
+            "label_id": entry["id"],
+            "name": entry["name"],
+            "description": entry.get("description", ""),
+            "section_range": [r_lo, r_hi],
+            "overlap_fraction": overlap / seg_span,
+        })
+
+    matches.sort(key=lambda m: m["overlap_fraction"], reverse=True)
+    top = matches[:3]
+
+    # Pit lanes and adjacent straights frequently share a normalized_position
+    # range (e.g. brands_hatch1 and brands_hatch17 both at [0.94, 1]), so the
+    # leader can tie the runner-up at the same overlap_fraction. Refuse to
+    # name a single best_match in that case — force the caller to pick.
+    AMBIGUOUS_MARGIN = 0.05
+    is_ambiguous = (
+        len(top) >= 2
+        and (top[0]["overlap_fraction"] - top[1]["overlap_fraction"]) < AMBIGUOUS_MARGIN
+    )
+    best = None if is_ambiguous or not top else top[0]
+    return _attach({
+        "circuit_id": circuit,
+        "segment_position_range": [seg_lo, seg_hi],
+        "top_matches": top,
+        "is_ambiguous": is_ambiguous,
+        "best_match": best,
+    })
+
+
+STATIC_TRACK_COLUMN = "Static_track"
+
+
+def _canonicalise_track_name(raw: Any) -> Optional[str]:
+    """Normalise a Static_track value to a catalog circuit id."""
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    return text.lower().replace(" ", "_").replace("-", "_")
+
+
+def get_circuit_id(df: pd.DataFrame):
+    """Tool — derive the lap's circuit id from the ``Static_track`` column.
+
+    Reads ``df[Static_track].iloc[0]`` and canonicalises it (lowercase,
+    spaces / hyphens to underscores) so it matches catalog circuit IDs
+    like ``brands_hatch`` / ``silverstone``. Returns a ``circuit_id``
+    attachment with::
+
+        {
+            "circuit_id": <str | None>,
+            "circuit_name": <str | None>,   # display name from CIRCUIT_NAMES
+            "raw_track_name": <str | None>,
+            "known": <bool>,    # True when canonical id matches a catalog circuit
+        }
+
+    Returns ``circuit_id=None`` when the column is missing, the dataframe
+    is empty, or the value canonicalises to an empty string. ``known`` is
+    informational only — the agent decides whether to proceed when an
+    unknown circuit slips through.
+    """
+    from app.local_annotation_agent.evaluators import PipelineAttachment
+    from app.shared.circuits import CIRCUIT_NAMES
+
+    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
+        return PipelineAttachment(
+            name="circuit_id",
+            kind="structured",
+            label="Circuit ID (from Static_track)",
+            content=content,
+        )
+
+    if STATIC_TRACK_COLUMN not in df.columns or df.empty:
+        return _attach({
+            "circuit_id": None,
+            "circuit_name": None,
+            "raw_track_name": None,
+            "known": False,
+            "error": f"column '{STATIC_TRACK_COLUMN}' missing or dataframe empty",
+        })
+
+    raw = df[STATIC_TRACK_COLUMN].iloc[0]
+    canon = _canonicalise_track_name(raw)
+    return _attach({
+        "circuit_id": canon,
+        "circuit_name": CIRCUIT_NAMES.get(canon) if canon else None,
+        "raw_track_name": None if raw is None else str(raw),
+        "known": canon in CIRCUIT_NAMES if canon else False,
+    })
+
+
+# Catalog of pre-compute tools, mirroring AGENT_GRAPH_DEFINITIONS. The
+# planner enumerates this in its prompt; the step solver dispatches by id.
+PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "id": "compute_expert_phases",
+        "label": "Phase Indices (per-arc entry / apex / exit)",
+        "description": (
+            "Detects expert-anchored corner phases from the expert "
+            "position-trace curvature. Produces a 'phase_indices' "
+            "attachment with a 'phases' list — one entry per arc, so "
+            "chicanes / esses produce multiple entries of opposite "
+            "direction. Empty list on straights. Use on any step that "
+            "requests a trajectory graph or reasons about corner phases."
+        ),
+        "callable": compute_expert_phases,
+    },
+    {
+        "id": "measure_segment_shape",
+        "label": "Segment shape + altitude angle measurement",
+        "description": (
+            "Measures expert-anchored curvature and z-position over the "
+            "segment. Produces a "
+            "'segment_shape_measurement' attachment with `base_segment_shape` "
+            "and optional `corner_shape_refinement` shape keys, plus entry / "
+            "apex / exit altitude slope-angle summaries. It does not output "
+            "labels; "
+            "preflight or label search maps shape keys to annotation wording. "
+            "Use this whenever deciding segment shape or reading corner "
+            "altitude trends; uphill, level, and downhill are classified from "
+            "slope angle, not raw height difference."
+        ),
+        "callable": measure_segment_shape,
+    },
+    {
+        "id": "locate_circuit_section",
+        "label": "Circuit Section Match (named corner / straight)",
+        "description": (
+            "Takes a circuit id first, reads "
+            "`Graphics_normalized_car_position` over the segment, and "
+            "matches it against that circuit's `circuit_section` labels' "
+            "`normalized_position_range`. Produces a "
+            "'circuit_section_match' attachment with 'top_matches' "
+            "(ranked by overlap fraction), an 'is_ambiguous' flag, and "
+            "a 'best_match' that is non-null ONLY when the leader clears "
+            "the runner-up by a clear margin. When 'is_ambiguous' is true "
+            "(e.g. pit lane and the adjacent straight share a normalized "
+            "position range), resolve the competing 'top_matches' to one "
+            "circuit_section id using splitter context and pit-lane evidence. "
+            "Use whenever you "
+            "need to label which "
+            "named corner / straight the segment is on — never guess from "
+            "telemetry shape alone."
+        ),
+        "callable": locate_circuit_section,
+    },
+    {
+        "id": "split_lap_by_circuit_sections",
+        "label": "Split lap range into per-section sub-ranges",
+        "description": (
+            "Walks `Graphics_normalized_car_position` across the parent "
+            "range and partitions it into one sub-range per "
+            "`circuit_section` whose `normalized_position_range` contains "
+            "the sample. Close opponent engagements are assigned to the "
+            "best matching section, which expands to include the padded "
+            "interaction window so "
+            "overtake / defense / racing-mistake labels are not clipped at "
+            "corner boundaries. Produces a 'split_lap_sections' attachment with "
+            "an ordered `segments` list (`start_index`, `end_index`, "
+            "`circuit_section_id`, `coverage_fraction`, `split_basis`). Used by the "
+            "lap-to-segment excerpter to compute the rough split that "
+            "feeds the per-section annotation agent."
+        ),
+        "callable": split_lap_by_circuit_sections,
+    },
+    {
+        "id": "find_nearest_opponent",
+        "label": "Nearest opponent(s) in range (multi-car positional context)",
+        "description": (
+            "Scans `Car_{1..60}_pos_{x,y}` against `Graphics_player_pos_"
+            "{x,y}` over the iloc range, filters empty slots (x=y=0.0), "
+            "and ranks the active opponents by minimum 2D distance to "
+            "the player. Produces an 'opponent_context' attachment whose "
+            "`candidates` list carries per-slot summary: minimum / entry "
+            "/ exit distance, signed longitudinal gap at entry & exit "
+            "(+ ⇒ opponent ahead in player heading), minimum lateral "
+            "offset, side-by-side iloc count, close-following evidence, "
+            "and `passed_by_player` / "
+            "`got_passed_by_opponent` flags (signed-gap sign flips). Use "
+            "after `classify_opponent_interaction` when you need "
+            "supporting primary-slot details. Empty `candidates` with "
+            "`data_available: true` is evidence that no car was close "
+            "enough to interact with."
+        ),
+        "callable": find_nearest_opponent,
+    },
+    {
+        "id": "classify_opponent_interaction",
+        "label": "Classify opponent interaction outcome",
+        "description": (
+            "Deterministically classifies the opponent-relative position "
+            "pattern over the iloc range using the driver's local path / "
+            "heading for signed longitudinal/lateral gaps. Returns a structured "
+            "'opponent_interaction_classification' attachment with "
+            "`role` (attack / defense / following / side_by_side / incidental), "
+            "`outcome` (pass_completed, held_defense, failed_attack, "
+            "broken_defense, close_following, etc.), numeric `confidence`, "
+            "readable `confidence_level`, primary opponent slot, "
+            "and per-slot evidence. Inline close-following "
+            "cars can be relevant even when they never become side-by-side, "
+            "but `close_following` does not imply an overtake or defense "
+            "outcome by itself. Use this as deterministic interaction "
+            "evidence; annotation preflight/search maps outcomes to label "
+            "vocabulary."
+        ),
+        "callable": classify_opponent_interaction,
+    },
+    {
+        "id": "query_opponent_trajectory",
+        "label": "Per-iloc trajectory samples for one opponent slot",
+        "description": (
+            "Given a specific opponent slot (1..60) returned by "
+            "`find_nearest_opponent`, samples `n_samples` evenly-spaced "
+            "ilocs across the range and returns each iloc's 2D distance, "
+            "signed longitudinal gap (+ ⇒ opp ahead), and signed lateral "
+            "offset (+ ⇒ opp on player's left of heading). Use to see "
+            "HOW the relationship evolved: gap closing smoothly on a "
+            "straight (slipstream), step change at apex (switchback), or "
+            "lateral offset crossing zero (line-cross during a pass)."
+        ),
+        "callable": query_opponent_trajectory,
+    },
+]
+
+
+def get_pipeline_tool(tool_id: str) -> Optional[Dict[str, Any]]:
+    """Lookup helper — returns the tool definition or None."""
+    return next(
+        (t for t in PIPELINE_TOOL_DEFINITIONS if t["id"] == tool_id),
+        None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pipeline queries — VLM-picked, parameter-driven detectors that resolve to
+# exact ilocs/values on the real DataFrame. The zoom agent's VLM call
+# classifies which query fits the planner's question, picks parameters, and
+# the query runs deterministic math — no pixel-reading.
+# ---------------------------------------------------------------------------
+
+def _canonical_column(column: str) -> str:
+    return column
+
+
+def _resolve_column(column: str, segment: pd.DataFrame) -> Optional[np.ndarray]:
+    if not column:
+        return None
+    column = _canonical_column(column)
+    if column not in segment.columns:
+        return None
+    return segment[column].to_numpy(dtype=float)
+
+
+_COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {
+    "expert_time_difference": {
+        "unit": "ms",
+        "flat_delta_abs": 50.0,
+        "label_significant_delta_abs": 150.0,
+        "strong_delta_abs": 500.0,
+        "near_zero_abs": 50.0,
+        "positive_label": "losing_time",
+        "negative_label": "gaining_time",
+    },
+    "trajectory_offset": {
+        "unit": "m",
+        "flat_delta_abs": 0.10,
+        "label_significant_delta_abs": 0.50,
+        "strong_delta_abs": 1.00,
+        "near_zero_abs": 0.50,
+        "positive_label": "moving_wider",
+        "negative_label": "moving_tighter",
+    },
+    "speed_difference": {
+        "unit": "km/h",
+        "flat_delta_abs": 2.0,
+        "label_significant_delta_abs": 5.0,
+        "strong_delta_abs": 15.0,
+        "near_zero_abs": 5.0,
+        "positive_label": "speed_gap_increasing",
+        "negative_label": "speed_gap_decreasing",
+    },
+}
+
+
+def _column_semantics(column: str) -> Dict[str, Any]:
+    column = _canonical_column(column)
+    return {
+        "unit": "value",
+        "flat_delta_abs": 1e-9,
+        "label_significant_delta_abs": 1e-9,
+        "strong_delta_abs": 1.0,
+        "near_zero_abs": 1e-9,
+        "positive_label": "rising",
+        "negative_label": "falling",
+        **_COLUMN_SEMANTICS.get(column, {}),
+    }
+
+
+def _classify_delta(delta: float, column: str) -> Dict[str, Any]:
+    meta = _column_semantics(column)
+    abs_delta = abs(float(delta))
+    flat = float(meta["flat_delta_abs"])
+    significant = float(meta["label_significant_delta_abs"])
+    strong = float(meta["strong_delta_abs"])
+
+    if abs_delta < flat:
+        direction = "flat"
+        domain_direction = "stable"
+        significance = "insignificant"
+    elif delta > 0:
+        direction = "rising"
+        domain_direction = str(meta["positive_label"])
+        significance = "strong" if abs_delta >= strong else "significant" if abs_delta >= significant else "small"
+    else:
+        direction = "falling"
+        domain_direction = str(meta["negative_label"])
+        significance = "strong" if abs_delta >= strong else "significant" if abs_delta >= significant else "small"
+
+    return {
+        "direction": direction,
+        "domain_direction": domain_direction,
+        "significance": significance,
+        "is_label_significant": abs_delta >= significant,
+        "thresholds": {
+            "flat_below_abs_delta": flat,
+            "label_significant_at_abs_delta": significant,
+            "strong_at_abs_delta": strong,
+            "unit": meta["unit"],
+        },
+    }
+
+
+def _slope_shape_window(length: int) -> int:
+    if length <= 1:
+        return 1
+    return max(1, min(5, int(np.ceil(length * 0.25))))
+
+
+def _slope_shape_smoothing_window(length: int) -> int:
+    window = _slope_shape_window(length)
+    if window % 2 == 0:
+        window = max(1, window - 1)
+    return window
+
+
+def _slope_shape(arr: np.ndarray, overall_slope: float, column: str) -> str:
+    """Classify whole-section shape from the smoothed first derivative."""
+    finite_locs = np.where(np.isfinite(arr))[0]
+    if len(finite_locs) < 3:
+        return "slope_steady_over_section"
+
+    window = _slope_shape_smoothing_window(len(arr))
+    smooth = (
+        pd.Series(arr)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy()
+    )
+
+    finite_locs = np.where(np.isfinite(smooth))[0]
+    if len(finite_locs) < 3:
+        return "slope_steady_over_section"
+
+    positions = finite_locs.astype(float)
+    values = smooth[finite_locs]
+    derivative = np.gradient(values, positions)
+    derivative = derivative[np.isfinite(derivative)]
+    if len(derivative) < 2:
+        return "slope_steady_over_section"
+
+    shape_window = _slope_shape_window(len(derivative))
+    early_derivative = float(np.nanmedian(derivative[:shape_window]))
+    late_derivative = float(np.nanmedian(derivative[-shape_window:]))
+    if not (np.isfinite(early_derivative) and np.isfinite(late_derivative)):
+        return "slope_steady_over_section"
+
+    meta = _column_semantics(column)
+    range_len = max(float(finite_locs[-1] - finite_locs[0]), 1.0)
+    absolute_guard = float(meta["label_significant_delta_abs"]) / range_len
+    baseline = max(
+        abs(float(overall_slope)),
+        abs(early_derivative),
+        abs(late_derivative),
+    )
+    relative_guard = baseline * 0.25
+    slope_guard = max(absolute_guard, relative_guard, 1e-9)
+
+    if abs(early_derivative) > slope_guard and abs(late_derivative) > slope_guard:
+        if early_derivative > 0 and late_derivative < 0:
+            return "reversing_to_falling_within_section"
+        if early_derivative < 0 and late_derivative > 0:
+            return "reversing_to_rising_within_section"
+
+    slope_change = late_derivative - early_derivative
+    if abs(slope_change) < slope_guard:
+        return "slope_steady_over_section"
+    if slope_change < 0:
+        return "slope_decreasing_over_section"
+    return "slope_increasing_over_section"
+
+
+def _empty_point_trend() -> Dict[str, Any]:
+    return {
+        "slope": None,
+        "delta_value": None,
+        "delta_iloc": None,
+        "overall": {"direction": "flat", "domain_direction": "stable"},
+        "start_trend": None,
+        "runs": [],
+        "rising_steps": 0,
+        "falling_steps": 0,
+        "flat_steps": 0,
+        "start_sample": None,
+        "end_sample": None,
+    }
+
+
+def _signed_trend(delta: float, meta: Dict[str, Any], eps: float) -> Tuple[str, str]:
+    if delta > eps:
+        return "rising", str(meta["positive_label"])
+    if delta < -eps:
+        return "falling", str(meta["negative_label"])
+    return "flat", "stable"
+
+
+def _point_trend_runs(
+    arr: np.ndarray,
+    start_index: int,
+    column: str,
+) -> Dict[str, Any]:
+    finite_locs = np.where(np.isfinite(arr))[0]
+    if len(finite_locs) < 2:
+        return _empty_point_trend()
+
+    values = arr[finite_locs]
+    ilocs = finite_locs + int(start_index)
+    iloc_deltas = np.diff(ilocs.astype(float))
+    value_deltas = np.diff(values)
+    valid = np.isfinite(value_deltas) & np.isfinite(iloc_deltas) & (iloc_deltas > 0)
+    if not np.any(valid):
+        return _empty_point_trend()
+
+    meta = _column_semantics(column)
+    eps = 1e-9
+    step_slopes = value_deltas[valid] / iloc_deltas[valid]
+    delta_value = float(np.sum(value_deltas[valid]))
+    delta_iloc = float(ilocs[-1] - ilocs[0])
+    signs = np.where(value_deltas > eps, 1, np.where(value_deltas < -eps, -1, 0))
+
+    primitive: List[Dict[str, int]] = []
+    run_start = 0
+    current = int(signs[0])
+    for i in range(1, len(signs)):
+        sign = int(signs[i])
+        if sign == current:
+            continue
+        primitive.append({"sign": current, "start": run_start, "end": i})
+        run_start = i
+        current = sign
+    primitive.append({"sign": current, "start": run_start, "end": len(signs)})
+
+    runs: List[Dict[str, Any]] = []
+    for primitive_run in primitive:
+        start_pos = int(primitive_run["start"])
+        end_pos = int(primitive_run["end"])
+        start_iloc = int(ilocs[start_pos])
+        end_iloc = int(ilocs[end_pos])
+        start_value = float(values[start_pos])
+        end_value = float(values[end_pos])
+        run_delta = end_value - start_value
+        run_iloc_delta = float(end_iloc - start_iloc)
+        run_slope = run_delta / run_iloc_delta if run_iloc_delta > 0 else 0.0
+        classification = _classify_delta(run_delta, column)
+        run_direction, domain_direction = _signed_trend(run_delta, meta, eps)
+        runs.append({
+            "start_iloc": start_iloc,
+            "end_iloc": end_iloc,
+            "start_value": start_value,
+            "end_value": end_value,
+            "delta_value": run_delta,
+            "slope": run_slope,
+            "direction": run_direction,
+            "domain_direction": domain_direction,
+            "significance": classification["significance"],
+            "is_label_significant": classification["is_label_significant"],
+            "role": _trend_role(column, run_direction),
+        })
+
+    overall = _classify_delta(delta_value, column)
+    overall_direction, overall_domain_direction = _signed_trend(delta_value, meta, eps)
+    return {
+        "slope": float(np.nanmean(step_slopes)),
+        "delta_value": delta_value,
+        "delta_iloc": delta_iloc,
+        "overall": {
+            "direction": overall_direction,
+            "domain_direction": overall_domain_direction,
+            "significance": overall["significance"],
+            "is_label_significant": overall["is_label_significant"],
+            "thresholds": overall["thresholds"],
+        },
+        "start_trend": runs[0] if runs else None,
+        "runs": runs,
+        "rising_steps": int(np.sum(value_deltas[valid] > eps)),
+        "falling_steps": int(np.sum(value_deltas[valid] < -eps)),
+        "flat_steps": int(np.sum(np.abs(value_deltas[valid]) <= eps)),
+        "start_sample": {"iloc": int(ilocs[0]), "value": float(values[0])},
+        "end_sample": {"iloc": int(ilocs[-1]), "value": float(values[-1])},
+    }
+
+
+def _trajectory_abs_offset_derivative(
+    arr: np.ndarray,
+    start_index: int,
+) -> Dict[str, Any]:
+    finite_locs = np.where(np.isfinite(arr))[0]
+    if len(finite_locs) < 2:
+        return {
+            "overall": {"direction": "stable"},
+            "runs": [],
+            "merge_runs": [],
+            "move_away_runs": [],
+        }
+
+    values = np.abs(arr[finite_locs])
+    ilocs = finite_locs + int(start_index)
+    deltas = np.diff(values)
+    iloc_deltas = np.diff(ilocs.astype(float))
+    valid = np.isfinite(deltas) & np.isfinite(iloc_deltas) & (iloc_deltas > 0)
+    if not np.any(valid):
+        return {
+            "overall": {"direction": "stable"},
+            "runs": [],
+            "merge_runs": [],
+            "move_away_runs": [],
+        }
+
+    near_zero_abs = float(_column_semantics("trajectory_offset")["near_zero_abs"])
+    eps = 1e-9
+    signs = np.where(deltas > eps, 1, np.where(deltas < -eps, -1, 0))
+    primitive: List[Dict[str, int]] = []
+    run_start = 0
+    current = int(signs[0])
+    for i in range(1, len(signs)):
+        sign = int(signs[i])
+        if sign == current:
+            continue
+        primitive.append({"sign": current, "start": run_start, "end": i})
+        run_start = i
+        current = sign
+    primitive.append({"sign": current, "start": run_start, "end": len(signs)})
+
+    runs: List[Dict[str, Any]] = []
+    for primitive_run in primitive:
+        start_pos = int(primitive_run["start"])
+        end_pos = int(primitive_run["end"])
+        start_iloc = int(ilocs[start_pos])
+        end_iloc = int(ilocs[end_pos])
+        start_abs = float(values[start_pos])
+        end_abs = float(values[end_pos])
+        delta_abs = end_abs - start_abs
+        run_iloc_delta = float(end_iloc - start_iloc)
+        derivative = delta_abs / run_iloc_delta if run_iloc_delta > 0 else 0.0
+        direction = (
+            "move_away_from_expert_line" if delta_abs > eps
+            else "merge_to_expert_line" if delta_abs < -eps
+            else "stable"
+        )
+        runs.append({
+            "start_iloc": start_iloc,
+            "end_iloc": end_iloc,
+            "start_abs": start_abs,
+            "end_abs": end_abs,
+            "delta_abs": delta_abs,
+            "derivative": derivative,
+            "direction": direction,
+            "role": direction,
+            "is_label_significant": abs(delta_abs) >= near_zero_abs,
+        })
+
+    total_delta = float(values[-1] - values[0])
+    total_iloc_delta = float(ilocs[-1] - ilocs[0])
+    mean_derivative = (
+        total_delta / total_iloc_delta
+        if total_iloc_delta > 0
+        else 0.0
+    )
+    overall_direction = (
+        "move_away_from_expert_line" if total_delta > eps
+        else "merge_to_expert_line" if total_delta < -eps
+        else "stable"
+    )
+    return {
+        "start_sample": {"iloc": int(ilocs[0]), "abs_offset": float(values[0])},
+        "end_sample": {"iloc": int(ilocs[-1]), "abs_offset": float(values[-1])},
+        "overall": {
+            "direction": overall_direction,
+            "delta_abs": total_delta,
+            "mean_derivative": mean_derivative,
+            "is_label_significant": abs(total_delta) >= near_zero_abs,
+        },
+        "runs": runs,
+        "merge_runs": [
+            run for run in runs
+            if run["direction"] == "merge_to_expert_line"
+        ],
+        "move_away_runs": [
+            run for run in runs
+            if run["direction"] == "move_away_from_expert_line"
+        ],
+    }
+
+
+def _trend_role(column: str, direction: str) -> str:
+    if column == "expert_time_difference":
+        if direction == "rising":
+            return "time_gap_increasing"
+        if direction == "falling":
+            return "time_gap_decreasing"
+        return "constant_gap_not_mistake_or_recovery"
+    return _column_semantics(column)[
+        "positive_label" if direction == "rising" else "negative_label"
+    ] if direction in {"rising", "falling"} else "stable"
+
+
+def _series_zero_context(arr: np.ndarray, column: str) -> Dict[str, Any]:
+    meta = _column_semantics(column)
+    near_zero_abs = float(meta["near_zero_abs"])
+    finite = arr[np.isfinite(arr)]
+    if len(finite) == 0:
+        return {"near_zero_abs": near_zero_abs}
+
+    abs_arr = np.abs(finite)
+    min_abs_local = int(np.nanargmin(np.abs(arr))) if np.any(np.isfinite(arr)) else 0
+    near_zero_mask = abs_arr <= near_zero_abs
+    start_abs = float(abs(arr[0])) if np.isfinite(arr[0]) else None
+    end_abs = float(abs(arr[-1])) if np.isfinite(arr[-1]) else None
+    moved_toward_zero = (
+        bool(end_abs < start_abs)
+        if start_abs is not None and end_abs is not None
+        else None
+    )
+    return {
+        "near_zero_abs": near_zero_abs,
+        "start_abs": start_abs,
+        "end_abs": end_abs,
+        "min_abs": float(abs(arr[min_abs_local])) if np.isfinite(arr[min_abs_local]) else None,
+        "min_abs_iloc_offset": min_abs_local,
+        "near_zero_count": int(np.sum(near_zero_mask)),
+        "near_zero_fraction": float(np.sum(near_zero_mask) / len(finite)),
+        "starts_near_zero": bool(start_abs is not None and start_abs <= near_zero_abs),
+        "ends_near_zero": bool(end_abs is not None and end_abs <= near_zero_abs),
+        "moves_toward_zero": moved_toward_zero,
+    }
+
+
+def _query_find_extremum(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, kind: str,
+) -> Optional[Dict[str, Any]]:
+    """iloc of the global min or max of <column> in the range."""
+    segment = df.loc[int(start_index): int(end_index)]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) == 0:
+        return None
+    finite = np.where(np.isfinite(arr), arr, np.nan)
+    if np.all(np.isnan(finite)):
+        return None
+    if kind == "max":
+        local = int(np.nanargmax(finite))
+    elif kind == "min":
+        local = int(np.nanargmin(finite))
+    else:
+        return None
+    finite_values = finite[np.isfinite(finite)]
+    zero_context = _series_zero_context(finite, column)
+    peak_abs_local = int(np.nanargmax(np.abs(finite)))
+    extra = {
+        "unit": _column_semantics(column)["unit"],
+        "abs_min": float(np.nanmin(np.abs(finite_values))),
+        "abs_max": float(np.nanmax(np.abs(finite_values))),
+        "abs_mean": float(np.nanmean(np.abs(finite_values))),
+        "peak_abs_iloc": int(start_index) + peak_abs_local,
+        "peak_abs_value": float(finite[peak_abs_local]),
+        **zero_context,
+    }
+    if zero_context.get("min_abs_iloc_offset") is not None:
+        extra["min_abs_iloc"] = int(start_index) + int(zero_context["min_abs_iloc_offset"])
+        extra.pop("min_abs_iloc_offset", None)
+    return {
+        "iloc": int(start_index) + local,
+        "value": float(finite[local]),
+        "extra": extra,
+    }
+
+
+def _query_find_first_match(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, op: str, value: float,
+) -> Optional[Dict[str, Any]]:
+    """First iloc in the range where <column> <op> <value> holds.
+
+    ``op`` is one of ``"equal"``, ``"greater_than_or_equal"``,
+    ``"less_than_or_equal"``, ``"greater_than"``, ``"less_than"``. Useful
+    for discrete-valued columns (gear, integer states) where threshold
+    crossings don't make sense.
+    """
+    segment = df.loc[int(start_index): int(end_index)]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) == 0:
+        return None
+    v = float(value)
+    if op == "equal":
+        mask = arr == v
+    elif op == "greater_than_or_equal":
+        mask = arr >= v
+    elif op == "less_than_or_equal":
+        mask = arr <= v
+    elif op == "greater_than":
+        mask = arr > v
+    elif op == "less_than":
+        mask = arr < v
+    else:
+        raise ValueError(
+            f"unknown op {op!r} — must be one of: equal, "
+            f"greater_than_or_equal, less_than_or_equal, "
+            f"greater_than, less_than"
+        )
+    idxs = np.where(mask & np.isfinite(arr))[0]
+    if len(idxs) == 0:
+        return None
+    local = int(idxs[0])
+    return {"iloc": int(start_index) + local, "value": float(arr[local])}
+
+
+def _query_read_values_at_indices(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, indices: List[int],
+) -> Optional[Dict[str, Any]]:
+    """Read <column> at each parent-frame iloc in <indices>.
+
+    Each requested iloc resolves to one entry in ``samples`` —
+    ``{iloc, value}``, with ``value=None`` for out-of-range or NaN samples
+    and a ``note`` explaining why. Returns ``None`` only when the column
+    itself is missing.
+    """
+    if not isinstance(indices, (list, tuple)) or not indices:
+        return None
+    segment = df.loc[int(start_index): int(end_index)]
+    arr = _resolve_column(column, segment)
+    if arr is None:
+        return None
+    samples: List[Dict[str, Any]] = []
+    for raw_idx in indices:
+        try:
+            idx = int(raw_idx)
+        except (TypeError, ValueError):
+            continue
+        local = idx - int(start_index)
+        if local < 0 or local >= len(arr):
+            samples.append({"iloc": idx, "value": None, "note": "out of zoom range"})
+            continue
+        v = arr[local]
+        if not np.isfinite(v):
+            samples.append({"iloc": idx, "value": None, "note": "NaN / missing"})
+        else:
+            samples.append({"iloc": idx, "value": float(v)})
+    if not samples:
+        return None
+    return {"samples": samples}
+
+
+def _query_compute_slope(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str,
+) -> Optional[Dict[str, Any]]:
+    """Point-by-point slope of <column> across the zoom range.
+
+    Returns ``{iloc, value, samples, extra}`` where ``value`` is the mean
+    point-to-point slope. ``samples`` documents the two range endpoints,
+    and ``extra`` carries the point-by-point runs and aggregate trend.
+    ``iloc`` is set to ``end_index`` so the synthesizer can cite the slope
+    at the end of the interval. Returns ``None`` when the column is missing,
+    the range collapses to a single iloc, or fewer than two finite samples
+    are available.
+    """
+    a_idx = int(start_index)
+    b_idx = int(end_index)
+    if a_idx == b_idx:
+        return None
+    segment = df.loc[a_idx: b_idx]
+    arr = _resolve_column(column, segment)
+    if arr is None or len(arr) < 2:
+        return None
+    meta = _column_semantics(column)
+    point_trend = _point_trend_runs(arr, a_idx, column)
+    delta_v = point_trend["delta_value"]
+    slope = point_trend["slope"]
+    if delta_v is None or slope is None:
+        return None
+    start_sample = point_trend["start_sample"]
+    end_sample = point_trend["end_sample"]
+    if not isinstance(start_sample, dict) or not isinstance(end_sample, dict):
+        return None
+    delta_i = point_trend["delta_iloc"]
+    overall_class = point_trend["overall"]
+    zero_context = _series_zero_context(arr, column)
+    absolute_offset_derivative = (
+        _trajectory_abs_offset_derivative(arr, a_idx)
+        if column == "trajectory_offset"
+        else None
+    )
+    extra = {
+        "unit": meta["unit"],
+        "slope_unit": f"{meta['unit']}/iloc",
+        "slope": slope,
+        "delta_value": delta_v,
+        "delta_iloc": delta_i,
+        "total_change_direction": overall_class["direction"],
+        "total_change_domain_direction": overall_class["domain_direction"],
+        "total_change_significance": overall_class["significance"],
+        "total_change_is_label_significant": overall_class["is_label_significant"],
+        "slope_shape": _slope_shape(arr, slope, column),
+        "start_trend": point_trend["start_trend"],
+        "point_trend_runs": point_trend["runs"],
+        "overall_point_trend": point_trend["overall"],
+        "rising_steps": point_trend["rising_steps"],
+        "falling_steps": point_trend["falling_steps"],
+        "flat_steps": point_trend["flat_steps"],
+        "thresholds": overall_class["thresholds"],
+        "near_zero_summary": zero_context,
+    }
+    if absolute_offset_derivative is not None:
+        extra["absolute_offset_derivative"] = absolute_offset_derivative
+    return {
+        "iloc": b_idx,
+        "value": slope,
+        "samples": [
+            start_sample,
+            end_sample,
+        ],
+        "extra": extra,
+    }
+
+
+def _query_find_dips_on_main_slope(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, smoothing_window: int, min_dip_depth: float,
+) -> Optional[Dict[str, Any]]:
+    """Find local dips along the linear-regression baseline of <column>.
+
+    Fits a least-squares line to (smoothed) <column> over the zoom range,
+    then identifies every local minimum of the residual (signal − baseline)
+    where the residual is negative AND its magnitude ≥ <min_dip_depth>.
+
+    Each surviving local min represents one "dip on the main slope" — a
+    moment where the signal briefly fell behind the overall trend. The
+    iloc reported per dip is the deepest point of that dip. Endpoints
+    are excluded from local-min detection.
+
+    Returns ``samples`` — one entry per dip, ``{iloc, value, depth}``,
+    sorted by iloc ascending; ``value`` is the raw (unsmoothed) signal
+    at the dip; ``depth`` is the absolute residual. Returns ``None`` when
+    the column is missing, has fewer than 3 finite samples, or the smoothing
+    window is < 1. When the regression succeeds but no dip meets the
+    threshold, returns an empty samples list with extras populated.
+    """
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+    try:
+        depth_thr = float(min_dip_depth)
+    except (TypeError, ValueError):
+        return None
+
+    segment = df.loc[int(start_index): int(end_index)]
+    arr_raw = _resolve_column(column, segment)
+    if arr_raw is None or len(arr_raw) < 3:
+        return None
+
+    smoothed = (
+        pd.Series(arr_raw)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy()
+    )
+    finite_mask = np.isfinite(smoothed)
+    if int(finite_mask.sum()) < 3:
+        return None
+
+    x_local = np.arange(len(smoothed), dtype=float)
+    slope, intercept = np.polyfit(x_local[finite_mask], smoothed[finite_mask], 1)
+    baseline = intercept + slope * x_local
+    residual = smoothed - baseline
+
+    eps = 1e-9
+    if slope > eps:
+        slope_direction = "rising"
+    elif slope < -eps:
+        slope_direction = "falling"
+    else:
+        slope_direction = "flat"
+
+    samples: List[Dict[str, Any]] = []
+    for i in range(1, len(residual) - 1):
+        ri, rp, rn = residual[i], residual[i - 1], residual[i + 1]
+        if not (np.isfinite(ri) and np.isfinite(rp) and np.isfinite(rn)):
+            continue
+        if not (ri < rp and ri <= rn):
+            continue
+        if ri >= 0:
+            continue
+        depth = abs(float(ri))
+        if depth < depth_thr:
+            continue
+        raw_val = arr_raw[i]
+        if not np.isfinite(raw_val):
+            continue
+        samples.append({
+            "iloc": int(start_index) + i,
+            "value": float(raw_val),
+            "depth": depth,
+        })
+
+    return {
+        "iloc": None,
+        "value": None,
+        "samples": samples,
+        "extra": {
+            "slope": float(slope),
+            "intercept": float(intercept),
+            "slope_direction": slope_direction,
+            "n_dips": len(samples),
+            "smoothing_window": window,
+        },
+    }
+
+
+def _merge_trend_runs(runs: List[Dict[str, int]]) -> List[Dict[str, int]]:
+    if not runs:
+        return []
+
+    merged: List[Dict[str, int]] = []
+    i = 0
+    while i < len(runs):
+        run = dict(runs[i])
+        if (
+            run["sign"] == 0
+            and merged
+            and i + 1 < len(runs)
+            and runs[i + 1]["sign"] == merged[-1]["sign"]
+            and runs[i + 1]["sign"] != 0
+        ):
+            merged[-1]["end"] = runs[i + 1]["end"]
+            i += 2
+            continue
+        if merged and merged[-1]["sign"] == run["sign"]:
+            merged[-1]["end"] = run["end"]
+        else:
+            merged.append(run)
+        i += 1
+    return merged
+
+
+def _query_find_trend_runs(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    column: str, smoothing_window: int,
+) -> Optional[Dict[str, Any]]:
+    """Find rising, falling, and flat runs in <column> over the range.
+
+    This is the deterministic shape reader for time-delta style graphs.
+    For ``expert_time_difference``, rising runs show the gap increasing
+    and falling runs show the gap decreasing. Parent-label prompts decide
+    whether that rate change is a new mistake or recovery from a carried
+    prior issue. Flat runs explicitly mean the existing gap is being
+    carried forward, not that a new mistake/recovery occurred.
+    """
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+
+    segment = df.loc[int(start_index): int(end_index)]
+    arr_raw = _resolve_column(column, segment)
+    if arr_raw is None or len(arr_raw) < 2:
+        return None
+
+    clean = (
+        pd.Series(arr_raw)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy()
+    )
+    finite_locs = np.where(np.isfinite(clean))[0]
+    if len(finite_locs) < 2:
+        return None
+
+    values = clean[finite_locs]
+    deltas = np.diff(values)
+    eps = 1e-9
+    signs = np.where(deltas > eps, 1, np.where(deltas < -eps, -1, 0))
+
+    primitive: List[Dict[str, int]] = []
+    run_start = 0
+    current = int(signs[0])
+    for i in range(1, len(signs)):
+        sign = int(signs[i])
+        if sign == current:
+            continue
+        primitive.append({
+            "sign": current,
+            "start": int(finite_locs[run_start]),
+            "end": int(finite_locs[i]),
+        })
+        run_start = i
+        current = sign
+    primitive.append({
+        "sign": current,
+        "start": int(finite_locs[run_start]),
+        "end": int(finite_locs[-1]),
+    })
+
+    meta = _column_semantics(column)
+    runs: List[Dict[str, Any]] = []
+    for run in _merge_trend_runs(primitive):
+        local_start = int(run["start"])
+        local_end = int(run["end"])
+        if local_end <= local_start:
+            continue
+        start_iloc = int(start_index) + local_start
+        end_iloc = int(start_index) + local_end
+        start_value = float(clean[local_start])
+        end_value = float(clean[local_end])
+        delta = end_value - start_value
+        slope = delta / float(end_iloc - start_iloc)
+        classification = _classify_delta(delta, column)
+        direction = classification["direction"]
+        runs.append({
+            "start_iloc": start_iloc,
+            "end_iloc": end_iloc,
+            "start_value": start_value,
+            "end_value": end_value,
+            "delta_value": delta,
+            "slope": slope,
+            "direction": direction,
+            "domain_direction": classification["domain_direction"],
+            "significance": classification["significance"],
+            "is_label_significant": classification["is_label_significant"],
+            "role": _trend_role(column, direction),
+        })
+
+    significant_runs = [
+        r for r in runs
+        if r["direction"] in {"rising", "falling"} and r["is_label_significant"]
+    ]
+    selected_run = (
+        max(significant_runs, key=lambda r: abs(float(r["delta_value"])))
+        if significant_runs else None
+    )
+    rising = [r for r in significant_runs if r["direction"] == "rising"]
+    falling = [r for r in significant_runs if r["direction"] == "falling"]
+    stable_only = not significant_runs
+    finite_values = values[np.isfinite(values)]
+    constant_offset_only = bool(
+        column == "expert_time_difference"
+        and stable_only
+        and len(finite_values) > 0
+        and np.nanmean(np.abs(finite_values)) > float(meta["near_zero_abs"])
+    )
+    if rising and falling:
+        verdict = "losing_time_and_recovery_runs"
+    elif rising:
+        verdict = "losing_time_run"
+    elif falling:
+        verdict = "recovery_run"
+    elif constant_offset_only:
+        verdict = "constant_offset_only"
+    else:
+        verdict = "no_rate_change"
+
+    samples = [
+        {
+            "iloc": r["end_iloc"],
+            "value": r["end_value"],
+            "note": (
+                f"{r['role']}: {r['start_iloc']}->{r['end_iloc']}, "
+                f"delta={r['delta_value']:.2f} {meta['unit']}, "
+                f"slope={r['slope']:.4f} {meta['unit']}/iloc"
+            ),
+        }
+        for r in significant_runs
+    ]
+
+    return {
+        "iloc": selected_run["end_iloc"] if selected_run else None,
+        "value": selected_run["end_value"] if selected_run else None,
+        "samples": samples,
+        "extra": {
+            "unit": meta["unit"],
+            "slope_unit": f"{meta['unit']}/iloc",
+            "smoothing_window": window,
+            "verdict": verdict,
+            "constant_offset_only": constant_offset_only,
+            "runs": runs,
+            "significant_runs": significant_runs,
+            "selected_losing_time_run": (
+                max(rising, key=lambda r: abs(float(r["delta_value"])))
+                if rising else None
+            ),
+            "selected_recovery_run": (
+                max(falling, key=lambda r: abs(float(r["delta_value"])))
+                if falling else None
+            ),
+            "thresholds": _classify_delta(0.0, column)["thresholds"],
+            "near_zero_summary": _series_zero_context(clean, column),
+        },
+    }
+
+
+def _query_measure_trajectory_similarity(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    smoothing_window: int,
+) -> Optional[Dict[str, Any]]:
+    """Measure player/expert trajectory similarity from x-y traces."""
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+
+    segment = df.loc[int(start_index): int(end_index)]
+    track = _resolve_track_config(segment)
+    if not all(
+        track.get(k)
+        for k in ("player_x", "player_y", "expert_x", "expert_y")
+    ):
+        return None
+    px_col, py_col = track["player_x"], track["player_y"]
+    ex_col, ey_col = track["expert_x"], track["expert_y"]
+    if any(c not in segment.columns for c in (px_col, py_col, ex_col, ey_col)):
+        return None
+    if len(segment) < 2:
+        return None
+
+    px = segment[px_col].to_numpy(dtype=float)
+    py = segment[py_col].to_numpy(dtype=float)
+    ex = segment[ex_col].to_numpy(dtype=float)
+    ey = segment[ey_col].to_numpy(dtype=float)
+    _, lateral_distance, _ = _project_points_to_local_reference_path(
+        px,
+        py,
+        ex,
+        ey,
+        center_indices=np.arange(px.size),
+        search_radius=30,
+    )
+    separation_raw = np.abs(lateral_distance)
+
+    clean = (
+        pd.Series(separation_raw)
+        .rolling(window=window, center=True, min_periods=1)
+        .median()
+        .to_numpy()
+    )
+    finite_locs = np.where(np.isfinite(clean))[0]
+    if len(finite_locs) < 2:
+        return None
+
+    values = clean[finite_locs]
+    segment_ilocs = segment.index.to_numpy()
+    ilocs = [int(segment_ilocs[int(local)]) for local in finite_locs]
+    deltas = np.diff(values)
+    widening_steps = int(np.sum(deltas > 1e-9))
+    widening_fraction = float(widening_steps / max(1, len(deltas)))
+    separation_gain = float(values[-1] - values[0])
+    mean_separation = float(np.mean(values))
+    peak_local = int(np.argmax(values))
+    peak_separation = float(values[peak_local])
+
+    longest_widening_run = 0
+    current_run = 0
+    for delta in deltas:
+        if float(delta) > 1e-9:
+            current_run += 1
+            longest_widening_run = max(longest_widening_run, current_run)
+        else:
+            current_run = 0
+
+    similarity_score = float(max(0.0, min(1.0, 1.0 / (1.0 + mean_separation))))
+
+    return {
+        "iloc": int(ilocs[peak_local]),
+        "value": similarity_score,
+        "samples": [
+            {
+                "iloc": ilocs[0],
+                "value": float(values[0]),
+                "note": "start_line_separation",
+            },
+            {
+                "iloc": ilocs[-1],
+                "value": float(values[-1]),
+                "note": "end_line_separation",
+            },
+            {
+                "iloc": int(ilocs[peak_local]),
+                "value": peak_separation,
+                "note": "peak_line_separation",
+            },
+        ],
+        "extra": {
+            "unit": "m",
+            "smoothing_window": window,
+            "similarity_score": similarity_score,
+            "line_separation_start_m": float(values[0]),
+            "line_separation_end_m": float(values[-1]),
+            "line_separation_gain_m": separation_gain,
+            "mean_line_separation_m": mean_separation,
+            "peak_line_separation": {
+                "iloc": int(ilocs[peak_local]),
+                "value_m": peak_separation,
+            },
+            "widening_fraction": widening_fraction,
+            "longest_widening_run_steps": int(longest_widening_run),
+        },
+    }
+
+
+def _query_find_threshold_crossing(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    columns: List[str], threshold: float, smoothing_window: int,
+) -> Optional[Dict[str, Any]]:
+    """Rank <columns> by which first crosses <threshold> on a denoised signal.
+
+    Robust-statistics pre-processing: each column is passed through a
+    centered rolling-median filter of width <smoothing_window>. The
+    median filter provably suppresses any spike/dip narrower than
+    ``floor(smoothing_window / 2)`` samples and — unlike a moving
+    average or low-pass filter — does not blur the transition edge or
+    shift the detected crossing in time. Edge samples use a shrinking
+    one-sided window (``min_periods=1``) instead of dropping out.
+
+    Direction is inferred per-column from the first valid cleaned
+    sample's side of <threshold>: below → first rising crossing;
+    above → first falling crossing; exactly on it → no crossing
+    reported. The iloc is the first cleaned sample on the new side.
+
+    Returns ``samples`` — one entry per column, shape
+    ``{ranking, column, iloc}`` — with ``ranking`` 1=first, 2=second,
+    …, ``None``=never crossed (and ``iloc`` also ``None``). Returns
+    ``None`` when fewer than two columns are supplied, <threshold> is
+    non-numeric, or <smoothing_window> is < 1.
+    """
+    if not isinstance(columns, list) or len(columns) < 2:
+        return None
+    try:
+        thr = float(threshold)
+    except (TypeError, ValueError):
+        return None
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+    segment = df.loc[int(start_index): int(end_index)]
+
+    crossings: List[Dict[str, Any]] = []
+    for column in columns:
+        entry: Dict[str, Any] = {"column": column, "iloc": None}
+        arr = _resolve_column(column, segment)
+        if arr is None or len(arr) < 2:
+            crossings.append(entry)
+            continue
+        clean = (
+            pd.Series(arr)
+            .rolling(window=window, center=True, min_periods=1)
+            .median()
+            .to_numpy()
+        )
+        finite_mask = np.isfinite(clean)
+        if not finite_mask.any():
+            crossings.append(entry)
+            continue
+        first_local = int(np.argmax(finite_mask))
+        first_value = float(clean[first_local])
+        if first_value < thr:
+            on_new_side = clean >= thr
+        elif first_value > thr:
+            on_new_side = clean <= thr
+        else:
+            crossings.append(entry)
+            continue
+
+        tail = on_new_side[first_local + 1:]
+        hits = np.where(tail)[0]
+        if len(hits) == 0:
+            crossings.append(entry)
+            continue
+        found_local = int(hits[0]) + first_local + 1
+        entry["iloc"] = int(start_index) + found_local
+        crossings.append(entry)
+
+    with_iloc = sorted(
+        (c for c in crossings if c["iloc"] is not None),
+        key=lambda c: c["iloc"],
+    )
+    without = [c for c in crossings if c["iloc"] is None]
+    samples: List[Dict[str, Any]] = []
+    for ranking, c in enumerate(with_iloc, start=1):
+        samples.append({"ranking": ranking, "column": c["column"], "iloc": c["iloc"]})
+    for c in without:
+        samples.append({"ranking": None, "column": c["column"], "iloc": None})
+
+    return {
+        "iloc": None,
+        "value": None,
+        "samples": samples,
+        "extra": {"smoothing_window": window},
+    }
+
+
+_RANGE_PARAM_DESC = (
+    "[start_iloc, end_iloc] — inclusive parent-frame iloc bounds this query "
+    "runs over. Must lie within the question's sub-range; pick a tight window "
+    "around the feature you're trying to capture."
+)
+
+PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
+    {
+        "id": "find_extremum",
+        "label": "Global min/max",
+        "description": (
+            "iloc of the global min or max of <column> in <range>."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "column": "DataFrame column name",
+            "kind": "min | max",
+        },
+        "callable": _query_find_extremum,
+    },
+    {
+        "id": "find_first_match",
+        "label": "First comparison match",
+        "description": (
+            "First iloc in <range> where <column> <operator> <value> holds."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "column": "DataFrame column name",
+            "op": "equal | greater_than_or_equal | less_than_or_equal | greater_than | less_than",
+            "value": "float",
+        },
+        "callable": _query_find_first_match,
+    },
+    {
+        "id": "read_values_at_indices",
+        "label": "Read values at specific ilocs",
+        "description": (
+            "Read <column> at each iloc in <indices>. Returns "
+            "one entry per index; out-of-range (outside <range>) or NaN "
+            "samples come back with value=null."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "column": "DataFrame column name",
+            "indices": "list of parent-frame ilocs (int)",
+        },
+        "callable": _query_read_values_at_indices,
+    },
+    {
+        "id": "compute_slope",
+        "label": "Point-by-point slope across the range",
+        "description": (
+            "Slope of <column> from point-by-point value changes across "
+            "<range>, plus start trend, local up/down index ranges, "
+            "overall trend, significance, near-zero, and whole-section "
+            "slope-shape verdicts. "
+            "For `expert_time_difference`, this answers whether the whole "
+            "range loses or gains time; a positive but flat value means the "
+            "player is already behind, not that a new mistake happened."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "column": "DataFrame column name",
+        },
+        "callable": _query_compute_slope,
+    },
+    {
+        "id": "find_trend_runs",
+        "label": "Up/down/flat trend runs",
+        "description": (
+            "Piecewise rising, falling, and flat runs in <column> over "
+            "<range>. Use this for `expert_time_difference` mistake/recovery "
+            "localization: rising runs are where the player loses "
+            "time, falling runs are where the player recovers, and "
+            "flat positive/negative runs are constant carried gap only."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "column": "DataFrame column name",
+            "smoothing_window": "int ≥ 1 — rolling-median width (1=off, 5=light, 11=heavy)",
+        },
+        "callable": _query_find_trend_runs,
+    },
+    {
+        "id": "find_dips_on_main_slope",
+        "label": "Dips on linear-regression baseline",
+        "description": (
+            "Find local dips in <column> below its least-squares trend line "
+            "over <range>. Returns `samples` — one `{iloc, value, depth}` "
+            "per dip, where `iloc` is the deepest point of that dip."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "column": "DataFrame column name",
+            "smoothing_window": "int ≥ 1 — rolling-median width (1=off, 5=light, 11=heavy)",
+            "min_dip_depth": "float — minimum dip depth in signal units (e.g. ~0.05 for brake/throttle 0–1, ~5 for speed in km/h)",
+        },
+        "callable": _query_find_dips_on_main_slope,
+    },
+    {
+        "id": "measure_trajectory_similarity",
+        "label": "Driver/expert trajectory similarity",
+        "description": (
+            "Compare driver and expert x-y trajectories over <range>. Returns "
+            "a trajectory similarity score plus line-separation evidence "
+            "from the driver path relative to the expert racing line."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "smoothing_window": (
+                "int >= 1 - rolling-median width "
+                "(1=off, 5=light, 11=heavy)"
+            ),
+        },
+        "callable": _query_measure_trajectory_similarity,
+    },
+    {
+        "id": "find_threshold_crossing",
+        "label": "Threshold crossing (ranked)",
+        "description": (
+            "Rank <columns> by which first crosses <threshold> within <range>, "
+            "with optional smoothing via <smoothing_window>. Returns ranking "
+            "per column (1=first, null=never crossed). useful for comparing "
+            "which curve first crossed the same threshold."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "columns": "list of 2+ DataFrame column names",
+            "threshold": "float",
+            "smoothing_window": (
+                "int ≥ 1 — rolling-median width (use an odd value; "
+                "5 cleans 2-sample spikes, 11 cleans 5-sample ones; "
+                "raise for noisier signals, lower it to preserve fast "
+                "transitions)"
+            ),
+        },
+        "callable": _query_find_threshold_crossing,
+    },
+]
+
+
+def get_pipeline_query(query_id: str) -> Optional[Dict[str, Any]]:
+    """Lookup helper — returns the query definition or None."""
+    return next(
+        (q for q in PIPELINE_QUERY_DEFINITIONS if q["id"] == query_id),
+        None,
+    )
+
+
+def render_query_catalog_for_prompt(columns: List[str]) -> str:
+    """Render the query catalog + column menu as a markdown block.
+
+    ``columns`` is the list of column names the VLM is allowed to pick from
+    — supplied by the caller (zoom passes its graph-table columns so the
+    menu is scoped to the data the parent agent constrained for this step).
+    """
+    lines: List[str] = ["**Available queries:**"]
+    for q in PIPELINE_QUERY_DEFINITIONS:
+        lines.append(f"- `{q['id']}` — {q['description']}")
+        for pname, ptype in q["params_schema"].items():
+            lines.append(f"    - `{pname}`: {ptype}")
+    lines.append("")
+    lines.append(
+        "**Available columns:** "
+        + (", ".join(f"`{c}`" for c in columns) if columns else "(none)")
+    )
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# graph_analysis skill — prompt rendering
+# ---------------------------------------------------------------------------
+
+_GRAPH_GUIDELINE_TRIGGERS: Dict[str, Dict[str, Any]] = {
+    "brake_and_speed":            {"required": {"brake", "speed"},                     "any_of": []},
+    "throttle_and_speed":         {"required": {"throttle", "speed"},                  "any_of": []},
+    "time_delta_and_features":    {"required": {"time_delta"},                         "any_of": [
+        {"brake", "throttle", "speed", "speed_delta", "push_limit", "trajectory_balance"},
+    ]},
+    "trajectory_and_features":    {"required": set(),                                  "any_of": [
+        {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset", "altitude_profile"},
+        {"throttle", "brake", "speed", "speed_delta", "push_limit", "trajectory_balance"},
+    ]},
+    "balance_and_push_limit":     {"required": {"trajectory_balance", "push_limit"},   "any_of": []},
+    "brake_and_throttle_overlap": {"required": {"brake", "throttle"},                  "any_of": []},
+}
+
+_TRAJECTORY_IDS = {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset"}
+_GRAPH_ANALYSIS_SKILL_ALIASES = {
+    "trajectory_offset": "trajectory_lateral_deviation",
+}
+
+
+def _render_graph_section(key: str, value: Any, indent: str = "  ") -> List[str]:
+    if not value:
+        return []
+    out: List[str] = [key.replace("_", " ") + ":"]
+
+    if isinstance(value, str):
+        for ln in value.rstrip("\n").split("\n"):
+            out.append(f"{indent}{ln}" if ln else "")
+    elif isinstance(value, list):
+        for item in value:
+            out.append(f"{indent}- {item}")
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            v_str = "" if v is None else str(v).rstrip("\n")
+            v_lines = v_str.split("\n")
+            first = v_lines[0]
+            out.append(f"{indent}- {k}: {first}" if first else f"{indent}- {k}:")
+            cont_indent = indent + "    "
+            for cont in v_lines[1:]:
+                out.append(f"{cont_indent}{cont}" if cont else "")
+    else:
+        out.append(f"{indent}{value}")
+
+    return out
+
+
+def graph_analysis_prompt(graph_ids: List[str]) -> str:
+    """Per-graph description block for VLM prompts that read graph images.
+
+    Walks each graph's yaml record with a uniform formatter, appends the
+    cross-graph guidelines whose triggers match this graph combination,
+    and (when trajectory graphs are present) appends the trajectory shape
+    vocabulary.
+    """
+    requested = list(graph_ids)
+    paired: List[tuple] = []
+    for gid in requested:
+        skill_gid = _GRAPH_ANALYSIS_SKILL_ALIASES.get(gid, gid)
+        entry = skills.get(f"graph_analysis.graphs.{skill_gid}")
+        if entry:
+            paired.append((gid, entry))
+    if not paired:
+        return ""
+
+    lines: List[str] = [
+        "#### Graph Description Skill — How to Describe These Graphs",
+        "",
+    ]
+
+    for gid, entry in paired:
+        title = entry.get("title", gid)
+        lines.append(f"##### {title} (id: {gid})")
+        lines.append("")
+        for key, value in entry.items():
+            if key in ("title", "id"):
+                continue
+            section = _render_graph_section(key, value)
+            if section:
+                lines.extend(section)
+                lines.append("")
+
+    graph_id_set = set(requested)
+    relevant: List[str] = []
+    for gid, spec in _GRAPH_GUIDELINE_TRIGGERS.items():
+        if not spec["required"].issubset(graph_id_set):
+            continue
+        if not all(any_set & graph_id_set for any_set in spec["any_of"]):
+            continue
+        text = skills.get(f"graph_analysis.cross_graph_guidelines.{gid}", "")
+        if text:
+            relevant.append(f"[{gid}] {str(text).strip()}")
+
+    if relevant:
+        lines.append("#### Cross-Graph Description Guidelines")
+        for g in relevant:
+            lines.append(g)
+        lines.append("")
+
+    if graph_id_set & _TRAJECTORY_IDS:
+        traj_vocab = skills.get("graph_analysis.trajectory_shape_vocabulary", "")
+        if traj_vocab:
+            lines.append("#### Trajectory Shape Vocabulary")
+            lines.append(str(traj_vocab).strip())
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def _round_floats(obj: Any, ndigits: int = 2) -> Any:
+    """Recursively round floats in a query payload to ``ndigits``.
+
+    Ints (ilocs, ranks, gear values) and non-finite floats pass through
+    untouched. Applied at the dispatch boundary so every query exposes
+    consistently formatted numbers regardless of how the callable produces them.
+    """
+    if isinstance(obj, float):
+        if not np.isfinite(obj):
+            return obj
+        return round(obj, ndigits)
+    if isinstance(obj, dict):
+        return {k: _round_floats(v, ndigits) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_round_floats(v, ndigits) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_round_floats(v, ndigits) for v in obj)
+    return obj
+
+
+def run_pipeline_query(
+    df: pd.DataFrame,
+    query_id: str, params: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Dispatch a query by id with the VLM-supplied params.
+
+    The range is now a per-query param: ``params["range"]`` must be a
+    ``[start_iloc, end_iloc]`` list. The dispatcher unpacks it and passes
+    it positionally to the underlying callable (so the callable signatures
+    stay unchanged).
+
+    Returns ``(payload, error)`` where ``payload`` is a dict with any of:
+
+      * ``iloc``    — primary parent-frame iloc (None when no match)
+      * ``value``   — primary value (None when no match)
+      * ``samples`` — list of ``{iloc, value, note?}`` for multi-point queries
+      * ``extra``   — query-specific extras (e.g. slope deltas)
+
+    ``error`` is a string when params are malformed or the query raises.
+    Validates that all required params are present before invoking the
+    callable. Missing keys default to None in the returned payload so the
+    answer attachment always has a uniform shape.
+    """
+    base: Dict[str, Any] = {"iloc": None, "value": None, "samples": None, "extra": None}
+    q = get_pipeline_query(query_id)
+    if q is None:
+        return base, f"unknown query '{query_id}'"
+    accepted: Dict[str, Any] = {}
+    for pname in q["params_schema"].keys():
+        if pname not in params:
+            return base, f"missing param '{pname}' for query '{query_id}'"
+        accepted[pname] = params[pname]
+    raw_range = accepted.pop("range")
+    if (
+        not isinstance(raw_range, (list, tuple))
+        or len(raw_range) != 2
+    ):
+        return base, (
+            f"param 'range' for query '{query_id}' must be a "
+            f"[start_iloc, end_iloc] list — got {raw_range!r}"
+        )
+    try:
+        start_index = int(raw_range[0])
+        end_index = int(raw_range[1])
+    except (TypeError, ValueError):
+        return base, (
+            f"param 'range' for query '{query_id}' must contain two ints "
+            f"— got {raw_range!r}"
+        )
+    if end_index < start_index:
+        return base, (
+            f"param 'range' for query '{query_id}' has end < start "
+            f"({start_index}, {end_index})"
+        )
+    try:
+        raw = q["callable"](df, start_index, end_index, **accepted)
+    except Exception as exc:  # noqa: BLE001 — surface any failure to the caller
+        return base, f"{type(exc).__name__}: {exc}"
+    if raw is None:
+        col = accepted.get("column")
+        col_msg = ""
+        if col is not None and col not in df.columns:
+            col_msg = (
+                f" — column '{col}' is not in the graph table; valid: "
+                + ", ".join(df.columns)
+            )
+        return base, (
+            f"query '{query_id}' returned no data (likely column mismatch, "
+            f"out-of-range indices, or NaN values)" + col_msg
+        )
+    if not isinstance(raw, dict):
+        return base, f"query '{query_id}' returned non-dict result: {type(raw).__name__}"
+    return _round_floats({**base, **raw}), None
+
+
+def _create_gas_brake_trajectory_plot(table: pd.DataFrame) -> Optional[Image.Image]:
+    """Trajectory coloured by gas−brake balance (green = gas, red = brake).
+
+    Consumes the parent-built table containing player/expert position
+    columns + the pre-computed ``gas_brake_signal`` (= Physics_gas −
+    Physics_brake).
+    """
+    track = _resolve_track_config(table)
+    px_col = track.get("player_x")
+    py_col = track.get("player_y")
+    if not px_col or not py_col:
+        return None
+    if px_col not in table.columns or py_col not in table.columns:
+        return None
+    if len(table) < 2:
+        return None
+
+    x = table[px_col].values.astype(float)
+    y = table[py_col].values.astype(float)
+
+    if "gas_brake_signal" in table.columns:
+        values = table["gas_brake_signal"].values.astype(float)
+    else:
+        values = np.ones(len(table))
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    # Expert trajectory (reference line)
+    ex_col = track.get("expert_x")
+    ey_col = track.get("expert_y")
+    if ex_col and ey_col and ex_col in table.columns and ey_col in table.columns:
+        ax.plot(
+            table[ex_col], table[ey_col],
+            color="steelblue", linewidth=1.5, linestyle="--",
+            label="Expert", zorder=1,
+        )
+
+    lc = _make_colored_line_collection(
+        ax, x, y, values,
+        cmap="RdYlGn", vmin=-1, vmax=1, linewidth=4,
+    )
+    plt.colorbar(lc, ax=ax, label="← Brake | Coast | Gas →")
+
+    # Start / end markers
+    ax.scatter(x[0], y[0], marker="x", color="black", s=80, zorder=5, label="Start")
+    ax.scatter(x[-1], y[-1], marker="o", color="black", s=80, zorder=5, label="End")
+
+    ax.set_title("Gas/Brake Trajectory\nGreen = Throttle, Red = Brake")
+    ax.invert_yaxis()
+    ax.set_aspect("equal", "box")
+    ax.axis("off")
+    if ex_col:
+        ax.legend(fontsize=8)
+    ax.autoscale()
+
+    return _plot_to_image(fig)
+
+
+def _create_balance_line_plot(table: pd.DataFrame) -> Optional[Image.Image]:
+    """Line plot of oversteer/understeer slip balance over segment index.
+
+    Reads the pre-computed ``slip_balance`` column from the parent-built
+    table (mean(|rear|) − mean(|front|), in radians). Positive → rear
+    slipping more → oversteer (red shading above zero). Negative → front
+    slipping more → understeer (blue shading below zero).
+    """
+    if "slip_balance" not in table.columns or len(table) < 2:
+        return None
+
+    balance = table["slip_balance"].astype(float)
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    idx = table.index
+    ax.plot(idx, balance, color="black", linewidth=1.2, label="Slip balance (rear − front)")
+    ax.fill_between(
+        idx, balance.values, 0.0,
+        where=(balance.values > 0), interpolate=True,
+        color="red", alpha=0.35, label="Oversteer (rear-slip dominant)",
+    )
+    ax.fill_between(
+        idx, balance.values, 0.0,
+        where=(balance.values < 0), interpolate=True,
+        color="blue", alpha=0.35, label="Understeer (front-slip dominant)",
+    )
+    ax.axhline(0.0, color="gray", linewidth=0.8, linestyle="--")
+
+    ax.set_title("Oversteer / Understeer Slip Balance")
+    ax.set_xlabel("Index")
+    ax.set_ylabel("Rear − Front mean |slip angle| (rad)")
+    ax.grid(True)
+    ax.legend(loc="best", fontsize=8)
+
+    return _plot_to_image(fig)
+
+
+def _create_trajectory_plot(table: pd.DataFrame) -> Optional[Image.Image]:
+    """Detailed trajectory plot — player + expert lines, start/end markers,
+    plus expert-anchored entry / apex / exit markers per detected arc.
+
+    Consumes the parent-built table with player/expert position columns;
+    phase detection runs on the slice in front of us so the markers fit
+    the rendered range.
+    """
+    track = _resolve_track_config(table)
+    px_col = track.get("player_x")
+    py_col = track.get("player_y")
+    if not px_col or not py_col:
+        return None
+    if px_col not in table.columns or py_col not in table.columns:
+        return None
+    if table.empty:
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+
+    # Player trajectory
+    ax.plot(table[px_col], table[py_col], label="Player", color="green", linewidth=2)
+
+    # Expert trajectory
+    ex_col = track.get("expert_x")
+    ey_col = track.get("expert_y")
+    if ex_col and ey_col and ex_col in table.columns and ey_col in table.columns:
+        ax.plot(
+            table[ex_col], table[ey_col],
+            label="Expert", color="blue", linewidth=1.5, linestyle="--",
+        )
+
+    # Mark start / end
+    ax.scatter(
+        table[px_col].iloc[0], table[py_col].iloc[0],
+        marker="x", color="black", s=80, zorder=5, label="Start",
+    )
+    ax.scatter(
+        table[px_col].iloc[-1], table[py_col].iloc[-1],
+        marker="o", color="black", s=80, zorder=5, label="End",
+    )
+
+    # Phase markers (expert-anchored) — entry / apex / exit per detected arc.
+    phases, _ = _detect_expert_phases(table)
+    if phases and ex_col and ey_col and ex_col in table.columns and ey_col in table.columns:
+        ex_arr = table[ex_col].to_numpy()
+        ey_arr = table[ey_col].to_numpy()
+        for k, ph in enumerate(phases):
+            entry_i, apex_i, exit_i = ph["entry"], ph["apex"], ph["exit"]
+            # Legend-label only the first arc's markers.
+            entry_label = "Entry" if k == 0 else None
+            apex_label = "Apex" if k == 0 else None
+            exit_label = "Exit" if k == 0 else None
+            ax.scatter(
+                ex_arr[entry_i], ey_arr[entry_i],
+                marker="o", color="yellow", s=90, zorder=6,
+                edgecolor="black", linewidth=0.6, label=entry_label,
+            )
+            ax.scatter(
+                ex_arr[apex_i], ey_arr[apex_i],
+                marker="*", color="red", s=180, zorder=7,
+                edgecolor="black", linewidth=0.6, label=apex_label,
+            )
+            ax.scatter(
+                ex_arr[exit_i], ey_arr[exit_i],
+                marker="^", color="limegreen", s=90, zorder=6,
+                edgecolor="black", linewidth=0.6, label=exit_label,
+            )
+            if len(phases) > 1:
+                ax.annotate(
+                    f"#{k + 1}",
+                    xy=(ex_arr[apex_i], ey_arr[apex_i]),
+                    xytext=(6, 6), textcoords="offset points",
+                    fontsize=9, fontweight="bold", color="red", zorder=8,
+                )
+
+    ax.set_title("Detailed Trajectory")
+    ax.invert_yaxis()
+    ax.legend()
+    ax.set_aspect("equal", "box")
+    ax.axis("off")
+    return _plot_to_image(fig)
+
+
+def _create_trajectory_offset_plot(table: pd.DataFrame) -> Optional[Image.Image]:
+    """Trajectory offset plot — signed perpendicular distance between the
+    player's position and the expert's path, plotted over segment index.
+
+    Reads the pre-computed ``trajectory_offset`` column from the parent-built
+    table. Phase markers (entry / apex / exit) come from
+    ``_detect_expert_phases`` run on the table's expert position columns so
+    they line up with the rendered range. Positive y = player wider than
+    expert (toward outside of corner); negative y = tighter (toward inside).
+    """
+    if "trajectory_offset" not in table.columns or table.empty:
+        return None
+
+    offset = table["trajectory_offset"].to_numpy(dtype=float)
+
+    # X-axis = table.index (matching the other feature plots so
+    # brake/throttle/offset cross-reference cleanly).
+    x_axis = table.index.to_numpy()
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.axhline(0.0, color="gray", linestyle="--", linewidth=1, label="Expert (zero offset)")
+    ax.plot(x_axis, offset, color="green", linewidth=2, label="Player offset")
+
+    phases, _ = _detect_expert_phases(table)
+    for k, ph in enumerate(phases):
+        entry_i, apex_i, exit_i = ph["entry"], ph["apex"], ph["exit"]
+        entry_x, apex_x, exit_x = x_axis[entry_i], x_axis[apex_i], x_axis[exit_i]
+        entry_label = "Entry" if k == 0 else None
+        apex_label = "Apex" if k == 0 else None
+        exit_label = "Exit" if k == 0 else None
+        ax.scatter(
+            entry_x, offset[entry_i],
+            marker="o", color="yellow", s=90, zorder=6,
+            edgecolor="black", linewidth=0.6, label=entry_label,
+        )
+        ax.scatter(
+            apex_x, offset[apex_i],
+            marker="*", color="red", s=180, zorder=7,
+            edgecolor="black", linewidth=0.6, label=apex_label,
+        )
+        ax.scatter(
+            exit_x, offset[exit_i],
+            marker="^", color="limegreen", s=90, zorder=6,
+            edgecolor="black", linewidth=0.6, label=exit_label,
+        )
+        if len(phases) > 1:
+            ax.annotate(
+                f"#{k + 1}",
+                xy=(apex_x, offset[apex_i]),
+                xytext=(6, 6), textcoords="offset points",
+                fontsize=9, fontweight="bold", color="red", zorder=8,
+            )
+
+    ax.set_title("Trajectory Offset (signed)")
+    ax.set_xlabel("Index")
+    ax.set_ylabel("Lateral offset (m) — wider > 0, tighter < 0")
+    ax.grid(True)
+    ax.legend(loc="best")
+    return _plot_to_image(fig)
+
+
+def _create_altitude_profile_plot(table: pd.DataFrame) -> Optional[Image.Image]:
+    """Altitude profile over segment index with expert phase markers."""
+    altitude_cols = [
+        c for c in ("expert_optimal_player_pos_z", "Graphics_player_pos_z")
+        if c in table.columns
+    ]
+    if not altitude_cols or table.empty:
+        return None
+
+    x_axis = table.index.to_numpy()
+    fig, ax = plt.subplots(figsize=(10, 4))
+
+    label_by_col = {
+        "expert_optimal_player_pos_z": "Expert altitude",
+        "Graphics_player_pos_z": "Player altitude",
+    }
+    color_by_col = {
+        "expert_optimal_player_pos_z": "steelblue",
+        "Graphics_player_pos_z": "green",
+    }
+    for col in altitude_cols:
+        ax.plot(
+            x_axis,
+            table[col].to_numpy(dtype=float),
+            label=label_by_col.get(col, col),
+            color=color_by_col.get(col),
+            linewidth=2 if col == "Graphics_player_pos_z" else 1.5,
+            linestyle="--" if col.startswith("expert_") else "-",
+        )
+
+    marker_col = (
+        "expert_optimal_player_pos_z"
+        if "expert_optimal_player_pos_z" in table.columns
+        else altitude_cols[0]
+    )
+    marker_values = table[marker_col].to_numpy(dtype=float)
+    phases, _ = _detect_expert_phases(table)
+    for k, ph in enumerate(phases):
+        entry_i, apex_i, exit_i = ph["entry"], ph["apex"], ph["exit"]
+        entry_label = "Entry" if k == 0 else None
+        apex_label = "Apex" if k == 0 else None
+        exit_label = "Exit" if k == 0 else None
+        ax.scatter(
+            x_axis[entry_i], marker_values[entry_i],
+            marker="o", color="yellow", s=90, zorder=6,
+            edgecolor="black", linewidth=0.6, label=entry_label,
+        )
+        ax.scatter(
+            x_axis[apex_i], marker_values[apex_i],
+            marker="*", color="red", s=180, zorder=7,
+            edgecolor="black", linewidth=0.6, label=apex_label,
+        )
+        ax.scatter(
+            x_axis[exit_i], marker_values[exit_i],
+            marker="^", color="limegreen", s=90, zorder=6,
+            edgecolor="black", linewidth=0.6, label=exit_label,
+        )
+        if len(phases) > 1:
+            ax.annotate(
+                f"#{k + 1}",
+                xy=(x_axis[apex_i], marker_values[apex_i]),
+                xytext=(6, 6), textcoords="offset points",
+                fontsize=9, fontweight="bold", color="red", zorder=8,
+            )
+
+    ax.set_title("Altitude Profile")
+    ax.set_xlabel("Index")
+    ax.set_ylabel("Z position / altitude (m)")
+    ax.grid(True)
+    ax.legend(loc="best")
+    return _plot_to_image(fig)
+
+
+def _resolve_track_config(df: pd.DataFrame) -> Dict[str, str]:
+    """Auto-detect trajectory column names from the DataFrame."""
+    tc: Dict[str, str] = {}
+    if "Graphics_player_pos_x" in df.columns:
+        tc["player_x"] = "Graphics_player_pos_x"
+        tc["player_y"] = "Graphics_player_pos_y"
+        if "Graphics_player_pos_z" in df.columns:
+            tc["player_z"] = "Graphics_player_pos_z"
+    if "expert_optimal_player_pos_x" in df.columns:
+        tc["expert_x"] = "expert_optimal_player_pos_x"
+        tc["expert_y"] = "expert_optimal_player_pos_y"
+        if "expert_optimal_player_pos_z" in df.columns:
+            tc["expert_z"] = "expert_optimal_player_pos_z"
+    return tc
+
+
+# ---------------------------------------------------------------------------
+# Graph data builders — one per graph id. Each takes raw df and returns a
+# DataFrame whose columns are exactly the data series that graph uses
+# (drawn lines + per-row inputs renderers consume internally, e.g. position
+# columns used for phase marker placement). The parent agent calls these to
+# build the constrained ``graph_table`` it hands children; children query
+# / render against the table only.
+# ---------------------------------------------------------------------------
+
+
+def _project_columns(df: pd.DataFrame, cols: List[str]) -> Optional[pd.DataFrame]:
+    if any(c not in df.columns for c in cols):
+        return None
+    return df.loc[:, cols].copy()
+
+
+def _build_throttle(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_optimal_throttle", "Physics_gas"])
+
+
+def _build_brake(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_optimal_brake", "Physics_brake"])
+
+
+def _build_time_delta(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_time_difference"])
+
+
+def _build_speed_delta(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["speed_difference"])
+
+
+def _build_speed(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_optimal_speed", "Physics_speed_kmh"])
+
+
+def _build_push_limit(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["driver_push_to_limit"])
+
+
+def _build_gear(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    return _project_columns(df, ["expert_optimal_gear", "Physics_gear"])
+
+
+def _build_trajectory_balance(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Compute the single drawn series (mean(|rear|) − mean(|front|))."""
+    raw = (
+        "Physics_slip_angle_front_left",
+        "Physics_slip_angle_front_right",
+        "Physics_slip_angle_rear_left",
+        "Physics_slip_angle_rear_right",
+    )
+    if any(c not in df.columns for c in raw):
+        return None
+    fl, fr, rl, rr = raw
+    balance = (
+        (df[rl].abs() + df[rr].abs()) / 2.0
+        - (df[fl].abs() + df[fr].abs()) / 2.0
+    ).astype(float)
+    return pd.DataFrame({"slip_balance": balance}, index=df.index)
+
+
+def _build_trajectory_detailed(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Player + expert position traces (renderer derives phase markers from them)."""
+    track = _resolve_track_config(df)
+    cols = [
+        track[k] for k in ("player_x", "player_y", "expert_x", "expert_y")
+        if track.get(k)
+    ]
+    if not cols:
+        return None
+    return _project_columns(df, cols)
+
+
+def _build_trajectory_gas_brake(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Player + expert position traces plus the colouring signal (gas − brake)."""
+    track = _resolve_track_config(df)
+    pos_cols = [
+        track[k] for k in ("player_x", "player_y", "expert_x", "expert_y")
+        if track.get(k)
+    ]
+    if not pos_cols:
+        return None
+    if "Physics_gas" not in df.columns or "Physics_brake" not in df.columns:
+        return None
+    if any(c not in df.columns for c in pos_cols):
+        return None
+    out = df.loc[:, pos_cols].copy()
+    out["gas_brake_signal"] = (df["Physics_gas"] - df["Physics_brake"]).astype(float)
+    return out
+
+
+def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """The signed offset line + expert positions (for phase marker placement)."""
+    track = _resolve_track_config(df)
+    if not all(track.get(k) for k in ("player_x", "player_y", "expert_x", "expert_y")):
+        return None
+    px_col, py_col = track["player_x"], track["player_y"]
+    ex_col, ey_col = track["expert_x"], track["expert_y"]
+    if any(c not in df.columns for c in (px_col, py_col, ex_col, ey_col)):
+        return None
+
+    kin = _expert_kinematics(df)
+    if kin is None:
+        return None
+    _x_ref, _y_ref, _dx, _dy, kappa, _w = kin
+    if kappa.size == 0:
+        return None
+
+    px = df[px_col].to_numpy(dtype=float)
+    py = df[py_col].to_numpy(dtype=float)
+    ex = df[ex_col].to_numpy(dtype=float)
+    ey = df[ey_col].to_numpy(dtype=float)
+    _, lateral_offset, projected_idx = _project_points_to_local_reference_path(
+        px,
+        py,
+        ex,
+        ey,
+        center_indices=np.arange(px.size),
+        search_radius=30,
+    )
+    fallback_idx = np.arange(projected_idx.size)
+    kappa_idx = np.where(projected_idx >= 0, projected_idx, fallback_idx)
+    kappa_idx = np.clip(kappa_idx, 0, max(kappa.size - 1, 0))
+
+    sign_flip = -np.sign(kappa[kappa_idx])
+    sign_flip = np.where(sign_flip == 0, 1.0, sign_flip)
+    offset = lateral_offset * sign_flip
+
+    # Expert positions stay in the table so the renderer's phase detection
+    # has the kinematic inputs it needs after the parent's projection.
+    out = df.loc[:, [ex_col, ey_col]].copy()
+    out["trajectory_offset"] = offset.astype(float)
+    return out
+
+
+def _build_altitude_profile(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Player/expert z-position plus expert x/y for phase marker placement."""
+    track = _resolve_track_config(df)
+    cols = [
+        track[k] for k in ("expert_x", "expert_y", "expert_z", "player_z")
+        if track.get(k)
+    ]
+    if not any(c.endswith("_pos_z") for c in cols):
+        return None
+    return _project_columns(df, cols)
+
+
+_GRAPH_BUILDERS = {
+    "throttle":             _build_throttle,
+    "brake":                _build_brake,
+    "time_delta":           _build_time_delta,
+    "speed_delta":          _build_speed_delta,
+    "speed":                _build_speed,
+    "push_limit":           _build_push_limit,
+    "gear":                 _build_gear,
+    "trajectory_balance":   _build_trajectory_balance,
+    "trajectory_detailed":  _build_trajectory_detailed,
+    "trajectory_gas_brake": _build_trajectory_gas_brake,
+    "trajectory_offset":    _build_trajectory_offset,
+    "altitude_profile":     _build_altitude_profile,
+}
+
+
+_GRAPH_RENDERERS = {
+    "trajectory_detailed":  _create_trajectory_plot,
+    "trajectory_gas_brake": _create_gas_brake_trajectory_plot,
+    "trajectory_balance":   _create_balance_line_plot,
+    "trajectory_offset":    _create_trajectory_offset_plot,
+    "altitude_profile":     _create_altitude_profile_plot,
+}
+
+
+def build_graph(graph_id: str, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """Build one graph's data table from raw df. Returns ``None`` when the
+    raw inputs the graph needs aren't present."""
+    builder = _GRAPH_BUILDERS.get(graph_id)
+    if builder is None:
+        return None
+    return builder(df)
+
+
+def _render_graph_table(graph_id: str, table: pd.DataFrame, title: str) -> Optional[Image.Image]:
+    renderer = _GRAPH_RENDERERS.get(graph_id)
+    if renderer is not None:
+        return renderer(table)
+    return _create_feature_plot(table, title)
+
+
+def render_graph_builds(
+    graph_builds: Dict[str, pd.DataFrame],
+    start_index: int,
+    end_index: int,
+) -> List[Tuple[Image.Image, str]]:
+    """Render the constrained-table form of ``generate_telemetry_graphs``.
+
+    ``graph_builds`` maps graph id → its full-range data table (as produced
+    by ``build_graph`` at the parent agent). Each table is sliced to
+    ``[start_index, end_index)`` (Python-slice end-exclusive, matching
+    ``generate_telemetry_graphs``) before being handed to its renderer.
+    """
+    if not graph_builds:
+        return []
+    desc_by_id = {d["id"]: (d["title"], d["description"]) for d in AGENT_GRAPH_DEFINITIONS}
+    results: List[Tuple[Image.Image, str]] = []
+    for gid, table in graph_builds.items():
+        sliced = _absolute_iloc_slice(table, int(start_index), int(end_index))
+        if sliced.empty:
+            continue
+        title, desc = desc_by_id.get(gid, (gid, ""))
+        img = _render_graph_table(gid, sliced, title)
+        if img is not None:
+            results.append((img, f"{title}: {desc}"))
+    return results
+
+
+def generate_telemetry_graphs(
+    df: pd.DataFrame,
+    start_index: int,
+    end_index: int,
+    graph_ids: Optional[List[str]] = None,
+) -> List[Tuple[Image.Image, str]]:
+    """Build + render graphs straight from raw df.
+
+    Convenience wrapper for callers (e.g. the describe_graphs planner) that
+    have raw df in hand and want one-shot build+render. Returns
+    ``(PIL.Image, description)`` pairs.
+    """
+    segment_df = _absolute_iloc_slice(df, int(start_index), int(end_index))
+    if segment_df.empty:
+        return []
+
+    defs = AGENT_GRAPH_DEFINITIONS
+    if graph_ids:
+        defs = [d for d in defs if d["id"] in graph_ids]
+
+    results: List[Tuple[Image.Image, str]] = []
+    for gdef in defs:
+        gid = gdef["id"]
+        table = build_graph(gid, segment_df)
+        if table is None or table.empty:
+            continue
+        img = _render_graph_table(gid, table, gdef["title"])
+        if img is not None:
+            results.append((img, f"{gdef['title']}: {gdef['description']}"))
+    return results

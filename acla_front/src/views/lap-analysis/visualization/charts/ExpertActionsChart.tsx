@@ -176,8 +176,6 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
     type ModelHandle = {
         cacheKey: string;
         data: any;
-        trackName?: string;
-        carName?: string;
     };
 
     const modelHandleRef = useRef<ModelHandle | null>(null);
@@ -410,8 +408,6 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
 
             try {
                 const acquiredHandle = await acquirePersistentImitationModel({
-                    trackName: sanitizedTrackName,
-                    carName: sanitizedCarName,
                     modelType: 'imitation_learning'
                 });
 
@@ -422,9 +418,7 @@ const ExpertActionsChart: React.FC<VisualizationProps> = ({ width = '100%', heig
 
                 const newHandle: ModelHandle = {
                     cacheKey: acquiredHandle.cacheKey,
-                    data: acquiredHandle.data,
-                    trackName: sanitizedTrackName,
-                    carName: sanitizedCarName
+                    data: acquiredHandle.data
                 };
 
                 modelHandleRef.current = newHandle;

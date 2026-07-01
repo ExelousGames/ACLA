@@ -1,0 +1,166 @@
+[importlinter]
+root_package = app
+
+# Component layout (imports flow downward only):
+#
+#   startup ─► api ─► (racing_engineer | pipelines | local_annotation_agent | claude_annotation_agent)
+#                          │
+#                          ▼
+#        shared | claude | llama | local_llm | cloud_llm | voice | ml | integrations
+#                          │
+#                          ▼
+#                       storage
+#                          │
+#                          ▼
+#   features | infra | internal_knowledge_base | external_knowledge_base  (leaves)
+#
+# Same-band imports are allowed deliberately (e.g. the annotation workflow dispatches to the
+# Claude annotation agent). Contracts target boundaries that REGRESSION would damage.
+
+# ─── Leaves ───────────────────────────────────────────────────────────────────
+
+[importlinter:contract:features-is-leaf]
+name = app/features is a leaf (stateless math)
+type = forbidden
+source_modules =
+    app.features
+forbidden_modules =
+    app.api
+    app.startup
+    app.racing_engineer
+    app.pipelines
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
+    app.voice
+    app.ml
+    app.integrations
+    app.storage
+
+[importlinter:contract:infra-is-leaf]
+name = app/infra (config) imports nothing from app
+type = forbidden
+source_modules =
+    app.infra
+forbidden_modules =
+    app.api
+    app.startup
+    app.racing_engineer
+    app.pipelines
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.shared
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
+    app.voice
+    app.ml
+    app.integrations
+    app.storage
+    app.features
+    app.internal_knowledge_base
+    app.external_knowledge_base
+
+[importlinter:contract:knowledge-bases-only-touch-shared]
+name = knowledge bases only reach down to shared/infra
+type = forbidden
+source_modules =
+    app.internal_knowledge_base
+    app.external_knowledge_base
+forbidden_modules =
+    app.api
+    app.startup
+    app.racing_engineer
+    app.pipelines
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
+    app.voice
+    app.ml
+    app.integrations
+    app.storage
+    app.features
+
+# ─── Storage: bottom of the stack ─────────────────────────────────────────────
+
+[importlinter:contract:storage-no-upward]
+name = app/storage does not import from any band above
+type = forbidden
+source_modules =
+    app.storage
+forbidden_modules =
+    app.api
+    app.startup
+    app.racing_engineer
+    app.pipelines
+    app.local_annotation_agent
+    app.claude_annotation_agent
+    app.claude
+    app.llama
+    app.local_llm
+    app.cloud_llm
+    app.voice
+    app.ml
+    app.integrations
+
+# ─── Outbound adapters / capabilities: never reach up into orchestration or api ─
+
+[importlinter:contract:adapters-no-upward]
+name = LLM/voice/ml/integrations adapters never import orchestration, api, or startup
+type = forbidden
+source_modules =
+    app.llama
+    app.local_llm
+    app.cloud_llm
+    app.claude
+    app.voice
+    app.ml
+    app.integrations
+    app.shared
+forbidden_modules =
+    app.api
+    app.startup
+    app.pipelines
+    app.racing_engineer
+    app.local_annotation_agent
+    app.claude_annotation_agent
+
+# ─── Annotation agents: never reach into api or startup ────────────────────────
+
+[importlinter:contract:annotation-agents-stay-pure]
+name = annotation agents never reach into api or startup
+type = forbidden
+source_modules =
+    app.local_annotation_agent
+    app.claude_annotation_agent
+forbidden_modules =
+    app.api
+    app.startup
+
+# ─── Racing engineer (front-facing chatbot): not reached from below ───────────
+
+[importlinter:contract:racing-engineer-no-api-startup]
+name = racing_engineer never imports api or startup
+type = forbidden
+source_modules =
+    app.racing_engineer
+forbidden_modules =
+    app.api
+    app.startup
+
+# ─── API: thin inbound adapter ────────────────────────────────────────────────
+
+[importlinter:contract:api-stays-thin]
+name = app/api never imports startup (api is reached FROM startup, not the reverse)
+type = forbidden
+source_modules =
+    app.api
+forbidden_modules =
+    app.startup

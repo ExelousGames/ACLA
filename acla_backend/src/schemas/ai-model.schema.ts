@@ -6,12 +6,6 @@ import { ObjectId } from 'mongodb';
 @Schema({ timestamps: true })
 export class AIModel {
 
-    @Prop()
-    trackName: string;
-
-    @Prop()
-    carName: string;
-
     @Prop({ required: true })
     modelType: string; // lap_time_prediction, sector_time_optimization, etc.
 

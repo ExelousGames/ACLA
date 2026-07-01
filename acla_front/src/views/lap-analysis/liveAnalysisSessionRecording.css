@@ -1,0 +1,154 @@
+/* Live recording floating bar — lp design language */
+
+.live-recording-bar {
+    border-radius: var(--lp-radius-pill);
+    background: linear-gradient(180deg, rgba(22, 22, 40, 0.92), rgba(14, 14, 24, 0.92));
+    backdrop-filter: blur(14px);
+    color: var(--lp-white);
+    font-family: var(--lp-sans);
+    border: 1px solid var(--lp-border-strong);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+/* Recording state — pulsing red glow */
+.live-recording-bar--rec {
+    border-color: var(--lp-red);
+    box-shadow:
+        0 12px 40px rgba(0, 0, 0, 0.6),
+        0 0 0 1px var(--lp-red),
+        0 0 24px var(--lp-red-dim);
+    animation: live-recording-bar-pulse 2s ease-in-out infinite;
+}
+@keyframes live-recording-bar-pulse {
+    0%, 100% {
+        box-shadow:
+            0 12px 40px rgba(0, 0, 0, 0.6),
+            0 0 0 1px var(--lp-red),
+            0 0 24px var(--lp-red-dim);
+    }
+    50% {
+        box-shadow:
+            0 12px 40px rgba(0, 0, 0, 0.6),
+            0 0 0 1px var(--lp-red),
+            0 0 36px rgba(255, 23, 68, 0.35);
+    }
+}
+
+.live-recording-bar__inner {
+    border-radius: var(--lp-radius-pill);
+    padding-left: 8px;
+    padding-right: 16px;
+}
+
+/* Channel pill (REC · LIVE / TELEMETRY · SCANNING etc.) */
+.live-recording-bar__channel {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: var(--lp-gray);
+    padding: 6px 14px;
+    border-radius: var(--lp-radius-pill);
+    border: 1px solid var(--lp-border-strong);
+    background: rgba(0, 0, 0, 0.3);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.live-recording-bar__channel-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 6px currentColor;
+}
+.live-recording-bar__channel--live {
+    color: var(--lp-green);
+    border-color: var(--lp-green);
+    background: var(--lp-green-dim);
+}
+.live-recording-bar__channel--live .live-recording-bar__channel-dot { animation: hud-led-blink 1.4s ease-in-out infinite; }
+
+.live-recording-bar__channel--rec {
+    color: var(--lp-red);
+    border-color: var(--lp-red);
+    background: var(--lp-red-dim);
+}
+.live-recording-bar__channel--rec .live-recording-bar__channel-dot { animation: live-recording-bar-rec-blink 0.9s ease-in-out infinite; }
+@keyframes live-recording-bar-rec-blink {
+    0%, 100% { opacity: 1;   box-shadow: 0 0 10px var(--lp-red); }
+    50%      { opacity: 0.3; box-shadow: 0 0 4px var(--lp-red); }
+}
+
+.live-recording-bar__channel--paused {
+    color: var(--lp-amber);
+    border-color: var(--lp-amber);
+    background: var(--lp-amber-dim);
+}
+.live-recording-bar__channel--stopped {
+    color: var(--lp-blue);
+    border-color: var(--lp-blue);
+    background: var(--lp-blue-dim);
+}
+
+/* Right-side status panel */
+.live-recording-bar__status {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 0 8px 0 16px;
+    border-left: 1px solid var(--lp-border);
+    min-width: 200px;
+}
+.live-recording-bar__status-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+}
+.live-recording-bar__status-label {
+    font-family: var(--lp-mono);
+    font-size: 9px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--lp-gray);
+}
+.live-recording-bar__status-value {
+    font-family: var(--lp-sans);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--lp-white);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+}
+.live-recording-bar__status-value--mono {
+    font-family: var(--lp-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--lp-green);
+}
+
+/* Restyle the Radix Buttons inside the bar to match */
+.live-recording-bar .rt-Button {
+    font-family: var(--lp-mono);
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    border-radius: var(--lp-radius-pill);
+    flex-shrink: 0;
+}
+
+@media (max-width: 900px) {
+    .live-recording-bar__status { min-width: 140px; }
+    .live-recording-bar__status-value { max-width: 100px; font-size: 11px; }
+    .live-recording-bar__channel { font-size: 9px; letter-spacing: 2px; padding: 5px 10px; }
+}
+
+@media (max-width: 720px) {
+    .live-recording-bar__status { display: none; }
+}

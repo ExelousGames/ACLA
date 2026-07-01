@@ -5,6 +5,12 @@ export class SessionBasicInfoListDto {
     }[] = []
 }
 
+export class MapBasicInfoListDto {
+    list: {
+        name: string
+    }[] = []
+}
+
 export class UploadReacingSessionInitDto {
     sessionName: string;
     mapName: string;
@@ -92,4 +98,92 @@ export class ImitationLearningGuidanceResponseDto {
     recommendations?: { [key: string]: any };
     confidence_score?: number;
     success: boolean;
+}
+
+export class OpportunityForecastRequestDto {
+    telemetry_data: { [key: string]: any }[];
+    horizon_seconds?: number;
+    top_k?: number;
+}
+
+export class OpportunityForecastOpportunityDto {
+    label_id: string;
+    label_name: string;
+    parent_label: string;
+    probability: number;
+    circuit_section_id?: string;
+    circuit_section_name?: string;
+}
+
+export class OpportunityForecastResponseDto {
+    status: string;
+    model_status?: string;
+    horizon_seconds: number;
+    opportunities: OpportunityForecastOpportunityDto[];
+    circuit_section_match?: any;
+}
+
+export class TrackCornerKnowledgeRequestDto {
+    track_name: string;
+    corner_name: string;
+    normalized_position?: number;
+    trigger_position?: number;
+    current_telemetry?: { [key: string]: any };
+}
+
+export class TrackCornerKnowledgeResponseDto {
+    status: string;
+    message?: string;
+    reason?: string;
+    track_knowledge: any;
+    normalized_position?: number;
+    trigger_position?: number;
+}
+
+export class SegmentClassificationRequestDto {
+    session_id: string;
+}
+
+export class LiveBaselineTimeGapDto {
+    start_ms: number;
+    end_ms: number;
+    delta_ms: number;
+}
+
+export class SegmentClassificationSubSegmentDto {
+    start_index: number;
+    end_index: number;
+    labels: string[];
+    time_gap?: LiveBaselineTimeGapDto;
+}
+
+export class SegmentClassificationSegmentDto {
+    id?: string;
+    labels: string[];
+    main_label_id: string;
+    start_index: number;
+    end_index: number;
+    sub_labels: string[];
+    sub_segments: SegmentClassificationSubSegmentDto[];
+    child_segments?: SegmentClassificationSubSegmentDto[];
+    time_gap?: LiveBaselineTimeGapDto;
+}
+
+export class SegmentClassificationResponseDto {
+    status: string;
+    session_id: string;
+    samples_analyzed: number;
+    segment_count: number;
+    segments: SegmentClassificationSegmentDto[];
+}
+
+export class LiveBaselineAnalysisRequestDto {
+    track?: string;
+    car?: string;
+    baseline_lap?: number;
+    records: { [key: string]: any }[];
+}
+
+export class LiveBaselineAnalysisResponseDto extends SegmentClassificationResponseDto {
+    expert_time_available: boolean;
 }

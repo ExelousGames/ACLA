@@ -10,8 +10,8 @@ const PrivateRoute = () => {
 
     //If the user does not possess a token, indicating they are not logged in
     if (!user.token) {
-        //the code triggers a redirect to the /login route using the <Navigate> component.
-        return <Navigate to="/login" />;
+        //the code triggers a redirect to the landing page using the <Navigate> component.
+        return <Navigate to="/" />;
     }
 
     //Otherwise, it renders the child components nested within the PrivateRoute component accessed via <Outlet />

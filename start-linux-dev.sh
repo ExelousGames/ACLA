@@ -1,0 +1,78 @@
+#!/bin/bash
+
+# ACLA Development Environment Startup Script
+
+echo "🚀 Starting ACLA Development Environment (Core Services)..."
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "❌ Docker is not running. Please start Docker first."
+    exit 1
+fi
+
+# Stop and remove all containers
+echo "🧹 Removing all existing containers..."
+docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml down --remove-orphans
+
+echo "🗑️  Removing all stopped containers..."
+docker container prune -f
+
+# Build and start core services
+echo "🔨 Building and starting services fresh..."
+docker compose --env-file .dev.env --env-file .env.secrets -f docker-compose.dev.yaml up --build -d frontend backend_proxy backend mongodb mongo-express
+
+# Wait for services to start
+echo "⏳ Waiting for services to initialize..."
+sleep 30
+
+# Check service health
+echo "🔍 Checking service health..."
+
+# Check backend
+if curl -f http://localhost:7001 > /dev/null 2>&1; then
+    echo "✅ Backend is running at http://localhost:7001"
+else
+    echo "❌ Backend failed to start"
+fi
+
+# Check frontend
+if curl -f http://localhost:3000 > /dev/null 2>&1; then
+    echo "✅ Frontend is running at http://localhost:3000"
+else
+    echo "❌ Frontend failed to start"
+fi
+
+# Check MongoDB
+if curl -f http://localhost:27017 > /dev/null 2>&1; then
+    echo "✅ MongoDB is running at http://localhost:27017"
+else
+    echo "❌ MongoDB failed to start"
+fi
+
+# Check Mongo Express
+if curl -f http://localhost:8081 > /dev/null 2>&1; then
+    echo "✅ Mongo Express is running at http://localhost:8081"
+else
+    echo "❌ Mongo Express failed to start"
+fi
+
+echo ""
+echo "🎉 ACLA Development Environment is ready!"
+echo ""
+echo "📋 Service URLs:"
+echo "   Frontend:      http://localhost:3000"
+echo "   Backend:       http://localhost:7001"
+echo "   MongoDB:       http://localhost:27017"
+echo "   Mongo Express: http://localhost:8081"
+echo ""
+echo "ℹ️  To run AI Service, use './start-ai-service.sh'"
+echo ""
+echo "📖 To view logs: docker-compose -f docker-compose.dev.yaml logs -f [service_name]"
+echo "📖 To stop services: docker-compose -f docker-compose.dev.yaml down"
+echo ""
+echo ""
+echo "💾 Memory Usage Tips:"
+echo "   - If WSL uses too much memory, run 'optimize-memory.bat'"
+echo "   - Stop containers when not developing: docker-compose -f docker-compose.dev.yaml down"
+echo "   - Clean up regularly: docker system prune -f"
+echo ""

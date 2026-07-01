@@ -12,6 +12,11 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+if (process.platform === 'darwin') {
+    console.log("macOS detected. Skipping Python setup since this device is only used for building the UI.");
+    process.exit(0);
+}
+
 const projectRoot = path.resolve(__dirname, '..');
 const requirementsPath = path.join(projectRoot, 'src', 'py-scripts', 'requirements.txt');
 
@@ -31,7 +36,7 @@ const envDir = path.join(
     isProd ? 'py-scripts-prod' : 'py-scripts'
 );
 
-const pythonCandidates = [process.env.PYTHON, 'python3', 'python', 'py'];
+const pythonCandidates = [process.env.PYTHON, 'python3.10', 'python3.9', 'python3.8', 'python3.11', 'python3', 'python', 'py'];
 
 function runCommand(command, commandArgs, options = {}) {
     const printable = `${command} ${commandArgs.join(' ')}`.trim();

@@ -69,38 +69,6 @@ export const INITIAL_PERMISSIONS = [
         resource: PermissionResource.RACING_SESSION
     },
 
-    // Racing Map permissions
-    {
-        name: 'Create Racing Map',
-        description: 'Create new racing maps',
-        action: PermissionAction.CREATE,
-        resource: PermissionResource.RACING_MAP
-    },
-    {
-        name: 'Read Racing Map',
-        description: 'View racing map data',
-        action: PermissionAction.READ,
-        resource: PermissionResource.RACING_MAP
-    },
-    {
-        name: 'Update Racing Map',
-        description: 'Modify racing map data',
-        action: PermissionAction.UPDATE,
-        resource: PermissionResource.RACING_MAP
-    },
-    {
-        name: 'Delete Racing Map',
-        description: 'Remove racing maps',
-        action: PermissionAction.DELETE,
-        resource: PermissionResource.RACING_MAP
-    },
-    {
-        name: 'Manage Racing Maps',
-        description: 'Full control over racing maps',
-        action: PermissionAction.MANAGE,
-        resource: PermissionResource.RACING_MAP
-    },
-
     // System-wide permissions
     {
         name: 'System Administrator',
@@ -126,8 +94,7 @@ export const INITIAL_ROLES = [
         permissions: [
             'Read User',
             'Update User',
-            'Manage Racing Sessions',
-            'Manage Racing Maps'
+            'Manage Racing Sessions'
         ]
     },
     {
@@ -136,7 +103,6 @@ export const INITIAL_ROLES = [
         permissions: [
             'Read User',
             'Read Racing Session',
-            'Read Racing Map',
             'Create Racing Session'
         ]
     }

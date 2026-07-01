@@ -1,17 +1,17 @@
-import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
+import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, HttpException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, TrackCornerKnowledgeRequestDto, TrackCornerKnowledgeResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto, LiveBaselineAnalysisRequestDto, LiveBaselineAnalysisResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest, TrackCornerKnowledgeRequest, AiLabelsResponse, LiveBaselineAnalysisRequest } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { createReadStream } from 'fs';
+import * as crypto from 'crypto';
 
 @Controller('racing-session')
 export class RacingSessionController {
@@ -19,15 +19,16 @@ export class RacingSessionController {
 
     private uploadStates = new Map<string, {
         metadata: UploadReacingSessionInitDto;
-        session_data_chunks: string[][];
-        received: number;
+        fileIds: Types.ObjectId[];
+        totalDataPoints: number;
+        buffer: any[];
+        nextChunkIndex: number;
+        createdAt: Date;
     }>();
 
     private downloadStates = new Map<string, {
         initData: AllSessionsInitResponseDto;
         downloadedChunks: Set<string>; // Track downloaded chunks by "sessionId:chunkIndex"
-        streamingFiles?: Map<string, { filePath: string; fileSize: number; }>; // Track streaming file paths by sessionId
-        tempDir?: string; // Directory containing temporary streaming files
         createdAt: Date;
     }>();
 
@@ -62,6 +63,12 @@ export class RacingSessionController {
         return this.racingSessionService.retrieveAllRacingSessionsBasicInfo(body.map_name, body.user_id);
     }
 
+    @UseGuards(AuthGuard('jwt'))
+    @Post('mapbasiclist')
+    retrieveAllSessionMapBasicInfo(@Request() req, @Body() body): Promise<MapBasicInfoListDto | null> {
+        return this.racingSessionService.retrieveAllSessionMapBasicInfo(body.user_id);
+    }
+
 
     @UseGuards(AuthGuard('jwt'))
     @Post('detailedSessionInfo')
@@ -74,49 +81,26 @@ export class RacingSessionController {
     @Post('download/init')
     async initializeSessionsDownload(
         @Request() req,
-        @Body() body: { trackName?: string, carName?: string, chunkSize?: number }
+        @Body() body: { trackName?: string, carName?: string, sessionId?: string, chunkSize?: number }
     ): Promise<AllSessionsInitResponseDto> {
         try {
             const chunkSize = body.chunkSize || 1000; // Legacy parameter, ignored in streaming mode
-            const initDataWithContext = await this.racingSessionService.initializeSessionsDownload(body.trackName, body.carName, chunkSize);
+            const initDataWithContext = await this.racingSessionService.initializeSessionsDownload(body.trackName, body.carName, chunkSize, body.sessionId);
 
-            // Store download state for tracking with streaming file information
-            const streamingFiles = new Map<string, { filePath: string; fileSize: number; }>();
-
-            // Populate streaming files map from the context
-            if (initDataWithContext.streamingContext?.sessionFiles) {
-                for (const sessionFile of initDataWithContext.streamingContext.sessionFiles) {
-                    streamingFiles.set(sessionFile.sessionId, {
-                        filePath: sessionFile.filePath,
-                        fileSize: sessionFile.fileSize
-                    });
-                }
-            }
-
-            // Remove streaming context from response (internal use only)
-            const initData: AllSessionsInitResponseDto = {
-                downloadId: initDataWithContext.downloadId,
-                totalSessions: initDataWithContext.totalSessions,
-                totalChunks: initDataWithContext.totalChunks,
-                sessionMetadata: initDataWithContext.sessionMetadata
-            };
-
-            this.downloadStates.set(initData.downloadId, {
-                initData,
+            this.downloadStates.set(initDataWithContext.downloadId, {
+                initData: initDataWithContext,
                 downloadedChunks: new Set<string>(),
-                streamingFiles,
-                tempDir: initDataWithContext.streamingContext?.tempDir,
                 createdAt: new Date()
             });
 
-            this.logger.log(`Initialized download session ${initData.downloadId} with ${initData.totalSessions} sessions`);
+            this.logger.log(`Initialized download session ${initDataWithContext.downloadId} with ${initDataWithContext.totalSessions} sessions`);
 
             // Clean up old download states (older than 2 hours)
             this.cleanupOldDownloadStates().catch(error => {
                 this.logger.error(`Error during download state cleanup: ${error.message}`);
             });
 
-            return initData;
+            return initDataWithContext;
         } catch (error) {
             throw new BadRequestException(`Failed to initialize download: ${error.message}`);
         }
@@ -149,57 +133,117 @@ export class RacingSessionController {
                 throw new BadRequestException('Session not found in download');
             }
 
-            // Get streaming file information
-            const streamingFile = downloadState.streamingFiles?.get(body.sessionId);
-            if (!streamingFile) {
-                this.logger.error(`Session streaming file not found for session ${body.sessionId}`);
-                throw new BadRequestException('Session streaming file not found');
-            }
-
-            const { filePath, fileSize } = streamingFile;
-
-            // Verify file exists
-            try {
-                await fs.access(filePath);
-            } catch (error) {
-                this.logger.error(`Session file not accessible: ${filePath}, error: ${error.message}`);
-                throw new BadRequestException('Session file not accessible');
-            }
+            const chunkIndex = Number(body.chunkIndex || 0);
+            const chunk = await this.racingSessionService.getSessionDownloadChunk(body.sessionId, chunkIndex);
 
             // Set response headers for streaming
             res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Content-Length', fileSize.toString());
-            res.setHeader('Content-Disposition', `attachment; filename="session_${body.sessionId}.json"`);
+            res.setHeader('Content-Length', chunk.fileSize.toString());
+            res.setHeader('Content-Disposition', `attachment; filename="session_${body.sessionId}_chunk_${chunkIndex}.json"`);
             res.setHeader('X-Download-Id', body.downloadId);
             res.setHeader('X-Session-Id', body.sessionId);
+            res.setHeader('X-Chunk-Index', chunkIndex.toString());
+            res.setHeader('X-Total-Chunks', chunk.totalChunks.toString());
+            res.setHeader('X-Data-Points', chunk.dataPoints.toString());
 
             // Track downloaded session
-            const chunkKey = `${body.sessionId}:0`; // Always index 0 for streaming mode
+            const chunkKey = `${body.sessionId}:${chunkIndex}`;
             downloadState.downloadedChunks.add(chunkKey);
 
-            // Create read stream and pipe to response
-            const readStream = createReadStream(filePath);
-
             // Handle stream errors
-            readStream.on('error', (error) => {
-                this.logger.error(`Error streaming file ${filePath}: ${error.message}`);
+            chunk.stream.on('error', (error) => {
+                this.logger.error(`Error streaming session chunk ${body.sessionId}:${chunkIndex}: ${error.message}`);
                 if (!res.headersSent) {
                     res.status(500).json({ error: 'Failed to stream session data' });
                 }
             });
 
-            readStream.on('end', () => {
-                this.logger.log(`Successfully streamed session ${body.sessionId} (${fileSize} bytes)`);
+            chunk.stream.on('end', () => {
+                this.logger.log(`Successfully streamed session chunk ${body.sessionId}:${chunkIndex} (${chunk.fileSize} bytes)`);
             });
 
-            // Pipe the file stream to response
-            readStream.pipe(res);
+            chunk.stream.pipe(res);
 
         } catch (error) {
             this.logger.error(`Failed to stream session chunk: ${error.message}`);
             if (!res.headersSent) {
                 throw new BadRequestException(`Failed to download chunk: ${error.message}`);
             }
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('analysis/user-sessions/init')
+    async initializeUserSessionsAnalysis(
+        @Request() req,
+        @Body() body: { userId?: string; sessionLimit?: number }
+    ) {
+        const targetUserId = body.userId;
+        if (!targetUserId) {
+            throw new BadRequestException('userId is required');
+        }
+        this.assertCanAccessAnalysisTarget(req, targetUserId);
+
+        const sessions = await this.racingSessionService.listUserSessionsForAnalysis(targetUserId, body.sessionLimit);
+        return {
+            userId: targetUserId,
+            totalSessions: sessions.length,
+            sessions,
+        };
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('analysis/user-sessions/chunk')
+    async downloadUserSessionAnalysisChunk(
+        @Request() req,
+        @Body() body: { userId?: string; sessionId?: string; chunkIndex?: number },
+        @Res() res: Response
+    ): Promise<void> {
+        try {
+            const targetUserId = body.userId;
+            if (!targetUserId || !body.sessionId || body.chunkIndex === undefined) {
+                throw new BadRequestException('userId, sessionId, and chunkIndex are required');
+            }
+            this.assertCanAccessAnalysisTarget(req, targetUserId);
+
+            const chunk = await this.racingSessionService.getUserSessionAnalysisChunk(
+                targetUserId,
+                body.sessionId,
+                Number(body.chunkIndex),
+            );
+
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Content-Length', chunk.fileSize.toString());
+            res.setHeader('X-Session-Id', body.sessionId);
+            res.setHeader('X-Chunk-Index', String(body.chunkIndex));
+            res.setHeader('X-Total-Chunks', String(chunk.totalChunks));
+
+            chunk.stream.on('error', (error) => {
+                this.logger.error(`Error streaming analysis chunk ${body.sessionId}:${body.chunkIndex}: ${error.message}`);
+                if (!res.headersSent) {
+                    res.status(500).json({ error: 'Failed to stream analysis chunk' });
+                }
+            });
+
+            chunk.stream.pipe(res);
+        } catch (error) {
+            this.logger.error(`Failed to stream analysis chunk: ${error.message}`);
+            if (!res.headersSent) {
+                if (error instanceof BadRequestException || error instanceof ForbiddenException) {
+                    throw error;
+                }
+                throw new BadRequestException(`Failed to stream analysis chunk: ${error.message}`);
+            }
+        }
+    }
+
+    private assertCanAccessAnalysisTarget(req: any, targetUserId: string): void {
+        const authenticatedUserId = req.user?.userId;
+        const authenticatedUsername = req.user?.username;
+        const isAiService = authenticatedUsername && authenticatedUsername === process.env.AI_SERVICE_USERNAME;
+
+        if (authenticatedUserId !== targetUserId && !isAiService) {
+            throw new ForbiddenException('Cannot access analysis data for another user');
         }
     }
 
@@ -351,10 +395,14 @@ export class RacingSessionController {
     async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
         const uploadId = crypto.randomUUID();
         console.log('Initialized upload with ID:', uploadId, 'for user:', metadata.userId);
+
         this.uploadStates.set(uploadId, {
             metadata,
-            session_data_chunks: [],
-            received: 0
+            fileIds: [],
+            totalDataPoints: 0,
+            buffer: [],
+            nextChunkIndex: 0,
+            createdAt: new Date()
         });
         return { uploadId: uploadId };
     }
@@ -362,167 +410,105 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('upload/chunk')
     async receiveChunk(
-        @Body() body: { chunk: string[]; chunkIndex: number },
+        @Body() body: { chunk: any[]; chunkIndex: number },
         @Query('uploadId') uploadId: string
     ) {
         const upload = this.uploadStates.get(uploadId);
         if (!upload) {
-            throw new BadRequestException('Upload doesnt exist');
+            throw new BadRequestException('Upload doesnt exist or expired');
         }
-        upload.session_data_chunks[body.chunkIndex] = body.chunk;
-        upload.received++;
 
+        if (body.chunkIndex !== upload.nextChunkIndex) {
+            // If we receive a previous chunk, it might be a retry that succeeded but we didn't get the response?
+            // But if we are strictly sequential, we expect nextChunkIndex.
+            // If chunkIndex < nextChunkIndex, we can ignore it (idempotent).
+            if (body.chunkIndex < upload.nextChunkIndex) {
+                return { receivedChunks: upload.nextChunkIndex };
+            }
+            throw new BadRequestException(`Invalid chunk index. Expected ${upload.nextChunkIndex}, got ${body.chunkIndex}`);
+        }
 
-        return { receivedChunks: upload.session_data_chunks.length };
+        if (body.chunk && body.chunk.length > 0) {
+            upload.buffer = upload.buffer.concat(body.chunk);
+            upload.totalDataPoints += body.chunk.length;
+        }
+
+        // If buffer is large enough, upload to GridFS
+        const CHUNK_SIZE = 1000;
+        while (upload.buffer.length >= CHUNK_SIZE) {
+            const chunkToUpload = upload.buffer.splice(0, CHUNK_SIZE);
+            const fileId = await this.racingSessionService.uploadSessionChunk(
+                chunkToUpload,
+                {
+                    session_name: upload.metadata.sessionName,
+                    map: upload.metadata.mapName,
+                    car_name: upload.metadata.carName,
+                    userId: upload.metadata.userId,
+                    chunkIndex: upload.fileIds.length,
+                    chunkSize: CHUNK_SIZE
+                }
+            );
+            upload.fileIds.push(fileId as unknown as Types.ObjectId);
+        }
+
+        upload.nextChunkIndex++;
+        // Update last access
+        upload.createdAt = new Date();
+
+        return { receivedChunks: upload.nextChunkIndex };
     }
 
     @Post('upload/complete')
     async completeUpload(
         @Body() completionData: any,
-        @Query('uploadId') uploadId: string //Extracts values from the URL query string (the part after ? in a URL)
+        @Query('uploadId') uploadId: string
     ) {
-
-        //get the data about the session upload
         const upload = this.uploadStates.get(uploadId);
         if (!upload) {
-            throw new BadRequestException('Upload doesnt exist');
+            throw new BadRequestException('Upload doesnt exist or expired');
         }
-        const fullDataset = upload.session_data_chunks.flat();
 
-        // Create racing session in database
         try {
-            const createdSession = await this.racingSessionService.createRacingSession(
+            // Upload remaining buffer
+            if (upload.buffer.length > 0) {
+                const fileId = await this.racingSessionService.uploadSessionChunk(
+                    upload.buffer,
+                    {
+                        session_name: upload.metadata.sessionName,
+                        map: upload.metadata.mapName,
+                        car_name: upload.metadata.carName,
+                        userId: upload.metadata.userId,
+                        chunkIndex: upload.fileIds.length,
+                        chunkSize: 1000
+                    }
+                );
+                upload.fileIds.push(fileId as unknown as Types.ObjectId);
+            }
+
+            // Create racing session in database
+            const createdSession = await this.racingSessionService.createRacingSessionFromChunks(
                 upload.metadata.sessionName,
                 upload.metadata.mapName,
                 upload.metadata.carName,
                 upload.metadata.userId,
-                fullDataset
+                upload.fileIds as unknown as any[],
+                upload.totalDataPoints,
+                1000
             );
 
-            // // ai training
-            // try {
-            //     // First, find the user by user id  to get their ObjectId
-            //     const userInfo = await this.userInfoService.findOneById(upload.metadata.userId);
-
-            //     if (!userInfo) {
-            //         console.log('User not found for id:', upload.metadata.userId);
-            //     } else {
-
-            //         const userId = upload.metadata.userId;
-            //         // Check for active AI model first, before processing the session
-
-            //         //list of ai models will be trained
-            //         const modelsConfig: ModelsConfig[] = [
-            //             { config_id: "lap_prediction", target_variable: "Graphics_current_time", model_type: "lap_time_prediction" }
-            //         ];
-
-            //         let activeModel: UserACCTrackAIModel & { _id: Types.ObjectId; } | null = null;
-
-            //         // Check for existing active models for each config
-            //         for (const modelConfig of modelsConfig) {
-
-            //             // Check if user has an active model for this track
-            //             activeModel = await this.aiModelService.findActiveUserSessionAIModel(
-            //                 userId,
-            //                 upload.metadata.mapName,
-            //                 upload.metadata.carName,
-            //                 modelConfig.model_type,
-            //                 modelConfig.target_variable
-            //             );
-
-            //             // add active model if any
-            //             modelConfig.existing_model_data = activeModel ? activeModel : null;
-            //         }
-
-            //         // Train the models using the AI service client
-            //         const trainedModelsResponse: TrainModelsResponse = await this.aiServiceClient.trainModels({
-            //             session_id: createdSession.id,
-            //             telemetry_data: fullDataset,
-            //             models_config: modelsConfig,
-            //             user_id: userId,
-            //             parallel_training: false
-            //         });
-
-            //         //save the training result to database
-            //         if (trainedModelsResponse) {
-            //             // Process and save the training result as needed
-            //             for (const [configId, response] of Object.entries(trainedModelsResponse.training_results)) {
-
-            //                 //find the matching config
-            //                 const modelConfig = modelsConfig.find(config => config.config_id === configId);
-            //                 console.log("Training result for response:", response);
-            //                 if (response.success) {
-            //                     //if there is an active model, update the model in database
-            //                     if (modelConfig && modelConfig.existing_model_data) {
-
-            //                         await this.aiModelService.updateModel(modelConfig.existing_model_data._id.toString(), {
-            //                             modelData: response.model_data,
-            //                             modelType: response.model_type,
-            //                             algorithmUsed: response.algorithm_used,
-            //                             algorithmType: response.algorithm_type,
-            //                             targetVariable: response.target_variable,
-            //                             trainingMetrics: response.training_metrics,
-            //                             featureNames: response.feature_names,
-            //                             featureCount: response.features_count,
-            //                             samplesProcessed: response.samples_processed,
-            //                             modelVersion: response.model_version, // Version number for incremental training
-            //                             algorithmStrengths: response.algorithm_strengths, // Summary of telemetry data used
-            //                             recommendations: response.recommendations, // Training recommendations
-            //                             algorithmDescription: response.algorithm_description, // Description of the algorithm used
-            //                             training_time: response.training_time, // Training time
-            //                             dataQualityScore: response.data_quality_score, // Feature importance scores
-            //                             timestamp: response.timestamp, // When the model was trained
-            //                             isActive: true // Whether this model version is active
-            //                         });
-            //                     } else {
-            //                         //else create a new model
-            //                         await this.aiModelService.createModel({
-            //                             userId: userId,
-            //                             trackName: upload.metadata.mapName,
-            //                             carName: upload.metadata.carName,
-            //                             modelData: response.model_data,
-            //                             modelType: response.model_type,
-            //                             algorithmUsed: response.algorithm_used,
-            //                             algorithmType: response.algorithm_type,
-            //                             targetVariable: response.target_variable,
-            //                             trainingMetrics: response.training_metrics,
-            //                             featureNames: response.feature_names,
-            //                             featureCount: response.features_count,
-            //                             samplesProcessed: response.samples_processed,
-            //                             modelVersion: response.model_version, // Version number for incremental training
-            //                             recommendations: response.recommendations, // Training recommendations
-            //                             algorithmDescription: response.algorithm_description, // Description of the algorithm used
-            //                             algorithmStrengths: response.algorithm_strengths,
-            //                             training_time: response.training_time,
-            //                             dataQualityScore: response.data_quality_score, // Alternative algorithms for this model type
-            //                             timestamp: response.timestamp, // When the model was trained
-            //                             isActive: true // Whether this model version is active
-            //                         });
-            //                     }
-            //                 }
-            //             }
-            //         }
-
-            //     }
-            // } catch (modelError) {
-            //     console.error('Model setup failed:', modelError);
-            // }
+            return {
+                message: 'Upload completed successfully',
+                sessionId: createdSession._id, // Assuming createRacingSession returns the document
+                aiAnalysisAvailable: true
+            };
 
         } catch (error) {
-            console.error('Error creating Racing Session:', error);
+            this.logger.error(`Error creating Racing Session: ${error.message}`);
+            throw new BadRequestException(`Upload failed: ${error.message}`);
         } finally {
-            // Clean up upload state from memory to prevent memory leaks
+            // Clean up
             this.uploadStates.delete(uploadId);
-
-            // Clean up any assembled files for this upload
-            await this.cleanupAssembledFile(uploadId);
         }
-
-        return {
-            message: 'Upload completed successfully',
-            sessionId: uploadId,
-            aiAnalysisAvailable: true
-        };
     }
 
     @UseGuards(AuthGuard('jwt'))
@@ -560,6 +546,144 @@ export class RacingSessionController {
     }
 
     @UseGuards(AuthGuard('jwt'))
+    @Get('labels')
+    async getLabels(): Promise<AiLabelsResponse> {
+        try {
+            return await this.aiServiceClient.getLabels();
+        } catch (error) {
+            console.error('AI labels retrieval failed:', error);
+            throw new BadRequestException(`Failed to get AI labels: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('opportunity-forecast')
+    async getOpportunityForecast(
+        @Request() req,
+        @Body() body: OpportunityForecastRequestDto
+    ): Promise<OpportunityForecastResponseDto> {
+        try {
+            if (!Array.isArray(body.telemetry_data) || body.telemetry_data.length === 0) {
+                throw new BadRequestException('telemetry_data is required');
+            }
+
+            const forecastRequest: OpportunityForecastRequest = {
+                telemetry_data: body.telemetry_data,
+                horizon_seconds: body.horizon_seconds ?? 10,
+                top_k: body.top_k ?? 3
+            };
+
+            return await this.aiServiceClient.getOpportunityForecast(forecastRequest);
+        } catch (error) {
+            if (error instanceof BadRequestException) {
+                throw error;
+            }
+            console.error('Opportunity forecast failed:', error);
+            throw new BadRequestException(`Failed to get opportunity forecast: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('track-corner-knowledge')
+    async getTrackCornerKnowledge(
+        @Request() req,
+        @Body() body: TrackCornerKnowledgeRequestDto
+    ): Promise<TrackCornerKnowledgeResponseDto> {
+        try {
+            if (!body.track_name) {
+                throw new BadRequestException('track_name is required');
+            }
+            if (!body.corner_name) {
+                throw new BadRequestException('corner_name is required');
+            }
+
+            const knowledgeRequest: TrackCornerKnowledgeRequest = {
+                track_name: body.track_name,
+                corner_name: body.corner_name,
+                normalized_position: body.normalized_position,
+                trigger_position: body.trigger_position,
+                current_telemetry: body.current_telemetry
+            };
+
+            return await this.aiServiceClient.getTrackCornerKnowledge(knowledgeRequest);
+        } catch (error) {
+            if (error instanceof BadRequestException || error instanceof HttpException) {
+                throw error;
+            }
+            console.error('Track corner knowledge failed:', error);
+            throw new BadRequestException(`Failed to get track corner knowledge: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('analyze-live-recorded-analysis')
+    async analyzeLiveRecordedAnalysis(
+        @Request() req,
+        @Body() body: LiveBaselineAnalysisRequestDto
+    ): Promise<LiveBaselineAnalysisResponseDto> {
+        try {
+            if (!req.user?.userId) {
+                throw new BadRequestException('Authenticated user id is required');
+            }
+            if (!Array.isArray(body.records) || body.records.length === 0) {
+                throw new BadRequestException('records is required');
+            }
+
+            const analysisRequest: LiveBaselineAnalysisRequest = {
+                track: body.track,
+                car: body.car,
+                baseline_lap: body.baseline_lap,
+                records: body.records,
+            };
+
+            return await this.aiServiceClient.analyzeLiveRecordedAnalysis(analysisRequest);
+        } catch (error) {
+            if (error instanceof BadRequestException || error instanceof HttpException) {
+                throw error;
+            }
+            console.error('Live recorded analysis failed:', error);
+            throw new BadRequestException(`Failed to analyze live recorded baseline: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('segment-classification')
+    async classifySessionSegments(
+        @Request() req,
+        @Body() body: SegmentClassificationRequestDto
+    ): Promise<SegmentClassificationResponseDto> {
+        try {
+            const sessionId = body.session_id || (body as any).sessionId;
+            if (!sessionId) {
+                throw new BadRequestException('session_id is required');
+            }
+
+            const userId = req.user?.userId;
+            if (!userId) {
+                throw new BadRequestException('Authenticated user id is required');
+            }
+
+            const sessionPayload = await this.racingSessionService.getSessionTelemetryForClassification(
+                userId,
+                sessionId,
+            );
+
+            return await this.aiServiceClient.classifySegments({
+                session_id: sessionPayload.sessionId,
+                telemetry_data: sessionPayload.telemetryData,
+                track_name: sessionPayload.trackName,
+                car_name: sessionPayload.carName,
+            });
+        } catch (error) {
+            if (error instanceof BadRequestException || error instanceof ForbiddenException || error instanceof HttpException) {
+                throw error;
+            }
+            console.error('Segment classification failed:', error);
+            throw new BadRequestException(`Failed to classify session segments: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
     @Post('download/cleanup')
     async cleanupDownload(
         @Request() req,
@@ -581,8 +705,7 @@ export class RacingSessionController {
             createdAt: state.createdAt,
             sessionCount: state.initData.totalSessions,
             downloadedChunks: state.downloadedChunks.size,
-            hasStreamingFiles: !!state.streamingFiles && state.streamingFiles.size > 0,
-            tempDir: state.tempDir
+            totalChunks: state.initData.totalChunks || 0
         }));
 
         return {

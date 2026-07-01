@@ -1,6 +1,7 @@
-import { Card, Flex, Box, IconButton, Heading, Grid, Text, Slider, Spinner, AlertDialog, Button } from '@radix-ui/themes';
+import { Card, Flex, Box, IconButton, Heading, Grid, Text, Spinner, AlertDialog, Button } from '@radix-ui/themes';
 import { useContext, useEffect, useRef, useState, useMemo, useCallback, JSX } from 'react';
 import { AnalysisContext } from './analysis-context';
+import './liveAnalysisSessionRecording.css';
 import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useAuth } from 'hooks/AuthProvider';
@@ -19,7 +20,7 @@ enum RecordingState {
 
 type StopReason = 'manual' | 'pause' | 'error' | 'complete';
 
-const UPLOAD_CHUNK_SIZE = 5;
+const UPLOAD_CHUNK_SIZE = 1000;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
 const POST_SUCCESS_DIALOG_CLOSE_MS = 800;
 
@@ -139,6 +140,7 @@ export default function LiveAnalysisSessionRecording() {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [showRetryButton, setShowRetryButton] = useState(false);
     const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+
     const uploadInFlightRef = useRef(false);
     const hasRecordedData = analysisContext.recordedTelemetryDataCount > 0 && Boolean(analysisContext.recordedSessionDataFilePath);
 
@@ -174,6 +176,14 @@ export default function LiveAnalysisSessionRecording() {
         startInFlightRef.current = false;
         hasReceivedLiveSampleRef.current = false;
 
+        const ctx = analysisContextRef.current;
+
+        if (reason === 'manual' || reason === 'complete') {
+            void ctx.finalizeRecordingWrites().catch((error) => {
+                console.warn('Failed to finalize telemetry writer', error);
+            });
+        }
+
         switch (reason) {
             case 'pause': {
                 transition({ type: 'recordingStopped', reason: 'pause' });
@@ -181,7 +191,7 @@ export default function LiveAnalysisSessionRecording() {
             }
             case 'error': {
                 recordingFileInfoRef.current = null;
-                analysisContext.clearRecordingSession();
+                ctx.clearRecordingSession();
                 transition({ type: 'recordingStopped', reason: 'error' });
                 break;
             }
@@ -193,7 +203,7 @@ export default function LiveAnalysisSessionRecording() {
                 transition({ type: 'recordingStopped', reason: 'complete' });
             }
         }
-    }, [analysisContext, transition]);
+    }, [transition]);
 
     /**
      * Process updates from the ACC session checking stream
@@ -339,11 +349,15 @@ export default function LiveAnalysisSessionRecording() {
         try {
             const result = await window.electronAPI.stopPythonScript(shellId);
             if (!result?.success) {
-                applyStopOutcome('error');
+                if (recordingShellIdRef.current === null) return;
+                console.warn('Stop script reported failure, applying intended outcome', reason);
+                applyStopOutcome(reason);
             }
         } catch (error) {
             console.error('Failed to stop python script', error);
-            applyStopOutcome('error');
+            if (recordingShellIdRef.current === null) return;
+            console.warn('Stop script threw error, applying intended outcome', reason);
+            applyStopOutcome(reason);
         }
     }, [applyStopOutcome, state]);
 
@@ -377,8 +391,17 @@ export default function LiveAnalysisSessionRecording() {
         }
 
         startInFlightRef.current = true;
+        if (pythonMessageCleanupRef.current) {
+            pythonMessageCleanupRef.current();
+            pythonMessageCleanupRef.current = null;
+        }
+        if (pythonEndCleanupRef.current) {
+            pythonEndCleanupRef.current();
+            pythonEndCleanupRef.current = null;
+        }
 
-        analysisContext.setMap((analysisContext.recordedSessioStaticsData as any)?.track || analysisContext.mapSelected || 'Unknown Track');
+        const ctx = analysisContextRef.current;
+        ctx.setMap((ctx.recordedSessioStaticsData as any)?.track || ctx.mapSelected || 'Unknown Track');
         let folder = '../session_recording';
         let filename: string;
 
@@ -395,16 +418,19 @@ export default function LiveAnalysisSessionRecording() {
 
         if (!resumeExisting) {
             const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
-            analysisContext.setSession({
+            ctx.setSession({
                 session_name: newSessionName,
                 SessionId: '',
-                map: analysisContext.mapSelected || (analysisContext.recordedSessioStaticsData as any)?.track || 'Unknown Track',
+                map: ctx.mapSelected || (ctx.recordedSessioStaticsData as any)?.track || 'Unknown Track',
                 user_id: '',
                 points: [],
                 data: [],
-                car: (analysisContext.recordedSessioStaticsData as any)?.car_model || 'Unknown Car'
+                car: (ctx.recordedSessioStaticsData as any)?.car_model || 'Unknown Car'
             } as RacingSessionDetailedInfoDto as any);
         }
+
+        // Reset live data to clear stale status
+        ctx.setLiveSessionData({});
 
         hasReceivedLiveSampleRef.current = false;
         transition({ type: resumeExisting ? 'recordingResumed' : 'recordingStarted' });
@@ -413,15 +439,51 @@ export default function LiveAnalysisSessionRecording() {
             recordingShellIdRef.current = shellId;
             stopReasonRef.current = null;
 
+            let lastValidObj: any = null;
+            let wasUnavailable = false;
+
             const messageCleanup = window.electronAPI.onPythonMessage((incomingId: number, message: string) => {
                 if (incomingId !== shellId) {
                     return;
                 }
                 try {
                     const obj = JSON.parse(message);
-                    analysisContext.setLiveSessionData(obj);
-                    void analysisContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
-                    hasReceivedLiveSampleRef.current = true;
+                    const status = obj.Graphics?.status;
+                    const latestContext = analysisContextRef.current;
+                    latestContext.setLiveSessionData(obj);
+
+                    if (obj.available === false) {
+                        wasUnavailable = true;
+                    } else if (Object.keys(obj).length > 2) {
+                        if (wasUnavailable && lastValidObj) {
+                            const condition1 = obj.Physics_packed_id > lastValidObj.Physics_packed_id;
+                            const condition2 = obj.Static_car_model === lastValidObj.Static_car_model;
+                            const condition3 = obj.Static_track === lastValidObj.Static_track;
+                            const condition4 = obj.Graphics_completed_lap >= lastValidObj.Graphics_completed_lap;
+                              const condition5 = obj.Graphics_completed_lap === lastValidObj.Graphics_completed_lap 
+                                  ? obj.Graphics_current_time >= lastValidObj.Graphics_current_time 
+                                  : true;
+
+                              if (!condition1 || !condition2 || !condition3 || !condition4 || !condition5) {
+                                  console.warn('Telemetry data validation failed after unavailability', {
+                                      cond1: condition1,
+                                      cond2: condition2,
+                                      cond3: condition3,
+                                      cond4: condition4,
+                                      cond5: condition5
+                                });
+                                void stopRecordingProcess('complete');
+                                return;
+                            }
+                        }
+                        wasUnavailable = false;
+                        lastValidObj = obj;
+                        void latestContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
+                    }
+
+                    if (status !== undefined && status !== null) {
+                        hasReceivedLiveSampleRef.current = true;
+                    }
                 } catch { }
             });
             pythonMessageCleanupRef.current = messageCleanup;
@@ -449,7 +511,7 @@ export default function LiveAnalysisSessionRecording() {
         } finally {
             startInFlightRef.current = false;
         }
-    }, [analysisContext, applyStopOutcome, canRecord, transition, uploadDialogOpen, determineStopReason]);
+    }, [applyStopOutcome, canRecord, transition, determineStopReason, stopRecordingProcess]);
 
     useEffect(() => {
         if (state !== RecordingState.HOLDING) {
@@ -471,6 +533,33 @@ export default function LiveAnalysisSessionRecording() {
         void startRecording({ resumeExisting: true });
     }, [TelemetryDataLiveStatus, isUploading, startRecording, state, uploadDialogOpen]);
 
+    useEffect(() => {
+        if (state === RecordingState.RECORDING && TelemetryDataLiveStatus === ACC_STATUS.ACC_PAUSE) {
+            if (hasReceivedLiveSampleRef.current) {
+                void stopRecordingProcess('pause');
+            }
+        }
+    }, [state, TelemetryDataLiveStatus, stopRecordingProcess]);
+
+    useEffect(() => {
+        return () => {
+            if (pythonMessageCleanupRef.current) {
+                pythonMessageCleanupRef.current();
+                pythonMessageCleanupRef.current = null;
+            }
+            if (pythonEndCleanupRef.current) {
+                pythonEndCleanupRef.current();
+                pythonEndCleanupRef.current = null;
+            }
+            const shellId = recordingShellIdRef.current;
+            recordingShellIdRef.current = null;
+            if (shellId !== null && window?.electronAPI?.stopPythonScript) {
+                void window.electronAPI.stopPythonScript(shellId).catch(() => undefined);
+            }
+            void stopSessionCheckingStream({ force: true });
+        };
+    }, [stopSessionCheckingStream]);
+
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
     }, []);
@@ -491,17 +580,21 @@ export default function LiveAnalysisSessionRecording() {
         if (uploadInFlightRef.current) return false;
         if (!hasRecordedData) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
         if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
-        uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Reading telemetry data...'); setUploadError(null); setShowRetryButton(false);
+        uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
         try {
+            await analysisContext.finalizeRecordingWrites();
+            setUploadStatus('Reading telemetry data...');
             // Reserve progress ranges: 0-40% for reading, 40-90% for chunk upload, 90-100% finalize
             let estimatedTotal: number | null = null;
             let lastRead = 0;
-            const data = await analysisContext.readRecordedSessionData((read, total) => {
+            const data = await analysisContext.readRecordedSessionData((read, total, bytesRead, totalBytes) => {
                 lastRead = read;
                 if (total && total > 0) estimatedTotal = total;
                 // If total known compute percentage otherwise logarithmic approximation
                 let pct: number;
-                if (estimatedTotal) {
+                if (totalBytes && totalBytes > 0 && bytesRead !== undefined) {
+                    pct = Math.min(bytesRead / totalBytes, 1) * 40;
+                } else if (estimatedTotal) {
                     pct = Math.min(read / estimatedTotal, 1) * 40; // scale into 0-40
                 } else {
                     // Unknown total: approach 40% asymptotically
@@ -517,7 +610,26 @@ export default function LiveAnalysisSessionRecording() {
             const initResp = await apiService.post('/racing-session/upload/init', metadata); if (!initResp.data) throw new Error('Failed to initialize upload');
             const { uploadId } = initResp.data as UploadRacingSessionInitReturnDto;
             setUploadProgress(55); setUploadStatus(`Uploading ${chunks.length} chunks...`);
-            for (let i = 0; i < chunks.length; i++) { const params = new URLSearchParams(); params.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/chunk?${params.toString()}`, { chunk: chunks[i], chunkIndex: i }); const pct = Math.floor(55 + (i + 1) / chunks.length * 35); setUploadProgress(pct); setUploadStatus(`Uploading chunk ${i + 1} of ${chunks.length}...`); }
+            for (let i = 0; i < chunks.length; i++) {
+                let retries = 3;
+                let success = false;
+                while (retries > 0 && !success) {
+                    try {
+                        const params = new URLSearchParams();
+                        params.append('uploadId', uploadId);
+                        await apiService.post(`/racing-session/upload/chunk?${params.toString()}`, { chunk: chunks[i], chunkIndex: i });
+                        success = true;
+                    } catch (err) {
+                        console.warn(`Chunk ${i} upload failed, retrying... (${retries} attempts left)`, err);
+                        retries--;
+                        if (retries === 0) throw err;
+                        await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries))); // Exponential backoff: 1s, 2s, 3s
+                    }
+                }
+                const pct = Math.floor(55 + (i + 1) / chunks.length * 35);
+                setUploadProgress(pct);
+                setUploadStatus(`Uploading chunk ${i + 1} of ${chunks.length}...`);
+            }
             setUploadProgress(92); setUploadStatus('Finalizing upload...');
             const final = new URLSearchParams(); final.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/complete?${final.toString()}`, {});
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
@@ -525,7 +637,14 @@ export default function LiveAnalysisSessionRecording() {
             setTimeout(() => { setIsUploading(false); setTimeout(() => resetToChecking(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
             uploadInFlightRef.current = false;
             return true;
-        } catch (e) { setUploadError(e instanceof Error ? e.message : 'Upload failed'); setIsUploading(false); setShowRetryButton(true); uploadInFlightRef.current = false; return false; }
+        } catch (e: any) {
+            const errorMessage = e?.message || (e instanceof Error ? e.message : 'Upload failed');
+            setUploadError(errorMessage);
+            setIsUploading(false);
+            setShowRetryButton(true);
+            uploadInFlightRef.current = false;
+            return false;
+        }
     }, [analysisContext, auth, cleanupTelemetryFile, resetToChecking, hasRecordedData]);
 
     const handleCancelUpload = useCallback(async () => { if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath); resetToChecking(); }, [analysisContext, cleanupTelemetryFile, resetToChecking]);
@@ -619,10 +738,32 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, [state, canRecord, startRecording, stopRecordingProcess, TelemetryDataLiveStatus, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
 
+    const isRecording = state === RecordingState.RECORDING;
+    const isPaused = state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
+    const channelLabel =
+        state === RecordingState.CHECKING ? 'TELEMETRY · SCANNING' :
+        state === RecordingState.READY ? 'TELEMETRY · LIVE' :
+        state === RecordingState.RECORDING ? 'REC · LIVE' :
+        state === RecordingState.HOLDING ? 'REC · PAUSED' :
+        state === RecordingState.RESUME_READY ? 'REC · STANDBY' :
+        state === RecordingState.UPLOAD_READY ? 'REC · STOPPED' :
+        'TELEMETRY';
+    const channelMod =
+        isRecording ? 'live-recording-bar__channel--rec' :
+        isPaused ? 'live-recording-bar__channel--paused' :
+        state === RecordingState.READY ? 'live-recording-bar__channel--live' :
+        state === RecordingState.UPLOAD_READY ? 'live-recording-bar__channel--stopped' :
+        '';
     return (
-        <Box position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ borderRadius: '100px', boxShadow: 'var(--shadow-6)', marginLeft: 200, marginRight: 200 }}>
-            <Flex height="100%" justify="between" position="relative">
-                <Flex gap="4" align="center" p="3">
+        <>
+        <Box className={`live-recording-bar ${isRecording ? 'live-recording-bar--rec' : ''}`} position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
+            <Flex height="100%" align="center" position="relative" overflow="hidden" className="live-recording-bar__inner">
+                <Flex gap="3" align="center" p="3" style={{ minWidth: 0, flex: 1 }}>
+
+                    <div className={`live-recording-bar__channel ${channelMod}`}>
+                        <span className="live-recording-bar__channel-dot" />
+                        {channelLabel}
+                    </div>
 
                     {controlButtons}
                     <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
@@ -674,22 +815,21 @@ export default function LiveAnalysisSessionRecording() {
                     </AlertDialog.Root>
 
                 </Flex>
-                <Flex align="center" gap="3">
-                    <Flex align="center" gap="3">
-                        <Box>
-                            <Text size="1" as="div" weight="medium">Racing Map Name Here</Text>
-                            <Text size="1" as="div" color="gray" mb="2">Practice Session</Text>
-                            <Box position="relative" height="4px" width="320px" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-1)' }}>
-                                <Box position="absolute" height="4px" width="64px" style={{ borderRadius: 'var(--radius-1)', backgroundColor: 'var(--gray-a9)' }} />
-                                <Box position="absolute" top="0" right="0" mt="-28px"><Text size="1" color="gray">0:58 / Lap 2</Text></Box>
-                            </Box>
-                        </Box>
-                    </Flex>
-                </Flex>
-                <Flex align="center" gap="2" p="5">
-                    <Slider defaultValue={[80]} variant="soft" color="gray" radius="full" size="2" style={{ width: 80 }} />
-                </Flex>
+                <div className="live-recording-bar__status">
+                    <div className="live-recording-bar__status-row">
+                        <span className="live-recording-bar__status-label">MAP</span>
+                        <span className="live-recording-bar__status-value">{analysisContext.mapSelected || '—'}</span>
+                    </div>
+                    <div className="live-recording-bar__status-row">
+                        <span className="live-recording-bar__status-label">SAMPLES</span>
+                        <span className="live-recording-bar__status-value live-recording-bar__status-value--mono">
+                            {analysisContext.recordedTelemetryDataCount.toLocaleString()}
+                        </span>
+                    </div>
+                </div>
+
             </Flex>
         </Box>
+        </>
     );
 }

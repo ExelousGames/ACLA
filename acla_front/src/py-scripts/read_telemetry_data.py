@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 PROGRESS_EVENT = "progress"
+CHUNK_EVENT = "chunk"
 COMPLETE_EVENT = "complete"
 ERROR_EVENT = "error"
 
@@ -26,8 +27,9 @@ def read_telemetry_data(file_path):
     """Stream telemetry data with progress events then final completion.
 
     Protocol:
-      {"type":"progress","read":<int>,"total":<int|null>} repeated
-      {"type":"complete","data":[...]} once at end
+      {"type":"chunk","data":[...]} repeated
+      {"type":"progress","read":<int>,"total":<int|null>,"bytesRead":<int>,"totalBytes":<int>} repeated
+      {"type":"complete","data":[],"elapsed_ms":<int>} once at end
       {"type":"error","message":str} on failure (followed by empty complete)
     """
     start_time = time.time()
@@ -38,40 +40,62 @@ def read_telemetry_data(file_path):
             _emit({"type": COMPLETE_EVENT, "data": []})
             return
 
-        # Attempt to get total lines quickly (could be large; fallback if too big)
-        total_lines = 0
-        try:
-            with open(file_path, 'r', encoding='utf-8') as tf:
-                for _ in tf:
-                    total_lines += 1
-        except Exception:
-            total_lines = None  # Unknown
-
-        data = []
+        file_size = file_path_obj.stat().st_size
+        
+        chunk_size = 2000 # Send in chunks of 2000 lines
+        current_chunk = []
+        
         read_lines = 0
+        bytes_read = 0
         last_emit = 0.0
         progress_interval_sec = 0.1  # throttle progress events
-        emit_every_n = 200  # also emit every N lines regardless of time
 
         with open(file_path, 'r', encoding='utf-8') as f:
-            for line_number, line in enumerate(f, 1):
-                line = line.strip()
-                if line:
+            for line in f:
+                # Approximation of bytes read (utf-8 encoding might vary but this is close enough for progress)
+                line_len = len(line.encode('utf-8')) 
+                bytes_read += line_len
+                
+                line_stripped = line.strip()
+                if line_stripped:
                     try:
-                        data.append(json.loads(line))
-                    except json.JSONDecodeError as e:
-                        # Skip invalid JSON line but report once per issue
-                        _emit({"type": "warn", "line": line_number, "message": f"Invalid JSON: {e}"})
-                        continue
+                        obj = json.loads(line_stripped)
+                        current_chunk.append(obj)
+                    except json.JSONDecodeError:
+                        pass
+                
                 read_lines += 1
-                now = time.time()
-                if read_lines % emit_every_n == 0 or (now - last_emit) >= progress_interval_sec:
-                    _emit({"type": PROGRESS_EVENT, "read": read_lines, "total": total_lines})
-                    last_emit = now
+                
+                if len(current_chunk) >= chunk_size:
+                    _emit({"type": CHUNK_EVENT, "data": current_chunk})
+                    current_chunk = []
+                    
+                    now = time.time()
+                    if (now - last_emit) >= progress_interval_sec:
+                        _emit({
+                            "type": PROGRESS_EVENT, 
+                            "read": read_lines, 
+                            "total": None, 
+                            "bytesRead": bytes_read, 
+                            "totalBytes": file_size
+                        })
+                        last_emit = now
 
-        # Final progress emit (ensure UI sees 100%)
-        _emit({"type": PROGRESS_EVENT, "read": read_lines, "total": total_lines})
-        _emit({"type": COMPLETE_EVENT, "data": data, "elapsed_ms": int((time.time() - start_time) * 1000)})
+        # Emit remaining chunk
+        if current_chunk:
+            _emit({"type": CHUNK_EVENT, "data": current_chunk})
+
+        # Final progress
+        _emit({
+            "type": PROGRESS_EVENT, 
+            "read": read_lines, 
+            "total": None, 
+            "bytesRead": bytes_read, 
+            "totalBytes": file_size
+        })
+        
+        # Complete event with empty data (since we sent chunks)
+        _emit({"type": COMPLETE_EVENT, "data": [], "elapsed_ms": int((time.time() - start_time) * 1000)})
 
     except Exception as e:
         _emit({"type": ERROR_EVENT, "message": str(e)})

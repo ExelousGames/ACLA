@@ -1,5 +1,5 @@
 import { Prop, Schema, SchemaFactory } from "@nestjs/mongoose";
-import { Types } from "mongoose";
+import { Schema as MongooseSchema, Types } from "mongoose";
 
 //Each schema maps to a MongoDB collection and defines the shape of the documents within that collection
 //The @Schema() decorator marks a class as a schema definition. It maps our Cat class to a MongoDB collection of the same name, but with an additional “s” at the end - so the final mongo collection name will be cats
@@ -24,6 +24,9 @@ export class UserInfo {
     //We are referencing Permission schema here. each user can have multiple permissions
     @Prop({ type: [{ type: Types.ObjectId, ref: 'Permission' }] })
     permissions: Types.ObjectId[];
+
+    @Prop({ type: MongooseSchema.Types.Mixed, default: {} })
+    userSummary: Record<string, any>;
 
     @Prop({ default: true })
     isActive: boolean;

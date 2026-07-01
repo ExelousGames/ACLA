@@ -1,8 +1,8 @@
-import { Body, Controller, Delete, Get, Request, Param, Post, Put } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Request, Param, Post, Put } from '@nestjs/common';
 import { AuthService } from 'src/shared/auth/auth.service';
 import { UserInfo } from '../../schemas/user-info.schema';
 import { UserInfoService } from './user-info.service';
-import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto, UpdateUserPasswordDto, UserProfileDto } from 'src/dto/user.dto';
+import { CreateUserInfoDto, UpdateUserPermissionsDto, UpdateUserRolesDto, UpdateUserPasswordDto, UserProfileDto, UserSummaryDto } from 'src/dto/user.dto';
 import {
     Auth,
     LocalAuth,
@@ -12,11 +12,16 @@ import {
     RequireAllRoles
 } from '../../common/decorators/auth.decorator';
 import { PermissionAction, PermissionResource } from '../../schemas/permission.schema';
+import { UserSummaryAnalysisService } from './user-summary-analysis.service';
 
 @Controller('userinfo')
 export class UserInfoController {
 
-    constructor(private userinfoService: UserInfoService, private authService: AuthService) { }
+    constructor(
+        private userinfoService: UserInfoService,
+        private authService: AuthService,
+        private userSummaryAnalysisService: UserSummaryAnalysisService,
+    ) { }
 
     //We are using LocalStrategy located in auth folder. our passport local strategy has a default name of 'local',
     //we refers the name in 'AuthGuard'
@@ -143,6 +148,39 @@ export class UserInfoController {
             userId: req.user?.userId,
             username: req.user?.username
         };
+    }
+
+    @JwtAuth()
+    @Get('summary')
+    async getUserSummary(@Request() req): Promise<UserSummaryDto> {
+        const summary = await this.userinfoService.getUserSummary(req.user.userId);
+        return { summary };
+    }
+
+    @JwtAuth()
+    @Put('summary')
+    async updateUserSummary(@Request() req, @Body() userSummaryDto: UserSummaryDto): Promise<UserSummaryDto> {
+        if (userSummaryDto.summary === undefined) {
+            throw new BadRequestException('summary is required');
+        }
+
+        const summary = await this.userinfoService.updateUserSummary(req.user.userId, userSummaryDto.summary);
+        return { summary };
+    }
+
+    @JwtAuth()
+    @Post('summary/analyze-all')
+    async analyzeAllUserSessions(
+        @Request() req,
+        @Body() body: { sessionLimit?: number } = {},
+    ): Promise<Record<string, any>> {
+        return this.userSummaryAnalysisService.enqueue(req.user.userId, body.sessionLimit);
+    }
+
+    @JwtAuth()
+    @Get('summary/analyze-all/status')
+    async getAnalyzeAllUserSessionsStatus(@Request() req): Promise<Record<string, any> | null> {
+        return this.userSummaryAnalysisService.getStatus(req.user.userId);
     }
 
     // Example: Only users with 'admin' role can access this endpoint

@@ -1,65 +1,75 @@
-import React, { useState, useRef, useEffect, useContext } from 'react';
-import { Box, Button, Card, Flex, Text, TextField, ScrollArea, Separator, Badge, Spinner, IconButton } from '@radix-ui/themes';
-import { PaperPlaneIcon, ChatBubbleIcon, PersonIcon } from '@radix-ui/react-icons';
-import apiService from 'services/api.service';
+import React, { useState, useRef, useEffect, useContext, useMemo, useCallback } from 'react';
 import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
-import { visualizationController } from 'views/lap-analysis/visualization';
+import { useAiLabels } from 'contexts/AiLabelsContext';
+import { useUserSummary } from 'contexts/UserSummaryContext';
+import { useCircuitMaps } from 'contexts/CircuitMapsContext';
+import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
+import apiService from 'services/api.service';
+import {
+    createAiCommandRegistry,
+    getFrontendToolSchemasForSessionMode,
+    QUERY_SCOPE_SCHEMA,
+    startAgentRuntime,
+} from './ai-command-registry';
+import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
+import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/types';
+import type {
+    AgentSessionInfo,
+    AgentSessionMode,
+    AgentSessionStartResult,
+    AgentSessionStopResult,
+    LivePerformanceAnalystState,
+    OpportunityAgentState,
+} from './ai-command-registry';
+import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
+import { AiMapDisplayPayload } from './AiMapToolDisplay';
+import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
+import BaselineProgressDisplay from './BaselineProgressDisplay';
+import ProcedurePlanDisplay from './ProcedurePlanDisplay';
+import {
+    advanceProcedurePlan,
+    buildProcedurePlan,
+    getProcedurePlanUpdateKey,
+    isProcedurePlanClearEvent,
+    isProcedurePlanOptOutRequest,
+    isProcedurePlanStartEvent,
+    type ProcedurePlan,
+    type ProcedurePlanRequest,
+} from './ai-chat-plan';
+import {
+    BaselineCollectionTracker,
+} from './BaselineCollectionTracker';
+import LiveRangeTracker, {
+    type LiveRangeTrackerHandle,
+    type LiveRangeTrackerState,
+} from './LiveRangeTracker';
+import { useBaselineCollectionRuntime } from './BaselineCollectionRuntime';
+import {
+    getToolEnvelopeError,
+    isToolOutputEnvelope,
+    type ToolOutputEnvelope,
+} from './ai-tool-base';
 
-// Type declarations for Web Speech API
-declare global {
-    interface Window {
-        SpeechRecognition: typeof SpeechRecognition;
-        webkitSpeechRecognition: typeof SpeechRecognition;
+type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
+
+const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
+type Emotion = typeof EMOTIONS[number];
+const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
+const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
+const MAX_OVERTAKE_AGENT_ROWS = 300;
+const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
+
+function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
+    const m = text.match(EMOTION_TAG_RE);
+    if (m && (EMOTIONS as readonly string[]).includes(m[1])) {
+        return { emotion: m[1] as Emotion, cleanText: text.slice(m[0].length) };
     }
+    return { emotion: null, cleanText: text };
 }
 
-interface SpeechRecognition extends EventTarget {
-    continuous: boolean;
-    interimResults: boolean;
-    lang: string;
-    start(): void;
-    stop(): void;
-    abort(): void;
-    onstart: ((this: SpeechRecognition, ev: Event) => any) | null;
-    onend: ((this: SpeechRecognition, ev: Event) => any) | null;
-    onresult: ((this: SpeechRecognition, ev: SpeechRecognitionEvent) => any) | null;
-    onerror: ((this: SpeechRecognition, ev: SpeechRecognitionErrorEvent) => any) | null;
-}
-
-interface SpeechRecognitionEvent extends Event {
-    results: SpeechRecognitionResultList;
-    resultIndex: number;
-}
-
-interface SpeechRecognitionErrorEvent extends Event {
-    error: string;
-    message: string;
-}
-
-interface SpeechRecognitionResultList {
-    length: number;
-    item(index: number): SpeechRecognitionResult;
-    [index: number]: SpeechRecognitionResult;
-}
-
-interface SpeechRecognitionResult {
-    length: number;
-    item(index: number): SpeechRecognitionAlternative;
-    [index: number]: SpeechRecognitionAlternative;
-    isFinal: boolean;
-}
-
-interface SpeechRecognitionAlternative {
-    transcript: string;
-    confidence: number;
-}
-
-declare var SpeechRecognition: {
-    prototype: SpeechRecognition;
-    new(): SpeechRecognition;
-};
+type MessageKind = AiChatDisplayMessage['kind'];
 
 interface Message {
     id: string;
@@ -67,342 +77,1471 @@ interface Message {
     isUser: boolean;
     timestamp: Date;
     isLoading?: boolean;
-    functionCalls?: FunctionCall[];
-    functionResults?: FunctionResult[];
-    isVoiceInput?: boolean;
+    /** Default 'chat' — text bubble. 'tool' renders the distinct
+     *  tool-call box (different background + readable title). */
+    kind?: MessageKind;
+    /** Tool-call metadata when kind === 'tool'. */
+    tool?: {
+        runId?: string;
+        name: string;
+        title: string;
+        status: 'started' | 'completed';
+        ok?: boolean;
+        error?: string | null;
+        result?: unknown;
+    };
+    mapDisplay?: AiMapDisplayPayload;
 }
 
-interface FunctionCall {
-    function: string;
-    arguments: Record<string, any>;
-}
-
-interface FunctionResult {
-    function: string;
-    arguments: Record<string, any>;
-    result: any;
-    success: boolean;
-    error?: string;
-}
 
 interface AiChatProps {
     sessionId?: string;
+    sessionMode?: AiChatSessionMode;
     title?: string;
 }
 
-const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) => {
-    const [messages, setMessages] = useState<Message[]>([]);
+const formatClock = (d: Date) =>
+    `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+
+const OverlayIcon = ({ size = 14 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect x="1.5" y="3.5" width="9" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+        <rect x="5.5" y="6.5" width="9" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.3" fill="currentColor" fillOpacity="0.18" />
+    </svg>
+);
+
+const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
+    if (!telemetry) return undefined;
+    const keys = [
+        'Graphics_normalized_car_position',
+        'graphics_normalized_car_position',
+        'normalized_car_position',
+        'car_position',
+    ];
+    for (const key of keys) {
+        if (key in telemetry) {
+            const value = Number(telemetry[key]);
+            if (Number.isFinite(value)) return value;
+        }
+    }
+    return undefined;
+};
+
+const crossedNormalizedPosition = (
+    lastPos: number,
+    currentPos: number,
+    targetPos: number,
+): boolean => {
+    if (currentPos >= lastPos) {
+        return lastPos < targetPos && currentPos >= targetPos;
+    }
+    return lastPos < targetPos || currentPos >= targetPos;
+};
+
+const normalizeCornerNameForKnowledge = (cornerName: string): string =>
+    cornerName.replace(/^T\d+\s+/i, '').trim();
+
+const getTrackNameForGuide = (
+    liveData: Record<string, any>,
+): string | undefined =>
+    typeof liveData.Static_track === 'string' && liveData.Static_track
+        ? liveData.Static_track
+        : undefined;
+
+const countSummaryTracks = (summary: Record<string, any>): number => {
+    const sessionAnalysis = summary?.sessionAnalysis;
+    const practiceTracks = sessionAnalysis?.practice?.tracks;
+    const analyzerTracks = sessionAnalysis?.tracks;
+    const rootTracks = summary?.tracks;
+    const tracks = practiceTracks || analyzerTracks || rootTracks;
+    return tracks && typeof tracks === 'object' && !Array.isArray(tracks)
+        ? Object.keys(tracks).length
+        : 0;
+};
+
+const getContextDescription = (sessionMode: AiChatSessionMode): string => {
+    if (sessionMode === 'recorded') {
+        return 'Selected recorded session with saved playback, AI analysis, and session metadata.';
+    }
+    if (sessionMode === 'user_summary') {
+        return 'User summary view with aggregate practice history.';
+    }
+    return 'Live session with streaming telemetry, event log, and live coaching context.';
+};
+
+const createClientSessionId = (prefix: string): string =>
+    `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+);
+
+const getBaselineToolEventResult = (envelope: ToolOutputEnvelope) => {
+    const payload = isRecord(envelope.payload) ? envelope.payload : {};
+    const rawProgress = Number(payload.progress_percent ?? envelope.progress_percent ?? 0);
+
+    return {
+        progress_percent: Number.isFinite(rawProgress) ? rawProgress : 0,
+        status: typeof payload.status === 'string' ? payload.status : envelope.status,
+        car: typeof payload.car === 'string' ? payload.car : null,
+        track: typeof payload.track === 'string' ? payload.track : null,
+        message: typeof payload.message === 'string'
+            ? payload.message
+            : envelope.message ?? 'Baseline collection updated.',
+    };
+};
+
+const getPlanToolArguments = (request: ProcedurePlanRequest): Record<string, unknown> => {
+    if (!isRecord(request.payload)) return {};
+    const nested = request.payload.arguments || request.payload.args || request.payload.parameters;
+    return isRecord(nested)
+        ? nested
+        : request.payload;
+};
+
+const getPlanToolRunKey = (
+    plan: ProcedurePlan,
+    request: ProcedurePlanRequest,
+): string => `${plan.currentStep}:${request.name || ''}:${JSON.stringify(request.payload ?? null)}`;
+
+const getAgentDisplayName = (agentMode?: AgentSessionMode | null): string => {
+    if (agentMode === 'track_guide') return 'Track Guide';
+    if (agentMode === 'overtake') return 'Overtake';
+    if (agentMode === 'live_performance_analyst') return 'Live Analyst';
+    return 'Agent';
+};
+
+const findTriggeredCorners = (
+    corners: CornerDefinition[],
+    lastPos: number,
+    currentPos: number,
+): CornerDefinition[] =>
+    corners.filter((corner) => crossedNormalizedPosition(lastPos, currentPos, corner.guideFrom ?? corner.from));
+
+const extractCornerKnowledgeMessage = (raw: any): string | null => {
+    if (raw?.status === 'unsupported' && typeof raw.message === 'string') {
+        return raw.message;
+    }
+
+    const knowledge = raw?.track_knowledge;
+    if (!knowledge || knowledge.error) return null;
+
+    const detail = knowledge.corner_detail;
+
+    if (typeof detail === 'string' && detail.trim()) {
+        return detail.trim();
+    }
+    if (Array.isArray(detail) && detail.length > 0) {
+        return detail.join('. ');
+    }
+    return null;
+};
+
+const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title = "AI Assistant" }) => {
+    const [mainMessages, setMainMessages] = useState<Message[]>([]);
+    const [agentMessages, setAgentMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
+    const mainClientSessionIdRef = useRef<string>(createClientSessionId('main'));
+    const [activeAgentSession, setActiveAgentSession] = useState<AgentSessionInfo | null>(null);
 
     // Loading and mode states
-    const [isLoading, setIsLoading] = useState(false);
+    const [isLoading] = useState(false);
     const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
-
-    // Simplified recording state management
-    const [recording, setRecording] = useState({
-        error: null as string | null,
-        transcript: '',
-        // idle means not actively recording or processing, completed means recording completed and finished processing.
-        status: 'inactive' as 'inactive' | 'initing' | 'idle' | 'listening' | 'detected' | 'processing' | 'completed' | 'error'
-    });
+    const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
+    const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlan | null>(null);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
-    const [speechRecognition, setSpeechRecognition] = useState<SpeechRecognition | null>(null);
-    const [electronSpeechAvailable, setElectronSpeechAvailable] = useState(false);
+    const [floatingChatOpen, setFloatingChatOpen] = useState(false);
 
-    // Text-to-speech states
-    const [speechSynthesis, setSpeechSynthesis] = useState<SpeechSynthesis | null>(null);
-    const [isTextToSpeechEnabled, setIsTextToSpeechEnabled] = useState(false);
-    const [isSpeaking, setIsSpeaking] = useState(false);
-    const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
-    const [availableVoices, setAvailableVoices] = useState<SpeechSynthesisVoice[]>([]);
-
-    // Helper functions for recording state management
-    const isUninteractableState = recording.status === 'initing' || recording.status === 'processing' || recording.status === 'listening';
-    const isRecordingCompleted = recording.status === 'completed';
-    const isVoiceActive = recording.status === 'listening' || recording.status === 'initing' || recording.status === 'processing';
-
-
-    const updateRecording = (updates: Partial<typeof recording>) => {
-        console.log('🎤 Recording state update:', updates);
-        setRecording(prev => {
-            const newState = { ...prev, ...updates };
-            console.log('🎤 New recording state:', newState);
-            return newState;
-        });
-    };
-
-    const resetRecording = (clearTranscript = false) => {
-        setRecording(prev => ({
-            ...prev,
-            error: null,
-            status: 'idle',
-            ...(clearTranscript && {
-                transcript: ''
-            })
-        }));
-    };
-
-    const startRecording = () => {
-        console.log('🎤 Starting recording - setting status to listening');
-        updateRecording({
-            error: null,
-            status: 'initing',
-            transcript: ''
-        });
-    };
-
-    const stopRecording = (transcript = '') => {
-        console.log('🎤 Stopping recording - setting status to idle');
-        updateRecording({
-            status: 'idle',
-            transcript
-        });
-    };
-
-    const setRecordingError = (error: string) => {
-        console.log('🎤 Recording error:', error);
-        updateRecording({
-            error,
-            status: 'error'
-        });
-    };
-
-    // Simplified refs - combine timeouts into one object
-    const timeoutRefs = useRef({
-        silence: null as NodeJS.Timeout | null,
-        voice: null as NodeJS.Timeout | null
+    // Emotion GIF settings — keyed by Emotion, values are data URLs.
+    const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
+        try { return JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}'); }
+        catch { return {}; }
     });
-    const lastStartAttemptRef = useRef<number>(0);
-    const messagesEndRef = useRef<HTMLDivElement>(null);
-    const inputRef = useRef<HTMLInputElement>(null);
-    const speechQueueRef = useRef<string[]>([]);
-    const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+    const [showEmoteSettings, setShowEmoteSettings] = useState(false);
 
+    // Live clock for the transcript header (matches landing page vibe).
+    const [clock, setClock] = useState(formatClock(new Date()));
+    useEffect(() => {
+        const id = setInterval(() => setClock(formatClock(new Date())), 1000);
+        return () => clearInterval(id);
+    }, []);
+
+    const messagesEndRef = useRef<HTMLDivElement>(null);
+    const messagesScrollRef = useRef<HTMLDivElement>(null);
+    const shouldAutoScrollMessagesRef = useRef(true);
     const analysisContext = useContext(AnalysisContext);
+    const {
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+    } = useUserSummary();
+    const {
+        getLabelName,
+        getCategoryLabels,
+    } = useAiLabels();
+    const {
+        getCircuitMapById,
+        getCircuitMapByTrack,
+    } = useCircuitMaps();
+    const opportunityForecastRowsRef = useRef<Record<string, any>[]>([]);
+    const opportunityAgentStateRef = useRef<OpportunityAgentState>({
+        intervalId: null,
+        inFlight: false,
+        lastAlertKey: null,
+        lastAlertAt: 0,
+    });
+    const livePerformanceAnalystStateRef = useRef<LivePerformanceAnalystState>({
+        intervalId: null,
+        inFlight: false,
+        enabled: false,
+        lastObservationKey: null,
+        lastObservationAt: 0,
+        lastSpokenAt: 0,
+    });
+    const trackGuideLastPosRef = useRef<number | undefined>(undefined);
+    const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
+    const trackGuideRunTokenRef = useRef(0);
+    const activeAgentTagsRef = useRef<string[]>([]);
+    const activeAgentSessionRef = useRef<AgentSessionInfo | null>(null);
+    const agentVoiceStopRef = useRef<() => void>(() => undefined);
+    const mainVoiceStopRef = useRef<() => void>(() => undefined);
+    const agentAutoStartSessionIdRef = useRef<string | null>(null);
+    const procedurePlanRef = useRef<ProcedurePlan | null>(null);
+    const procedurePlanOptedOutRef = useRef(false);
+    const planToolRunsRef = useRef<Set<string>>(new Set());
+    const lastBroadcastedProcedurePlanKeyRef = useRef<string | null>(null);
+    const liveRangeTrackerRef = useRef<LiveRangeTrackerHandle | null>(null);
+
+    useEffect(() => {
+        activeAgentSessionRef.current = activeAgentSession;
+    }, [activeAgentSession]);
+
+    const messages = activeAgentSession ? agentMessages : mainMessages;
+    const setFocusedMessages = useCallback((
+        updater: React.SetStateAction<Message[]>,
+    ) => {
+        if (activeAgentSessionRef.current) {
+            setAgentMessages(updater);
+            return;
+        }
+        setMainMessages(updater);
+    }, []);
+    const setMessages = setFocusedMessages;
+
+    useEffect(() => {
+        const liveData = analysisContext?.liveData as Record<string, any> | null;
+        if (!liveData || Object.keys(liveData).length === 0) {
+            return;
+        }
+        opportunityForecastRowsRef.current = [
+            ...opportunityForecastRowsRef.current,
+            liveData,
+        ].slice(-MAX_OVERTAKE_AGENT_ROWS);
+    }, [analysisContext?.liveData]);
 
     // Utility function to generate unique message IDs
-    const generateUniqueId = (prefix: string = 'msg') => {
-        return `${prefix}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    };
+    const generateUniqueId = useCallback((prefix: string = 'msg') => {
+        return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+    }, []);
 
-    // Simplified utility functions
-    const resetRecordingState = (clearTranscripts = false) => {
-        resetRecording(clearTranscripts);
-    };
+    const broadcastPillPayload = useCallback((
+        payload: {
+            kind: 'message' | 'tool' | 'baseline' | 'map' | 'plan' | 'range';
+            text?: string;
+            data?: unknown;
+            emotion?: Emotion | null;
+            tags?: string[];
+            name?: string;
+        },
+    ) => {
+        try {
+            localStorage.setItem('acla-pill-msg', JSON.stringify({
+                ...payload,
+                ts: Date.now(),
+                emotion: payload.emotion ?? undefined,
+                tags: payload.tags ?? activeAgentTagsRef.current,
+            }));
+        } catch { /* ignore storage write failures */ }
+    }, []);
 
-    const clearAllTimeouts = () => {
-        Object.values(timeoutRefs.current).forEach(timeout => {
-            if (timeout) {
-                clearTimeout(timeout);
+    const broadcastPillMessage = useCallback((text: string, options: { emotion?: Emotion | null; tags?: string[]; name?: string } = {}) => {
+        try {
+            const pillText = text
+                .replace(/\*\*(.*?)\*\*/g, '$1')
+                .replace(/\*(.*?)\*/g, '$1')
+                .replace(/`(.*?)`/g, '$1')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 280);
+            if (pillText || options.tags !== undefined) {
+                broadcastPillPayload({
+                    kind: 'message',
+                    text: pillText,
+                    name: options.name,
+                    emotion: options.emotion ?? undefined,
+                    tags: options.tags ?? activeAgentTagsRef.current,
+                });
             }
-        });
-        timeoutRefs.current = { silence: null, voice: null };
-    };
+        } catch { /* ignore storage write failures */ }
+    }, [broadcastPillPayload]);
 
-    const addStatusMessage = (type: string, content: string) => {
+    const displayMapInChat = useCallback((display: AiMapDisplayPayload) => {
+        const fallbackText = display.status === 'unavailable'
+            ? 'Map is not available'
+            : display.note || display.title || display.map?.circuit_name || 'Map';
+        broadcastPillPayload({
+            kind: 'map',
+            text: fallbackText,
+            data: display,
+        });
+        setMessages(prev => prev
+            .filter(m => !m.isLoading)
+            .concat({
+                id: generateUniqueId('map'),
+                content: fallbackText,
+                isUser: false,
+                timestamp: new Date(),
+                kind: 'chat',
+                mapDisplay: display,
+            }));
+    }, [broadcastPillPayload, generateUniqueId, setMessages]);
+
+    const setAgentTag = useCallback((tag: string, active: boolean) => {
+        const current = activeAgentTagsRef.current;
+        const next = active
+            ? Array.from(new Set([...current, tag]))
+            : current.filter((item) => item !== tag);
+        if (next.length === current.length && next.every((item, index) => item === current[index])) {
+            return;
+        }
+        activeAgentTagsRef.current = next;
+        broadcastPillMessage('', { tags: next });
+    }, [broadcastPillMessage]);
+
+    useEffect(() => {
+        activeAgentTagsRef.current = [];
+        broadcastPillMessage('', { tags: [] });
+    }, [broadcastPillMessage]);
+
+    const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
+        if (!enabled) {
+            trackGuideRunTokenRef.current += 1;
+        }
+        setTrackGuideEnabled(enabled);
+    }, []);
+
+    const setLivePerformanceAnalystAgentEnabled = useCallback((enabled: boolean) => {
+        livePerformanceAnalystStateRef.current.enabled = enabled;
+        setLivePerformanceAnalystEnabled(enabled);
+    }, []);
+
+    const setProcedurePlan = useCallback((plan: ProcedurePlan | null) => {
+        if (!plan || isProcedurePlanStartEvent(plan.sourceEvent)) {
+            planToolRunsRef.current.clear();
+        }
+        procedurePlanRef.current = plan;
+        setProcedurePlanState(plan);
+        if (!plan) {
+            lastBroadcastedProcedurePlanKeyRef.current = null;
+            return;
+        }
+
+        const planKey = getProcedurePlanUpdateKey(plan);
+        if (planKey === lastBroadcastedProcedurePlanKeyRef.current) {
+            return;
+        }
+        lastBroadcastedProcedurePlanKeyRef.current = planKey;
+
+        broadcastPillPayload({
+            kind: 'plan',
+            text: plan.requests[plan.currentStep]?.title || plan.goal,
+            data: plan,
+        });
+    }, [broadcastPillPayload]);
+
+    const advanceProcedurePlanStep = useCallback((reason?: string) => {
+        const current = procedurePlanRef.current;
+        if (!current) {
+            return { status: 'unavailable', error: 'no_procedure_plan' };
+        }
+
+        const result = advanceProcedurePlan(current, reason);
+        setProcedurePlan(result.plan);
+
+        return result;
+    }, [setProcedurePlan]);
+
+    const clearProcedurePlan = useCallback(() => {
+        setProcedurePlan(null);
+    }, [setProcedurePlan]);
+
+    const setProcedurePlanRequestStatus = useCallback((
+        index: number,
+        status: ProcedurePlanRequest['status'],
+        detail?: string,
+    ) => {
+        const current = procedurePlanRef.current;
+        if (!current || !current.requests[index]) return;
+
+        const next: ProcedurePlan = {
+            ...current,
+            requests: current.requests.map((request, requestIndex) => (
+                requestIndex === index
+                    ? {
+                        ...request,
+                        status,
+                        detail: detail ?? request.detail,
+                    }
+                    : request
+            )),
+        };
+        setProcedurePlan(next);
+    }, [setProcedurePlan]);
+
+    const optOutProcedurePlan = useCallback(() => {
+        procedurePlanOptedOutRef.current = true;
+        setProcedurePlan(null);
+    }, [setProcedurePlan]);
+
+    // Racing engineer voice conversation. The hook owns mic, WS, and
+    // audio playback; it ALSO multiplexes the tool-relay text channel on
+    // the same WS — frontend tools listed below are reachable from the
+    // backend LLM via JSON text frames.
+    const handleSessionVoiceEvent = useCallback((event: VoiceEvent, target: 'main' | 'agent') => {
+        const setTargetMessages = target === 'agent' ? setAgentMessages : setMainMessages;
+        if (event.kind === 'user_transcript') {
+            if (isProcedurePlanOptOutRequest(event.text)) {
+                optOutProcedurePlan();
+            }
+            setTargetMessages(prev => prev
+                .filter(m => !m.isLoading)
+                .concat({
+                    id: generateUniqueId('user-voice'),
+                    content: event.text,
+                    isUser: true,
+                    timestamp: new Date(),
+                    kind: 'chat',
+                }));
+            return;
+        }
+        if (event.kind === 'assistant_transcript') {
+            // Backend strips the [emotion] tag before sending the transcript,
+            // but fall back to frontend parsing for robustness.
+            const { emotion, cleanText } = event.emotion
+                ? { emotion: event.emotion as Emotion, cleanText: event.text }
+                : extractEmotion(event.text);
+            setTargetMessages(prev => prev
+                .filter(m => !m.isLoading)
+                .concat({
+                    id: generateUniqueId('ai-voice'),
+                    content: cleanText,
+                    isUser: false,
+                    timestamp: new Date(),
+                    kind: 'chat',
+                }));
+            // Broadcast to the floating pill overlay (separate Electron window).
+            // 'storage' events fire in other same-origin BrowserWindows but not
+            // in the window that writes — perfect one-way fanout.
+            broadcastPillMessage(cleanText, {
+                emotion,
+                name: target === 'agent' ? getAgentDisplayName(activeAgentSessionRef.current?.agentMode) : undefined,
+            });
+            return;
+        }
+        if (event.kind === 'observation') {
+            const sourceEvent = typeof event.data.event === 'string' ? event.data.event : undefined;
+            if (isProcedurePlanClearEvent(sourceEvent)) {
+                clearProcedurePlan();
+                return;
+            }
+            const plan = buildProcedurePlan(event.data);
+            if (plan) {
+                if (isProcedurePlanStartEvent(plan.sourceEvent)) {
+                    procedurePlanOptedOutRef.current = false;
+                }
+                if (procedurePlanOptedOutRef.current) {
+                    return;
+                }
+                setProcedurePlan(plan);
+            }
+            return;
+        }
+        if (event.kind === 'tool_event') {
+            console.log(`[ai-tool] tool_event ${event.status}`, {
+                name: event.name,
+                title: event.title,
+                status: event.status,
+                arguments: event.arguments,
+                result: event.result,
+                ok: event.ok,
+                error: event.error,
+            });
+            broadcastPillPayload({
+                kind: 'tool',
+                text: event.title,
+                data: {
+                    runId: event.runId,
+                    name: event.name,
+                    title: event.title,
+                    status: event.status,
+                    ok: event.ok,
+                    error: event.error ?? null,
+                    result: event.result,
+                },
+            });
+            setTargetMessages(prev => {
+                for (let i = prev.length - 1; i >= 0; i--) {
+                    const m = prev[i];
+                    const matchesRun = event.runId
+                        ? m.tool?.runId === event.runId
+                        : m.tool?.name === event.name;
+                    if (m.kind === 'tool' && m.tool && matchesRun) {
+                        const next = prev.slice();
+                        next[i] = {
+                            ...m,
+                            content: event.title,
+                            tool: {
+                                ...m.tool,
+                                title: event.title,
+                                status: event.status,
+                                ok: event.ok,
+                                error: event.error ?? null,
+                                result: event.result,
+                            },
+                        };
+                        return next;
+                    }
+                }
+                return prev.concat({
+                    id: generateUniqueId('tool'),
+                    content: event.title,
+                    isUser: false,
+                    timestamp: new Date(),
+                    kind: 'tool',
+                    tool: {
+                        runId: event.runId,
+                        name: event.name,
+                        title: event.title,
+                        status: event.status,
+                        ok: event.ok,
+                        error: event.error ?? null,
+                        result: event.result,
+                    },
+                });
+            });
+            return;
+        }
+    }, [
+        broadcastPillMessage,
+        broadcastPillPayload,
+        clearProcedurePlan,
+        generateUniqueId,
+        optOutProcedurePlan,
+        setProcedurePlan,
+    ]);
+
+    const handleMainVoiceEvent = useCallback((event: VoiceEvent) => {
+        handleSessionVoiceEvent(event, 'main');
+    }, [handleSessionVoiceEvent]);
+
+    const handleAgentVoiceEvent = useCallback((event: VoiceEvent) => {
+        handleSessionVoiceEvent(event, 'agent');
+    }, [handleSessionVoiceEvent]);
+
+    const handleBaselineToolOutput = useCallback((envelope: ToolOutputEnvelope) => {
+        const envelopeError = getToolEnvelopeError(envelope);
+        if (!envelope.final && !envelopeError) {
+            return;
+        }
+
+        handleSessionVoiceEvent({
+            kind: 'tool_event',
+            runId: envelope.run_id,
+            name: envelope.tool_name,
+            title: envelope.message || 'Collect live baseline',
+            status: envelope.final ? 'completed' : 'started',
+            result: getBaselineToolEventResult(envelope),
+            ok: !envelopeError,
+            error: envelopeError,
+        }, activeAgentSessionRef.current ? 'agent' : 'main');
+    }, [handleSessionVoiceEvent]);
+
+    const baselineCollectionRuntime = useBaselineCollectionRuntime({
+        onToolOutput: handleBaselineToolOutput,
+    });
+    const baselineCollectionEnabled = baselineCollectionRuntime.enabled;
+    const baselineCollectionTag = baselineCollectionRuntime.tag;
+    const setBaselineCollectionEnabled = baselineCollectionRuntime.setEnabled;
+    const getBaselineCollectionTag = baselineCollectionRuntime.getTag;
+    const getBaselineLapRecord = baselineCollectionRuntime.getLapRecord;
+    const getBaselineToolOutput = baselineCollectionRuntime.getToolOutput;
+    const subscribeBaselineToolOutput = baselineCollectionRuntime.subscribeToolOutput;
+    const restartBaselineCollection = baselineCollectionRuntime.restart;
+
+    useEffect(() => {
+        if (!baselineCollectionEnabled || !baselineCollectionTag) return;
+        broadcastPillPayload({
+            kind: 'baseline',
+            text: baselineCollectionTag.detail,
+            data: baselineCollectionTag,
+        });
+    }, [baselineCollectionEnabled, baselineCollectionTag, broadcastPillPayload]);
+
+    const handleLiveRangeTrackerStateChange = useCallback((tracker: LiveRangeTrackerState | null) => {
+        if (!tracker || tracker.ranges.length === 0) return;
+        broadcastPillPayload({
+            kind: 'range',
+            text: `${tracker.ranges.length} tracked range${tracker.ranges.length === 1 ? '' : 's'}`,
+            data: tracker,
+        });
+    }, [broadcastPillPayload]);
+
+    const startTrackGuide = useCallback(() => {
+        trackGuideRunTokenRef.current += 1;
+        setTrackGuideEnabled(true);
+    }, []);
+
+    const resolvedSessionId = sessionId || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId;
+
+    const aiSessionContext = useMemo(() => {
+        const selectedSession = analysisContext?.sessionSelected as Record<string, any> | null;
+        const liveData = analysisContext?.liveData as Record<string, any> | null;
+        const liveDataKeys = liveData ? Object.keys(liveData).length : 0;
+        const summaryTrackCount = countSummaryTracks(userSummary || {});
+        const summaryLoaded = !userSummaryLoading && !userSummaryError && summaryTrackCount > 0;
+        const recordedAiAnalysis = analysisContext?.recordedAiAnalysis;
+        const recordedAnalysisResult = recordedAiAnalysis?.result;
+        const recordedPlaybackSummary = analysisContext?.recordedPlaybackSummary;
+        const liveSnapshot = sessionMode === 'live'
+            ? analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.()
+            : null;
+        const activeAgentModes = [
+            ...(TrackGuideEnabled ? ['track_guide'] : []),
+            ...(opportunityAgentStateRef.current.intervalId ? ['overtake'] : []),
+            ...(livePerformanceAnalystEnabled ? ['live_performance_analyst'] : []),
+        ];
+
+        return {
+            assistant_surface: 'lap_analysis_ai_chat',
+            conversation_role: 'main',
+            client_session_id: mainClientSessionIdRef.current,
+            active_agent_session: activeAgentSession
+                ? {
+                    client_session_id: activeAgentSession.clientSessionId,
+                    agent_mode: activeAgentSession.agentMode,
+                    status: activeAgentSession.status,
+                }
+                : null,
+            context_kind: sessionMode,
+            context_description: getContextDescription(sessionMode),
+            session_mode: sessionMode,
+            session_id: resolvedSessionId || null,
+            active_tab: analysisContext?.activeTab || null,
+            selected_map_id: analysisContext?.mapSelected || selectedSession?.map || null,
+            agent_modes: {
+                active: activeAgentModes,
+            },
+            procedure_plan: procedurePlan
+                ? {
+                    goal: procedurePlan.goal,
+                    requests: procedurePlan.requests,
+                    current_request: procedurePlan.currentStep,
+                    current_request_text: procedurePlan.requests[procedurePlan.currentStep]?.title || null,
+                }
+                : null,
+            live_session_type: liveSnapshot?.live_session_type ?? 'unknown',
+            track: liveSnapshot?.track || liveData?.Static_track || null,
+            car: liveSnapshot?.car || liveData?.Static_car_model || null,
+            current_lap: liveSnapshot?.current_lap ?? null,
+            normalized_position: liveSnapshot?.normalized_position ?? getNormalizedCarPos(liveData),
+            completed_laps: liveSnapshot?.completed_laps ?? null,
+            sample_count: liveSnapshot?.sample_count ?? 0,
+            capabilities: {
+                live_session: sessionMode === 'live',
+                recorded_session: sessionMode === 'recorded',
+                user_summary: summaryLoaded,
+            },
+            selected_session: selectedSession
+                ? {
+                    id: selectedSession.SessionId || null,
+                    name: selectedSession.session_name || null,
+                    map: selectedSession.map || null,
+                    car: selectedSession.car || null,
+                }
+                : null,
+            telemetry: {
+                live_available: sessionMode === 'live' && Boolean(analysisContext?.sessionIntelligence),
+                latest_sample_present: liveDataKeys > 0,
+                latest_sample_key_count: liveDataKeys,
+                live_status: analysisContext?.TelemetryDataLiveStatus ?? null,
+                live_snapshot: liveSnapshot,
+                recorded_file_loaded: Boolean(analysisContext?.recordedSessionDataFilePath),
+                recorded_sample_count: recordedPlaybackSummary?.sampleCount
+                    ?? analysisContext?.recordedTelemetryDataCount
+                    ?? 0,
+            },
+            recorded_session: {
+                ai_analysis: {
+                    status: recordedAiAnalysis?.status || 'idle',
+                    message: recordedAiAnalysis?.message || null,
+                    session_id: recordedAiAnalysis?.sessionId || null,
+                    segment_count: recordedAnalysisResult?.segment_count ?? 0,
+                    samples_analyzed: recordedAnalysisResult?.samples_analyzed ?? 0,
+                    result_ready: Boolean(recordedAnalysisResult),
+                },
+                playback: {
+                    session_id: recordedPlaybackSummary?.sessionId || null,
+                    sample_count: recordedPlaybackSummary?.sampleCount ?? 0,
+                    duration_seconds: recordedPlaybackSummary?.durationSeconds ?? 0,
+                    playback_index: recordedPlaybackSummary?.playbackIndex ?? 0,
+                    playback_time_seconds: recordedPlaybackSummary?.playbackTimeSeconds ?? 0,
+                    active_segment: recordedPlaybackSummary?.activeSegment ?? null,
+                },
+            },
+            user_summary: {
+                loaded: summaryLoaded,
+                loading: userSummaryLoading,
+                error: userSummaryError || null,
+                track_count: summaryTrackCount,
+            },
+        };
+    }, [
+        analysisContext?.TelemetryDataLiveStatus,
+        analysisContext?.activeTab,
+        analysisContext?.liveData,
+        analysisContext?.mapSelected,
+        analysisContext?.recordedAiAnalysis,
+        analysisContext?.recordedPlaybackSummary,
+        analysisContext?.recordedSessionDataFilePath,
+        analysisContext?.recordedTelemetryDataCount,
+        analysisContext?.sessionIntelligence,
+        analysisContext?.sessionSelected,
+        activeAgentSession,
+        livePerformanceAnalystEnabled,
+        procedurePlan,
+        resolvedSessionId,
+        sessionMode,
+        TrackGuideEnabled,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
+    ]);
+
+    const frontendTools = useMemo(
+        () => getFrontendToolSchemasForSessionMode(sessionMode, { conversationRole: 'main' }),
+        [sessionMode],
+    );
+    const agentFrontendTools = useMemo(
+        () => getFrontendToolSchemasForSessionMode(sessionMode, {
+            conversationRole: 'agent',
+            agentMode: activeAgentSession?.agentMode,
+        }),
+        [activeAgentSession?.agentMode, sessionMode],
+    );
+    const inactiveAgentFrontendTools = useMemo(() => [], []);
+    const inactiveAgentToolHandlers = useMemo(() => ({}), []);
+    const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
+    const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
+    const getMissingLiveRangeTrackerResult = useCallback(() => ({
+        status: 'error' as const,
+        tracker: null,
+        error: 'live_range_tracker_unavailable',
+        message: 'Live range tracker UI is not mounted.',
+    }), []);
+    const setLiveRangeTracker = useCallback((args: Record<string, unknown>) => (
+        liveRangeTrackerRef.current?.setTracker(args) ?? getMissingLiveRangeTrackerResult()
+    ), [getMissingLiveRangeTrackerResult]);
+    const updateLiveRangeTracker = useCallback((args: Record<string, unknown>) => (
+        liveRangeTrackerRef.current?.updateTracker(args) ?? getMissingLiveRangeTrackerResult()
+    ), [getMissingLiveRangeTrackerResult]);
+    const getLiveRangeTracker = useCallback(() => (
+        liveRangeTrackerRef.current?.getTracker() ?? getMissingLiveRangeTrackerResult()
+    ), [getMissingLiveRangeTrackerResult]);
+
+    const resetLivePerformanceAnalystRuntime = useCallback(() => {
+        const analystAgent = livePerformanceAnalystStateRef.current;
+        if (analystAgent.intervalId) {
+            clearInterval(analystAgent.intervalId);
+        }
+        analystAgent.intervalId = null;
+        analystAgent.inFlight = false;
+        analystAgent.enabled = false;
+        analystAgent.lastObservationKey = null;
+        analystAgent.lastObservationAt = 0;
+        analystAgent.lastSpokenAt = 0;
+        analystAgent.analysisSessionId = null;
+        analysisContext?.sessionIntelligence?.clearFocusSection?.();
+        setLivePerformanceAnalystAgentEnabled(false);
+        setBaselineCollectionEnabled(false);
+        procedurePlanOptedOutRef.current = false;
+        clearProcedurePlan();
+    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, setBaselineCollectionEnabled, setLivePerformanceAnalystAgentEnabled]);
+
+    const resetOvertakeRuntime = useCallback(() => {
+        const opportunityAgent = opportunityAgentStateRef.current;
+        if (opportunityAgent.intervalId) {
+            clearInterval(opportunityAgent.intervalId);
+        }
+        opportunityAgent.intervalId = null;
+        opportunityAgent.inFlight = false;
+        opportunityAgent.lastAlertKey = null;
+        opportunityAgent.lastAlertAt = 0;
+    }, []);
+
+    const resetAgentRuntimes = useCallback(() => {
+        setTrackGuideAgentEnabled(false);
+        resetOvertakeRuntime();
+        resetLivePerformanceAnalystRuntime();
+    }, [
+        resetLivePerformanceAnalystRuntime,
+        resetOvertakeRuntime,
+        setTrackGuideAgentEnabled,
+    ]);
+
+    const startAgentSession = useCallback((
+        agentMode: AgentSessionMode,
+        args: Record<string, any> = {},
+    ): AgentSessionStartResult => {
+        if (sessionMode !== 'live') {
+            return {
+                status: 'error',
+                conversation_role: 'agent',
+                agent_mode: agentMode,
+                error: 'non_live_context_live_tools_unavailable',
+                message: 'Agent sessions are only available in live session mode.',
+            };
+        }
+
+        const existing = activeAgentSessionRef.current;
+        if (existing && existing.agentMode === agentMode && existing.status !== 'stopped') {
+            if (existing.status === 'error') {
+                agentAutoStartSessionIdRef.current = null;
+            }
+            setActiveAgentSession({ ...existing, status: existing.status === 'error' ? 'starting' : existing.status });
+            return {
+                status: 'already_running',
+                conversation_role: 'agent',
+                agent_mode: agentMode,
+                agent_session_id: existing.clientSessionId,
+                parent_client_session_id: existing.parentClientSessionId,
+            };
+        }
+
+        agentVoiceStopRef.current?.();
+        mainVoiceStopRef.current?.();
+        resetAgentRuntimes();
+
+        const clientSessionId = createClientSessionId(`agent-${agentMode}`);
+        const nextSession: AgentSessionInfo = {
+            sessionRole: 'agent',
+            clientSessionId,
+            parentClientSessionId: mainClientSessionIdRef.current,
+            agentMode,
+            status: 'starting',
+        };
+        activeAgentSessionRef.current = nextSession;
+        setActiveAgentSession(nextSession);
+        setAgentMessages([]);
+        setAgentTag(getAgentDisplayName(agentMode), true);
+        broadcastPillMessage('', {
+            name: getAgentDisplayName(agentMode),
+            tags: [getAgentDisplayName(agentMode)],
+        });
+
+        return {
+            status: 'started',
+            conversation_role: 'agent',
+            agent_mode: agentMode,
+            agent_session_id: clientSessionId,
+            parent_client_session_id: mainClientSessionIdRef.current,
+        };
+    }, [
+        broadcastPillMessage,
+        resetAgentRuntimes,
+        sessionMode,
+        setAgentTag,
+    ]);
+
+    const stopAgentSession = useCallback((
+        agentSessionId?: string | null,
+    ): AgentSessionStopResult => {
+        const current = activeAgentSessionRef.current;
+        if (!current || (agentSessionId && current.clientSessionId !== agentSessionId)) {
+            return {
+                status: 'not_running',
+                conversation_role: 'agent',
+                agent_mode: current?.agentMode,
+                agent_session_id: agentSessionId || current?.clientSessionId || null,
+            };
+        }
+
+        setActiveAgentSession({ ...current, status: 'stopping' });
+        agentVoiceStopRef.current?.();
+        resetAgentRuntimes();
+        setActiveAgentSession(null);
+        activeAgentSessionRef.current = null;
+        agentAutoStartSessionIdRef.current = null;
+        setAgentTag(getAgentDisplayName(current.agentMode), false);
+        broadcastPillMessage('', { tags: [] });
+
+        return {
+            status: 'stopped',
+            conversation_role: 'agent',
+            agent_mode: current.agentMode,
+            agent_session_id: current.clientSessionId,
+        };
+    }, [broadcastPillMessage, resetAgentRuntimes, setAgentTag]);
+
+    const toolHandlers = useMemo(() => createAiCommandRegistry({
+        sessionId: resolvedSessionId,
+        sessionMode,
+        conversationRole: 'main',
+        activeAgentSession,
+        analysisContext,
+        sessionIntelligence: analysisContext?.sessionIntelligence,
+        opportunityAgentState: opportunityAgentStateRef.current,
+        livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
+        startTrackGuide,
+        setTrackGuideEnabled: setTrackGuideAgentEnabled,
+        setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
+        setBaselineCollectionEnabled,
+        restartBaselineCollection,
+        advanceProcedurePlanStep,
+        getBaselineCollectionTag,
+        getBaselineLapRecord,
+        getBaselineToolOutput,
+        subscribeBaselineToolOutput,
+        getProcedurePlan,
+        clearProcedurePlan,
+        setProcedurePlan,
+        setAgentTagActive: setAgentTag,
+        startAgentSession,
+        stopAgentSession,
+        getOpportunityTelemetryRows,
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+        getLabelName,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        setLiveRangeTracker,
+        updateLiveRangeTracker,
+        getLiveRangeTracker,
+        displayMap: displayMapInChat,
+    }), [
+        activeAgentSession,
+        advanceProcedurePlanStep,
+        analysisContext,
+        clearProcedurePlan,
+        displayMapInChat,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        getLiveRangeTracker,
+        getLabelName,
+        getOpportunityTelemetryRows,
+        getBaselineCollectionTag,
+        getBaselineLapRecord,
+        getBaselineToolOutput,
+        subscribeBaselineToolOutput,
+        getProcedurePlan,
+        restartBaselineCollection,
+        resolvedSessionId,
+        sessionMode,
+        setAgentTag,
+        setBaselineCollectionEnabled,
+        setLiveRangeTracker,
+        setLivePerformanceAnalystAgentEnabled,
+        setProcedurePlan,
+        setTrackGuideAgentEnabled,
+        startAgentSession,
+        startTrackGuide,
+        stopAgentSession,
+        updateLiveRangeTracker,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
+    ]);
+
+    const voiceConversation = useVoiceConversation({
+        sessionId: resolvedSessionId,
+        conversationRole: 'main',
+        clientSessionId: mainClientSessionIdRef.current,
+        sessionContext: aiSessionContext,
+        onEvent: handleMainVoiceEvent,
+        frontendTools,
+        querySchemaScope: QUERY_SCOPE_SCHEMA,
+        toolHandlers,
+    });
+    const agentSessionContext = useMemo(() => (
+        activeAgentSession
+            ? {
+                ...aiSessionContext,
+                assistant_surface: 'lap_analysis_ai_chat_agent',
+                conversation_role: 'agent',
+                client_session_id: activeAgentSession.clientSessionId,
+                parent_client_session_id: activeAgentSession.parentClientSessionId,
+                agent_mode: activeAgentSession.agentMode,
+                agent_session: {
+                    client_session_id: activeAgentSession.clientSessionId,
+                    parent_client_session_id: activeAgentSession.parentClientSessionId,
+                    agent_mode: activeAgentSession.agentMode,
+                    status: activeAgentSession.status,
+                },
+            }
+            : null
+    ), [activeAgentSession, aiSessionContext]);
+
+    const agentToolHandlers = useMemo(() => createAiCommandRegistry({
+        sessionId: resolvedSessionId,
+        sessionMode,
+        conversationRole: 'agent',
+        activeAgentSession,
+        analysisContext,
+        sessionIntelligence: analysisContext?.sessionIntelligence,
+        opportunityAgentState: opportunityAgentStateRef.current,
+        livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
+        startTrackGuide,
+        setTrackGuideEnabled: setTrackGuideAgentEnabled,
+        setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
+        setBaselineCollectionEnabled,
+        restartBaselineCollection,
+        advanceProcedurePlanStep,
+        getBaselineCollectionTag,
+        getBaselineLapRecord,
+        getBaselineToolOutput,
+        subscribeBaselineToolOutput,
+        getProcedurePlan,
+        clearProcedurePlan,
+        setProcedurePlan,
+        setAgentTagActive: setAgentTag,
+        stopAgentSession,
+        getOpportunityTelemetryRows,
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+        getLabelName,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        setLiveRangeTracker,
+        updateLiveRangeTracker,
+        getLiveRangeTracker,
+        displayMap: displayMapInChat,
+    }), [
+        activeAgentSession,
+        advanceProcedurePlanStep,
+        analysisContext,
+        clearProcedurePlan,
+        displayMapInChat,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        getLiveRangeTracker,
+        getLabelName,
+        getOpportunityTelemetryRows,
+        getBaselineCollectionTag,
+        getBaselineLapRecord,
+        getBaselineToolOutput,
+        subscribeBaselineToolOutput,
+        getProcedurePlan,
+        restartBaselineCollection,
+        resolvedSessionId,
+        sessionMode,
+        setAgentTag,
+        setBaselineCollectionEnabled,
+        setLiveRangeTracker,
+        setLivePerformanceAnalystAgentEnabled,
+        setProcedurePlan,
+        setTrackGuideAgentEnabled,
+        startTrackGuide,
+        stopAgentSession,
+        updateLiveRangeTracker,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
+    ]);
+
+    const agentVoiceConversation = useVoiceConversation({
+        sessionId: resolvedSessionId,
+        conversationRole: 'agent',
+        clientSessionId: activeAgentSession?.clientSessionId,
+        parentClientSessionId: activeAgentSession?.parentClientSessionId,
+        agentMode: activeAgentSession?.agentMode,
+        sessionContext: agentSessionContext || undefined,
+        onEvent: handleAgentVoiceEvent,
+        frontendTools: activeAgentSession ? agentFrontendTools : inactiveAgentFrontendTools,
+        querySchemaScope: QUERY_SCOPE_SCHEMA,
+        toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
+    });
+    const sendAgentVoiceObservation = agentVoiceConversation.sendObservation;
+
+    useEffect(() => {
+        mainVoiceStopRef.current = voiceConversation.stop;
+    }, [voiceConversation.stop]);
+
+    useEffect(() => {
+        agentVoiceStopRef.current = agentVoiceConversation.stop;
+    }, [agentVoiceConversation.stop]);
+
+    const activeAgentSessionId = activeAgentSession?.clientSessionId;
+    const activeAgentSessionStatus = activeAgentSession?.status;
+    const agentVoiceState = agentVoiceConversation.state;
+    const startAgentVoiceConversation = agentVoiceConversation.start;
+
+    useEffect(() => {
+        if (!activeAgentSessionId) {
+            agentAutoStartSessionIdRef.current = null;
+            return;
+        }
+        if (activeAgentSessionStatus !== 'starting') return;
+        if (agentVoiceState !== 'idle' && agentVoiceState !== 'error') return;
+        if (agentAutoStartSessionIdRef.current === activeAgentSessionId) return;
+
+        agentAutoStartSessionIdRef.current = activeAgentSessionId;
+        startAgentVoiceConversation().catch((err) => {
+            console.error('Agent voice conversation failed to start:', err);
+            setActiveAgentSession((current) => current
+                ? { ...current, status: 'error' }
+                : current);
+        });
+    }, [
+        activeAgentSessionId,
+        activeAgentSessionStatus,
+        agentVoiceState,
+        startAgentVoiceConversation,
+    ]);
+
+    useEffect(() => {
+        if (!activeAgentSession) return;
+        if (agentVoiceConversation.state !== 'listening' && agentVoiceConversation.state !== 'speaking') return;
+        if (activeAgentSession.status === 'starting') {
+            const next = { ...activeAgentSession, status: 'active' as const };
+            activeAgentSessionRef.current = next;
+            setActiveAgentSession(next);
+        }
+        const shouldStartRuntime = (
+            (activeAgentSession.agentMode === 'track_guide' && !TrackGuideEnabled)
+            || (activeAgentSession.agentMode === 'overtake' && !opportunityAgentStateRef.current.intervalId)
+            || (activeAgentSession.agentMode === 'live_performance_analyst' && !livePerformanceAnalystStateRef.current.enabled)
+        );
+        if (!shouldStartRuntime) return;
+
+        window.setTimeout(() => {
+            const current = activeAgentSessionRef.current;
+            if (!current || current.clientSessionId !== activeAgentSession.clientSessionId) return;
+            if (
+                (current.agentMode === 'track_guide' && TrackGuideEnabled)
+                || (current.agentMode === 'overtake' && opportunityAgentStateRef.current.intervalId)
+                || (current.agentMode === 'live_performance_analyst' && livePerformanceAnalystStateRef.current.enabled)
+            ) {
+                return;
+            }
+
+            void startAgentRuntime(current.agentMode, {
+                sessionId: resolvedSessionId,
+                sessionMode,
+                conversationRole: 'agent',
+                activeAgentSession: current,
+                analysisContext,
+                sessionIntelligence: analysisContext?.sessionIntelligence,
+                opportunityAgentState: opportunityAgentStateRef.current,
+                livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
+                startTrackGuide,
+                setTrackGuideEnabled: setTrackGuideAgentEnabled,
+                setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
+                setBaselineCollectionEnabled,
+                restartBaselineCollection,
+                advanceProcedurePlanStep,
+                getBaselineCollectionTag,
+                getBaselineLapRecord,
+                getBaselineToolOutput,
+                subscribeBaselineToolOutput,
+                getProcedurePlan,
+                clearProcedurePlan,
+                setProcedurePlan,
+                setAgentTagActive: setAgentTag,
+                stopAgentSession,
+                getOpportunityTelemetryRows,
+                userSummary,
+                userSummaryLoading,
+                userSummaryError,
+                getLabelName,
+                getCategoryLabels,
+                getCircuitMapById,
+                getCircuitMapByTrack,
+                setLiveRangeTracker,
+                updateLiveRangeTracker,
+                getLiveRangeTracker,
+                displayMap: displayMapInChat,
+            }, {}, {
+                sendObservation: agentVoiceConversation.sendObservation,
+            });
+        }, 0);
+    }, [
+        activeAgentSession,
+        TrackGuideEnabled,
+        advanceProcedurePlanStep,
+        analysisContext,
+        clearProcedurePlan,
+        displayMapInChat,
+        agentVoiceConversation.state,
+        agentVoiceConversation.sendObservation,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        getLiveRangeTracker,
+        getLabelName,
+        getOpportunityTelemetryRows,
+        getBaselineCollectionTag,
+        getBaselineLapRecord,
+        getBaselineToolOutput,
+        subscribeBaselineToolOutput,
+        getProcedurePlan,
+        restartBaselineCollection,
+        resolvedSessionId,
+        sessionMode,
+        setAgentTag,
+        setBaselineCollectionEnabled,
+        setLiveRangeTracker,
+        setLivePerformanceAnalystAgentEnabled,
+        setProcedurePlan,
+        setTrackGuideAgentEnabled,
+        startTrackGuide,
+        stopAgentSession,
+        updateLiveRangeTracker,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
+    ]);
+
+    useEffect(() => {
+        const sessionIntelligence = analysisContext?.sessionIntelligence;
+        if (sessionMode !== 'live' || !sessionIntelligence || !activeAgentSession) return;
+
+        return sessionIntelligence.onLiveAnalystObservation((observation) => {
+            if (!livePerformanceAnalystStateRef.current.enabled) return;
+            sendAgentVoiceObservation(observation);
+        });
+    }, [
+        activeAgentSession,
+        analysisContext?.sessionIntelligence,
+        sendAgentVoiceObservation,
+        sessionMode,
+    ]);
+
+    const activeVoiceConversation = activeAgentSession ? agentVoiceConversation : voiceConversation;
+    const vState = activeVoiceConversation.state;
+    const voiceActive = vState === 'listening' || vState === 'speaking';
+    const micDisabled = activeVoiceConversation.micDisabled;
+    const sendActiveVoiceObservation = activeVoiceConversation.sendObservation;
+    const sendLiveRangeTrackerObservation = useCallback((
+        data: Record<string, unknown>,
+    ) => sendActiveVoiceObservation(data), [sendActiveVoiceObservation]);
+    const canOpenFloatingChat = typeof window !== 'undefined'
+        && Boolean((window as any).electronAPI?.openFloatingChat);
+
+    useEffect(() => {
+        if (!procedurePlan) return;
+        const request = procedurePlan.requests[procedurePlan.currentStep];
+        if (!request || request.type !== 'tool_call' || !request.name) return;
+        if (request.status === 'complete' || request.status === 'failed' || request.status === 'skipped') return;
+        if (activeVoiceConversation.state !== 'listening' && activeVoiceConversation.state !== 'speaking') return;
+
+        const runKey = getPlanToolRunKey(procedurePlan, request);
+        if (planToolRunsRef.current.has(runKey)) return;
+        planToolRunsRef.current.add(runKey);
+
+        const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        const requestIndex = procedurePlan.currentStep;
+        setProcedurePlanRequestStatus(requestIndex, 'running');
+
+        activeVoiceConversation.executeToolCall({
+            id: runId,
+            name: request.name,
+            title: request.title,
+            arguments: getPlanToolArguments(request),
+        }).then((result) => {
+            if (!result) {
+                planToolRunsRef.current.delete(runKey);
+                setProcedurePlanRequestStatus(
+                    requestIndex,
+                    'blocked',
+                    'Start the active AI session before running this tool.',
+                );
+                return;
+            }
+            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
+            if (!envelope) {
+                setProcedurePlanRequestStatus(
+                    requestIndex,
+                    'failed',
+                    'Tool did not return a standard output envelope.',
+                );
+                return;
+            }
+            const envelopeError = getToolEnvelopeError(envelope);
+            if (!result.ok || envelopeError) {
+                setProcedurePlanRequestStatus(
+                    requestIndex,
+                    'failed',
+                    result.error || envelopeError || 'Tool failed.',
+                );
+                return;
+            }
+            if (!envelope.final) {
+                setProcedurePlanRequestStatus(
+                    requestIndex,
+                    'blocked',
+                    envelope.message || 'Tool has not produced a final output yet.',
+                );
+                return;
+            }
+            advanceProcedurePlanStep(envelope.message || `tool ${request.name} completed`);
+        }).catch((error) => {
+            setProcedurePlanRequestStatus(
+                requestIndex,
+                'failed',
+                (error as Error)?.message || 'Tool failed.',
+            );
+        });
+    }, [
+        activeVoiceConversation,
+        activeVoiceConversation.state,
+        advanceProcedurePlanStep,
+        procedurePlan,
+        setProcedurePlanRequestStatus,
+    ]);
+
+    useEffect(() => {
+        if (sessionMode === 'live') {
+            return;
+        }
+
+        if (activeAgentSessionRef.current) {
+            stopAgentSession(activeAgentSessionRef.current.clientSessionId);
+        }
+        setTrackGuideAgentEnabled(false);
+        const opportunityAgent = opportunityAgentStateRef.current;
+        if (opportunityAgent.intervalId) {
+            clearInterval(opportunityAgent.intervalId);
+            opportunityAgent.intervalId = null;
+        }
+        opportunityAgent.inFlight = false;
+        opportunityAgent.lastAlertKey = null;
+        opportunityAgent.lastAlertAt = 0;
+        const analystAgent = livePerformanceAnalystStateRef.current;
+        if (analystAgent.intervalId) {
+            clearInterval(analystAgent.intervalId);
+            analystAgent.intervalId = null;
+        }
+        analystAgent.inFlight = false;
+        analystAgent.enabled = false;
+        analystAgent.lastObservationKey = null;
+        analystAgent.lastObservationAt = 0;
+        analystAgent.lastSpokenAt = 0;
+        setLivePerformanceAnalystAgentEnabled(false);
+        setBaselineCollectionEnabled(false);
+        procedurePlanOptedOutRef.current = false;
+        clearProcedurePlan();
+        setAgentTag('Track Guide', false);
+        setAgentTag('Overtake', false);
+        setAgentTag('Live Analyst', false);
+    }, [clearProcedurePlan, sessionMode, setAgentTag, setBaselineCollectionEnabled, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled, stopAgentSession]);
+
+    const toggleFloatingChat = useCallback(async () => {
+        const api = (window as any).electronAPI;
+        if (!api?.openFloatingChat) return;
+        try {
+            if (floatingChatOpen) {
+                await api.closeFloatingChat();
+                setFloatingChatOpen(false);
+            } else {
+                await api.openFloatingChat();
+                setFloatingChatOpen(true);
+            }
+        } catch (err) {
+            console.warn('Failed to toggle floating chat:', err);
+        }
+    }, [floatingChatOpen]);
+
+    useEffect(() => {
+        const api = (window as any).electronAPI;
+        if (!api?.onFloatingChatClosed) return;
+        const unsubscribe = api.onFloatingChatClosed(() => setFloatingChatOpen(false));
+        if (api.isFloatingChatOpen) {
+            api.isFloatingChatOpen()
+                .then((open: boolean) => setFloatingChatOpen(Boolean(open)))
+                .catch(() => undefined);
+        }
+        return () => { try { unsubscribe?.(); } catch { /* ignore */ } };
+    }, []);
+
+    const addGuidanceMessage = useCallback((content: string) => {
         const message: Message = {
-            id: generateUniqueId(type),
-            content: `🎤 ${content}`,
+            id: generateUniqueId('guidance'),
+            content,
             isUser: false,
             timestamp: new Date()
         };
         setMessages(prev => [...prev, message]);
-    };
+    }, [generateUniqueId, setMessages]);
 
-    const handleRecordingError = (error: string, shouldShowMessage = true) => {
-        setRecordingError(error);
-        clearAllTimeouts();
-        if (shouldShowMessage) {
-            addStatusMessage('error', error);
-        }
-    };
+    const scrollToBottom = useCallback((behavior: ScrollBehavior = "smooth") => {
+        messagesEndRef.current?.scrollIntoView({ behavior });
+    }, []);
 
-    const scrollToBottom = () => {
-        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
+    const handleMessagesScroll = useCallback(() => {
+        const el = messagesScrollRef.current;
+        if (!el) return;
+        const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+        shouldAutoScrollMessagesRef.current = distanceFromBottom <= TRANSCRIPT_BOTTOM_THRESHOLD_PX;
+    }, []);
 
-    // Text-to-speech utility functions
-    const initializeTextToSpeech = () => {
-        if ('speechSynthesis' in window) {
-            const synth = window.speechSynthesis;
-            setSpeechSynthesis(synth);
-
-            // Load available voices
-            const loadVoices = () => {
-                const voices = synth.getVoices();
-                setAvailableVoices(voices);
-
-                // Select a default voice (prefer English voices)
-                const englishVoices = voices.filter(voice => voice.lang.startsWith('en'));
-                const defaultVoice = englishVoices.find(voice => voice.default) ||
-                    englishVoices.find(voice => voice.name.includes('Google')) ||
-                    englishVoices[0] ||
-                    voices[0];
-
-                if (defaultVoice) {
-                    setSelectedVoice(defaultVoice);
-                }
-            };
-
-            // Load voices immediately
-            loadVoices();
-
-            // Also load voices when they become available (some browsers load them asynchronously)
-            synth.onvoiceschanged = loadVoices;
-
-            return true;
-        }
-        return false;
-    };
-
-    const speakText = (text: string, options?: { isGuidance?: boolean }) => {
-        if (!speechSynthesis || !isTextToSpeechEnabled || !selectedVoice) {
-            return;
-        }
-
-        // Stop current speech if speaking
-        if (isSpeaking) {
-            speechSynthesis.cancel();
-            setIsSpeaking(false);
-        }
-
-        // Clean text for better speech synthesis
-        const cleanText = text
-            .replace(/\*\*(.*?)\*\*/g, '$1') // Remove markdown bold
-            .replace(/\*(.*?)\*/g, '$1') // Remove markdown italic
-            .replace(/```[\s\S]*?```/g, '') // Remove code blocks
-            .replace(/`(.*?)`/g, '$1') // Remove inline code
-            .replace(/https?:\/\/[^\s]+/g, 'link') // Replace URLs with "link"
-            .replace(/[#]+\s*/g, '') // Remove markdown headers
-            .replace(/\n+/g, '. ') // Replace newlines with periods
-            .replace(/\s+/g, ' ') // Normalize whitespace
-            .trim();
-
-        if (!cleanText) return;
-
-        // Split very long messages into chunks to prevent browser timeout
-        const maxLength = 200;
-        if (cleanText.length > maxLength) {
-            const sentences = cleanText.split(/[.!?]+/).filter(s => s.trim().length > 0);
-            let currentChunk = '';
-
-            for (const sentence of sentences) {
-                if ((currentChunk + sentence).length > maxLength && currentChunk) {
-                    speechQueueRef.current.push(currentChunk.trim() + '.');
-                    currentChunk = sentence;
-                } else {
-                    currentChunk += (currentChunk ? '. ' : '') + sentence;
-                }
-            }
-
-            if (currentChunk.trim()) {
-                speechQueueRef.current.push(currentChunk.trim() + '.');
-            }
-
-            // Start speaking the first chunk
-            if (speechQueueRef.current.length > 0) {
-                const firstChunk = speechQueueRef.current.shift();
-                if (firstChunk) {
-                    speakText(firstChunk, options);
-                }
-            }
-            return;
-        }
-
-        const utterance = new SpeechSynthesisUtterance(cleanText);
-        currentUtteranceRef.current = utterance;
-
-        utterance.voice = selectedVoice;
-        utterance.rate = options?.isGuidance ? 1.1 : 0.9; // Slightly faster for guidance
-        utterance.pitch = options?.isGuidance ? 1.1 : 1.0; // Slightly higher pitch for guidance
-        utterance.volume = 0.8;
-
-        utterance.onstart = () => {
-            setIsSpeaking(true);
+    const handleGifUpload = (emotion: Emotion, e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = reader.result as string;
+            const next = { ...emotionGifs, [emotion]: dataUrl };
+            setEmotionGifs(next);
+            localStorage.setItem(EMOTION_GIFS_KEY, JSON.stringify(next));
         };
-
-        utterance.onend = () => {
-            setIsSpeaking(false);
-            currentUtteranceRef.current = null;
-
-            // Process queue if there are more messages
-            if (speechQueueRef.current.length > 0) {
-                const nextText = speechQueueRef.current.shift();
-                if (nextText) {
-                    setTimeout(() => speakText(nextText), 100);
-                }
-            }
-        };
-
-        utterance.onerror = (event) => {
-            console.error('Speech synthesis error:', event);
-            setIsSpeaking(false);
-            currentUtteranceRef.current = null;
-        };
-
-        speechSynthesis.speak(utterance);
+        reader.readAsDataURL(file);
+        e.target.value = '';
     };
 
-    const stopSpeaking = () => {
-        if (speechSynthesis && isSpeaking) {
-            speechSynthesis.cancel();
-            setIsSpeaking(false);
-            currentUtteranceRef.current = null;
-            speechQueueRef.current = []; // Clear queue
-        }
-    };
-
-    const toggleTextToSpeech = () => {
-        const newState = !isTextToSpeechEnabled;
-        setIsTextToSpeechEnabled(newState);
-
-        // Save preference to localStorage
-        localStorage.setItem('ai-chat-tts-enabled', newState.toString());
-
-        if (!newState && isSpeaking) {
-            stopSpeaking();
-        }
-
-        // Show feedback message
-        const statusMessage = newState ? 'Text-to-speech enabled' : 'Text-to-speech disabled';
-        addStatusMessage('tts-toggle', statusMessage);
+    const handleGifRemove = (emotion: Emotion) => {
+        const next = { ...emotionGifs };
+        delete next[emotion];
+        setEmotionGifs(next);
+        localStorage.setItem(EMOTION_GIFS_KEY, JSON.stringify(next));
     };
 
     useEffect(() => {
-        scrollToBottom();
-    }, [messages]);
-
-    // Automatically speak new AI messages
-    useEffect(() => {
-        if (!isTextToSpeechEnabled || messages.length === 0) return;
-
-        const lastMessage = messages[messages.length - 1];
-
-        // Only speak AI messages (not user messages) and not loading messages
-        if (!lastMessage.isUser && !lastMessage.isLoading && lastMessage.content) {
-            // Don't speak the welcome message on first load
-            if (lastMessage.id === 'welcome' && messages.length === 1) return;
-
-            // Determine if this is a guidance message
-            const isGuidanceMessage = lastMessage.id.includes('guidance');
-
-            // Add a small delay to ensure the message is rendered
-            setTimeout(() => {
-                speakText(lastMessage.content, { isGuidance: isGuidanceMessage });
-            }, 300);
+        if (shouldAutoScrollMessagesRef.current) {
+            scrollToBottom();
         }
-    }, [messages, isTextToSpeechEnabled]);
+    }, [messages, scrollToBottom]);
 
     // Listen for guidance messages from ImitationGuidanceChart
     const lastProcessedGuidanceRef = useRef<string>('');
     const lastGuidanceTimestampRef = useRef<number>(0);
     useEffect(() => {
+        if (!TrackGuideEnabled) {
+            if (analysisContext?.latestGuidanceMessage) {
+                lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
+            }
+            return;
+        }
+
         if (analysisContext?.latestGuidanceMessage &&
             analysisContext.latestGuidanceMessage !== lastProcessedGuidanceRef.current) {
 
-            // Throttle guidance messages to avoid spam (max 1 per 2 seconds)
             const now = Date.now();
             if (now - lastGuidanceTimestampRef.current < 2000) {
                 return;
@@ -418,42 +1557,81 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
             lastProcessedGuidanceRef.current = analysisContext.latestGuidanceMessage;
             lastGuidanceTimestampRef.current = now;
         }
-    }, [analysisContext?.latestGuidanceMessage]);
+    }, [analysisContext?.latestGuidanceMessage, generateUniqueId, setMessages, TrackGuideEnabled]);
 
     useEffect(() => {
-        // Add welcome message when component mounts
-        if (messages.length === 0) {
-            const welcomeMessage: Message = {
-                id: 'welcome',
-                content: sessionId
-                    ? "Hello! I'm your AI assistant. I can help you analyze your racing session data. What would you like to know?"
-                    : "Hello! I'm your AI assistant. How can I help you today?",
-                isUser: false,
-                timestamp: new Date()
-            };
-            setMessages([welcomeMessage]);
+        const liveData = analysisContext?.liveData as Record<string, any> | null;
+        if (!TrackGuideEnabled) {
+            trackGuideRunTokenRef.current += 1;
+            trackGuideLastPosRef.current = undefined;
+            trackGuideTriggeredRef.current.clear();
+            return;
         }
-    }, [sessionId, messages.length]);
+        if (!liveData || Object.keys(liveData).length === 0) return;
 
-    useEffect(() => {
-        const fetchImitationLearningGuidance = async () => {
-            if (!analysisContext?.liveData || !TrackGuideEnabled) return;
+        const currentPos = getNormalizedCarPos(liveData);
+        const lastPos = trackGuideLastPosRef.current;
+        if (currentPos === undefined) return;
+        trackGuideLastPosRef.current = currentPos;
+        if (lastPos === undefined) return;
 
-            try {
+        const trackName = getTrackNameForGuide(liveData);
+        if (!trackName) return;
 
-                // Handle the response here if needed
-            } catch (error) {
-                console.error('Error fetching imitation learning guidance:', error);
-            }
-        };
+        const triggeredCorners = findTriggeredCorners(
+            getCornersForTrack(trackName),
+            lastPos,
+            currentPos,
+        );
+        if (triggeredCorners.length === 0) return;
 
-        fetchImitationLearningGuidance();
-    }, [analysisContext?.liveData, TrackGuideEnabled]);
+        const lap = Number(
+            liveData.Graphics_completed_laps
+            ?? liveData.Graphics_completed_lap
+            ?? 0
+        );
+        triggeredCorners.forEach((triggeredCorner) => {
+            const triggerPosition = triggeredCorner.guideFrom ?? triggeredCorner.from;
+            const triggerKey = `${lap}:${triggerPosition}:${triggeredCorner.name}`;
+            if (trackGuideTriggeredRef.current.has(triggerKey)) return;
+
+            trackGuideTriggeredRef.current.add(triggerKey);
+            const guideToken = trackGuideRunTokenRef.current;
+
+            apiService.post('/racing-session/track-corner-knowledge', {
+                track_name: trackName,
+                corner_name: normalizeCornerNameForKnowledge(triggeredCorner.name),
+                normalized_position: triggerPosition,
+                trigger_position: triggerPosition,
+                current_telemetry: liveData,
+            }).then((response) => {
+                if (guideToken !== trackGuideRunTokenRef.current) return;
+                const message = extractCornerKnowledgeMessage(response.data);
+                if (message) {
+                    addGuidanceMessage(message);
+                }
+            }).catch((error) => {
+                if (guideToken !== trackGuideRunTokenRef.current) return;
+                const errorDetail = error?.data?.message || error?.data?.detail;
+                if (
+                    error?.status === 404
+                    && typeof errorDetail === 'string'
+                    && (
+                        errorDetail.includes('not in corpus')
+                        || (errorDetail.includes('corner') && errorDetail.includes('not found'))
+                    )
+                ) {
+                    addGuidanceMessage("Track guide doesn't support the current track right now.");
+                    return;
+                }
+                console.warn('Track guide agent knowledge request failed:', error);
+            });
+        });
+    }, [addGuidanceMessage, analysisContext?.liveData, TrackGuideEnabled]);
 
     // Auto-manage imitation guidance chart visibility
     useEffect(() => {
         if (!TrackGuideEnabled) {
-            // Remove all auto-managed imitation guidance charts when disabled
             const existingCharts = visualizationController.getCurrentInstances();
             existingCharts.forEach(chart => {
                 if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
@@ -461,16 +1639,24 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         action: 'remove',
                         id: chart.id
                     });
-                    console.log('Auto-manage: removed imitation guidance chart:', chart.id);
                 }
             });
         }
     }, [TrackGuideEnabled, sessionId]);
 
-    // Cleanup auto-managed charts when component unmounts
     useEffect(() => {
+        const opportunityAgent = opportunityAgentStateRef.current;
+        const analystAgent = livePerformanceAnalystStateRef.current;
         return () => {
-            // Remove auto-managed imitation guidance charts on unmount
+            if (opportunityAgent.intervalId) {
+                clearInterval(opportunityAgent.intervalId);
+                opportunityAgent.intervalId = null;
+            }
+            if (analystAgent.intervalId) {
+                clearInterval(analystAgent.intervalId);
+                analystAgent.intervalId = null;
+            }
+
             const existingCharts = visualizationController.getCurrentInstances();
             existingCharts.forEach(chart => {
                 if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
@@ -478,1311 +1664,413 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, title = "AI Assistant" }) =>
                         action: 'remove',
                         id: chart.id
                     });
-                    console.log('Cleanup: removed auto-managed imitation guidance chart:', chart.id);
                 }
             });
         };
     }, []);
 
-
-    // Initialize speech recognition
     useEffect(() => {
-        const currentEnvironment = detectEnvironment();
-        setEnvironment(currentEnvironment);
-
-        // Initialize text-to-speech
-        const ttsAvailable = initializeTextToSpeech();
-        if (ttsAvailable) {
-            console.log('Text-to-speech initialized successfully');
-
-            // Load saved TTS preference
-            const savedTtsEnabled = localStorage.getItem('ai-chat-tts-enabled');
-            if (savedTtsEnabled === 'true') {
-                setIsTextToSpeechEnabled(true);
-            }
-        } else {
-            console.warn('Text-to-speech not available in this environment');
-        }
-
-        let cleanup: (() => void) | undefined;
-
-        const initialize = async () => {
-            if (currentEnvironment === 'electron') {
-                // Check if Electron speech recognition is available
-                cleanup = await initializeElectronSpeechRecognition();
-            } else {
-                // Initialize web speech recognition for browser
-                initializeWebSpeechRecognition();
-            }
-        };
-
-        initialize().catch(error => {
-            console.error('Error initializing speech recognition:', error);
-        });
-
-        // Return cleanup function
-        return () => {
-            if (cleanup) {
-                cleanup();
-            }
-            // Clean up text-to-speech
-            stopSpeaking();
-        };
+        setEnvironment(detectEnvironment());
     }, []);
 
-    const initializeElectronSpeechRecognition = async () => {
-        try {
-            if (window.electronAPI && window.electronAPI.isSpeechRecognitionAvailable) {
-
-                // Check availability
-                const available = await window.electronAPI.isSpeechRecognitionAvailable();
-                setElectronSpeechAvailable(available);
-
-                if (available) {
-                    // Set up event listeners for speech recognition
-                    const statusUnsubscribe = window.electronAPI.onSpeechRecognitionStatus((status) => {
-                        console.log('Speech recognition status:', status);
-
-                        // Handle enhanced status updates
-                        if (status.status === 'listening') {
-                            updateRecording({ status: 'listening', error: null });
-
-                        } else if (status.status === 'speech_detected') {
-                            updateRecording({ status: 'detected', error: null });
-                        } else if (status.status === 'processing') {
-                            updateRecording({ status: 'processing', error: null });
-                        }
-                        else if (status.status === 'calibrating') {
-                            updateRecording({ status: 'initing', error: null });
-                        }
-                        else if (status.status === 'ready') {
-                            updateRecording({ status: 'idle', error: null });
-                        }
-                        else if (status.status === 'initing') {
-                            updateRecording({ status: 'initing', error: null });
-                        }
-                        else if (status.status === 'idle') {
-                            updateRecording({ status: 'idle', error: null });
-                        }
-
-                    });
-
-                    const completeUnsubscribe = window.electronAPI.onSpeechRecognitionComplete((result) => {
-                        console.log('Speech recognition complete:', result);
-                        handleElectronSpeechResult(result);
-                    });
-
-                    // Return cleanup function to be called in useEffect cleanup
-                    return () => {
-                        console.log('Cleaning up Electron speech recognition listeners');
-                        statusUnsubscribe();
-                        completeUnsubscribe();
-                    };
-                } else {
-                    console.warn('Electron speech recognition not available');
-                    return () => { }; // Return empty cleanup function
-                }
-            } else {
-                console.warn('Electron API not available');
-                return () => { }; // Return empty cleanup function
-            }
-        } catch (error) {
-            console.error('Error checking Electron speech recognition availability:', error);
-            setElectronSpeechAvailable(false);
-            return () => { }; // Return empty cleanup function
-        }
-    };
-
-    const handleElectronSpeechResult = (result: { success: boolean, transcript?: string, error?: string, method?: string, confidence?: number, enhanced?: boolean }) => {
-        resetRecording();
-        clearAllTimeouts();
-
-        if (result.success && result.transcript?.trim()) {
-            const transcript = cleanTranscript(result.transcript.trim());
-
-            if (transcript.length > 0) {
-                setInputValue(transcript);
-                updateRecording({ status: 'completed' });
-
-                // Show recognition quality feedback
-                if (result.enhanced && result.confidence !== undefined) {
-                    const qualityMessage = result.confidence > 0.8 ? 'High quality' :
-                        result.confidence > 0.6 ? 'Good quality' : 'Basic quality';
-                    const methodName = result.method === 'whisper' ? 'Whisper AI' :
-                        result.method === 'google' ? 'Google' :
-                            result.method === 'sphinx' ? 'Offline' : 'Unknown';
-
-                    addStatusMessage('quality', `${qualityMessage} recognition using ${methodName} (${Math.round((result.confidence || 0) * 100)}% confidence)`);
-                }
-
-                if (inputRef.current) {
-                    inputRef.current.focus();
-                }
-            } else {
-                addStatusMessage('empty-transcript', 'No speech detected or transcript was empty. Please try speaking more clearly.');
-            }
-        } else if (result.error) {
-            handleRecordingError(result.error + (result.enhanced ? ' (Enhanced mode)' : ''));
-        } else {
-            addStatusMessage('no-speech', 'Recording completed but no speech was detected. Please try again.');
-        }
-    };
-
-    const initializeWebSpeechRecognition = () => {
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-        if (!SpeechRecognition) {
-            console.warn('Speech recognition not supported in this browser');
-            return;
+    const handleSendMessage = async (override?: string) => {
+        const text = (override ?? inputValue).trim();
+        if (!text || isLoading) return;
+        if (isProcedurePlanOptOutRequest(text)) {
+            optOutProcedurePlan();
         }
 
-        const recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = true;
-        recognition.lang = 'en-US';
-
-        recognition.onstart = () => {
-            console.log('Voice recognition started');
-            updateRecording({
-                error: null,
-                transcript: ''
-            });
-        };
-
-        recognition.onresult = (event: SpeechRecognitionEvent) => {
-            let interim = '';
-            let final = '';
-
-            for (let i = event.resultIndex; i < event.results.length; i++) {
-                const result = event.results[i];
-                const transcript = result[0].transcript;
-
-                if (result.isFinal) {
-                    final += transcript;
-                } else {
-                    interim += transcript;
-                }
-            }
-
-            // Update the transcript in our recording state
-            const currentTranscript = recording.transcript + final;
-            updateRecording({
-                transcript: currentTranscript
-            });
-
-            if (final) {
-                if (timeoutRefs.current.silence) {
-                    clearTimeout(timeoutRefs.current.silence);
-                }
-
-                timeoutRefs.current.silence = setTimeout(() => {
-                    if (recognition && recording.status === 'listening') {
-                        recognition.stop();
-                    }
-                }, 2000);
-            }
-
-            const combinedTranscript = (currentTranscript + interim).trim();
-            setInputValue(combinedTranscript);
-        };
-
-        recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-            console.error('Voice recognition error:', event.error, event.message);
-            resetRecording(true);
-            clearAllTimeouts();
-
-            const errorMessages = {
-                'network': 'Network error: Please check your internet connection and try again.',
-                'not-allowed': 'Microphone access denied. Please allow microphone permissions and try again.',
-                'no-speech': 'No speech detected. Please speak clearly and try again.',
-                'audio-capture': 'Audio capture failed. Please check your microphone and try again.',
-                'service-not-allowed': 'Speech recognition service not allowed. Please check browser settings.',
-                'aborted': null // Don't show message for intentional aborts
-            };
-
-            const errorMessage = errorMessages[event.error as keyof typeof errorMessages] ||
-                `Voice recognition error: ${event.error}. Please try speaking more clearly.`;
-
-            if (errorMessage) {
-                handleRecordingError(errorMessage);
-            }
-        };
-
-        recognition.onend = () => {
-            console.log('Voice recognition ended');
-            const currentTranscript = cleanTranscript(recording.transcript.trim());
-            resetRecording();
-            clearAllTimeouts();
-
-            if (currentTranscript && currentTranscript.length > 0) {
-                setInputValue(currentTranscript);
-                updateRecording({ status: 'completed' });
-
-                setTimeout(() => {
-                    if (inputRef.current) {
-                        inputRef.current.focus();
-                        inputRef.current.setSelectionRange(currentTranscript.length, currentTranscript.length);
-                    }
-                }, 100);
-            } else {
-                addStatusMessage('no-speech-web', 'Recording completed but no clear speech was detected. Please try again.');
-            }
-        };
-
-        setSpeechRecognition(recognition);
-    };    // Cleanup effect
-    useEffect(() => {
-        return () => {
-
-            clearAllTimeouts();
-            try {
-                if (speechRecognition && (recording.status === 'listening' || recording.status === 'processing' || recording.status === 'initing')) {
-                    speechRecognition.abort();
-                }
-            } catch (error) {
-                console.warn('Error aborting speech recognition during cleanup:', error);
-            } finally {
-                resetRecording(true);
-            }
-
-            // Cleanup text-to-speech
-            stopSpeaking();
-        };
-    }, [speechRecognition, recording.status]);
-
-    const forceStopVoiceRecording = () => {
-        console.log('Force stopping voice recording...');
-        clearAllTimeouts();
-
-        try {
-            if (speechRecognition) {
-                speechRecognition.abort();
-            }
-            if (window.electronAPI?.stopSpeechRecognition) {
-                window.electronAPI.stopSpeechRecognition().catch(console.warn);
-            }
-        } catch (error) {
-            console.warn('Error during force stop:', error);
-        } finally {
-            resetRecording(true);
-        }
-    };
-
-    // Add keyboard shortcut to force stop recording (Escape key)
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Escape' && isUninteractableState) {
-                event.preventDefault();
-                forceStopVoiceRecording();
-                addStatusMessage('escape-stop', 'Voice recording stopped by Escape key.');
-            }
-            // Add keyboard shortcut to stop speech (Ctrl+Space or Cmd+Space)
-            if ((event.ctrlKey || event.metaKey) && event.code === 'Space' && isSpeaking) {
-                event.preventDefault();
-                stopSpeaking();
-                addStatusMessage('speech-stop', 'Text-to-speech stopped.');
-            }
-        };
-
-        document.addEventListener('keydown', handleKeyDown);
-        return () => document.removeEventListener('keydown', handleKeyDown);
-    }, [isUninteractableState, isSpeaking]);
-
-    // Debug and sync utilities (simplified)
-    useEffect(() => {
-        const debugRecordingState = () => ({
-            recording,
-            speechRecognition: !!speechRecognition,
-            environment,
-            electronSpeechAvailable
-        });
-
-        (window as any).debugVoiceRecording = debugRecordingState;
-
-        // Periodic state sync check
-        const interval = setInterval(() => {
-            if (recording.status === 'listening' && !speechRecognition) {
-                console.warn('State sync issue detected: recording status is listening but no speech recognition');
-                resetRecording();
-                setRecordingError('Recording state was reset due to sync issue');
-            }
-        }, 5000);
-
-        return () => {
-            delete (window as any).debugVoiceRecording;
-            clearInterval(interval);
-        };
-    }, [recording, speechRecognition, environment, electronSpeechAvailable]);
-
-    const startVoiceRecording = async () => {
-        // Debounce mechanism
-        const now = Date.now();
-        if (now - lastStartAttemptRef.current < 1000) {
-            console.warn('Voice recording start attempt too soon, ignoring');
-            return;
-        }
-        lastStartAttemptRef.current = now;
-
-        if (recording.status === 'listening') {
-            console.warn('Voice recording already in progress');
-            return;
-        }
-
-        try {
-            startRecording();
-
-            // Stop any existing speech recognition first
-            if (speechRecognition) {
-                try { speechRecognition.stop(); } catch (e) { console.warn('Error stopping previous recognition:', e); }
-            }
-
-            clearAllTimeouts();
-
-            if (environment === 'electron') {
-                await startElectronSpeechRecognition();
-            } else {
-                await startWebSpeechRecognition();
-            }
-        } catch (error) {
-            console.error('Error starting voice recognition:', error);
-            const errorMessage = error instanceof Error ? error.message : 'Failed to start voice recognition';
-            handleRecordingError(errorMessage);
-            addStatusMessage('start-error', errorMessage);
-        }
-    };
-
-    const startElectronSpeechRecognition = async () => {
-        if (!electronSpeechAvailable || !window.electronAPI?.startSpeechRecognition) {
-            throw new Error('Electron speech recognition not available');
-        }
-
-        if (recording.status === 'listening') {
-            console.warn('Electron speech recognition already in progress');
-            return;
-        }
-
-        // Stop any existing recognition
-        try {
-            if (window.electronAPI.stopSpeechRecognition) {
-                await window.electronAPI.stopSpeechRecognition();
-            }
-        } catch (e) {
-            console.warn('Error stopping previous Electron speech recognition:', e);
-        }
-
-        setInputValue('');
-
-        // Forces recording to stop after 30 seconds maximum
-        timeoutRefs.current.voice = setTimeout(async () => {
-            if (recording.status === 'listening') {
-                await stopVoiceRecording();
-                addStatusMessage('timeout', 'Voice recording timed out after 30 seconds.');
-            }
-        }, 30000);
-
-        const result = await window.electronAPI.startSpeechRecognition();
-        if (!result.success) {
-            resetRecording();
-            clearAllTimeouts();
-            throw new Error(result.error || 'Failed to start speech recognition');
-        }
-    };
-
-    const startWebSpeechRecognition = async () => {
-        if (!speechRecognition) {
-            throw new Error('Web speech recognition not available');
-        }
-
-        if (recording.status === 'listening') {
-            console.warn('Web speech recognition already in progress');
-            return;
-        }
-
-        // Check microphone permissions
-        if (navigator.permissions) {
-            try {
-                const permission = await navigator.permissions.query({ name: 'microphone' as PermissionName });
-                if (permission.state === 'denied') {
-                    throw new Error('Microphone access denied. Please allow microphone permissions in your browser settings.');
-                }
-            } catch (permError) {
-                console.warn('Permission check failed:', permError);
-            }
-        }
-
-        // Stop any ongoing recognition
-        try {
-            speechRecognition.stop();
-            await new Promise(resolve => setTimeout(resolve, 100));
-        } catch (e) {
-            console.warn('Error stopping previous web speech recognition:', e);
-        }
-
-        setInputValue('');
-        updateRecording({ transcript: '' });
-
-        // Set timeout for 30 seconds
-        timeoutRefs.current.voice = setTimeout(() => {
-            if (speechRecognition && recording.status === 'listening') {
-                speechRecognition.stop();
-                addStatusMessage('timeout', 'Voice recording timed out after 30 seconds.');
-            }
-        }, 30000);
-
-        try {
-            speechRecognition.start();
-        } catch (error) {
-            resetRecording();
-            clearAllTimeouts();
-            throw error;
-        }
-    };
-
-    const stopVoiceRecording = async () => {
-        clearAllTimeouts();
-
-        try {
-            if (environment === 'electron') {
-                await stopElectronSpeechRecognition();
-            } else {
-                stopWebSpeechRecognition();
-            }
-        } catch (error) {
-            console.error('Error in stopVoiceRecording:', error);
-        } finally {
-            resetRecording();
-        }
-    };
-
-    const stopElectronSpeechRecognition = async () => {
-        if (!window.electronAPI?.stopSpeechRecognition) return;
-
-        try {
-            const result = await window.electronAPI.stopSpeechRecognition();
-            if (!result.success) {
-                console.warn('Failed to stop speech recognition:', result.error);
-            }
-        } catch (error) {
-            console.error('Error stopping Electron speech recognition:', error);
-            addStatusMessage('stop-error', error instanceof Error ? error.message : 'Failed to stop speech recognition');
-        }
-    };
-
-    const stopWebSpeechRecognition = () => {
-        if (speechRecognition) {
-            try {
-                speechRecognition.stop();
-                resetRecording();
-                clearAllTimeouts();
-            } catch (error) {
-                console.error('Error stopping web speech recognition:', error);
-                setRecordingError('Failed to stop recording');
-            }
-        } else {
-            resetRecording();
-        }
-    };
-    const sendToAI = async (messageContent: string) => {
-        try {
-            let response;
-
-            // Use openai general natural language ai query endpoint
-            response = await apiService.post('user-ai-model/ai-query', {
-                question: messageContent,
-                context: {
-                    session_id: sessionId || '',
-                    trackname: analysisContext?.recordedSessioStaticsData?.track || '',
-                },
-            });
-
-            const responseData = response.data as any;
-            let aiResponseContent = responseData?.payload?.answer || responseData?.answer || responseData?.response || "I'm sorry, I couldn't process your request.";
-            let functionCalls: FunctionCall[] = [];
-            let functionResults: FunctionResult[] = [];
-            console.log('AI response data:', responseData);
-
-            // Check if the response contains track guidance data in side_products
-            if (responseData?.payload?.side_products?.track_detail_for_guide) {
-                try {
-                    // Call startTrackGuide with the complete response data
-                    startTrackGuide(responseData);
-                    console.log('Track guidance enabled from AI response');
-                } catch (error) {
-                    console.error('Error enabling track guidance:', error);
-                    aiResponseContent += '\n\n*Note: Track guidance data was received but could not be processed properly.*';
-                }
-            }
-
-            // Check if the response contains function calls (legacy support)
-            if (responseData?.function_calls && Array.isArray(responseData.function_calls)) {
-
-                try {
-                    // Parse function calls from the response
-                    functionCalls = responseData.function_calls.map((fc: any) => ({
-                        function: fc.function || fc.name,
-                        arguments: typeof fc.arguments === 'string' ? JSON.parse(fc.arguments) : fc.arguments
-                    }));
-
-                    // Execute all function calls
-                    for (const functionCall of functionCalls) {
-                        const result = await executeFunctionCall(functionCall, responseData);
-                        functionResults.push(result);
-                    }
-
-                } catch (parseError) {
-                    console.error('Error parsing function calls:', parseError);
-                    aiResponseContent += '\n\n*Note: Function calls were detected but could not be parsed properly.*';
-                }
-            }
-
-            const aiResponse: Message = {
+        // The voice WS is the single chat surface. Backend echoes a
+        // user_transcript frame for typed input, so we don't append the
+        // user message locally — handleVoiceEvent will when the echo arrives.
+        const sent = activeVoiceConversation.sendUserText(text);
+        if (!sent) {
+            setMessages(prev => prev.concat({
                 id: generateUniqueId('ai'),
-                content: aiResponseContent,
+                ...(activeAgentSession
+                    ? { content: `Start the ${getAgentDisplayName(activeAgentSession.agentMode)} connection first. Agent chat runs on its own session.` }
+                    : sessionMode === 'recorded'
+                    ? { content: 'Start the assistant connection first. Recorded session context will be sent with the request.' }
+                    : sessionMode === 'user_summary'
+                        ? { content: 'Start the assistant connection first. User summary context will be sent with the request.' }
+                        : { content: 'Click the mic to start a live voice session first - text chat runs on the same connection.' }),
                 isUser: false,
                 timestamp: new Date(),
-                functionCalls: functionCalls.length > 0 ? functionCalls : undefined,
-                functionResults: functionResults.length > 0 ? functionResults : undefined
-            };
-
-            // Remove loading messages and add AI response
-            setMessages(prev => prev.filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing')).concat(aiResponse));
-        } catch (error) {
-            console.error('Error sending message to AI:', error);
-            const errorMessage: Message = {
-                id: generateUniqueId('error'),
-                content: "I'm sorry, I encountered an error while processing your request. Please try again.",
-                isUser: false,
-                timestamp: new Date()
-            };
-
-            // Remove loading messages and add error message
-            setMessages(prev => prev.filter(msg => !msg.id.includes('loading') && !msg.id.includes('executing')).concat(errorMessage));
-        } finally {
-            setIsLoading(false);
+                kind: 'chat',
+            }));
+            return;
         }
-    };
-
-    const handleSendMessage = async () => {
-        if (!inputValue.trim() || isLoading) return;
-
-        // Check if this message came from voice input
-        const actualIsFromVoice = isRecordingCompleted;
-
-        const userMessage: Message = {
-            id: generateUniqueId('user'),
-            content: inputValue.trim(),
-            isUser: true,
-            timestamp: new Date(),
-            isVoiceInput: actualIsFromVoice
-        };
-
-        setMessages(prev => [...prev, userMessage]);
-        const messageContent = inputValue.trim();
         setInputValue('');
-        updateRecording({ status: 'idle' }); // Clear the voice input status
-
-        // Set loading state
-        setIsLoading(true);
-
-        // Add loading message
-        const loadingMessage: Message = {
-            id: generateUniqueId('loading'),
-            content: 'Thinking...',
-            isUser: false,
-            timestamp: new Date(),
-            isLoading: true
-        };
-        setMessages(prev => [...prev, loadingMessage]);
-
-        await sendToAI(messageContent);
     };
 
-    // handle user input change
     const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const newValue = e.target.value;
-        setInputValue(newValue);
-
-        // If user is typing manually (not just backspacing), clear the voice status
-        if (newValue.length > inputValue.length && isRecordingCompleted) {
-            updateRecording({ status: 'idle' });
-        }
+        setInputValue(e.target.value);
     };
 
-    const handleKeyPress = (e: React.KeyboardEvent) => {
+    const handleKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSendMessage();
         }
     };
 
-    // Function execution system
-    const executeFunctionCall = async (functionCall: FunctionCall, responseData: any): Promise<FunctionResult> => {
-        try {
-            console.log(`Executing function: ${functionCall.function} with args:`, functionCall.arguments);
+    // ── Voice state → mic panel display ─────────────────────────────
+    const sessionModeLabel = activeAgentSession
+        ? getAgentDisplayName(activeAgentSession.agentMode)
+        : sessionMode === 'recorded'
+        ? 'Recorded Session'
+        : sessionMode === 'user_summary'
+            ? 'User Summary'
+            : 'Live Session';
+    const transcriptLabel = activeAgentSession
+        ? `${getAgentDisplayName(activeAgentSession.agentMode).toUpperCase()} TRANSCRIPT`
+        : sessionMode === 'recorded'
+        ? 'RECORDED TRANSCRIPT'
+        : sessionMode === 'user_summary'
+            ? 'SUMMARY TRANSCRIPT'
+            : 'LIVE TRANSCRIPT';
 
-            const result = await findAndExecuteFunction(functionCall.function, functionCall.arguments, responseData);
+    const channelLabel =
+        vState === 'idle' ? 'CH-1 · OFFLINE' :
+        vState === 'connecting' ? 'CH-1 · CONNECTING' :
+        vState === 'error' ? 'CH-1 · ERROR' :
+        micDisabled ? 'CH-1 · MIC OFF' :
+        'CH-1 · OPEN';
+    const channelMod =
+        vState === 'idle' ? 'ai-chat__mic-channel--idle' :
+        vState === 'error' ? 'ai-chat__mic-channel--error' :
+        '';
+    const coreMod =
+        vState === 'idle' || vState === 'connecting' ? 'ai-chat__mic-core--idle' :
+        vState === 'error' ? 'ai-chat__mic-core--error' :
+        '';
+    const statusTop =
+        vState === 'idle' ? 'TAP MIC' :
+        vState === 'connecting' ? 'CONNECTING' :
+        micDisabled ? 'MIC' :
+        vState === 'speaking' ? 'ACLA' :
+        vState === 'listening' ? 'DRIVER' :
+        'VOICE';
+    const statusBottom =
+        vState === 'idle' ? 'TO START' :
+        vState === 'connecting' ? '…' :
+        micDisabled ? 'DISABLED' :
+        vState === 'speaking' ? 'RESPONDING' :
+        vState === 'listening' ? 'LISTENING' :
+        vState === 'error' ? 'RETRY' :
+        'IDLE';
+    const statusMod =
+        vState === 'idle' || vState === 'connecting' ? 'ai-chat__mic-status--idle' :
+        vState === 'error' ? 'ai-chat__mic-status--error' :
+        '';
 
-            return {
-                function: functionCall.function,
-                arguments: functionCall.arguments,
-                result,
-                success: true
-            };
-        } catch (error) {
-            console.error(`Error executing function ${functionCall.function}:`, error);
-            return {
-                function: functionCall.function,
-                arguments: functionCall.arguments,
-                result: null,
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
-            };
+    const toggleVoice = () => {
+        if (vState === 'idle' || vState === 'error') {
+            activeVoiceConversation.start().catch((err) => {
+                console.error('Voice conversation failed to start:', err);
+            });
+        } else {
+            activeVoiceConversation.stop();
         }
     };
 
-    // Define available functions that can be called
-    const findAndExecuteFunction = async (functionName: string, args: Record<string, any>, responseData: any): Promise<any> => {
-        // Add session context to function arguments if available and not already provided
-        const sessionIdToUse = args.session_id ||
-            sessionId ||
-            analysisContext?.sessionSelected?.SessionId;
-
-        switch (functionName) {
-            case 'get_session_analysis':
-                return await apiService.post('/racing-session/detailed-info', {
-                    id: sessionIdToUse
-                });
-
-            case 'get_telemetry_data':
-                return await apiService.post('/racing-session/telemetry', {
-                    session_id: sessionIdToUse,
-                    data_types: args.data_types || ['speed', 'acceleration']
-                });
-
-            case 'compare_lap_times':
-                return await apiService.post('/racing-session/compare', {
-                    session_ids: args.session_ids,
-                    metrics: args.metrics || ['lap_times']
-                });
-
-            case 'get_performance_insights':
-                return await apiService.post('/ai/performance-analysis', {
-                    session_id: sessionIdToUse,
-                    analysis_type: args.analysis_type || 'comprehensive'
-                });
-
-            case 'follow_expert_line':
-                return await apiService.post('/ai/expert-line-guidance', {
-                    session_id: sessionIdToUse,
-                    data_types: args.data_types || ['speed', 'acceleration', 'braking', 'steering']
-                });
-
-            case 'track_detail_for_guide':
-                // Enable the continuous imitation learning guidance
-                startTrackGuide(responseData);
-
-                return {
-                    status: 'Imitation learning guidance enabled - now continuously monitoring telemetry data and displaying AI guidance chart',
-                    enabled: true,
-                    chartAdded: true
-                };
-
-            case 'disable_guide_user_racing':
-                // Disable the continuous imitation learning guidance
-                setTrackGuideEnabled(false);
-
-                return {
-                    status: 'Imitation learning guidance disabled - no longer monitoring telemetry data and guidance chart removed',
-                    enabled: false,
-                    chartRemoved: true
-                };
-
-            case 'disable_ui_component':
-                // Handle UI updates locally
-                if (args.component === 'chart' && analysisContext) {
-                    // Trigger chart update through context
-                    console.log('Updating UI component:', args);
-                    return { success: true, message: 'UI updated successfully' };
-                }
-                return { success: false, message: 'UI component not found or not supported' };
-
-            case 'add_imitation_guidance_chart':
-                // Manually add imitation guidance chart
-                const chartAdded = visualizationController.executeCommand({
-                    action: 'add',
-                    type: 'imitation-guidance-chart',
-                    data: {
-                        sessionId: sessionIdToUse,
-                        manuallyAdded: true
-                    },
-                    config: {
-                        title: args.title || 'AI Driving Guidance',
-                        autoUpdate: args.autoUpdate !== false
-                    }
-                });
-
-                return {
-                    success: chartAdded,
-                    message: chartAdded
-                        ? 'Imitation guidance chart added successfully'
-                        : 'Failed to add imitation guidance chart',
-                    chartType: 'imitation-guidance-chart'
-                };
-
-            case 'remove_imitation_guidance_chart':
-                // Remove specific imitation guidance chart or all of them
-                const charts = visualizationController.getCurrentInstances();
-                const imitationCharts = charts.filter(chart => chart.type === 'imitation-guidance-chart');
-
-                let removedCount = 0;
-                if (args.chartId) {
-                    // Remove specific chart
-                    const removed = visualizationController.executeCommand({
-                        action: 'remove',
-                        id: args.chartId
-                    });
-                    if (removed) removedCount = 1;
-                } else {
-                    // Remove all imitation guidance charts
-                    imitationCharts.forEach(chart => {
-                        const removed = visualizationController.executeCommand({
-                            action: 'remove',
-                            id: chart.id
-                        });
-                        if (removed) removedCount++;
-                    });
-                }
-
-                return {
-                    success: removedCount > 0,
-                    message: `Removed ${removedCount} imitation guidance chart(s)`,
-                    removedCount
-                };
-
-            case 'get_available_functions':
-                // Return list of available functions
-                return {
-                    functions: [
-                        'get_session_analysis',
-                        'get_telemetry_data',
-                        'compare_lap_times',
-                        'get_performance_insights',
-                        'follow_expert_line',
-                        'enable_guide_user_racing',
-                        'disable_guide_user_racing',
-                        'add_imitation_guidance_chart',
-                        'remove_imitation_guidance_chart',
-                        'get_imitation_learning_guidance',
-                        'update_ui_component'
-                    ],
-                    session_context: !!sessionId,
-                    analysis_context: !!analysisContext,
-                    current_session: sessionIdToUse
-                };
-
-            default:
-                throw new Error(`Unknown function: ${functionName}`);
-        }
+    const toggleMicDisabled = () => {
+        activeVoiceConversation.setMicDisabled(!micDisabled);
     };
 
-    const startTrackGuide = (responseData: any) => {
-
-
-        // Add imitation guidance chart with the track data
-
-        visualizationController.executeCommand({
-            action: 'add',
-            type: 'imitation-guidance-chart',
-            data: {
-
-            },
-            config: {
-                title: 'AI Track Guidance',
-                autoUpdate: true
-            }
+    // Wave bars: driver real mic level when listening so the bars visually
+    // confirm we're picking up audio; otherwise CSS-only decorative animation.
+    const waveBars = useMemo(
+        () => Array.from({ length: 24 }, (_, i) => ({
+            delay: `${(i % 6) * 0.08}s`,
+            duration: `${0.7 + (i % 5) * 0.1}s`,
+        })),
+        []
+    );
+    const liveLevels = useMemo(() => {
+        // Stable per-bar response curve so adjacent bars don't all jump in sync.
+        return Array.from({ length: 24 }, (_, i) => {
+            const phase = (i / 24) * Math.PI * 2;
+            return 0.55 + 0.45 * Math.abs(Math.sin(phase));
         });
-
-
-        setTrackGuideEnabled(true);
-    }
-
-
-    // Utility function to clean and improve transcript quality
-    const cleanTranscript = (transcript: string): string => {
-        return transcript
-            .trim()
-            // Remove extra whitespace
-            .replace(/\s+/g, ' ')
-            // Capitalize first letter of sentences
-            .replace(/(^|\. )([a-z])/g, (match, prefix, letter) => prefix + letter.toUpperCase())
-            // Fix common speech recognition errors in racing context
-            .replace(/\bcar\b/gi, 'car')
-            .replace(/\bturn\b/gi, 'turn')
-            .replace(/\bspeed\b/gi, 'speed')
-            .replace(/\bbrake\b/gi, 'brake')
-            .replace(/\brace\b/gi, 'race')
-            .replace(/\blap\b/gi, 'lap')
-            .replace(/\btrack\b/gi, 'track');
-    };
-    const formatFunctionArgs = (args: Record<string, any>): string => {
-        return Object.entries(args).map(([key, value]) => {
-            if (typeof value === 'object') {
-                return `${key}: ${JSON.stringify(value)}`;
-            }
-            return `${key}: ${value}`;
-        }).join(', ');
-    };
-
-
-    // Microphone Icon Component
-    const MicrophoneIcon = () => (
-        <svg
-            className="mic-icon"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <path d="M12 1a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V5a4 4 0 0 0-4-4z" />
-            <path d="M19 11v1a7 7 0 0 1-14 0v-1" />
-            <line x1="12" y1="20" x2="12" y2="24" />
-            <line x1="8" y1="24" x2="16" y2="24" />
-        </svg>
-    );
-
-    // Recording Animation Microphone Icon
-    const RecordingMicrophoneIcon = () => (
-        <svg
-            className="recording-mic-icon"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <path d="M12 1a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V5a4 4 0 0 0-4-4z" />
-            <path d="M19 11v1a7 7 0 0 1-14 0v-1" />
-            <line x1="12" y1="20" x2="12" y2="24" />
-            <line x1="8" y1="24" x2="16" y2="24" />
-        </svg>
-    );
-
-    // Speaker Icon Component
-    const SpeakerIcon = () => (
-        <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-        >
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-            <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
-        </svg>
-    );
-
-    /**
-     * Extracts JSON object from a string that may contain markdown code blocks or other text
-     * @param text - The string that may contain JSON
-     * @returns Parsed JSON object or null if no valid JSON found
-     */
-    const extractJsonFromString = (text: string): any => {
-        if (!text || typeof text !== 'string') {
-            return null;
-        }
-
-        try {
-            // First, try to parse the entire string as JSON (handles case where it's just {})
-            return JSON.parse(text.trim());
-        } catch {
-            // If that fails, look for JSON within the string
-        }
-
-        // Remove markdown code blocks (```json ... ``` or ``` ... ```
-        let cleanedText = text.replace(/```(?:json)?\s*([\s\S]*?)\s*```/gi, '$1');
-
-        // Try to find JSON object boundaries
-        const jsonPatterns = [
-            // Look for objects starting with { and ending with }
-            /\{[\s\S]*\}/,
-            // Look for arrays starting with [ and ending with ]
-            /\[[\s\S]*\]/
-        ];
-
-        for (const pattern of jsonPatterns) {
-            const match = cleanedText.match(pattern);
-            if (match) {
-                try {
-                    const jsonStr = match[0].trim();
-                    return JSON.parse(jsonStr);
-                } catch (parseError) {
-                    console.warn('Failed to parse extracted JSON:', parseError);
-                    continue;
-                }
-            }
-        }
-
-        // Try to find multiple JSON objects in the string
-        const lines = cleanedText.split('\n');
-        let jsonStart = -1;
-        let braceCount = 0;
-        let jsonContent = '';
-
-        for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
-
-            for (let j = 0; j < line.length; j++) {
-                const char = line[j];
-
-                if (char === '{') {
-                    if (jsonStart === -1) {
-                        jsonStart = i;
-                        jsonContent = '';
-                    }
-                    braceCount++;
-                    jsonContent += char;
-                } else if (char === '}' && jsonStart !== -1) {
-                    braceCount--;
-                    jsonContent += char;
-
-                    if (braceCount === 0) {
-                        // Found complete JSON object
-                        try {
-                            return JSON.parse(jsonContent);
-                        } catch (parseError) {
-                            console.warn('Failed to parse found JSON object:', parseError);
-                            jsonStart = -1;
-                            jsonContent = '';
-                        }
-                    }
-                } else if (jsonStart !== -1) {
-                    jsonContent += char;
-                }
-            }
-
-            if (jsonStart !== -1 && i < lines.length - 1) {
-                jsonContent += '\n';
-            }
-        }
-
-        console.warn('No valid JSON found in string:', text);
-        return null;
-    };
-
-    // Add this helper function to validate and structure guidance data
-    const parseGuidanceData = (text: string): { throttle_guidance?: string[], brake_guidance?: string[], steering_guidance?: string[] } | null => {
-        const jsonData = extractJsonFromString(text);
-
-        if (!jsonData || typeof jsonData !== 'object') {
-            return null;
-        }
-
-        // Validate the structure matches expected guidance format
-        const guidanceData: any = {};
-
-        if (Array.isArray(jsonData.throttle_guidance)) {
-            guidanceData.throttle_guidance = jsonData.throttle_guidance;
-        }
-
-        if (Array.isArray(jsonData.brake_guidance)) {
-            guidanceData.brake_guidance = jsonData.brake_guidance;
-        }
-
-        if (Array.isArray(jsonData.steering_guidance)) {
-            guidanceData.steering_guidance = jsonData.steering_guidance;
-        }
-
-        // Return null if no valid guidance arrays found
-        if (Object.keys(guidanceData).length === 0) {
-            return null;
-        }
-        return guidanceData;
-    };
+    }, []);
+    const useLiveBars = vState === 'listening' && !micDisabled;
 
     return (
-        <Card className="ai-chat-container">
-            <Flex direction="column" height="100%">
-                {/* Header */}
-                <Flex align="center" justify="between" p="3" style={{ borderBottom: '1px solid var(--gray-6)' }}>
-                    <Flex align="center" gap="2">
-                        <ChatBubbleIcon />
-                        <Text size="4" weight="medium">{title}</Text>
-                        {sessionId && <Badge variant="soft" color="blue">Session Analysis</Badge>}
-                        {environment === 'electron' && (
-                            <Badge variant="soft" color="green" size="1">
-                                Desktop Mode
-                            </Badge>
-                        )}
-                    </Flex>
-                    <Flex align="center" gap="2">
-                        <Button
-                            variant="ghost"
-                            size="1"
-                            onClick={() => setDebugMode(!debugMode)}
-                            color={debugMode ? "blue" : "gray"}
+        <div className="ai-chat">
+            <BaselineCollectionTracker
+                {...baselineCollectionRuntime.trackerProps}
+                liveData={analysisContext?.liveData as Record<string, any> | null}
+                sessionMode={sessionMode}
+            />
+            <div className="ai-chat__grid-bg" aria-hidden="true" />
+
+            {/* Header */}
+            <div className="ai-chat__header">
+                <span className="ai-chat__eyebrow">
+                    <span className="ai-chat__eyebrow-dot" />
+                    {title}
+                </span>
+                <div className="ai-chat__header-meta">
+                    <span className="ai-chat__chip ai-chat__chip--blue">{sessionModeLabel}</span>
+                    {environment === 'electron' && (
+                        <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
+                    )}
+                    {activeVoiceConversation.error && (
+                        <span className="ai-chat__chip ai-chat__chip--red" title={activeVoiceConversation.error}>
+                            Voice Error
+                        </span>
+                    )}
+                    {activeAgentSession && (
+                        <span className="ai-chat__chip ai-chat__chip--amber">
+                            Main Paused
+                        </span>
+                    )}
+                    {activeAgentSession && (
+                        <button
+                            type="button"
+                            className="ai-chat__chip-btn ai-chat__chip-btn--red"
+                            onClick={() => stopAgentSession(activeAgentSession.clientSessionId)}
+                            title="End the focused agent session"
                         >
-                            Debug
-                        </Button>
-                        {!speechRecognition && !electronSpeechAvailable && (
-                            <Badge variant="soft" color="orange" size="1">
-                                Voice input not supported
-                            </Badge>
-                        )}
-                        {!speechSynthesis && (
-                            <Badge variant="soft" color="orange" size="1">
-                                Text-to-speech not supported
-                            </Badge>
-                        )}
-                        {recording.error && (
-                            <Badge variant="soft" color="red" size="1">
-                                Voice error
-                            </Badge>
-                        )}
-                        {isTextToSpeechEnabled && (
-                            <Badge variant="soft" color="green" size="1">
-                                TTS On ({selectedVoice?.name?.split(' ')[0] || 'Default'})
-                            </Badge>
-                        )}
-                    </Flex>
-                </Flex>
+                            End Agent
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        className={`ai-chat__chip-btn ${micDisabled ? 'ai-chat__chip-btn--red' : ''}`}
+                        onClick={toggleMicDisabled}
+                        disabled={isLoading}
+                        aria-pressed={micDisabled}
+                        title={micDisabled ? 'Enable microphone capture' : 'Disable microphone capture'}
+                    >
+                        {micDisabled ? 'Mic Off' : 'Mic On'}
+                    </button>
+                    {canOpenFloatingChat && (
+                        <button
+                            type="button"
+                            className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
+                            onClick={() => { void toggleFloatingChat(); }}
+                            aria-pressed={floatingChatOpen}
+                            title={floatingChatOpen
+                                ? 'Close the always-on-top AI chat overlay'
+                                : 'Open the always-on-top AI chat overlay (visible over the game in borderless windowed mode)'}
+                        >
+                            <OverlayIcon size={14} />
+                            <span>{floatingChatOpen ? 'Overlay On' : 'AI Overlay'}</span>
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        className="ai-chat__chip-btn"
+                        onClick={() => setDebugMode(!debugMode)}
+                        aria-pressed={debugMode}
+                    >
+                        Debug
+                    </button>
+                    <button
+                        type="button"
+                        className="ai-chat__chip-btn"
+                        onClick={() => setShowEmoteSettings(!showEmoteSettings)}
+                        aria-pressed={showEmoteSettings}
+                        title="Emotion GIF settings"
+                    >
+                        Emotes
+                    </button>
+                </div>
+            </div>
 
-                {/* Messages Area */}
-                <ScrollArea className="ai-chat-messages" style={{ flex: 1 }}>
-                    <Flex direction="column" gap="3" p="3">
-                        {messages.map((message) => (
-                            <Flex
-                                key={message.id}
-                                direction="column"
-                                align={message.isUser ? "end" : "start"}
-                                gap="1"
-                            >
-                                <Flex align="center" gap="2">
-                                    {!message.isUser && <PersonIcon />}
-                                    <Text size="1" color="gray">
-                                        {message.isUser
-                                            ? 'You'
-                                            : message.id.includes('guidance')
-                                                ? '🎯 Live Track Guidance'
-                                                : 'AI Assistant'
-                                        }
-                                    </Text>
-                                    {message.isVoiceInput && (
-                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style={{ color: 'var(--accent-9)' }}>
-                                            <path d="M12 1a4 4 0 0 0-4 4v6a4 4 0 0 0 8 0V5a4 4 0 0 0-4-4z" />
-                                            <path d="M19 11v1a7 7 0 0 1-14 0v-1" />
-                                            <line x1="12" y1="20" x2="12" y2="24" />
-                                            <line x1="8" y1="24" x2="16" y2="24" />
-                                        </svg>
-                                    )}
-                                    {/* Show speaking indicator for AI messages */}
-                                    {!message.isUser && isTextToSpeechEnabled && isSpeaking && (
-                                        <Flex align="center" gap="1">
-                                            <SpeakerIcon />
-                                            <Text size="1" color="blue">Speaking...</Text>
-                                        </Flex>
-                                    )}
-                                    <Text size="1" color="gray">
-                                        {message.timestamp.toLocaleTimeString()}
-                                    </Text>
-                                </Flex>
-                                <Box
-                                    className={`ai-chat-message ${message.isUser ? 'user' : 'ai'}`}
-                                    style={{
-                                        maxWidth: '80%',
-                                        padding: '8px 12px',
-                                        borderRadius: '12px',
-                                        backgroundColor: message.isUser
-                                            ? 'var(--accent-9)'
-                                            : message.id.includes('guidance')
-                                                ? 'var(--green-3)'  // Special styling for guidance messages
-                                                : 'var(--gray-3)',
-                                        color: message.isUser
-                                            ? 'var(--accent-contrast)'
-                                            : message.id.includes('guidance')
-                                                ? 'var(--green-12)'  // Special color for guidance messages
-                                                : 'var(--gray-12)',
-                                        border: message.id.includes('guidance') ? '1px solid var(--green-7)' : 'none'
-                                    }}
+            {/* Emotion GIF settings panel */}
+            {showEmoteSettings && (
+                <div className="ai-chat__emote-settings">
+                    <div className="ai-chat__emote-settings-title">Emotion GIFs</div>
+                    {EMOTIONS.map(em => (
+                        <div key={em} className="ai-chat__emote-row">
+                            <span className="ai-chat__emote-label">[{em}]</span>
+                            {emotionGifs[em] && (
+                                <img
+                                    src={emotionGifs[em]}
+                                    alt={em}
+                                    className="ai-chat__emote-preview"
+                                />
+                            )}
+                            <label className="ai-chat__btn ai-chat__btn--blue" style={{ cursor: 'pointer' }}>
+                                {emotionGifs[em] ? 'Change' : 'Add GIF'}
+                                <input
+                                    type="file"
+                                    accept=".gif,image/gif"
+                                    style={{ display: 'none' }}
+                                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => handleGifUpload(em, e)}
+                                />
+                            </label>
+                            {emotionGifs[em] && (
+                                <button
+                                    type="button"
+                                    className="ai-chat__btn"
+                                    onClick={() => handleGifRemove(em)}
                                 >
-                                    {message.isLoading ? (
-                                        <Flex align="center" gap="2">
-                                            <Spinner size="1" />
-                                            <Text size="2">{message.content}</Text>
-                                        </Flex>
-                                    ) : (
-                                        <>
-                                            <Text size="2" style={{ whiteSpace: 'pre-wrap' }}>
-                                                {message.content}
-                                            </Text>
+                                    Remove
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
 
-                                            {/* Individual message speech control for AI messages */}
-                                            {!message.isUser && speechSynthesis && !message.isLoading && (
-                                                <Flex justify="end" mt="1">
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="1"
-                                                        onClick={() => speakText(message.content, { isGuidance: message.id.includes('guidance') })}
-                                                        disabled={isSpeaking}
-                                                        title="Speak this message"
-                                                        style={{ opacity: 0.7 }}
-                                                    >
-                                                        <SpeakerIcon />
-                                                    </Button>
-                                                </Flex>
-                                            )}
+            {/* Stage: mic panel + transcript */}
+            <div className="ai-chat__stage">
+                <aside className="ai-chat__mic-panel">
+                    <div className="ai-chat__mic-head">
+                        <span className={`ai-chat__mic-channel ${channelMod}`}>
+                            <span className="ai-chat__eyebrow-dot" />
+                            {channelLabel}
+                        </span>
+                        <span>VOICE LINK</span>
+                    </div>
 
-                                            {/* Show function execution indicator (always visible) */}
-                                            {!debugMode && message.functionResults && message.functionResults.length > 0 && (
-                                                <Box mt="2">
-                                                    <Badge
-                                                        variant="soft"
-                                                        color={message.functionResults.every(r => r.success) ? "green" : "orange"}
-                                                        size="1"
-                                                    >
-                                                        {message.functionResults.every(r => r.success)
-                                                            ? `${message.functionResults.length} command(s) executed successfully`
-                                                            : `${message.functionResults.filter(r => r.success).length}/${message.functionResults.length} commands executed`
-                                                        }
-                                                    </Badge>
-                                                </Box>
-                                            )}
+                    <div className="ai-chat__mic-visual">
+                        {voiceActive && (
+                            <>
+                                <span className="ai-chat__mic-ring" />
+                                <span className="ai-chat__mic-ring" />
+                                <span className="ai-chat__mic-ring" />
+                            </>
+                        )}
+                        <button
+                            type="button"
+                            className={`ai-chat__mic-core ${coreMod} ${micDisabled ? 'ai-chat__mic-core--muted' : ''}`}
+                            onClick={toggleVoice}
+                            disabled={vState === 'connecting'}
+                            title={
+                                vState === 'error' ? `Voice error: ${activeVoiceConversation.error}. Click to retry.` :
+                                vState === 'connecting' ? 'Connecting…' :
+                                voiceActive ? 'Click to end voice session' :
+                                'Click to start voice session'
+                            }
+                            aria-label="Toggle voice session"
+                        >
+                            <svg viewBox="0 0 48 48" width="36" height="36" fill="none">
+                                <rect x="18" y="6" width="12" height="22" rx="6"
+                                    stroke="var(--lp-green)" strokeWidth="2" fill="rgba(0,230,118,0.08)" />
+                                <path d="M10 22c0 7.7 6.3 14 14 14s14-6.3 14-14"
+                                    stroke="var(--lp-green)" strokeWidth="2" strokeLinecap="round" />
+                                <line x1="24" y1="36" x2="24" y2="42" stroke="var(--lp-green)" strokeWidth="2" />
+                                <line x1="17" y1="42" x2="31" y2="42"
+                                    stroke="var(--lp-green)" strokeWidth="2" strokeLinecap="round" />
+                            </svg>
+                        </button>
+                    </div>
 
-                                            {/* Display function calls if present and debug mode is on */}
-                                            {debugMode && message.functionCalls && message.functionCalls.length > 0 && (
-                                                <Box mt="2" p="2" style={{
-                                                    backgroundColor: 'var(--gray-2)',
-                                                    borderRadius: '6px',
-                                                    border: '1px solid var(--gray-6)'
-                                                }}>
-                                                    <Text size="1" weight="bold" color="gray">
-                                                        Function Calls Executed:
-                                                    </Text>
-                                                    {message.functionCalls.map((fc, index) => (
-                                                        <Box key={index} mt="1">
-                                                            <Text size="1" color="blue">
-                                                                {fc.function}({formatFunctionArgs(fc.arguments)})
-                                                            </Text>
-                                                        </Box>
-                                                    ))}
-                                                </Box>
-                                            )}
+                    <div className={`ai-chat__mic-status ${statusMod}`}>
+                        {statusTop}
+                        <b>{statusBottom}</b>
+                    </div>
 
-                                            {/* Display function results if present and debug mode is on */}
-                                            {debugMode && message.functionResults && message.functionResults.length > 0 && (
-                                                <Box mt="2" p="2" style={{
-                                                    backgroundColor: message.functionResults.some(r => !r.success)
-                                                        ? 'var(--red-2)'
-                                                        : 'var(--green-2)',
-                                                    borderRadius: '6px',
-                                                    border: `1px solid ${message.functionResults.some(r => !r.success)
-                                                        ? 'var(--red-6)'
-                                                        : 'var(--green-6)'}`
-                                                }}>
-                                                    <Text size="1" weight="bold" color="gray">
-                                                        Function Results:
-                                                    </Text>
-                                                    {message.functionResults.map((fr, index) => (
-                                                        <Box key={index} mt="1">
-                                                            <Text size="1" color={fr.success ? "green" : "red"}>
-                                                                {fr.function}: {fr.success ? "✓ Success" : "✗ Error"}
-                                                                {fr.error && ` - ${fr.error}`}
-                                                            </Text>
-                                                        </Box>
-                                                    ))}
-                                                </Box>
-                                            )}
-                                        </>
-                                    )}
-                                </Box>
-                            </Flex>
+                    <div
+                        className={`ai-chat__mic-wave ${useLiveBars ? 'ai-chat__mic-wave--live' : (vState === 'idle' || micDisabled) ? 'ai-chat__mic-wave--idle' : ''}`}
+                        aria-hidden="true"
+                    >
+                        {waveBars.map((b, i) => {
+                            if (useLiveBars) {
+                                const lvl = Math.min(1, activeVoiceConversation.micLevel * 1.8 * liveLevels[i]);
+                                return (
+                                    <span
+                                        key={i}
+                                        className="ai-chat__mic-wave-bar"
+                                        style={{ height: `${Math.max(8, lvl * 100)}%`, transition: 'height 80ms linear' }}
+                                    />
+                                );
+                            }
+                            return (
+                                <span
+                                    key={i}
+                                    className="ai-chat__mic-wave-bar"
+                                    style={{ animationDelay: b.delay, animationDuration: b.duration }}
+                                />
+                            );
+                        })}
+                    </div>
+
+                    <div className="ai-chat__mic-hint">
+                        Push <kbd>PTT</kbd> or say <kbd>&ldquo;Hey ACLA&rdquo;</kbd><br />
+                        No menus. No screens. Just talk.
+                    </div>
+
+                </aside>
+
+                <section className="ai-chat__transcript">
+                    <div className="ai-chat__transcript-head">
+                        <span className="ai-chat__transcript-title">
+                            <span className="ai-chat__eyebrow-dot" />
+                            {transcriptLabel}
+                        </span>
+                        <span className="ai-chat__transcript-time">{clock}</span>
+                    </div>
+
+                    {baselineCollectionEnabled && baselineCollectionTag && (
+                        <BaselineProgressDisplay tag={baselineCollectionTag} />
+                    )}
+
+                    <LiveRangeTracker
+                        ref={liveRangeTrackerRef}
+                        liveData={analysisContext?.liveData as Record<string, any> | null}
+                        sessionMode={sessionMode}
+                        sessionIntelligence={analysisContext?.sessionIntelligence}
+                        sendObservation={sendLiveRangeTrackerObservation}
+                        resolveLabel={getLabelName}
+                        onStateChange={handleLiveRangeTrackerStateChange}
+                    />
+
+                    {procedurePlan && (
+                        <ProcedurePlanDisplay plan={procedurePlan} onClear={clearProcedurePlan} />
+                    )}
+
+                    <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
+                        {messages.map((message) => (
+                            <AiMessageDisplay
+                                key={message.id}
+                                message={message}
+                                debugMode={debugMode}
+                                assistantAvatarLabel={activeAgentSession ? 'LA' : 'AI'}
+                                assistantWhoLabel={activeAgentSession ? getAgentDisplayName(activeAgentSession.agentMode).toUpperCase() : 'ACLA'}
+                            />
                         ))}
                         <div ref={messagesEndRef} />
-                    </Flex>
-                </ScrollArea>
+                    </div>
+                </section>
+            </div>
 
-                {/* Input Area */}
-                <Separator />
-                <Box p="3">
-                    <Flex gap="2">
-                        <TextField.Root
-                            ref={inputRef}
-                            placeholder={
-                                isUninteractableState
-                                    ? `🎤 ${recording.status === 'listening' ? 'Recording...' : recording.status === 'processing' ? 'Processing...' : 'Initializing...'} (Press Escape or click Force Stop to cancel)`
-                                    : isRecordingCompleted
-                                        ? "Voice input ready - press Enter to send or continue editing..."
-                                        : "Ask me anything about your racing session..."
-                            }
-                            value={inputValue}
-                            onChange={handleInputChange}
-                            onKeyPress={handleKeyPress}
-                            disabled={isLoading || isUninteractableState}
-                            style={{ flex: 1 }}
-                        />
-                        {/* Text-to-speech controls next to microphone */}
-                        {speechSynthesis && (
-                            <IconButton
-                                onClick={isSpeaking ? stopSpeaking : toggleTextToSpeech}
-                                disabled={isLoading}
-                                size="2"
-                                variant={isTextToSpeechEnabled ? "solid" : "ghost"}
-                                color={isSpeaking ? "red" : isTextToSpeechEnabled ? "green" : "gray"}
-                                title={
-                                    isSpeaking
-                                        ? "Stop speaking"
-                                        : isTextToSpeechEnabled
-                                            ? "Disable auto text-to-speech"
-                                            : "Enable auto text-to-speech"
-                                }
-                            >
-                                {isSpeaking ? "🔇" : isTextToSpeechEnabled ? "🔊" : "🔇"}
-                            </IconButton>
-                        )}
-                        {(speechRecognition || electronSpeechAvailable) && (
-                            <IconButton
-                                onClick={isUninteractableState ? stopVoiceRecording : startVoiceRecording}
-                                disabled={isLoading}
-                                size="2"
-                                variant={isUninteractableState ? "solid" : "ghost"}
-                                color={isUninteractableState ? "red" : recording.error ? "orange" : "gray"}
-                                title={
-                                    recording.error
-                                        ? `Voice error: ${recording.error}. Click to retry.`
-                                        : isUninteractableState
-                                            ? `Recording ${recording.status} - Click to stop or press Escape`
-                                            : `Start voice recording (${environment === 'electron' ? 'Local' : 'Web'} mode)`
-                                }
-                                style={{
-                                    ...(isUninteractableState && {
-                                        backgroundColor: 'var(--red-9)',
-                                        color: 'white'
-                                    })
-                                }}
-                            >
-                                {isUninteractableState ? <RecordingMicrophoneIcon /> : <MicrophoneIcon />}
-                            </IconButton>
-                        )}
-                        <Button
-                            onClick={() => handleSendMessage()}
-                            disabled={!inputValue.trim() || isLoading || isUninteractableState}
-                            size="2"
-                        >
-                            <PaperPlaneIcon />
-                        </Button>
-                    </Flex>
-                </Box>
-            </Flex>
-        </Card>
+            {/* Input row */}
+            <div className="ai-chat__input-row">
+                <input
+                    className="ai-chat__input"
+                    placeholder={
+                        activeAgentSession
+                            ? `Talk to ${getAgentDisplayName(activeAgentSession.agentMode)}.`
+                            : voiceActive
+                            ? 'Type a message to the engineer…'
+                            : sessionMode === 'recorded'
+                                ? 'Ask about this recording.'
+                                : sessionMode === 'user_summary'
+                                    ? 'Ask about your summary.'
+                                    : 'Ask about the live session.'
+                    }
+                    value={inputValue}
+                    onChange={handleInputChange}
+                    onKeyDown={handleKeyDown}
+                    disabled={isLoading}
+                />
+                <button
+                    type="button"
+                    className="ai-chat__btn ai-chat__btn--primary"
+                    onClick={() => handleSendMessage()}
+                    disabled={!inputValue.trim() || isLoading}
+                    title="Send"
+                >
+                    SEND
+                </button>
+            </div>
+        </div>
     );
 };
 

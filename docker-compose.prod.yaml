@@ -53,11 +53,18 @@ services:
     gpus: all
     env_file:
       - .prod.env
+      - .env.secrets
     environment:
       - BACKEND_URL=http://acla_backend_c:7001
       # Enable NVIDIA runtime features if GPUs are available on the host
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ./acla_ai_service/service_src:/app/service_src:ro
+      # One volume for ALL on-disk AI models: chat sidecar GGUF, Kokoro TTS,
+      # annotation VLM GGUFs + mmproj, HuggingFace cache, LoRA adapters,
+      # training datasets. Subdirs are created on demand by the service.
+      - ai_models:/app/models
     ports:
       - '8000:8000'
     networks:
@@ -83,12 +90,18 @@ services:
       MONGO_INITDB_DATABASE: ${MONGO_DATEBASE}
     volumes:
       - ./acla_db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js
-      - ./acla_db/mongodb_data:/data/db
+      - mongodb_data:/data/db
       - ../db_backups:/backups
     env_file:
       - .prod.env
     ports:
       - "27017:27017"
+
+volumes:
+  mongodb_data:
+    driver: local
+  ai_models:
+    driver: local
 
 networks:
   frontend-network:

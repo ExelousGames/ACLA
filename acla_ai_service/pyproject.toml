@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+# Pytest needs to find the `app` package. Without this, rootdir auto-detects
+# to tests/ and `from app.agents.framework import …` fails with
+# ModuleNotFoundError. Added during refactor/hexagonal-v1 Step 9.
+pythonpath = [".", "app"]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+# Default `prepend` import mode collides with the refactored top-level
+# package layout (`from app.X` from tests/). importlib mode resolves
+# modules through the importlib path the same way our runtime does.
+addopts = "--import-mode=importlib"

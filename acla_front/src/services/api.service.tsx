@@ -1,4 +1,4 @@
-import axios, { AxiosError, AxiosInstance, AxiosResponse } from 'axios';
+import axios, { AxiosError, AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 
 
 type ApiResponse<T> = {
@@ -69,9 +69,9 @@ export class ApiService {
     }
 
     // POST method
-    public async post<T>(url: string, data?: object): Promise<AxiosResponse<T>> {
+    public async post<T>(url: string, data?: object, config?: AxiosRequestConfig): Promise<AxiosResponse<T>> {
         try {
-            return await this.axiosInstance.post<T>(url, data);
+            return await this.axiosInstance.post<T>(url, data, config);
         } catch (error) {
             throw error as ApiError;
         }
@@ -106,6 +106,60 @@ export class ApiService {
         } catch (error) {
             throw error as ApiError;
         }
+    }
+
+    /**
+     * POST that returns the raw response body as an ArrayBuffer.
+     * Used for binary responses such as generated media or file payloads.
+     * The axios `timeout` and auth interceptors still apply.
+     */
+    public async postBinary(
+        url: string,
+        data?: object,
+        opts?: { timeoutMs?: number },
+    ): Promise<ArrayBuffer> {
+        try {
+            const response = await this.axiosInstance.post<ArrayBuffer>(url, data, {
+                responseType: 'arraybuffer',
+                timeout: opts?.timeoutMs ?? 30000,
+            });
+            return response.data;
+        } catch (error) {
+            throw error as ApiError;
+        }
+    }
+
+    /**
+     * Open an authenticated WebSocket to the backend.
+     *
+     * Same auth + addressing model as the REST methods: hits the same
+     * baseURL host:port (just `ws://` instead of `http://`) and attaches
+     * the JWT from localStorage. Browsers can't set custom headers on
+     * `new WebSocket()`, so the token rides as a `?token=…` query param;
+     * the backend verifies it at the upgrade boundary.
+     */
+    public openWebSocket(
+        path: string,
+        params?: Record<string, string | undefined>,
+    ): WebSocket {
+        const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = process.env.REACT_APP_BACKEND_SERVER_IP;
+        const port = process.env.REACT_APP_BACKEND_PROXY_PORT;
+
+        const qs = new URLSearchParams();
+        if (params) {
+            for (const [k, v] of Object.entries(params)) {
+                if (v !== undefined && v !== '') qs.set(k, v);
+            }
+        }
+        const token = localStorage.getItem('token');
+        if (token) qs.set('token', token);
+
+        const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+        const tail = qs.toString();
+        return new WebSocket(
+            `${wsProto}//${host}:${port}${normalizedPath}${tail ? `?${tail}` : ''}`,
+        );
     }
 
 

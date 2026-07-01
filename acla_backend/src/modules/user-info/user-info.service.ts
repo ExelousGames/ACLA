@@ -55,6 +55,7 @@ export class UserInfoService {
             email: createUserInfoDto.email,
             roles: [],
             permissions: [],
+            userSummary: {},
             isActive: true,
             createdAt: new Date(),
             lastLogin: new Date()
@@ -100,5 +101,20 @@ export class UserInfoService {
             { password: hashedPassword },
             { new: true }
         ).exec();
+    }
+
+    async getUserSummary(userId: string): Promise<Record<string, any>> {
+        const user = await this.userInfoModel.findOne({ id: userId }).exec();
+        return user?.userSummary || {};
+    }
+
+    async updateUserSummary(userId: string, summary: Record<string, any>): Promise<Record<string, any>> {
+        const user = await this.userInfoModel.findOneAndUpdate(
+            { id: userId },
+            { userSummary: summary },
+            { new: true }
+        ).exec();
+
+        return user?.userSummary || {};
     }
 }

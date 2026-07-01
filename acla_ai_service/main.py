@@ -16,14 +16,23 @@ if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
 # Import the main application from the app package
-from app.main import app
+from app.startup.app import app
 
 # Surface basic device info on startup for visibility
 try:
     import torch
     _cuda_available = torch.cuda.is_available()
-    _device_name = torch.cuda.get_device_name(0) if _cuda_available else "CPU"
-    print(f"[AI Service] Torch version: {getattr(torch, '__version__', 'unknown')} | CUDA available: {_cuda_available} | Device: {_device_name}")
+    _device_name = "CPU"
+    _backend_type = "CPU"
+    
+    if _cuda_available:
+        _device_name = torch.cuda.get_device_name(0)
+        if hasattr(torch.version, 'hip') and torch.version.hip:
+            _backend_type = "ROCm (AMD)"
+        else:
+            _backend_type = "CUDA (NVIDIA)"
+            
+    print(f"[AI Service] Torch version: {getattr(torch, '__version__', 'unknown')} | Backend: {_backend_type} | Device: {_device_name}")
 except Exception as _e:
     print(f"[AI Service] Torch import failed or CUDA check error: {_e}")
 
@@ -38,9 +47,9 @@ if __name__ == "__main__":
     print(f"🚀 Starting ACLA AI Service on {host}:{port}")
     print(f"🔧 Debug mode: {debug}")
     
-    # Fixed: Use app.main:app instead of main:app to properly reference the FastAPI app
+    # Reference the FastAPI app via its new home in app.startup.app
     uvicorn.run(
-        "app.main:app",
+        "app.startup.app:app",
         host=host,
         port=port,
         reload=debug,

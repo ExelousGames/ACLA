@@ -1,0 +1,6 @@
+services:
+  ai_service:
+    build:
+      context: ./acla_ai_service
+      dockerfile: dev.cpu.dockerfile
+    network_mode: "bridge"

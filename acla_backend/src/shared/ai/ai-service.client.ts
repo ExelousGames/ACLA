@@ -2,13 +2,6 @@ import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import axios from 'axios';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
 
-export interface QueryRequest {
-    question: string;
-    user_id?: string;
-    context?: any;
-}
-
-
 export interface TrainModelRequest {
     session_id: string;
     telemetry_data: any[];
@@ -94,6 +87,124 @@ export interface ImitationLearningGuidanceResponse {
     confidence_score?: number;
 }
 
+export interface OpportunityForecastRequest {
+    telemetry_data: { [key: string]: any }[];
+    horizon_seconds?: number;
+    top_k?: number;
+}
+
+export interface OpportunityForecastOpportunity {
+    label_id: string;
+    label_name: string;
+    parent_label: string;
+    probability: number;
+    circuit_section_id?: string;
+    circuit_section_name?: string;
+}
+
+export interface OpportunityForecastResponse {
+    status: string;
+    model_status?: string;
+    horizon_seconds: number;
+    opportunities: OpportunityForecastOpportunity[];
+    circuit_section_match?: any;
+}
+
+export interface TrackCornerKnowledgeRequest {
+    track_name: string;
+    corner_name: string;
+    normalized_position?: number;
+    trigger_position?: number;
+    current_telemetry?: { [key: string]: any };
+}
+
+export interface TrackCornerKnowledgeResponse {
+    status: string;
+    message?: string;
+    reason?: string;
+    track_knowledge: any;
+    normalized_position?: number;
+    trigger_position?: number;
+}
+
+export interface SegmentClassificationRequest {
+    session_id?: string;
+    telemetry_data: { [key: string]: any }[];
+    track_name?: string;
+    car_name?: string;
+}
+
+export interface LiveBaselineTimeGap {
+    start_ms: number;
+    end_ms: number;
+    delta_ms: number;
+}
+
+export interface SegmentClassificationSubSegment {
+    start_index: number;
+    end_index: number;
+    labels: string[];
+    time_gap?: LiveBaselineTimeGap;
+}
+
+export interface SegmentClassificationSegment {
+    id?: string;
+    labels: string[];
+    main_label_id: string;
+    parent_segment_id?: string;
+    parent_label_id?: string;
+    start_index: number;
+    end_index: number;
+    sub_labels: string[];
+    sub_segments: SegmentClassificationSubSegment[];
+    child_segments?: SegmentClassificationSubSegment[];
+    time_gap?: LiveBaselineTimeGap;
+}
+
+export interface SegmentClassificationResponse {
+    status: string;
+    session_id: string;
+    samples_analyzed: number;
+    segment_count: number;
+    segments: SegmentClassificationSegment[];
+}
+
+export interface LiveBaselineAnalysisRequest {
+    track?: string;
+    car?: string;
+    baseline_lap?: number;
+    records: { [key: string]: any }[];
+}
+
+export interface LiveBaselineAnalysisResponse extends SegmentClassificationResponse {
+    expert_time_available: boolean;
+}
+
+export interface AiLabelsResponse {
+    label_mapping: Record<string, string>;
+    label_name_to_id: Record<string, string>;
+    label_image_map: Record<string, string>;
+    label_categories: Record<string, string[]>;
+}
+
+// Phase 2 — text-to-speech via Kokoro
+export interface AnalyzeUserSessionsRequest {
+    user_id: string;
+    session_limit?: number;
+}
+
+export interface AnalyzeUserSessionsResponse {
+    status: string;
+    sessionAnalysis: Record<string, any>;
+}
+
+export interface VoiceSynthesizeRequest {
+    text: string;
+    voice?: string;       // e.g. "af_bella"; defaults to AI service's kokoro_default_voice
+    speed?: number;       // 0.5..2.0
+    language?: string;    // e.g. "en-us"
+}
+
 @Injectable()
 export class AiServiceClient {
     private readonly aiServiceUrl: string;
@@ -129,19 +240,6 @@ export class AiServiceClient {
     }
 
 
-    async processQuery(query: QueryRequest): Promise<any> {
-        try {
-            const response = await axios.post(`${this.aiServiceUrl}/naturallanguagequery`, query);
-            return response.data;
-        } catch (error) {
-            throw new HttpException(
-                `AI Service query failed: ${error.message}`,
-                HttpStatus.SERVICE_UNAVAILABLE
-            );
-        }
-    }
-
-
     async checkHealth(): Promise<any> {
         try {
             const response = await axios.get(`${this.aiServiceUrl}/health`);
@@ -149,6 +247,18 @@ export class AiServiceClient {
         } catch (error) {
             throw new HttpException(
                 `AI Service health check failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async getLabels(): Promise<AiLabelsResponse> {
+        try {
+            const response = await axios.get(`${this.aiServiceUrl}/racing-session/labels`);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service labels retrieval failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }
@@ -162,6 +272,120 @@ export class AiServiceClient {
         } catch (error) {
             throw new HttpException(
                 `AI Service imitation learning guidance failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async getOpportunityForecast(request: OpportunityForecastRequest): Promise<OpportunityForecastResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/opportunity-forecast`, request);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service opportunity forecast failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async getTrackCornerKnowledge(request: TrackCornerKnowledgeRequest): Promise<TrackCornerKnowledgeResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/track-corner-knowledge`, request);
+            return response.data;
+        } catch (error) {
+            const axiosError = error as any;
+            const detail = axiosError?.response?.data?.detail
+                || axiosError?.response?.data?.message
+                || axiosError?.message;
+            const status = axiosError?.response?.status || HttpStatus.SERVICE_UNAVAILABLE;
+            throw new HttpException(
+                `AI Service track corner knowledge failed: ${detail}`,
+                status
+            );
+        }
+    }
+
+    async classifySegments(request: SegmentClassificationRequest): Promise<SegmentClassificationResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/segment-classification`, request);
+            return response.data;
+        } catch (error) {
+            const axiosError = error as any;
+            const detail = axiosError?.response?.data?.detail
+                || axiosError?.response?.data?.message
+                || axiosError?.message;
+            const status = axiosError?.response?.status || HttpStatus.SERVICE_UNAVAILABLE;
+            throw new HttpException(
+                `AI Service segment classification failed: ${detail}`,
+                status
+            );
+        }
+    }
+
+    async analyzeLiveRecordedAnalysis(request: LiveBaselineAnalysisRequest): Promise<LiveBaselineAnalysisResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/live-baseline-analysis`, request);
+            return response.data;
+        } catch (error) {
+            const axiosError = error as any;
+            const detail = axiosError?.response?.data?.detail
+                || axiosError?.response?.data?.message
+                || axiosError?.message;
+            const status = axiosError?.response?.status || HttpStatus.SERVICE_UNAVAILABLE;
+            throw new HttpException(
+                `AI Service live baseline analysis failed: ${detail}`,
+                status
+            );
+        }
+    }
+
+    /**
+     * Phase 2 — Neural text-to-speech via Kokoro.
+     * Returns raw WAV bytes (audio/wav). The controller forwards these
+     * to the browser, which plays them via HTMLAudioElement, replacing
+     * the robotic window.speechSynthesis output.
+     */
+    async analyzeUserSessions(request: AnalyzeUserSessionsRequest): Promise<AnalyzeUserSessionsResponse> {
+        try {
+            const response = await axios.post(
+                `${this.aiServiceUrl}/racing-session/analyze-user-sessions`,
+                request,
+                { timeout: 24 * 60 * 60 * 1000 },
+            );
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service user session analysis failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    async synthesizeVoice(request: VoiceSynthesizeRequest): Promise<Buffer> {
+        try {
+            const response = await axios.post(
+                `${this.aiServiceUrl}/voice/synthesize`,
+                request,
+                { responseType: 'arraybuffer' },
+            );
+            return Buffer.from(response.data);
+        } catch (error) {
+            throw new HttpException(
+                `AI Service voice synthesis failed: ${error.message}`,
+                HttpStatus.SERVICE_UNAVAILABLE
+            );
+        }
+    }
+
+    /** Phase 2 — list available Kokoro voices. */
+    async listVoices(): Promise<{ voices: string[]; count: number }> {
+        try {
+            const response = await axios.get(`${this.aiServiceUrl}/voice/voices`);
+            return response.data;
+        } catch (error) {
+            throw new HttpException(
+                `AI Service voice listing failed: ${error.message}`,
                 HttpStatus.SERVICE_UNAVAILABLE
             );
         }

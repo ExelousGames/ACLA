@@ -80,7 +80,7 @@ const AuthProvider = ({ children }: { children: ReactNode }) => {
         setUserProfile(null);
         localStorage.removeItem("token");
         localStorage.removeItem("username");
-        navigate("/login");
+        navigate("/");
     };
 
     // Permission checking function

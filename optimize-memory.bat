@@ -28,28 +28,4 @@ REM Force restart WSL
 wsl --shutdown
 timeout /t 10 >nul
 
-echo.
-echo 🎯 Memory Optimization Complete!
-echo.
-echo 📋 What was done:
-echo    ✅ Set AGGRESSIVE memory limits on all Docker containers
-echo    ✅ Cleaned up Docker system resources  
-echo    ✅ Updated WSL to use only 4GB RAM (down from unlimited)
-echo    ✅ Forced WSL restart
-echo.
-echo 🔄 Next Steps:
-echo    1. WSL has been restarted with new 4GB limit
-echo    2. Start your development environment: start-dev.bat
-echo    3. Monitor memory with Task Manager
-echo    4. If containers fail, increase limits gradually
-echo.
-echo 💡 New aggressive limits:
-echo    - WSL total memory: 4GB (was unlimited)
-echo    - AI Service: 1GB (was 2GB)
-echo    - Backend: 512MB (was 1GB)  
-echo    - Frontend: 256MB (was 512MB)
-echo    - MongoDB: 512MB (was 1GB)
-echo    - Other services: 64-128MB each
-echo.
-
 pause

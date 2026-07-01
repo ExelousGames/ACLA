@@ -1,50 +1,141 @@
-/* Ensure no global overflow */
-html,
-body {
-    height: 100%;
-    margin: 0;
-    padding: 0;
-    overflow: hidden;
-}
-
-#root {
-    height: 100%;
-}
-
-/* Global rule to prevent any scrolling */
-* {
-    scrollbar-width: none;
-    /* Firefox */
-    -ms-overflow-style: none;
-    /* Internet Explorer/Edge */
-}
-
-*::-webkit-scrollbar {
-    display: none;
-    /* Chrome, Safari, Opera */
-}
-
 .main-dashboard-container {
     height: 100vh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    background: var(--lp-bg);
+    color: var(--lp-white);
+    font-family: var(--lp-sans);
 }
+
+.main-dashboard-container * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--lp-border-strong) transparent;
+}
+
+.main-dashboard-container *::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+.main-dashboard-container *::-webkit-scrollbar-track { background: transparent; }
+.main-dashboard-container *::-webkit-scrollbar-thumb {
+    background: var(--lp-border-strong);
+    border-radius: 4px;
+}
+.main-dashboard-container *::-webkit-scrollbar-thumb:hover { background: var(--lp-gray); }
 
 .main-dashboard-header {
     flex-shrink: 0;
-    height: 80px;
-    /* Fixed height for header */
+    height: 72px;
     overflow: hidden;
+    border-bottom: 1px solid var(--lp-border);
+    background: rgba(14, 14, 24, 0.9);
+    backdrop-filter: blur(14px);
+    z-index: 10;
 }
 
 .main-dashboard-content {
     flex: 1;
     display: flex;
     min-height: 0;
-    /* Important for flex children to shrink */
     overflow: hidden;
-    height: calc(100vh - 80px);
+    height: calc(100vh - 72px);
+    background: var(--lp-bg);
+}
+
+.main-dashboard-primary {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+.main-dashboard-assistant {
+    width: clamp(360px, 32vw, 520px);
+    flex: 0 0 clamp(360px, 32vw, 520px);
+    position: relative;
+    display: flex;
+    min-width: 56px;
+    min-height: 0;
+    border-left: 1px solid var(--lp-border);
+    background: rgba(14, 14, 24, 0.72);
+    transition: width 0.22s ease, flex-basis 0.22s ease, background 0.22s ease;
+}
+
+.main-dashboard-assistant--folded {
+    width: 56px;
+    flex-basis: 56px;
+    background: rgba(14, 14, 24, 0.92);
+}
+
+.main-dashboard-assistant__toggle {
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+    margin: 12px 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    color: var(--lp-green);
+    background: var(--lp-green-dim);
+    border: 1px solid var(--lp-green);
+    border-radius: var(--lp-radius-sm);
+    cursor: pointer;
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.main-dashboard-assistant__toggle:hover {
+    color: var(--lp-white);
+    border-color: var(--lp-white);
+    background: rgba(0, 230, 118, 0.18);
+}
+
+.main-dashboard-assistant__body {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    padding: 12px 12px 12px 0;
+    opacity: 1;
+    transition: opacity 0.14s ease;
+}
+
+.main-dashboard-assistant--folded .main-dashboard-assistant__body {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    overflow: hidden;
+}
+
+.main-dashboard-content.has-recording-bar .main-dashboard-assistant {
+    padding-bottom: 96px;
+}
+
+.main-dashboard-assistant .ai-chat {
+    border-radius: var(--lp-radius-sm);
+}
+
+.main-dashboard-assistant .ai-chat__stage {
+    grid-template-columns: 1fr;
+}
+
+.main-dashboard-assistant .ai-chat__mic-panel {
+    padding: 12px;
+    gap: 10px;
+}
+
+.main-dashboard-assistant .ai-chat__mic-visual {
+    width: 96px;
+    height: 96px;
+}
+
+.main-dashboard-assistant .ai-chat__mic-core {
+    width: 64px;
+    height: 64px;
+}
+
+.main-dashboard-assistant .ai-chat__mic-hint {
+    display: none;
 }
 
 .SideMainMenu {
@@ -53,16 +144,21 @@ body {
     overflow: hidden;
 }
 
-.MainDashboardTitle {
-    height: 8%;
-}
+.MainDashboardTitle { height: auto; }
 
-/* Ensure all child components respect the height constraint */
-* {
-    box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
-/* Additional constraint for any child components */
-.main-dashboard-content * {
-    max-height: 100%;
+.main-dashboard-content * { max-height: 100%; }
+
+@media (max-width: 1100px) {
+    .main-dashboard-assistant {
+        width: min(420px, 82vw);
+        flex: 0 0 min(420px, 82vw);
+        border-left: 1px solid var(--lp-border);
+    }
+
+    .main-dashboard-assistant--folded {
+        width: 56px;
+        flex-basis: 56px;
+    }
 }

@@ -210,7 +210,6 @@ class TelemetryFeatures:
         "Physics_car_damage_center",
         "Physics_suspension_damage_front_left",
         "Physics_velocity_y",
-        "Physics_pit_limiter_on",
         "Physics_tyre_contact_normal_front_left_y",
         "Physics_packed_id",
         "Physics_wheel_slip_front_left",
@@ -244,7 +243,6 @@ class TelemetryFeatures:
         "Graphics_session_index",
         "Graphics_driver_stint_time_left",
         "Graphics_global_green",
-        "Graphics_is_in_pit_lane",
         "Graphics_global_chequered",
         "Graphics_global_red",
         "Graphics_current_sector_index",
@@ -506,7 +504,6 @@ class TelemetryFeatures:
             "Graphics_global_yellow_s1",
             "Graphics_global_yellow_s2",
             "Graphics_global_yellow_s3",
-            "Graphics_is_in_pit_lane",
             "Physics_tc",
             "Physics_abs"
         ]
@@ -703,7 +700,6 @@ class TelemetryFeatures:
             "Graphics_track_grip_status",
             "Graphics_current_tyre_set",
             "Graphics_is_valid_lap",
-            "time_delta_ms"
         ]
         
         
@@ -974,9 +970,9 @@ class FeatureProcessor:
         
         # Handle boolean fields that might be strings
         boolean_fields = [
-            'Physics_pit_limiter_on', 'Physics_autoshifter_on', 'Physics_is_ai_controlled',
+            'Physics_autoshifter_on', 'Physics_is_ai_controlled',
             'Physics_ignition_on', 'Physics_starter_engine_on', 'Physics_is_engine_running',
-            'Graphics_is_in_pit', 'Graphics_ideal_line_on', 'Graphics_is_in_pit_lane',
+            'Graphics_is_in_pit', 'Graphics_ideal_line_on',
             'Graphics_mandatory_pit_done', 'Graphics_is_setup_menu_visible',
             'Graphics_rain_light', 'Graphics_flashing_light', 'Graphics_is_delta_positive',
             'Graphics_is_valid_lap', 'Graphics_direction_light_left', 'Graphics_direction_light_right',
@@ -1207,57 +1203,9 @@ class FeatureProcessor:
                 continue
 
             stripped = working.iloc[keep_mask].copy()
-            stripped = self.add_time_delta(stripped, new_column="time_delta_ms", default_delta=0.0)
             stripped_laps.append(stripped.reset_index(drop=True))
 
         return stripped_laps
-
-    def add_time_delta(
-        self,
-        df: Optional[pd.DataFrame] = None,
-        new_column: str = "time_delta_ms",
-        default_delta: float = 0.0
-    ) -> pd.DataFrame:
-        """Add per-row time deltas to the provided DataFrame (or self.df by default)."""
-
-        target_df = self.df if df is None else df
-
-        if target_df is None:
-            target_df = pd.DataFrame()
-            if df is None:
-                self.df = target_df
-
-        if target_df.empty:
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        time_column_name = "Graphics_current_time"
-        if time_column_name not in target_df.columns:
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        numeric_series = pd.to_numeric(target_df[time_column_name], errors="coerce")
-        if numeric_series.isna().all():
-            target_df[new_column] = default_delta
-            if df is None:
-                self.df = target_df
-            return target_df
-
-        numeric_series = numeric_series.ffill().fillna(0.0)
-        deltas = numeric_series.diff().fillna(default_delta)
-        deltas[deltas < 0] = default_delta
-
-        target_df[new_column] = deltas.values
-
-        if df is None:
-            self.df = target_df
-
-        return target_df
-
     
     # ========================= Console Plotting Utilities ========================= #
     def plot_features_console(

@@ -9,6 +9,9 @@ import { AuthService } from 'src/shared/auth/auth.service';
 import { JwtService } from '@nestjs/jwt';
 import { AuthorizationModule } from '../../shared/authorization/authorization.module';
 import { PasswordService } from 'src/shared/utils/password.service';
+import { AiServiceClient } from 'src/shared/ai/ai-service.client';
+import { UserSummaryAnalysisJob, UserSummaryAnalysisJobSchema } from 'src/schemas/user-summary-analysis-job.schema';
+import { UserSummaryAnalysisService } from './user-summary-analysis.service';
 
 @Module({
 
@@ -18,14 +21,15 @@ import { PasswordService } from 'src/shared/utils/password.service';
     MongooseModule.forFeature([
       { name: UserInfo.name, schema: UserInfoSchema },
       { name: Permission.name, schema: PermissionSchema },
-      { name: Role.name, schema: RoleSchema }
+      { name: Role.name, schema: RoleSchema },
+      { name: UserSummaryAnalysisJob.name, schema: UserSummaryAnalysisJobSchema }
     ]),
     AuthorizationModule
   ],
   controllers: [UserInfoController],
-  providers: [UserInfoService, AuthService, JwtService, PasswordService],
+  providers: [UserInfoService, UserSummaryAnalysisService, AuthService, JwtService, PasswordService, AiServiceClient],
 
   //(services, repositories, etc.) that the current module wants to share
-  exports: [UserInfoService]
+  exports: [UserInfoService, UserSummaryAnalysisService]
 })
 export class UserInfoModule { }

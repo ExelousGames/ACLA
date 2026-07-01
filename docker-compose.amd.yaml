@@ -1,0 +1,18 @@
+services:
+  ai_service:
+    build:
+      context: ./acla_ai_service
+      dockerfile: dev.amd.dockerfile
+    privileged: true
+    ipc: host
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+      - /dev/mem:/dev/mem
+    security_opt:
+      - seccomp=unconfined
+    group_add:
+      - video
+      - render
+    environment:
+      - ROCM_PATH=/opt/rocm

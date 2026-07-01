@@ -3,6 +3,12 @@
 /node_modules
 /build
 
+# Python bytecode (added in refactor/hexagonal-v1 — replaces dozens of
+# per-directory __pycache__ entries below, most now obsolete).
+__pycache__/
+*.pyc
+*.pyo
+
 # Logs
 logs
 *.log
@@ -36,12 +42,12 @@ lerna-debug.log*
 !.vscode/extensions.json
 
 # dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
 .env.secrets
+
+
+# GCP Service Account credentials
+**/gcp-service-account.json
+**/service_src/*.json
 
 # temp directory
 .temp
@@ -87,10 +93,45 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /acla_ai_service/__pycache__
 /acla_ai_service/app/api/__pycache__
 
-/acla_ai_service/telemetry_data_cache
 /acla_ai_service/app/scripts/debug_output
 /acla_front/src/py-scripts/__pycache__
 
 # Frontend Python environments
 /acla_front/.venv/
 /acla_front/dist/
+/acla_ai_service/models/llm_datasets
+/acla_ai_service/telemetry_zarr_store
+/acla_ai_service/app/storage/telemetry_zarr_store
+/acla_ai_service/scripts/output
+/acla_ai_service/models/llm_adapters
+/acla_ai_service/models
+/acla_ai_service/scripts/telemetry_zarr_store
+/acla_ai_service/ui/segment_tabs/__pycache__
+/acla_ai_service/ui/segment_tabs/components/__pycache__
+/acla_ai_service/ui/__pycache__
+/acla_ai_service/app/services/llm/__pycache__
+/acla_ai_service/scripts/__pycache__
+/acla_ai_service/telemetry_data_cache
+/acla_ai_service/app/services/llm/agents/__pycache__
+/acla_ai_service/tests/__pycache__
+/acla_ai_service/app/services/llm/agent/__pycache__
+/acla_ai_service/app/services/llm/agent/backends/__pycache__
+/acla_ai_service/app/services/llm/agent/tools/__pycache__
+/acla_ai_service/app/services/llm/agent/sub_agents/__pycache__
+
+# Skill registry embedding cache (rebuilt on demand)
+/acla_ai_service/.cache/
+/acla_ai_service/app/services/llm/annotation/__pycache__
+/acla_ai_service/app/services/llm/annotation/flows/__pycache__
+/acla_ai_service/app/skills/__pycache__
+/acla_ai_service/app/skills/graph_analysis/__pycache__
+/acla_ai_service/app/skills/lap_annotation/__pycache__
+/acla_ai_service/app/skills/sub_label_catalog/__pycache__
+/acla_ai_service/app/services/llm/agent/runners/__pycache__
+/acla_ai_service/app/services/llm/annotation/agents/__pycache__
+/acla_ai_service/app/services/llm/annotation/tools/__pycache__
+/.claude
+/acla_ai_service/app/storage/telemetry_lance_store
+/acla_ai_service/app/storage/pipelines
+/acla_ai_service/app/pipelines/scripts/debug_output
+/acla_ai_service/app/storage

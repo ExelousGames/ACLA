@@ -1,4 +1,5 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Request, Inject, forwardRef } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseGuards, Request, Inject, forwardRef, Res, HttpException, HttpStatus } from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthGuard } from '@nestjs/passport';
 import { Types } from 'mongoose';
 import { UserSessionAiModelService } from './user-session-ai-model.service';
@@ -60,34 +61,55 @@ export class UserSessionAiModelController {
         return this.aiModelService.deleteModel(id);
     }
 
-    @UseGuards(AuthGuard('jwt'))
-    @Post('ai-query')
-    async processAIQuery(
-        @Body() body: {
-            question: string;
-            context?: any;
-        },
-        @Request() req: any
-    ) {
-        // Unified endpoint for AI queries - handles both model operations and model-related questions
-        // Examples:
-        // - "Train a new model for Monza" (ai_model_operation)
-        // - "Which of my models performs best for Monza?" (model_query)
-        // - General AI queries (general)
-
-        const queryRequest = {
-            question: body.question,
-            user_id: req?.user?.id,
-            context: {
-                ...body.context,
-            }
-        };
-
-        return this.aiModelService.processAIQuery(queryRequest);
-    }
-
     @Get('health')
     async healthCheck() {
         return await this.aiModelService.healthCheck();
+    }
+
+    /**
+     * Phase 2 — Neural text-to-speech (Kokoro) for AI chat responses.
+     * Replaces the browser's robotic window.speechSynthesis.
+     *
+     * Auth-protected: only logged-in users hit the AI service's TTS.
+     * Returns audio/wav bytes that the renderer plays via HTMLAudioElement.
+     */
+    @UseGuards(AuthGuard('jwt'))
+    @Post('voice-synthesize')
+    async voiceSynthesize(
+        @Body() body: {
+            text: string;
+            voice?: string;
+            speed?: number;
+            language?: string;
+        },
+        @Res() res: Response,
+    ) {
+        if (!body?.text || !body.text.trim()) {
+            throw new HttpException(
+                'voice-synthesize: "text" is required',
+                HttpStatus.BAD_REQUEST,
+            );
+        }
+
+        const wavBytes = await this.aiModelService.synthesizeVoice({
+            text: body.text,
+            voice: body.voice,
+            speed: body.speed,
+            language: body.language,
+        });
+
+        res.set({
+            'Content-Type': 'audio/wav',
+            'Content-Length': wavBytes.length.toString(),
+            'Cache-Control': 'no-store',
+        });
+        res.send(wavBytes);
+    }
+
+    /** Phase 2 — list available Kokoro voices (for a future voice picker UI). */
+    @UseGuards(AuthGuard('jwt'))
+    @Get('voices')
+    async listVoices() {
+        return await this.aiModelService.listVoices();
     }
 }

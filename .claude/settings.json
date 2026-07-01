@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c ' *)"
+    ],
+    "deny": [
+      "Read(.env.secrets)",
+      "Read(./.env.secrets)",
+      "Read(**/.env.secrets)",
+      "Edit(.env.secrets)",
+      "Edit(./.env.secrets)",
+      "Edit(**/.env.secrets)",
+      "Write(.env.secrets)",
+      "Write(./.env.secrets)",
+      "Write(**/.env.secrets)",
+      "Bash(cat *.env.secrets*)",
+      "Bash(* .env.secrets*)"
+    ]
+  }
+}

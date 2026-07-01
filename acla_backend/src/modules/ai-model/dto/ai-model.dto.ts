@@ -1,6 +1,4 @@
 export class CreateAiModelDto {
-    trackName?: string;
-    carName?: string;
     modelType: string;
     modelData: any;
     metadata?: any;
@@ -8,8 +6,6 @@ export class CreateAiModelDto {
 }
 
 export class UpdateAiModelDto {
-    trackName?: string;
-    carName?: string;
     modelType?: string;
     modelData?: any;
     metadata?: any;
@@ -18,7 +14,5 @@ export class UpdateAiModelDto {
 
 
 export class TelemetryDataDto {
-    trackName: string;
-    carName: string;
     telemetryData: Record<string, any>;
 }
