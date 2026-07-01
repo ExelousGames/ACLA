@@ -507,6 +507,7 @@ const summarizeRecordedSegment = (
     parent_label: getSegmentMainLabelText(segment, context.getLabelName),
     child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
     label_ids: segment.labels ?? [],
+    ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
     child_segments: (segment.child_segments || segment.sub_segments || [])
         .slice(0, 8)
         .map((child) => ({
@@ -514,6 +515,7 @@ const summarizeRecordedSegment = (
             end_index: child.end_index,
             labels: child.labels,
             label_names: child.labels.map((labelId) => context.getLabelName?.(labelId) || labelId),
+            ...(child.time_gap ? { time_gap: child.time_gap } : {}),
         })),
 });
 
@@ -585,6 +587,9 @@ const buildLiveRecordedAnalysisToolResult = (
             samples_analyzed: result.samples_analyzed,
             segment_count: result.segment_count,
             returned_segment_count: Math.min(segments.length, limit),
+            ...(typeof result.expert_time_available === 'boolean'
+                ? { expert_time_available: result.expert_time_available }
+                : {}),
             segments: segments.slice(0, limit).map((segment) => summarizeRecordedSegment(segment, context)),
         },
     };
@@ -837,7 +842,7 @@ export const frontendToolSchemas: FrontendToolSchema[] = [
     },
     {
         name: 'analyze_live_recorded_analysis',
-        description: 'Submit the already recorded baseline lap to live recorded analysis and return the compact classifier result. Returns an error until baseline collection has recorded a cached lap.',
+        description: 'Submit the already recorded baseline lap to live recorded analysis and return classified sections with time gaps when available. Returns an error until baseline collection has recorded a cached lap.',
         properties: {
             limit: {
                 type: 'integer',

@@ -21,7 +21,9 @@ def test_live_performance_tool_knowledge_is_loaded():
     assert "show_map_arguments" in tool("get_live_focus_section")["_raw_body"]
     assert tool("analyze_live_recorded_analysis")["title"] == "Analyzing baseline lap"
     assert "lap records to the recorded-session classifier" in tool("analyze_live_recorded_analysis")["_raw_body"]
-    assert "compact classifier result" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "compact analysis result" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "time_gap" in tool("analyze_live_recorded_analysis")["_raw_body"]
+    assert "top 3" not in tool("analyze_live_recorded_analysis")["_raw_body"].lower()
     assert "telemetry row counts" in tool("analyze_live_recorded_analysis")["_raw_body"]
     assert "A classified segment is a short portion of the baseline lap" in " ".join(tool("analyze_live_recorded_analysis")["_raw_body"].split())
     assert "marked with driving labels" in tool("analyze_live_recorded_analysis")["_raw_body"]

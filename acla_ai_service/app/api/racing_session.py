@@ -10,7 +10,11 @@ import asyncio
 import pandas as pd
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.racing_engineer.expert_actions import predict_expert_actions
-from app.ml.model_hub import get_opportunity_forecaster, get_segment_classifier
+from app.ml.model_hub import (
+    get_expert_imitation_learning,
+    get_opportunity_forecaster,
+    get_segment_classifier,
+)
 from app.services.user_session_analysis import analyze_user_sessions
 from app.shared.label_hierarchy import build_track_area_segments
 from app.shared.labels import (
@@ -88,9 +92,107 @@ class SegmentClassificationRequest(BaseModel):
     telemetry_data: List[Dict[str, Any]]
     track_name: Optional[str] = None
     car_name: Optional[str] = None
+
+class LiveBaselineAnalysisRequest(BaseModel):
+    track: Optional[str] = None
+    car: Optional[str] = None
+    baseline_lap: Optional[int] = None
+    records: List[Dict[str, Any]]
     
 # Initialize telemetry service
 telemetryMLService = Full_dataset_TelemetryMLService()
+
+EXPERT_TIME_DIFFERENCE_FIELD = "expert_time_difference"
+
+
+def _classify_telemetry_segments(
+    telemetry_data: List[Dict[str, Any]],
+    track_name: Optional[str],
+    include_empty_track_sections: bool = False,
+) -> List[Dict[str, Any]]:
+    dataframe = pd.DataFrame(telemetry_data)
+    predicted_segments = get_segment_classifier().scan_telemetry_data(dataframe)
+    raw_segments = []
+
+    for segment in predicted_segments:
+        segment_dict = segment.to_dict() if hasattr(segment, "to_dict") else dict(segment)
+        raw_segments.append({
+            "id": segment_dict.get("id"),
+            "labels": segment_dict.get("labels", []),
+            "start_index": segment_dict.get("start_index"),
+            "end_index": segment_dict.get("end_index"),
+        })
+
+    return build_track_area_segments(
+        raw_segments,
+        telemetry_data,
+        track_name,
+        include_empty_sections=include_empty_track_sections,
+    )
+
+
+def _extract_expert_rows(telemetry_data: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], bool]:
+    try:
+        expert_rows = get_expert_imitation_learning().extract_expert_state_for_telemetry(telemetry_data)
+        return expert_rows, any(
+            EXPERT_TIME_DIFFERENCE_FIELD in row
+            for row in expert_rows
+        )
+    except Exception:
+        return [], False
+
+
+def _build_time_gap(
+    expert_rows: List[Dict[str, Any]],
+    start_index: Any,
+    end_index: Any,
+) -> Optional[Dict[str, float]]:
+    if not expert_rows or start_index is None or end_index is None:
+        return None
+
+    try:
+        start = max(0, int(start_index))
+        end_exclusive = min(len(expert_rows), int(end_index))
+    except (TypeError, ValueError):
+        return None
+
+    if start >= len(expert_rows) or end_exclusive <= start:
+        return None
+
+    start_diff = expert_rows[start].get(EXPERT_TIME_DIFFERENCE_FIELD)
+    end_diff = expert_rows[end_exclusive - 1].get(EXPERT_TIME_DIFFERENCE_FIELD)
+    try:
+        start_ms = float(start_diff)
+        end_ms = float(end_diff)
+    except (TypeError, ValueError):
+        return None
+
+    return {
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "delta_ms": end_ms - start_ms,
+    }
+
+
+def _annotate_segments_with_time_gaps(
+    segments: List[Dict[str, Any]],
+    expert_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    annotated_segments: List[Dict[str, Any]] = []
+
+    for segment in segments:
+        annotated_segment = dict(segment)
+        time_gap = _build_time_gap(
+            expert_rows,
+            segment.get("start_index"),
+            segment.get("end_index"),
+        )
+        if time_gap is not None:
+            annotated_segment["time_gap"] = time_gap
+
+        annotated_segments.append(annotated_segment)
+
+    return annotated_segments
 
 
 @router.get("/labels")
@@ -204,24 +306,7 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
         if not request.telemetry_data:
             raise HTTPException(status_code=400, detail="telemetry_data is required")
 
-        dataframe = pd.DataFrame(request.telemetry_data)
-        predicted_segments = get_segment_classifier().scan_telemetry_data(dataframe)
-        raw_segments = []
-
-        for segment in predicted_segments:
-            segment_dict = segment.to_dict() if hasattr(segment, "to_dict") else dict(segment)
-            raw_segments.append({
-                "id": segment_dict.get("id"),
-                "labels": segment_dict.get("labels", []),
-                "start_index": segment_dict.get("start_index"),
-                "end_index": segment_dict.get("end_index"),
-            })
-
-        segments = build_track_area_segments(
-            raw_segments,
-            request.telemetry_data,
-            request.track_name,
-        )
+        segments = _classify_telemetry_segments(request.telemetry_data, request.track_name)
 
         return {
             "status": "success",
@@ -236,6 +321,39 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Segment classification failed: {str(e)}")
+
+
+@router.post("/live-baseline-analysis")
+async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[str, Any]:
+    try:
+        if not request.records:
+            raise HTTPException(status_code=400, detail="records is required")
+
+        segments = _classify_telemetry_segments(
+            request.records,
+            request.track,
+            include_empty_track_sections=True,
+        )
+        expert_rows, expert_time_available = _extract_expert_rows(request.records)
+        if expert_time_available:
+            segments = _annotate_segments_with_time_gaps(segments, expert_rows)
+
+        return {
+            "status": "success",
+            "session_id": f"live-baseline-lap-{request.baseline_lap}"
+                if request.baseline_lap is not None
+                else "live-baseline",
+            "samples_analyzed": len(request.records),
+            "segment_count": len(segments),
+            "segments": segments,
+            "expert_time_available": expert_time_available,
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Live baseline analysis failed: {str(e)}")
 
 
 @router.post("/analyze-user-sessions")

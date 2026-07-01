@@ -182,6 +182,7 @@ def build_track_area_segments(
     raw_segments: List[Dict[str, Any]],
     telemetry_data: Sequence[Dict[str, Any]],
     track_name: Optional[str],
+    include_empty_sections: bool = False,
 ) -> List[Dict[str, Any]]:
     """Build parent track-area segments with child analysis segments."""
     track_id = _track_id(track_name)
@@ -219,12 +220,12 @@ def build_track_area_segments(
 
             child_label_ids.extend(analysis_labels)
             child_segments.append({
-                "start_index": child_start,
-                "end_index": child_end,
+                "start_index": int(raw_start),
+                "end_index": int(raw_end),
                 "labels": _dedupe_label_ids(analysis_labels),
             })
 
-        if not child_segments:
+        if not child_segments and not include_empty_sections:
             continue
 
         segment_labels = _dedupe_label_ids([parent_label_id] + child_label_ids)

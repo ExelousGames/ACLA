@@ -1,9 +1,16 @@
 export type SegmentLabelResolver = (labelId: string) => string | undefined;
 
+export type SegmentTimeGap = {
+    start_ms: number;
+    end_ms: number;
+    delta_ms: number;
+};
+
 export type SegmentClassificationSubSegment = {
     start_index: number;
     end_index: number;
     labels: string[];
+    time_gap?: SegmentTimeGap;
 };
 
 export type SegmentClassificationSegment = {
@@ -17,6 +24,7 @@ export type SegmentClassificationSegment = {
     sub_labels?: string[];
     sub_segments?: SegmentClassificationSubSegment[];
     child_segments?: SegmentClassificationSubSegment[];
+    time_gap?: SegmentTimeGap;
 };
 
 export const getSegmentLabelText = (labelId: string, resolveLabel?: SegmentLabelResolver): string => (

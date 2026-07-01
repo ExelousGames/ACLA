@@ -18,6 +18,7 @@ describe('RacingSessionController', () => {
     };
     aiServiceClient = {
       classifySegments: jest.fn(),
+      analyzeLiveRecordedAnalysis: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -110,5 +111,58 @@ describe('RacingSessionController', () => {
       track_name: 'Brands Hatch',
       car_name: 'BMW',
     });
+  });
+
+  it('forwards live baseline records for analysis', async () => {
+    aiServiceClient.analyzeLiveRecordedAnalysis.mockResolvedValue({
+      status: 'success',
+      session_id: 'live-baseline-lap-2',
+      samples_analyzed: 1,
+      segment_count: 0,
+      segments: [],
+      expert_time_available: false,
+    });
+
+    await expect(
+      controller.analyzeLiveRecordedAnalysis(
+        { user: { userId: 'user-1' } },
+        {
+          track: 'brands_hatch',
+          car: 'Ferrari 296',
+          baseline_lap: 2,
+          records: [{ speed: 120 }],
+        },
+      ),
+    ).resolves.toEqual({
+      status: 'success',
+      session_id: 'live-baseline-lap-2',
+      samples_analyzed: 1,
+      segment_count: 0,
+      segments: [],
+      expert_time_available: false,
+    });
+
+    expect(aiServiceClient.analyzeLiveRecordedAnalysis).toHaveBeenCalledWith({
+      track: 'brands_hatch',
+      car: 'Ferrari 296',
+      baseline_lap: 2,
+      records: [{ speed: 120 }],
+    });
+  });
+
+  it('rejects empty live baseline records', async () => {
+    await expect(
+      controller.analyzeLiveRecordedAnalysis(
+        { user: { userId: 'user-1' } },
+        {
+          track: 'brands_hatch',
+          car: 'Ferrari 296',
+          baseline_lap: 2,
+          records: [],
+        },
+      ),
+    ).rejects.toThrow('records is required');
+
+    expect(aiServiceClient.analyzeLiveRecordedAnalysis).not.toHaveBeenCalled();
   });
 });

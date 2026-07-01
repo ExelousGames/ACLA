@@ -144,10 +144,17 @@ export class SegmentClassificationRequestDto {
     session_id: string;
 }
 
+export class LiveBaselineTimeGapDto {
+    start_ms: number;
+    end_ms: number;
+    delta_ms: number;
+}
+
 export class SegmentClassificationSubSegmentDto {
     start_index: number;
     end_index: number;
     labels: string[];
+    time_gap?: LiveBaselineTimeGapDto;
 }
 
 export class SegmentClassificationSegmentDto {
@@ -159,6 +166,7 @@ export class SegmentClassificationSegmentDto {
     sub_labels: string[];
     sub_segments: SegmentClassificationSubSegmentDto[];
     child_segments?: SegmentClassificationSubSegmentDto[];
+    time_gap?: LiveBaselineTimeGapDto;
 }
 
 export class SegmentClassificationResponseDto {
@@ -167,4 +175,15 @@ export class SegmentClassificationResponseDto {
     samples_analyzed: number;
     segment_count: number;
     segments: SegmentClassificationSegmentDto[];
+}
+
+export class LiveBaselineAnalysisRequestDto {
+    track?: string;
+    car?: string;
+    baseline_lap?: number;
+    records: { [key: string]: any }[];
+}
+
+export class LiveBaselineAnalysisResponseDto extends SegmentClassificationResponseDto {
+    expert_time_available: boolean;
 }

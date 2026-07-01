@@ -1849,6 +1849,7 @@ describe('ai command registry live performance analyst tools', () => {
                 session_id: 'live-baseline',
                 samples_analyzed: 2,
                 segment_count: 1,
+                expert_time_available: true,
                 segments: [
                     {
                         id: 'live-segment-1',
@@ -1856,7 +1857,18 @@ describe('ai command registry live performance analyst tools', () => {
                         end_index: 1,
                         main_label_id: 'brands_hatch2',
                         labels: ['brands_hatch2', 'late_brake'],
-                        child_segments: [],
+                        child_segments: [
+                            {
+                                start_index: 0,
+                                end_index: 2,
+                                labels: ['late_brake'],
+                                time_gap: {
+                                    start_ms: 0,
+                                    end_ms: 125,
+                                    delta_ms: 125,
+                                },
+                            },
+                        ],
                     },
                 ],
             },
@@ -1909,6 +1921,24 @@ describe('ai command registry live performance analyst tools', () => {
         expect(result).toMatchObject({
             status: 'ready',
             source: 'baseline_lap_record',
+            analysis: {
+                expert_time_available: true,
+                segments: [
+                    expect.objectContaining({
+                        child_segments: [
+                            expect.objectContaining({
+                                start_index: 0,
+                                end_index: 2,
+                                time_gap: {
+                                    start_ms: 0,
+                                    end_ms: 125,
+                                    delta_ms: 125,
+                                },
+                            }),
+                        ],
+                    }),
+                ],
+            },
         });
         expect(apiService.post).toHaveBeenCalledWith(
             '/racing-session/analyze-live-recorded-analysis',
@@ -1927,6 +1957,24 @@ describe('ai command registry live performance analyst tools', () => {
             analysis: expect.objectContaining({
                 status: 'ready',
                 source: 'baseline_lap_record',
+                analysis: expect.objectContaining({
+                    expert_time_available: true,
+                    segments: expect.arrayContaining([
+                        expect.objectContaining({
+                            child_segments: [
+                                expect.objectContaining({
+                                    start_index: 0,
+                                    end_index: 2,
+                                    time_gap: {
+                                        start_ms: 0,
+                                        end_ms: 125,
+                                        delta_ms: 125,
+                                    },
+                                }),
+                            ],
+                        }),
+                    ]),
+                }),
             }),
         }));
     });

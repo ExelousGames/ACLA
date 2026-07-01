@@ -1,13 +1,13 @@
 import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, HttpException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, TrackCornerKnowledgeRequestDto, TrackCornerKnowledgeResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, TrackCornerKnowledgeRequestDto, TrackCornerKnowledgeResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto, LiveBaselineAnalysisRequestDto, LiveBaselineAnalysisResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest, TrackCornerKnowledgeRequest, AiLabelsResponse } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest, TrackCornerKnowledgeRequest, AiLabelsResponse, LiveBaselineAnalysisRequest } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -612,6 +612,37 @@ export class RacingSessionController {
             }
             console.error('Track corner knowledge failed:', error);
             throw new BadRequestException(`Failed to get track corner knowledge: ${error.message}`);
+        }
+    }
+
+    @UseGuards(AuthGuard('jwt'))
+    @Post('analyze-live-recorded-analysis')
+    async analyzeLiveRecordedAnalysis(
+        @Request() req,
+        @Body() body: LiveBaselineAnalysisRequestDto
+    ): Promise<LiveBaselineAnalysisResponseDto> {
+        try {
+            if (!req.user?.userId) {
+                throw new BadRequestException('Authenticated user id is required');
+            }
+            if (!Array.isArray(body.records) || body.records.length === 0) {
+                throw new BadRequestException('records is required');
+            }
+
+            const analysisRequest: LiveBaselineAnalysisRequest = {
+                track: body.track,
+                car: body.car,
+                baseline_lap: body.baseline_lap,
+                records: body.records,
+            };
+
+            return await this.aiServiceClient.analyzeLiveRecordedAnalysis(analysisRequest);
+        } catch (error) {
+            if (error instanceof BadRequestException || error instanceof HttpException) {
+                throw error;
+            }
+            console.error('Live recorded analysis failed:', error);
+            throw new BadRequestException(`Failed to analyze live recorded baseline: ${error.message}`);
         }
     }
 

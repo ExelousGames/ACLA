@@ -8,6 +8,7 @@ export type SegmentClassificationResult = {
     samples_analyzed: number;
     segment_count: number;
     segments: SegmentClassificationSegment[];
+    expert_time_available?: boolean;
 };
 
 export type RecordedActiveSegmentSummary = {
@@ -61,6 +62,9 @@ export const normalizeSegmentClassificationResult = (
     samples_analyzed: Number(result?.samples_analyzed) || 0,
     session_id: result?.session_id || sessionId,
     status: result?.status || 'success',
+    ...(typeof result?.expert_time_available === 'boolean'
+        ? { expert_time_available: result.expert_time_available }
+        : {}),
 });
 
 export const getRecordedAnalysisStateForResult = (

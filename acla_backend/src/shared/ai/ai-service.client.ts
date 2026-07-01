@@ -134,10 +134,17 @@ export interface SegmentClassificationRequest {
     car_name?: string;
 }
 
+export interface LiveBaselineTimeGap {
+    start_ms: number;
+    end_ms: number;
+    delta_ms: number;
+}
+
 export interface SegmentClassificationSubSegment {
     start_index: number;
     end_index: number;
     labels: string[];
+    time_gap?: LiveBaselineTimeGap;
 }
 
 export interface SegmentClassificationSegment {
@@ -151,6 +158,7 @@ export interface SegmentClassificationSegment {
     sub_labels: string[];
     sub_segments: SegmentClassificationSubSegment[];
     child_segments?: SegmentClassificationSubSegment[];
+    time_gap?: LiveBaselineTimeGap;
 }
 
 export interface SegmentClassificationResponse {
@@ -159,6 +167,17 @@ export interface SegmentClassificationResponse {
     samples_analyzed: number;
     segment_count: number;
     segments: SegmentClassificationSegment[];
+}
+
+export interface LiveBaselineAnalysisRequest {
+    track?: string;
+    car?: string;
+    baseline_lap?: number;
+    records: { [key: string]: any }[];
+}
+
+export interface LiveBaselineAnalysisResponse extends SegmentClassificationResponse {
+    expert_time_available: boolean;
 }
 
 export interface AiLabelsResponse {
@@ -299,6 +318,23 @@ export class AiServiceClient {
             const status = axiosError?.response?.status || HttpStatus.SERVICE_UNAVAILABLE;
             throw new HttpException(
                 `AI Service segment classification failed: ${detail}`,
+                status
+            );
+        }
+    }
+
+    async analyzeLiveRecordedAnalysis(request: LiveBaselineAnalysisRequest): Promise<LiveBaselineAnalysisResponse> {
+        try {
+            const response = await axios.post(`${this.aiServiceUrl}/racing-session/live-baseline-analysis`, request);
+            return response.data;
+        } catch (error) {
+            const axiosError = error as any;
+            const detail = axiosError?.response?.data?.detail
+                || axiosError?.response?.data?.message
+                || axiosError?.message;
+            const status = axiosError?.response?.status || HttpStatus.SERVICE_UNAVAILABLE;
+            throw new HttpException(
+                `AI Service live baseline analysis failed: ${detail}`,
                 status
             );
         }
