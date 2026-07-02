@@ -28,10 +28,6 @@ Phase 3b additions:
       the same tool implementations.
 
 Known limitations (deferred):
-    - Side products from tools (e.g. _guidance_enabled, _track_corner_data)
-      are LOGGED but not surfaced over the WS — the voice path has no UI
-      side-channel. Voice users hear spoken guidance but won't trigger
-      the in-chat track-guide UI overlay.
     - No per-user conversation history persistence — each WS = fresh context.
 """
 
@@ -578,9 +574,8 @@ def _make_tool_handler(
     * Everything else → forwarded to ``tool_executor`` (server-side path,
       typically ``AIService._execute_function``).
 
-    Both paths share the side-product filter (underscore-prefixed keys are
-    logged but not sent back to the LLM) so server-side and frontend-side
-    tools behave consistently from the LLM's perspective.
+    Both paths pass tool returns through unchanged so the LLM sees exactly
+    what the frontend or server-side executor returned.
 
     Each call also emits ``tool_event`` text frames (started + completed)
     on the same WS so the chat UI can render a "tool box" with the
@@ -606,9 +601,9 @@ def _make_tool_handler(
 
         Shared by native Pipecat ``register_function`` calls. Emits
         tool_event start/complete frames, routes frontend vs. server tools,
-        filters underscore-prefixed side
-        products, and logs the result. Never raises — failures come back as
-        ``{"error": ...}`` so Pipecat can hand the result back cleanly.
+        leaves the tool return unchanged, and logs the result. Never raises —
+        failures come back as ``{"error": ...}`` so Pipecat can hand the
+        result back cleanly.
         """
         title = _tool_title(function_name)
         arguments = arguments or {}
@@ -656,21 +651,10 @@ def _make_tool_handler(
             })
             return {"error": error_msg}
 
-        # Side-product filter — underscore-prefixed keys never reach the LLM.
-        if isinstance(result, dict):
-            public = {k: v for k, v in result.items() if not k.startswith("_")}
-            side_products = {k: v for k, v in result.items() if k.startswith("_")}
-            if side_products:
-                LOGGER.info(
-                    "Voice tool %s produced side products (not forwarded to LLM): %s",
-                    function_name, list(side_products.keys()),
-                )
-            payload = public if public else result
-            if isinstance(payload, dict) and "error" in payload:
-                ok = False
-                error_msg = str(payload.get("error"))
-        else:
-            payload = result
+        payload = result
+        if isinstance(payload, dict) and "error" in payload:
+            ok = False
+            error_msg = str(payload.get("error"))
 
         await _emit_tool_event({
             "name": function_name,

@@ -132,12 +132,13 @@ class ToolRelay:
         name: str,
         arguments: Optional[Dict[str, Any]] = None,
         timeout: float = 10.0,
-    ) -> Dict[str, Any]:
+    ) -> Any:
         """Send a ``tool_call`` and await the response.
 
-        Returns the ``result`` payload on success. On send-failure / timeout /
-        cancellation, returns ``{"error": "<reason>"}`` — never raises — so
-        the LLM tool handler can hand the dict back to Pipecat unchanged.
+        Returns the ``result`` payload unchanged on success. On send-failure /
+        timeout / cancellation, returns ``{"error": "<reason>"}`` — never
+        raises — so the LLM tool handler can hand the dict back to Pipecat
+        unchanged.
         """
         state = self._by_conn.get(id(conn))
         if state is None:
@@ -195,8 +196,7 @@ class ToolRelay:
             if future is None or future.done():
                 return
             if frame_type == "tool_result":
-                result = payload.get("result")
-                future.set_result(result if isinstance(result, dict) else {"result": result})
+                future.set_result(payload.get("result"))
             else:
                 future.set_result({"error": str(payload.get("error", "unknown"))})
             return
