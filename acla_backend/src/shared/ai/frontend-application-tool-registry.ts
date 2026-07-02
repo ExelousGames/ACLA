@@ -20,14 +20,6 @@ export const FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA = {
     required: ['type'],
 } as const;
 
-export const FRONTEND_APPLICATION_TOOL_RESULT_HANDLING = [
-    'Tools may return a status field such as running, complete, failed, blocked, or skipped.',
-    'Treat complete or ok=true as a successful result and use the returned result/data payload.',
-    'Treat running as not ready yet; wait for the final result instead of answering from partial data.',
-    'Treat failed, blocked, or skipped as unavailable and explain the issue or choose another available tool.',
-    'If no status is present, treat an error field as failed; otherwise treat the payload as a completed result.',
-].join(' ');
-
 const TELEMETRY_METRIC_PHYSICS_FIELDS = [
     'Physics_pad_life_front_left',
     'Physics_wheel_angular_s_front_left',

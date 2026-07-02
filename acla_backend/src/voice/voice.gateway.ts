@@ -9,7 +9,6 @@ import { URL } from 'url';
 import { WebSocket as WsClient, RawData } from 'ws';
 import {
     FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
-    FRONTEND_APPLICATION_TOOL_RESULT_HANDLING,
     getAiToolMetadataForSessionContext,
     getFrontendApplicationToolsForSessionContext,
 } from '../shared/ai/frontend-application-tool-registry';
@@ -93,14 +92,15 @@ export class VoiceGateway implements OnGatewayConnection {
         const sessionContext = payload.session_context && typeof payload.session_context === 'object'
             ? payload.session_context
             : {};
+        const frontendInfo = { ...payload };
+        delete frontendInfo.tool_result_handling;
 
         return {
             data: JSON.stringify({
-                ...payload,
+                ...frontendInfo,
                 tools: getFrontendApplicationToolsForSessionContext(sessionContext),
                 tool_metadata: getAiToolMetadataForSessionContext(sessionContext),
                 query_scope_schema: FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
-                tool_result_handling: FRONTEND_APPLICATION_TOOL_RESULT_HANDLING,
             }),
             isBinary: false,
         };
