@@ -150,7 +150,8 @@ async def voice_stream(
     * **Binary frames** — raw PCM16 mono audio (mic in / Kokoro TTS out).
       Consumed by Pipecat's transport unchanged.
     * **Text frames** — JSON tool-relay messages (``tool_call`` /
-      ``tool_result`` / ``tool_error`` / ``observation``) — see
+      ``tool_result`` / ``user_text`` /
+      ``session_context``) — see
       :mod:`app.voice.tool_relay`. Routed off the audio path before
       Pipecat sees them.
 
@@ -418,7 +419,7 @@ class _TextFilteringWebSocket:
                     continue
                 # Pass ``self`` (the proxy) — the relay binds against this
                 # same identity inside build_voice_pipeline_task, so the
-                # call_id-to-future map and observation_sink find it.
+                # inbound text-frame sinks find it.
                 relay.handle_text_frame(self, payload)
                 continue
             return msg

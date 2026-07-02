@@ -18,7 +18,6 @@ export const FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA = {
         end: { type: 'integer' },
     },
     required: ['type'],
-    additionalProperties: false,
 } as const;
 
 export const FRONTEND_APPLICATION_TOOL_RESULT_HANDLING = [

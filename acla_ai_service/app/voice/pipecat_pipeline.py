@@ -103,8 +103,8 @@ def _format_tool_result_handling_for_prompt(
     tool_result_handling: Optional[str],
 ) -> str:
     # Legacy handshake field kept for compatibility. Frontend tools are now
-    # fire-and-forget; AI-visible frontend data returns via observation/user
-    # text/session-context frames instead of same-turn tool results.
+    # fire-and-forget; AI-visible frontend data returns via tool payload,
+    # user_text, or session_context frames instead of same-turn tool results.
     _ = tool_result_handling
     return ""
 
@@ -217,6 +217,13 @@ def _compact_json(value: Any, *, max_chars: int = 3000) -> str:
     return f"{encoded[:max_chars]}...<truncated>"
 
 
+def _json_for_prompt(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
+
+
 def _as_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -278,28 +285,21 @@ def _format_procedure_plan_for_prompt(plan: Dict[str, Any]) -> str:
         "Procedure plan mode is active. "
         f"Current plan: {_compact_json(plan)}\n"
         "Plan-mode rule: the application owns visible plan state and executable "
-        "subscribed requests. When an observation or the active request state "
+        "subscribed requests. When tool results, session context, or the active request state "
         "shows the current request is ready, complete, or executable now, call "
         "`advance_plan_step` before speaking. Tool calls are "
-        "fire-and-forget; use the later observation or user message "
+        "fire-and-forget; use later tool results or user messages "
         "for the response and next decision. Do not clear, skip, or abandon "
         "the plan unless the driver explicitly asks to opt out."
     )
 
 
-def _format_observation_for_prompt(
+def _format_tool_payload_for_prompt(
     data: Dict[str, Any],
     session_context: Optional[Dict[str, Any]],
 ) -> str:
-    text = str(data.get("text") or "").strip()
-    if not text:
-        text = f"event={data.get('event', 'observation')}"
-
-    plan = _extract_procedure_plan(data, session_context)
-    if not plan:
-        return text
-
-    return f"{text}\n\n{_format_procedure_plan_for_prompt(plan)}"
+    _ = session_context
+    return _json_for_prompt(data)
 
 
 # ----------------------------------------------------------------------
@@ -901,7 +901,7 @@ def _build_transcript_observer():
         ``LLMFullResponseStartFrame`` and ``LLMFullResponseEndFrame`` and
         emits one ``assistant_transcript`` per turn.
 
-    All frames pass through unchanged — this processor is observation-only.
+    All frames pass through unchanged — this processor only mirrors transcripts.
     """
     import json as _json
     from pipecat.frames.frames import (
@@ -1081,7 +1081,7 @@ async def build_voice_pipeline_task(
     `PipelineRunner.run(task)`.
 
     Side effect: registers the WebSocket with :mod:`app.voice.tool_relay`
-    so frontend tool calls and observation pushes routed via text frames
+    so frontend tool calls and tool payloads routed via text frames
     reach this session's LLM context. The caller (api/voice.py) is
     responsible for unbinding on session end.
 
@@ -1316,11 +1316,10 @@ async def build_voice_pipeline_task(
         ),
     )
     task_ref["task"] = task
-    # --- Observation sink (frontend monitoring-agent pushes) ----------------
-    # When the frontend WS sends {"type":"observation","data":{"text":"..."}},
-    # the relay calls this sink. The frontend owns observation formatting; the
-    # backend injects the final text as a synthetic user turn and triggers the
-    # LLM to respond.
+    # --- Frontend tool payload sink ----------------------------------------
+    # Frontend tools are fire-and-forget. When the frontend later sends a
+    # tool_result, the relay calls this sink. The backend injects
+    # that payload as a synthetic user turn and triggers the LLM to respond.
     loop = asyncio.get_running_loop()
 
     def _remember_session_context(session_context: Dict[str, Any]) -> None:
@@ -1337,15 +1336,15 @@ async def build_voice_pipeline_task(
                 "content": _format_procedure_plan_for_prompt(plan),
             })
 
-    def observation_sink(data: dict) -> None:
+    def tool_payload_sink(data: dict) -> None:
         if not isinstance(data, dict):
-            LOGGER.warning("observation_sink: dropped non-object observation")
+            LOGGER.warning("tool_payload_sink: dropped non-object tool payload")
             return
-        text = _format_observation_for_prompt(data, latest_session_context["value"])
+        text = _format_tool_payload_for_prompt(data, latest_session_context["value"])
         if not text:
-            LOGGER.warning("observation_sink: dropped observation without formatted text")
+            LOGGER.warning("tool_payload_sink: dropped tool payload without formatted text")
             return
-        context.add_message({"role": "user", "content": f"[OBSERVATION] {text}"})
+        context.add_message({"role": "user", "content": text})
         # Trigger the LLM to generate a response now (don't wait for the
         # next spoken user turn). Best-effort across Pipecat versions:
         # LLMRunFrame is the canonical trigger; fall back to a transcription
@@ -1357,11 +1356,11 @@ async def build_voice_pipeline_task(
             try:
                 from pipecat.frames.frames import TranscriptionFrame
                 loop.create_task(task.queue_frame(
-                    TranscriptionFrame(text="", user_id="observation", timestamp="")
+                    TranscriptionFrame(text="", user_id="tool_payload", timestamp="")
                 ))
             except Exception:
                 LOGGER.exception(
-                    "observation_sink: could not push trigger frame; "
+                    "tool_payload_sink: could not push trigger frame; "
                     "message appended to context but LLM won't fire until "
                     "the next spoken user turn"
                 )
@@ -1369,10 +1368,9 @@ async def build_voice_pipeline_task(
     def user_text_sink(text: str) -> None:
         """Inject a typed chat message as a synthetic user turn.
 
-        Same path as observation_sink minus the [OBSERVATION] framing —
-        the LLM treats it as if the driver had spoken it. We also echo a
-        ``user_transcript`` text frame back so the UI shows the typed
-        message immediately, even before the LLM responds.
+        The LLM treats it as if the driver had spoken it. We also echo a
+        ``user_transcript`` text frame back so the UI shows the typed message
+        immediately, even before the LLM responds.
         """
         import time as _time
         LOGGER.info("[LAT-DIAG] user_text_in t=%.3f chars=%d", _time.monotonic(), len(text))
@@ -1398,7 +1396,7 @@ async def build_voice_pipeline_task(
     get_relay().bind(
         websocket,
         send_text=_send_text,
-        observation_sink=observation_sink,
+        tool_payload_sink=tool_payload_sink,
         user_text_sink=user_text_sink,
         session_context_sink=_remember_session_context,
     )

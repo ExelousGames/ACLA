@@ -2,12 +2,12 @@
 
 Backend and frontend share the same ``/voice/stream`` WebSocket. Binary
 frames carry PCM audio for Pipecat. Text frames carry JSON control messages
-for frontend tool calls, observations, typed user text, and session context.
+for frontend tool calls/results, typed user text, and session context.
 
 Frontend tool calls are fire-and-forget from the AI service perspective. The
 relay sends a ``tool_call`` frame to the frontend and does not wait for a
 matching result. Later AI-visible data should come back through
-``observation`` / ``user_text`` / ``session_context`` frames.
+``tool_result`` / ``user_text`` / ``session_context`` frames.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 LOGGER = logging.getLogger(__name__)
 
 SendText = Callable[[str], Awaitable[None]]
-ObservationSink = Callable[[Dict[str, Any]], Any]
+ToolPayloadSink = Callable[[Dict[str, Any]], Any]
 UserTextSink = Callable[[str], Any]
 SessionContextSink = Callable[[Dict[str, Any]], Any]
 
@@ -30,7 +30,7 @@ class _ConnectionState:
 
     __slots__ = (
         "send_text",
-        "observation_sink",
+        "tool_payload_sink",
         "user_text_sink",
         "session_context_sink",
     )
@@ -38,12 +38,12 @@ class _ConnectionState:
     def __init__(
         self,
         send_text: SendText,
-        observation_sink: ObservationSink,
+        tool_payload_sink: ToolPayloadSink,
         user_text_sink: Optional[UserTextSink] = None,
         session_context_sink: Optional[SessionContextSink] = None,
     ) -> None:
         self.send_text = send_text
-        self.observation_sink = observation_sink
+        self.tool_payload_sink = tool_payload_sink
         self.user_text_sink = user_text_sink
         self.session_context_sink = session_context_sink
 
@@ -58,13 +58,13 @@ class ToolRelay:
         self,
         conn: Any,
         send_text: SendText,
-        observation_sink: ObservationSink,
+        tool_payload_sink: ToolPayloadSink,
         user_text_sink: Optional[UserTextSink] = None,
         session_context_sink: Optional[SessionContextSink] = None,
     ) -> None:
         """Register a connection and its inbound text-frame sinks."""
         self._by_conn[id(conn)] = _ConnectionState(
-            send_text, observation_sink, user_text_sink, session_context_sink,
+            send_text, tool_payload_sink, user_text_sink, session_context_sink,
         )
 
     def unbind(self, conn: Any) -> None:
@@ -107,8 +107,8 @@ class ToolRelay:
     def handle_text_frame(self, conn: Any, payload: Dict[str, Any]) -> None:
         """Route one inbound text frame.
 
-        Legacy ``tool_result`` / ``tool_error`` frames are ignored because
-        frontend tool calls are no longer backend-awaited RPCs.
+        Tool payload frames are forwarded to the AI-visible sink as raw data;
+        the sink is responsible for serializing them into the model context.
         """
         state = self._by_conn.get(id(conn))
         if state is None:
@@ -116,16 +116,11 @@ class ToolRelay:
 
         frame_type = payload.get("type")
 
-        if frame_type in ("tool_result", "tool_error"):
-            LOGGER.debug("tool_relay: ignored legacy %s frame", frame_type)
-            return
-
-        if frame_type == "observation":
-            data = payload.get("data") or {}
+        if frame_type == "tool_result":
             try:
-                state.observation_sink(data)
+                state.tool_payload_sink(payload)
             except Exception:
-                LOGGER.exception("tool_relay: observation_sink raised")
+                LOGGER.exception("tool_relay: tool payload sink raised")
             return
 
         if frame_type == "user_text":

@@ -32,25 +32,74 @@ async def test_send_tool_call_sends_frame_and_returns_without_result():
 
 
 @pytest.mark.asyncio
-async def test_legacy_tool_result_is_ignored():
+async def test_tool_result_is_forwarded_as_ai_visible_payload():
     relay = ToolRelay()
     conn = object()
-    observations = []
+    payloads = []
 
     async def send_text(payload: str) -> None:
         _ = payload
 
-    relay.bind(conn, send_text, observations.append)
+    relay.bind(conn, send_text, payloads.append)
 
     relay.handle_text_frame(conn, {
         "type": "tool_result",
-        "id": "legacy",
-        "result": {"ok": True},
+        "id": "call-1",
+        "name": "frontend_classifier",
+        "result": {
+            "ok": True,
+            "label": "understeering_at_entry",
+            "metadata": {"confidence": 0.92},
+        },
     })
+
+    assert payloads == [{
+        "type": "tool_result",
+        "id": "call-1",
+        "name": "frontend_classifier",
+        "result": {
+            "ok": True,
+            "label": "understeering_at_entry",
+            "metadata": {"confidence": 0.92},
+        },
+    }]
+
+
+@pytest.mark.asyncio
+async def test_unknown_frame_is_not_forwarded_to_ai_visible_payloads():
+    relay = ToolRelay()
+    conn = object()
+    payloads = []
+
+    async def send_text(payload: str) -> None:
+        _ = payload
+
+    relay.bind(conn, send_text, payloads.append)
+
     relay.handle_text_frame(conn, {
-        "type": "observation",
-        "data": {"text": "frontend data"},
+        "type": "legacy_frame",
+        "data": {"event": "legacy_frame"},
     })
 
-    assert observations == [{"text": "frontend data"}]
+    assert payloads == []
 
+
+@pytest.mark.asyncio
+async def test_tool_error_is_not_forwarded_to_ai_visible_payloads():
+    relay = ToolRelay()
+    conn = object()
+    payloads = []
+
+    async def send_text(payload: str) -> None:
+        _ = payload
+
+    relay.bind(conn, send_text, payloads.append)
+
+    relay.handle_text_frame(conn, {
+        "type": "tool_error",
+        "id": "call-1",
+        "name": "frontend_classifier",
+        "error": {"message": "failed"},
+    })
+
+    assert payloads == []

@@ -7,7 +7,7 @@ import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { UserInfoService } from '../user-info/user-info.service';
 import { UserACCTrackAIModel } from 'src/schemas/session-ai-model.schema';
-import { AiServiceClient, ModelsConfig, TrainModelsResponse, ImitationLearningGuidanceRequest, OpportunityForecastRequest, TrackCornerKnowledgeRequest, AiLabelsResponse, LiveBaselineAnalysisRequest } from '../../shared/ai/ai-service.client';
+import { AiServiceClient, ModelsConfig, TrainModelsResponse, AiLabelsResponse } from '../../shared/ai/ai-service.client';
 import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
@@ -514,21 +514,11 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('imitation-learning-guidance')
     async getImitationLearningGuidance(
-        @Request() req,
-        @Body() body: ImitationLearningGuidanceRequestDto
+        @Body() body: ImitationLearningGuidanceRequestDto & Record<string, any>
     ): Promise<ImitationLearningGuidanceResponseDto> {
         try {
-
-            // Prepare request for AI service
-            const guidanceRequest: ImitationLearningGuidanceRequest = {
-                current_telemetry: body.current_telemetry,
-                track_name: body.track_name,
-                car_name: body.car_name,
-                user_id: body.user_id || req.user?.email // Use authenticated user's email if not provided
-            };
-
             // Call AI service for imitation learning guidance
-            const response = await this.aiServiceClient.getImitationLearningGuidance(guidanceRequest);
+            const response = await this.aiServiceClient.getImitationLearningGuidance(body as any);
 
             return {
                 message: response.message,
@@ -559,21 +549,14 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('opportunity-forecast')
     async getOpportunityForecast(
-        @Request() req,
-        @Body() body: OpportunityForecastRequestDto
+        @Body() body: OpportunityForecastRequestDto & Record<string, any>
     ): Promise<OpportunityForecastResponseDto> {
         try {
             if (!Array.isArray(body.telemetry_data) || body.telemetry_data.length === 0) {
                 throw new BadRequestException('telemetry_data is required');
             }
 
-            const forecastRequest: OpportunityForecastRequest = {
-                telemetry_data: body.telemetry_data,
-                horizon_seconds: body.horizon_seconds ?? 10,
-                top_k: body.top_k ?? 3
-            };
-
-            return await this.aiServiceClient.getOpportunityForecast(forecastRequest);
+            return await this.aiServiceClient.getOpportunityForecast(body as any);
         } catch (error) {
             if (error instanceof BadRequestException) {
                 throw error;
@@ -586,8 +569,7 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('track-corner-knowledge')
     async getTrackCornerKnowledge(
-        @Request() req,
-        @Body() body: TrackCornerKnowledgeRequestDto
+        @Body() body: TrackCornerKnowledgeRequestDto & Record<string, any>
     ): Promise<TrackCornerKnowledgeResponseDto> {
         try {
             if (!body.track_name) {
@@ -597,15 +579,7 @@ export class RacingSessionController {
                 throw new BadRequestException('corner_name is required');
             }
 
-            const knowledgeRequest: TrackCornerKnowledgeRequest = {
-                track_name: body.track_name,
-                corner_name: body.corner_name,
-                normalized_position: body.normalized_position,
-                trigger_position: body.trigger_position,
-                current_telemetry: body.current_telemetry
-            };
-
-            return await this.aiServiceClient.getTrackCornerKnowledge(knowledgeRequest);
+            return await this.aiServiceClient.getTrackCornerKnowledge(body as any);
         } catch (error) {
             if (error instanceof BadRequestException || error instanceof HttpException) {
                 throw error;
@@ -619,7 +593,7 @@ export class RacingSessionController {
     @Post('analyze-live-recorded-analysis')
     async analyzeLiveRecordedAnalysis(
         @Request() req,
-        @Body() body: LiveBaselineAnalysisRequestDto
+        @Body() body: LiveBaselineAnalysisRequestDto & Record<string, any>
     ): Promise<LiveBaselineAnalysisResponseDto> {
         try {
             if (!req.user?.userId) {
@@ -629,14 +603,7 @@ export class RacingSessionController {
                 throw new BadRequestException('records is required');
             }
 
-            const analysisRequest: LiveBaselineAnalysisRequest = {
-                track: body.track,
-                car: body.car,
-                baseline_lap: body.baseline_lap,
-                records: body.records,
-            };
-
-            return await this.aiServiceClient.analyzeLiveRecordedAnalysis(analysisRequest);
+            return await this.aiServiceClient.analyzeLiveRecordedAnalysis(body as any);
         } catch (error) {
             if (error instanceof BadRequestException || error instanceof HttpException) {
                 throw error;
@@ -649,31 +616,14 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('segment-classification')
     async classifySessionSegments(
-        @Request() req,
-        @Body() body: SegmentClassificationRequestDto
+        @Body() body: SegmentClassificationRequestDto & Record<string, any>
     ): Promise<SegmentClassificationResponseDto> {
         try {
-            const sessionId = body.session_id || (body as any).sessionId;
-            if (!sessionId) {
-                throw new BadRequestException('session_id is required');
+            if (!Array.isArray(body.telemetry_data) || body.telemetry_data.length === 0) {
+                throw new BadRequestException('telemetry_data is required');
             }
 
-            const userId = req.user?.userId;
-            if (!userId) {
-                throw new BadRequestException('Authenticated user id is required');
-            }
-
-            const sessionPayload = await this.racingSessionService.getSessionTelemetryForClassification(
-                userId,
-                sessionId,
-            );
-
-            return await this.aiServiceClient.classifySegments({
-                session_id: sessionPayload.sessionId,
-                telemetry_data: sessionPayload.telemetryData,
-                track_name: sessionPayload.trackName,
-                car_name: sessionPayload.carName,
-            });
+            return await this.aiServiceClient.classifySegments(body as any);
         } catch (error) {
             if (error instanceof BadRequestException || error instanceof ForbiddenException || error instanceof HttpException) {
                 throw error;
