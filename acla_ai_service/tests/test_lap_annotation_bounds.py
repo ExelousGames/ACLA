@@ -89,6 +89,26 @@ def test_lap_tool_agent_prompt_allows_pit_evidence_without_direct_flags():
     assert "large player/expert speed separation" in request.planner_prompt
 
 
+def test_lap_tool_agent_prompt_requires_rejected_ambiguous_option_reason():
+    request = lap_flow.build_request(
+        provider_id="test",
+        prompt_mode="tool_agent",
+        df=pd.DataFrame({"metric": range(100)}),
+        lap_start=0,
+        lap_end=100,
+        section_id="brands_hatch1",
+        section_start=10,
+        section_end=20,
+        circuit_id="brands_hatch",
+    )
+
+    assert "When two plausible labels or circuit sections are ambiguous" in (
+        request.planner_prompt
+    )
+    assert "name the option that was not selected" in request.planner_prompt
+    assert "state why it was rejected" in request.planner_prompt
+
+
 def test_lap_parse_rejects_extra_range_fields():
     response = AgentResponse(
         raw_response=json.dumps({
@@ -137,6 +157,44 @@ def test_lap_parse_tool_agent_accepts_summary_field_as_reasoning_fallback():
         result.reasoning
         == "Observed steady maintenance speed through the full split."
     )
+
+
+def test_lap_parse_accepts_direct_label_ids_payload():
+    reasoning = (
+        "This segment covers ilocs 0-19, corresponding to the Brabham "
+        "Straight at Brands Hatch (brands_hatch1). The expert phase "
+        "detection found no corner arc, and the segment shape was "
+        "classified as a straight, supporting ST2. The time gap shows a "
+        "losing time run with recovery and merge evidence."
+    )
+    response = AgentResponse(
+        raw_response=json.dumps({
+            "label_ids": ["brands_hatch", "brands_hatch1", "RM", "ST2", "RM7"],
+            "reasoning": reasoning,
+        }),
+        verdict="submitted",
+    )
+
+    result = lap_flow.parse(
+        response,
+        prompt_mode="tool_agent",
+        lap_start=0,
+        lap_end=100,
+        section_id="brands_hatch1",
+        section_start=0,
+        section_end=20,
+        circuit_id="brands_hatch",
+    )
+
+    assert result.submitted is True
+    assert result.label_ids == [
+        "brands_hatch",
+        "brands_hatch1",
+        "RM",
+        "ST2",
+        "RM7",
+    ]
+    assert result.reasoning == reasoning
 
 
 def test_lap_parse_does_not_add_section_when_agent_omits_it():

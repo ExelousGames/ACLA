@@ -115,7 +115,9 @@ LAP_REASONING_NOTE_RULE = (
     "Write `reasoning` as a longer human annotation note: 4-6 concise "
     "sentences covering the final iloc range, selected label fit, key "
     "telemetry values or trends, deterministic tool verdicts, and why "
-    "competing labels were omitted. For time-delta prose, say "
+    "competing labels were omitted. When two plausible labels or circuit "
+    "sections are ambiguous, name the option that was not selected and "
+    "state why it was rejected. For time-delta prose, say "
     "`losing time run` and avoid ranking/adjective phrasing."
 )
 
@@ -457,7 +459,7 @@ def _tool_agent_task_prompt(
         "```json\n"
         "{\n"
         '  "label_ids": ["<id>", "<id>", ...],\n'
-        '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and range-fit rationale>"\n'
+        '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, range-fit rationale, and any ambiguous option rejected>"\n'
         "}\n"
         "```\n"
         "`label_ids` carries the circuit id, one selected "

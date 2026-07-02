@@ -143,7 +143,7 @@ def _tool_agent_task_prompt(
         '      "label_id": "<a label_id from the upfront embedding candidates>",\n'
         f'      "start_index": <int in [{parent_start}, {parent_end}]>,\n'
         f'      "end_index": <int in [{parent_start}, {parent_end}]>,\n'
-        '      "reasoning": "<2-4 sentence human-readable evidence note citing ilocs, values, trends, and tool verdicts>"\n'
+        '      "reasoning": "<2-4 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and any ambiguous option rejected>"\n'
         '    }\n'
         "  ]\n"
         "}\n"
@@ -176,6 +176,9 @@ def _tool_agent_task_prompt(
         "concise sentences with the key ilocs/ranges, values/trends, "
         "tool verdicts, and why those facts support the proposed child "
         "range.\n"
+        "- When evidence is ambiguous between two plausible labels or "
+        "ranges, choose the best-supported option and state in `reasoning` "
+        "which other option was not selected and why.\n"
         "- Do not propose ranges that exactly match an already-discovered sub-segment.\n"
         "- After `submit_result` returns `ok: true`, stop calling tools."
     )
@@ -408,7 +411,8 @@ def parse(
     """Decode the agent's raw_response into an AnnotationResult.
 
     ``prompt_mode="tool_agent"`` expects a submitted JSON object with a
-    ``proposals`` key.
+    ``proposals`` key, or a direct ``label_ids`` payload from providers that
+    captured plain assistant JSON.
     """
     if prompt_mode != "tool_agent":
         raise ValueError(
@@ -467,6 +471,26 @@ def _parse_tool_agent(
                 proposed_start = min(starts)
             if ends:
                 proposed_end = max(ends)
+        elif isinstance(parsed.get("label_ids"), list):
+            try:
+                s = int(parsed.get("start_index", parent_start))
+                e = int(parsed.get("end_index", parent_end))
+            except (TypeError, ValueError):
+                s, e = parent_start, parent_end
+            if parent_start <= s < e <= parent_end:
+                proposed_start = s
+                proposed_end = e
+                note = str(parsed.get("reasoning") or parsed.get("summary") or "")
+                for lid in parsed["label_ids"]:
+                    if lid not in LABEL_MAPPING or lid in label_ids:
+                        continue
+                    label_ids.append(lid)
+                    label_proposals.append({
+                        "label_id": lid,
+                        "start_index": proposed_start,
+                        "end_index": proposed_end,
+                        "reasoning": note,
+                    })
 
     # Prefer the synthesizer.summary attachment as the high-level
     # reasoning; otherwise use the transcript / raw payload.
