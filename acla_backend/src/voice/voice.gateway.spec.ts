@@ -106,6 +106,9 @@ describe('VoiceGateway', () => {
         const metadata = payload.tool_metadata.query_telemetry_metric;
 
         expect(metadata.description).toContain('selected fields over a live-session scope');
+        expect(metadata.description).toContain('Do not use `query_telemetry_metric`');
+        expect(metadata.description).toContain('performance checking, pace diagnosis');
+        expect(metadata.description).toContain('use `live_performance_analyst`');
         expect(metadata.parameters.fields.description).toContain('Physics_speed_kmh');
         expect(metadata.parameters.fields.description).toContain('Physics_brake_pressure_front_left');
         expect(metadata.parameters.fields.description).toContain('Graphics_current_time');

@@ -474,7 +474,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'query_telemetry_metric',
-        description: 'Ask for the current, average, minimum, or maximum telemetry value for selected fields over a live-session scope and return summarized numbers instead of raw telemetry rows.',
+        description: 'Ask for the current, average, minimum, or maximum telemetry value for selected fields over a live-session scope and return summarized numbers instead of raw telemetry rows. Do not use `query_telemetry_metric` for performance checking, pace diagnosis, or track-improvement requests; use `live_performance_analyst` for those.',
         properties: {
             fields: {
                 type: 'array',
