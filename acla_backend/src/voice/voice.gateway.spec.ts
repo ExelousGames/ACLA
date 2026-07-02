@@ -1,6 +1,7 @@
 import { VoiceGateway } from './voice.gateway';
 import {
     FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
+    FRONTEND_APPLICATION_TOOL_RESULT_HANDLING,
     getAiToolMetadataForSessionContext,
     getFrontendApplicationToolsForSessionContext,
 } from '../shared/ai/frontend-application-tool-registry';
@@ -13,6 +14,7 @@ describe('VoiceGateway', () => {
             type: 'frontend_info',
             tools: [{ name: 'client_filtered_tool' }],
             query_scope_schema: { type: 'client_schema' },
+            tool_result_handling: 'client handling',
             session_context: { session_mode: 'recorded' },
         })), false);
 
@@ -29,6 +31,10 @@ describe('VoiceGateway', () => {
         expect(payload.tool_metadata.run_recorded_ai_analysis.title)
             .toBe('Running recorded session AI analysis');
         expect(payload.query_scope_schema).toEqual(FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA);
+        expect(payload.tool_result_handling).toEqual(FRONTEND_APPLICATION_TOOL_RESULT_HANDLING);
+        expect(payload.tool_result_handling).toContain('Treat complete or ok=true as a successful result');
+        expect(payload.tool_result_handling).toContain('Treat running as not ready yet');
+        expect(payload.tool_result_handling).toContain('Treat failed, blocked, or skipped as unavailable');
     });
 
     it('keeps live-only tools out of recorded frontend_info frames', () => {
