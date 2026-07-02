@@ -60,11 +60,9 @@ def test_system_prompt_includes_frontend_tool_result_handling():
 
     prompt = pipecat_pipeline._build_system_prompt(
         {},
-        [
-            "Treat complete or ok=true as a successful result.",
-            "Treat running as not ready yet.",
-            "Treat failed, blocked, or skipped as unavailable.",
-        ],
+        "Treat complete or ok=true as a successful result. "
+        "Treat running as not ready yet. "
+        "Treat failed, blocked, or skipped as unavailable.",
     )
 
     assert "Frontend tool result handling:" in prompt

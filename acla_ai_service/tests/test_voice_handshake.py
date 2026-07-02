@@ -5,16 +5,18 @@ from pathlib import Path
 import pytest
 
 
-def _load_await_frontend_info():
+def _load_voice_api():
     voice_path = Path(__file__).resolve().parents[1] / "app" / "api" / "voice.py"
     spec = importlib.util.spec_from_file_location("voice_api_under_test", voice_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
-    return module._await_frontend_info
+    return module
 
 
-_await_frontend_info = _load_await_frontend_info()
+_voice_api = _load_voice_api()
+_await_frontend_info = _voice_api._await_frontend_info
+_HandshakeError = _voice_api._HandshakeError
 
 
 class FakeWebSocket:
@@ -45,10 +47,10 @@ async def test_frontend_info_accepts_user_summary_session_mode():
                 },
             },
             "query_scope_schema": None,
-            "tool_result_handling": [
-                "Treat complete or ok=true as a successful result.",
-                "Treat running as not ready yet.",
-            ],
+            "tool_result_handling": (
+                "Treat complete or ok=true as a successful result. "
+                "Treat running as not ready yet."
+            ),
             "session_context": {"session_mode": "user_summary"},
         }),
         timeout=1.0,
@@ -57,8 +59,28 @@ async def test_frontend_info_accepts_user_summary_session_mode():
     assert tools == []
     assert tool_metadata["get_next_corner"]["title"] == "Looking up next corner"
     assert query_scope_schema is None
-    assert tool_result_handling == [
-        "Treat complete or ok=true as a successful result.",
-        "Treat running as not ready yet.",
-    ]
+    assert tool_result_handling == (
+        "Treat complete or ok=true as a successful result. "
+        "Treat running as not ready yet."
+    )
     assert session_context == {"session_mode": "user_summary"}
+
+
+@pytest.mark.asyncio
+async def test_frontend_info_rejects_list_tool_result_handling():
+    with pytest.raises(
+        _HandshakeError,
+        match="'tool_result_handling' must be a string or null",
+    ):
+        await _await_frontend_info(
+            FakeWebSocket({
+                "type": "frontend_info",
+                "tools": [],
+                "tool_result_handling": [
+                    "Treat complete or ok=true as a successful result.",
+                    "Treat running as not ready yet.",
+                ],
+                "session_context": {"session_mode": "user_summary"},
+            }),
+            timeout=1.0,
+        )

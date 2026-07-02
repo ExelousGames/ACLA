@@ -104,20 +104,16 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
 
 
 def _format_tool_result_handling_for_prompt(
-    tool_result_handling: Optional[List[str]],
+    tool_result_handling: Optional[str],
 ) -> str:
     if not tool_result_handling:
         return ""
 
-    rules = [
-        str(rule).strip()
-        for rule in tool_result_handling
-        if str(rule).strip()
-    ]
+    rules = tool_result_handling.strip()
     if not rules:
         return ""
 
-    return "Frontend tool result handling:\n" + "\n".join(rules)
+    return "Frontend tool result handling:\n" + rules
 
 
 def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> str:
@@ -186,7 +182,7 @@ def _build_startup_knowledge_prompt(
 
 def _build_system_prompt(
     session_context: Optional[Dict[str, Any]],
-    tool_result_handling: Optional[List[str]] = None,
+    tool_result_handling: Optional[str] = None,
 ) -> str:
     system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
     session_context_prompt = _format_session_context_for_prompt(session_context)
@@ -1054,7 +1050,7 @@ async def build_voice_pipeline_task(
     frontend_tools: Optional[List[Dict[str, Any]]] = None,
     tool_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
     query_scope_schema: Optional[Dict[str, Any]] = None,
-    tool_result_handling: Optional[List[str]] = None,
+    tool_result_handling: Optional[str] = None,
 ):
     """Build a Pipecat PipelineTask bound to the given WebSocket.
 
@@ -1393,7 +1389,7 @@ async def run_voice_session(
     frontend_tools: Optional[List[Dict[str, Any]]] = None,
     tool_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
     query_scope_schema: Optional[Dict[str, Any]] = None,
-    tool_result_handling: Optional[List[str]] = None,
+    tool_result_handling: Optional[str] = None,
 ) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
 

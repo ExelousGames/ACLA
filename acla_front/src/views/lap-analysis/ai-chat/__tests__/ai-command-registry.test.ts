@@ -1526,6 +1526,12 @@ describe('ai command registry live performance analyst tools', () => {
                     samples_analyzed: 2,
                     segment_count: 1,
                     returned_segment_count: 1,
+                    segments: [
+                        expect.objectContaining({
+                            start_position: 0.01,
+                            end_position: 0.99,
+                        }),
+                    ],
                 },
             },
         });
@@ -1925,10 +1931,12 @@ describe('ai command registry live performance analyst tools', () => {
                     expert_time_available: true,
                     segments: [
                         expect.objectContaining({
+                            start_position: 0.98,
+                            end_position: 0.03,
                             child_segments: [
                                 expect.objectContaining({
-                                    start_index: 0,
-                                    end_index: 2,
+                                    start_position: 0.98,
+                                    end_position: 0.03,
                                     time_gap: {
                                         start_ms: 0,
                                         end_ms: 125,
@@ -1941,6 +1949,16 @@ describe('ai command registry live performance analyst tools', () => {
                 }),
             }),
         });
+        expect((result.ai_output as any)).toMatchObject({
+            segments: [
+                expect.objectContaining({
+                    start_position: 0.98,
+                    end_position: 0.03,
+                }),
+            ],
+        });
+        expect(((result.ui_output as any).analysis.segments[0])).not.toHaveProperty('start_index');
+        expect(((result.ui_output as any).analysis.segments[0])).not.toHaveProperty('end_index');
         expect(apiService.post).toHaveBeenCalledWith(
             '/racing-session/analyze-live-recorded-analysis',
             expect.objectContaining({
@@ -1962,10 +1980,12 @@ describe('ai command registry live performance analyst tools', () => {
                     expert_time_available: true,
                     segments: expect.arrayContaining([
                         expect.objectContaining({
+                            start_position: 0.98,
+                            end_position: 0.03,
                             child_segments: [
                                 expect.objectContaining({
-                                    start_index: 0,
-                                    end_index: 2,
+                                    start_position: 0.98,
+                                    end_position: 0.03,
                                     time_gap: {
                                         start_ms: 0,
                                         end_ms: 125,

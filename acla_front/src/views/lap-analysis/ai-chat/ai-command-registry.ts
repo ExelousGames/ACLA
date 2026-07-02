@@ -488,6 +488,49 @@ const summarizeRecordedSegment = (
         })),
 });
 
+const getBaselineRecordPosition = (
+    records: Record<string, any>[],
+    index: number,
+): number | null => {
+    if (records.length === 0 || !Number.isFinite(index)) return null;
+
+    const boundedIndex = Math.min(
+        records.length - 1,
+        Math.max(0, Math.trunc(index)),
+    );
+    const row = records[boundedIndex];
+    if (!row) return null;
+
+    const value = row.Graphics_normalized_car_position
+        ?? row.normalized_position
+        ?? row.normalizedPosition;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const summarizeLiveRecordedSegment = (
+    segment: SegmentClassificationSegment,
+    context: AiCommandRegistryContext,
+    records: Record<string, any>[],
+) => ({
+    id: segment.id ?? null,
+    start_position: getBaselineRecordPosition(records, segment.start_index),
+    end_position: getBaselineRecordPosition(records, segment.end_index),
+    parent_label: getSegmentMainLabelText(segment, context.getLabelName),
+    child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
+    label_ids: segment.labels ?? [],
+    ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
+    child_segments: (segment.child_segments || segment.sub_segments || [])
+        .slice(0, 8)
+        .map((child) => ({
+            start_position: getBaselineRecordPosition(records, child.start_index),
+            end_position: getBaselineRecordPosition(records, child.end_index),
+            labels: child.labels,
+            label_names: child.labels.map((labelId) => context.getLabelName?.(labelId) || labelId),
+            ...(child.time_gap ? { time_gap: child.time_gap } : {}),
+        })),
+});
+
 const buildRecordedAnalysisToolResult = (
     state: RecordedAiAnalysisState | null | undefined,
     context: AiCommandRegistryContext,
@@ -559,7 +602,9 @@ const buildLiveRecordedAnalysisToolResult = (
             ...(typeof result.expert_time_available === 'boolean'
                 ? { expert_time_available: result.expert_time_available }
                 : {}),
-            segments: segments.slice(0, limit).map((segment) => summarizeRecordedSegment(segment, context)),
+            segments: segments
+                .slice(0, limit)
+                .map((segment) => summarizeLiveRecordedSegment(segment, context, baselineRecord.records)),
         },
     };
 };
@@ -1784,6 +1829,21 @@ const summarizeProcedureRequestForAi = (request: unknown) => {
     };
 };
 
+const summarizeLiveRecordedSegmentsForAi = (segments: unknown): Record<string, unknown>[] => (
+    Array.isArray(segments)
+        ? segments.slice(0, 5).map((segment) => {
+            const record = getToolUiRecord(segment);
+            return {
+                id: record.id ?? null,
+                parent_label: record.parent_label ?? null,
+                child_labels: Array.isArray(record.child_labels) ? record.child_labels : [],
+                start_position: record.start_position ?? null,
+                end_position: record.end_position ?? null,
+            };
+        })
+        : []
+);
+
 const buildToolAiOutput = (
     name: typeof ALL_AI_TOOL_NAMES[number],
     uiOutputValue: unknown,
@@ -1885,6 +1945,7 @@ const buildToolAiOutput = (
             output.segment_count = uiOutput.analysis?.segment_count ?? 0;
             output.samples_analyzed = uiOutput.analysis?.samples_analyzed ?? 0;
             output.expert_time_available = uiOutput.analysis?.expert_time_available ?? null;
+            output.segments = summarizeLiveRecordedSegmentsForAi(uiOutput.analysis?.segments);
             break;
         case '_get_live_section_telemetry':
             output.section = uiOutput.section

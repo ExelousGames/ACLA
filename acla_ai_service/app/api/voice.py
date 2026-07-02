@@ -272,7 +272,7 @@ async def _await_frontend_info(
     List[Dict[str, Any]],
     Dict[str, Dict[str, Any]],
     Optional[Dict[str, Any]],
-    List[str],
+    Optional[str],
     Dict[str, Any],
 ]:
     """Receive and parse the first text frame as ``frontend_info``.
@@ -348,18 +348,13 @@ async def _await_frontend_info(
             raise _HandshakeError(
                 "frontend_info: 'query_scope_schema' must be an object or null"
             )
-        raw_tool_result_handling = payload.get("tool_result_handling")
-        if raw_tool_result_handling is None:
-            raw_tool_result_handling = []
-        if not isinstance(raw_tool_result_handling, list) or not all(
-            isinstance(item, str) for item in raw_tool_result_handling
-        ):
+        tool_result_handling = payload.get("tool_result_handling")
+        if tool_result_handling is not None and not isinstance(tool_result_handling, str):
             raise _HandshakeError(
-                "frontend_info: 'tool_result_handling' must be a list of strings or null"
+                "frontend_info: 'tool_result_handling' must be a string or null"
             )
-        tool_result_handling = [
-            item.strip() for item in raw_tool_result_handling if item.strip()
-        ]
+        if tool_result_handling is not None:
+            tool_result_handling = tool_result_handling.strip()
 
         session_context = payload.get("session_context")
         if session_context is None:
