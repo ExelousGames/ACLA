@@ -8,6 +8,21 @@ import {
 describe('VoiceGateway', () => {
     const gateway = new VoiceGateway({ verify: jest.fn() } as any) as any;
 
+    it('adds a valid chat LLM provider selector to the AI service session URL', () => {
+        const upstreamUrl = gateway.buildUpstreamUrl('user-1', 'session-1', 'hosted');
+
+        expect(upstreamUrl).toBe(
+            'ws://localhost:8000/voice/stream?user_id=user-1&session_id=session-1&chat_llm_provider=hosted',
+        );
+    });
+
+    it('normalizes and rejects chat LLM provider selectors at the gateway boundary', () => {
+        expect(gateway.normalizeChatLlmProvider(' OpenAI ')).toBe('openai');
+        expect(gateway.normalizeChatLlmProvider('hosted')).toBe('hosted');
+        expect(gateway.normalizeChatLlmProvider('local')).toBeNull();
+        expect(gateway.normalizeChatLlmProvider(null)).toBeNull();
+    });
+
     it('replaces frontend_info tool metadata with the backend frontend application registry', () => {
         const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
             type: 'frontend_info',

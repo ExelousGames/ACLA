@@ -21,7 +21,7 @@ import type {
     LivePerformanceAnalystState,
     OpportunityAgentState,
 } from './ai-command-registry';
-import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
+import { useVoiceConversation, VoiceEvent, type ChatLlmProvider } from './use-voice-conversation';
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
@@ -58,6 +58,10 @@ const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
 const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
+const CHAT_LLM_PROVIDER_OPTIONS: Array<{ value: ChatLlmProvider; label: string; title: string }> = [
+    { value: 'openai', label: 'OpenAI', title: 'Use OpenAI for this voice chat session' },
+    { value: 'hosted', label: 'Hosted', title: 'Use the hosted LLM for this voice chat session' },
+];
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -251,6 +255,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
+    const [chatLlmProvider, setChatLlmProvider] = useState<ChatLlmProvider>('openai');
 
     // Emotion GIF settings — keyed by Emotion, values are data URLs.
     const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
@@ -1056,6 +1061,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         sessionId: resolvedSessionId,
         conversationRole: 'main',
         clientSessionId: mainClientSessionIdRef.current,
+        chatLlmProvider,
         sessionContext: aiSessionContext,
         onEvent: handleMainVoiceEvent,
         toolHandlers,
@@ -1155,6 +1161,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         clientSessionId: activeAgentSession?.clientSessionId,
         parentClientSessionId: activeAgentSession?.parentClientSessionId,
         agentMode: activeAgentSession?.agentMode,
+        chatLlmProvider,
         sessionContext: agentSessionContext || undefined,
         onEvent: handleAgentVoiceEvent,
         toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
@@ -1318,6 +1325,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const activeVoiceConversation = activeAgentSession ? agentVoiceConversation : voiceConversation;
     const vState = activeVoiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
+    const providerPickerDisabled = voiceActive || vState === 'connecting';
     const micDisabled = activeVoiceConversation.micDisabled;
     const sendActiveVoiceObservation = activeVoiceConversation.sendObservation;
     const sendLiveRangeTrackerObservation = useCallback((
@@ -1795,6 +1803,23 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 </span>
                 <div className="ai-chat__header-meta">
                     <span className="ai-chat__chip ai-chat__chip--blue">{sessionModeLabel}</span>
+                    <div className="ai-chat__provider-toggle" role="group" aria-label="Chat LLM provider">
+                        {CHAT_LLM_PROVIDER_OPTIONS.map((option) => (
+                            <button
+                                key={option.value}
+                                type="button"
+                                className="ai-chat__provider-option"
+                                onClick={() => setChatLlmProvider(option.value)}
+                                disabled={providerPickerDisabled}
+                                aria-pressed={chatLlmProvider === option.value}
+                                title={providerPickerDisabled
+                                    ? 'End the current voice session before changing providers'
+                                    : option.title}
+                            >
+                                {option.label}
+                            </button>
+                        ))}
+                    </div>
                     {environment === 'electron' && (
                         <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
                     )}

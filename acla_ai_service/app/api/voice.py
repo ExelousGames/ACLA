@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+from app.chat_llm import VALID_CHAT_LLM_PROVIDERS, normalize_chat_llm_provider
 from app.voice import get_kokoro_service
 
 LOGGER = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ async def voice_stream(
     websocket: WebSocket,
     session_id: Optional[str] = Query(None),
     user_id: Optional[str] = Query(None),
+    chat_llm_provider: Optional[str] = Query(None),
 ):
     """WebSocket endpoint for full bidirectional voice conversation.
 
@@ -164,6 +166,22 @@ async def voice_stream(
     state. See the plan's "everything is pulled on demand" principle.
     """
     await websocket.accept()
+
+    selected_chat_llm_provider = normalize_chat_llm_provider(chat_llm_provider)
+    if (
+        selected_chat_llm_provider is not None
+        and selected_chat_llm_provider not in VALID_CHAT_LLM_PROVIDERS
+    ):
+        await websocket.send_json({
+            "type": "error",
+            "message": (
+                "chat_llm_provider must be one of: openai, hosted "
+                f"(got {chat_llm_provider!r})"
+            ),
+            "error_type": "InvalidChatLLMProvider",
+        })
+        await websocket.close(code=1008, reason="invalid chat_llm_provider")
+        return
 
     # Deferred imports — keeps the rest of the API importable even when
     # pipecat isn't installed in the running container.
@@ -225,13 +243,14 @@ async def voice_stream(
         session_id=session_id,
         session_context=session_context,
         user_id=user_id,
+        chat_llm_provider=selected_chat_llm_provider,
     )
 
     # Construct the tool executor here, in the inbound-adapter band, so
     # app/voice/ never imports from app/pipelines/ (see .importlinter
     # contract voice-no-pipeline-or-api).
     from app.racing_engineer import AIService
-    ai_service = AIService()
+    ai_service = AIService(chat_llm_provider=selected_chat_llm_provider)
     tool_executor = ai_service._execute_function
 
     # Wrap the WS so inbound text frames go to the tool relay and only
@@ -241,8 +260,8 @@ async def voice_stream(
     filtered_ws = _TextFilteringWebSocket(websocket)
 
     LOGGER.info(
-        "Voice WS connected (session=%s user=%s frontend_tools=%d)",
-        session_id, user_id, len(frontend_tools),
+        "Voice WS connected (session=%s user=%s chat_llm_provider=%s frontend_tools=%d)",
+        session_id, user_id, selected_chat_llm_provider or "default", len(frontend_tools),
     )
 
     try:
@@ -453,4 +472,3 @@ class _TextFilteringWebSocket:
                 yield await self.receive_text()
         except Exception:
             return
-

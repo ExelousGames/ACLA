@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional
 import asyncio
 import logging
 from openai import AsyncOpenAI
-from app.infra.config import settings
+from app.chat_llm import resolve_chat_llm_config
 
 LOGGER = logging.getLogger(__name__)
 
@@ -14,43 +14,15 @@ LOGGER = logging.getLogger(__name__)
 class AIService:
     """Service for AI-powered analysis and conversation.
 
-    Backend is chosen by whether ``HOSTED_LLM_BASE_URL`` is set:
-      * unset → local llama-server sidecar (GGUF model configured via
-        ``settings.llama_model_*``).
-      * set   → any OpenAI-compatible hosted endpoint (Groq, Cerebras,
-        Together, Fireworks, OpenRouter, …). Also requires
-        ``HOSTED_LLM_API_KEY`` + ``HOSTED_LLM_MODEL``.
-
-    Both paths use the same ``AsyncOpenAI`` client; only base_url / api_key /
-    model differ.
+    Chat uses the configured remote provider from ``CHAT_LLM_PROVIDER``.
+    Both supported providers use the same ``AsyncOpenAI`` client; only
+    base_url / api_key / model differ.
     """
 
-    def __init__(self):
-        if settings.hosted_llm_base_url:
-            missing = [
-                name for name, val in (
-                    ("HOSTED_LLM_API_KEY", settings.hosted_llm_api_key),
-                    ("HOSTED_LLM_MODEL", settings.hosted_llm_model),
-                ) if not val
-            ]
-            if missing:
-                raise RuntimeError(
-                    f"HOSTED_LLM_BASE_URL is set; also requires {', '.join(missing)}"
-                )
-            self.llm_client = AsyncOpenAI(
-                base_url=settings.hosted_llm_base_url,
-                api_key=settings.hosted_llm_api_key,
-            )
-            self.chat_model = settings.hosted_llm_model
-        else:
-            # llama-server does not authenticate, but the OpenAI client
-            # refuses to construct without an api_key — any non-empty string
-            # works.
-            self.llm_client = AsyncOpenAI(
-                base_url=settings.llama_server_url,
-                api_key="not-needed",
-            )
-            self.chat_model = settings.llama_model_name
+    def __init__(self, chat_llm_provider: Optional[str] = None):
+        llm_config = resolve_chat_llm_config(chat_llm_provider)
+        self.llm_client = AsyncOpenAI(**llm_config.openai_client_kwargs())
+        self.chat_model = llm_config.model
 
     async def _execute_function(self, function_name: str, arguments: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Execute server-side racing-engineer knowledge tools.
@@ -194,4 +166,3 @@ class AIService:
             LOGGER.exception("search_racing_knowledge failed")
             return {"error": f"knowledge search failed: {exc}"}
         return {"query": query, "hits": hits}
-

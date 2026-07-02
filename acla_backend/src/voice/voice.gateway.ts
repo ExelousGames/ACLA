@@ -62,14 +62,41 @@ export class VoiceGateway implements OnGatewayConnection {
         // Client-supplied — forwarded as-is to the AI service, same as
         // the text path forwards `context`. Not used for authorization.
         const sessionId = parsed.searchParams.get('session_id') || '';
+        const chatLlmProvider = this.normalizeChatLlmProvider(
+            parsed.searchParams.get('chat_llm_provider'),
+        );
+        if (parsed.searchParams.get('chat_llm_provider') && !chatLlmProvider) {
+            client.close(1008, 'Invalid chat_llm_provider');
+            return;
+        }
 
-        this.bridge(client, userId, sessionId);
+        this.bridge(client, userId, sessionId, chatLlmProvider);
     }
 
     private aiServiceWsBase(): string {
         const httpUrl = new URL(this.aiServiceUrl);
         const proto = httpUrl.protocol === 'https:' ? 'wss:' : 'ws:';
         return `${proto}//${httpUrl.host}`;
+    }
+
+    private normalizeChatLlmProvider(provider: string | null): string | null {
+        const normalized = (provider || '').trim().toLowerCase();
+        if (!normalized) return null;
+        return normalized === 'openai' || normalized === 'hosted'
+            ? normalized
+            : null;
+    }
+
+    private buildUpstreamUrl(
+        userId: string,
+        sessionId: string,
+        chatLlmProvider: string | null,
+    ): string {
+        const params = new URLSearchParams();
+        params.set('user_id', userId);
+        if (sessionId) params.set('session_id', sessionId);
+        if (chatLlmProvider) params.set('chat_llm_provider', chatLlmProvider);
+        return `${this.aiServiceWsBase()}/voice/stream?${params.toString()}`;
     }
 
     private withBackendToolRegistry(data: RawData, isBinary: boolean): { data: RawData | string; isBinary: boolean } {
@@ -106,11 +133,13 @@ export class VoiceGateway implements OnGatewayConnection {
         };
     }
 
-    private bridge(client: WsClient, userId: string, sessionId: string): void {
-        const params = new URLSearchParams();
-        params.set('user_id', userId);
-        if (sessionId) params.set('session_id', sessionId);
-        const upstreamUrl = `${this.aiServiceWsBase()}/voice/stream?${params.toString()}`;
+    private bridge(
+        client: WsClient,
+        userId: string,
+        sessionId: string,
+        chatLlmProvider: string | null,
+    ): void {
+        const upstreamUrl = this.buildUpstreamUrl(userId, sessionId, chatLlmProvider);
 
         const upstream = new WsClient(upstreamUrl);
 

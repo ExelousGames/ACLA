@@ -42,6 +42,8 @@ Live analysis loop:
 - Use `query_telemetry_metric` for current, average, min, or max telemetry
   values when numbers will make feedback clearer, such as brake pressure,
   throttle application, steering angle, speed, or time gap over a section.
+  Do not use `query_telemetry_metric` for performance checking, pace diagnosis,
+  or track-improvement requests; use `live_performance_analyst` for those.
 - Use `get_next_corner` when timing matters and the driver needs guidance for
   the next corner ahead.
 

@@ -39,6 +39,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 
+from app.chat_llm import resolve_chat_llm_config
 from app.infra.config import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -103,7 +104,6 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
         "Frontend session context: "
         f"{encoded}\n"
         "Use this context to decide which tools are appropriate. "
-        "Fetch detailed data with tools instead of inventing it."
     )
 
 
@@ -310,6 +310,22 @@ def _format_tool_payload_for_prompt(
     return _json_for_prompt(data)
 
 
+def _build_openai_llm_service(
+    OpenAILLMService: Any,
+    provider: Optional[str] = None,
+) -> Any:
+    llm_config = resolve_chat_llm_config(provider)
+    return OpenAILLMService(
+        base_url=llm_config.base_url,
+        api_key=llm_config.api_key,
+        settings=OpenAILLMService.Settings(
+            model=llm_config.model,
+            temperature=0.3,
+            max_tokens=1000,  # Engineer-voice answers can run a few sentences; Pipecat still stops at end-of-turn.
+        ),
+    )
+
+
 # ----------------------------------------------------------------------
 # Public API
 # ----------------------------------------------------------------------
@@ -329,6 +345,7 @@ class VoiceSessionConfig:
     session_context: Optional[Dict[str, Any]] = None
     user_id: Optional[str] = None
     voice: Optional[str] = None  # Kokoro voice override
+    chat_llm_provider: Optional[str] = None
 
 
 # Human-readable titles shown in the chat UI for each tool. The driver
@@ -1174,36 +1191,10 @@ async def build_voice_pipeline_task(
         # device="cuda" if available; Pipecat auto-detects via faster-whisper.
     )
 
-    # --- LLM (OpenAI-compatible client) ---
-    # Backend = hosted endpoint if HOSTED_LLM_BASE_URL is set, else local
-    # llama-server sidecar.
-    if settings.hosted_llm_base_url:
-        missing = [
-            name for name, val in (
-                ("HOSTED_LLM_API_KEY", settings.hosted_llm_api_key),
-                ("HOSTED_LLM_MODEL", settings.hosted_llm_model),
-            ) if not val
-        ]
-        if missing:
-            raise RuntimeError(
-                f"HOSTED_LLM_BASE_URL is set; also requires {', '.join(missing)}"
-            )
-        llm_base_url = settings.hosted_llm_base_url
-        llm_api_key = settings.hosted_llm_api_key
-        llm_model = settings.hosted_llm_model
-    else:
-        llm_base_url = settings.llama_server_url
-        llm_api_key = "not-needed"  # llama-server ignores auth; OpenAI client requires non-empty.
-        llm_model = settings.llama_model_name
-
-    llm = OpenAILLMService(
-        base_url=llm_base_url,
-        api_key=llm_api_key,
-        settings=OpenAILLMService.Settings(
-            model=llm_model,
-            temperature=0.3,
-            max_tokens=1000,  # Engineer-voice answers can run a few sentences; Pipecat still stops at end-of-turn.
-        ),
+    # --- LLM (remote OpenAI-compatible client) ---
+    llm = _build_openai_llm_service(
+        OpenAILLMService,
+        session_config.chat_llm_provider,
     )
 
     # --- Tool calling (Phase 3b) ---

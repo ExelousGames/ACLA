@@ -61,12 +61,17 @@ class Settings(BaseSettings):
     llama_draft_max: int = 16
     llama_draft_min: int = 0
 
+    # Chat LLM provider. Chat uses remote providers only: OpenAI directly, or
+    # any hosted OpenAI-compatible endpoint configured below.
+    chat_llm_provider: str = "openai"
+    chat_openai_api_key_env: str = "OPENAI_API_KEY"
+    chat_openai_model: str = "gpt-5.5"
+
     # Hosted LLM (OpenAI-compatible third-party endpoint). When
-    # HOSTED_LLM_BASE_URL is set, the chat + voice pipelines use it instead
-    # of the local llama-server sidecar. Works with Groq, Cerebras, Together,
-    # Fireworks, OpenRouter, etc., by just changing the base_url. If
-    # HOSTED_LLM_BASE_URL is set, HOSTED_LLM_API_KEY and HOSTED_LLM_MODEL
-    # are required — missing values fail loudly at startup.
+    # CHAT_LLM_PROVIDER=hosted, the chat + voice pipelines use this endpoint.
+    # Works with Groq, Cerebras, Together, Fireworks, OpenRouter, etc., by just
+    # changing the base_url. HOSTED_LLM_API_KEY and HOSTED_LLM_MODEL are then
+    # required — missing values fail loudly.
     hosted_llm_base_url: Optional[str] = None   # e.g. https://api.groq.com/openai/v1
     hosted_llm_api_key: Optional[str] = None
     hosted_llm_model: Optional[str] = None      # e.g. qwen/qwen3-32b
