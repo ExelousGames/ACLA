@@ -1803,23 +1803,22 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 </span>
                 <div className="ai-chat__header-meta">
                     <span className="ai-chat__chip ai-chat__chip--blue">{sessionModeLabel}</span>
-                    <div className="ai-chat__provider-toggle" role="group" aria-label="Chat LLM provider">
+                    <select
+                        className="ai-chat__provider-select"
+                        value={chatLlmProvider}
+                        onChange={(event) => setChatLlmProvider(event.target.value as ChatLlmProvider)}
+                        disabled={providerPickerDisabled}
+                        aria-label="Chat LLM provider"
+                        title={providerPickerDisabled
+                            ? 'End the current voice session before changing providers'
+                            : 'Choose the provider for the next voice chat session'}
+                    >
                         {CHAT_LLM_PROVIDER_OPTIONS.map((option) => (
-                            <button
-                                key={option.value}
-                                type="button"
-                                className="ai-chat__provider-option"
-                                onClick={() => setChatLlmProvider(option.value)}
-                                disabled={providerPickerDisabled}
-                                aria-pressed={chatLlmProvider === option.value}
-                                title={providerPickerDisabled
-                                    ? 'End the current voice session before changing providers'
-                                    : option.title}
-                            >
+                            <option key={option.value} value={option.value}>
                                 {option.label}
-                            </button>
+                            </option>
                         ))}
-                    </div>
+                    </select>
                     {environment === 'electron' && (
                         <span className="ai-chat__chip ai-chat__chip--green">Desktop</span>
                     )}
