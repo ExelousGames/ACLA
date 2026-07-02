@@ -102,14 +102,11 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
 def _format_tool_result_handling_for_prompt(
     tool_result_handling: Optional[str],
 ) -> str:
-    if not tool_result_handling:
-        return ""
-
-    rules = tool_result_handling.strip()
-    if not rules:
-        return ""
-
-    return "Frontend tool result handling:\n" + rules
+    # Legacy handshake field kept for compatibility. Frontend tools are now
+    # fire-and-forget; AI-visible frontend data returns via observation/user
+    # text/session-context frames instead of same-turn tool results.
+    _ = tool_result_handling
+    return ""
 
 
 def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> str:
@@ -280,13 +277,13 @@ def _format_procedure_plan_for_prompt(plan: Dict[str, Any]) -> str:
     return (
         "Procedure plan mode is active. "
         f"Current plan: {_compact_json(plan)}\n"
-        "Plan-mode rule: the frontend owns visible plan state and executable "
+        "Plan-mode rule: the application owns visible plan state and executable "
         "subscribed requests. When an observation or the active request state "
         "shows the current request is ready, complete, or executable now, call "
-        "`advance_plan_step` before speaking. If `advance_plan_step` returns "
-        "AI-visible tool_result data, use that result for the response and next "
-        "decision. Do not clear, skip, or abandon the plan unless the driver "
-        "explicitly asks to opt out."
+        "`advance_plan_step` before speaking. Tool calls are "
+        "fire-and-forget; use the later observation or user message "
+        "for the response and next decision. Do not clear, skip, or abandon "
+        "the plan unless the driver explicitly asks to opt out."
     )
 
 
@@ -596,7 +593,34 @@ def _make_tool_handler(
         except Exception:
             LOGGER.debug("tool_event emit failed (WS likely closed)", exc_info=True)
 
-    async def dispatch_tool(function_name: str, arguments: Dict[str, Any]) -> Any:
+    async def send_frontend_tool(function_name: str, arguments: Dict[str, Any]) -> Optional[str]:
+        """Send one frontend-owned tool call and return without waiting."""
+        title = _tool_title(function_name)
+        arguments = arguments or {}
+
+        LOGGER.info("[FRONTEND-TOOL-CALL] name=%s args=%r", function_name, arguments)
+        await _emit_tool_event({
+            "name": function_name,
+            "title": title,
+            "status": "started",
+            "arguments": arguments,
+        })
+
+        call_id = await relay.send_tool_call(conn, function_name, arguments)
+        await _emit_tool_event({
+            "name": function_name,
+            "title": title,
+            "status": "dispatched" if call_id else "dispatch_failed",
+            "ok": bool(call_id),
+            "call_id": call_id,
+        })
+        LOGGER.info(
+            "[FRONTEND-TOOL-DISPATCHED] name=%s ok=%s call_id=%r",
+            function_name, bool(call_id), call_id,
+        )
+        return call_id
+
+    async def dispatch_server_tool(function_name: str, arguments: Dict[str, Any]) -> Any:
         """Execute one tool by name and return the LLM-visible payload.
 
         Shared by native Pipecat ``register_function`` calls. Emits
@@ -621,9 +645,8 @@ def _make_tool_handler(
         error_msg: Optional[str] = None
         try:
             if function_name in frontend_tool_names:
-                # Relayed to the Electron app over the same WS as audio.
                 # dispatch() never raises — failures come back as {"error": ...}.
-                result = await relay.dispatch(conn, function_name, arguments)
+                raise RuntimeError("frontend tool reached server dispatcher")
             else:
                 # Server-side path. Context carries the connect-time IDs;
                 # track/car are intentionally absent (LLM fetches via tool).
@@ -674,10 +697,13 @@ def _make_tool_handler(
         return payload
 
     async def handle_tool_call(params):
-        payload = await dispatch_tool(params.function_name, params.arguments or {})
+        if params.function_name in frontend_tool_names:
+            await send_frontend_tool(params.function_name, params.arguments or {})
+            return
+        payload = await dispatch_server_tool(params.function_name, params.arguments or {})
         await params.result_callback(payload)
 
-    return handle_tool_call, dispatch_tool
+    return handle_tool_call, send_frontend_tool, dispatch_server_tool
 
 
 def _split_function_tag_prefix(text: str) -> tuple[str, str]:
@@ -711,9 +737,18 @@ def _build_function_tag_recovery():
     from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
     class FunctionTagRecovery(FrameProcessor):
-        def __init__(self, dispatch_tool, context: Any, get_task) -> None:
+        def __init__(
+            self,
+            send_frontend_tool,
+            dispatch_server_tool,
+            frontend_tool_names: frozenset[str],
+            context: Any,
+            get_task,
+        ) -> None:
             super().__init__()
-            self._dispatch_tool = dispatch_tool
+            self._send_frontend_tool = send_frontend_tool
+            self._dispatch_server_tool = dispatch_server_tool
+            self._frontend_tool_names = frontend_tool_names
             self._context = context
             self._get_task = get_task
             self._buf = ""
@@ -810,7 +845,11 @@ def _build_function_tag_recovery():
                 await self.push_frame(TextFrame(text=text), direction)
 
         async def _recover(self, name: str, args: Dict[str, Any]) -> None:
-            result = await self._dispatch_tool(name, args)
+            if name in self._frontend_tool_names:
+                await self._send_frontend_tool(name, args)
+                return
+
+            result = await self._dispatch_server_tool(name, args)
             try:
                 call_id = f"recovered_{_uuid.uuid4().hex}"
                 self._context.add_message({
@@ -1181,7 +1220,7 @@ async def build_voice_pipeline_task(
     tool_titles = _build_title_map(fe_tools, metadata)
     tools = ToolsSchema(standard_tools=tool_schemas)
 
-    tool_handler, dispatch_tool = _make_tool_handler(
+    tool_handler, send_frontend_tool, dispatch_server_tool = _make_tool_handler(
         tool_executor, session_config, conn=websocket,
         frontend_tool_names=frontend_tool_names,
         tool_titles=tool_titles,
@@ -1227,7 +1266,9 @@ async def build_voice_pipeline_task(
     }
     latest_plan_fingerprint: Dict[str, str] = {"value": ""}
     function_tag_recovery = FunctionTagRecovery(
-        dispatch_tool,
+        send_frontend_tool,
+        dispatch_server_tool,
+        frontend_tool_names,
         context,
         lambda: task_ref["task"],
     )

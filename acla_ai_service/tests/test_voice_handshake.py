@@ -28,7 +28,7 @@ class FakeWebSocket:
 
 
 @pytest.mark.asyncio
-async def test_frontend_info_accepts_user_summary_session_mode():
+async def test_frontend_info_accepts_user_summary_session_mode_and_legacy_result_handling():
     (
         tools,
         tool_metadata,

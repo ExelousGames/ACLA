@@ -11,6 +11,7 @@ def test_live_performance_agent_behavior_knowledge_is_loaded():
     reload()
 
     assert "advance_plan_step" in behavior("procedure_plan")["_raw_body"]
+    assert "frontend" not in behavior("procedure_plan")["_raw_body"].lower()
     assert "collecting_baseline" in agent_behavior("live_performance_analyst")["_raw_body"]
     assert "get_live_focus_section" not in agent_behavior("live_performance_analyst")["_raw_body"]
     assert "live_analysis_plan_started" in agent_behavior("live_performance_analyst")["_raw_body"]
@@ -55,7 +56,7 @@ def test_system_prompt_defaults_to_live_session_knowledge():
     assert "Live Performance Analyst startup behavior:" not in prompt
 
 
-def test_system_prompt_includes_frontend_tool_result_handling():
+def test_system_prompt_ignores_legacy_frontend_tool_result_handling():
     reload()
 
     prompt = pipecat_pipeline._build_system_prompt(
@@ -65,10 +66,10 @@ def test_system_prompt_includes_frontend_tool_result_handling():
         "Treat failed, blocked, or skipped as unavailable.",
     )
 
-    assert "Frontend tool result handling:" in prompt
-    assert "Treat complete or ok=true as a successful result." in prompt
-    assert "Treat running as not ready yet." in prompt
-    assert "Treat failed, blocked, or skipped as unavailable." in prompt
+    assert "Frontend tool result handling:" not in prompt
+    assert "Treat complete or ok=true as a successful result." not in prompt
+    assert "Treat running as not ready yet." not in prompt
+    assert "Treat failed, blocked, or skipped as unavailable." not in prompt
 
 
 @pytest.mark.parametrize(
