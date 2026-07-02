@@ -103,6 +103,23 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
     )
 
 
+def _format_tool_result_handling_for_prompt(
+    tool_result_handling: Optional[List[str]],
+) -> str:
+    if not tool_result_handling:
+        return ""
+
+    rules = [
+        str(rule).strip()
+        for rule in tool_result_handling
+        if str(rule).strip()
+    ]
+    if not rules:
+        return ""
+
+    return "Frontend tool result handling:\n" + "\n".join(rules)
+
+
 def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> str:
     context = session_context if isinstance(session_context, dict) else {}
     raw_mode = context.get("agent_mode")
@@ -167,11 +184,18 @@ def _build_startup_knowledge_prompt(
     return "\n\n".join(sections)
 
 
-def _build_system_prompt(session_context: Optional[Dict[str, Any]]) -> str:
+def _build_system_prompt(
+    session_context: Optional[Dict[str, Any]],
+    tool_result_handling: Optional[List[str]] = None,
+) -> str:
     system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
     session_context_prompt = _format_session_context_for_prompt(session_context)
     if session_context_prompt:
         system_prompt = f"{system_prompt.rstrip()}\n\n{session_context_prompt}"
+
+    tool_result_prompt = _format_tool_result_handling_for_prompt(tool_result_handling)
+    if tool_result_prompt:
+        system_prompt = f"{system_prompt.rstrip()}\n\n{tool_result_prompt}"
 
     startup_knowledge = _build_startup_knowledge_prompt(session_context)
     if startup_knowledge:
@@ -1030,6 +1054,7 @@ async def build_voice_pipeline_task(
     frontend_tools: Optional[List[Dict[str, Any]]] = None,
     tool_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
     query_scope_schema: Optional[Dict[str, Any]] = None,
+    tool_result_handling: Optional[List[str]] = None,
 ):
     """Build a Pipecat PipelineTask bound to the given WebSocket.
 
@@ -1190,7 +1215,10 @@ async def build_voice_pipeline_task(
     #
     # Startup behavior docs live in editable .md files. Each new socket gets
     # shared chatbot rules plus exactly one agent-specific role document.
-    system_prompt = _build_system_prompt(session_config.session_context)
+    system_prompt = _build_system_prompt(
+        session_config.session_context,
+        tool_result_handling,
+    )
 
     context = LLMContext(
         messages=[{"role": "system", "content": system_prompt}],
@@ -1365,6 +1393,7 @@ async def run_voice_session(
     frontend_tools: Optional[List[Dict[str, Any]]] = None,
     tool_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
     query_scope_schema: Optional[Dict[str, Any]] = None,
+    tool_result_handling: Optional[List[str]] = None,
 ) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
 
@@ -1385,6 +1414,7 @@ async def run_voice_session(
         frontend_tools=frontend_tools,
         tool_metadata=tool_metadata,
         query_scope_schema=query_scope_schema,
+        tool_result_handling=tool_result_handling,
     )
     runner = PipelineRunner()
     try:

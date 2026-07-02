@@ -27,7 +27,13 @@ class FakeWebSocket:
 
 @pytest.mark.asyncio
 async def test_frontend_info_accepts_user_summary_session_mode():
-    tools, tool_metadata, query_scope_schema, session_context = await _await_frontend_info(
+    (
+        tools,
+        tool_metadata,
+        query_scope_schema,
+        tool_result_handling,
+        session_context,
+    ) = await _await_frontend_info(
         FakeWebSocket({
             "type": "frontend_info",
             "tools": [],
@@ -39,6 +45,10 @@ async def test_frontend_info_accepts_user_summary_session_mode():
                 },
             },
             "query_scope_schema": None,
+            "tool_result_handling": [
+                "Treat complete or ok=true as a successful result.",
+                "Treat running as not ready yet.",
+            ],
             "session_context": {"session_mode": "user_summary"},
         }),
         timeout=1.0,
@@ -47,4 +57,8 @@ async def test_frontend_info_accepts_user_summary_session_mode():
     assert tools == []
     assert tool_metadata["get_next_corner"]["title"] == "Looking up next corner"
     assert query_scope_schema is None
+    assert tool_result_handling == [
+        "Treat complete or ok=true as a successful result.",
+        "Treat running as not ready yet.",
+    ]
     assert session_context == {"session_mode": "user_summary"}

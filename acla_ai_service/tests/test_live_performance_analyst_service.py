@@ -55,6 +55,24 @@ def test_system_prompt_defaults_to_live_session_knowledge():
     assert "Live Performance Analyst startup behavior:" not in prompt
 
 
+def test_system_prompt_includes_frontend_tool_result_handling():
+    reload()
+
+    prompt = pipecat_pipeline._build_system_prompt(
+        {},
+        [
+            "Treat complete or ok=true as a successful result.",
+            "Treat running as not ready yet.",
+            "Treat failed, blocked, or skipped as unavailable.",
+        ],
+    )
+
+    assert "Frontend tool result handling:" in prompt
+    assert "Treat complete or ok=true as a successful result." in prompt
+    assert "Treat running as not ready yet." in prompt
+    assert "Treat failed, blocked, or skipped as unavailable." in prompt
+
+
 @pytest.mark.parametrize(
     ("session_mode", "included", "excluded"),
     [

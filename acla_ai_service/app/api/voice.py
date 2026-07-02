@@ -192,7 +192,13 @@ async def voice_stream(
     # Audio frames before the handshake are dropped (we haven't built the
     # pipeline yet anyway).
     try:
-        frontend_tools, tool_metadata, query_scope_schema, session_context = await _await_frontend_info(
+        (
+            frontend_tools,
+            tool_metadata,
+            query_scope_schema,
+            tool_result_handling,
+            session_context,
+        ) = await _await_frontend_info(
             websocket,
             timeout=5.0,
         )
@@ -244,6 +250,7 @@ async def voice_stream(
             frontend_tools=frontend_tools,
             tool_metadata=tool_metadata,
             query_scope_schema=query_scope_schema,
+            tool_result_handling=tool_result_handling,
         )
     except WebSocketDisconnect:
         LOGGER.info("Voice WS client disconnected (user=%s)", user_id)
@@ -261,17 +268,25 @@ class _HandshakeError(Exception):
 
 async def _await_frontend_info(
     websocket: WebSocket, *, timeout: float,
-) -> Tuple[List[Dict[str, Any]], Dict[str, Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]:
+) -> Tuple[
+    List[Dict[str, Any]],
+    Dict[str, Dict[str, Any]],
+    Optional[Dict[str, Any]],
+    List[str],
+    Dict[str, Any],
+]:
     """Receive and parse the first text frame as ``frontend_info``.
 
-    Returns ``(tools, tool_metadata, query_scope_schema, session_context)``.
+    Returns ``(tools, tool_metadata, query_scope_schema, tool_result_handling,
+    session_context)``.
     ``tools`` is the (possibly empty) list of backend-injected frontend tool
     capability schemas. ``tool_metadata`` is backend-injected LLM-facing
     titles, descriptions, and parameter wording for both server and frontend
     tools. ``query_scope_schema`` is the backend-injected JSON Schema for
     QueryScope and is passed through for compatibility with frontend tool
-    descriptors; it may be ``None``. ``session_context`` is compact frontend
-    view/session state. Raises
+    descriptors; it may be ``None``. ``tool_result_handling`` is
+    backend-injected LLM-facing guidance for interpreting frontend tool result
+    payloads. ``session_context`` is compact frontend view/session state. Raises
     :class:`_HandshakeError` on timeout, non-text first frame, malformed
     JSON, wrong ``type``, or invalid ``tools`` shape.
 
@@ -333,6 +348,19 @@ async def _await_frontend_info(
             raise _HandshakeError(
                 "frontend_info: 'query_scope_schema' must be an object or null"
             )
+        raw_tool_result_handling = payload.get("tool_result_handling")
+        if raw_tool_result_handling is None:
+            raw_tool_result_handling = []
+        if not isinstance(raw_tool_result_handling, list) or not all(
+            isinstance(item, str) for item in raw_tool_result_handling
+        ):
+            raise _HandshakeError(
+                "frontend_info: 'tool_result_handling' must be a list of strings or null"
+            )
+        tool_result_handling = [
+            item.strip() for item in raw_tool_result_handling if item.strip()
+        ]
+
         session_context = payload.get("session_context")
         if session_context is None:
             session_context = {}
@@ -343,7 +371,7 @@ async def _await_frontend_info(
             raise _HandshakeError(
                 "frontend_info: 'session_context.session_mode' must be 'live', 'recorded', 'user_summary', or omitted"
             )
-        return tools, tool_metadata, query_scope_schema, session_context
+        return tools, tool_metadata, query_scope_schema, tool_result_handling, session_context
 
 
 class _TextFilteringWebSocket:
