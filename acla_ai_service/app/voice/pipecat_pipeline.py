@@ -82,6 +82,14 @@ No markdown, no bullets, no headings. Racing terms freely (apex,
 trail-brake, kerb, slip, weight transfer, etc.).
 """
 
+_TOOL_RESULT_HANDLING_PROMPT = """Frontend tool result handling:
+- Tools may return a status field such as running, complete, failed, blocked, or skipped.
+- Treat complete or ok=true as a successful result and use the returned result/data payload.
+- Treat running as not ready yet; wait for the final result instead of answering from partial data.
+- Treat failed, blocked, or skipped as unavailable and explain the issue or choose another available tool.
+- If no status is present, treat an error field as failed; otherwise treat the payload as a completed result.
+"""
+
 
 def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]) -> str:
     if not session_context:
@@ -102,11 +110,11 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
 def _format_tool_result_handling_for_prompt(
     tool_result_handling: Optional[str],
 ) -> str:
-    # Legacy handshake field kept for compatibility. Frontend tools are now
-    # fire-and-forget; AI-visible frontend data returns via tool payload,
-    # user_text, or session_context frames instead of same-turn tool results.
+    # Legacy handshake field kept for compatibility. The AI service owns these
+    # interpretation rules so the frontend/backend bridge does not have to
+    # supply LLM-facing prompt text.
     _ = tool_result_handling
-    return ""
+    return _TOOL_RESULT_HANDLING_PROMPT
 
 
 def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> str:
@@ -1441,4 +1449,3 @@ async def run_voice_session(
     finally:
         get_relay().unbind(websocket)
         LOGGER.info("Voice session ended (user=%s)", session_config.user_id)
-

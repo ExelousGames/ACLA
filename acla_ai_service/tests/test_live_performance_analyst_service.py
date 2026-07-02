@@ -56,20 +56,19 @@ def test_system_prompt_defaults_to_live_session_knowledge():
     assert "Live Performance Analyst startup behavior:" not in prompt
 
 
-def test_system_prompt_ignores_legacy_frontend_tool_result_handling():
+def test_system_prompt_uses_service_owned_tool_result_handling():
     reload()
 
     prompt = pipecat_pipeline._build_system_prompt(
         {},
-        "Treat complete or ok=true as a successful result. "
-        "Treat running as not ready yet. "
-        "Treat failed, blocked, or skipped as unavailable.",
+        "LEGACY FRONTEND HANDLING SHOULD NOT BE COPIED.",
     )
 
-    assert "Frontend tool result handling:" not in prompt
-    assert "Treat complete or ok=true as a successful result." not in prompt
-    assert "Treat running as not ready yet." not in prompt
-    assert "Treat failed, blocked, or skipped as unavailable." not in prompt
+    assert "Frontend tool result handling:" in prompt
+    assert "Treat complete or ok=true as a successful result" in prompt
+    assert "Treat running as not ready yet" in prompt
+    assert "Treat failed, blocked, or skipped as unavailable" in prompt
+    assert "LEGACY FRONTEND HANDLING SHOULD NOT BE COPIED." not in prompt
 
 
 @pytest.mark.parametrize(
@@ -297,5 +296,4 @@ def test_tool_payload_prompt_includes_full_payload_fields():
     assert '"evidence": ["late rotation", "front slip"]' in prompt
     assert '"tool_call_id": "abc123"' in prompt
     assert '"source": "frontend"' in prompt
-
 
