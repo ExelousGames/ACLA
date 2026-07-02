@@ -216,6 +216,12 @@ describe('executeSubscribedFrontendTool', () => {
             runId: 'tool-4',
             result: envelope,
         }));
+        expect(events).toContainEqual(expect.objectContaining({
+            kind: 'tool_event',
+            runId: 'tool-4',
+            name: 'collect_live_baseline',
+            status: 'started',
+        }));
     });
 
     it('supports plan-triggered calls with generated run ids', async () => {

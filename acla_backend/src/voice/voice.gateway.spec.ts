@@ -58,6 +58,56 @@ describe('VoiceGateway', () => {
         ]));
     });
 
+    it('keeps disabled live helpers out of live frontend_info frames', () => {
+        const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
+            type: 'frontend_info',
+            session_context: { session_mode: 'live' },
+        })), false);
+
+        const payload = JSON.parse(frame.data.toString());
+        const toolNames = payload.tools.map((tool: { name: string }) => tool.name);
+
+        expect(toolNames).toEqual(expect.arrayContaining([
+            'start_agent_session',
+            'analyze_telemetry',
+            'get_next_corner',
+            'query_telemetry_metric',
+            'get_event_log',
+        ]));
+        expect(toolNames).not.toEqual(expect.arrayContaining([
+            'set_live_range_tracker',
+            'update_live_range_tracker',
+            'get_live_range_tracker',
+            'collect_live_baseline',
+            'restart_live_baseline',
+            'analyze_live_recorded_analysis',
+            'classify_live_section',
+        ]));
+    });
+
+    it('advertises query_telemetry_metric field guidance in live frontend_info frames', () => {
+        const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
+            type: 'frontend_info',
+            session_context: { session_mode: 'live' },
+        })), false);
+
+        const payload = JSON.parse(frame.data.toString());
+        const metadata = payload.tool_metadata.query_telemetry_metric;
+
+        expect(metadata.description).toContain('selected fields over a live-session scope');
+        expect(metadata.parameters.fields.description).toContain('Physics_speed_kmh');
+        expect(metadata.parameters.fields.description).toContain('Physics_brake_pressure_front_left');
+        expect(metadata.parameters.fields.description).toContain('Graphics_current_time');
+        expect(metadata.parameters.fields.description).toContain('Graphics_fuel_per_lap');
+        expect(metadata.parameters.fields.description).toContain('Static_track');
+        expect(metadata.parameters.fields.description).toContain('Static_car_model');
+        expect(metadata.parameters.fields.description).toContain('do not invent unlisted names');
+        expect(metadata.parameters.scope.description).toContain('type="now"');
+        expect(metadata.parameters.scope.description).toContain('last_seconds, event, lap, or range');
+        expect(metadata.parameters.reduce.description).toContain('avg, min, max, or stats');
+        expect(metadata.parameters.reduce.description).toContain('Prefer stats');
+    });
+
     it('advertises only frontend-held AI request helpers as frontend tools', () => {
         const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
             type: 'frontend_info',

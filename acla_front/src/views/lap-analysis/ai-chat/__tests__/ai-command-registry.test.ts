@@ -862,7 +862,7 @@ describe('ai command registry live performance analyst tools', () => {
         };
     };
 
-    it('collects baseline through the subscribed tool result channel', async () => {
+    it('returns cached baseline completion immediately', async () => {
         const setBaselineCollectionEnabled = jest.fn();
         const restartBaselineCollection = jest.fn();
         const { registry, livePerformanceAnalystState } = createLiveAnalystRegistry({
@@ -926,57 +926,53 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
-    it('returns baseline timeout through the subscribed tool result channel', async () => {
-        jest.useFakeTimers();
-        try {
-            const collectingTag = buildBaselineCollectionTag({
-                status: 'ready',
-                track: 'brands_hatch',
+    it('returns baseline started immediately while collection continues in the tracker', async () => {
+        const collectingTag = buildBaselineCollectionTag({
+            status: 'ready',
+            track: 'brands_hatch',
+            car: 'Ferrari 296',
+            current_lap: 0,
+            completed_laps: 0,
+            normalized_position: 0.35,
+            sample_count: 5,
+            live_session_type: 'solo_practice',
+            baseline_ready: false,
+            baseline_collection_started: true,
+            baseline_progress_percent: 35,
+            baseline_lap: 0,
+            completed_lap_count: 0,
+            section_count: 0,
+        });
+        const setBaselineCollectionEnabled = jest.fn();
+        const { registry } = createLiveAnalystRegistry({
+            getBaselineCollectionTag: () => collectingTag,
+            getBaselineLapRecord: () => null,
+            setBaselineCollectionEnabled,
+        });
+
+        const result = await registry.collect_live_baseline(
+            { timeout_seconds: 30 },
+            { sendObservation: jest.fn() },
+        );
+
+        expect(result).toMatchObject({
+            status: 'started',
+            final: true,
+            tool_name: 'collect_live_baseline',
+            ui_output: {
+                status: 'started',
+                progress_percent: 35,
                 car: 'Ferrari 296',
-                current_lap: 0,
-                completed_laps: 0,
-                normalized_position: 0.35,
-                sample_count: 5,
-                live_session_type: 'solo_practice',
-                baseline_ready: false,
-                baseline_collection_started: true,
-                baseline_progress_percent: 35,
-                baseline_lap: 0,
-                completed_lap_count: 0,
-                section_count: 0,
-            });
-            const { registry } = createLiveAnalystRegistry({
-                getBaselineCollectionTag: () => collectingTag,
-                getBaselineLapRecord: () => null,
-            });
-
-            const resultPromise = registry.collect_live_baseline(
-                { timeout_seconds: 30 },
-                { sendObservation: jest.fn() },
-            );
-
-            jest.advanceTimersByTime(250);
-            await Promise.resolve();
-
-            jest.advanceTimersByTime(30000);
-            await Promise.resolve();
-            await expect(resultPromise).resolves.toMatchObject({
-                status: 'error',
-                error: 'baseline_collection_timeout',
-                final: true,
-                tool_name: 'collect_live_baseline',
-                ui_output: {
-                    status: 'error',
-                    error: 'baseline_collection_timeout',
-                    progress_percent: 35,
-                    car: 'Ferrari 296',
-                    track: 'brands_hatch',
-                    message: 'Baseline collection did not complete before the tool timeout.',
-                },
-            });
-        } finally {
-            jest.useRealTimers();
-        }
+                track: 'brands_hatch',
+                message: 'Baseline collection started.',
+            },
+            ai_output: {
+                name: 'collect_live_baseline',
+                status: 'started',
+                message: 'Baseline collection started.',
+            },
+        });
+        expect(setBaselineCollectionEnabled).toHaveBeenCalledWith(true);
     });
 
     it('starts every live agent through the generic child agent session tool', async () => {

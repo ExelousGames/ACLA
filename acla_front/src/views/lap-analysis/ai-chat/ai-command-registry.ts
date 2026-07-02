@@ -45,7 +45,6 @@ import {
     type ToolOutputEmitter,
     type ToolOutputEnvelope,
     executeAiToolDefinition,
-    getToolEnvelopeError,
 } from './ai-tool-base';
 import type { LiveRangeTrackerToolResult } from './LiveRangeTracker';
 
@@ -165,10 +164,6 @@ const LIVE_ANALYST_MIN_INTERVAL_SECONDS = 2;
 const LIVE_ANALYST_MAX_INTERVAL_SECONDS = 12;
 const LIVE_RECORDED_ANALYSIS_TIMEOUT_MS = 120000;
 const LIVE_RECORDED_ANALYSIS_ENDPOINT = '/racing-session/analyze-live-recorded-analysis';
-const DEFAULT_BASELINE_COLLECTION_TIMEOUT_SECONDS = 600;
-const MIN_BASELINE_COLLECTION_TIMEOUT_SECONDS = 30;
-const MAX_BASELINE_COLLECTION_TIMEOUT_SECONDS = 900;
-
 const toPositiveNumber = (value: unknown): number | undefined => {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
@@ -874,14 +869,6 @@ const buildLiveAnalystPlanError = (
     message,
 });
 
-const getBaselineCollectionTimeoutMs = (args: Record<string, any>): number => {
-    const seconds = toPositiveNumber(args.timeout_seconds) ?? DEFAULT_BASELINE_COLLECTION_TIMEOUT_SECONDS;
-    return Math.min(
-        MAX_BASELINE_COLLECTION_TIMEOUT_SECONDS,
-        Math.max(MIN_BASELINE_COLLECTION_TIMEOUT_SECONDS, seconds),
-    ) * 1000;
-};
-
 const getCurrentBaselineCollectionPayload = (context: AiCommandRegistryContext) => (
     buildBaselineCollectionToolPayload(
         context.getBaselineCollectionTag?.() ?? null,
@@ -889,22 +876,11 @@ const getCurrentBaselineCollectionPayload = (context: AiCommandRegistryContext) 
     )
 );
 
-const finishBaselineCollectionFromEnvelope = (
-    envelope: ToolOutputEnvelope,
-    output: ToolOutputController,
-) => {
-    const envelopeError = getToolEnvelopeError(envelope);
-    if (envelopeError) {
-        return output.error(envelopeError, envelope.ui_output, { message: envelope.message });
-    }
-    return output.final(envelope.ui_output, { message: envelope.message });
-};
-
-const collectBaselineLapFromTrackerOutput = async (
+const collectBaselineLapFromTrackerOutput = (
     context: AiCommandRegistryContext,
-    args: Record<string, any>,
+    _args: Record<string, any>,
     output: ToolOutputController,
-): Promise<ToolOutputEnvelope> => {
+): ToolOutputEnvelope => {
     const unavailable = buildLiveAnalystUnavailable(context);
     if (unavailable) return output.error(unavailable.error || 'baseline_collection_unavailable', unavailable);
 
@@ -912,72 +888,15 @@ const collectBaselineLapFromTrackerOutput = async (
     context.setBaselineCollectionEnabled?.(true);
     context.setAgentTagActive?.('Live Analyst', true);
 
-    const initial = context.getBaselineToolOutput?.() ?? null;
-    if (initial?.tool_name === 'collect_live_baseline') {
-        if (initial.final) {
-            return finishBaselineCollectionFromEnvelope(initial, output);
-        }
-    }
-
     const initialPayload = getCurrentBaselineCollectionPayload(context);
     if (initialPayload.status === 'complete') {
         return output.final(initialPayload);
     }
 
-    const timeoutMs = getBaselineCollectionTimeoutMs(args);
-    const subscribe = context.subscribeBaselineToolOutput;
-    return new Promise((resolve) => {
-        let settled = false;
-        let unsubscribe: () => void = () => undefined;
-
-        const settle = (result: ToolOutputEnvelope) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeoutId);
-            unsubscribe();
-            resolve(result);
-        };
-
-        const handleEnvelope: ToolOutputEmitter = (envelope) => {
-            if (envelope.tool_name !== 'collect_live_baseline') {
-                return;
-            }
-
-            if (envelope.final) {
-                settle(finishBaselineCollectionFromEnvelope(envelope, output));
-                return;
-            }
-        };
-
-        const timeoutId = setTimeout(() => {
-            const progress = context.getBaselineToolOutput?.()?.ui_output
-                ?? getCurrentBaselineCollectionPayload(context);
-            const progressRecord = progress && typeof progress === 'object' && !Array.isArray(progress)
-                ? progress as Record<string, any>
-                : {};
-            const timeoutPayload = {
-                status: 'error',
-                error: 'baseline_collection_timeout',
-                progress_percent: Number(progressRecord.progress_percent ?? 0),
-                car: typeof progressRecord.car === 'string' ? progressRecord.car : null,
-                track: typeof progressRecord.track === 'string' ? progressRecord.track : null,
-                message: 'Baseline collection did not complete before the tool timeout.',
-            };
-            settle(output.error(
-                'baseline_collection_timeout',
-                timeoutPayload,
-                { message: timeoutPayload.message },
-            ));
-        }, timeoutMs);
-
-        if (subscribe) {
-            unsubscribe = subscribe(handleEnvelope);
-            const current = context.getBaselineToolOutput?.();
-            if (current) {
-                handleEnvelope(current, { final: current.final });
-            }
-            return;
-        }
+    return output.final({
+        ...initialPayload,
+        status: 'started',
+        message: 'Baseline collection started.',
     });
 };
 
