@@ -751,7 +751,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             ...(livePerformanceAnalystEnabled ? ['live_performance_analyst'] : []),
         ];
 
-        return {
+        const context = {
             assistant_surface: 'lap_analysis_ai_chat',
             conversation_role: 'main',
             client_session_id: mainClientSessionIdRef.current,
@@ -789,7 +789,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             capabilities: {
                 live_session: sessionMode === 'live',
                 recorded_session: sessionMode === 'recorded',
-                user_summary: summaryLoaded,
+                ...(sessionMode === 'user_summary' ? { user_summary: summaryLoaded } : {}),
             },
             selected_session: selectedSession
                 ? {
@@ -804,7 +804,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 latest_sample_present: liveDataKeys > 0,
                 latest_sample_key_count: liveDataKeys,
                 live_status: analysisContext?.TelemetryDataLiveStatus ?? null,
-                live_snapshot: liveSnapshot,
                 recorded_file_loaded: Boolean(analysisContext?.recordedSessionDataFilePath),
                 recorded_sample_count: recordedPlaybackSummary?.sampleCount
                     ?? analysisContext?.recordedTelemetryDataCount
@@ -828,6 +827,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     active_segment: recordedPlaybackSummary?.activeSegment ?? null,
                 },
             },
+        };
+
+        if (sessionMode !== 'user_summary') {
+            return context;
+        }
+
+        return {
+            ...context,
             user_summary: {
                 loaded: summaryLoaded,
                 loading: userSummaryLoading,
