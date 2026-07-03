@@ -8,11 +8,11 @@ import {
     chooseLiveFocusSection,
     compareLiveSectionPerformance,
     createLiveTrackSection,
-    buildBaselineClassifierRequestReadyObservation,
-    buildLiveAnalysisPlanStartedObservation,
-    buildLiveAnalysisWindowObservation,
-    buildRecordedAnalysisErrorObservation,
-    buildRecordedAnalysisReadyObservation,
+    buildBaselineClassifierRequestReadyToolStatus,
+    buildLiveAnalysisPlanStartedToolStatus,
+    buildLiveAnalysisWindowToolStatus,
+    buildRecordedAnalysisErrorToolStatus,
+    buildRecordedAnalysisReadyToolStatus,
     detectLiveSessionType,
     estimateSecondsToSection,
     getTelemetryCar,
@@ -20,7 +20,7 @@ import {
     getTelemetryPosition,
     getTelemetryTrack,
     isPositionInWrappedRange,
-    LiveAnalystObservation,
+    LiveAnalystToolStatus,
     LiveAnalystRecordedAnalysisError,
     LivePerformanceComparison,
     LiveSectionClassification,
@@ -84,28 +84,28 @@ export class SessionIntelligence {
     private baselineStartLap: number | null = null;
     private baselineStartPendingFromLap: number | null = null;
     private onEvent: ((event: SessionEvent) => void) | null = null;
-    private onAnalystObservation: ((observation: LiveAnalystObservation) => void) | null = null;
+    private onAnalystToolStatus: ((toolStatus: LiveAnalystToolStatus) => void) | null = null;
     private sectionHistory: LiveSectionClassification[] = [];
     private focusSection: LiveSectionFocus | null = null;
     private baselineClassifierReadyEmittedForLap: number | null = null;
 
-    // Optional callback fired on every new event — used to push WS observations.
+    // Optional callback fired on every new event — used to push WS tool statuses.
     onEventEmitted(cb: (event: SessionEvent) => void): void {
         this.onEvent = cb;
         this.sensors.onEventEmitted(cb);
     }
 
-    onLiveAnalystObservation(cb: (observation: LiveAnalystObservation) => void): () => void {
-        this.onAnalystObservation = cb;
+    onLiveAnalystToolStatus(cb: (toolStatus: LiveAnalystToolStatus) => void): () => void {
+        this.onAnalystToolStatus = cb;
         return () => {
-            if (this.onAnalystObservation === cb) {
-                this.onAnalystObservation = null;
+            if (this.onAnalystToolStatus === cb) {
+                this.onAnalystToolStatus = null;
             }
         };
     }
 
     emitLiveAnalysisPlanStarted(): void {
-        this.emitLiveAnalystObservation(buildLiveAnalysisPlanStartedObservation(
+        this.emitLiveAnalystToolStatus(buildLiveAnalysisPlanStartedToolStatus(
             this.getLiveSessionSnapshot() as unknown as Record<string, unknown>,
         ));
     }
@@ -115,18 +115,18 @@ export class SessionIntelligence {
         message: string,
         snapshot?: Record<string, unknown> | null,
     ): void {
-        this.emitLiveAnalystObservation(buildRecordedAnalysisErrorObservation(error, message, snapshot));
+        this.emitLiveAnalystToolStatus(buildRecordedAnalysisErrorToolStatus(error, message, snapshot));
     }
 
     emitRecordedAnalysisReady(
         analysis: unknown,
         snapshot?: Record<string, unknown> | null,
     ): void {
-        this.emitLiveAnalystObservation(buildRecordedAnalysisReadyObservation(analysis, snapshot));
+        this.emitLiveAnalystToolStatus(buildRecordedAnalysisReadyToolStatus(analysis, snapshot));
     }
 
     emitLiveAnalysisWindow(snapshot: Record<string, unknown>, focus: unknown): void {
-        this.emitLiveAnalystObservation(buildLiveAnalysisWindowObservation(snapshot, focus));
+        this.emitLiveAnalystToolStatus(buildLiveAnalysisWindowToolStatus(snapshot, focus));
     }
 
     // Called every telemetry tick from AnalysisContext.
@@ -154,7 +154,7 @@ export class SessionIntelligence {
 
         const sampleIdx = this.buffer.push(sample);
         this.sensors.tick(sample, sampleIdx, this.log);
-        this.emitLiveAnalystObservations();
+        this.emitLiveAnalystToolStatuses();
     }
 
     // ── Tool API (called by ai-command-registry handlers) ─────────────────────
@@ -462,19 +462,19 @@ export class SessionIntelligence {
         this.baselineClassifierReadyEmittedForLap = null;
     }
 
-    private emitLiveAnalystObservations(): void {
+    private emitLiveAnalystToolStatuses(): void {
         if (!this.hasCompletedBaselineLap()) return;
         const baselineLap = this.getBaselineLap();
         if (baselineLap === null || this.baselineClassifierReadyEmittedForLap === baselineLap) return;
 
         this.baselineClassifierReadyEmittedForLap = baselineLap;
-        this.emitLiveAnalystObservation(buildBaselineClassifierRequestReadyObservation(
+        this.emitLiveAnalystToolStatus(buildBaselineClassifierRequestReadyToolStatus(
             this.getLiveSessionSnapshot() as unknown as Record<string, unknown>,
         ));
     }
 
-    private emitLiveAnalystObservation(observation: LiveAnalystObservation): void {
-        this.onAnalystObservation?.(observation);
+    private emitLiveAnalystToolStatus(toolStatus: LiveAnalystToolStatus): void {
+        this.onAnalystToolStatus?.(toolStatus);
     }
 
     private getLatestSample(): TelemetrySample | null {

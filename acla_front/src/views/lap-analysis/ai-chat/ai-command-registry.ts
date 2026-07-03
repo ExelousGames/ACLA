@@ -146,8 +146,8 @@ export interface LivePerformanceAnalystState {
     intervalId: ReturnType<typeof setInterval> | null;
     inFlight: boolean;
     enabled: boolean;
-    lastObservationKey: string | null;
-    lastObservationAt: number;
+    lastToolStatusKey: string | null;
+    lastToolStatusAt: number;
     lastSpokenAt: number;
     analysisSessionId?: string | null;
 }
@@ -799,8 +799,8 @@ const getLiveAnalystState = (context: AiCommandRegistryContext): LivePerformance
         intervalId: null,
         inFlight: false,
         enabled: false,
-        lastObservationKey: null,
-        lastObservationAt: 0,
+        lastToolStatusKey: null,
+        lastToolStatusAt: 0,
         lastSpokenAt: 0,
     };
 };
@@ -981,7 +981,7 @@ export const startAgentRuntime = async (
                     if (agent.lastAlertKey !== alertKey || now - agent.lastAlertAt > OVERTAKE_AGENT_REPEAT_ALERT_MS) {
                         agent.lastAlertKey = alertKey;
                         agent.lastAlertAt = now;
-                        ctx.sendObservation({
+                        ctx.sendToolStatus({
                             ...result,
                             source: 'overtake_agent',
                             agent_mode: 'overtake',
@@ -1054,7 +1054,7 @@ export const startAgentRuntime = async (
             if (notify) {
                 const now = Date.now();
                 if (!baselineReady) {
-                    agent.lastObservationKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
+                    agent.lastToolStatusKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
                 } else if (focus) {
                     const timing = focus.timing;
                     const key = `focus:${focus.section.id}:${focus.baseline.lap}:${focus.baseline.observedAt}`;
@@ -1065,9 +1065,9 @@ export const startAgentRuntime = async (
                         DEFAULT_ANALYST_MIN_LEAD_SECONDS,
                     ) && now - agent.lastSpokenAt >= DEFAULT_ANALYST_COOLDOWN_MS;
 
-                    if (canSpeak && agent.lastObservationKey !== key) {
-                        agent.lastObservationKey = key;
-                        agent.lastObservationAt = now;
+                    if (canSpeak && agent.lastToolStatusKey !== key) {
+                        agent.lastToolStatusKey = key;
+                        agent.lastToolStatusAt = now;
                         agent.lastSpokenAt = now;
                         si.emitLiveAnalysisWindow(snapshot, focus);
                     }

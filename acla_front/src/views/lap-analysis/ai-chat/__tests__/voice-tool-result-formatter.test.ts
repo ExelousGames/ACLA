@@ -1,11 +1,11 @@
 import {
-    buildFormattedObservationFrame,
-    formatObservationForLlm,
-} from '../voice-observation-formatter';
+    buildFormattedToolResultFrame,
+    formatToolResultForLlm,
+} from '../voice-tool-result-formatter';
 
-describe('formatObservationForLlm', () => {
-    it('formats live analyst observations without backend-only teaching actions', () => {
-        const planStartedMsg = formatObservationForLlm({
+describe('formatToolResultForLlm', () => {
+    it('formats live analyst tool statuses without backend-only teaching actions', () => {
+        const planStartedMsg = formatToolResultForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
             event: 'live_analysis_plan_started',
@@ -17,7 +17,7 @@ describe('formatObservationForLlm', () => {
                 live_session_type: 'solo_practice',
             },
         });
-        const classifierReadyMsg = formatObservationForLlm({
+        const classifierReadyMsg = formatToolResultForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
             event: 'baseline_classifier_request_ready',
@@ -29,7 +29,7 @@ describe('formatObservationForLlm', () => {
                 live_session_type: 'solo_practice',
             },
         });
-        const analysisMsg = formatObservationForLlm({
+        const analysisMsg = formatToolResultForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
             event: 'recorded_analysis_ready',
@@ -51,14 +51,14 @@ describe('formatObservationForLlm', () => {
                 },
             },
         });
-        const baselineMsg = formatObservationForLlm({
+        const baselineMsg = formatToolResultForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
             event: 'baseline_lap_record_required',
             message: 'Cached baseline lap records are required.',
             snapshot: { track: 'brands_hatch', live_session_type: 'solo_practice' },
         });
-        const coachingMsg = formatObservationForLlm({
+        const coachingMsg = formatToolResultForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
             event: 'live_analysis_window',
@@ -90,8 +90,8 @@ describe('formatObservationForLlm', () => {
         expect(coachingMsg).toContain('traffic_or_race');
     });
 
-    it('formats overtake and generic observations', () => {
-        expect(formatObservationForLlm({
+    it('formats overtake and generic tool statuses', () => {
+        expect(formatToolResultForLlm({
             source: 'overtake_agent',
             agent_mode: 'overtake',
             event: 'attack_window',
@@ -105,7 +105,7 @@ describe('formatObservationForLlm', () => {
             + 'Tell the driver an attack is opening and give one short action.',
         );
 
-        expect(formatObservationForLlm({
+        expect(formatToolResultForLlm({
             event: 'custom_alert',
             section: 'T1',
             lap: 3,
@@ -113,15 +113,18 @@ describe('formatObservationForLlm', () => {
         })).toBe('custom_alert section=T1 lap=3 telemetry_rows=2. Respond with one short engineer suggestion.');
     });
 
-    it('builds the formatted websocket frame sent to the backend', () => {
-        expect(buildFormattedObservationFrame({
+    it('builds the formatted websocket tool_result frame sent to the backend', () => {
+        expect(buildFormattedToolResultFrame({
             event: 'custom_alert',
             section: 'T1',
         })).toEqual({
-            type: 'observation',
-            data: {
+            type: 'tool_result',
+            id: undefined,
+            name: 'custom_alert',
+            result: {
                 event: 'custom_alert',
                 section: 'T1',
+                status: 'complete',
                 text: 'custom_alert section=T1. Respond with one short engineer suggestion.',
             },
         });

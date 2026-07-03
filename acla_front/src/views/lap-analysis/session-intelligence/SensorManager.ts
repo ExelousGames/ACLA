@@ -15,7 +15,7 @@ export class SensorManager {
         this.cornerSensor.setCorners(getCornersForTrack(trackName));
     }
 
-    // Optional callback — fired for every event (e.g. to send an observation over WS).
+    // Optional callback — fired for every event (e.g. to send tool status over WS).
     onEventEmitted(cb: (event: SessionEvent) => void): void {
         this.onEvent = cb;
     }

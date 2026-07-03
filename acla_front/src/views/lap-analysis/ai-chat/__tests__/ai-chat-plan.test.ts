@@ -123,7 +123,7 @@ describe('buildProcedurePlan', () => {
         });
     });
 
-    it('marks earlier requests complete when an observation advances current_request', () => {
+    it('marks earlier requests complete when an tool status advances current_request', () => {
         expect(buildProcedurePlan({
             event: 'baseline_classifier_request_ready',
             goal: 'Run live analysis from a clean baseline.',

@@ -172,7 +172,7 @@ describe('ai command registry user summary tools', () => {
             updateLiveRangeTracker,
             getLiveRangeTracker,
         });
-        const toolContext = { sendObservation: jest.fn() };
+        const toolContext = { sendToolStatus: jest.fn() };
 
         const setResult = await registry.set_live_range_tracker(
             { ranges: [{ id: 'r1', start_position: 0.1, end_position: 0.2 }] },
@@ -227,7 +227,7 @@ describe('ai command registry user summary tools', () => {
 
         const fuelResult = await registry.query_telemetry_metric(
             { fields: '[FuelLevel]', scope: { type: 'now' }, reduce: 'avg' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
         const tireResult = await registry.query_telemetry_metric(
             {
@@ -235,7 +235,7 @@ describe('ai command registry user summary tools', () => {
                 scope: { type: 'now' },
                 reduce: 'avg',
             },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
         const bareTyreResult = await registry.query_telemetry_metric(
             {
@@ -243,7 +243,7 @@ describe('ai command registry user summary tools', () => {
                 scope: { type: 'now' },
                 reduce: 'avg',
             },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(fuelResult).toMatchObject({
@@ -331,7 +331,7 @@ describe('ai command registry user summary tools', () => {
 
         const result = await registry.show_map(
             { map_id: 'brands_hatch', section_start: 0, section_end: 0.1, section_label: 'Paddock' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -372,7 +372,7 @@ describe('ai command registry user summary tools', () => {
 
         const result = await registry.show_map(
             { map_id: 'unknown_track' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -388,7 +388,7 @@ describe('ai command registry user summary tools', () => {
     it('lists compact map choices from the retrieved user summary', async () => {
         const result = await createRegistry().get_available_user_summary_maps(
             {},
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -426,7 +426,7 @@ describe('ai command registry user summary tools', () => {
     it('searches retrieved user summary map-level rows by track name', async () => {
         const result = await createRegistry().search_user_summary_map_level(
             { query: 'brands hatch' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -448,7 +448,7 @@ describe('ai command registry user summary tools', () => {
     it('searches map-level top sections from the retrieved user summary', async () => {
         const result = await createRegistry().search_user_summary_map_level(
             { query: 'druids' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -469,7 +469,7 @@ describe('ai command registry user summary tools', () => {
     it('includes section-level mistake breakdowns when reading a known map', async () => {
         const result = await createRegistry().get_user_summary_map_level(
             { map_id: 'brands_hatch' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect((result.ui_output as any).maps[0].sections).toEqual(expect.arrayContaining([
@@ -585,7 +585,7 @@ describe('ai command registry recorded session tools', () => {
 
         const result = await registry.run_recorded_ai_analysis(
             { force: true, limit: 5 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(analysisContext.runRecordedAiAnalysis).toHaveBeenCalledWith({ force: true });
@@ -612,7 +612,7 @@ describe('ai command registry recorded session tools', () => {
 
         const result = await registry.get_recorded_session_analysis(
             { limit: 1 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
@@ -633,7 +633,7 @@ describe('ai command registry recorded session tools', () => {
 
         const result = await registry.get_recorded_session_context(
             {},
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -664,7 +664,7 @@ describe('ai command registry recorded session tools', () => {
 
         const result = await registry.get_recorded_session_analysis(
             {},
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -678,7 +678,7 @@ describe('ai command registry recorded session tools', () => {
 
         const result = await registry.query_telemetry_metric(
             { fields: ['Physics_speed_kmh'], scope: { type: 'now' }, reduce: 'avg' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -711,7 +711,7 @@ describe('ai command registry recorded session tools', () => {
 
         const result = await registry.get_user_summary_map_level(
             { map_id: 'brands_hatch' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -805,8 +805,8 @@ describe('ai command registry live performance analyst tools', () => {
             intervalId: null,
             inFlight: false,
             enabled: false,
-            lastObservationKey: null,
-            lastObservationAt: 0,
+            lastToolStatusKey: null,
+            lastToolStatusAt: 0,
             lastSpokenAt: 0,
         };
         const getBaselineLapRecord = () => {
@@ -872,7 +872,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.collect_live_baseline(
             {},
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -907,7 +907,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.restart_live_baseline(
             {},
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(restartBaselineCollection).toHaveBeenCalledTimes(1);
@@ -952,7 +952,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.collect_live_baseline(
             { timeout_seconds: 30 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -990,7 +990,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.start_agent_session(
             { agent_mode: 'live_performance_analyst', interval_seconds: 3 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(startAgentSession).toHaveBeenCalledWith(
@@ -1025,7 +1025,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.start_agent_session(
             { agent_mode: 'track_guide' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(startAgentSession).toHaveBeenCalledWith('track_guide', { agent_mode: 'track_guide' });
@@ -1062,7 +1062,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.advance_plan_step(
             { reason: 'first step completed' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first step completed');
@@ -1100,7 +1100,7 @@ describe('ai command registry live performance analyst tools', () => {
                     },
                 ],
             },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(setProcedurePlan).toHaveBeenCalledWith(expect.objectContaining({
@@ -1140,7 +1140,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.clear_procedure_plan(
             { reason: 'plan is complete' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(clearProcedurePlan).toHaveBeenCalledTimes(1);
@@ -1176,7 +1176,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.advance_plan_step(
             { reason: 'first task complete' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first task complete');
@@ -1218,7 +1218,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.advance_plan_step(
             { reason: 'snapshot requested' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('snapshot requested');
@@ -1259,7 +1259,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.advance_plan_step(
             { reason: 'ui tag updated' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -1301,8 +1301,8 @@ describe('ai command registry live performance analyst tools', () => {
                 intervalId: null,
                 inFlight: false,
                 enabled: true,
-                lastObservationKey: null,
-                lastObservationAt: 0,
+                lastToolStatusKey: null,
+                lastToolStatusAt: 0,
                 lastSpokenAt: 0,
             },
             startTrackGuide: jest.fn(),
@@ -1340,7 +1340,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.advance_plan_step(
             { reason: 'skip ahead' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('skip ahead');
@@ -1382,8 +1382,8 @@ describe('ai command registry live performance analyst tools', () => {
                 intervalId: null,
                 inFlight: false,
                 enabled: true,
-                lastObservationKey: null,
-                lastObservationAt: 0,
+                lastToolStatusKey: null,
+                lastToolStatusAt: 0,
                 lastSpokenAt: 0,
             },
             startTrackGuide: jest.fn(),
@@ -1418,7 +1418,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.advance_plan_step(
             { reason: 'baseline step completed' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(sessionIntelligence.getLiveSessionSnapshot()).toMatchObject({
@@ -1479,7 +1479,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const missingResult = await registry.analyze_live_recorded_analysis(
             { limit: 5 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(missingResult).toMatchObject({
@@ -1508,7 +1508,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         await expect(registry.analyze_live_recorded_analysis(
             { limit: 5 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         )).resolves.toMatchObject({
             status: 'ready',
             ui_output: {
@@ -1560,7 +1560,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry.advance_plan_step(
             { reason: 'first task complete' },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('first task complete');
@@ -1610,8 +1610,8 @@ describe('ai command registry live performance analyst tools', () => {
                 intervalId: null,
                 inFlight: false,
                 enabled: true,
-                lastObservationKey: null,
-                lastObservationAt: 0,
+                lastToolStatusKey: null,
+                lastToolStatusAt: 0,
                 lastSpokenAt: 0,
             },
             startTrackGuide: jest.fn(),
@@ -1622,11 +1622,11 @@ describe('ai command registry live performance analyst tools', () => {
 
         const focusResult = await registry.get_live_focus_section(
             {},
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
         const telemetryResult = await registry._get_live_section_telemetry(
             { section_name: 'T2 Druids', lap: 0 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(focusResult).toMatchObject({
@@ -1669,8 +1669,8 @@ describe('ai command registry live performance analyst tools', () => {
             intervalId: null,
             inFlight: false,
             enabled: false,
-            lastObservationKey: null,
-            lastObservationAt: 0,
+            lastToolStatusKey: null,
+            lastToolStatusAt: 0,
             lastSpokenAt: 0,
         };
         const setBaselineCollectionEnabled = jest.fn();
@@ -1690,14 +1690,14 @@ describe('ai command registry live performance analyst tools', () => {
             setBaselineCollectionEnabled,
             getOpportunityTelemetryRows: () => [],
         };
-        const sendObservation = jest.fn();
-        sessionIntelligence.onLiveAnalystObservation(sendObservation);
+        const sendToolStatus = jest.fn();
+        sessionIntelligence.onLiveAnalystToolStatus(sendToolStatus);
 
         const result = await startAgentRuntime(
             'live_performance_analyst',
             context,
             {},
-            { sendObservation },
+            { sendToolStatus },
         );
 
         expect(result).toMatchObject({
@@ -1712,22 +1712,22 @@ describe('ai command registry live performance analyst tools', () => {
             },
         });
         expect(setBaselineCollectionEnabled).not.toHaveBeenCalled();
-        expect(sendObservation).toHaveBeenCalledTimes(1);
-        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+        expect(sendToolStatus).toHaveBeenCalledTimes(1);
+        expect(sendToolStatus).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
             message: expect.stringContaining('Collect a baseline first'),
             snapshot: expect.objectContaining({
                 baseline_ready: false,
             }),
         }));
-        const startupPlanObservation = sendObservation.mock.calls.find(([payload]) => (
+        const startupPlanToolStatus = sendToolStatus.mock.calls.find(([payload]) => (
             payload.event === 'live_analysis_plan_started'
         ))?.[0];
-        expect(startupPlanObservation).not.toHaveProperty('goal');
-        expect(startupPlanObservation).not.toHaveProperty('requests');
-        expect(startupPlanObservation).not.toHaveProperty('current_request');
-        expect(startupPlanObservation).not.toHaveProperty('internal_tool_hint');
-        expect(startupPlanObservation).not.toHaveProperty('sections');
+        expect(startupPlanToolStatus).not.toHaveProperty('goal');
+        expect(startupPlanToolStatus).not.toHaveProperty('requests');
+        expect(startupPlanToolStatus).not.toHaveProperty('current_request');
+        expect(startupPlanToolStatus).not.toHaveProperty('internal_tool_hint');
+        expect(startupPlanToolStatus).not.toHaveProperty('sections');
 
         if (livePerformanceAnalystState.intervalId) {
             clearInterval(livePerformanceAnalystState.intervalId);
@@ -1793,15 +1793,15 @@ describe('ai command registry live performance analyst tools', () => {
                 sourceEvent: 'live_analysis_plan_started',
             }),
         });
-        const sendObservation = jest.fn();
-        sessionIntelligence.onLiveAnalystObservation(sendObservation);
-        const toolContextSendObservation = jest.fn();
+        const sendToolStatus = jest.fn();
+        sessionIntelligence.onLiveAnalystToolStatus(sendToolStatus);
+        const toolContextSendToolStatus = jest.fn();
 
         const startResult = await startAgentRuntime(
             'live_performance_analyst',
             context,
             {},
-            { sendObservation: toolContextSendObservation },
+            { sendToolStatus: toolContextSendToolStatus },
         );
         expect(startResult).toMatchObject({
             status: 'started',
@@ -1813,14 +1813,14 @@ describe('ai command registry live performance analyst tools', () => {
                 focus: null,
             },
         });
-        expect(sendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+        expect(sendToolStatus).not.toHaveBeenCalledWith(expect.objectContaining({
             event: 'baseline_classifier_request_ready',
         }));
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
 
         const result = await planRegistry.advance_plan_step(
             { reason: 'baseline complete' },
-            { sendObservation: toolContextSendObservation },
+            { sendToolStatus: toolContextSendToolStatus },
         );
 
         expect(result).toMatchObject({
@@ -1831,10 +1831,10 @@ describe('ai command registry live performance analyst tools', () => {
         });
         expect(advanceProcedurePlanStep).toHaveBeenCalledWith('baseline complete');
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
-        expect(sendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+        expect(sendToolStatus).not.toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_ready',
         }));
-        expect(toolContextSendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+        expect(toolContextSendToolStatus).not.toHaveBeenCalledWith(expect.objectContaining({
             source: 'live_performance_analyst',
         }));
 
@@ -1911,12 +1911,12 @@ describe('ai command registry live performance analyst tools', () => {
                 sourceEvent: 'live_analysis_plan_started',
             }),
         });
-        const sendObservation = jest.fn();
-        sessionIntelligence.onLiveAnalystObservation(sendObservation);
+        const sendToolStatus = jest.fn();
+        sessionIntelligence.onLiveAnalystToolStatus(sendToolStatus);
 
         const result = await registry.analyze_live_recorded_analysis(
             { limit: 8 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({
@@ -1967,7 +1967,7 @@ describe('ai command registry live performance analyst tools', () => {
         );
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
         expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
-        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+        expect(sendToolStatus).toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_ready',
             analysis: expect.objectContaining({
                 status: 'ready',
@@ -2025,8 +2025,8 @@ describe('ai command registry live performance analyst tools', () => {
             intervalId: null,
             inFlight: false,
             enabled: false,
-            lastObservationKey: null,
-            lastObservationAt: 0,
+            lastToolStatusKey: null,
+            lastToolStatusAt: 0,
             lastSpokenAt: 0,
         };
         const context: AiCommandRegistryContext = {
@@ -2066,19 +2066,19 @@ describe('ai command registry live performance analyst tools', () => {
             }),
         };
         const registry = createAiCommandRegistry(context);
-        const sendObservation = jest.fn();
-        sessionIntelligence.onLiveAnalystObservation(sendObservation);
-        const toolContextSendObservation = jest.fn();
+        const sendToolStatus = jest.fn();
+        sessionIntelligence.onLiveAnalystToolStatus(sendToolStatus);
+        const toolContextSendToolStatus = jest.fn();
 
         await startAgentRuntime(
             'live_performance_analyst',
             context,
             {},
-            { sendObservation: toolContextSendObservation },
+            { sendToolStatus: toolContextSendToolStatus },
         );
         const result = await registry.analyze_live_recorded_analysis(
             { limit: 8 },
-            { sendObservation: toolContextSendObservation },
+            { sendToolStatus: toolContextSendToolStatus },
         );
 
         expect(result).toMatchObject({
@@ -2090,23 +2090,23 @@ describe('ai command registry live performance analyst tools', () => {
                 }),
             }),
         });
-        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+        expect(sendToolStatus).toHaveBeenCalledWith(expect.objectContaining({
             event: 'baseline_lap_record_required',
             message: expect.stringContaining('recorded baseline lap'),
         }));
-        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+        expect(sendToolStatus).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_analysis_plan_started',
             snapshot: expect.objectContaining({
                 baseline_ready: true,
             }),
         }));
-        const startupObservation = sendObservation.mock.calls.find(([payload]) => (
+        const startupToolStatus = sendToolStatus.mock.calls.find(([payload]) => (
             payload.event === 'live_analysis_plan_started'
         ))?.[0];
-        expect(startupObservation).not.toHaveProperty('goal');
-        expect(startupObservation).not.toHaveProperty('requests');
-        expect(startupObservation).not.toHaveProperty('current_request');
-        expect(toolContextSendObservation).not.toHaveBeenCalledWith(expect.objectContaining({
+        expect(startupToolStatus).not.toHaveProperty('goal');
+        expect(startupToolStatus).not.toHaveProperty('requests');
+        expect(startupToolStatus).not.toHaveProperty('current_request');
+        expect(toolContextSendToolStatus).not.toHaveBeenCalledWith(expect.objectContaining({
             source: 'live_performance_analyst',
         }));
 
@@ -2120,7 +2120,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const result = await registry._get_live_section_telemetry(
             { section_name: 'T1 Paddock Hill Bend', lap: 0 },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({ status: 'ready' });
@@ -2145,12 +2145,12 @@ describe('ai command registry live performance analyst tools', () => {
                 confidence: 0.9,
                 child_labels: ['late brake'],
             },
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         const result = await registry.get_live_focus_section(
             {},
-            { sendObservation: jest.fn() },
+            { sendToolStatus: jest.fn() },
         );
 
         expect(result).toMatchObject({ status: 'ready' });

@@ -34,7 +34,7 @@ interface ParsedRow {
     time: number;
 }
 
-export interface TacticalObservation {
+export interface TacticalToolStatus {
     event: 'attack_window' | 'defense_threat';
     mode: 'attack' | 'defense';
     opponent_id: number | string | null;
@@ -53,7 +53,7 @@ export interface TacticalObservation {
 export type TacticalDetectionResult =
     | { status: 'insufficient_data'; reason: string }
     | { status: 'neutral'; reason: string; opponent_count: number }
-    | ({ status: 'actionable' } & TacticalObservation);
+    | ({ status: 'actionable' } & TacticalToolStatus);
 
 const toFiniteNumber = (value: unknown): number | null => {
     const parsed = Number(value);
@@ -199,7 +199,7 @@ const getSectionContext = (
     rows: Record<string, any>[],
     parsedRows: ParsedRow[],
     timeToOverlap: number,
-): Pick<TacticalObservation, 'projected_track_position' | 'projected_section' | 'next_corner'> => {
+): Pick<TacticalToolStatus, 'projected_track_position' | 'projected_section' | 'next_corner'> => {
     const projected = projectTrackPosition(rows, parsedRows, timeToOverlap);
     const track = String(rows[rows.length - 1]?.Static_track ?? '');
     const corners = getCornersForTrack(track);
@@ -269,7 +269,7 @@ export const detectOvertakeTacticalState = (
     }
 
     const left = { x: -heading.y, y: heading.x };
-    const candidates: TacticalObservation[] = [];
+    const candidates: TacticalToolStatus[] = [];
 
     for (const [key, samples] of Array.from(samplesByCar.entries())) {
         if (key === playerKey) continue;

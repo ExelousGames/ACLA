@@ -28,7 +28,7 @@ const summarizeRecordedAnalysisSegments = (value: unknown): string => {
     return `[${summaries.join('; ')}]`;
 };
 
-export const formatObservationForLlm = (data: Record<string, unknown>): string => {
+export const formatToolResultForLlm = (data: Record<string, unknown>): string => {
     const event = typeof data.event === 'string' ? data.event : 'event';
 
     if (data.source === 'live_performance_analyst' || data.agent_mode === 'live_performance_analyst') {
@@ -184,10 +184,31 @@ export const formatObservationForLlm = (data: Record<string, unknown>): string =
     return `${bits.join(' ')}. Respond with one short engineer suggestion.`;
 };
 
-export const buildFormattedObservationFrame = (data: Record<string, unknown>) => ({
-    type: 'observation' as const,
-    data: {
-        ...data,
-        text: formatObservationForLlm(data),
-    },
-});
+const getToolResultName = (data: Record<string, unknown>): string => {
+    if (typeof data.tool_name === 'string' && data.tool_name.trim()) {
+        return data.tool_name.trim();
+    }
+    if (typeof data.source === 'string' && data.source.trim()) {
+        return data.source.trim();
+    }
+    if (typeof data.event === 'string' && data.event.trim()) {
+        return data.event.trim();
+    }
+    return 'frontend_status_update';
+};
+
+export const buildFormattedToolResultFrame = (data: Record<string, unknown>) => {
+    const sourceStatus = typeof data.status === 'string' ? data.status : undefined;
+
+    return {
+        type: 'tool_result' as const,
+        id: typeof data.tool_run_id === 'string' ? data.tool_run_id : undefined,
+        name: getToolResultName(data),
+        result: {
+            ...data,
+            ...(sourceStatus ? { source_status: sourceStatus } : {}),
+            status: 'complete',
+            text: formatToolResultForLlm(data),
+        },
+    };
+};

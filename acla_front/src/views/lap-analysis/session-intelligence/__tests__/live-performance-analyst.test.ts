@@ -195,10 +195,10 @@ describe('SessionIntelligence live analyst section state', () => {
         });
     });
 
-    it('emits the classifier-ready observation from the source when baseline completes', () => {
+    it('emits the classifier-ready tool status from the source when baseline completes', () => {
         const intelligence = new SessionIntelligence();
-        const onObservation = jest.fn();
-        intelligence.onLiveAnalystObservation(onObservation);
+        const onToolStatus = jest.fn();
+        intelligence.onLiveAnalystToolStatus(onToolStatus);
         intelligence.startBaselineCollectionAtLapStart();
 
         intelligence.tick({
@@ -214,7 +214,7 @@ describe('SessionIntelligence live analyst section state', () => {
             Graphics_normalized_car_position: 0.03,
         });
 
-        expect(onObservation).not.toHaveBeenCalled();
+        expect(onToolStatus).not.toHaveBeenCalled();
 
         intelligence.tick({
             Static_track: 'brands_hatch',
@@ -229,8 +229,8 @@ describe('SessionIntelligence live analyst section state', () => {
             Graphics_normalized_car_position: 0.02,
         });
 
-        expect(onObservation).toHaveBeenCalledTimes(1);
-        expect(onObservation).toHaveBeenCalledWith(expect.objectContaining({
+        expect(onToolStatus).toHaveBeenCalledTimes(1);
+        expect(onToolStatus).toHaveBeenCalledWith(expect.objectContaining({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
             event: 'baseline_classifier_request_ready',
@@ -239,10 +239,10 @@ describe('SessionIntelligence live analyst section state', () => {
                 baseline_lap: 0,
             }),
         }));
-        const observation = onObservation.mock.calls[0][0];
-        expect(observation).not.toHaveProperty('goal');
-        expect(observation).not.toHaveProperty('requests');
-        expect(observation).not.toHaveProperty('current_request');
+        const toolStatus = onToolStatus.mock.calls[0][0];
+        expect(toolStatus).not.toHaveProperty('goal');
+        expect(toolStatus).not.toHaveProperty('requests');
+        expect(toolStatus).not.toHaveProperty('current_request');
     });
 
     it('does not complete a new baseline from laps driven before collection started', () => {

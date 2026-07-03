@@ -324,8 +324,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         intervalId: null,
         inFlight: false,
         enabled: false,
-        lastObservationKey: null,
-        lastObservationAt: 0,
+        lastToolStatusKey: null,
+        lastToolStatusAt: 0,
         lastSpokenAt: 0,
     });
     const trackGuideLastPosRef = useRef<number | undefined>(undefined);
@@ -581,7 +581,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             });
             return;
         }
-        if (event.kind === 'observation') {
+        if (event.kind === 'tool_status') {
             const sourceEvent = typeof event.data.event === 'string' ? event.data.event : undefined;
             if (isProcedurePlanClearEvent(sourceEvent)) {
                 clearProcedurePlan();
@@ -900,8 +900,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analystAgent.intervalId = null;
         analystAgent.inFlight = false;
         analystAgent.enabled = false;
-        analystAgent.lastObservationKey = null;
-        analystAgent.lastObservationAt = 0;
+        analystAgent.lastToolStatusKey = null;
+        analystAgent.lastToolStatusAt = 0;
         analystAgent.lastSpokenAt = 0;
         analystAgent.analysisSessionId = null;
         analysisContext?.sessionIntelligence?.clearFocusSection?.();
@@ -1208,7 +1208,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         onEvent: handleAgentVoiceEvent,
         toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
     });
-    const sendAgentVoiceObservation = agentVoiceConversation.sendObservation;
+    const sendAgentVoiceToolStatus = agentVoiceConversation.sendToolStatus;
 
     useEffect(() => {
         mainVoiceStopRef.current = voiceConversation.stop;
@@ -1309,7 +1309,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 getLiveRangeTracker,
                 displayMap: displayMapInChat,
             }, {}, {
-                sendObservation: agentVoiceConversation.sendObservation,
+                sendToolStatus: agentVoiceConversation.sendToolStatus,
             });
         }, 0);
     }, [
@@ -1320,7 +1320,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         clearProcedurePlan,
         displayMapInChat,
         agentVoiceConversation.state,
-        agentVoiceConversation.sendObservation,
+        agentVoiceConversation.sendToolStatus,
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
@@ -1353,14 +1353,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         const sessionIntelligence = analysisContext?.sessionIntelligence;
         if (sessionMode !== 'live' || !sessionIntelligence || !activeAgentSession) return;
 
-        return sessionIntelligence.onLiveAnalystObservation((observation) => {
+        return sessionIntelligence.onLiveAnalystToolStatus((toolStatus) => {
             if (!livePerformanceAnalystStateRef.current.enabled) return;
-            sendAgentVoiceObservation(observation);
+            sendAgentVoiceToolStatus(toolStatus);
         });
     }, [
         activeAgentSession,
         analysisContext?.sessionIntelligence,
-        sendAgentVoiceObservation,
+        sendAgentVoiceToolStatus,
         sessionMode,
     ]);
 
@@ -1369,14 +1369,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const voiceActive = vState === 'listening' || vState === 'speaking';
     const modelPickerDisabled = voiceActive || vState === 'connecting';
     const micDisabled = activeVoiceConversation.micDisabled;
-    const sendActiveVoiceObservation = activeVoiceConversation.sendObservation;
+    const sendActiveVoiceToolStatus = activeVoiceConversation.sendToolStatus;
     const sendActiveVoiceToolResult = activeVoiceConversation.sendToolResult;
     useEffect(() => {
         activeVoiceToolResultRef.current = sendActiveVoiceToolResult;
     }, [sendActiveVoiceToolResult]);
-    const sendLiveRangeTrackerObservation = useCallback((
+    const sendLiveRangeTrackerToolStatus = useCallback((
         data: Record<string, unknown>,
-    ) => sendActiveVoiceObservation(data), [sendActiveVoiceObservation]);
+    ) => sendActiveVoiceToolStatus(data), [sendActiveVoiceToolStatus]);
     const canOpenFloatingChat = typeof window !== 'undefined'
         && Boolean((window as any).electronAPI?.openFloatingChat);
 
@@ -1476,8 +1476,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }
         analystAgent.inFlight = false;
         analystAgent.enabled = false;
-        analystAgent.lastObservationKey = null;
-        analystAgent.lastObservationAt = 0;
+        analystAgent.lastToolStatusKey = null;
+        analystAgent.lastToolStatusAt = 0;
         analystAgent.lastSpokenAt = 0;
         setLivePerformanceAnalystAgentEnabled(false);
         setBaselineCollectionEnabled(false);
@@ -2068,7 +2068,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         liveData={analysisContext?.liveData as Record<string, any> | null}
                         sessionMode={sessionMode}
                         sessionIntelligence={analysisContext?.sessionIntelligence}
-                        sendObservation={sendLiveRangeTrackerObservation}
+                        sendToolStatus={sendLiveRangeTrackerToolStatus}
                         resolveLabel={getLabelName}
                         onStateChange={handleLiveRangeTrackerStateChange}
                     />

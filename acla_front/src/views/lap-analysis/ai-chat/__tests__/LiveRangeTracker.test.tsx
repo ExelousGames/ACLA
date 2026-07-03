@@ -88,7 +88,7 @@ describe('LiveRangeTracker', () => {
     it('marks a pending range as classifying once the driver crosses the end position', async () => {
         const ref = React.createRef<LiveRangeTrackerHandle>();
         const sessionIntelligence = new SessionIntelligence();
-        const sendObservation = jest.fn(() => true);
+        const sendToolStatus = jest.fn(() => true);
         const first = sample(0, 0.1);
         const middle = sample(0, 0.24);
         const crossed = sample(0, 0.26);
@@ -100,7 +100,7 @@ describe('LiveRangeTracker', () => {
                 liveData={first}
                 sessionMode="live"
                 sessionIntelligence={sessionIntelligence}
-                sendObservation={sendObservation}
+                sendToolStatus={sendToolStatus}
             />,
         );
 
@@ -117,7 +117,7 @@ describe('LiveRangeTracker', () => {
                 liveData={middle}
                 sessionMode="live"
                 sessionIntelligence={sessionIntelligence}
-                sendObservation={sendObservation}
+                sendToolStatus={sendToolStatus}
             />,
         );
 
@@ -128,12 +128,12 @@ describe('LiveRangeTracker', () => {
                 liveData={crossed}
                 sessionMode="live"
                 sessionIntelligence={sessionIntelligence}
-                sendObservation={sendObservation}
+                sendToolStatus={sendToolStatus}
             />,
         );
 
-        await waitFor(() => expect(sendObservation).toHaveBeenCalledTimes(1));
-        expect(sendObservation).toHaveBeenCalledWith(expect.objectContaining({
+        await waitFor(() => expect(sendToolStatus).toHaveBeenCalledTimes(1));
+        expect(sendToolStatus).toHaveBeenCalledWith(expect.objectContaining({
             event: 'live_range_classification_requested',
             range_id: 'r1',
             telemetry_row_count: 2,
@@ -148,7 +148,7 @@ describe('LiveRangeTracker', () => {
     it('does not trigger a closed tracker', async () => {
         const ref = React.createRef<LiveRangeTrackerHandle>();
         const sessionIntelligence = new SessionIntelligence();
-        const sendObservation = jest.fn(() => true);
+        const sendToolStatus = jest.fn(() => true);
         const first = sample(0, 0.1);
         const crossed = sample(0, 0.3);
 
@@ -159,7 +159,7 @@ describe('LiveRangeTracker', () => {
                 liveData={first}
                 sessionMode="live"
                 sessionIntelligence={sessionIntelligence}
-                sendObservation={sendObservation}
+                sendToolStatus={sendToolStatus}
             />,
         );
         act(() => {
@@ -176,11 +176,11 @@ describe('LiveRangeTracker', () => {
                 liveData={crossed}
                 sessionMode="live"
                 sessionIntelligence={sessionIntelligence}
-                sendObservation={sendObservation}
+                sendToolStatus={sendToolStatus}
             />,
         );
 
-        await waitFor(() => expect(sendObservation).not.toHaveBeenCalled());
+        await waitFor(() => expect(sendToolStatus).not.toHaveBeenCalled());
         expect(ref.current!.getTracker().tracker?.ranges[0].lifecycle_status).toBe('pending');
     });
 });

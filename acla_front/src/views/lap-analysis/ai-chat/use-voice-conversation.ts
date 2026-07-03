@@ -9,13 +9,13 @@
  *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
  *   them through a caller-supplied handler registry and replies with
  *   `{type:"tool_result",...}` or `{type:"tool_error",...}`. Long-running
- *   handlers (e.g. per-turn coaching) can also push
- *   `{type:"observation",data:{text}}` frames any time via `ctx.sendObservation`.
+ *   handlers (e.g. per-turn coaching) can also push AI-visible status as
+ *   `{type:"tool_result",result:{text,...}}` frames via `ctx.sendToolStatus`.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
-import { buildFormattedObservationFrame } from './voice-observation-formatter';
+import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
 import { getToolEnvelopeError, isToolOutputEnvelope } from './ai-tool-base';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
@@ -32,10 +32,9 @@ export type VoiceConversationState =
 export interface ToolHandlerContext {
     toolRunId?: string;
     toolName?: string;
-    /** Push an `observation` frame on the open WS. Safe to call from a
-     *  background monitoring agent at any time. The frontend formats it
-     *  before the backend injects it into the LLM context. */
-    sendObservation: (data: Record<string, unknown>) => void;
+    /** Push a background status update as a `tool_result` frame on the open
+     *  WS. Safe to call from a monitoring agent at any time. */
+    sendToolStatus: (data: Record<string, unknown>) => void;
 }
 
 /** One frontend tool handler. Return value becomes the `tool_result`. Throw
@@ -53,7 +52,7 @@ export type ConversationRole = 'main' | 'agent';
 export type VoiceEvent =
     | { kind: 'user_transcript'; text: string; source?: 'voice' | 'typed' }
     | { kind: 'assistant_transcript'; text: string; emotion?: string }
-    | { kind: 'observation'; data: Record<string, unknown> }
+    | { kind: 'tool_status'; data: Record<string, unknown> }
     | {
         kind: 'tool_event';
         runId?: string;
@@ -118,9 +117,9 @@ export interface VoiceConversation {
      *  open. The backend treats it as a synthetic user turn and runs
      *  the LLM (same path as a spoken turn). */
     sendUserText: (text: string) => boolean;
-    /** Push a background observation into the open voice session. Returns
-     *  false when the voice WebSocket is not ready. */
-    sendObservation: (data: Record<string, unknown>) => boolean;
+    /** Push a background status update into the open voice session as a
+     *  tool_result. Returns false when the voice WebSocket is not ready. */
+    sendToolStatus: (data: Record<string, unknown>) => boolean;
     /** Send a tool_result frame into the open voice session. */
     sendToolResult: (frame: ToolResultFrame) => boolean;
     /** Execute a frontend tool through this session's subscription channel. */
@@ -154,7 +153,7 @@ type ToolEventEmitter = (event: VoiceEvent) => void;
 interface ExecuteSubscribedToolOptions {
     call: SubscribedToolCall;
     handlers: Record<string, FrontendToolHandler>;
-    baseContext: Pick<ToolHandlerContext, 'sendObservation'>;
+    baseContext: Pick<ToolHandlerContext, 'sendToolStatus'>;
     sendText: ToolFrameSender;
     emitEvent?: ToolEventEmitter;
     makeRunId?: () => string;
@@ -251,7 +250,7 @@ export const executeSubscribedFrontendTool = async ({
     const scopedContext: ToolHandlerContext = {
         toolRunId: id,
         toolName: name,
-        sendObservation: baseContext.sendObservation,
+        sendToolStatus: baseContext.sendToolStatus,
     };
 
     try {
@@ -626,10 +625,10 @@ export function useVoiceConversation(
                 try { ws.send(JSON.stringify(payload)); }
                 catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
             };
-            const toolCtx: Pick<ToolHandlerContext, 'sendObservation'> = {
-                sendObservation: (data) => {
-                    onEventRef.current?.({ kind: 'observation', data });
-                    sendText(buildFormattedObservationFrame(data));
+            const toolCtx: Pick<ToolHandlerContext, 'sendToolStatus'> = {
+                sendToolStatus: (data) => {
+                    onEventRef.current?.({ kind: 'tool_status', data });
+                    sendText(buildFormattedToolResultFrame(data));
                 },
             };
 
@@ -823,15 +822,15 @@ export function useVoiceConversation(
         }
     }, []);
 
-    const sendObservation = useCallback((data: Record<string, unknown>): boolean => {
-        onEventRef.current?.({ kind: 'observation', data });
+    const sendToolStatus = useCallback((data: Record<string, unknown>): boolean => {
+        onEventRef.current?.({ kind: 'tool_status', data });
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
-            ws.send(JSON.stringify(buildFormattedObservationFrame(data)));
+            ws.send(JSON.stringify(buildFormattedToolResultFrame(data)));
             return true;
         } catch (err) {
-            console.warn('[voice] sendObservation failed:', err);
+            console.warn('[voice] sendToolStatus failed:', err);
             return false;
         }
     }, []);
@@ -869,9 +868,9 @@ export function useVoiceConversation(
             call,
             handlers: toolHandlersRef.current,
             baseContext: {
-                sendObservation: (data) => {
-                    onEventRef.current?.({ kind: 'observation', data });
-                    sendText(buildFormattedObservationFrame(data));
+                sendToolStatus: (data) => {
+                    onEventRef.current?.({ kind: 'tool_status', data });
+                    sendText(buildFormattedToolResultFrame(data));
                 },
             },
             sendText,
@@ -893,7 +892,7 @@ export function useVoiceConversation(
         stop,
         setMicDisabled,
         sendUserText,
-        sendObservation,
+        sendToolStatus,
         sendToolResult,
         executeToolCall,
     };

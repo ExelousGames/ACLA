@@ -91,7 +91,7 @@ describe('executeSubscribedFrontendTool', () => {
                 read_context: async (args) => ({ status: 'ready', args }),
             },
             baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
+                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
             },
             sendText: (payload) => frames.push(payload),
             emitEvent: (event) => events.push(event),
@@ -136,7 +136,7 @@ describe('executeSubscribedFrontendTool', () => {
                 },
             },
             baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
+                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
             },
             sendText: (payload) => frames.push(payload),
             emitEvent: (event) => events.push(event),
@@ -163,12 +163,12 @@ describe('executeSubscribedFrontendTool', () => {
                 },
             },
             baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
+                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
             },
             sendText: (payload) => frames.push(payload),
         });
 
-        expect(contextKeys).toEqual([['sendObservation', 'toolName', 'toolRunId']]);
+        expect(contextKeys).toEqual([['sendToolStatus', 'toolName', 'toolRunId']]);
         expect(frames).toEqual([
             { type: 'tool_result', id: 'tool-3', result: { status: 'done' } },
         ]);
@@ -201,7 +201,7 @@ describe('executeSubscribedFrontendTool', () => {
                 collect_live_baseline: async () => envelope,
             },
             baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
+                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
             },
             sendText: (payload) => frames.push(payload),
             emitEvent: (event) => events.push(event),
@@ -237,7 +237,7 @@ describe('executeSubscribedFrontendTool', () => {
                 show_map: async () => ({ status: 'displayed' }),
             },
             baseContext: {
-                sendObservation: (data) => frames.push({ type: 'observation', data }),
+                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
             },
             sendText: (payload) => frames.push(payload),
             makeRunId: () => 'plan-1',

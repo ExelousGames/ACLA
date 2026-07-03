@@ -42,15 +42,15 @@ export type LivePerformanceComparison = {
     confidence: number;
 };
 
-export type LiveAnalystObservation = Record<string, unknown> & {
+export type LiveAnalystToolStatus = Record<string, unknown> & {
     source: 'live_performance_analyst';
     agent_mode: 'live_performance_analyst';
     event: string;
 };
 
-export const buildBaselineClassifierRequestReadyObservation = (
+export const buildBaselineClassifierRequestReadyToolStatus = (
     snapshot: Record<string, unknown>,
-): LiveAnalystObservation => ({
+): LiveAnalystToolStatus => ({
     source: 'live_performance_analyst',
     agent_mode: 'live_performance_analyst',
     event: 'baseline_classifier_request_ready',
@@ -63,9 +63,9 @@ export type LiveAnalystRecordedAnalysisError =
     | 'recorded_analysis_unavailable'
     | 'recorded_analysis_failed';
 
-export const buildLiveAnalysisPlanStartedObservation = (
+export const buildLiveAnalysisPlanStartedToolStatus = (
     snapshot: Record<string, unknown>,
-): LiveAnalystObservation => ({
+): LiveAnalystToolStatus => ({
     source: 'live_performance_analyst',
     agent_mode: 'live_performance_analyst',
     event: 'live_analysis_plan_started',
@@ -73,11 +73,11 @@ export const buildLiveAnalysisPlanStartedObservation = (
     message: 'Live analysis procedure started. Collect a baseline first, then use recorded-session analysis to choose a focus.',
 });
 
-export const buildRecordedAnalysisErrorObservation = (
+export const buildRecordedAnalysisErrorToolStatus = (
     error: LiveAnalystRecordedAnalysisError,
     message: string,
     snapshot?: Record<string, unknown> | null,
-): LiveAnalystObservation => ({
+): LiveAnalystToolStatus => ({
     source: 'live_performance_analyst',
     agent_mode: 'live_performance_analyst',
     event: error,
@@ -85,10 +85,10 @@ export const buildRecordedAnalysisErrorObservation = (
     message,
 });
 
-export const buildRecordedAnalysisReadyObservation = (
+export const buildRecordedAnalysisReadyToolStatus = (
     analysis: unknown,
     snapshot?: Record<string, unknown> | null,
-): LiveAnalystObservation => ({
+): LiveAnalystToolStatus => ({
     source: 'live_performance_analyst',
     agent_mode: 'live_performance_analyst',
     event: 'recorded_analysis_ready',
@@ -96,10 +96,10 @@ export const buildRecordedAnalysisReadyObservation = (
     analysis,
 });
 
-export const buildLiveAnalysisWindowObservation = (
+export const buildLiveAnalysisWindowToolStatus = (
     snapshot: Record<string, unknown>,
     focus: unknown,
-): LiveAnalystObservation => ({
+): LiveAnalystToolStatus => ({
     source: 'live_performance_analyst',
     agent_mode: 'live_performance_analyst',
     event: 'live_analysis_window',

@@ -56,7 +56,7 @@ type LiveRangeTrackerProps = {
     liveData?: Record<string, any> | null;
     sessionMode?: 'live' | 'recorded' | 'user_summary';
     sessionIntelligence?: SessionIntelligence | null;
-    sendObservation?: (data: Record<string, unknown>) => boolean;
+    sendToolStatus?: (data: Record<string, unknown>) => boolean;
     resolveLabel?: (labelId: string) => string | undefined;
     onStateChange?: (tracker: LiveRangeTrackerState | null) => void;
 };
@@ -262,7 +262,7 @@ const LiveRangeTracker = forwardRef<LiveRangeTrackerHandle, LiveRangeTrackerProp
     liveData,
     sessionMode = 'live',
     sessionIntelligence,
-    sendObservation,
+    sendToolStatus,
     resolveLabel,
     onStateChange,
 }, ref) => {
@@ -451,7 +451,7 @@ const LiveRangeTracker = forwardRef<LiveRangeTrackerHandle, LiveRangeTrackerProp
             });
             const triggeredAt = Date.now();
             const hasWindow = windowResult?.status === 'ready';
-            const observation = {
+            const toolStatus = {
                 source: 'live_range_tracker',
                 event: 'live_range_classification_requested',
                 range_id: range.id,
@@ -465,7 +465,7 @@ const LiveRangeTracker = forwardRef<LiveRangeTrackerHandle, LiveRangeTrackerProp
                 telemetry_row_count: windowResult?.rows.length ?? 0,
                 message: 'Classify this tracked range and update it with update_live_range_tracker action=record_classification.',
             };
-            const sent = hasWindow && sendObservation?.(observation) === true;
+            const sent = hasWindow && sendToolStatus?.(toolStatus) === true;
 
             nextTracker = {
                 ...nextTracker,
@@ -491,7 +491,7 @@ const LiveRangeTracker = forwardRef<LiveRangeTrackerHandle, LiveRangeTrackerProp
         });
 
         commitTracker(nextTracker);
-    }, [liveData, sendObservation, sessionIntelligence, sessionMode]);
+    }, [liveData, sendToolStatus, sessionIntelligence, sessionMode]);
 
     return (
         <LiveRangeTrackerDisplay
