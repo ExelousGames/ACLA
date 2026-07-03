@@ -57,7 +57,7 @@ _FUNCTION_TAG_RE = re.compile(
     re.DOTALL,
 )
 _FRONTEND_TOOL_RESULT_TYPE = "tool_result"
-_FRONTEND_TOOL_STATUS_PREFIX = "Frontend tool status update: "
+_FRONTEND_TOOL_STATUS_PREFIX = "Tool status update: "
 _SHARED_STARTUP_BEHAVIORS = (
     "tool_use",
     "procedure_plan",
@@ -82,7 +82,7 @@ No markdown, no bullets, no headings. Racing terms freely (apex,
 trail-brake, kerb, slip, weight transfer, etc.).
 """
 
-_TOOL_RESULT_HANDLING_PROMPT = """Frontend tool result handling:
+_TOOL_RESULT_HANDLING_PROMPT = """Tool result handling:
 - Tools may return a status field such as running, complete, failed, blocked, or skipped.
 - Treat complete or ok=true as a successful result and use the returned result/data payload.
 - Treat running as not ready yet; wait for the final result instead of answering from partial data.
@@ -100,7 +100,7 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
         LOGGER.exception("Failed to serialize voice session context")
         return ""
     return (
-        "Frontend session context: "
+        "Session context: "
         f"{encoded}\n"
         "Use this context to decide which tools are appropriate. "
     )
