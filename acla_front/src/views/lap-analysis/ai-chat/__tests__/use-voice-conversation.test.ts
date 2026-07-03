@@ -116,6 +116,7 @@ describe('executeSubscribedFrontendTool', () => {
             {
                 type: 'tool_result',
                 id: 'tool-1',
+                name: 'read_context',
                 result: {
                     status: 'ready',
                     args: { session_id: 's1' },
@@ -147,7 +148,7 @@ describe('executeSubscribedFrontendTool', () => {
             { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'started' },
             { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'completed', ok: false, error: 'boom' },
         ]);
-        expect(frames).toContainEqual({ type: 'tool_error', id: 'tool-2', error: 'boom' });
+        expect(frames).toContainEqual({ type: 'tool_error', id: 'tool-2', name: 'explode', error: 'boom' });
     });
 
     it('does not expose a secondary tool output callback', async () => {
@@ -170,7 +171,7 @@ describe('executeSubscribedFrontendTool', () => {
 
         expect(contextKeys).toEqual([['sendToolStatus', 'toolName', 'toolRunId']]);
         expect(frames).toEqual([
-            { type: 'tool_result', id: 'tool-3', result: { status: 'done' } },
+            { type: 'tool_result', id: 'tool-3', name: 'single_output', result: { status: 'done' } },
         ]);
     });
 
@@ -208,7 +209,7 @@ describe('executeSubscribedFrontendTool', () => {
         });
 
         expect(frames).toEqual([
-            { type: 'tool_result', id: 'tool-4', result: aiOutput },
+            { type: 'tool_result', id: 'tool-4', name: 'collect_live_baseline', result: aiOutput },
         ]);
         expect((frames[0] as any).result).not.toHaveProperty('snapshot');
         expect(events).toContainEqual(expect.objectContaining({
@@ -246,6 +247,7 @@ describe('executeSubscribedFrontendTool', () => {
         expect(frames).toContainEqual({
             type: 'tool_result',
             id: 'plan-1',
+            name: 'show_map',
             result: { status: 'displayed' },
         });
     });

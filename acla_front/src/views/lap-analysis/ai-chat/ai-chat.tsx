@@ -1010,7 +1010,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }
 
         setActiveAgentSession({ ...current, status: 'stopping' });
-        agentVoiceStopRef.current?.();
+        const stopAgentVoice = agentVoiceStopRef.current;
+        window.setTimeout(() => stopAgentVoice?.(), 0);
         resetAgentRuntimes();
         setActiveAgentSession(null);
         activeAgentSessionRef.current = null;

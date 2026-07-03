@@ -233,7 +233,7 @@ export const executeSubscribedFrontendTool = async ({
 
     if (!name) {
         const error = 'tool call missing name';
-        sendText({ type: 'tool_error', id, error });
+        sendText({ type: 'tool_error', id, name, error });
         return { id, name, ok: false, error };
     }
 
@@ -265,6 +265,7 @@ export const executeSubscribedFrontendTool = async ({
         sendText({
             type: 'tool_result',
             id,
+            name,
             result: getToolResultForAi(result),
         });
         emitEvent?.({
@@ -282,7 +283,7 @@ export const executeSubscribedFrontendTool = async ({
             : { id, name, ok: true, result };
     } catch (err) {
         const error = (err as Error)?.message || String(err);
-        sendText({ type: 'tool_error', id, error });
+        sendText({ type: 'tool_error', id, name, error });
         emitEvent?.({
             kind: 'tool_event',
             runId: id,
