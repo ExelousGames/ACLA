@@ -647,7 +647,11 @@ export function useVoiceConversation(
             // they capture the live `ws` instance; not exposed externally.
             const sendText = (payload: object) => {
                 if (ws.readyState !== WebSocket.OPEN) return;
-                try { ws.send(JSON.stringify(payload)); }
+                try {
+                    const json = JSON.stringify(payload);
+                    console.log('[ai-tool] sent to ai', json);
+                    ws.send(json);
+                }
                 catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
             };
             const toolCtx: Pick<ToolHandlerContext, 'sendToolStatus'> = {
@@ -692,7 +696,6 @@ export function useVoiceConversation(
             ws.onmessage = (event) => {
                 // Text frame → tool-relay channel. Binary frame → PCM audio.
                 if (typeof event.data === 'string') {
-                    console.log(event.data);
                     let parsed: any;
                     try { parsed = JSON.parse(event.data); }
                     catch { console.warn('[voice/tool-relay] non-JSON text frame:', event.data); return; }
@@ -848,7 +851,10 @@ export function useVoiceConversation(
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
-            ws.send(JSON.stringify(buildFormattedToolResultFrame(data)));
+            const frame = buildFormattedToolResultFrame(data);
+            const json = JSON.stringify(frame);
+            console.log('[ai-tool] sent to ai', json);
+            ws.send(json);
             return true;
         } catch (err) {
             console.warn('[voice] sendToolStatus failed:', err);
@@ -860,14 +866,15 @@ export function useVoiceConversation(
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
-            ws.send(JSON.stringify({
-                ...buildToolResultFrame(
-                    String(frame.id || ''),
-                    String(frame.name || ''),
-                    getToolResultForAi(frame.result),
-                    frame.arguments,
-                ),
-            }));
+            const payload = buildToolResultFrame(
+                String(frame.id || ''),
+                String(frame.name || ''),
+                getToolResultForAi(frame.result),
+                frame.arguments,
+            );
+            const json = JSON.stringify(payload);
+            console.log('[ai-tool] sent to ai', json);
+            ws.send(json);
             return true;
         } catch (err) {
             console.warn('[voice] sendToolResult failed:', err);
@@ -883,7 +890,11 @@ export function useVoiceConversation(
 
         const sendText = (payload: object) => {
             if (ws.readyState !== WebSocket.OPEN) return;
-            try { ws.send(JSON.stringify(payload)); }
+            try {
+                const json = JSON.stringify(payload);
+                console.log('[ai-tool] sent to ai', json);
+                ws.send(json);
+            }
             catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
         };
 

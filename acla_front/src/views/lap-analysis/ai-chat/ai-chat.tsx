@@ -606,15 +606,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
         if (event.kind === 'tool_call') {
-            console.log(`[ai-tool] tool_call ${event.status}`, {
-                name: event.name,
-                title: event.title,
-                status: event.status,
-                arguments: event.arguments,
-                result: event.result,
-                ok: event.ok,
-                error: event.error,
-            });
             broadcastPillPayload({
                 kind: 'tool',
                 text: event.title,
