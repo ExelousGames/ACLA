@@ -662,12 +662,10 @@ def _make_tool_handler(
     Both paths pass tool returns through unchanged so the LLM sees exactly
     what the frontend or server-side executor returned.
 
-    Each call also emits ``tool_event`` text frames (started + completed)
-    on the same WS so the chat UI can render a "tool box" with the
-    human-readable title from ``tool_titles`` (server-side fallback +
-    frontend-supplied titles from the handshake).
+    Frontend-owned calls carry their human-readable title on the
+    ``tool_call`` frame so the browser can render and execute from one
+    message.
     """
-    import json as _json
     from app.voice.tool_relay import get_relay
 
     relay = get_relay()
@@ -675,33 +673,13 @@ def _make_tool_handler(
     def _tool_title(name: str) -> str:
         return tool_titles.get(name) or _prettify(name)
 
-    async def _emit_tool_event(payload: Dict[str, Any]) -> None:
-        try:
-            await conn.send_text(_json.dumps({"type": "tool_event", **payload}))
-        except Exception:
-            LOGGER.debug("tool_event emit failed (WS likely closed)", exc_info=True)
-
     async def send_frontend_tool(function_name: str, arguments: Dict[str, Any]) -> Optional[str]:
         """Send one frontend-owned tool call and return without waiting."""
         title = _tool_title(function_name)
         arguments = arguments or {}
 
         LOGGER.info("[FRONTEND-TOOL-CALL] name=%s args=%r", function_name, arguments)
-        await _emit_tool_event({
-            "name": function_name,
-            "title": title,
-            "status": "started",
-            "arguments": arguments,
-        })
-
-        call_id = await relay.send_tool_call(conn, function_name, arguments)
-        await _emit_tool_event({
-            "name": function_name,
-            "title": title,
-            "status": "dispatched" if call_id else "dispatch_failed",
-            "ok": bool(call_id),
-            "call_id": call_id,
-        })
+        call_id = await relay.send_tool_call(conn, function_name, arguments, title)
         LOGGER.info(
             "[FRONTEND-TOOL-DISPATCHED] name=%s ok=%s call_id=%r",
             function_name, bool(call_id), call_id,
@@ -711,23 +689,15 @@ def _make_tool_handler(
     async def dispatch_server_tool(function_name: str, arguments: Dict[str, Any]) -> Any:
         """Execute one tool by name and return the LLM-visible payload.
 
-        Shared by native Pipecat ``register_function`` calls. Emits
-        tool_event start/complete frames, routes frontend vs. server tools,
-        leaves the tool return unchanged, and logs the result. Never raises —
+        Shared by native Pipecat ``register_function`` calls. Routes frontend
+        vs. server tools, leaves the tool return unchanged, and logs the
+        result. Never raises —
         failures come back as ``{"error": ...}`` so Pipecat can hand the
         result back cleanly.
         """
-        title = _tool_title(function_name)
         arguments = arguments or {}
 
         LOGGER.info("[TOOL-CALL] name=%s args=%r", function_name, arguments)
-
-        await _emit_tool_event({
-            "name": function_name,
-            "title": title,
-            "status": "started",
-            "arguments": arguments,
-        })
 
         ok = True
         error_msg: Optional[str] = None
@@ -753,13 +723,6 @@ def _make_tool_handler(
         except Exception as exc:
             LOGGER.exception("Voice tool %s failed", function_name)
             error_msg = str(exc)
-            await _emit_tool_event({
-                "name": function_name,
-                "title": title,
-                "status": "completed",
-                "ok": False,
-                "error": error_msg,
-            })
             return {"error": error_msg}
 
         payload = result
@@ -767,13 +730,6 @@ def _make_tool_handler(
             ok = False
             error_msg = str(payload.get("error"))
 
-        await _emit_tool_event({
-            "name": function_name,
-            "title": title,
-            "status": "completed",
-            "ok": ok,
-            "error": error_msg,
-        })
         # Truncate large payloads for log readability.
         _payload_log = payload
         if isinstance(_payload_log, str) and len(_payload_log) > 400:

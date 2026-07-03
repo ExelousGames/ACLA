@@ -73,6 +73,7 @@ class ToolRelay:
         conn: Any,
         name: str,
         arguments: Optional[Dict[str, Any]] = None,
+        title: Optional[str] = None,
     ) -> Optional[str]:
         """Send a frontend ``tool_call`` frame without awaiting a result.
 
@@ -91,6 +92,7 @@ class ToolRelay:
             "type": "tool_call",
             "id": call_id,
             "name": name,
+            "title": title or name,
             "arguments": arguments or {},
         })
 

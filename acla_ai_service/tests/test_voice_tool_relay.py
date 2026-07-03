@@ -20,6 +20,7 @@ async def test_send_tool_call_sends_frame_and_returns_without_result():
         conn,
         "advance_plan_step",
         {"reason": "ready"},
+        "Advance plan",
     )
 
     assert call_id
@@ -27,6 +28,7 @@ async def test_send_tool_call_sends_frame_and_returns_without_result():
         "type": "tool_call",
         "id": call_id,
         "name": "advance_plan_step",
+        "title": "Advance plan",
         "arguments": {"reason": "ready"},
     }]
 

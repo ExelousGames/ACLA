@@ -2,7 +2,6 @@ import {
     buildVoiceSessionMetadata,
     executeSubscribedFrontendTool,
     extractInlineFunctionCalls,
-    mapBackendToolEventForUi,
 } from '../use-voice-conversation';
 import { createToolOutputController } from '../ai-tool-base';
 
@@ -86,6 +85,7 @@ describe('executeSubscribedFrontendTool', () => {
             call: {
                 id: 'tool-1',
                 name: 'read_context',
+                title: 'Read context',
                 arguments: { session_id: 's1' },
             },
             handlers: {
@@ -100,11 +100,12 @@ describe('executeSubscribedFrontendTool', () => {
 
         expect(result).toMatchObject({ id: 'tool-1', name: 'read_context', ok: true });
         expect(events).toMatchObject([
-            { kind: 'tool_event', runId: 'tool-1', name: 'read_context', status: 'started' },
+            { kind: 'tool_event', runId: 'tool-1', name: 'read_context', title: 'Read context', status: 'started' },
             {
                 kind: 'tool_event',
                 runId: 'tool-1',
                 name: 'read_context',
+                title: 'Read context',
                 status: 'completed',
                 ok: true,
                 result: {
@@ -335,16 +336,5 @@ describe('executeSubscribedFrontendTool', () => {
             result: { status: 'displayed' },
             messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'plan-1' })],
         }));
-    });
-});
-
-describe('mapBackendToolEventForUi', () => {
-    it('keeps backend tool status frames out of the visible transcript', () => {
-        expect(mapBackendToolEventForUi({
-            type: 'tool_event',
-            name: 'query_telemetry_metric',
-            title: 'Querying telemetry',
-            status: 'started',
-        })).toBeNull();
     });
 });

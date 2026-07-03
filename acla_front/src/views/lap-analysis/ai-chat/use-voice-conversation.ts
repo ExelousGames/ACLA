@@ -6,7 +6,7 @@
  * - **Binary frames** — raw PCM16 mic in / assistant audio out. Same protocol
  *   as before.
  * - **Text frames** — JSON tool-relay messages. The backend emits
- *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
+ *   `{type:"tool_call",id,name,title,arguments}` frames; this hook dispatches
  *   them through a caller-supplied handler registry and replies with
  *   `{type:"tool_result",...}`. Long-running
  *   handlers (e.g. per-turn coaching) can also push AI-visible status as
@@ -243,12 +243,6 @@ const buildToolResultFrame = (
 
 const defaultToolRunId = () =>
     `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-
-// Backend tool events describe server-side orchestration. The transcript only
-// surfaces frontend tool execution events emitted by executeSubscribedFrontendTool.
-export const mapBackendToolEventForUi = (_parsed: unknown): VoiceEvent | null => {
-    return null;
-};
 
 export const executeSubscribedFrontendTool = async ({
     call,
@@ -664,7 +658,7 @@ export function useVoiceConversation(
             };
 
             const handleToolCall = async (msg: {
-                id?: string; name?: string; arguments?: Record<string, unknown>;
+                id?: string; name?: string; title?: string; arguments?: Record<string, unknown>;
             }) => {
                 const id = msg.id;
                 const name = msg.name;
@@ -673,7 +667,7 @@ export function useVoiceConversation(
                     return;
                 }
                 await executeSubscribedFrontendTool({
-                    call: { id, name, arguments: msg.arguments },
+                    call: { id, name, title: msg.title, arguments: msg.arguments },
                     handlers: toolHandlersRef.current,
                     baseContext: toolCtx,
                     sendText,
@@ -724,11 +718,6 @@ export function useVoiceConversation(
                             if (cleanText) {
                                 onEventRef.current?.({ kind: 'assistant_transcript', text: cleanText, emotion });
                             }
-                        }
-                    } else if (parsed?.type === 'tool_event') {
-                        const backendToolEvent = mapBackendToolEventForUi(parsed);
-                        if (backendToolEvent) {
-                            onEventRef.current?.(backendToolEvent);
                         }
                     } else if (parsed?.type === 'error') {
                         // Backend explicit error (e.g. pipecat / faster-whisper
