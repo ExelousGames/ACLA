@@ -225,24 +225,39 @@ const getToolResultName = (data: Record<string, unknown>): string => {
     return 'frontend_status_update';
 };
 
+const buildNativeToolMessage = (
+    id: string,
+    payload: Record<string, unknown>,
+) => ({
+    role: 'tool',
+    tool_call_id: id,
+    content: JSON.stringify(payload),
+});
+
 export const buildFormattedToolResultFrame = (data: Record<string, unknown>) => {
     const rawAiData = asRecord(getAiToolResult(data));
     const aiData = omitRawTelemetryRows(rawAiData);
     const sourceStatus = typeof aiData.status === 'string' ? aiData.status : undefined;
-
-    return {
+    const id = typeof aiData.tool_run_id === 'string'
+        ? aiData.tool_run_id
+        : typeof data.run_id === 'string'
+            ? data.run_id
+            : undefined;
+    const name = getToolResultName(aiData);
+    const payload = {
         type: 'tool_result' as const,
-        id: typeof aiData.tool_run_id === 'string'
-            ? aiData.tool_run_id
-            : typeof data.run_id === 'string'
-                ? data.run_id
-                : undefined,
-        name: getToolResultName(aiData),
+        id,
+        name,
         result: {
             ...aiData,
             ...(sourceStatus ? { source_status: sourceStatus } : {}),
             status: 'complete',
             text: formatToolResultForLlm(rawAiData),
         },
+    };
+
+    return {
+        ...payload,
+        ...(id ? { messages: [buildNativeToolMessage(id, payload)] } : {}),
     };
 };

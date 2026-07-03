@@ -91,6 +91,30 @@ async def test_server_tool_still_returns_result_callback():
     assert calls[0][2]["_conn"] is conn
 
 
+def test_user_text_sink_message_uses_frontend_supplied_native_messages():
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "tool-1",
+            "content": json.dumps({"type": "tool_result", "id": "tool-1"}),
+        },
+    ]
+    text = json.dumps({
+        "type": "tool_result",
+        "id": "tool-1",
+        "messages": messages,
+    })
+
+    assert pipecat_pipeline._llm_context_messages_from_user_text(text) == messages
+
+
+def test_user_text_sink_message_keeps_plain_text_as_user_role():
+    assert pipecat_pipeline._llm_context_messages_from_user_text("Box this lap") == [{
+        "role": "user",
+        "content": "Box this lap",
+    }]
+
+
 @pytest.mark.asyncio
 async def test_frontend_function_tag_recovery_does_not_inject_tool_result(monkeypatch):
     class Frame:

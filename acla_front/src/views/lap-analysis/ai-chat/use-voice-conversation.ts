@@ -131,6 +131,7 @@ export interface ToolResultFrame {
     id?: string;
     name?: string;
     result: unknown;
+    arguments?: Record<string, unknown>;
 }
 
 export interface SubscribedToolCall {
@@ -212,6 +213,55 @@ const getToolResultForUi = (result: unknown): unknown => (
         : result
 );
 
+const buildNativeToolMessage = (
+    id: string,
+    payload: Record<string, unknown>,
+) => ({
+    role: 'tool',
+    tool_call_id: id,
+    content: JSON.stringify(payload),
+});
+
+const buildToolResultFrame = (
+    id: string,
+    name: string,
+    result: unknown,
+    args?: Record<string, unknown>,
+) => {
+    const payload = {
+        type: 'tool_result',
+        id,
+        name,
+        result,
+    };
+    return {
+        ...payload,
+        ...(id && name
+            ? { messages: [buildNativeToolMessage(id, payload)] }
+            : {}),
+    };
+};
+
+const buildToolErrorFrame = (
+    id: string,
+    name: string,
+    error: string,
+    args?: Record<string, unknown>,
+) => {
+    const payload = {
+        type: 'tool_error',
+        id,
+        name,
+        error,
+    };
+    return {
+        ...payload,
+        ...(id && name
+            ? { messages: [buildNativeToolMessage(id, payload)] }
+            : {}),
+    };
+};
+
 const defaultToolRunId = () =>
     `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
@@ -238,7 +288,7 @@ export const executeSubscribedFrontendTool = async ({
 
     if (!name) {
         const error = 'tool call missing name';
-        sendText({ type: 'tool_error', id, name, error });
+        sendText(buildToolErrorFrame(id, name, error, args));
         return { id, name, ok: false, error };
     }
 
@@ -267,12 +317,7 @@ export const executeSubscribedFrontendTool = async ({
         const envelopeError = isToolOutputEnvelope(result)
             ? getToolEnvelopeError(result)
             : null;
-        sendText({
-            type: 'tool_result',
-            id,
-            name,
-            result: getToolResultForAi(result),
-        });
+        sendText(buildToolResultFrame(id, name, getToolResultForAi(result), args));
         const envelopeComplete = isToolOutputEnvelope(result) ? result.final : true;
         emitEvent?.({
             kind: 'tool_event',
@@ -289,7 +334,7 @@ export const executeSubscribedFrontendTool = async ({
             : { id, name, ok: true, result };
     } catch (err) {
         const error = (err as Error)?.message || String(err);
-        sendText({ type: 'tool_error', id, name, error });
+        sendText(buildToolErrorFrame(id, name, error, args));
         emitEvent?.({
             kind: 'tool_event',
             runId: id,
@@ -847,10 +892,12 @@ export function useVoiceConversation(
         if (!ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
             ws.send(JSON.stringify({
-                type: 'tool_result',
-                id: frame.id,
-                name: frame.name,
-                result: getToolResultForAi(frame.result),
+                ...buildToolResultFrame(
+                    String(frame.id || ''),
+                    String(frame.name || ''),
+                    getToolResultForAi(frame.result),
+                    frame.arguments,
+                ),
             }));
             return true;
         } catch (err) {

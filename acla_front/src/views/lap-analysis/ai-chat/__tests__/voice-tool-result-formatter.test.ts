@@ -140,4 +140,21 @@ describe('formatToolResultForLlm', () => {
             },
         });
     });
+
+    it('includes a native tool message when a run id is available', () => {
+        const frame = buildFormattedToolResultFrame({
+            run_id: 'tool-7',
+            event: 'custom_alert',
+            section: 'T1',
+        });
+
+        expect(frame).toEqual(expect.objectContaining({
+            type: 'tool_result',
+            id: 'tool-7',
+            name: 'custom_alert',
+            messages: [
+                expect.objectContaining({ role: 'tool', tool_call_id: 'tool-7' }),
+            ],
+        }));
+    });
 });

@@ -114,7 +114,7 @@ describe('executeSubscribedFrontendTool', () => {
             },
         ]);
         expect(frames).toEqual([
-            {
+            expect.objectContaining({
                 type: 'tool_result',
                 id: 'tool-1',
                 name: 'read_context',
@@ -122,6 +122,21 @@ describe('executeSubscribedFrontendTool', () => {
                     status: 'ready',
                     args: { session_id: 's1' },
                 },
+            }),
+        ]);
+        expect((frames[0] as any).messages).toEqual([
+            {
+                role: 'tool',
+                tool_call_id: 'tool-1',
+                content: JSON.stringify({
+                    type: 'tool_result',
+                    id: 'tool-1',
+                    name: 'read_context',
+                    result: {
+                        status: 'ready',
+                        args: { session_id: 's1' },
+                    },
+                }),
             },
         ]);
     });
@@ -149,7 +164,13 @@ describe('executeSubscribedFrontendTool', () => {
             { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'started' },
             { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'completed', ok: false, error: 'boom' },
         ]);
-        expect(frames).toContainEqual({ type: 'tool_error', id: 'tool-2', name: 'explode', error: 'boom' });
+        expect(frames).toContainEqual(expect.objectContaining({
+            type: 'tool_error',
+            id: 'tool-2',
+            name: 'explode',
+            error: 'boom',
+            messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-2' })],
+        }));
     });
 
     it('does not expose a secondary tool output callback', async () => {
@@ -172,7 +193,13 @@ describe('executeSubscribedFrontendTool', () => {
 
         expect(contextKeys).toEqual([['sendToolStatus', 'toolName', 'toolRunId']]);
         expect(frames).toEqual([
-            { type: 'tool_result', id: 'tool-3', name: 'single_output', result: { status: 'done' } },
+            expect.objectContaining({
+                type: 'tool_result',
+                id: 'tool-3',
+                name: 'single_output',
+                result: { status: 'done' },
+                messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-3' })],
+            }),
         ]);
     });
 
@@ -207,7 +234,13 @@ describe('executeSubscribedFrontendTool', () => {
         });
 
         expect(frames).toEqual([
-            { type: 'tool_result', id: 'tool-4', name: 'collect_live_baseline', result: aiOutput },
+            expect.objectContaining({
+                type: 'tool_result',
+                id: 'tool-4',
+                name: 'collect_live_baseline',
+                result: aiOutput,
+                messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-4' })],
+            }),
         ]);
         expect((frames[0] as any).result).not.toHaveProperty('snapshot');
         expect(events).toContainEqual(expect.objectContaining({
@@ -254,12 +287,13 @@ describe('executeSubscribedFrontendTool', () => {
         });
 
         expect(frames).toEqual([
-            {
+            expect.objectContaining({
                 type: 'tool_result',
                 id: 'tool-5',
                 name: 'collect_live_baseline',
                 result: envelope.output,
-            },
+                messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-5' })],
+            }),
         ]);
         expect(events).toContainEqual(expect.objectContaining({
             kind: 'tool_event',
@@ -294,12 +328,13 @@ describe('executeSubscribedFrontendTool', () => {
             makeRunId: () => 'plan-1',
         });
 
-        expect(frames).toContainEqual({
+        expect(frames).toContainEqual(expect.objectContaining({
             type: 'tool_result',
             id: 'plan-1',
             name: 'show_map',
             result: { status: 'displayed' },
-        });
+            messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'plan-1' })],
+        }));
     });
 });
 

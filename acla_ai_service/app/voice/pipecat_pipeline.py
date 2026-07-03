@@ -218,6 +218,29 @@ def _compact_json(value: Any, *, max_chars: int = 3000) -> str:
     return f"{encoded[:max_chars]}...<truncated>"
 
 
+def _llm_context_messages_from_user_text(text: str) -> List[Dict[str, Any]]:
+    """Return LLMContext message(s) for typed text/control payloads."""
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return [{"role": "user", "content": text}]
+
+    if not isinstance(payload, dict):
+        return [{"role": "user", "content": text}]
+
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        native_messages = [m for m in messages if isinstance(m, dict)]
+        if native_messages:
+            return native_messages
+
+    role = payload.get("role")
+    if isinstance(role, str):
+        return [payload]
+
+    return [{"role": "user", "content": text}]
+
+
 def _as_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -1316,15 +1339,15 @@ async def build_voice_pipeline_task(
             _trigger_llm_run("session_context_sink")
 
     def user_text_sink(text: str) -> None:
-        """Inject a typed chat message as a synthetic user turn.
+        """Inject typed chat text or a frontend tool response.
 
-        The LLM treats it as if the driver had spoken it. Plain user_text
-        frames are echoed by the frontend before sending; this backend path is
-        only responsible for updating LLM context and waking the model.
+        Plain user_text frames become user turns. Tool-result frames can
+        include frontend-supplied native messages for the LLM context.
         """
         import time as _time
         LOGGER.info("[LAT-DIAG] user_text_in t=%.3f chars=%d", _time.monotonic(), len(text))
-        context.add_message({"role": "user", "content": text})
+        for message in _llm_context_messages_from_user_text(text):
+            context.add_message(message)
         _trigger_llm_run("user_text_sink")
 
     get_relay().bind(
