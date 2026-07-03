@@ -82,7 +82,7 @@ export class SessionIntelligence {
     private currentTrack: string = '';
     private currentPosition: number = 0;
     private baselineStartLap: number | null = null;
-    private baselineStartPendingFromLap: number | null = null;
+    private baselineStartPending: boolean = false;
     private onEvent: ((event: SessionEvent) => void) | null = null;
     private onAnalystToolStatus: ((toolStatus: LiveAnalystToolStatus) => void) | null = null;
     private sectionHistory: LiveSectionClassification[] = [];
@@ -142,14 +142,11 @@ export class SessionIntelligence {
         this.currentPosition = getTelemetryPosition(sample) ?? this.currentPosition;
 
         if (
-            this.baselineStartPendingFromLap !== null
-            && (
-                this.currentPosition <= BASELINE_START_POSITION_EPSILON
-                || this.currentLap > this.baselineStartPendingFromLap
-            )
+            this.baselineStartPending
+            && this.currentPosition <= BASELINE_START_POSITION_EPSILON
         ) {
             this.baselineStartLap = this.currentLap;
-            this.baselineStartPendingFromLap = null;
+            this.baselineStartPending = false;
         }
 
         const sampleIdx = this.buffer.push(sample);
@@ -239,12 +236,12 @@ export class SessionIntelligence {
 
         if (this.currentPosition <= BASELINE_START_POSITION_EPSILON) {
             this.baselineStartLap = this.currentLap;
-            this.baselineStartPendingFromLap = null;
+            this.baselineStartPending = false;
             return;
         }
 
         this.baselineStartLap = null;
-        this.baselineStartPendingFromLap = this.currentLap;
+        this.baselineStartPending = true;
     }
 
     hasBaselineCollectionStarted(): boolean {
@@ -456,7 +453,7 @@ export class SessionIntelligence {
         this.currentTrack = '';
         this.currentPosition = 0;
         this.baselineStartLap = null;
-        this.baselineStartPendingFromLap = null;
+        this.baselineStartPending = false;
         this.sectionHistory = [];
         this.focusSection = null;
         this.baselineClassifierReadyEmittedForLap = null;

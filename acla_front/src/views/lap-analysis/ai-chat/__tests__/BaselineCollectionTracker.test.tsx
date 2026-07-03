@@ -4,6 +4,7 @@ import {
     type BaselineCollectionTag,
     type BaselineLapRecord,
 } from '../BaselineCollectionTracker';
+import { getToolEnvelopeUiOutput } from '../ai-tool-base';
 
 const makeSample = (lap: number, position: number, currentTime: number) => ({
     Static_track: 'brands_hatch',
@@ -97,6 +98,37 @@ describe('BaselineCollectionTracker', () => {
         expect(tags.at(-1)).not.toHaveProperty('snapshot');
     });
 
+    it('waits for position zero instead of starting when the lap counter advances', () => {
+        const tags: Array<BaselineCollectionTag | null> = [];
+        const records: Array<BaselineLapRecord | null> = [];
+
+        const props = {
+            enabled: true,
+            liveData: makeSample(0, 0.45, 45000),
+            sessionMode: 'live' as const,
+            onTagChange: (tag: BaselineCollectionTag | null) => tags.push(tag),
+            onLapRecordChange: (record: BaselineLapRecord | null) => records.push(record),
+        };
+
+        const { rerender } = render(<BaselineCollectionTracker {...props} />);
+        rerender(<BaselineCollectionTracker {...props} liveData={makeSample(1, 0.4, 40000)} />);
+
+        expect(tags.at(-1)).toMatchObject({
+            status: 'waiting_for_start',
+            progress_percent: 0,
+            baseline_lap: null,
+        });
+        expect(records.filter(Boolean)).toHaveLength(0);
+
+        rerender(<BaselineCollectionTracker {...props} liveData={makeSample(1, 0.001, 5)} />);
+
+        expect(tags.at(-1)).toMatchObject({
+            status: 'collecting',
+            progress_percent: 1,
+            baseline_lap: 1,
+        });
+    });
+
     it('emits a compact public tool result when the baseline completes', () => {
         const outputs: any[] = [];
         const props = {
@@ -113,26 +145,29 @@ describe('BaselineCollectionTracker', () => {
         rerender(<BaselineCollectionTracker {...props} liveData={makeSample(0, 0.98, 98000)} />);
         rerender(<BaselineCollectionTracker {...props} liveData={makeSample(1, 0.001, 5)} />);
 
-        expect(outputs.at(-1)).toMatchObject({
+        const latestOutput = outputs.at(-1);
+        const uiOutput = getToolEnvelopeUiOutput(latestOutput);
+
+        expect(latestOutput).toMatchObject({
             status: 'complete',
             progress_percent: 100,
             message: 'Baseline complete. Cached lap record is ready.',
             tool_name: 'collect_live_baseline',
             final: true,
-            ui_output: {
-                progress_percent: 100,
-                status: 'complete',
-                car: 'Ferrari 296',
-                track: 'brands_hatch',
-                message: 'Baseline complete. Cached lap record is ready.',
-            },
-            ai_output: {
+            output: {
                 name: 'collect_live_baseline',
                 status: 'complete',
                 message: 'Baseline complete. Cached lap record is ready.',
             },
         });
-        expect(Object.keys(outputs.at(-1).ui_output).sort()).toEqual([
+        expect(uiOutput).toMatchObject({
+            progress_percent: 100,
+            status: 'complete',
+            car: 'Ferrari 296',
+            track: 'brands_hatch',
+            message: 'Baseline complete. Cached lap record is ready.',
+        });
+        expect(Object.keys(uiOutput as Record<string, unknown>).sort()).toEqual([
             'car',
             'message',
             'progress_percent',
