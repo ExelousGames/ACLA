@@ -225,6 +225,59 @@ describe('executeSubscribedFrontendTool', () => {
         }));
     });
 
+    it('does not mark a non-final envelope completed', async () => {
+        const frames: object[] = [];
+        const events: object[] = [];
+        const envelope = {
+            tool_name: 'collect_live_baseline',
+            run_id: 'tool-5',
+            status: 'started',
+            ui_output: {
+                status: 'started',
+                message: 'Baseline collection started.',
+            },
+            ai_output: {
+                name: 'collect_live_baseline',
+                status: 'started',
+                message: 'Baseline collection started.',
+            },
+            final: false,
+        };
+
+        await executeSubscribedFrontendTool({
+            call: { id: 'tool-5', name: 'collect_live_baseline' },
+            handlers: {
+                collect_live_baseline: async () => envelope,
+            },
+            baseContext: {
+                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
+            },
+            sendText: (payload) => frames.push(payload),
+            emitEvent: (event) => events.push(event),
+        });
+
+        expect(frames).toEqual([
+            {
+                type: 'tool_result',
+                id: 'tool-5',
+                name: 'collect_live_baseline',
+                result: envelope.ai_output,
+            },
+        ]);
+        expect(events).toContainEqual(expect.objectContaining({
+            kind: 'tool_event',
+            runId: 'tool-5',
+            name: 'collect_live_baseline',
+            status: 'started',
+            result: envelope,
+        }));
+        expect(events).not.toContainEqual(expect.objectContaining({
+            kind: 'tool_event',
+            runId: 'tool-5',
+            status: 'completed',
+        }));
+    });
+
     it('supports plan-triggered calls with generated run ids', async () => {
         const frames: object[] = [];
 

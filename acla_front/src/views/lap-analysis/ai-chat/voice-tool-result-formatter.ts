@@ -1,3 +1,5 @@
+import { getAiToolResult } from './ai-tool-result-boundary';
+
 const asRecord = (value: unknown): Record<string, unknown> => (
     value && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
@@ -185,6 +187,9 @@ export const formatToolResultForLlm = (data: Record<string, unknown>): string =>
 };
 
 const getToolResultName = (data: Record<string, unknown>): string => {
+    if (typeof data.name === 'string' && data.name.trim()) {
+        return data.name.trim();
+    }
     if (typeof data.tool_name === 'string' && data.tool_name.trim()) {
         return data.tool_name.trim();
     }
@@ -198,17 +203,22 @@ const getToolResultName = (data: Record<string, unknown>): string => {
 };
 
 export const buildFormattedToolResultFrame = (data: Record<string, unknown>) => {
-    const sourceStatus = typeof data.status === 'string' ? data.status : undefined;
+    const aiData = asRecord(getAiToolResult(data));
+    const sourceStatus = typeof aiData.status === 'string' ? aiData.status : undefined;
 
     return {
         type: 'tool_result' as const,
-        id: typeof data.tool_run_id === 'string' ? data.tool_run_id : undefined,
-        name: getToolResultName(data),
+        id: typeof aiData.tool_run_id === 'string'
+            ? aiData.tool_run_id
+            : typeof data.run_id === 'string'
+                ? data.run_id
+                : undefined,
+        name: getToolResultName(aiData),
         result: {
-            ...data,
+            ...aiData,
             ...(sourceStatus ? { source_status: sourceStatus } : {}),
             status: 'complete',
-            text: formatToolResultForLlm(data),
+            text: formatToolResultForLlm(aiData),
         },
     };
 };

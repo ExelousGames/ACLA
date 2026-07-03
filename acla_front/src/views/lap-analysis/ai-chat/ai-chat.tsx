@@ -707,7 +707,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             name: envelope.tool_name,
             result: envelope.ai_output,
         });
-    }, [handleSessionVoiceEvent]);
+
+        const plan = procedurePlanRef.current;
+        const request = plan?.requests[plan.currentStep];
+        if (
+            envelope.final
+            && !envelopeError
+            && request?.type === 'tool_call'
+            && request.name === envelope.tool_name
+            && request.status !== 'complete'
+        ) {
+            advanceProcedurePlanStep(envelope.message || `tool ${envelope.tool_name} completed`);
+        }
+    }, [advanceProcedurePlanStep, handleSessionVoiceEvent]);
 
     const baselineCollectionRuntime = useBaselineCollectionRuntime({
         onToolOutput: handleBaselineToolOutput,
@@ -1452,7 +1464,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             if (!envelope.final) {
                 setProcedurePlanRequestStatus(
                     requestIndex,
-                    'blocked',
+                    'running',
                     envelope.message || 'Tool has not produced a final output yet.',
                 );
                 return;

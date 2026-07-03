@@ -896,7 +896,7 @@ const collectBaselineLapFromTrackerOutput = (
         return output.final(initialPayload);
     }
 
-    return output.final({
+    return output.progress({
         ...initialPayload,
         status: 'started',
         message: 'Baseline collection started.',

@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
 import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
 import { getToolEnvelopeError, isToolOutputEnvelope } from './ai-tool-base';
+import { getAiToolResult } from './ai-tool-result-boundary';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
 const INLINE_FUNCTION_CALL_RE = /<function=([a-zA-Z0-9_.:-]+)\s*>?([\s\S]*?)<\/function>/g;
@@ -199,12 +200,10 @@ export const extractInlineFunctionCalls = (
 };
 
 const getToolResultForAi = (result: unknown): unknown => {
-    if (isToolOutputEnvelope(result)) {
-        return result.ai_output;
-    }
-    return result && typeof result === 'object' && !Array.isArray(result)
-        ? result
-        : { value: result };
+    const aiResult = getAiToolResult(result);
+    return aiResult && typeof aiResult === 'object' && !Array.isArray(aiResult)
+        ? aiResult
+        : { value: aiResult };
 };
 
 const defaultToolRunId = () =>
@@ -268,12 +267,13 @@ export const executeSubscribedFrontendTool = async ({
             name,
             result: getToolResultForAi(result),
         });
+        const envelopeComplete = isToolOutputEnvelope(result) ? result.final : true;
         emitEvent?.({
             kind: 'tool_event',
             runId: id,
             name,
             title,
-            status: 'completed',
+            status: envelopeComplete ? 'completed' : 'started',
             result,
             ok: !envelopeError,
             error: envelopeError,
@@ -844,7 +844,7 @@ export function useVoiceConversation(
                 type: 'tool_result',
                 id: frame.id,
                 name: frame.name,
-                result: frame.result,
+                result: getToolResultForAi(frame.result),
             }));
             return true;
         } catch (err) {

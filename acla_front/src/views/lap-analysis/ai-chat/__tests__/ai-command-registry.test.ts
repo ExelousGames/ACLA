@@ -1001,7 +1001,7 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
-    it('returns baseline started immediately while collection continues in the tracker', async () => {
+    it('keeps collect live baseline non-final while collection continues in the tracker', async () => {
         const collectingTag = buildBaselineCollectionTag({
             status: 'ready',
             track: 'brands_hatch',
@@ -1032,7 +1032,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(result).toMatchObject({
             status: 'started',
-            final: true,
+            final: false,
             tool_name: 'collect_live_baseline',
             ui_output: {
                 status: 'started',
