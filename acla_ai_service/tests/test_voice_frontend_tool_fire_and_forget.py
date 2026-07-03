@@ -91,8 +91,57 @@ async def test_server_tool_still_returns_result_callback():
     assert calls[0][2]["_conn"] is conn
 
 
-def test_user_text_sink_message_uses_frontend_supplied_native_messages():
+def test_user_text_sink_message_formats_orphan_frontend_tool_status_update():
     messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "tool-1",
+            "content": json.dumps({"type": "tool_result", "id": "tool-1"}),
+        },
+    ]
+    text = json.dumps({
+        "type": "tool_result",
+        "id": "tool-1",
+        "name": "collect_live_baseline",
+        "result": {
+            "status": "started",
+            "message": "Baseline collection started.",
+        },
+        "messages": messages,
+    })
+
+    llm_messages = pipecat_pipeline._llm_context_messages_from_user_text(text)
+
+    assert llm_messages[0]["role"] == "user"
+    prefix = "Frontend tool status update: "
+    assert llm_messages[0]["content"].startswith(prefix)
+    status_update = json.loads(llm_messages[0]["content"][len(prefix):])
+    assert status_update == {
+        "type": "tool_result",
+        "name": "collect_live_baseline",
+        "status": "started",
+        "message": "Baseline collection started.",
+        "result": {
+            "status": "started",
+            "message": "Baseline collection started.",
+        },
+    }
+
+
+def test_user_text_sink_message_uses_valid_frontend_native_message_batch():
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "tool-1",
+                "type": "function",
+                "function": {
+                    "name": "read_context",
+                    "arguments": "{}",
+                },
+            }],
+        },
         {
             "role": "tool",
             "tool_call_id": "tool-1",

@@ -56,6 +56,8 @@ _FUNCTION_TAG_RE = re.compile(
     r"^<function=([A-Za-z_]\w*)>\s*(.*?)\s*</function>$",
     re.DOTALL,
 )
+_FRONTEND_TOOL_RESULT_TYPE = "tool_result"
+_FRONTEND_TOOL_STATUS_PREFIX = "Frontend tool status update: "
 _SHARED_STARTUP_BEHAVIORS = (
     "tool_use",
     "procedure_plan",
@@ -231,14 +233,74 @@ def _llm_context_messages_from_user_text(text: str) -> List[Dict[str, Any]]:
     messages = payload.get("messages")
     if isinstance(messages, list):
         native_messages = [m for m in messages if isinstance(m, dict)]
-        if native_messages:
+        if native_messages and _native_message_batch_is_valid(native_messages):
             return native_messages
 
+    tool_status_message = _format_frontend_tool_status_for_prompt(payload)
+    if tool_status_message:
+        return [{"role": "user", "content": tool_status_message}]
+
     role = payload.get("role")
-    if isinstance(role, str):
+    if isinstance(role, str) and role != "tool":
         return [payload]
 
     return [{"role": "user", "content": text}]
+
+
+def _format_frontend_tool_status_for_prompt(payload: Dict[str, Any]) -> str:
+    fields = _frontend_tool_status_fields(payload)
+    if not fields:
+        return ""
+
+    return f"{_FRONTEND_TOOL_STATUS_PREFIX}{_compact_json(fields)}"
+
+
+def _frontend_tool_status_fields(payload: Dict[str, Any]) -> Dict[str, Any]:
+    payload_type = payload.get("type")
+    if payload_type != _FRONTEND_TOOL_RESULT_TYPE:
+        return {}
+
+    fields: Dict[str, Any] = {"type": payload_type}
+    name = payload.get("name")
+    if isinstance(name, str) and name:
+        fields["name"] = name
+
+    result = payload.get("result")
+    prompt_source = result if isinstance(result, dict) else payload
+    for field in ("status", "message"):
+        value = prompt_source.get(field)
+        if isinstance(value, str) and value:
+            fields[field] = value
+    if "message" not in fields:
+        text = prompt_source.get("text")
+        if isinstance(text, str) and text:
+            fields["message"] = text
+    if result is not None:
+        fields["result"] = result
+
+    return fields
+
+
+def _native_message_batch_is_valid(messages: List[Dict[str, Any]]) -> bool:
+    """Validate frontend-supplied native messages before adding them to context."""
+    pending_tool_call_ids: set[str] = set()
+    for message in messages:
+        role = message.get("role")
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if isinstance(tool_call, dict) and isinstance(tool_call.get("id"), str):
+                        pending_tool_call_ids.add(tool_call["id"])
+            continue
+        if role != "tool":
+            continue
+
+        tool_call_id = message.get("tool_call_id")
+        if not isinstance(tool_call_id, str) or tool_call_id not in pending_tool_call_ids:
+            return False
+        pending_tool_call_ids.remove(tool_call_id)
+    return not pending_tool_call_ids
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
