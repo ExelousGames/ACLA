@@ -7,7 +7,7 @@ for frontend tool calls/results, typed user text, and session context.
 Frontend tool calls are fire-and-forget from the AI service perspective. The
 relay sends a ``tool_call`` frame to the frontend and does not wait for a
 matching result. Later AI-visible data should come back through
-``tool_result`` / ``tool_error`` / ``user_text`` / ``session_context`` frames.
+``tool_result`` / ``user_text`` / ``session_context`` frames.
 """
 
 from __future__ import annotations
@@ -113,7 +113,7 @@ class ToolRelay:
 
         frame_type = payload.get("type")
 
-        if frame_type in ("tool_result", "tool_error"):
+        if frame_type == "tool_result":
             try:
                 state.user_text_sink(self._serialize_ai_visible_tool_payload(payload))
             except Exception:
@@ -170,13 +170,10 @@ class ToolRelay:
                 "Use a compact tool result or a server-side classifier path."
             ),
         }
-        if frame_type == "tool_error":
-            compact_payload["error"] = {"message": compact_payload["message"]}
-        else:
-            compact_payload["result"] = {
-                "status": "omitted",
-                "message": compact_payload["message"],
-            }
+        compact_payload["result"] = {
+            "status": "omitted",
+            "message": compact_payload["message"],
+        }
 
         LOGGER.warning(
             "tool_relay: truncated oversized %s payload name=%r chars=%d cap=%d",

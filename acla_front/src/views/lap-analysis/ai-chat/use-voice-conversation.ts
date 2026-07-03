@@ -8,7 +8,7 @@
  * - **Text frames** — JSON tool-relay messages. The backend emits
  *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
  *   them through a caller-supplied handler registry and replies with
- *   `{type:"tool_result",...}` or `{type:"tool_error",...}`. Long-running
+ *   `{type:"tool_result",...}`. Long-running
  *   handlers (e.g. per-turn coaching) can also push AI-visible status as
  *   `{type:"tool_result",result:{text,...}}` frames via `ctx.sendToolStatus`.
  */
@@ -38,8 +38,7 @@ export interface ToolHandlerContext {
     sendToolStatus: (data: Record<string, unknown>) => void;
 }
 
-/** One frontend tool handler. Return value becomes the `tool_result`. Throw
- *  to emit a `tool_error`. */
+/** One frontend tool handler. Return value becomes the `tool_result`. */
 export type FrontendToolHandler = (
     args: Record<string, unknown>,
     ctx: ToolHandlerContext,
@@ -81,7 +80,7 @@ export interface VoiceConversationOptions {
     /** Map of frontend tool name → handler. The LLM picks which tools to
      *  call from its system prompt; the backend routes the call to this
      *  hook over the WS via a `tool_call` text frame; we dispatch by
-     *  name. Missing handler → automatic `tool_error`. */
+     *  name. Missing handlers are returned as failed tool_result frames. */
     toolHandlers?: Record<string, FrontendToolHandler>;
     /** Compact frontend view/session state injected into the backend system
      *  context before the LLM chooses tools. */
@@ -242,26 +241,6 @@ const buildToolResultFrame = (
     };
 };
 
-const buildToolErrorFrame = (
-    id: string,
-    name: string,
-    error: string,
-    args?: Record<string, unknown>,
-) => {
-    const payload = {
-        type: 'tool_error',
-        id,
-        name,
-        error,
-    };
-    return {
-        ...payload,
-        ...(id && name
-            ? { messages: [buildNativeToolMessage(id, payload)] }
-            : {}),
-    };
-};
-
 const defaultToolRunId = () =>
     `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
@@ -288,7 +267,7 @@ export const executeSubscribedFrontendTool = async ({
 
     if (!name) {
         const error = 'tool call missing name';
-        sendText(buildToolErrorFrame(id, name, error, args));
+        sendText(buildToolResultFrame(id, name, { ok: false, error }, args));
         return { id, name, ok: false, error };
     }
 
@@ -334,7 +313,7 @@ export const executeSubscribedFrontendTool = async ({
             : { id, name, ok: true, result };
     } catch (err) {
         const error = (err as Error)?.message || String(err);
-        sendText(buildToolErrorFrame(id, name, error, args));
+        sendText(buildToolResultFrame(id, name, { ok: false, error }, args));
         emitEvent?.({
             kind: 'tool_event',
             runId: id,

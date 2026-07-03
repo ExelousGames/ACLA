@@ -141,7 +141,7 @@ describe('executeSubscribedFrontendTool', () => {
         ]);
     });
 
-    it('emits lifecycle events and a final tool_error when the handler fails', async () => {
+    it('emits lifecycle events and a failed tool_result when the handler fails', async () => {
         const frames: object[] = [];
         const events: object[] = [];
 
@@ -165,10 +165,10 @@ describe('executeSubscribedFrontendTool', () => {
             { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'completed', ok: false, error: 'boom' },
         ]);
         expect(frames).toContainEqual(expect.objectContaining({
-            type: 'tool_error',
+            type: 'tool_result',
             id: 'tool-2',
             name: 'explode',
-            error: 'boom',
+            result: { ok: false, error: 'boom' },
             messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-2' })],
         }));
     });

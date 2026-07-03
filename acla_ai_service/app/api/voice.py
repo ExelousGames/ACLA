@@ -160,7 +160,7 @@ async def voice_stream(
     * **Binary frames** — raw PCM16 mono audio (mic in / Kokoro TTS out).
       Consumed by Pipecat's transport unchanged.
     * **Text frames** — JSON tool-relay messages (``tool_call`` /
-      ``tool_result`` / ``tool_error`` / ``user_text`` /
+      ``tool_result`` / ``user_text`` /
       ``session_context``) — see
       :mod:`app.voice.tool_relay`. Routed off the audio path before
       Pipecat sees them.

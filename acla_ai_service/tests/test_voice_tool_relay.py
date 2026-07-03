@@ -128,30 +128,3 @@ async def test_unknown_frame_is_not_forwarded_to_ai_visible_payloads():
     })
 
     assert payloads == []
-
-
-@pytest.mark.asyncio
-async def test_tool_error_is_forwarded_as_ai_visible_payload():
-    relay = ToolRelay()
-    conn = object()
-    payloads = []
-
-    async def send_text(payload: str) -> None:
-        _ = payload
-
-    relay.bind(conn, send_text, payloads.append)
-
-    relay.handle_text_frame(conn, {
-        "type": "tool_error",
-        "id": "call-1",
-        "name": "frontend_classifier",
-        "error": {"message": "failed"},
-    })
-
-    assert len(payloads) == 1
-    assert json.loads(payloads[0]) == {
-        "type": "tool_error",
-        "id": "call-1",
-        "name": "frontend_classifier",
-        "error": {"message": "failed"},
-    }
