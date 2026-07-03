@@ -47,6 +47,7 @@ import {
     executeAiToolDefinition,
 } from './ai-tool-base';
 import type { LiveRangeTrackerToolResult } from './LiveRangeTracker';
+import { RecordingState } from 'views/lap-analysis/recording-state';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
 export type AiCommandToolDefinition = AiToolDefinition<AiCommandRegistryContext, ToolHandlerContext>;
@@ -82,7 +83,8 @@ export type AgentSessionStopResult = {
 };
 export interface AiCommandRegistryContext {
     sessionId?: string;
-    sessionMode?: 'live' | 'recorded' | 'user_summary';
+    sessionMode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
+    recordingState?: RecordingState | null;
     conversationRole?: AgentSessionRole;
     activeAgentSession?: AgentSessionInfo | null;
     analysisContext?: any;
@@ -218,7 +220,8 @@ const getLiveToolsUnavailableError = (context: AiCommandRegistryContext) => (
 );
 
 const isLiveSessionContext = (context: AiCommandRegistryContext): boolean =>
-    !context.sessionMode || context.sessionMode === 'live';
+    (!context.sessionMode || context.sessionMode === 'live')
+    && context.recordingState === RecordingState.RECORDING;
 
 const isRecordedSessionContext = (context: AiCommandRegistryContext): boolean =>
     context.sessionMode === 'recorded';

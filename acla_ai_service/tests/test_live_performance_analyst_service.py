@@ -26,6 +26,7 @@ def test_agent_behavior_knowledge_is_loaded():
     reload()
 
     for name in (
+        "front_desk",
         "live",
         "recorded",
         "user_summary",
@@ -39,7 +40,7 @@ def test_agent_behavior_knowledge_is_loaded():
     assert agent_behavior("main_chatbot") is None
 
 
-def test_system_prompt_defaults_to_live_session_knowledge():
+def test_system_prompt_defaults_to_front_desk_session_knowledge():
     reload()
 
     prompt = pipecat_pipeline._build_system_prompt({})
@@ -48,7 +49,8 @@ def test_system_prompt_defaults_to_live_session_knowledge():
     assert "Procedure plan mode:" in prompt
     assert "Emotion signaling" in prompt
     assert "Transcript resilience" in prompt
-    assert "Live chatbot session startup behavior:" in prompt
+    assert "Front desk chatbot session startup behavior:" in prompt
+    assert "Live chatbot session startup behavior:" not in prompt
     assert "Recorded chatbot session startup behavior:" not in prompt
     assert "User summary chatbot session startup behavior:" not in prompt
     assert "Track Guide agent startup behavior:" not in prompt
@@ -75,9 +77,19 @@ def test_system_prompt_uses_service_owned_tool_result_handling():
     ("session_mode", "included", "excluded"),
     [
         (
+            "front_desk",
+            "Front desk chatbot session startup behavior:",
+            [
+                "Live chatbot session startup behavior:",
+                "Recorded chatbot session startup behavior:",
+                "User summary chatbot session startup behavior:",
+            ],
+        ),
+        (
             "live",
             "Live chatbot session startup behavior:",
             [
+                "Front desk chatbot session startup behavior:",
                 "Recorded chatbot session startup behavior:",
                 "User summary chatbot session startup behavior:",
             ],
@@ -86,6 +98,7 @@ def test_system_prompt_uses_service_owned_tool_result_handling():
             "recorded",
             "Recorded chatbot session startup behavior:",
             [
+                "Front desk chatbot session startup behavior:",
                 "Live chatbot session startup behavior:",
                 "User summary chatbot session startup behavior:",
             ],
@@ -94,6 +107,7 @@ def test_system_prompt_uses_service_owned_tool_result_handling():
             "user_summary",
             "User summary chatbot session startup behavior:",
             [
+                "Front desk chatbot session startup behavior:",
                 "Live chatbot session startup behavior:",
                 "Recorded chatbot session startup behavior:",
             ],
@@ -122,6 +136,7 @@ def test_system_prompt_uses_one_sub_agent_startup_knowledge():
 
     assert '"agent_mode": "track_guide"' in prompt
     assert "Track Guide agent startup behavior:" in prompt
+    assert "Front desk chatbot session startup behavior:" not in prompt
     assert "Live chatbot session startup behavior:" not in prompt
     assert "Recorded chatbot session startup behavior:" not in prompt
     assert "User summary chatbot session startup behavior:" not in prompt

@@ -39,6 +39,11 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from app.chat_llm import resolve_chat_llm_config
 from app.infra.config import settings
+from app.voice.session_modes import (
+    DEFAULT_CHATBOT_SESSION_MODE,
+    SESSION_MODE_AGENT_BEHAVIORS,
+    normalize_chatbot_session_mode,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -57,12 +62,6 @@ _SHARED_STARTUP_BEHAVIORS = (
     "emotion",
     "transcript_resilience",
 )
-_DEFAULT_CHATBOT_SESSION_MODE = "live"
-_SESSION_MODE_AGENT_BEHAVIORS = {
-    "live": "live",
-    "recorded": "recorded",
-    "user_summary": "user_summary",
-}
 _VALID_CHILD_AGENT_BEHAVIORS = frozenset([
     "track_guide",
     "overtake",
@@ -120,21 +119,17 @@ def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> s
     raw_mode = context.get("agent_mode")
     raw_session_mode = context.get("session_mode")
 
-    session_mode = (
-        str(raw_session_mode).strip()
-        if raw_session_mode is not None and str(raw_session_mode).strip()
-        else _DEFAULT_CHATBOT_SESSION_MODE
-    )
-    if session_mode not in _SESSION_MODE_AGENT_BEHAVIORS:
+    session_mode = normalize_chatbot_session_mode(raw_session_mode)
+    if session_mode is None:
         LOGGER.warning(
             "Unknown voice session_mode %r; falling back to %s",
-            session_mode,
-            _DEFAULT_CHATBOT_SESSION_MODE,
+            raw_session_mode,
+            DEFAULT_CHATBOT_SESSION_MODE,
         )
-        session_mode = _DEFAULT_CHATBOT_SESSION_MODE
+        session_mode = DEFAULT_CHATBOT_SESSION_MODE
 
     if raw_mode is None or str(raw_mode).strip() == "":
-        return _SESSION_MODE_AGENT_BEHAVIORS[session_mode]
+        return SESSION_MODE_AGENT_BEHAVIORS[session_mode]
 
     agent_mode = str(raw_mode).strip()
     if agent_mode in _VALID_CHILD_AGENT_BEHAVIORS:
@@ -145,7 +140,7 @@ def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> s
         agent_mode,
         session_mode,
     )
-    return _SESSION_MODE_AGENT_BEHAVIORS[session_mode]
+    return SESSION_MODE_AGENT_BEHAVIORS[session_mode]
 
 
 def _raw_knowledge_doc(doc: Any) -> str:

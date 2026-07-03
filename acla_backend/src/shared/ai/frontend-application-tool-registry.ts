@@ -651,7 +651,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
 ] as const;
 
 type FrontendApplicationToolName = typeof FRONTEND_APPLICATION_TOOLS[number]['name'];
-type FrontendApplicationSessionMode = 'live' | 'recorded' | 'user_summary';
+type FrontendApplicationSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 type ToolPropertyMap = Record<string, unknown>;
 
 type AiToolMetadata = {
@@ -736,7 +736,7 @@ const RECORDED_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
 const isFrontendApplicationSessionMode = (
     value: unknown,
 ): value is FrontendApplicationSessionMode => (
-    value === 'live' || value === 'recorded' || value === 'user_summary'
+    value === 'front_desk' || value === 'live' || value === 'recorded' || value === 'user_summary'
 );
 
 const getAllowedToolNames = (
@@ -760,6 +760,13 @@ const getAllowedToolNames = (
     }
 
     if (sessionMode === 'user_summary') {
+        return new Set<FrontendApplicationToolName>([
+            ...COMMON_TOOL_NAMES,
+            ...USER_SUMMARY_SESSION_TOOL_NAMES,
+        ]);
+    }
+
+    if (sessionMode === 'front_desk') {
         return new Set<FrontendApplicationToolName>([
             ...COMMON_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,

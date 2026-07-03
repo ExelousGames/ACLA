@@ -25,6 +25,10 @@ from app.chat_llm import (
     parse_chat_llm_model_selector,
 )
 from app.voice import get_kokoro_service
+from app.voice.session_modes import (
+    VALID_CHATBOT_SESSION_MODES,
+    normalize_chatbot_session_mode,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -388,10 +392,15 @@ async def _await_frontend_info(
         if not isinstance(session_context, dict):
             raise _HandshakeError("frontend_info: 'session_context' must be an object or null")
         context_session_mode = session_context.get("session_mode")
-        if context_session_mode is not None and context_session_mode not in ("live", "recorded", "user_summary"):
+        normalized_session_mode = normalize_chatbot_session_mode(context_session_mode)
+        if context_session_mode is not None and normalized_session_mode is None:
             raise _HandshakeError(
-                "frontend_info: 'session_context.session_mode' must be 'live', 'recorded', 'user_summary', or omitted"
+                "frontend_info: 'session_context.session_mode' must be "
+                f"{', '.join(sorted(VALID_CHATBOT_SESSION_MODES))}, or omitted"
             )
+        if context_session_mode is not None and normalized_session_mode != context_session_mode:
+            session_context = dict(session_context)
+            session_context["session_mode"] = normalized_session_mode
         return tools, tool_metadata, query_scope_schema, tool_result_handling, session_context
 
 

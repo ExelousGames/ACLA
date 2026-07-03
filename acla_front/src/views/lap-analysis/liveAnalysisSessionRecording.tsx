@@ -7,18 +7,7 @@ import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useAuth } from 'hooks/AuthProvider';
 import apiService from 'services/api.service';
 import { PythonShellOptions } from 'services/pythonService';
-import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
-
-enum RecordingState {
-    CHECKING = 'CHECKING', // checking for live session
-    READY = 'READY', // find live session, ready to record
-    RECORDING = 'RECORDING', // actively recording
-    HOLDING = 'HOLDING', // paused because game paused, awaiting resume
-    RESUME_READY = 'RESUME_READY', // live session detected again while paused
-    UPLOAD_READY = 'UPLOAD_READY' // recording stopped, ready to upload
-}
-
-type StopReason = 'manual' | 'pause' | 'error' | 'complete';
+import { RecordingState, StopReason } from './recording-state';
 
 const UPLOAD_CHUNK_SIZE = 1000;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
@@ -48,19 +37,11 @@ const PauseBadgeIcon = ({ size = 16 }: { size?: number }) => (
     </svg>
 );
 
-const toAccStatus = (value: unknown): ACC_STATUS | null => {
-    const numeric = typeof value === 'string' ? Number(value) : value;
-    if (typeof numeric !== 'number' || Number.isNaN(numeric)) {
-        return null;
-    }
-
-    return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
-};
-
 export default function LiveAnalysisSessionRecording() {
     const analysisContext = useContext(AnalysisContext);
     const auth = useAuth();
-    const [state, setState] = useState<RecordingState>(RecordingState.CHECKING);
+    const state = analysisContext.recordingState;
+    const transition = analysisContext.transitionRecordingState;
     const analysisContextRef = useRef(analysisContext);
 
     useEffect(() => {
@@ -70,58 +51,6 @@ export default function LiveAnalysisSessionRecording() {
     const TelemetryDataLiveStatus = analysisContext.TelemetryDataLiveStatus;
     const canRecord = state === RecordingState.READY || state === RecordingState.RESUME_READY;
 
-    type RecordingEvent =
-        | { type: 'sessionAvailable' }
-        | { type: 'sessionUnavailable' }
-        | { type: 'recordingStarted' }
-        | { type: 'recordingResumed' }
-        | { type: 'recordingStopped'; reason: StopReason }
-        | { type: 'reset' };
-
-    const transition = useCallback((event: RecordingEvent) => {
-
-        setState((prev) => {
-            switch (event.type) {
-                case 'sessionAvailable':
-                    if (prev === RecordingState.CHECKING) {
-                        return RecordingState.READY;
-                    }
-                    if (prev === RecordingState.HOLDING) {
-                        return RecordingState.RESUME_READY;
-                    }
-                    return prev;
-                case 'sessionUnavailable':
-                    if (prev === RecordingState.RESUME_READY) {
-                        return RecordingState.HOLDING;
-                    }
-                    if (prev === RecordingState.RECORDING || prev === RecordingState.HOLDING || prev === RecordingState.UPLOAD_READY) {
-                        return prev;
-                    }
-                    return RecordingState.CHECKING;
-                case 'recordingStarted':
-                    return RecordingState.RECORDING;
-                case 'recordingResumed':
-                    return prev === RecordingState.HOLDING || prev === RecordingState.RESUME_READY ? RecordingState.RECORDING : prev;
-                case 'recordingStopped':
-                    switch (event.reason) {
-                        case 'pause':
-                            return RecordingState.HOLDING;
-                        case 'error':
-                            return RecordingState.READY;
-                        case 'manual':
-                        case 'complete':
-                            return RecordingState.UPLOAD_READY;
-                        default:
-                            return prev;
-                    }
-                case 'reset':
-                    return RecordingState.CHECKING;
-                default:
-                    return prev;
-            }
-        });
-    }, []);
-
     const recordingShellIdRef = useRef<number | null>(null);
     const pythonMessageCleanupRef = useRef<(() => void) | null>(null);
     const pythonEndCleanupRef = useRef<(() => void) | null>(null);
@@ -129,10 +58,6 @@ export default function LiveAnalysisSessionRecording() {
     const startInFlightRef = useRef(false);
     const hasReceivedLiveSampleRef = useRef(false);
     const recordingFileInfoRef = useRef<{ folder: string; filename: string } | null>(null);
-
-    const sessionCheckingStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
-    const sessionCheckingStreamCleanupRef = useRef<(() => void) | null>(null);
-    const sessionCheckingStreamStartingRef = useRef(false);
 
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -204,129 +129,6 @@ export default function LiveAnalysisSessionRecording() {
             }
         }
     }, [transition]);
-
-    /**
-     * Process updates from the ACC session checking stream
-     * @param event PythonStreamEvent<Record<string, unknown>>
-     * @returns void
-     */
-    const processCheckingSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
-        const ctx = analysisContextRef.current;
-        if (!ctx || !event) {
-            return;
-        }
-
-        if (event.status === 'update') {
-            const data = (event.data ?? {}) as Record<string, any>;
-            const graphics = (data as any).Graphics ?? {};
-            const status = toAccStatus(graphics.status);
-
-            if (status !== null) {
-                if (status === ACC_STATUS.ACC_LIVE) {
-                    if ((data as any).Static) {
-                        ctx.setRecordedSessionStaticsData((data as any).Static);
-                    }
-                    transition({ type: 'sessionAvailable' });
-                } else if (status === ACC_STATUS.ACC_PAUSE) {
-                    // recorder will transition when the python process ends
-                } else if (status === ACC_STATUS.ACC_OFF) {
-                    transition({ type: 'sessionUnavailable' });
-                }
-            } else if (data.checking === true) {
-                transition({ type: 'sessionUnavailable' });
-            } else if (data.available === false) {
-                transition({ type: 'sessionUnavailable' });
-            }
-        } else if (event.status === 'ready') {
-            if (ctx.TelemetryDataLiveStatus == null) {
-                transition({ type: 'sessionUnavailable' });
-            }
-        } else if (event.status === 'error') {
-            console.error('ACC session checker error:', event.message ?? 'Unknown error', event.traceback ?? '');
-        } else if (event.status === 'shutdown') {
-            sessionCheckingStreamCleanupRef.current?.();
-            sessionCheckingStreamCleanupRef.current = null;
-            sessionCheckingStreamRef.current = null;
-            sessionCheckingStreamStartingRef.current = false;
-        }
-    }, [transition]);
-
-    const stopSessionCheckingStream = useCallback(async ({ force = false } = {}) => {
-        sessionCheckingStreamStartingRef.current = false;
-
-        const cleanup = sessionCheckingStreamCleanupRef.current;
-        sessionCheckingStreamCleanupRef.current = null;
-        cleanup?.();
-
-        const stream = sessionCheckingStreamRef.current;
-        sessionCheckingStreamRef.current = null;
-
-        if (!stream) {
-            return;
-        }
-
-        try {
-            await stream.dispose({ force });
-        } catch (error) {
-            console.warn('Failed to dispose ACC session checker stream', error);
-        }
-    }, []);
-
-    const startSessionCheckingStream = useCallback(async () => {
-        if (sessionCheckingStreamStartingRef.current || sessionCheckingStreamRef.current) {
-            return sessionCheckingStreamRef.current;
-        }
-
-        sessionCheckingStreamStartingRef.current = true;
-        try {
-            const stream = await createPythonStreamSession<Record<string, unknown>>({
-                scriptName: 'ACCCheckAvailableSession.py',
-                pythonOptions: { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [] },
-                readyTimeoutMs: 8000
-            });
-
-            sessionCheckingStreamRef.current = stream;
-            sessionCheckingStreamCleanupRef.current = stream.onMessage(processCheckingSessionStreamUpdate);
-
-            await stream.waitUntilReady();
-            return stream;
-        } catch (error) {
-            console.error('Failed to start ACC session checker stream', error);
-            await stopSessionCheckingStream({ force: true });
-            throw error;
-        } finally {
-            sessionCheckingStreamStartingRef.current = false;
-        }
-    }, [processCheckingSessionStreamUpdate, stopSessionCheckingStream]);
-
-    const shouldMaintainSessionCheckingStream =
-        state === RecordingState.CHECKING || state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
-
-    useEffect(() => {
-        let cancelled = false;
-
-        const ensureStream = async () => {
-            if (shouldMaintainSessionCheckingStream) {
-                try {
-                    // Start the session checking stream
-                    await startSessionCheckingStream();
-                } catch (error) {
-                    if (!cancelled) {
-                        console.error('Unable to ensure ACC session checker stream', error);
-                    }
-                }
-            } else {
-                await stopSessionCheckingStream();
-            }
-        };
-
-        void ensureStream();
-
-        return () => {
-            cancelled = true;
-            void stopSessionCheckingStream({ force: true });
-        };
-    }, [shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
 
     const stopRecordingProcess = useCallback(async (reason: StopReason) => {
         if (stopReasonRef.current && stopReasonRef.current !== 'complete') {
@@ -556,9 +358,8 @@ export default function LiveAnalysisSessionRecording() {
             if (shellId !== null && window?.electronAPI?.stopPythonScript) {
                 void window.electronAPI.stopPythonScript(shellId).catch(() => undefined);
             }
-            void stopSessionCheckingStream({ force: true });
         };
-    }, [stopSessionCheckingStream]);
+    }, []);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }

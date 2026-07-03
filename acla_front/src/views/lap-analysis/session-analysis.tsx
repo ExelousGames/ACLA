@@ -27,9 +27,12 @@ import {
     getRecordedAnalysisStateForResult,
     normalizeSegmentClassificationResult,
 } from './recorded-session-analysis';
-
-export const buildAssistantConversationKey = (sessionMode: string, sessionId?: string | null): string =>
-    `${sessionMode}:${sessionId || 'none'}`;
+import { getNextRecordingState, RecordingEvent, RecordingState } from './recording-state';
+import {
+    buildAssistantConversationKey,
+    resolveAssistantSessionMode,
+    type SessionAnalysisAssistantMode,
+} from './assistant-session-mode';
 
 const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -67,6 +70,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     const [activeTab, setActiveTab] = useState('mapLists');
     const [liveData, setLiveData] = useState({});
     const [TelemetryDataLiveStatus, setTelemetryDataLiveStatus] = useState<ACC_STATUS | null>(null);
+    const [recordingState, setRecordingState] = useState<RecordingState>(RecordingState.CHECKING);
     const [recordedSessioStaticsData, setRecordedSessionStaticsData] = useState({});
     const [recordedSessionDataFilePath, setRecordedSessionDataFilePath] = useState<string | null>(null);
     const [recordedTelemetryDataCount, setRecordedTelemetryDataCount] = useState<number>(0);
@@ -121,6 +125,10 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             sessionIntelligenceRef.current.tick(nextLiveData as any);
         }
     }, [scheduleLiveDataFlush]);
+
+    const transitionRecordingState = useCallback((event: RecordingEvent) => {
+        setRecordingState((previous) => getNextRecordingState(previous, event));
+    }, []);
 
     // Use ref to persist file path during recording to prevent state reset issues
     const recordingFilePathRef = useRef<string | null>(null);
@@ -602,6 +610,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
         mapSelected,
         sessionSelected,
         liveData,
+        recordingState,
         recordedSessionDataFilePath,
         recordedTelemetryDataCount,
         recordedSessioStaticsData,
@@ -613,6 +622,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
         setMap,
         setSession,
         setLiveSessionData,
+        transitionRecordingState,
         setRecordedSessionStaticsData,
         setRecordedSessionDataFilePath: setRecordingSessionDataFilePath,
         setRecordedPlaybackSummary,
@@ -639,11 +649,13 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
         recordedSessionDataFilePath,
         recordedSessioStaticsData,
         recordedTelemetryDataCount,
+        recordingState,
         runRecordedAiAnalysis,
         sendGuidanceToChat,
         sessionSelected,
         setLiveSessionData,
         setRecordingSessionDataFilePath,
+        transitionRecordingState,
         TelemetryDataLiveStatus,
         writeRecordedLiveSessionData
     ]);
@@ -655,8 +667,6 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     )
 };
 
-type SessionAnalysisAssistantMode = 'live' | 'recorded' | 'user_summary';
-
 type SessionAnalysisAssistantProps = {
     assistantModeOverride?: SessionAnalysisAssistantMode;
 };
@@ -665,12 +675,17 @@ export const SessionAnalysisAssistant = ({ assistantModeOverride }: SessionAnaly
     const analysisContext = useContext(AnalysisContext);
     const [isOpen, setIsOpen] = useState(false);
     const assistantSessionId = analysisContext.sessionSelected?.SessionId;
-    const assistantSessionMode: SessionAnalysisAssistantMode = assistantModeOverride
-        || (assistantSessionId ? 'recorded' : 'live');
+    const assistantSessionMode = resolveAssistantSessionMode({
+        assistantModeOverride,
+        sessionId: assistantSessionId,
+        recordingState: analysisContext.recordingState,
+    });
     const assistantSessionLabel = assistantSessionMode === 'user_summary'
         ? 'User Summary'
-        : analysisContext.sessionSelected?.session_name || 'Live Telemetry';
-    const effectiveAssistantSessionId = assistantSessionMode === 'user_summary'
+        : assistantSessionMode === 'front_desk'
+            ? 'Front Desk'
+            : analysisContext.sessionSelected?.session_name || 'Live Telemetry';
+    const effectiveAssistantSessionId = assistantSessionMode === 'user_summary' || assistantSessionMode === 'front_desk'
         ? undefined
         : assistantSessionId;
     const assistantConversationKey = buildAssistantConversationKey(assistantSessionMode, effectiveAssistantSessionId);
@@ -679,7 +694,9 @@ export const SessionAnalysisAssistant = ({ assistantModeOverride }: SessionAnaly
         ? 'User Summary'
         : assistantSessionMode === 'recorded'
             ? 'Recorded'
-            : 'Live';
+            : assistantSessionMode === 'front_desk'
+                ? 'Front Desk'
+                : 'Live';
 
     return (
         <aside className={assistantClassName} aria-label="AI Assistant">
@@ -702,6 +719,8 @@ export const SessionAnalysisAssistant = ({ assistantModeOverride }: SessionAnaly
                     sessionMode={assistantSessionMode}
                     title={assistantSessionMode === 'user_summary'
                         ? 'AI Assistant - User Summary'
+                        : assistantSessionMode === 'front_desk'
+                            ? 'AI Assistant - Front Desk'
                         : `AI Assistant - ${assistantTitleMode} - ${assistantSessionLabel}`}
                 />
             </div>

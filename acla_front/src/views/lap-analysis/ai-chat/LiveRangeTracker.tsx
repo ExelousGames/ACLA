@@ -54,7 +54,7 @@ export type LiveRangeTrackerHandle = {
 
 type LiveRangeTrackerProps = {
     liveData?: Record<string, any> | null;
-    sessionMode?: 'live' | 'recorded' | 'user_summary';
+    sessionMode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
     sessionIntelligence?: SessionIntelligence | null;
     sendToolStatus?: (data: Record<string, unknown>) => boolean;
     resolveLabel?: (labelId: string) => string | undefined;

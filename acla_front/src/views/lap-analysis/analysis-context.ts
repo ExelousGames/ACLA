@@ -9,6 +9,7 @@ import {
     createEmptyRecordedPlaybackSummary,
     createIdleRecordedAiAnalysis,
 } from './recorded-session-analysis';
+import { RecordingEvent, RecordingState } from './recording-state';
 
 export interface AnalysisContextType {
     activeTab: string;
@@ -16,6 +17,7 @@ export interface AnalysisContextType {
     sessionSelected: RacingSessionDetailedInfoDto | null;
     liveData: any;
     TelemetryDataLiveStatus: ACC_STATUS | null;
+    recordingState: RecordingState;
     recordedSessionDataFilePath: string | null;
     recordedTelemetryDataCount: number;
     recordedSessioStaticsData: any;
@@ -27,6 +29,7 @@ export interface AnalysisContextType {
     setMap: (map: string | null) => void;
     setSession: Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>;
     setLiveSessionData: (data: {}) => void;
+    transitionRecordingState: (event: RecordingEvent) => void;
     setRecordedSessionStaticsData: (data: {}) => void;
     setRecordedSessionDataFilePath: (filePath: string | null) => void;
     setRecordedPlaybackSummary: Dispatch<SetStateAction<RecordedPlaybackSummary>>;
@@ -46,6 +49,7 @@ export const AnalysisContext = createContext<AnalysisContextType>({
     sessionSelected: {} as RacingSessionDetailedInfoDto,
     liveData: {} as any,
     TelemetryDataLiveStatus: null,
+    recordingState: RecordingState.CHECKING,
     recordedSessionDataFilePath: null,
     recordedTelemetryDataCount: 0,
     recordedSessioStaticsData: {} as any,
@@ -61,6 +65,9 @@ export const AnalysisContext = createContext<AnalysisContextType>({
         console.warn('No provider for AnalysisContext');
     }) as Dispatch<SetStateAction<RacingSessionDetailedInfoDto | null>>,
     setLiveSessionData: () => {
+        console.warn('No provider for AnalysisContext');
+    },
+    transitionRecordingState: () => {
         console.warn('No provider for AnalysisContext');
     },
     setRecordedSessionStaticsData: () => {

@@ -68,6 +68,30 @@ async def test_frontend_info_accepts_user_summary_session_mode_and_legacy_result
 
 
 @pytest.mark.asyncio
+async def test_frontend_info_accepts_front_desk_session_mode_display_label():
+    (
+        tools,
+        tool_metadata,
+        query_scope_schema,
+        tool_result_handling,
+        session_context,
+    ) = await _await_frontend_info(
+        FakeWebSocket({
+            "type": "frontend_info",
+            "tools": [],
+            "session_context": {"session_mode": "Front desk"},
+        }),
+        timeout=1.0,
+    )
+
+    assert tools == []
+    assert tool_metadata == {}
+    assert query_scope_schema is None
+    assert tool_result_handling is None
+    assert session_context == {"session_mode": "front_desk"}
+
+
+@pytest.mark.asyncio
 async def test_frontend_info_rejects_list_tool_result_handling():
     with pytest.raises(
         _HandshakeError,

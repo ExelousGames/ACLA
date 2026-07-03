@@ -72,6 +72,37 @@ describe('VoiceGateway', () => {
         ]));
     });
 
+    it('advertises front desk tools without falling back to live mode', () => {
+        const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
+            type: 'frontend_info',
+            session_context: { session_mode: 'front_desk' },
+        })), false);
+
+        const payload = JSON.parse(frame.data.toString());
+        const toolNames = payload.tools.map((tool: { name: string }) => tool.name);
+
+        expect(payload.session_context).toEqual({ session_mode: 'front_desk' });
+        expect(toolNames).toEqual(expect.arrayContaining([
+            'show_map',
+            'set_procedure_plan',
+            'advance_plan_step',
+            'clear_procedure_plan',
+            'get_available_user_summary_maps',
+            'search_user_summary_map_level',
+        ]));
+        expect(toolNames).not.toEqual(expect.arrayContaining([
+            'start_agent_session',
+            'analyze_telemetry',
+            'get_next_corner',
+            'query_telemetry_metric',
+            'run_recorded_ai_analysis',
+            'get_recorded_session_context',
+        ]));
+        expect(payload.tool_metadata.get_available_user_summary_maps.title)
+            .toBe('Listing user summary maps');
+        expect(payload.tool_metadata.start_agent_session).toBeUndefined();
+    });
+
     it('keeps disabled live helpers out of live frontend_info frames', () => {
         const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
             type: 'frontend_info',

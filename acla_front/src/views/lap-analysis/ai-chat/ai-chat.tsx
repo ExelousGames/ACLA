@@ -49,8 +49,9 @@ import {
     isToolOutputEnvelope,
     type ToolOutputEnvelope,
 } from './ai-tool-base';
+import { RecordingState } from 'views/lap-analysis/recording-state';
 
-type AiChatSessionMode = 'live' | 'recorded' | 'user_summary';
+type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
@@ -185,6 +186,9 @@ const countSummaryTracks = (summary: Record<string, any>): number => {
 };
 
 const getContextDescription = (sessionMode: AiChatSessionMode): string => {
+    if (sessionMode === 'front_desk') {
+        return 'Front desk assistant for general navigation, onboarding, and high-level help before a session is selected.';
+    }
     if (sessionMode === 'recorded') {
         return 'Selected recorded session with saved playback, AI analysis, and session metadata.';
     }
@@ -751,7 +755,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         const recordedAiAnalysis = analysisContext?.recordedAiAnalysis;
         const recordedAnalysisResult = recordedAiAnalysis?.result;
         const recordedPlaybackSummary = analysisContext?.recordedPlaybackSummary;
-        const liveSnapshot = sessionMode === 'live'
+        const liveRecordingActive = analysisContext?.recordingState === RecordingState.RECORDING;
+        const liveSnapshot = liveRecordingActive
             ? analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.()
             : null;
         const activeAgentModes = [
@@ -775,6 +780,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             context_description: getContextDescription(sessionMode),
             session_mode: sessionMode,
             session_id: resolvedSessionId || null,
+            recording_state: analysisContext?.recordingState || null,
+            live_recording_active: liveRecordingActive,
             active_tab: analysisContext?.activeTab || null,
             selected_map_id: analysisContext?.mapSelected || selectedSession?.map || null,
             agent_modes: {
@@ -796,8 +803,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             completed_laps: liveSnapshot?.completed_laps ?? null,
             sample_count: liveSnapshot?.sample_count ?? 0,
             capabilities: {
-                live_session: sessionMode === 'live',
+                live_session: liveRecordingActive,
                 recorded_session: sessionMode === 'recorded',
+                front_desk: sessionMode === 'front_desk',
                 ...(sessionMode === 'user_summary' ? { user_summary: summaryLoaded } : {}),
             },
             selected_session: selectedSession
@@ -809,7 +817,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 }
                 : null,
             telemetry: {
-                live_available: sessionMode === 'live' && Boolean(analysisContext?.sessionIntelligence),
+                live_available: liveRecordingActive && Boolean(analysisContext?.sessionIntelligence),
                 latest_sample_present: liveDataKeys > 0,
                 latest_sample_key_count: liveDataKeys,
                 live_status: analysisContext?.TelemetryDataLiveStatus ?? null,
@@ -860,6 +868,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analysisContext?.recordedPlaybackSummary,
         analysisContext?.recordedSessionDataFilePath,
         analysisContext?.recordedTelemetryDataCount,
+        analysisContext?.recordingState,
         analysisContext?.sessionIntelligence,
         analysisContext?.sessionSelected,
         activeAgentSession,
@@ -936,7 +945,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         agentMode: AgentSessionMode,
         args: Record<string, any> = {},
     ): AgentSessionStartResult => {
-        if (sessionMode !== 'live') {
+        if (sessionMode !== 'live' || analysisContext?.recordingState !== RecordingState.RECORDING) {
             return {
                 status: 'error',
                 conversation_role: 'agent',
@@ -992,6 +1001,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, [
         broadcastPillMessage,
         resetAgentRuntimes,
+        analysisContext?.recordingState,
         sessionMode,
         setAgentTag,
     ]);
@@ -1030,6 +1040,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const toolHandlers = useMemo(() => createAiCommandRegistry({
         sessionId: resolvedSessionId,
         sessionMode,
+        recordingState: analysisContext?.recordingState,
         conversationRole: 'main',
         activeAgentSession,
         analysisContext,
@@ -1131,6 +1142,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const agentToolHandlers = useMemo(() => createAiCommandRegistry({
         sessionId: resolvedSessionId,
         sessionMode,
+        recordingState: analysisContext?.recordingState,
         conversationRole: 'agent',
         activeAgentSession,
         analysisContext,
@@ -1276,6 +1288,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             void startAgentRuntime(current.agentMode, {
                 sessionId: resolvedSessionId,
                 sessionMode,
+                recordingState: analysisContext?.recordingState,
                 conversationRole: 'agent',
                 activeAgentSession: current,
                 analysisContext,
@@ -1318,6 +1331,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         TrackGuideEnabled,
         advanceProcedurePlanStep,
         analysisContext,
+        analysisContext?.recordingState,
         clearProcedurePlan,
         displayMapInChat,
         agentVoiceConversation.state,
@@ -1352,7 +1366,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     useEffect(() => {
         const sessionIntelligence = analysisContext?.sessionIntelligence;
-        if (sessionMode !== 'live' || !sessionIntelligence || !activeAgentSession) return;
+        if (
+            sessionMode !== 'live'
+            || analysisContext?.recordingState !== RecordingState.RECORDING
+            || !sessionIntelligence
+            || !activeAgentSession
+        ) return;
 
         return sessionIntelligence.onLiveAnalystToolStatus((toolStatus) => {
             if (!livePerformanceAnalystStateRef.current.enabled) return;
@@ -1360,6 +1379,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         });
     }, [
         activeAgentSession,
+        analysisContext?.recordingState,
         analysisContext?.sessionIntelligence,
         sendAgentVoiceToolStatus,
         sessionMode,
@@ -1726,6 +1746,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 id: generateUniqueId('ai'),
                 ...(activeAgentSession
                     ? { content: `Start the ${getAgentDisplayName(activeAgentSession.agentMode)} connection first. Agent chat runs on its own session.` }
+                    : sessionMode === 'front_desk'
+                    ? { content: 'Start the assistant connection first. Front desk context will be sent with the request.' }
                     : sessionMode === 'recorded'
                     ? { content: 'Start the assistant connection first. Recorded session context will be sent with the request.' }
                     : sessionMode === 'user_summary'
@@ -1754,6 +1776,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     // ── Voice state → mic panel display ─────────────────────────────
     const sessionModeLabel = activeAgentSession
         ? getAgentDisplayName(activeAgentSession.agentMode)
+        : sessionMode === 'front_desk'
+        ? 'Front Desk'
         : sessionMode === 'recorded'
         ? 'Recorded Session'
         : sessionMode === 'user_summary'
@@ -1761,6 +1785,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             : 'Live Session';
     const transcriptLabel = activeAgentSession
         ? `${getAgentDisplayName(activeAgentSession.agentMode).toUpperCase()} TRANSCRIPT`
+        : sessionMode === 'front_desk'
+        ? 'FRONT DESK TRANSCRIPT'
         : sessionMode === 'recorded'
         ? 'RECORDED TRANSCRIPT'
         : sessionMode === 'user_summary'
@@ -2102,6 +2128,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                             ? `Talk to ${getAgentDisplayName(activeAgentSession.agentMode)}.`
                             : voiceActive
                             ? 'Type a message to the engineer…'
+                            : sessionMode === 'front_desk'
+                                ? 'Ask the front desk.'
                             : sessionMode === 'recorded'
                                 ? 'Ask about this recording.'
                                 : sessionMode === 'user_summary'

@@ -5,6 +5,7 @@ import HeaderMenu from 'views/header-menu/header-menu';
 import { SessionAnalysisAssistant, SessionAnalysisProvider } from 'views/lap-analysis/session-analysis';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from 'views/lap-analysis/liveAnalysisSessionRecording';
+import LiveSessionDetectionManager from 'views/lap-analysis/LiveSessionDetectionManager';
 
 
 const DASHBOARD_TABS = Object.freeze({
@@ -23,6 +24,7 @@ const MainDashboard = ({ onTaskCreated }) => {
 
     return (
         <SessionAnalysisProvider>
+            {environment === 'electron' ? <LiveSessionDetectionManager /> : null}
             <div className="main-dashboard-container">
                 <div className="main-dashboard-header">
                     <HeaderMenu />

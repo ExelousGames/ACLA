@@ -25,6 +25,7 @@ import { RecordedAiAnalysisState } from 'views/lap-analysis/recorded-session-ana
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import { buildBaselineCollectionTag, type BaselineLapRecord } from '../BaselineCollectionTracker';
 import apiService from 'services/api.service';
+import { RecordingState } from 'views/lap-analysis/recording-state';
 
 const labelNames: Record<string, string> = {
     brands_hatch: 'Brands Hatch',
@@ -45,6 +46,7 @@ beforeEach(() => {
 
 const createRegistry = () => createAiCommandRegistry({
     sessionMode: 'live',
+    recordingState: RecordingState.RECORDING,
     opportunityAgentState: {
         intervalId: null,
         inFlight: false,
@@ -159,6 +161,7 @@ describe('ai command registry user summary tools', () => {
         const getLiveRangeTracker = jest.fn(() => ({ status: 'ready', tracker }));
         const registry = createAiCommandRegistry({
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             opportunityAgentState: {
                 intervalId: null,
                 inFlight: false,
@@ -213,6 +216,7 @@ describe('ai command registry user summary tools', () => {
         });
         const registry = createAiCommandRegistry({
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             sessionIntelligence,
             opportunityAgentState: {
                 intervalId: null,
@@ -297,6 +301,7 @@ describe('ai command registry user summary tools', () => {
         const displayMap = jest.fn();
         const registry = createAiCommandRegistry({
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             opportunityAgentState: {
                 intervalId: null,
                 inFlight: false,
@@ -356,6 +361,7 @@ describe('ai command registry user summary tools', () => {
         const displayMap = jest.fn();
         const registry = createAiCommandRegistry({
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             opportunityAgentState: {
                 intervalId: null,
                 inFlight: false,
@@ -491,6 +497,74 @@ describe('ai command registry user summary tools', () => {
             id: 'brands_hatch2',
             mistake_segments: expect.any(Array),
         }));
+    });
+});
+
+describe('ai command registry live recording gate', () => {
+    it('rejects live-only tools when live mode is not actively recording', async () => {
+        const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.tick({ Physics_fuel: 20 });
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            recordingState: RecordingState.READY,
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            startAgentSession: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            setLiveRangeTracker: jest.fn(),
+        });
+
+        await expect(registry.query_telemetry_metric(
+            { fields: ['Physics_fuel'], scope: { type: 'now' } },
+            { sendToolStatus: jest.fn() },
+        )).resolves.toMatchObject({
+            error: 'non_live_context_live_tools_unavailable',
+        });
+        await expect(registry.start_agent_session(
+            { agent_mode: 'live_performance_analyst' },
+            { sendToolStatus: jest.fn() },
+        )).resolves.toMatchObject({
+            status: 'error',
+            error: 'non_live_context_live_tools_unavailable',
+        });
+        await expect(registry.set_live_range_tracker(
+            { ranges: [] },
+            { sendToolStatus: jest.fn() },
+        )).resolves.toMatchObject({
+            error: 'non_live_context_live_tools_unavailable',
+        });
+    });
+
+    it('rejects live agent runtime startup unless shared state is recording', async () => {
+        const startTrackGuide = jest.fn();
+        const result = await startAgentRuntime(
+            'track_guide',
+            {
+                sessionMode: 'live',
+                recordingState: RecordingState.READY,
+                opportunityAgentState: {
+                    intervalId: null,
+                    inFlight: false,
+                    lastAlertKey: null,
+                    lastAlertAt: 0,
+                },
+                startTrackGuide,
+                setTrackGuideEnabled: jest.fn(),
+                getOpportunityTelemetryRows: () => [],
+            },
+            {},
+            { sendToolStatus: jest.fn() },
+        );
+
+        expect(result).toEqual({ error: 'non_live_context_live_tools_unavailable' });
+        expect(startTrackGuide).not.toHaveBeenCalled();
     });
 });
 
@@ -828,6 +902,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             analysisContext,
             sessionIntelligence,
             opportunityAgentState: {
@@ -1290,6 +1365,7 @@ describe('ai command registry live performance analyst tools', () => {
         }));
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             sessionIntelligence,
             opportunityAgentState: {
                 intervalId: null,
@@ -1371,6 +1447,7 @@ describe('ai command registry live performance analyst tools', () => {
         }));
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             sessionIntelligence,
             opportunityAgentState: {
                 intervalId: null,
@@ -1599,6 +1676,7 @@ describe('ai command registry live performance analyst tools', () => {
 
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             sessionIntelligence,
             opportunityAgentState: {
                 intervalId: null,
@@ -1676,6 +1754,7 @@ describe('ai command registry live performance analyst tools', () => {
         const setBaselineCollectionEnabled = jest.fn();
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             sessionIntelligence,
             opportunityAgentState: {
                 intervalId: null,
@@ -1754,6 +1833,7 @@ describe('ai command registry live performance analyst tools', () => {
         }));
         const planRegistry = createAiCommandRegistry({
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             analysisContext,
             sessionIntelligence,
             opportunityAgentState: {
@@ -2031,6 +2111,7 @@ describe('ai command registry live performance analyst tools', () => {
         };
         const context: AiCommandRegistryContext = {
             sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
             sessionIntelligence,
             opportunityAgentState: {
                 intervalId: null,

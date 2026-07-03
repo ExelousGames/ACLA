@@ -37,7 +37,7 @@ type BaselineCollectionTrackerProps = {
     enabled: boolean;
     restartToken?: number;
     liveData: Record<string, any> | null | undefined;
-    sessionMode: 'live' | 'recorded' | 'user_summary';
+    sessionMode: 'front_desk' | 'live' | 'recorded' | 'user_summary';
     onTagChange: (tag: BaselineCollectionTag | null) => void;
     onLapRecordChange: (record: BaselineLapRecord | null) => void;
     onToolOutput?: ToolOutputEmitter;
