@@ -26,6 +26,7 @@ import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/Ses
 import { buildBaselineCollectionTag, type BaselineLapRecord } from '../BaselineCollectionTracker';
 import apiService from 'services/api.service';
 import { RecordingState } from 'views/lap-analysis/recording-state';
+import { getToolEnvelopeUiOutput, type ToolOutputEnvelope } from '../ai-tool-base';
 
 const labelNames: Record<string, string> = {
     brands_hatch: 'Brands Hatch',
@@ -34,6 +35,8 @@ const labelNames: Record<string, string> = {
     monza: 'Monza',
     monza1: 'Rettifilo',
 };
+
+const getUiOutput = (result: ToolOutputEnvelope) => getToolEnvelopeUiOutput(result) as any;
 
 const categories: Record<string, string[]> = {
     brands_hatch: ['brands_hatch1', 'brands_hatch2'],
@@ -152,7 +155,17 @@ describe('ai command registry user summary tools', () => {
     it('routes live range tracker tools to component-owned callbacks', async () => {
         const tracker = {
             status: 'open',
-            ranges: [],
+            ranges: [{
+                id: 'r1',
+                start_position: 0.1,
+                end_position: 0.2,
+                lifecycle_status: 'pending',
+                child_segments: [{
+                    labels: ['entry', 'apex'],
+                    start_index: 10,
+                    end_index: 20,
+                }],
+            }],
             created_at: 1,
             updated_at: 1,
         };
@@ -192,17 +205,26 @@ describe('ai command registry user summary tools', () => {
         });
         expect(updateLiveRangeTracker).toHaveBeenCalledWith({ action: 'close' });
         expect(getLiveRangeTracker).toHaveBeenCalled();
-        expect(setResult).toMatchObject({ ui_output: { status: 'ready', tracker } });
-        expect(updateResult).toMatchObject({ ui_output: { status: 'ready', tracker } });
-        expect(getResult).toMatchObject({ ui_output: { status: 'ready', tracker } });
+        expect(getUiOutput(setResult)).toMatchObject({ status: 'ready', tracker });
+        expect(getUiOutput(updateResult)).toMatchObject({ status: 'ready', tracker });
+        expect(getUiOutput(getResult)).toMatchObject({ status: 'ready', tracker });
         expect(setResult).toMatchObject({
-            ai_output: {
+            output: {
                 name: 'set_live_range_tracker',
                 status: 'ready',
-                range_count: 0,
+                tracker_status: 'open',
             },
         });
-        expect((setResult.ai_output as any)).not.toHaveProperty('tracker');
+        expect((setResult.output as any)).not.toHaveProperty('tracker');
+        expect((setResult.output as any)).not.toHaveProperty('ranges');
+        expect((setResult.output as any)).not.toHaveProperty('range_count');
+        expect(updateResult).toMatchObject({
+            output: {
+                name: 'update_live_range_tracker',
+                status: 'ready',
+                range_count: 1,
+            },
+        });
     });
 
     it('normalizes bracketed telemetry fields and common tire/fuel aliases', async () => {
@@ -252,10 +274,7 @@ describe('ai command registry user summary tools', () => {
 
         expect(fuelResult).toMatchObject({
             status: 'complete',
-            ui_output: {
-                Physics_fuel: 38,
-            },
-            ai_output: {
+            output: {
                 name: 'query_telemetry_metric',
                 status: 'complete',
                 values: {
@@ -263,25 +282,24 @@ describe('ai command registry user summary tools', () => {
                 },
             },
         });
-        expect((fuelResult.ai_output as any)).not.toHaveProperty('ok');
-        expect((fuelResult.ai_output as any).values).not.toHaveProperty('ok');
-        expect(tireResult).toMatchObject({
-            status: 'complete',
-            ui_output: {
-                Physics_wheel_pressure_front_left: 26.1,
-                Physics_wheel_pressure_front_right: 26.2,
-                Physics_wheel_pressure_rear_left: 25.9,
-                Physics_wheel_pressure_rear_right: 26,
-            },
+        expect(getUiOutput(fuelResult)).toMatchObject({
+            Physics_fuel: 38,
         });
-        expect(bareTyreResult).toMatchObject({
-            status: 'complete',
-            ui_output: {
-                Physics_wheel_pressure_front_left: 26.1,
-                Physics_wheel_pressure_front_right: 26.2,
-                Physics_wheel_pressure_rear_left: 25.9,
-                Physics_wheel_pressure_rear_right: 26,
-            },
+        expect((fuelResult.output as any)).not.toHaveProperty('ok');
+        expect((fuelResult.output as any).values).not.toHaveProperty('ok');
+        expect(tireResult).toMatchObject({ status: 'complete' });
+        expect(getUiOutput(tireResult)).toMatchObject({
+            Physics_wheel_pressure_front_left: 26.1,
+            Physics_wheel_pressure_front_right: 26.2,
+            Physics_wheel_pressure_rear_left: 25.9,
+            Physics_wheel_pressure_rear_right: 26,
+        });
+        expect(bareTyreResult).toMatchObject({ status: 'complete' });
+        expect(getUiOutput(bareTyreResult)).toMatchObject({
+            Physics_wheel_pressure_front_left: 26.1,
+            Physics_wheel_pressure_front_right: 26.2,
+            Physics_wheel_pressure_rear_left: 25.9,
+            Physics_wheel_pressure_rear_right: 26,
         });
     });
 

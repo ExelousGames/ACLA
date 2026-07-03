@@ -1742,6 +1742,10 @@ const summarizeLiveRangeForAi = (uiOutput: Record<string, any>) => {
     };
 };
 
+const summarizeLiveRangeSetForAi = (uiOutput: Record<string, any>) => ({
+    tracker_status: uiOutput.tracker?.status ?? null,
+});
+
 const summarizeProcedureRequestForAi = (request: unknown) => {
     const record = getToolUiRecord(request);
     return {
@@ -1799,10 +1803,12 @@ const buildToolAiOutput = (
         case 'show_map':
             Object.assign(output, summarizeMapForAi(uiOutput));
             break;
-        case 'set_live_range_tracker':
         case 'update_live_range_tracker':
         case 'get_live_range_tracker':
             Object.assign(output, summarizeLiveRangeForAi(uiOutput));
+            break;
+        case 'set_live_range_tracker':
+            Object.assign(output, summarizeLiveRangeSetForAi(uiOutput));
             break;
         case 'set_procedure_plan':
             output.goal = uiOutput.goal ?? null;

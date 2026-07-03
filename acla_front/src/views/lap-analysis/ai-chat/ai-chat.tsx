@@ -46,6 +46,7 @@ import LiveRangeTracker, {
 import { useBaselineCollectionRuntime } from './BaselineCollectionRuntime';
 import {
     getToolEnvelopeError,
+    getToolEnvelopeUiOutput,
     isToolOutputEnvelope,
     type ToolOutputEnvelope,
 } from './ai-tool-base';
@@ -206,7 +207,8 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
 );
 
 const getBaselineToolEventResult = (envelope: ToolOutputEnvelope) => {
-    const payload = isRecord(envelope.ui_output) ? envelope.ui_output : {};
+    const uiOutput = getToolEnvelopeUiOutput(envelope);
+    const payload = isRecord(uiOutput) ? uiOutput : {};
     const rawProgress = Number(payload.progress_percent ?? envelope.progress_percent ?? 0);
 
     return {
@@ -705,7 +707,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         activeVoiceToolResultRef.current({
             id: envelope.run_id,
             name: envelope.tool_name,
-            result: envelope.ai_output,
+            result: envelope.output,
         });
 
         const plan = procedurePlanRef.current;

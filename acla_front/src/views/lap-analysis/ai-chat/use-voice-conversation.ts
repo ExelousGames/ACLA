@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
 import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
-import { getToolEnvelopeError, isToolOutputEnvelope } from './ai-tool-base';
+import { getToolEnvelopeError, getToolEnvelopeUiOutput, isToolOutputEnvelope } from './ai-tool-base';
 import { getAiToolResult } from './ai-tool-result-boundary';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
@@ -206,6 +206,12 @@ const getToolResultForAi = (result: unknown): unknown => {
         : { value: aiResult };
 };
 
+const getToolResultForUi = (result: unknown): unknown => (
+    isToolOutputEnvelope(result)
+        ? getToolEnvelopeUiOutput(result)
+        : result
+);
+
 const defaultToolRunId = () =>
     `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
@@ -274,7 +280,7 @@ export const executeSubscribedFrontendTool = async ({
             name,
             title,
             status: envelopeComplete ? 'completed' : 'started',
-            result,
+            result: getToolResultForUi(result),
             ok: !envelopeError,
             error: envelopeError,
         });

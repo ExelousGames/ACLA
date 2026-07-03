@@ -4,6 +4,7 @@ import {
     extractInlineFunctionCalls,
     mapBackendToolEventForUi,
 } from '../use-voice-conversation';
+import { createToolOutputController } from '../ai-tool-base';
 
 describe('buildVoiceSessionMetadata', () => {
     it('defaults to a main conversation session', () => {
@@ -183,18 +184,15 @@ describe('executeSubscribedFrontendTool', () => {
             status: 'complete',
             message: 'Baseline complete.',
         };
-        const envelope = {
-            tool_name: 'collect_live_baseline',
-            run_id: 'tool-4',
+        const uiOutput = {
             status: 'complete',
-            ui_output: {
-                status: 'complete',
-                message: 'Baseline complete.',
-                snapshot: { baseline_ready: true },
-            },
-            ai_output: aiOutput,
-            final: true,
+            message: 'Baseline complete.',
+            snapshot: { baseline_ready: true },
         };
+        const envelope = createToolOutputController(
+            'collect_live_baseline',
+            'tool-4',
+        ).final(uiOutput, { aiOutput });
 
         await executeSubscribedFrontendTool({
             call: { id: 'tool-4', name: 'collect_live_baseline' },
@@ -215,7 +213,7 @@ describe('executeSubscribedFrontendTool', () => {
         expect(events).toContainEqual(expect.objectContaining({
             kind: 'tool_event',
             runId: 'tool-4',
-            result: envelope,
+            result: uiOutput,
         }));
         expect(events).toContainEqual(expect.objectContaining({
             kind: 'tool_event',
@@ -228,21 +226,20 @@ describe('executeSubscribedFrontendTool', () => {
     it('does not mark a non-final envelope completed', async () => {
         const frames: object[] = [];
         const events: object[] = [];
-        const envelope = {
-            tool_name: 'collect_live_baseline',
-            run_id: 'tool-5',
+        const uiOutput = {
             status: 'started',
-            ui_output: {
-                status: 'started',
-                message: 'Baseline collection started.',
-            },
-            ai_output: {
+            message: 'Baseline collection started.',
+        };
+        const envelope = createToolOutputController(
+            'collect_live_baseline',
+            'tool-5',
+        ).progress(uiOutput, {
+            aiOutput: {
                 name: 'collect_live_baseline',
                 status: 'started',
                 message: 'Baseline collection started.',
             },
-            final: false,
-        };
+        });
 
         await executeSubscribedFrontendTool({
             call: { id: 'tool-5', name: 'collect_live_baseline' },
@@ -261,7 +258,7 @@ describe('executeSubscribedFrontendTool', () => {
                 type: 'tool_result',
                 id: 'tool-5',
                 name: 'collect_live_baseline',
-                result: envelope.ai_output,
+                result: envelope.output,
             },
         ]);
         expect(events).toContainEqual(expect.objectContaining({
@@ -269,7 +266,7 @@ describe('executeSubscribedFrontendTool', () => {
             runId: 'tool-5',
             name: 'collect_live_baseline',
             status: 'started',
-            result: envelope,
+            result: uiOutput,
         }));
         expect(events).not.toContainEqual(expect.objectContaining({
             kind: 'tool_event',

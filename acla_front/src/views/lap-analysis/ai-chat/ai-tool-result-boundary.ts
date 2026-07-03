@@ -16,8 +16,7 @@ export const isToolOutputEnvelopeLike = (value: unknown): value is Record<string
         && typeof value.run_id === 'string'
         && typeof value.status === 'string'
         && typeof value.final === 'boolean'
-        && 'ui_output' in value
-        && 'ai_output' in value
+        && 'output' in value
     );
 };
 
@@ -40,8 +39,8 @@ export const assertNoUiOutputForAi = (value: unknown): void => {
 
 export const getAiToolResult = (result: unknown): unknown => {
     if (isToolOutputEnvelopeLike(result)) {
-        assertNoUiOutputForAi(result.ai_output);
-        return result.ai_output;
+        assertNoUiOutputForAi(result.output);
+        return result.output;
     }
     assertNoUiOutputForAi(result);
     return result;

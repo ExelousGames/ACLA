@@ -4,8 +4,7 @@ export type ToolOutputEnvelope = {
     tool_name: string;
     run_id: string;
     status: ToolOutputStatus;
-    ui_output: unknown;
-    ai_output: unknown;
+    output: unknown;
     message?: string;
     error?: string;
     final: boolean;
@@ -110,14 +109,19 @@ const buildDefaultAiOutput = (
     return output;
 };
 
+const toolEnvelopeUiOutput = new WeakMap<ToolOutputEnvelope, unknown>();
+
+export const getToolEnvelopeUiOutput = (envelope: ToolOutputEnvelope): unknown => (
+    toolEnvelopeUiOutput.get(envelope)
+);
+
 export const isToolOutputEnvelope = (value: unknown): value is ToolOutputEnvelope => (
     isRecord(value)
     && typeof value.tool_name === 'string'
     && typeof value.run_id === 'string'
     && typeof value.status === 'string'
     && typeof value.final === 'boolean'
-    && 'ui_output' in value
-    && 'ai_output' in value
+    && 'output' in value
 );
 
 const createEnvelope = (
@@ -141,13 +145,13 @@ const createEnvelope = (
         tool_name: toolName,
         run_id: runId,
         status,
-        ui_output: uiOutput,
-        ai_output: options.aiOutput ?? buildDefaultAiOutput(toolName, status, message, error),
+        output: options.aiOutput ?? buildDefaultAiOutput(toolName, status, message, error),
         message,
         error,
         final,
         progress_percent: options.progressPercent ?? getUiOutputProgressPercent(uiOutput),
     };
+    toolEnvelopeUiOutput.set(envelope, uiOutput);
 
     if (envelope.message === undefined) {
         delete envelope.message;
