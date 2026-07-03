@@ -135,7 +135,12 @@ async def test_text_filtering_websocket_routes_tool_result_without_audio_read():
     async def send_text(payload: str) -> None:
         _ = payload
 
-    relay.bind(proxy, send_text, payloads.put_nowait)
+    relay.bind(
+        proxy,
+        send_text,
+        lambda text: None,
+        tool_result_sink=payloads.put_nowait,
+    )
     proxy.start_text_control_pump()
     try:
         await raw_ws.messages.put({

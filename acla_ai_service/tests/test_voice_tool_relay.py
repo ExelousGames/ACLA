@@ -37,12 +37,18 @@ async def test_send_tool_call_sends_frame_and_returns_without_result():
 async def test_tool_result_is_forwarded_as_ai_visible_payload():
     relay = ToolRelay()
     conn = object()
-    payloads = []
+    user_payloads = []
+    tool_payloads = []
 
     async def send_text(payload: str) -> None:
         _ = payload
 
-    relay.bind(conn, send_text, payloads.append)
+    relay.bind(
+        conn,
+        send_text,
+        user_payloads.append,
+        tool_result_sink=tool_payloads.append,
+    )
 
     relay.handle_text_frame(conn, {
         "type": "tool_result",
@@ -55,8 +61,9 @@ async def test_tool_result_is_forwarded_as_ai_visible_payload():
         },
     })
 
-    assert len(payloads) == 1
-    assert json.loads(payloads[0]) == {
+    assert user_payloads == []
+    assert len(tool_payloads) == 1
+    assert json.loads(tool_payloads[0]) == {
         "type": "tool_result",
         "id": "call-1",
         "name": "frontend_classifier",
@@ -72,12 +79,18 @@ async def test_tool_result_is_forwarded_as_ai_visible_payload():
 async def test_oversized_tool_result_is_not_forwarded_to_ai_visible_payload():
     relay = ToolRelay(max_ai_visible_tool_payload_chars=300)
     conn = object()
-    payloads = []
+    user_payloads = []
+    tool_payloads = []
 
     async def send_text(payload: str) -> None:
         _ = payload
 
-    relay.bind(conn, send_text, payloads.append)
+    relay.bind(
+        conn,
+        send_text,
+        user_payloads.append,
+        tool_result_sink=tool_payloads.append,
+    )
 
     relay.handle_text_frame(conn, {
         "type": "tool_result",
@@ -88,8 +101,9 @@ async def test_oversized_tool_result_is_not_forwarded_to_ai_visible_payload():
         },
     })
 
-    assert len(payloads) == 1
-    forwarded = json.loads(payloads[0])
+    assert user_payloads == []
+    assert len(tool_payloads) == 1
+    forwarded = json.loads(tool_payloads[0])
     assert forwarded == {
         "ai_visible_payload_truncated": True,
         "id": "call-1",
@@ -110,7 +124,7 @@ async def test_oversized_tool_result_is_not_forwarded_to_ai_visible_payload():
         "type": "tool_result",
     }
     assert forwarded["original_payload_chars"] > 300
-    assert "telemetry_rows" not in payloads[0]
+    assert "telemetry_rows" not in tool_payloads[0]
 
 
 @pytest.mark.asyncio
@@ -130,3 +144,29 @@ async def test_unknown_frame_is_not_forwarded_to_ai_visible_payloads():
     })
 
     assert payloads == []
+
+
+@pytest.mark.asyncio
+async def test_user_text_frame_is_forwarded_to_user_text_sink_only():
+    relay = ToolRelay()
+    conn = object()
+    user_payloads = []
+    tool_payloads = []
+
+    async def send_text(payload: str) -> None:
+        _ = payload
+
+    relay.bind(
+        conn,
+        send_text,
+        user_payloads.append,
+        tool_result_sink=tool_payloads.append,
+    )
+
+    relay.handle_text_frame(conn, {
+        "type": "user_text",
+        "text": "Box this lap",
+    })
+
+    assert user_payloads == ["Box this lap"]
+    assert tool_payloads == []

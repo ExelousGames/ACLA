@@ -1330,8 +1330,8 @@ async def build_voice_pipeline_task(
     )
     task_ref["task"] = task
     # --- Text control sinks -------------------------------------------------
-    # Tool results/errors are serialized by the relay and sent through the
-    # same user_text_sink path as typed chat.
+    # Tool results/errors are serialized by the relay and sent through a
+    # dedicated sink so typed chat and frontend tool payloads stay separate.
     loop = asyncio.get_running_loop()
 
     def _trigger_llm_run(source: str) -> None:
@@ -1355,21 +1355,30 @@ async def build_voice_pipeline_task(
             _trigger_llm_run("session_context_sink")
 
     def user_text_sink(text: str) -> None:
-        """Inject typed chat text or a frontend tool response.
-
-        Plain user_text frames become user turns. Tool-result frames can
-        include frontend-supplied native messages for the LLM context.
-        """
+        """Inject typed chat text."""
         import time as _time
         LOGGER.info("[LAT-DIAG] user_text_in t=%.3f chars=%d", _time.monotonic(), len(text))
         for message in _llm_context_messages_from_user_text(text):
             context.add_message(message)
         _trigger_llm_run("user_text_sink")
 
+    def tool_result_sink(text: str) -> None:
+        """Inject a frontend tool response.
+
+        Tool-result frames can include frontend-supplied native messages for
+        the LLM context.
+        """
+        import time as _time
+        LOGGER.info("[LAT-DIAG] tool_result_in t=%.3f chars=%d", _time.monotonic(), len(text))
+        for message in _llm_context_messages_from_user_text(text):
+            context.add_message(message)
+        _trigger_llm_run("tool_result_sink")
+
     get_relay().bind(
         websocket,
         send_text=_send_text,
         user_text_sink=user_text_sink,
+        tool_result_sink=tool_result_sink,
         session_context_sink=_remember_session_context,
     )
     start_control_pump = getattr(websocket, "start_text_control_pump", None)

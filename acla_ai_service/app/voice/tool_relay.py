@@ -22,6 +22,7 @@ MAX_AI_VISIBLE_TOOL_PAYLOAD_CHARS = 64 * 1024
 
 SendText = Callable[[str], Awaitable[None]]
 UserTextSink = Callable[[str], Any]
+ToolResultSink = Callable[[str], Any]
 SessionContextSink = Callable[[Dict[str, Any]], Any]
 
 
@@ -31,6 +32,7 @@ class _ConnectionState:
     __slots__ = (
         "send_text",
         "user_text_sink",
+        "tool_result_sink",
         "session_context_sink",
     )
 
@@ -38,10 +40,12 @@ class _ConnectionState:
         self,
         send_text: SendText,
         user_text_sink: UserTextSink,
+        tool_result_sink: Optional[ToolResultSink] = None,
         session_context_sink: Optional[SessionContextSink] = None,
     ) -> None:
         self.send_text = send_text
         self.user_text_sink = user_text_sink
+        self.tool_result_sink = tool_result_sink or user_text_sink
         self.session_context_sink = session_context_sink
 
 
@@ -58,10 +62,11 @@ class ToolRelay:
         send_text: SendText,
         user_text_sink: UserTextSink,
         session_context_sink: Optional[SessionContextSink] = None,
+        tool_result_sink: Optional[ToolResultSink] = None,
     ) -> None:
         """Register a connection and its inbound text-frame sinks."""
         self._by_conn[id(conn)] = _ConnectionState(
-            send_text, user_text_sink, session_context_sink,
+            send_text, user_text_sink, tool_result_sink, session_context_sink,
         )
 
     def unbind(self, conn: Any) -> None:
@@ -106,8 +111,8 @@ class ToolRelay:
     def handle_text_frame(self, conn: Any, payload: Dict[str, Any]) -> None:
         """Route one inbound text frame.
 
-        Tool payload frames are serialized to text and sent through the same
-        AI-visible path as typed user text.
+        Tool payload frames are serialized to text and sent through the
+        tool-result sink. Typed user text uses the user-text sink.
         """
         state = self._by_conn.get(id(conn))
         if state is None:
@@ -117,9 +122,9 @@ class ToolRelay:
 
         if frame_type == "tool_result":
             try:
-                state.user_text_sink(self._serialize_ai_visible_tool_payload(payload))
+                state.tool_result_sink(self._serialize_ai_visible_tool_payload(payload))
             except Exception:
-                LOGGER.exception("tool_relay: user_text_sink raised for %s", frame_type)
+                LOGGER.exception("tool_relay: tool_result_sink raised for %s", frame_type)
             return
 
         if frame_type == "user_text":
