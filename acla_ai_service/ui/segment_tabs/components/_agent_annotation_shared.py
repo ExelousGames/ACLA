@@ -633,20 +633,11 @@ def render_followup_chat() -> None:
 
     with st.chat_message("assistant"):
         text_placeholder = st.empty()
-        tool_placeholder = st.empty()
         buffer: list[str] = []
-        tool_events: list[str] = []
 
         def on_text_chunk(chunk: str) -> None:
             buffer.append(chunk)
             text_placeholder.markdown("".join(buffer) + "▌")
-
-        def on_tool_event(name: str, inp: dict) -> None:
-            short = str(inp)
-            if len(short) > 160:
-                short = short[:160] + "…"
-            tool_events.append(f"🔧 `{name}` {short}")
-            tool_placeholder.caption("\n\n".join(tool_events))
 
         try:
             response = run_claude_followup(
@@ -662,7 +653,6 @@ def render_followup_chat() -> None:
                 chat_history=chat[:-1],  # prior turns; current user turn passes via user_question
                 user_question=user_question,
                 on_text_chunk=on_text_chunk,
-                on_tool_event=on_tool_event,
             )
         except Exception as e:
             text_placeholder.error(f"Follow-up chat error: {e}")

@@ -14,7 +14,7 @@ telemetry while debugging skill text.
         prior_result=annotation_result,
         chat_history=[{"role": "user", "content": "..."}],
         user_question="why didn't EA1 fit here?",
-        on_text_chunk=on_text, on_tool_event=on_tool,
+        on_text_chunk=on_text,
     )
 """
 
@@ -264,7 +264,6 @@ async def _run_async(
     chat_history: List[Dict[str, str]],
     user_question: str,
     on_text_chunk: Optional[Callable[[str], None]],
-    on_tool_event: Optional[Callable[[str, Dict[str, Any]], None]],
 ) -> str:
     sdk = _import_sdk_types()
 
@@ -323,11 +322,6 @@ async def _run_async(
                         on_text_chunk(text)
             elif isinstance(block, sdk.ToolUseBlock):
                 capture.tool_calls += 1
-                if on_tool_event is not None:
-                    on_tool_event(
-                        getattr(block, "name", "tool"),
-                        getattr(block, "input", {}) or {},
-                    )
 
     return "".join(response_chunks).strip()
 
@@ -346,7 +340,6 @@ def run_claude_followup(
     chat_history: List[Dict[str, str]],
     user_question: str,
     on_text_chunk: Optional[Callable[[str], None]] = None,
-    on_tool_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> str:
     """One follow-up Q&A turn against a finished annotation. Returns the reply text."""
     return asyncio.run(_run_async(
@@ -362,5 +355,4 @@ def run_claude_followup(
         chat_history=list(chat_history),
         user_question=user_question,
         on_text_chunk=on_text_chunk,
-        on_tool_event=on_tool_event,
     ))

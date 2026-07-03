@@ -605,8 +605,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             }
             return;
         }
-        if (event.kind === 'tool_event') {
-            console.log(`[ai-tool] tool_event ${event.status}`, {
+        if (event.kind === 'tool_call') {
+            console.log(`[ai-tool] tool_call ${event.status}`, {
                 name: event.name,
                 title: event.title,
                 status: event.status,
@@ -694,7 +694,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         }
 
         handleSessionVoiceEvent({
-            kind: 'tool_event',
+            kind: 'tool_call',
             runId: envelope.run_id,
             name: envelope.tool_name,
             title: envelope.message || 'Collect live baseline',

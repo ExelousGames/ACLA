@@ -57,7 +57,6 @@ async def test_frontend_tool_call_is_fire_and_forget():
     assert tool_calls[0]["name"] == "advance_plan_step"
     assert tool_calls[0]["title"] == "Advance plan"
     assert tool_calls[0]["arguments"] == {"reason": "ready"}
-    assert [frame for frame in conn.sent if frame.get("type") == "tool_event"] == []
 
 
 @pytest.mark.asyncio

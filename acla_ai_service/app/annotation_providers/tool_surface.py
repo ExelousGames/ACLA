@@ -470,25 +470,6 @@ class AnnotationToolSurface:
                 pass
         return out
 
-    def _emit_tool_event(self, name: str, inp: Dict[str, Any], summary: str) -> None:
-        inp_str = json.dumps(inp, default=str)
-        if len(inp_str) > 400:
-            inp_str = inp_str[:400] + "..."
-        if len(summary) > 600:
-            summary = summary[:600] + "..."
-        msg = (
-            f"**Tool:** `{name}`\n\n"
-            f"**Input:** `{inp_str}`\n\n"
-            f"**Result:** {summary}"
-        )
-        stage = tool_agent_stage(self.capture.node_name, f"tool:{name}")
-        self.capture.step_events.append(StepEvent(
-            stage=stage["node_name"], summary=msg, detail=stage,
-        ))
-        cb = self.request.callbacks
-        if cb.step_event:
-            cb.step_event(msg, stage)
-
     def recommend_tools(self, intent: str, context_json: str) -> str:
         context = _safe_json_object(context_json)
         top_k = int(context.get("top_k") or 6)
@@ -791,7 +772,6 @@ class AnnotationToolSurface:
                     result = json.dumps(result, default=str)
 
         text, images = _text_from_tool_result(result)
-        self._emit_tool_event(name, args, text)
         return result, text, images
 
 

@@ -152,7 +152,7 @@ class LapLiveOutput:
     Lap sessions are short (one section per click — typically 3-6 VLM /
     tool calls for Claude, one VLM call for local). We don't need the
     detailed flow's per-step expander UI — a header + a single live block
-    plus a tool-event chip row is enough.
+    plus a compact status chip row is enough.
     """
 
     def __init__(self) -> None:
@@ -162,7 +162,7 @@ class LapLiveOutput:
         self.preflight_area = st.empty()
         self.text_area = st.empty()
         self.thinking_area = st.empty()
-        self.tool_events: List[str] = []
+        self.status_events: List[str] = []
         self.preflight_output = ""
         self.text_chunks: List[str] = []
         self.thinking_chunks: List[str] = []
@@ -171,8 +171,8 @@ class LapLiveOutput:
     def _render(self) -> None:
         elapsed = time.time() - self.start_time
         self.header.markdown(f"**Lap agent run** _(elapsed {elapsed:.1f}s)_")
-        if self.tool_events:
-            self.tool_chip_area.caption(" · ".join(self.tool_events[-8:]))
+        if self.status_events:
+            self.tool_chip_area.caption(" · ".join(self.status_events[-8:]))
         if self.preflight_output:
             with self.preflight_area.expander("Preflight output", expanded=False):
                 st.code(self.preflight_output, language="text")
@@ -185,7 +185,7 @@ class LapLiveOutput:
 
     def on_prompt(self, prompt: str, stage: Dict[str, Any]) -> None:  # noqa: ARG002
         self.preflight_output = _extract_preflight_output(prompt)
-        self.tool_events.append("🟢 prompt sent")
+        self.status_events.append("🟢 prompt sent")
         self._render()
 
     def on_text_chunk(self, chunk: str) -> None:
@@ -199,11 +199,11 @@ class LapLiveOutput:
     def on_step_event(self, summary: str, stage: Dict[str, Any]) -> None:
         phase = stage.get("phase") or ""
         chip = phase.replace("tool:", "🔧 ") if phase.startswith("tool:") else f"📎 {phase}"
-        self.tool_events.append(chip)
+        self.status_events.append(chip)
         self._render()
 
     def on_progress(self, node_name: str, detail: str) -> None:
-        self.tool_events.append(f"⏱ {detail}")
+        self.status_events.append(f"⏱ {detail}")
         self._render()
 
 

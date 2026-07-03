@@ -54,7 +54,7 @@ export type VoiceEvent =
     | { kind: 'assistant_transcript'; text: string; emotion?: string }
     | { kind: 'tool_status'; data: Record<string, unknown> }
     | {
-        kind: 'tool_event';
+        kind: 'tool_call';
         runId?: string;
         name: string;
         title: string;
@@ -85,7 +85,7 @@ export interface VoiceConversationOptions {
     /** Compact frontend view/session state injected into the backend system
      *  context before the LLM chooses tools. */
     sessionContext?: AiSessionContext;
-    /** Fires for each transcript / tool event the backend sends. The
+    /** Fires for each transcript / tool lifecycle event the backend sends. The
      *  caller is responsible for appending to its own message list. */
     onEvent?: (event: VoiceEvent) => void;
 }
@@ -266,7 +266,7 @@ export const executeSubscribedFrontendTool = async ({
     }
 
     emitEvent?.({
-        kind: 'tool_event',
+        kind: 'tool_call',
         runId: id,
         name,
         title,
@@ -293,7 +293,7 @@ export const executeSubscribedFrontendTool = async ({
         sendText(buildToolResultFrame(id, name, getToolResultForAi(result), args));
         const envelopeComplete = isToolOutputEnvelope(result) ? result.final : true;
         emitEvent?.({
-            kind: 'tool_event',
+            kind: 'tool_call',
             runId: id,
             name,
             title,
@@ -309,7 +309,7 @@ export const executeSubscribedFrontendTool = async ({
         const error = (err as Error)?.message || String(err);
         sendText(buildToolResultFrame(id, name, { ok: false, error }, args));
         emitEvent?.({
-            kind: 'tool_event',
+            kind: 'tool_call',
             runId: id,
             name,
             title,

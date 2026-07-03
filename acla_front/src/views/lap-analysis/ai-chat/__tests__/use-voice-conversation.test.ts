@@ -100,9 +100,9 @@ describe('executeSubscribedFrontendTool', () => {
 
         expect(result).toMatchObject({ id: 'tool-1', name: 'read_context', ok: true });
         expect(events).toMatchObject([
-            { kind: 'tool_event', runId: 'tool-1', name: 'read_context', title: 'Read context', status: 'started' },
+            { kind: 'tool_call', runId: 'tool-1', name: 'read_context', title: 'Read context', status: 'started' },
             {
-                kind: 'tool_event',
+                kind: 'tool_call',
                 runId: 'tool-1',
                 name: 'read_context',
                 title: 'Read context',
@@ -162,8 +162,8 @@ describe('executeSubscribedFrontendTool', () => {
 
         expect(result).toEqual({ id: 'tool-2', name: 'explode', ok: false, error: 'boom' });
         expect(events).toMatchObject([
-            { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'started' },
-            { kind: 'tool_event', runId: 'tool-2', name: 'explode', status: 'completed', ok: false, error: 'boom' },
+            { kind: 'tool_call', runId: 'tool-2', name: 'explode', status: 'started' },
+            { kind: 'tool_call', runId: 'tool-2', name: 'explode', status: 'completed', ok: false, error: 'boom' },
         ]);
         expect(frames).toContainEqual(expect.objectContaining({
             type: 'tool_result',
@@ -245,12 +245,12 @@ describe('executeSubscribedFrontendTool', () => {
         ]);
         expect((frames[0] as any).result).not.toHaveProperty('snapshot');
         expect(events).toContainEqual(expect.objectContaining({
-            kind: 'tool_event',
+            kind: 'tool_call',
             runId: 'tool-4',
             result: uiOutput,
         }));
         expect(events).toContainEqual(expect.objectContaining({
-            kind: 'tool_event',
+            kind: 'tool_call',
             runId: 'tool-4',
             name: 'collect_live_baseline',
             status: 'started',
@@ -297,14 +297,14 @@ describe('executeSubscribedFrontendTool', () => {
             }),
         ]);
         expect(events).toContainEqual(expect.objectContaining({
-            kind: 'tool_event',
+            kind: 'tool_call',
             runId: 'tool-5',
             name: 'collect_live_baseline',
             status: 'started',
             result: uiOutput,
         }));
         expect(events).not.toContainEqual(expect.objectContaining({
-            kind: 'tool_event',
+            kind: 'tool_call',
             runId: 'tool-5',
             status: 'completed',
         }));

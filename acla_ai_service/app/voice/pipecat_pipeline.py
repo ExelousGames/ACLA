@@ -1011,8 +1011,7 @@ def _build_emotion_tag_stripper():
     chunk(s) until it can determine whether the response starts with a valid
     emotion tag, then either strips it or flushes the buffer unchanged.
 
-    This keeps Kokoro from ever speaking "[vibing]" — parallel to how
-    tool_event frames are UI-only signals that also never reach TTS.
+    This keeps Kokoro from ever speaking "[vibing]".
     """
     from pipecat.frames.frames import (
         Frame,
@@ -1299,8 +1298,7 @@ async def build_voice_pipeline_task(
     # before they can reach transcript/TTS. Native tool calls still use
     # Pipecat's registered function channel.
     # emotion_tag_stripper sits AFTER the observer and BEFORE tts so Kokoro
-    # never receives the [emotion] tag — same principle as tool_event frames
-    # being UI-only signals that never reach speech synthesis.
+    # never receives the [emotion] tag.
     # context_aggregator.assistant() is the LAST processor (canonical
     # Pipecat placement). It consumes TextFrame/LLMFullResponse{Start,End}Frame
     # to commit spoken assistant turns to LLMContext. Requires every upstream
