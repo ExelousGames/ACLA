@@ -40,6 +40,16 @@ def test_agent_behavior_knowledge_is_loaded():
     assert agent_behavior("main_chatbot") is None
 
 
+def test_live_behavior_routes_full_lap_and_quick_checks():
+    reload()
+
+    raw_body = agent_behavior("live")["_raw_body"]
+
+    assert "Use `analyze_telemetry` only for a quick, one-off classification" in raw_body
+    assert "Do not use it for full-lap checks" in raw_body
+    assert "running a full-lap check" in raw_body
+
+
 def test_system_prompt_defaults_to_front_desk_session_knowledge():
     reload()
 

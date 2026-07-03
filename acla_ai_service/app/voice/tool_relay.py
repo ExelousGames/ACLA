@@ -18,6 +18,7 @@ import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 LOGGER = logging.getLogger(__name__)
+MAX_AI_VISIBLE_TOOL_PAYLOAD_CHARS = 64 * 1024
 
 SendText = Callable[[str], Awaitable[None]]
 UserTextSink = Callable[[str], Any]
@@ -47,8 +48,9 @@ class _ConnectionState:
 class ToolRelay:
     """Process-wide registry for active voice connections."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_ai_visible_tool_payload_chars: int = MAX_AI_VISIBLE_TOOL_PAYLOAD_CHARS) -> None:
         self._by_conn: Dict[int, _ConnectionState] = {}
+        self._max_ai_visible_tool_payload_chars = max_ai_visible_tool_payload_chars
 
     def bind(
         self,
@@ -113,14 +115,7 @@ class ToolRelay:
 
         if frame_type in ("tool_result", "tool_error"):
             try:
-                state.user_text_sink(
-                    json.dumps(
-                        payload,
-                        ensure_ascii=True,
-                        sort_keys=True,
-                        default=str,
-                    ),
-                )
+                state.user_text_sink(self._serialize_ai_visible_tool_payload(payload))
             except Exception:
                 LOGGER.exception("tool_relay: user_text_sink raised for %s", frame_type)
             return
@@ -150,6 +145,52 @@ class ToolRelay:
             return
 
         LOGGER.warning("tool_relay: unknown frame type %r", frame_type)
+
+    def _serialize_ai_visible_tool_payload(self, payload: Dict[str, Any]) -> str:
+        serialized = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
+        if len(serialized) <= self._max_ai_visible_tool_payload_chars:
+            return serialized
+
+        frame_type = payload.get("type")
+        name = payload.get("name")
+        compact_payload = {
+            "type": frame_type,
+            "id": payload.get("id"),
+            "name": name,
+            "ai_visible_payload_truncated": True,
+            "original_payload_chars": len(serialized),
+            "max_payload_chars": self._max_ai_visible_tool_payload_chars,
+            "message": (
+                "Tool payload omitted because it exceeded the AI-visible size cap. "
+                "Use a compact tool result or a server-side classifier path."
+            ),
+        }
+        if frame_type == "tool_error":
+            compact_payload["error"] = {"message": compact_payload["message"]}
+        else:
+            compact_payload["result"] = {
+                "status": "omitted",
+                "message": compact_payload["message"],
+            }
+
+        LOGGER.warning(
+            "tool_relay: truncated oversized %s payload name=%r chars=%d cap=%d",
+            frame_type,
+            name,
+            len(serialized),
+            self._max_ai_visible_tool_payload_chars,
+        )
+        return json.dumps(
+            compact_payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            default=str,
+        )
 
 
 _RELAY = ToolRelay()

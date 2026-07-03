@@ -6,6 +6,17 @@ const asRecord = (value: unknown): Record<string, unknown> => (
         : {}
 );
 
+const omitRawTelemetryRows = (value: Record<string, unknown>): Record<string, unknown> => {
+    if (!Array.isArray(value.telemetry_rows)) return value;
+    const { telemetry_rows, ...rest } = value;
+    return {
+        ...rest,
+        telemetry_row_count: typeof rest.telemetry_row_count === 'number'
+            ? rest.telemetry_row_count
+            : telemetry_rows.length,
+    };
+};
+
 const isNumber = (value: unknown): value is number => (
     typeof value === 'number' && Number.isFinite(value)
 );
@@ -176,6 +187,18 @@ export const formatToolResultForLlm = (data: Record<string, unknown>): string =>
         );
     }
 
+    if (data.source === 'live_range_tracker') {
+        const bits = ['live_range_tracker', event];
+        ['range_id', 'label', 'lap'].forEach((key) => {
+            const value = data[key];
+            if (value !== undefined && value !== null) bits.push(`${key}=${value}`);
+        });
+        if (isNumber(data.telemetry_row_count)) {
+            bits.push(`telemetry_rows=${data.telemetry_row_count}`);
+        }
+        return `${bits.join(' ')}.`;
+    }
+
     const bits = [event];
     ['section', 'lap', 'lap_number'].forEach((key) => {
         const value = data[key];
@@ -203,7 +226,8 @@ const getToolResultName = (data: Record<string, unknown>): string => {
 };
 
 export const buildFormattedToolResultFrame = (data: Record<string, unknown>) => {
-    const aiData = asRecord(getAiToolResult(data));
+    const rawAiData = asRecord(getAiToolResult(data));
+    const aiData = omitRawTelemetryRows(rawAiData);
     const sourceStatus = typeof aiData.status === 'string' ? aiData.status : undefined;
 
     return {
@@ -218,7 +242,7 @@ export const buildFormattedToolResultFrame = (data: Record<string, unknown>) => 
             ...aiData,
             ...(sourceStatus ? { source_status: sourceStatus } : {}),
             status: 'complete',
-            text: formatToolResultForLlm(aiData),
+            text: formatToolResultForLlm(rawAiData),
         },
     };
 };

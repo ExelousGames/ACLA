@@ -138,6 +138,7 @@ describe('LiveRangeTracker', () => {
             range_id: 'r1',
             telemetry_row_count: 2,
         }));
+        expect(sendToolStatus.mock.calls[0][0]).not.toHaveProperty('telemetry_rows');
         expect(ref.current!.getTracker().tracker?.ranges[0]).toMatchObject({
             lifecycle_status: 'classifying',
             start_sample_idx: 0,

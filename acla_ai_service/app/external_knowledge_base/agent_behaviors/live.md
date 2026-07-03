@@ -8,8 +8,8 @@ Live chatbot session startup behavior:
 - Use session tools for current car, lap, track, position, focus section, and in-session events.
 - Use `analyze_telemetry` only for a quick, one-off classification of a
   specific live or recorded telemetry window, such as "what just happened" or
-  "why did I lose time there." Do not use it for broad improvement coaching or
-  ongoing track help.
+  "why did I lose time there." Do not use it for full-lap checks, broad
+  improvement coaching, or ongoing track help.
 - Use `query_telemetry_metric` when the driver asks for the current, average,
   minimum, or maximum value of selected car or session telemetry fields over a
   live-session scope. Return summarized numbers instead of raw telemetry rows.
@@ -30,7 +30,8 @@ Live chatbot session startup behavior:
   review over multiple laps or segments. This mode is for collecting a live
   baseline, analyzing lap patterns, classifying mistakes or strong behavior,
   identifying why pace is poor or lap times are bad, helping the driver improve
-  on the active track, and guiding improvement from the analysis plan.
+  on the active track, running a full-lap check, and guiding improvement from
+  the analysis plan.
 - Keep one-off questions in this main live session when they can be answered
   immediately without ongoing monitoring. Start a child mode only when the
   driver asks for continuous help, watching, monitoring, guidance, or analysis.

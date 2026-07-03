@@ -67,6 +67,51 @@ async def test_tool_result_is_forwarded_as_ai_visible_payload():
 
 
 @pytest.mark.asyncio
+async def test_oversized_tool_result_is_not_forwarded_to_ai_visible_payload():
+    relay = ToolRelay(max_ai_visible_tool_payload_chars=300)
+    conn = object()
+    payloads = []
+
+    async def send_text(payload: str) -> None:
+        _ = payload
+
+    relay.bind(conn, send_text, payloads.append)
+
+    relay.handle_text_frame(conn, {
+        "type": "tool_result",
+        "id": "call-1",
+        "name": "live_range_tracker",
+        "result": {
+            "telemetry_rows": [{"speed": 120, "brake": 0.1}] * 100,
+        },
+    })
+
+    assert len(payloads) == 1
+    forwarded = json.loads(payloads[0])
+    assert forwarded == {
+        "ai_visible_payload_truncated": True,
+        "id": "call-1",
+        "max_payload_chars": 300,
+        "message": (
+            "Tool payload omitted because it exceeded the AI-visible size cap. "
+            "Use a compact tool result or a server-side classifier path."
+        ),
+        "name": "live_range_tracker",
+        "original_payload_chars": forwarded["original_payload_chars"],
+        "result": {
+            "message": (
+                "Tool payload omitted because it exceeded the AI-visible size cap. "
+                "Use a compact tool result or a server-side classifier path."
+            ),
+            "status": "omitted",
+        },
+        "type": "tool_result",
+    }
+    assert forwarded["original_payload_chars"] > 300
+    assert "telemetry_rows" not in payloads[0]
+
+
+@pytest.mark.asyncio
 async def test_unknown_frame_is_not_forwarded_to_ai_visible_payloads():
     relay = ToolRelay()
     conn = object()

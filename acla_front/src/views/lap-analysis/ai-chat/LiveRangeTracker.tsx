@@ -461,9 +461,8 @@ const LiveRangeTracker = forwardRef<LiveRangeTrackerHandle, LiveRangeTrackerProp
                 lap,
                 start_sample_idx: windowResult?.startSampleIdx ?? null,
                 end_sample_idx: windowResult?.endSampleIdx ?? null,
-                telemetry_rows: windowResult?.rows ?? [],
                 telemetry_row_count: windowResult?.rows.length ?? 0,
-                message: 'Classify this tracked range and update it with update_live_range_tracker action=record_classification.',
+                message: 'Tracked range crossed; telemetry window is ready for the live classifier.',
             };
             const sent = hasWindow && sendToolStatus?.(toolStatus) === true;
 
