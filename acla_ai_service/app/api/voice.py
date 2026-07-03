@@ -4,7 +4,7 @@ Phase 2: `POST /voice/synthesize` (text → WAV), `GET /voice/voices`,
 `GET /voice/health`.
 
 Phase 3: `WS /voice/stream` — full bidirectional voice conversation via a
-Pipecat pipeline (Silero VAD → Whisper STT → llama-server LLM → Kokoro TTS).
+Pipecat pipeline (Silero VAD → Whisper STT → selected chat LLM → Kokoro TTS).
 Each connection spawns its own pipeline; interruption is built-in.
 """
 
@@ -19,7 +19,10 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from app.chat_llm import VALID_CHAT_LLM_PROVIDERS, normalize_chat_llm_provider
+from app.chat_llm import (
+    normalize_chat_llm_model,
+    parse_chat_llm_model_selector,
+)
 from app.voice import get_kokoro_service
 
 LOGGER = logging.getLogger(__name__)
@@ -142,7 +145,7 @@ async def voice_stream(
     websocket: WebSocket,
     session_id: Optional[str] = Query(None),
     user_id: Optional[str] = Query(None),
-    chat_llm_provider: Optional[str] = Query(None),
+    chat_llm_model: Optional[str] = Query(None),
 ):
     """WebSocket endpoint for full bidirectional voice conversation.
 
@@ -158,7 +161,7 @@ async def voice_stream(
       Pipecat sees them.
 
     Pipeline (binary frames only):
-        VAD → Whisper STT → llama-server LLM → Kokoro TTS
+        VAD → Whisper STT → selected chat LLM → Kokoro TTS
 
     Query params kept minimal — only what the relay needs at connect
     time. ``track_name`` / ``car_name`` are not passed in; the LLM
@@ -167,21 +170,18 @@ async def voice_stream(
     """
     await websocket.accept()
 
-    selected_chat_llm_provider = normalize_chat_llm_provider(chat_llm_provider)
-    if (
-        selected_chat_llm_provider is not None
-        and selected_chat_llm_provider not in VALID_CHAT_LLM_PROVIDERS
-    ):
-        await websocket.send_json({
-            "type": "error",
-            "message": (
-                "chat_llm_provider must be one of: openai, hosted "
-                f"(got {chat_llm_provider!r})"
-            ),
-            "error_type": "InvalidChatLLMProvider",
-        })
-        await websocket.close(code=1008, reason="invalid chat_llm_provider")
-        return
+    selected_chat_llm_model = normalize_chat_llm_model(chat_llm_model)
+    if selected_chat_llm_model is not None:
+        try:
+            parse_chat_llm_model_selector(selected_chat_llm_model)
+        except RuntimeError as exc:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(exc),
+                "error_type": "InvalidChatLLMModel",
+            })
+            await websocket.close(code=1008, reason="invalid chat_llm_model")
+            return
 
     # Deferred imports — keeps the rest of the API importable even when
     # pipecat isn't installed in the running container.
@@ -243,14 +243,16 @@ async def voice_stream(
         session_id=session_id,
         session_context=session_context,
         user_id=user_id,
-        chat_llm_provider=selected_chat_llm_provider,
+        chat_llm_model=selected_chat_llm_model,
     )
 
     # Construct the tool executor here, in the inbound-adapter band, so
     # app/voice/ never imports from app/pipelines/ (see .importlinter
     # contract voice-no-pipeline-or-api).
     from app.racing_engineer import AIService
-    ai_service = AIService(chat_llm_provider=selected_chat_llm_provider)
+    ai_service = AIService(
+        chat_llm_model=selected_chat_llm_model,
+    )
     tool_executor = ai_service._execute_function
 
     # Wrap the WS so inbound text frames go to the tool relay and only
@@ -260,8 +262,11 @@ async def voice_stream(
     filtered_ws = _TextFilteringWebSocket(websocket)
 
     LOGGER.info(
-        "Voice WS connected (session=%s user=%s chat_llm_provider=%s frontend_tools=%d)",
-        session_id, user_id, selected_chat_llm_provider or "default", len(frontend_tools),
+        "Voice WS connected (session=%s user=%s chat_llm_model=%s frontend_tools=%d)",
+        session_id,
+        user_id,
+        selected_chat_llm_model or "default",
+        len(frontend_tools),
     )
 
     try:

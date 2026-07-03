@@ -14,13 +14,16 @@ LOGGER = logging.getLogger(__name__)
 class AIService:
     """Service for AI-powered analysis and conversation.
 
-    Chat uses the configured remote provider from ``CHAT_LLM_PROVIDER``.
-    Both supported providers use the same ``AsyncOpenAI`` client; only
-    base_url / api_key / model differ.
+    Chat uses the selected remote model from ``CHAT_LLM_MODEL``. Supported
+    selectors use the same ``AsyncOpenAI`` client; only base_url / api_key /
+    model differ.
     """
 
-    def __init__(self, chat_llm_provider: Optional[str] = None):
-        llm_config = resolve_chat_llm_config(chat_llm_provider)
+    def __init__(
+        self,
+        chat_llm_model: Optional[str] = None,
+    ):
+        llm_config = resolve_chat_llm_config(chat_llm_model)
         self.llm_client = AsyncOpenAI(**llm_config.openai_client_kwargs())
         self.chat_model = llm_config.model
 

@@ -47,7 +47,6 @@ export type FrontendToolHandler = (
 
 export type AiSessionContext = Record<string, unknown>;
 export type ConversationRole = 'main' | 'agent';
-export type ChatLlmProvider = 'openai' | 'hosted';
 
 /** One event surfaced to the chat UI off the voice WS. The hook fires
  *  these via `onEvent` so the caller can append them to a message list. */
@@ -75,7 +74,7 @@ export interface VoiceConversationOptions {
      *  user (e.g. saved preferences, history). */
     userId?: string;
     conversationRole?: ConversationRole;
-    chatLlmProvider?: ChatLlmProvider | null;
+    chatLlmModel?: string | null;
     clientSessionId?: string;
     parentClientSessionId?: string | null;
     agentMode?: string | null;
@@ -338,11 +337,11 @@ export function useVoiceConversation(
             client_session_id: metadata.client_session_id,
             parent_client_session_id: metadata.parent_client_session_id || undefined,
             agent_mode: metadata.agent_mode || undefined,
-            chat_llm_provider: options.chatLlmProvider || undefined,
+            chat_llm_model: options.chatLlmModel?.trim() || undefined,
         });
     }, [
         options.agentMode,
-        options.chatLlmProvider,
+        options.chatLlmModel,
         options.clientSessionId,
         options.conversationRole,
         options.parentClientSessionId,

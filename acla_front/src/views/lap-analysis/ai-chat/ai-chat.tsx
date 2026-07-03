@@ -21,7 +21,7 @@ import type {
     LivePerformanceAnalystState,
     OpportunityAgentState,
 } from './ai-command-registry';
-import { useVoiceConversation, VoiceEvent, type ChatLlmProvider } from './use-voice-conversation';
+import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
@@ -58,10 +58,33 @@ const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const EMOTION_TAG_RE = /^\[([a-z]+)\]\s*/;
 const MAX_OVERTAKE_AGENT_ROWS = 300;
 const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 48;
-const CHAT_LLM_PROVIDER_OPTIONS: Array<{ value: ChatLlmProvider; label: string; title: string }> = [
-    { value: 'openai', label: 'OpenAI', title: 'Use OpenAI for this voice chat session' },
-    { value: 'hosted', label: 'Hosted', title: 'Use the hosted LLM for this voice chat session' },
+type ChatLlmModelOption = {
+    value: string;
+    label: string;
+};
+
+const CHAT_LLM_MODEL_OPTIONS: ChatLlmModelOption[] = [
+    {
+        value: 'openai:gpt-5.5',
+        label: 'GPT-5.5',
+    },
+    {
+        value: 'openai:gpt-4.1',
+        label: 'GPT-4.1',
+    },
+    {
+        value: 'hosted:qwen/qwen3-32b',
+        label: 'Qwen3 32B',
+    },
+    {
+        value: 'hosted:llama-3.3-70b-versatile',
+        label: 'Llama 3.3 70B',
+    },
 ];
+const DEFAULT_CHAT_LLM_MODEL_OPTION = CHAT_LLM_MODEL_OPTIONS[0];
+const getChatLlmModelOption = (value: string) =>
+    CHAT_LLM_MODEL_OPTIONS.find((option) => option.value === value)
+    || DEFAULT_CHAT_LLM_MODEL_OPTION;
 
 function extractEmotion(text: string): { emotion: Emotion | null; cleanText: string } {
     const m = text.match(EMOTION_TAG_RE);
@@ -255,7 +278,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
-    const [chatLlmProvider, setChatLlmProvider] = useState<ChatLlmProvider>('openai');
+    const [selectedChatLlmModel, setSelectedChatLlmModel] = useState(
+        DEFAULT_CHAT_LLM_MODEL_OPTION.value,
+    );
 
     // Emotion GIF settings — keyed by Emotion, values are data URLs.
     const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
@@ -1057,11 +1082,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         userSummaryLoading,
     ]);
 
+    const selectedChatLlmModelOption = getChatLlmModelOption(selectedChatLlmModel);
     const voiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
         conversationRole: 'main',
         clientSessionId: mainClientSessionIdRef.current,
-        chatLlmProvider,
+        chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: aiSessionContext,
         onEvent: handleMainVoiceEvent,
         toolHandlers,
@@ -1161,7 +1187,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         clientSessionId: activeAgentSession?.clientSessionId,
         parentClientSessionId: activeAgentSession?.parentClientSessionId,
         agentMode: activeAgentSession?.agentMode,
-        chatLlmProvider,
+        chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: agentSessionContext || undefined,
         onEvent: handleAgentVoiceEvent,
         toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
@@ -1325,7 +1351,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const activeVoiceConversation = activeAgentSession ? agentVoiceConversation : voiceConversation;
     const vState = activeVoiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
-    const providerPickerDisabled = voiceActive || vState === 'connecting';
+    const modelPickerDisabled = voiceActive || vState === 'connecting';
     const micDisabled = activeVoiceConversation.micDisabled;
     const sendActiveVoiceObservation = activeVoiceConversation.sendObservation;
     const sendLiveRangeTrackerObservation = useCallback((
@@ -1804,16 +1830,16 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 <div className="ai-chat__header-meta">
                     <span className="ai-chat__chip ai-chat__chip--blue">{sessionModeLabel}</span>
                     <select
-                        className="ai-chat__provider-select"
-                        value={chatLlmProvider}
-                        onChange={(event) => setChatLlmProvider(event.target.value as ChatLlmProvider)}
-                        disabled={providerPickerDisabled}
-                        aria-label="Chat LLM provider"
-                        title={providerPickerDisabled
-                            ? 'End the current voice session before changing providers'
-                            : 'Choose the provider for the next voice chat session'}
+                        className="ai-chat__model-select"
+                        value={selectedChatLlmModel}
+                        onChange={(event) => setSelectedChatLlmModel(event.target.value)}
+                        disabled={modelPickerDisabled}
+                        aria-label="Chat LLM model"
+                        title={modelPickerDisabled
+                            ? 'End the current voice session before changing models'
+                            : 'Choose the model for the next voice chat session'}
                     >
-                        {CHAT_LLM_PROVIDER_OPTIONS.map((option) => (
+                        {CHAT_LLM_MODEL_OPTIONS.map((option) => (
                             <option key={option.value} value={option.value}>
                                 {option.label}
                             </option>

@@ -62,15 +62,11 @@ export class VoiceGateway implements OnGatewayConnection {
         // Client-supplied — forwarded as-is to the AI service, same as
         // the text path forwards `context`. Not used for authorization.
         const sessionId = parsed.searchParams.get('session_id') || '';
-        const chatLlmProvider = this.normalizeChatLlmProvider(
-            parsed.searchParams.get('chat_llm_provider'),
+        const chatLlmModel = this.normalizeChatLlmModel(
+            parsed.searchParams.get('chat_llm_model'),
         );
-        if (parsed.searchParams.get('chat_llm_provider') && !chatLlmProvider) {
-            client.close(1008, 'Invalid chat_llm_provider');
-            return;
-        }
 
-        this.bridge(client, userId, sessionId, chatLlmProvider);
+        this.bridge(client, userId, sessionId, chatLlmModel);
     }
 
     private aiServiceWsBase(): string {
@@ -79,23 +75,20 @@ export class VoiceGateway implements OnGatewayConnection {
         return `${proto}//${httpUrl.host}`;
     }
 
-    private normalizeChatLlmProvider(provider: string | null): string | null {
-        const normalized = (provider || '').trim().toLowerCase();
-        if (!normalized) return null;
-        return normalized === 'openai' || normalized === 'hosted'
-            ? normalized
-            : null;
+    private normalizeChatLlmModel(model: string | null): string | null {
+        const normalized = (model || '').trim();
+        return normalized || null;
     }
 
     private buildUpstreamUrl(
         userId: string,
         sessionId: string,
-        chatLlmProvider: string | null,
+        chatLlmModel: string | null = null,
     ): string {
         const params = new URLSearchParams();
         params.set('user_id', userId);
         if (sessionId) params.set('session_id', sessionId);
-        if (chatLlmProvider) params.set('chat_llm_provider', chatLlmProvider);
+        if (chatLlmModel) params.set('chat_llm_model', chatLlmModel);
         return `${this.aiServiceWsBase()}/voice/stream?${params.toString()}`;
     }
 
@@ -137,9 +130,13 @@ export class VoiceGateway implements OnGatewayConnection {
         client: WsClient,
         userId: string,
         sessionId: string,
-        chatLlmProvider: string | null,
+        chatLlmModel: string | null,
     ): void {
-        const upstreamUrl = this.buildUpstreamUrl(userId, sessionId, chatLlmProvider);
+        const upstreamUrl = this.buildUpstreamUrl(
+            userId,
+            sessionId,
+            chatLlmModel,
+        );
 
         const upstream = new WsClient(upstreamUrl);
 

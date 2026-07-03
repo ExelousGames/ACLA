@@ -5,11 +5,9 @@ Builds a per-WebSocket-session pipeline:
     FastAPIWebsocketTransport.input()
         → SileroVADAnalyzer (endpoint detection)
         → faster-whisper STT
-        → OpenAILLMService                              -- local llama-server,
-                                                           or hosted OpenAI-
-                                                           compatible endpoint
-                                                           if HOSTED_LLM_BASE_URL
-                                                           is set
+        → OpenAILLMService                              -- selected OpenAI or
+                                                           hosted OpenAI-
+                                                           compatible model
         → KokoroTTSProcessor                            -- our Phase 2 engine
         → FastAPIWebsocketTransport.output()
 
@@ -312,9 +310,9 @@ def _format_tool_payload_for_prompt(
 
 def _build_openai_llm_service(
     OpenAILLMService: Any,
-    provider: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Any:
-    llm_config = resolve_chat_llm_config(provider)
+    llm_config = resolve_chat_llm_config(model)
     return OpenAILLMService(
         base_url=llm_config.base_url,
         api_key=llm_config.api_key,
@@ -345,7 +343,7 @@ class VoiceSessionConfig:
     session_context: Optional[Dict[str, Any]] = None
     user_id: Optional[str] = None
     voice: Optional[str] = None  # Kokoro voice override
-    chat_llm_provider: Optional[str] = None
+    chat_llm_model: Optional[str] = None
 
 
 # Human-readable titles shown in the chat UI for each tool. The driver
@@ -1194,7 +1192,7 @@ async def build_voice_pipeline_task(
     # --- LLM (remote OpenAI-compatible client) ---
     llm = _build_openai_llm_service(
         OpenAILLMService,
-        session_config.chat_llm_provider,
+        session_config.chat_llm_model,
     )
 
     # --- Tool calling (Phase 3b) ---
