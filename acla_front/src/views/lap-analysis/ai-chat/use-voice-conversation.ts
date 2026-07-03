@@ -698,6 +698,7 @@ export function useVoiceConversation(
             ws.onmessage = (event) => {
                 // Text frame → tool-relay channel. Binary frame → PCM audio.
                 if (typeof event.data === 'string') {
+                    console.log(event.data);
                     let parsed: any;
                     try { parsed = JSON.parse(event.data); }
                     catch { console.warn('[voice/tool-relay] non-JSON text frame:', event.data); return; }
