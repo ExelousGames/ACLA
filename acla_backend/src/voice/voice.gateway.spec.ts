@@ -99,6 +99,33 @@ describe('VoiceGateway', () => {
         ]));
     });
 
+    it('advertises live analyst helper tools to child agent frontend_info frames', () => {
+        const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
+            type: 'frontend_info',
+            session_context: {
+                session_mode: 'live',
+                conversation_role: 'agent',
+                agent_mode: 'live_performance_analyst',
+            },
+        })), false);
+
+        const payload = JSON.parse(frame.data.toString());
+        const toolNames = payload.tools.map((tool: { name: string }) => tool.name);
+
+        expect(toolNames).toEqual(expect.arrayContaining([
+            'collect_live_baseline',
+            'restart_live_baseline',
+            'analyze_live_recorded_analysis',
+            'set_live_range_tracker',
+            'update_live_range_tracker',
+            'get_live_range_tracker',
+            'classify_live_section',
+            'analyze_telemetry',
+            'stop_agent_session',
+        ]));
+        expect(toolNames).not.toContain('start_agent_session');
+    });
+
     it('advertises query_telemetry_metric field guidance in live frontend_info frames', () => {
         const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
             type: 'frontend_info',

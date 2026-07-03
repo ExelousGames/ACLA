@@ -690,34 +690,48 @@ const FRONTEND_APPLICATION_TOOL_DESCRIPTION_OVERRIDES: Partial<Record<FrontendAp
     get_next_corner: 'Return the name and normalized distance of the next corner ahead. Use for live questions about what corner is coming up.',
 };
 
-const COMMON_TOOL_NAMES = new Set<FrontendApplicationToolName>([
+const COMMON_TOOL_NAMES: FrontendApplicationToolName[] = [
     'show_map',
     'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
     'stop_agent_session',
-]);
+];
 
-const LIVE_TOOL_NAMES = new Set<FrontendApplicationToolName>([
+const LIVE_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
     'start_agent_session',
     'analyze_telemetry',
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
-]);
+];
 
-const USER_SUMMARY_TOOL_NAMES = new Set<FrontendApplicationToolName>([
+const LIVE_AGENT_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
+    'analyze_telemetry',
+    'get_next_corner',
+    'query_telemetry_metric',
+    'get_event_log',
+    'set_live_range_tracker',
+    'update_live_range_tracker',
+    'get_live_range_tracker',
+    'collect_live_baseline',
+    'restart_live_baseline',
+    'analyze_live_recorded_analysis',
+    'classify_live_section',
+];
+
+const USER_SUMMARY_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
     'get_user_summary_map_level',
     'get_available_user_summary_maps',
     'search_user_summary_map_level',
-]);
+];
 
-const RECORDED_TOOL_NAMES = new Set<FrontendApplicationToolName>([
+const RECORDED_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
     'analyze_telemetry',
-]);
+];
 
 const isFrontendApplicationSessionMode = (
     value: unknown,
@@ -732,30 +746,30 @@ const getAllowedToolNames = (
     if (conversationRole === 'agent') {
         return new Set<FrontendApplicationToolName>([
             ...COMMON_TOOL_NAMES,
-            ...Array.from(LIVE_TOOL_NAMES).filter((name) => name !== 'start_agent_session'),
-            ...USER_SUMMARY_TOOL_NAMES,
+            ...LIVE_AGENT_SESSION_TOOL_NAMES,
+            ...USER_SUMMARY_SESSION_TOOL_NAMES,
         ]);
     }
 
     if (sessionMode === 'recorded') {
         return new Set<FrontendApplicationToolName>([
             ...COMMON_TOOL_NAMES,
-            ...USER_SUMMARY_TOOL_NAMES,
-            ...RECORDED_TOOL_NAMES,
+            ...USER_SUMMARY_SESSION_TOOL_NAMES,
+            ...RECORDED_SESSION_TOOL_NAMES,
         ]);
     }
 
     if (sessionMode === 'user_summary') {
         return new Set<FrontendApplicationToolName>([
             ...COMMON_TOOL_NAMES,
-            ...USER_SUMMARY_TOOL_NAMES,
+            ...USER_SUMMARY_SESSION_TOOL_NAMES,
         ]);
     }
 
     return new Set<FrontendApplicationToolName>([
         ...COMMON_TOOL_NAMES,
-        ...LIVE_TOOL_NAMES,
-        ...USER_SUMMARY_TOOL_NAMES,
+        ...LIVE_SESSION_TOOL_NAMES,
+        ...USER_SUMMARY_SESSION_TOOL_NAMES,
     ]);
 };
 
