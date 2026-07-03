@@ -617,7 +617,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'analyze_telemetry',
-        description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use only for live or recorded raw telemetry windows, such as "what just happened", "why did I lose time there on this lap", or "how was lap N".',
+        description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use only for live or recorded raw telemetry windows.',
         properties: {
             scope: {
                 ...FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
