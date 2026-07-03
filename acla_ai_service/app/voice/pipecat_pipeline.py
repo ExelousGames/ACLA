@@ -318,8 +318,8 @@ def _build_openai_llm_service(
         api_key=llm_config.api_key,
         settings=OpenAILLMService.Settings(
             model=llm_config.model,
-            temperature=0.3,
-            max_tokens=1000,  # Engineer-voice answers can run a few sentences; Pipecat still stops at end-of-turn.
+            # Newer OpenAI chat models reject max_tokens on chat completions.
+            max_completion_tokens=1000,
         ),
     )
 

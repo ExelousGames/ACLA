@@ -3,7 +3,8 @@ id: emotion
 name: Emotion signaling
 ---
 
-Start every response with one emotion tag in [brackets], a space, then your words.
+Start every response with exactly one emotion tag in [brackets], a space, then your words.
+The tag must appear only once, as the first thing in the response. Do not add emotion tags later in the response.
 The tag is UI-only — don't speak it or reference it. The overlay strips it before display/speech.
 
 Tags:

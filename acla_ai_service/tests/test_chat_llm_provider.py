@@ -154,8 +154,7 @@ def test_voice_llm_service_uses_chat_llm_resolver(monkeypatch):
     assert llm.kwargs["api_key"] == "voice-key"
     assert llm.kwargs["settings"].kwargs == {
         "model": "voice-model",
-        "temperature": 0.3,
-        "max_tokens": 1000,
+        "max_completion_tokens": 1000,
     }
 
 
