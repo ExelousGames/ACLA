@@ -136,7 +136,21 @@ describe('SessionIntelligence live analyst section state', () => {
             Static_track: 'brands_hatch',
             Static_num_cars: 1,
             Graphics_completed_laps: 1,
-            Graphics_normalized_car_position: 0.01,
+            Graphics_normalized_car_position: 0.45,
+        });
+
+        expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
+            baseline_ready: false,
+            baseline_collection_started: false,
+            baseline_progress_percent: 0,
+            baseline_lap: null,
+        });
+
+        intelligence.tick({
+            Static_track: 'brands_hatch',
+            Static_num_cars: 1,
+            Graphics_completed_laps: 1,
+            Graphics_normalized_car_position: 0.005,
         });
 
         expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
@@ -150,7 +164,7 @@ describe('SessionIntelligence live analyst section state', () => {
             Static_track: 'brands_hatch',
             Static_num_cars: 1,
             Graphics_completed_laps: 2,
-            Graphics_normalized_car_position: 0.01,
+            Graphics_normalized_car_position: 0.001,
         });
 
         expect(intelligence.getLiveSessionSnapshot()).toMatchObject({
@@ -273,7 +287,7 @@ describe('SessionIntelligence live analyst section state', () => {
             Static_track: 'brands_hatch',
             Static_num_cars: 1,
             Graphics_completed_laps: 2,
-            Graphics_normalized_car_position: 0.01,
+            Graphics_normalized_car_position: 0.005,
         });
 
         expect(intelligence.getLiveSessionSnapshot()).toMatchObject({

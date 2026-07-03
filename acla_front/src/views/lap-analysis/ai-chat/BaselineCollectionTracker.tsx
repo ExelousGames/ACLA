@@ -50,7 +50,6 @@ type BaselineRecorderState = {
     startPosition: number;
     currentLap: number;
     currentPosition: number;
-    lastLap: number | null;
     lastPosition: number | null;
     lastSampleKey: string | null;
     track: string;
@@ -68,7 +67,6 @@ const createEmptyRecorderState = (): BaselineRecorderState => ({
     startPosition: 0,
     currentLap: 0,
     currentPosition: 0,
-    lastLap: null,
     lastPosition: null,
     lastSampleKey: null,
     track: '',
@@ -89,19 +87,8 @@ const getSampleKey = (
     sample.Physics_timestamp ?? sample.timestamp ?? '',
 ].join(':');
 
-const crossedLapStart = (
-    previousLap: number | null,
-    currentLap: number,
-    previousPosition: number | null,
-    currentPosition: number,
-): boolean => (
-    currentPosition <= BASELINE_START_POSITION_EPSILON
-    || (previousLap !== null && currentLap > previousLap)
-    || (
-        previousPosition !== null
-        && previousPosition - currentPosition > BASELINE_WRAP_THRESHOLD
-    )
-);
+const isAtBaselineStartPosition = (position: number): boolean =>
+    position <= BASELINE_START_POSITION_EPSILON;
 
 const hasCompletedRecordingLap = (
     state: BaselineRecorderState,
@@ -149,6 +136,12 @@ const buildRecorderSnapshot = (state: BaselineRecorderState): Record<string, any
     section_count: 0,
 });
 
+const toNullableFiniteNumber = (value: unknown): number | null => {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
 export const buildBaselineCollectionTag = (
     snapshot: Record<string, any>,
 ): BaselineCollectionTag => {
@@ -171,12 +164,8 @@ export const buildBaselineCollectionTag = (
         detail,
         track: typeof snapshot.track === 'string' ? snapshot.track : null,
         car: typeof snapshot.car === 'string' ? snapshot.car : null,
-        current_lap: Number.isFinite(Number(snapshot.current_lap))
-            ? Number(snapshot.current_lap)
-            : null,
-        baseline_lap: Number.isFinite(Number(snapshot.baseline_lap))
-            ? Number(snapshot.baseline_lap)
-            : null,
+        current_lap: toNullableFiniteNumber(snapshot.current_lap),
+        baseline_lap: toNullableFiniteNumber(snapshot.baseline_lap),
     };
 };
 
@@ -294,10 +283,10 @@ export const BaselineCollectionTracker = ({
             state.currentPosition = position;
 
             if (state.status === 'waiting_for_start') {
-                if (crossedLapStart(state.lastLap, lap, state.lastPosition, position)) {
+                if (isAtBaselineStartPosition(position)) {
                     state.status = 'collecting';
                     state.startLap = lap;
-                    state.startPosition = position <= BASELINE_START_POSITION_EPSILON ? 0 : position;
+                    state.startPosition = 0;
                     state.rows = [cloneSample(sample)];
                 }
             } else if (state.status === 'collecting') {
@@ -331,7 +320,6 @@ export const BaselineCollectionTracker = ({
                 }
             }
 
-            state.lastLap = lap;
             state.lastPosition = position;
             state.lastSampleKey = sampleKey;
         }
