@@ -11,6 +11,7 @@ Each connection spawns its own pipeline; interruption is built-in.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -155,7 +156,7 @@ async def voice_stream(
     * **Binary frames** — raw PCM16 mono audio (mic in / Kokoro TTS out).
       Consumed by Pipecat's transport unchanged.
     * **Text frames** — JSON tool-relay messages (``tool_call`` /
-      ``tool_result`` / ``user_text`` /
+      ``tool_result`` / ``tool_error`` / ``user_text`` /
       ``session_context``) — see
       :mod:`app.voice.tool_relay`. Routed off the audio path before
       Pipecat sees them.
@@ -399,10 +400,9 @@ class _TextFilteringWebSocket:
     to :mod:`app.voice.tool_relay` while letting binary frames pass through
     to Pipecat unchanged.
 
-    Pipecat's :class:`FastAPIWebsocketTransport` runs its own ``receive``
-    loop over the WS. By interposing this proxy we keep Pipecat's audio
-    contract intact (it only ever sees binary frames) and turn the same
-    connection into a JSON RPC channel for tool relay traffic.
+    A dedicated pump owns the underlying ``receive`` loop. Text frames are
+    routed immediately, even when Pipecat is not currently pulling microphone
+    audio, while binary/disconnect frames are queued for Pipecat.
 
     Identity is preserved via :py:meth:`__hash__` / :py:meth:`__eq__` so
     callers can use either the proxy or the underlying WS as a dict key
@@ -412,6 +412,8 @@ class _TextFilteringWebSocket:
 
     def __init__(self, ws: WebSocket) -> None:
         self._ws = ws
+        self._pipecat_frames: asyncio.Queue[dict] = asyncio.Queue()
+        self._receive_task: Optional[asyncio.Task] = None
 
     # Delegate everything we don't override (send_bytes, send_text, accept,
     # close, headers, query_params, state, etc.).
@@ -426,43 +428,63 @@ class _TextFilteringWebSocket:
 
     # ---- receive path: route text frames into the relay --------------------
 
-    async def receive(self) -> dict:
-        """Return the next inbound frame, swallowing any text frames the
-        upstream is already routed elsewhere."""
+    def start_text_control_pump(self) -> None:
+        """Start routing text control frames independently of audio reads."""
+        if self._receive_task is not None and not self._receive_task.done():
+            return
+        self._receive_task = asyncio.create_task(self._receive_loop())
+
+    async def stop_text_control_pump(self) -> None:
+        """Stop the control pump when the voice session ends."""
+        task = self._receive_task
+        if task is None or task.done():
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+    async def _receive_loop(self) -> None:
         import json as _json
         from app.voice.tool_relay import get_relay
+
         relay = get_relay()
-        while True:
-            msg = await self._ws.receive()
-            text = msg.get("text")
-            if text is not None:
-                try:
-                    payload = _json.loads(text)
-                except Exception:
-                    LOGGER.exception("voice WS: bad JSON text frame")
+        try:
+            while True:
+                msg = await self._ws.receive()
+                text = msg.get("text")
+                if text is not None:
+                    try:
+                        payload = _json.loads(text)
+                    except Exception:
+                        LOGGER.exception("voice WS: bad JSON text frame")
+                        continue
+                    relay.handle_text_frame(self, payload)
                     continue
-                # Pass ``self`` (the proxy) — the relay binds against this
-                # same identity inside build_voice_pipeline_task, so the
-                # inbound text-frame sinks find it.
-                relay.handle_text_frame(self, payload)
-                continue
-            return msg
+
+                await self._pipecat_frames.put(msg)
+                if msg.get("type") == "websocket.disconnect":
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOGGER.exception("voice WS receive pump failed")
+            await self._pipecat_frames.put({"type": "websocket.disconnect"})
+
+    async def receive(self) -> dict:
+        self.start_text_control_pump()
+        return await self._pipecat_frames.get()
 
     async def receive_bytes(self) -> bytes:
         msg = await self.receive()
-        if "bytes" in msg:
+        if msg.get("bytes") is not None:
             return msg["bytes"]
-        # Disconnect or unexpected — re-raise via the underlying WS so
-        # Pipecat sees the normal Starlette failure path.
-        return await self._ws.receive_bytes()
+        raise WebSocketDisconnect(code=msg.get("code", 1000))
 
     async def receive_text(self) -> str:
-        # Defensive — Pipecat is configured for binary frames, so this
-        # should rarely fire. If it does, route the same way as receive().
         msg = await self.receive()
-        if "text" in msg:
+        if msg.get("text") is not None:
             return msg["text"]
-        return await self._ws.receive_text()
+        raise WebSocketDisconnect(code=msg.get("code", 1000))
 
     async def iter_bytes(self):
         try:

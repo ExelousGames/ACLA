@@ -53,7 +53,8 @@ async def test_tool_result_is_forwarded_as_ai_visible_payload():
         },
     })
 
-    assert payloads == [{
+    assert len(payloads) == 1
+    assert json.loads(payloads[0]) == {
         "type": "tool_result",
         "id": "call-1",
         "name": "frontend_classifier",
@@ -62,7 +63,7 @@ async def test_tool_result_is_forwarded_as_ai_visible_payload():
             "label": "understeering_at_entry",
             "metadata": {"confidence": 0.92},
         },
-    }]
+    }
 
 
 @pytest.mark.asyncio
@@ -85,7 +86,7 @@ async def test_unknown_frame_is_not_forwarded_to_ai_visible_payloads():
 
 
 @pytest.mark.asyncio
-async def test_tool_error_is_not_forwarded_to_ai_visible_payloads():
+async def test_tool_error_is_forwarded_as_ai_visible_payload():
     relay = ToolRelay()
     conn = object()
     payloads = []
@@ -102,4 +103,10 @@ async def test_tool_error_is_not_forwarded_to_ai_visible_payloads():
         "error": {"message": "failed"},
     })
 
-    assert payloads == []
+    assert len(payloads) == 1
+    assert json.loads(payloads[0]) == {
+        "type": "tool_error",
+        "id": "call-1",
+        "name": "frontend_classifier",
+        "error": {"message": "failed"},
+    }

@@ -223,13 +223,6 @@ def _compact_json(value: Any, *, max_chars: int = 3000) -> str:
     return f"{encoded[:max_chars]}...<truncated>"
 
 
-def _json_for_prompt(value: Any) -> str:
-    try:
-        return json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
-    except Exception:
-        return str(value)
-
-
 def _as_dict(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -298,14 +291,6 @@ def _format_procedure_plan_for_prompt(plan: Dict[str, Any]) -> str:
         "for the response and next decision. Do not clear, skip, or abandon "
         "the plan unless the driver explicitly asks to opt out."
     )
-
-
-def _format_tool_payload_for_prompt(
-    data: Dict[str, Any],
-    session_context: Optional[Dict[str, Any]],
-) -> str:
-    _ = session_context
-    return _json_for_prompt(data)
 
 
 def _build_openai_llm_service(
@@ -1113,9 +1098,9 @@ async def build_voice_pipeline_task(
     """
     # Deferred imports — see module docstring.
     import asyncio
-    import json as _json
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
     from pipecat.audio.vad.silero import SileroVADAnalyzer
+    from pipecat.frames.frames import LLMRunFrame
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.task import PipelineParams, PipelineTask
     from pipecat.processors.aggregators.llm_context import LLMContext
@@ -1258,9 +1243,6 @@ async def build_voice_pipeline_task(
     emotion_tag_stripper = EmotionTagStripper()
     context_logger = ContextLogger(context)
     task_ref: Dict[str, Any] = {"task": None}
-    latest_session_context: Dict[str, Dict[str, Any]] = {
-        "value": session_config.session_context or {},
-    }
     latest_plan_fingerprint: Dict[str, str] = {"value": ""}
     function_tag_recovery = FunctionTagRecovery(
         send_frontend_tool,
@@ -1313,15 +1295,19 @@ async def build_voice_pipeline_task(
         ),
     )
     task_ref["task"] = task
-    # --- Frontend tool payload sink ----------------------------------------
-    # Frontend tools are fire-and-forget. When the frontend later sends a
-    # tool_result, the relay calls this sink. The backend injects
-    # that payload as a synthetic user turn and triggers the LLM to respond.
+    # --- Text control sinks -------------------------------------------------
+    # Tool results/errors are serialized by the relay and sent through the
+    # same user_text_sink path as typed chat.
     loop = asyncio.get_running_loop()
+
+    def _trigger_llm_run(source: str) -> None:
+        try:
+            loop.create_task(task.queue_frame(LLMRunFrame()))
+        except Exception:
+            LOGGER.exception("%s: could not trigger LLM run", source)
 
     def _remember_session_context(session_context: Dict[str, Any]) -> None:
         session_config.session_context = session_context
-        latest_session_context["value"] = session_context
         plan = _extract_procedure_plan({}, session_context)
         fingerprint = _compact_json(plan, max_chars=4000) if plan else ""
         if fingerprint == latest_plan_fingerprint["value"]:
@@ -1332,71 +1318,29 @@ async def build_voice_pipeline_task(
                 "role": "system",
                 "content": _format_procedure_plan_for_prompt(plan),
             })
-
-    def tool_payload_sink(data: dict) -> None:
-        if not isinstance(data, dict):
-            LOGGER.warning("tool_payload_sink: dropped non-object tool payload")
-            return
-        text = _format_tool_payload_for_prompt(data, latest_session_context["value"])
-        if not text:
-            LOGGER.warning("tool_payload_sink: dropped tool payload without formatted text")
-            return
-        context.add_message({"role": "user", "content": text})
-        # Trigger the LLM to generate a response now (don't wait for the
-        # next spoken user turn). Best-effort across Pipecat versions:
-        # LLMRunFrame is the canonical trigger; fall back to a transcription
-        # frame which the user-aggregator forwards.
-        try:
-            from pipecat.frames.frames import LLMRunFrame
-            loop.create_task(task.queue_frame(LLMRunFrame()))
-        except ImportError:
-            try:
-                from pipecat.frames.frames import TranscriptionFrame
-                loop.create_task(task.queue_frame(
-                    TranscriptionFrame(text="", user_id="tool_payload", timestamp="")
-                ))
-            except Exception:
-                LOGGER.exception(
-                    "tool_payload_sink: could not push trigger frame; "
-                    "message appended to context but LLM won't fire until "
-                    "the next spoken user turn"
-                )
+            _trigger_llm_run("session_context_sink")
 
     def user_text_sink(text: str) -> None:
         """Inject a typed chat message as a synthetic user turn.
 
-        The LLM treats it as if the driver had spoken it. We also echo a
-        ``user_transcript`` text frame back so the UI shows the typed message
-        immediately, even before the LLM responds.
+        The LLM treats it as if the driver had spoken it. Plain user_text
+        frames are echoed by the frontend before sending; this backend path is
+        only responsible for updating LLM context and waking the model.
         """
         import time as _time
         LOGGER.info("[LAT-DIAG] user_text_in t=%.3f chars=%d", _time.monotonic(), len(text))
         context.add_message({"role": "user", "content": text})
-        try:
-            loop.create_task(_send_text(_json.dumps({
-                "type": "user_transcript", "text": text, "source": "typed",
-            })))
-        except Exception:
-            LOGGER.exception("user_text_sink: failed to echo user_transcript")
-        try:
-            from pipecat.frames.frames import LLMRunFrame
-            loop.create_task(task.queue_frame(LLMRunFrame()))
-        except ImportError:
-            try:
-                from pipecat.frames.frames import TranscriptionFrame
-                loop.create_task(task.queue_frame(
-                    TranscriptionFrame(text="", user_id="user_text", timestamp="")
-                ))
-            except Exception:
-                LOGGER.exception("user_text_sink: could not trigger LLM run")
+        _trigger_llm_run("user_text_sink")
 
     get_relay().bind(
         websocket,
         send_text=_send_text,
-        tool_payload_sink=tool_payload_sink,
         user_text_sink=user_text_sink,
         session_context_sink=_remember_session_context,
     )
+    start_control_pump = getattr(websocket, "start_text_control_pump", None)
+    if callable(start_control_pump):
+        start_control_pump()
 
     return task
 
@@ -1436,5 +1380,8 @@ async def run_voice_session(
     try:
         await runner.run(task)
     finally:
+        stop_control_pump = getattr(websocket, "stop_text_control_pump", None)
+        if callable(stop_control_pump):
+            await stop_control_pump()
         get_relay().unbind(websocket)
         LOGGER.info("Voice session ended (user=%s)", session_config.user_id)

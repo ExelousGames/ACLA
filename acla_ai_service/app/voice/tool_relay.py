@@ -7,7 +7,7 @@ for frontend tool calls/results, typed user text, and session context.
 Frontend tool calls are fire-and-forget from the AI service perspective. The
 relay sends a ``tool_call`` frame to the frontend and does not wait for a
 matching result. Later AI-visible data should come back through
-``tool_result`` / ``user_text`` / ``session_context`` frames.
+``tool_result`` / ``tool_error`` / ``user_text`` / ``session_context`` frames.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 LOGGER = logging.getLogger(__name__)
 
 SendText = Callable[[str], Awaitable[None]]
-ToolPayloadSink = Callable[[Dict[str, Any]], Any]
 UserTextSink = Callable[[str], Any]
 SessionContextSink = Callable[[Dict[str, Any]], Any]
 
@@ -30,7 +29,6 @@ class _ConnectionState:
 
     __slots__ = (
         "send_text",
-        "tool_payload_sink",
         "user_text_sink",
         "session_context_sink",
     )
@@ -38,12 +36,10 @@ class _ConnectionState:
     def __init__(
         self,
         send_text: SendText,
-        tool_payload_sink: ToolPayloadSink,
-        user_text_sink: Optional[UserTextSink] = None,
+        user_text_sink: UserTextSink,
         session_context_sink: Optional[SessionContextSink] = None,
     ) -> None:
         self.send_text = send_text
-        self.tool_payload_sink = tool_payload_sink
         self.user_text_sink = user_text_sink
         self.session_context_sink = session_context_sink
 
@@ -58,13 +54,12 @@ class ToolRelay:
         self,
         conn: Any,
         send_text: SendText,
-        tool_payload_sink: ToolPayloadSink,
-        user_text_sink: Optional[UserTextSink] = None,
+        user_text_sink: UserTextSink,
         session_context_sink: Optional[SessionContextSink] = None,
     ) -> None:
         """Register a connection and its inbound text-frame sinks."""
         self._by_conn[id(conn)] = _ConnectionState(
-            send_text, tool_payload_sink, user_text_sink, session_context_sink,
+            send_text, user_text_sink, session_context_sink,
         )
 
     def unbind(self, conn: Any) -> None:
@@ -107,8 +102,8 @@ class ToolRelay:
     def handle_text_frame(self, conn: Any, payload: Dict[str, Any]) -> None:
         """Route one inbound text frame.
 
-        Tool payload frames are forwarded to the AI-visible sink as raw data;
-        the sink is responsible for serializing them into the model context.
+        Tool payload frames are serialized to text and sent through the same
+        AI-visible path as typed user text.
         """
         state = self._by_conn.get(id(conn))
         if state is None:
@@ -116,17 +111,21 @@ class ToolRelay:
 
         frame_type = payload.get("type")
 
-        if frame_type == "tool_result":
+        if frame_type in ("tool_result", "tool_error"):
             try:
-                state.tool_payload_sink(payload)
+                state.user_text_sink(
+                    json.dumps(
+                        payload,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        default=str,
+                    ),
+                )
             except Exception:
-                LOGGER.exception("tool_relay: tool payload sink raised")
+                LOGGER.exception("tool_relay: user_text_sink raised for %s", frame_type)
             return
 
         if frame_type == "user_text":
-            if state.user_text_sink is None:
-                LOGGER.warning("tool_relay: user_text frame received but no sink bound")
-                return
             text = str(payload.get("text") or "").strip()
             if not text:
                 return

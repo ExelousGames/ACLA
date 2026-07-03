@@ -21,7 +21,7 @@ import type {
     LivePerformanceAnalystState,
     OpportunityAgentState,
 } from './ai-command-registry';
-import { useVoiceConversation, VoiceEvent } from './use-voice-conversation';
+import { useVoiceConversation, type ToolResultFrame, type VoiceEvent } from './use-voice-conversation';
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
@@ -335,6 +335,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const activeAgentSessionRef = useRef<AgentSessionInfo | null>(null);
     const agentVoiceStopRef = useRef<() => void>(() => undefined);
     const mainVoiceStopRef = useRef<() => void>(() => undefined);
+    const activeVoiceToolResultRef = useRef<(frame: ToolResultFrame) => boolean>(
+        () => false,
+    );
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
@@ -694,6 +697,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             ok: !envelopeError,
             error: envelopeError,
         }, activeAgentSessionRef.current ? 'agent' : 'main');
+
+        activeVoiceToolResultRef.current({
+            id: envelope.run_id,
+            name: envelope.tool_name,
+            result: envelope.ai_output,
+        });
     }, [handleSessionVoiceEvent]);
 
     const baselineCollectionRuntime = useBaselineCollectionRuntime({
@@ -1361,6 +1370,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const modelPickerDisabled = voiceActive || vState === 'connecting';
     const micDisabled = activeVoiceConversation.micDisabled;
     const sendActiveVoiceObservation = activeVoiceConversation.sendObservation;
+    const sendActiveVoiceToolResult = activeVoiceConversation.sendToolResult;
+    useEffect(() => {
+        activeVoiceToolResultRef.current = sendActiveVoiceToolResult;
+    }, [sendActiveVoiceToolResult]);
     const sendLiveRangeTrackerObservation = useCallback((
         data: Record<string, unknown>,
     ) => sendActiveVoiceObservation(data), [sendActiveVoiceObservation]);

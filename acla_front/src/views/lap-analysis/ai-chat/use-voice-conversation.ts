@@ -121,8 +121,16 @@ export interface VoiceConversation {
     /** Push a background observation into the open voice session. Returns
      *  false when the voice WebSocket is not ready. */
     sendObservation: (data: Record<string, unknown>) => boolean;
+    /** Send a tool_result frame into the open voice session. */
+    sendToolResult: (frame: ToolResultFrame) => boolean;
     /** Execute a frontend tool through this session's subscription channel. */
     executeToolCall: (call: SubscribedToolCall) => Promise<ToolSubscriptionResult | null>;
+}
+
+export interface ToolResultFrame {
+    id?: string;
+    name?: string;
+    result: unknown;
 }
 
 export interface SubscribedToolCall {
@@ -828,6 +836,23 @@ export function useVoiceConversation(
         }
     }, []);
 
+    const sendToolResult = useCallback((frame: ToolResultFrame): boolean => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        try {
+            ws.send(JSON.stringify({
+                type: 'tool_result',
+                id: frame.id,
+                name: frame.name,
+                result: frame.result,
+            }));
+            return true;
+        } catch (err) {
+            console.warn('[voice] sendToolResult failed:', err);
+            return false;
+        }
+    }, []);
+
     const executeToolCall = useCallback(async (
         call: SubscribedToolCall,
     ): Promise<ToolSubscriptionResult | null> => {
@@ -869,6 +894,7 @@ export function useVoiceConversation(
         setMicDisabled,
         sendUserText,
         sendObservation,
+        sendToolResult,
         executeToolCall,
     };
 }

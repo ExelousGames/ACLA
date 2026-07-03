@@ -17,6 +17,7 @@ def _load_voice_api():
 _voice_api = _load_voice_api()
 _await_frontend_info = _voice_api._await_frontend_info
 _HandshakeError = _voice_api._HandshakeError
+_TextFilteringWebSocket = _voice_api._TextFilteringWebSocket
 
 
 class FakeWebSocket:
@@ -84,3 +85,52 @@ async def test_frontend_info_rejects_list_tool_result_handling():
             }),
             timeout=1.0,
         )
+
+
+class StreamingFakeWebSocket:
+    def __init__(self):
+        import asyncio
+
+        self.messages = asyncio.Queue()
+
+    async def receive(self):
+        return await self.messages.get()
+
+
+@pytest.mark.asyncio
+async def test_text_filtering_websocket_routes_tool_result_without_audio_read():
+    import asyncio
+
+    from app.voice.tool_relay import get_relay
+
+    raw_ws = StreamingFakeWebSocket()
+    proxy = _TextFilteringWebSocket(raw_ws)
+    relay = get_relay()
+    payloads = asyncio.Queue()
+
+    async def send_text(payload: str) -> None:
+        _ = payload
+
+    relay.bind(proxy, send_text, payloads.put_nowait)
+    proxy.start_text_control_pump()
+    try:
+        await raw_ws.messages.put({
+            "text": json.dumps({
+                "type": "tool_result",
+                "id": "call-1",
+                "result": {"ok": True},
+            }),
+        })
+
+        routed_text = await asyncio.wait_for(payloads.get(), timeout=1.0)
+        assert json.loads(routed_text) == {
+            "type": "tool_result",
+            "id": "call-1",
+            "result": {"ok": True},
+        }
+
+        await raw_ws.messages.put({"bytes": b"pcm"})
+        assert await asyncio.wait_for(proxy.receive(), timeout=1.0) == {"bytes": b"pcm"}
+    finally:
+        await proxy.stop_text_control_pump()
+        relay.unbind(proxy)
