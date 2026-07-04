@@ -25,7 +25,7 @@ import {
     VisibilitySample
 } from './mapTelemetry';
 import {
-    getSegmentMainLabelText,
+    getSegmentParentLabelText,
     resolveActiveSubLabelTexts,
     resolveSegmentChildLabelTexts,
     SegmentClassificationSegment
@@ -81,7 +81,7 @@ const getCarColor = (carKey: string, isPlayer: boolean): string => {
 };
 
 const getSegmentColor = (segment: SegmentClassificationSegment, index: number): string => {
-    const key = segment.main_label_id || segment.labels?.join('|') || segment.id || String(index);
+    const key = segment.parent_labels?.join('|') || segment.labels?.join('|') || segment.id || String(index);
     let hash = index;
 
     for (let charIndex = 0; charIndex < key.length; charIndex += 1) {
@@ -304,7 +304,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             segmentId: activeSegment.id,
             startIndex: activeSegment.start_index,
             endIndex: activeSegment.end_index,
-            parentLabel: getSegmentMainLabelText(activeSegment, getLabelName),
+            parentLabel: getSegmentParentLabelText(activeSegment, getLabelName),
             childLabels: resolveActiveSubLabelTexts(activeSegment, currentFrame.sourceIndex, getLabelName)
         };
     }, [currentFrame, getLabelName, segmentClassification]);
@@ -874,8 +874,8 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                                                     style={{ backgroundColor: getSegmentColor(segment, index) }}
                                                 />
                                                 <span className="map-visualization__segment-copy">
-                                                    <span className="map-visualization__segment-main-label">
-                                                        Parent: {getSegmentMainLabelText(segment, getLabelName)}
+                                                    <span className="map-visualization__segment-parent-label">
+                                                        Parent: {getSegmentParentLabelText(segment, getLabelName)}
                                                     </span>
                                                     {childLabelTexts.length > 0 && (
                                                         <span className="map-visualization__segment-sub-labels">

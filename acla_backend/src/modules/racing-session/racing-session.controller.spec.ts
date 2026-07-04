@@ -75,7 +75,7 @@ describe('RacingSessionController', () => {
       segments: [{
         id: 'segment-1',
         labels: ['EA'],
-        main_label_id: 'EA',
+        parent_labels: ['EA'],
         start_index: 0,
         end_index: 1,
         sub_labels: [],
@@ -96,7 +96,7 @@ describe('RacingSessionController', () => {
       segments: [{
         id: 'segment-1',
         labels: ['EA'],
-        main_label_id: 'EA',
+        parent_labels: ['EA'],
         start_index: 0,
         end_index: 1,
         sub_labels: [],

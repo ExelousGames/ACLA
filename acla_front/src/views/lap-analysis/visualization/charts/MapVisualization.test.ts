@@ -1,7 +1,7 @@
 import { buildCircuitTrackLayout, getAccTelemetryTrackKey } from './circuitTrackLayout';
 import { getPlaybackFrameIndex, parseTelemetryFrame, parseTelemetryFrames, segmentVisiblePoints } from './mapTelemetry';
 import {
-    getSegmentMainLabelText,
+    getSegmentParentLabelText,
     getSegmentSubLabelTexts,
     resolveActiveSubLabelTexts,
     resolveSegmentChildLabelTexts
@@ -308,8 +308,7 @@ describe('MapVisualization AI segment labels', () => {
     it('formats parent track areas with active child analysis labels', () => {
         const segment = {
             labels: ['brands_hatch2', 'MSP', 'MSP1', 'EA'],
-            parent_segment_id: 'brands_hatch2',
-            main_label_id: 'brands_hatch2',
+            parent_labels: ['brands_hatch2'],
             start_index: 10,
             end_index: 30,
             child_segments: [
@@ -326,7 +325,7 @@ describe('MapVisualization AI segment labels', () => {
             ]
         };
 
-        expect(getSegmentMainLabelText(segment, resolveLabel)).toBe('Paddock Hill Bend');
+        expect(getSegmentParentLabelText(segment, resolveLabel)).toBe('Paddock Hill Bend');
         expect(getSegmentSubLabelTexts(segment)).toEqual(['MSP', 'MSP1', 'EA']);
         expect(resolveSegmentChildLabelTexts(segment, resolveLabel)).toEqual([
             'Mistake (Practice)',
@@ -347,14 +346,14 @@ describe('MapVisualization AI segment labels', () => {
     it('formats main-first segment labels with sub labels', () => {
         const segment = {
             labels: ['MSP', 'MSP1', 'ST3'],
-            main_label_id: 'MSP',
+            parent_labels: ['MSP'],
             start_index: 0,
             end_index: 3,
             sub_labels: ['MSP1', 'ST3'],
             sub_segments: []
         };
 
-        expect(getSegmentMainLabelText(segment, resolveLabel)).toBe('Mistake (Practice)');
+        expect(getSegmentParentLabelText(segment, resolveLabel)).toBe('Mistake (Practice)');
         expect(getSegmentSubLabelTexts(segment)).toEqual(['MSP1', 'ST3']);
         expect(resolveSegmentChildLabelTexts(segment, resolveLabel)).toEqual([
             'Initiate brake too late',
@@ -369,7 +368,7 @@ describe('MapVisualization AI segment labels', () => {
             end_index: 3
         };
 
-        expect(getSegmentMainLabelText(segment)).toBe('EA, ST2');
+        expect(getSegmentParentLabelText(segment)).toBe('EA, ST2');
         expect(getSegmentSubLabelTexts(segment)).toEqual([]);
     });
 });

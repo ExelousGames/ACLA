@@ -11,7 +11,7 @@ import {
     normalizeSegmentClassificationResult,
 } from 'views/lap-analysis/recorded-session-analysis';
 import {
-    getSegmentMainLabelText,
+    resolveSegmentParentLabelTexts,
     resolveSegmentChildLabelTexts,
     SegmentClassificationSegment,
 } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
@@ -471,7 +471,7 @@ const summarizeRecordedSegment = (
     id: segment.id ?? null,
     start_index: segment.start_index,
     end_index: segment.end_index,
-    parent_label: getSegmentMainLabelText(segment, context.getLabelName),
+    parent_labels: resolveSegmentParentLabelTexts(segment, context.getLabelName),
     child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
     label_ids: segment.labels ?? [],
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
@@ -514,7 +514,7 @@ const summarizeLiveRecordedSegment = (
     id: segment.id ?? null,
     start_position: getBaselineRecordPosition(records, segment.start_index),
     end_position: getBaselineRecordPosition(records, segment.end_index),
-    parent_label: getSegmentMainLabelText(segment, context.getLabelName),
+    parent_labels: resolveSegmentParentLabelTexts(segment, context.getLabelName),
     child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
     label_ids: segment.labels ?? [],
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
@@ -1757,7 +1757,7 @@ const summarizeLiveRecordedSegmentsForAi = (segments: unknown): Record<string, u
             const record = getToolUiRecord(segment);
             return {
                 id: record.id ?? null,
-                parent_label: record.parent_label ?? null,
+                parent_labels: Array.isArray(record.parent_labels) ? record.parent_labels : [],
                 child_labels: Array.isArray(record.child_labels) ? record.child_labels : [],
                 start_position: record.start_position ?? null,
                 end_position: record.end_position ?? null,
@@ -1945,4 +1945,3 @@ export const createAiCommandRegistry = (
 
     return registry;
 };
-

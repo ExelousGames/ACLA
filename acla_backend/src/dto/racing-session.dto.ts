@@ -160,7 +160,7 @@ export class SegmentClassificationSubSegmentDto {
 export class SegmentClassificationSegmentDto {
     id?: string;
     labels: string[];
-    main_label_id: string;
+    parent_labels?: string[];
     start_index: number;
     end_index: number;
     sub_labels: string[];

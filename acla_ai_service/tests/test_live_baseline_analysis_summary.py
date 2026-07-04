@@ -41,18 +41,18 @@ async def test_live_baseline_analysis_returns_circuit_sections_without_classifie
 
     assert result["session_id"] == "live-baseline-lap-4"
     assert result["segment_count"] == 2
-    assert [segment["parent_segment_id"] for segment in result["segments"]] == [
-        "brands_hatch2",
-        "brands_hatch3",
+    assert [segment["parent_labels"] for segment in result["segments"]] == [
+        ["brands_hatch2"],
+        ["brands_hatch3"],
     ]
     assert result["segments"][0]["child_segments"] == []
     assert result["expert_time_available"] is False
 
 
-def test_annotate_segments_uses_parent_segment_range_for_time_gap():
+def test_annotate_segments_uses_parent_label_range_for_time_gap():
     segments = [
         {
-            "parent_segment_id": "brands_hatch1",
+            "parent_labels": ["brands_hatch1"],
             "start_index": 0,
             "end_index": 5,
             "child_segments": [
@@ -71,13 +71,13 @@ def test_annotate_segments_uses_parent_segment_range_for_time_gap():
             ],
         },
         {
-            "parent_segment_id": "brands_hatch2",
+            "parent_labels": ["brands_hatch2"],
             "start_index": 3,
             "end_index": 5,
             "child_segments": [],
         },
         {
-            "main_label_id": "MSP",
+            "parent_labels": ["MSP"],
             "start_index": 3,
             "end_index": 5,
         },

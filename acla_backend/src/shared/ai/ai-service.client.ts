@@ -150,9 +150,7 @@ export interface SegmentClassificationSubSegment {
 export interface SegmentClassificationSegment {
     id?: string;
     labels: string[];
-    main_label_id: string;
-    parent_segment_id?: string;
-    parent_label_id?: string;
+    parent_labels?: string[];
     start_index: number;
     end_index: number;
     sub_labels: string[];

@@ -16,9 +16,7 @@ export type SegmentClassificationSubSegment = {
 export type SegmentClassificationSegment = {
     id?: string;
     labels?: string[];
-    parent_segment_id?: string;
-    parent_label_id?: string;
-    main_label_id?: string;
+    parent_labels?: string[];
     start_index: number;
     end_index: number;
     sub_labels?: string[];
@@ -35,9 +33,9 @@ export const getSegmentParentLabelText = (
     segment: SegmentClassificationSegment,
     resolveLabel?: SegmentLabelResolver,
 ): string => {
-    const labelId = segment.parent_segment_id || segment.parent_label_id || segment.main_label_id;
-    if (labelId) {
-        return getSegmentLabelText(labelId, resolveLabel);
+    const parentLabels = getSegmentParentLabelIds(segment);
+    if (parentLabels.length > 0) {
+        return parentLabels.map((labelId) => getSegmentLabelText(labelId, resolveLabel)).join(', ');
     }
 
     if (Array.isArray(segment.labels) && segment.labels.length > 0) {
@@ -47,21 +45,20 @@ export const getSegmentParentLabelText = (
     return 'Unlabeled';
 };
 
-export const getSegmentMainLabelText = getSegmentParentLabelText;
-
 export const getSegmentChildSegments = (segment: SegmentClassificationSegment): SegmentClassificationSubSegment[] => (
     Array.isArray(segment.child_segments) && segment.child_segments.length > 0
         ? segment.child_segments
         : segment.sub_segments || []
 );
 
-const getSegmentParentLabelIds = (segment: SegmentClassificationSegment): string[] => (
-    [
-        segment.parent_segment_id,
-        segment.parent_label_id,
-        segment.main_label_id
-    ].filter((label): label is string => Boolean(label))
+export const getSegmentParentLabelIds = (segment: SegmentClassificationSegment): string[] => (
+    Array.isArray(segment.parent_labels) ? segment.parent_labels : []
 );
+
+export const resolveSegmentParentLabelTexts = (
+    segment: SegmentClassificationSegment,
+    resolveLabel?: SegmentLabelResolver,
+): string[] => getSegmentParentLabelIds(segment).map((labelId) => getSegmentLabelText(labelId, resolveLabel));
 
 const dedupeTexts = (texts: string[]): string[] => {
     const seen = new Set<string>();

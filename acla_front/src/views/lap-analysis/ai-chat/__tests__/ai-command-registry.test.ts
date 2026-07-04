@@ -600,7 +600,7 @@ describe('ai command registry recorded session tools', () => {
                     id: 'segment-1',
                     start_index: 10,
                     end_index: 40,
-                    main_label_id: 'brands_hatch1',
+                    parent_labels: ['brands_hatch1'],
                     labels: ['brands_hatch1', 'late_brake'],
                     child_segments: [
                         {
@@ -692,7 +692,7 @@ describe('ai command registry recorded session tools', () => {
                 segments: [
                     {
                         id: 'segment-1',
-                        parent_label: 'Paddock Hill Bend',
+                        parent_labels: ['Paddock Hill Bend'],
                     },
                 ],
             },
@@ -860,9 +860,7 @@ describe('ai command registry live performance analyst tools', () => {
                 segments: [
                     {
                         id: 'brands_hatch2:10-30',
-                        parent_segment_id: 'brands_hatch2',
-                        parent_label_id: 'brands_hatch2',
-                        main_label_id: 'brands_hatch2',
+                        parent_labels: ['brands_hatch2'],
                         start_index: 10,
                         end_index: 30,
                         labels: ['brands_hatch2', 'MSP', 'late_brake'],
@@ -1543,7 +1541,7 @@ describe('ai command registry live performance analyst tools', () => {
                         id: 'live-segment-1',
                         start_index: 0,
                         end_index: 1,
-                        main_label_id: 'brands_hatch2',
+                        parent_labels: ['brands_hatch2'],
                         labels: ['brands_hatch2', 'late_brake'],
                         child_segments: [],
                     },
@@ -1601,10 +1599,12 @@ describe('ai command registry live performance analyst tools', () => {
             ],
         };
 
-        await expect(registry.analyze_live_recorded_analysis(
+        const readyResult = await registry.analyze_live_recorded_analysis(
             { limit: 5 },
             { sendToolStatus: jest.fn() },
-        )).resolves.toMatchObject({
+        );
+
+        expect(readyResult).toMatchObject({
             status: 'ready',
             ui_output: {
                 source: 'baseline_lap_record',
@@ -1619,6 +1619,7 @@ describe('ai command registry live performance analyst tools', () => {
                     returned_segment_count: 1,
                     segments: [
                         expect.objectContaining({
+                            parent_labels: ['Druids'],
                             start_position: 0.01,
                             end_position: 0.99,
                         }),
@@ -1954,7 +1955,7 @@ describe('ai command registry live performance analyst tools', () => {
                         id: 'live-segment-1',
                         start_index: 0,
                         end_index: 1,
-                        main_label_id: 'brands_hatch2',
+                        parent_labels: ['brands_hatch2'],
                         labels: ['brands_hatch2', 'late_brake'],
                         child_segments: [
                             {
@@ -2027,6 +2028,7 @@ describe('ai command registry live performance analyst tools', () => {
                 expert_time_available: true,
                 segments: [
                     expect.objectContaining({
+                        parent_labels: ['Druids'],
                         start_position: 0.98,
                         end_position: 0.03,
                         child_segments: [
@@ -2047,6 +2049,7 @@ describe('ai command registry live performance analyst tools', () => {
         expect((result.output as any)).toMatchObject({
             segments: [
                 expect.objectContaining({
+                    parent_labels: ['Druids'],
                     start_position: 0.98,
                     end_position: 0.03,
                 }),
@@ -2242,4 +2245,3 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 });
-

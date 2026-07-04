@@ -95,7 +95,7 @@
     min-width: 0;
 }
 
-.map-visualization__segment-main-label {
+.map-visualization__segment-parent-label {
     color: rgba(235, 255, 245, 0.92);
     font-weight: 700;
     overflow: hidden;
