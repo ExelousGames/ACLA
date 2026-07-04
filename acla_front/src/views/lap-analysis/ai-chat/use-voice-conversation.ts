@@ -225,6 +225,20 @@ const buildToolResultFrame = (
     };
 };
 
+const getAiToolLogSummary = (payload: object): string => {
+    const frame = payload as Record<string, unknown>;
+    const parts = [frame.type, frame.name, frame.id]
+        .filter((part): part is string => typeof part === 'string' && part.trim().length > 0);
+    return parts.length > 0 ? ` (${parts.join(' / ')})` : '';
+};
+
+const logAiToolSend = (payload: object, json: string) => {
+    const prettyJson = JSON.stringify(JSON.parse(json), null, 2);
+    console.groupCollapsed(`[ai-tool] sent to ai${getAiToolLogSummary(payload)}`);
+    console.log(prettyJson);
+    console.groupEnd();
+};
+
 const defaultToolRunId = () =>
     `tool-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
@@ -633,7 +647,7 @@ export function useVoiceConversation(
                 if (ws.readyState !== WebSocket.OPEN) return;
                 try {
                     const json = JSON.stringify(payload);
-                    console.log('[ai-tool] sent to ai', json);
+                    logAiToolSend(payload, json);
                     ws.send(json);
                 }
                 catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
@@ -837,7 +851,7 @@ export function useVoiceConversation(
         try {
             const frame = buildFormattedToolResultFrame(data);
             const json = JSON.stringify(frame);
-            console.log('[ai-tool] sent to ai', json);
+            logAiToolSend(frame, json);
             ws.send(json);
             return true;
         } catch (err) {
@@ -856,7 +870,7 @@ export function useVoiceConversation(
                 getToolResultForAi(frame.result),
             );
             const json = JSON.stringify(payload);
-            console.log('[ai-tool] sent to ai', json);
+            logAiToolSend(payload, json);
             ws.send(json);
             return true;
         } catch (err) {
@@ -875,7 +889,7 @@ export function useVoiceConversation(
             if (ws.readyState !== WebSocket.OPEN) return;
             try {
                 const json = JSON.stringify(payload);
-                console.log('[ai-tool] sent to ai', json);
+                logAiToolSend(payload, json);
                 ws.send(json);
             }
             catch (err) { console.warn('[voice/tool-relay] send failed:', err); }

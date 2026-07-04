@@ -29,28 +29,6 @@ describe('formatToolResultForLlm', () => {
                 live_session_type: 'solo_practice',
             },
         });
-        const analysisMsg = formatToolResultForLlm({
-            source: 'live_performance_analyst',
-            agent_mode: 'live_performance_analyst',
-            event: 'recorded_analysis_ready',
-            snapshot: { track: 'brands_hatch', live_session_type: 'solo_practice' },
-            analysis: {
-                status: 'ready',
-                session_id: 'session-1',
-                analysis: {
-                    samples_analyzed: 120,
-                    segment_count: 1,
-                    returned_segment_count: 1,
-                    segments: [
-                        {
-                            id: 'segment-1',
-                            parent_label: 'Paddock Hill',
-                            child_labels: ['Initiate brake too late'],
-                        },
-                    ],
-                },
-            },
-        });
         const baselineMsg = formatToolResultForLlm({
             source: 'live_performance_analyst',
             agent_mode: 'live_performance_analyst',
@@ -76,12 +54,6 @@ describe('formatToolResultForLlm', () => {
         expect(classifierReadyMsg).toContain('baseline classifier request ready');
         expect(classifierReadyMsg).toContain('baseline_ready=true');
         expect(classifierReadyMsg).not.toContain('Respond with one short');
-        expect(analysisMsg).toContain('recorded classifier analysis ready');
-        expect(analysisMsg).toContain('segment_count=1');
-        expect(analysisMsg).toContain('Paddock Hill');
-        expect(analysisMsg).not.toContain('goal=');
-        expect(analysisMsg).not.toContain('focus=');
-        expect(analysisMsg).not.toContain('plan=');
         expect(baselineMsg).toContain('Cached baseline lap records are required.');
         expect(baselineMsg).not.toContain('Explain briefly');
         expect(baselineMsg).not.toContain('classify_live_section');
@@ -154,5 +126,29 @@ describe('formatToolResultForLlm', () => {
             name: 'custom_alert',
         }));
         expect((frame as any).messages).toBeUndefined();
+    });
+
+    it('does not expose classifier analysis in live analyst status frames', () => {
+        expect(buildFormattedToolResultFrame({
+            source: 'live_performance_analyst',
+            agent_mode: 'live_performance_analyst',
+            event: 'recorded_analysis_ready',
+            analysis: {
+                analysis: {
+                    segments: [{ id: 'segment-1', child_labels: ['late brake'] }],
+                },
+            },
+        })).toEqual({
+            type: 'tool_result',
+            id: undefined,
+            name: 'live_performance_analyst',
+            result: {
+                source: 'live_performance_analyst',
+                agent_mode: 'live_performance_analyst',
+                event: 'recorded_analysis_ready',
+                status: 'complete',
+                text: 'recorded_analysis_ready. Respond with one short engineer suggestion.',
+            },
+        });
     });
 });

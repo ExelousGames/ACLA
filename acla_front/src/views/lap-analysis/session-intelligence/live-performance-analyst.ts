@@ -85,17 +85,6 @@ export const buildRecordedAnalysisErrorToolStatus = (
     message,
 });
 
-export const buildRecordedAnalysisReadyToolStatus = (
-    analysis: unknown,
-    snapshot?: Record<string, unknown> | null,
-): LiveAnalystToolStatus => ({
-    source: 'live_performance_analyst',
-    agent_mode: 'live_performance_analyst',
-    event: 'recorded_analysis_ready',
-    ...(snapshot ? { snapshot } : {}),
-    analysis,
-});
-
 export const buildLiveAnalysisWindowToolStatus = (
     snapshot: Record<string, unknown>,
     focus: unknown,

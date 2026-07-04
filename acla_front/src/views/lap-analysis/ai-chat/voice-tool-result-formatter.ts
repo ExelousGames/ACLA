@@ -27,20 +27,6 @@ const formatLabels = (value: unknown): string => (
     Array.isArray(value) ? `[${value.map(String).join(', ')}]` : String(value)
 );
 
-const summarizeRecordedAnalysisSegments = (value: unknown): string => {
-    if (!Array.isArray(value)) return '[]';
-
-    const summaries = value.slice(0, 5).map((item) => {
-        const segment = asRecord(item);
-        const labels = Array.isArray(segment.child_labels) && segment.child_labels.length
-            ? segment.child_labels
-            : segment.label_ids;
-        return `${segment.id || 'segment'}:${segment.parent_label || 'unknown'} labels=${formatLabels(labels)}`;
-    });
-
-    return `[${summaries.join('; ')}]`;
-};
-
 export const formatToolResultForLlm = (data: Record<string, unknown>): string => {
     const event = typeof data.event === 'string' ? data.event : 'event';
 
@@ -64,21 +50,6 @@ export const formatToolResultForLlm = (data: Record<string, unknown>): string =>
                 'live_performance_analyst baseline classifier request ready: '
                 + `track=${track}, current_lap=${currentLap}, completed_laps=${completedLaps}, `
                 + `session_type=${sessionType}, baseline_ready=${snapshot.baseline_ready}.`
-            );
-        }
-
-        if (event === 'recorded_analysis_ready') {
-            const analysisContext = asRecord(data.analysis);
-            const analysis = asRecord(analysisContext.analysis);
-            return (
-                'live_performance_analyst recorded classifier analysis ready. '
-                + `status=${analysisContext.status}; `
-                + `session_id=${analysisContext.session_id}; `
-                + `samples_analyzed=${analysis.samples_analyzed}; `
-                + `segment_count=${analysis.segment_count}; `
-                + `returned_segment_count=${analysis.returned_segment_count}; `
-                + `segments=${summarizeRecordedAnalysisSegments(analysis.segments)}, `
-                + `session_type=${sessionType}.`
             );
         }
 
@@ -225,9 +196,22 @@ const getToolResultName = (data: Record<string, unknown>): string => {
     return 'frontend_status_update';
 };
 
+const omitLiveAnalystAnalysis = (value: Record<string, unknown>): Record<string, unknown> => {
+    if (
+        value.source !== 'live_performance_analyst'
+        && value.agent_mode !== 'live_performance_analyst'
+    ) {
+        return value;
+    }
+    if (!('analysis' in value)) return value;
+
+    const { analysis: _analysis, ...rest } = value;
+    return rest;
+};
+
 export const buildFormattedToolResultFrame = (data: Record<string, unknown>) => {
     const rawAiData = asRecord(getAiToolResult(data));
-    const aiData = omitRawTelemetryRows(rawAiData);
+    const aiData = omitLiveAnalystAnalysis(omitRawTelemetryRows(rawAiData));
     const sourceStatus = typeof aiData.status === 'string' ? aiData.status : undefined;
     const id = typeof aiData.tool_run_id === 'string'
         ? aiData.tool_run_id

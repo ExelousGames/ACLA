@@ -2016,34 +2016,35 @@ describe('ai command registry live performance analyst tools', () => {
             { limit: 8 },
             { sendToolStatus: jest.fn() },
         );
+        const uiOutput = getUiOutput(result as ToolOutputEnvelope);
 
         expect(result).toMatchObject({
             status: 'ready',
-            ui_output: expect.objectContaining({
-                source: 'baseline_lap_record',
-                analysis: expect.objectContaining({
-                    expert_time_available: true,
-                    segments: [
-                        expect.objectContaining({
-                            start_position: 0.98,
-                            end_position: 0.03,
-                            child_segments: [
-                                expect.objectContaining({
-                                    start_position: 0.98,
-                                    end_position: 0.03,
-                                    time_gap: {
-                                        start_ms: 0,
-                                        end_ms: 125,
-                                        delta_ms: 125,
-                                    },
-                                }),
-                            ],
-                        }),
-                    ],
-                }),
+        });
+        expect(uiOutput).toMatchObject({
+            source: 'baseline_lap_record',
+            analysis: expect.objectContaining({
+                expert_time_available: true,
+                segments: [
+                    expect.objectContaining({
+                        start_position: 0.98,
+                        end_position: 0.03,
+                        child_segments: [
+                            expect.objectContaining({
+                                start_position: 0.98,
+                                end_position: 0.03,
+                                time_gap: {
+                                    start_ms: 0,
+                                    end_ms: 125,
+                                    delta_ms: 125,
+                                },
+                            }),
+                        ],
+                    }),
+                ],
             }),
         });
-        expect((result.ai_output as any)).toMatchObject({
+        expect((result.output as any)).toMatchObject({
             segments: [
                 expect.objectContaining({
                     start_position: 0.98,
@@ -2051,8 +2052,8 @@ describe('ai command registry live performance analyst tools', () => {
                 }),
             ],
         });
-        expect(((result.ui_output as any).analysis.segments[0])).not.toHaveProperty('start_index');
-        expect(((result.ui_output as any).analysis.segments[0])).not.toHaveProperty('end_index');
+        expect(uiOutput.analysis.segments[0]).not.toHaveProperty('start_index');
+        expect(uiOutput.analysis.segments[0]).not.toHaveProperty('end_index');
         expect(apiService.post).toHaveBeenCalledWith(
             '/racing-session/analyze-live-recorded-analysis',
             expect.objectContaining({
@@ -2065,32 +2066,8 @@ describe('ai command registry live performance analyst tools', () => {
         );
         expect(analysisContext.runRecordedAiAnalysis).not.toHaveBeenCalled();
         expect(advanceProcedurePlanStep).not.toHaveBeenCalled();
-        expect(sendToolStatus).toHaveBeenCalledWith(expect.objectContaining({
+        expect(sendToolStatus).not.toHaveBeenCalledWith(expect.objectContaining({
             event: 'recorded_analysis_ready',
-            analysis: expect.objectContaining({
-                status: 'ready',
-                source: 'baseline_lap_record',
-                analysis: expect.objectContaining({
-                    expert_time_available: true,
-                    segments: expect.arrayContaining([
-                        expect.objectContaining({
-                            start_position: 0.98,
-                            end_position: 0.03,
-                            child_segments: [
-                                expect.objectContaining({
-                                    start_position: 0.98,
-                                    end_position: 0.03,
-                                    time_gap: {
-                                        start_ms: 0,
-                                        end_ms: 125,
-                                        delta_ms: 125,
-                                    },
-                                }),
-                            ],
-                        }),
-                    ]),
-                }),
-            }),
         }));
     });
 

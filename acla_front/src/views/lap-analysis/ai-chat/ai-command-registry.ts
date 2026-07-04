@@ -1419,10 +1419,6 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
 
         const agent = getLiveAnalystState(context);
         agent.analysisSessionId = analysisStatus.analysis.baseline.id;
-        context.sessionIntelligence?.emitRecordedAnalysisReady(
-            analysisStatus.analysis,
-            buildLiveAnalystSnapshot(context),
-        );
         return analysisStatus.analysis;
     },
 

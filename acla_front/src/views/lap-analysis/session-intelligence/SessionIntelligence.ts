@@ -12,7 +12,6 @@ import {
     buildLiveAnalysisPlanStartedToolStatus,
     buildLiveAnalysisWindowToolStatus,
     buildRecordedAnalysisErrorToolStatus,
-    buildRecordedAnalysisReadyToolStatus,
     detectLiveSessionType,
     estimateSecondsToSection,
     getTelemetryCar,
@@ -116,13 +115,6 @@ export class SessionIntelligence {
         snapshot?: Record<string, unknown> | null,
     ): void {
         this.emitLiveAnalystToolStatus(buildRecordedAnalysisErrorToolStatus(error, message, snapshot));
-    }
-
-    emitRecordedAnalysisReady(
-        analysis: unknown,
-        snapshot?: Record<string, unknown> | null,
-    ): void {
-        this.emitLiveAnalystToolStatus(buildRecordedAnalysisReadyToolStatus(analysis, snapshot));
     }
 
     emitLiveAnalysisWindow(snapshot: Record<string, unknown>, focus: unknown): void {
