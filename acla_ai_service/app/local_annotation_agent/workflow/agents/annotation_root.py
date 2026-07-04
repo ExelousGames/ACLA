@@ -5,10 +5,7 @@ in ``agent/runners/local.py``. This module wires them into an Agent
 subclass that declares which sub-agents the planner may delegate to.
 
 Sub-agents in ``delegates_to``:
-  * ``describe_graphs`` — generic telemetry-graph describer (in the box).
-  * ``zoom`` — generic VLM-driven zoom worker (in the box).
-  * ``label_verifier`` — embedding-similarity filter (in the box, peer
-    of describe_graphs and zoom). Dispatched from the planner JSON plan.
+  * ``label_verifier`` — embedding-similarity filter (in the box).
 
 Side-effect registration on import populates the box's AGENT_REGISTRY.
 """
@@ -33,12 +30,16 @@ class AnnotationRoot(Agent):
     name = ANNOTATION_ROOT_AGENT_NAME
     consumes: list = []
     produces = ["response"]
-    delegates_to = ["describe_graphs", "label_verifier", "zoom"]
+    delegates_to = ["label_verifier"]
 
     def planner(self, state: AgentState) -> Dict[str, Any]:
         return default_planner_node(state)
 
     def executor(self, state: AgentState, step, registry) -> Dict[str, Any]:
+        if step.get("agent") in {"describe_graphs", "zoom"}:
+            raise RuntimeError(
+                "visual graph inspection agents are disabled for AI annotation"
+            )
         return delegate_step(state, step, registry)
 
     def synthesizer(self, state: AgentState) -> Dict[str, Any]:

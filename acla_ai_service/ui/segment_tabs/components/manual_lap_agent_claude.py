@@ -27,11 +27,9 @@ def render_lap_agent_claude(df, session_id, selected_annotation_key, circuit_id,
     with st.expander("☁️ Claude — Lap-to-Segment Excerpter"):
         st.markdown(
             "Annotates **one rough-split section per click** using an "
-            "agentic Claude session. Tools available: `render_graph`, "
-            "`query_telemetry`, `compute_expert_phases`, "
-            "`locate_circuit_section`, `classify_opponent_interaction`, "
-            "`submit_result`. The agent inspects the section and submits "
-            "grouped labels (circuit + optional circuit_section + "
+            "agentic Claude session over the upfront preflight package. "
+            "The agent submits grouped labels (circuit + optional "
+            "circuit_section + "
             "main + optional ST1-ST6 + optional whole-segment sub-label)."
         )
 

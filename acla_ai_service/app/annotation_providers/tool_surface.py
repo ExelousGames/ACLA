@@ -7,12 +7,9 @@ and submit-result capture.
 
 from __future__ import annotations
 
-import base64
-import io
 import json
-import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Tuple
+from typing import Any, Callable, Dict, List, Tuple
 
 from app.shared.contracts import AgentRequest, StepEvent
 
@@ -67,74 +64,7 @@ def _schema_type_for_python_type(typ: Any) -> Dict[str, Any]:
     return {"type": "string"}
 
 
-def _tool_def(
-    name: str,
-    description: str,
-    params_schema: Dict[str, Any],
-    *,
-    required: List[str] | None = None,
-    category: str = "general",
-) -> Dict[str, Any]:
-    required_params = list(required if required is not None else params_schema.keys())
-    return {
-        "name": name,
-        "description": description,
-        "params_schema": params_schema,
-        "openai_properties": {
-            str(key): _schema_type_for_python_type(typ)
-            for key, typ in params_schema.items()
-        },
-        "required": required_params,
-        "category": category,
-    }
-
-
 ANNOTATION_TOOL_REGISTRY: List[Dict[str, Any]] = [
-    {
-        "name": "list_graphs",
-        "description": "List available telemetry graphs.",
-        "params_schema": {},
-        "openai_properties": {},
-        "required": [],
-    },
-    {
-        "name": "get_circuit_id",
-        "description": "Return canonical circuit id from Static_track.",
-        "params_schema": {},
-        "openai_properties": {},
-        "required": [],
-    },
-    {
-        "name": "get_graph_guidance",
-        "description": "Return graph analysis guidance.",
-        "params_schema": {"graph_ids": list},
-        "openai_properties": {
-            "graph_ids": {"type": "array", "items": {"type": "string"}},
-        },
-        "required": ["graph_ids"],
-    },
-    {
-        "name": "render_graph",
-        "description": "Render one telemetry graph over an iloc window.",
-        "params_schema": {"graph_id": str, "start": int, "end": int},
-        "openai_properties": {
-            "graph_id": {"type": "string"},
-            "start": {"type": "integer"},
-            "end": {"type": "integer"},
-        },
-        "required": ["graph_id", "start", "end"],
-    },
-    {
-        "name": "peek_graph",
-        "description": "Render one graph over the current working range without changing it.",
-        "params_schema": {"graph_id": str, "start": int, "end": int},
-        "openai_properties": {
-            "graph_id": {"type": "string"},
-            "start": {"type": "integer"},
-            "end": {"type": "integer"},
-        },
-        "required": ["graph_id", "start", "end"],
-    },
     {
         "name": "query_telemetry",
         "description": "Run a deterministic telemetry query.",
@@ -212,34 +142,6 @@ ANNOTATION_TOOL_REGISTRY: List[Dict[str, Any]] = [
 
 
 EXPOSED_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
-    _tool_def(
-        "recommend_tools",
-        (
-            "Recommend annotation capability tool IDs for a specific missing "
-            "detail after reading the upfront preflight context; then execute "
-            "returned IDs with run_annotation_tool."
-        ),
-        {"intent": str, "context_json": str},
-        category="meta",
-    ),
-    _tool_def(
-        "run_annotation_tool",
-        (
-            "Execute a recommended annotation capability by ID. args_json is "
-            "a JSON object matching that capability's parameters."
-        ),
-        {"tool_id": str, "args_json": str},
-        category="meta",
-    ),
-    _tool_def(
-        "search_annotation_guidance",
-        (
-            "Search annotation skill guidance and workflow rules. query is "
-            "plain language; scope may be a skill name or empty."
-        ),
-        {"query": str, "scope": str},
-        category="knowledge",
-    ),
     {
         "name": "submit_result",
         "description": "Submit final structured JSON result.",
@@ -281,6 +183,7 @@ def _normalise_extra_tool_def(spec: Dict[str, Any]) -> Dict[str, Any]:
 def annotation_tool_definitions(request: AgentRequest | None = None) -> List[Dict[str, Any]]:
     return [
         *EXPOSED_TOOL_DEFINITIONS,
+        *ANNOTATION_TOOL_REGISTRY,
         *(
             _normalise_extra_tool_def(spec)
             for spec in (tool_agent_extra_tools(request) if request is not None else [])
@@ -315,56 +218,8 @@ def _text_from_tool_result(result: Any) -> Tuple[str, List[str]]:
     return "\n".join(texts), images
 
 
-def _tokens(text: str) -> set[str]:
-    return {
-        token
-        for token in re.split(r"[^a-z0-9_]+", text.lower())
-        if len(token) >= 3
-    }
-
-
-def _safe_json_object(raw: str) -> Dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _tool_search_text(defn: Dict[str, Any]) -> str:
-    fields: List[str] = [
-        str(defn.get("name") or ""),
-        str(defn.get("description") or ""),
-        str(defn.get("category") or ""),
-    ]
-    fields.extend(str(key) for key in (defn.get("params_schema") or {}).keys())
-    return " ".join(fields)
-
-
 def _capability_by_name() -> Dict[str, Dict[str, Any]]:
     return {str(defn["name"]): defn for defn in ANNOTATION_TOOL_REGISTRY}
-
-
-def _iter_guidance_records() -> Iterable[Dict[str, str]]:
-    from app.internal_knowledge_base._registry import get_registry
-
-    def walk(value: Any, path: str, skill_name: str) -> Iterable[Dict[str, str]]:
-        if isinstance(value, str):
-            text = value.strip()
-            if text:
-                yield {"skill": skill_name, "path": path, "text": text}
-        elif isinstance(value, dict):
-            for key, child in value.items():
-                child_path = f"{path}.{key}" if path else str(key)
-                yield from walk(child, child_path, skill_name)
-        elif isinstance(value, list):
-            for idx, child in enumerate(value):
-                yield from walk(child, f"{path}[{idx}]", skill_name)
-
-    for skill in get_registry().all_skills():
-        yield from walk(skill.raw_body, skill.name, skill.name)
 
 
 def _request_session_context(request: AgentRequest) -> str:
@@ -375,64 +230,6 @@ def _request_session_context(request: AgentRequest) -> str:
 def _request_eligible_behavior_label_ids(request: AgentRequest) -> List[str]:
     raw = request.extra_state.get("eligible_behavior_label_ids") or []
     return [str(label_id) for label_id in raw if str(label_id)]
-
-
-def _label_path_allowed_for_request(request: AgentRequest, path: str) -> bool:
-    eligible = set(_request_eligible_behavior_label_ids(request))
-    if not eligible:
-        return True
-    required_parents = {"O", "OD", "PS", "RM", "MSP", "MSR"}
-
-    lap_match = re.search(r"lap_annotation\.labels\.([A-Za-z0-9_]+)", path)
-    if lap_match:
-        return lap_match.group(1) in eligible
-
-    sub_match = re.search(r"sub_label_annotation\.labels\.([A-Za-z0-9_]+)", path)
-    if sub_match:
-        try:
-            from app.internal_knowledge_base.label_lookup import get_label
-
-            doc = get_label(sub_match.group(1))
-        except Exception:
-            doc = None
-        parent = str((doc or {}).get("parent") or "")
-        if parent in required_parents:
-            return parent in eligible
-    return True
-
-
-def _mode_specific_guidance_record(request: AgentRequest) -> Dict[str, str] | None:
-    context = _request_session_context(request)
-    eligible = _request_eligible_behavior_label_ids(request)
-    if not context or not eligible:
-        return None
-    label_set = "{" + ", ".join(eligible) + "}"
-    if context == "racing":
-        text = (
-            "Detected session mode: racing / opponent interaction. Only "
-            f"behavior parent labels from {label_set} are eligible. Use "
-            "O for a completed attack, OD for a held defense, or MSR for a "
-            "failed attack / broken defense; use PS for pit-lane procedure "
-            "when pit evidence fits the whole range. Gate O / OD / MSR with "
-            "`classify_opponent_interaction(start, end)` over the full "
-            "working range. Do not evaluate or attach practice-session "
-            "behavior parents MSP / RM; submit [] if no racing or "
-            "pit-stop label fits."
-        )
-    else:
-        text = (
-            "Detected session mode: practice / solo section. Only behavior "
-            f"parent labels from {label_set} are eligible. Use MSP for "
-            "technical driving mistakes, RM for recovery, or PS for pit-lane "
-            "procedure. Do not "
-            "evaluate or attach racing-session behavior parents O / OD / "
-            "MSR."
-        )
-    return {
-        "skill": "lap_annotation",
-        "path": "lap_annotation.detected_session_rules",
-        "text": text,
-    }
 
 
 class AnnotationToolSurface:
@@ -469,174 +266,6 @@ class AnnotationToolSurface:
             except (TypeError, ValueError):
                 pass
         return out
-
-    def recommend_tools(self, intent: str, context_json: str) -> str:
-        context = _safe_json_object(context_json)
-        top_k = int(context.get("top_k") or 6)
-        query_tokens = _tokens(f"{intent} {json.dumps(context, default=str)}")
-        scored: List[Tuple[int, Dict[str, Any]]] = []
-        for defn in ANNOTATION_TOOL_REGISTRY:
-            tool_tokens = _tokens(_tool_search_text(defn))
-            score = len(query_tokens & tool_tokens)
-            if score:
-                scored.append((score, defn))
-        scored.sort(key=lambda item: (-item[0], str(item[1]["name"])))
-
-        recommendations = []
-        for score, defn in scored[:max(1, top_k)]:
-            recommendations.append({
-                "tool_id": defn["name"],
-                "description": defn["description"],
-                "args_schema": defn.get("openai_properties") or {},
-                "required": defn.get("required") or [],
-                "match_score": score,
-            })
-        return json.dumps({
-            "intent": intent,
-            "recommendations": recommendations,
-            "note": (
-                "Use run_annotation_tool with one of these tool_id values. "
-                "If recommendations is empty, call again with a more specific intent."
-            ),
-        }, default=str)
-
-    def run_annotation_tool(self, tool_id: str, args_json: str) -> Any:
-        tool_id = str(tool_id or "").strip()
-        if tool_id not in _capability_by_name():
-            return json.dumps({
-                "error": f"unknown annotation capability {tool_id!r}",
-                "known_tool_ids": sorted(_capability_by_name()),
-            })
-        args = _safe_json_object(args_json)
-        return self._call_annotation_capability(tool_id, args)
-
-    def search_annotation_guidance(self, query: str, scope: str) -> str:
-        q = str(query or "").strip()
-        if not q:
-            return json.dumps({"error": "query is required"})
-        scope = str(scope or "").strip()
-        query_tokens = _tokens(q)
-        matches: List[Tuple[int, Dict[str, str]]] = []
-        for record in _iter_guidance_records():
-            if scope and scope not in record["path"] and scope != record["skill"]:
-                continue
-            if not _label_path_allowed_for_request(self.request, record["path"]):
-                continue
-            text_tokens = _tokens(
-                f"{record['skill']} {record['path']} {record['text']}"
-            )
-            score = len(query_tokens & text_tokens)
-            if score:
-                matches.append((score, record))
-        matches.sort(key=lambda item: (-item[0], item[1]["path"]))
-        return json.dumps({
-            "query": q,
-            "scope": scope,
-            "results": [
-                {
-                    "skill": record["skill"],
-                    "path": record["path"],
-                    "text": record["text"],
-                    "match_score": score,
-                }
-                for score, record in matches[:5]
-            ],
-        }, default=str)
-
-    def list_graphs(self) -> str:
-        from app.shared.annotation_agent_tools import AGENT_GRAPH_DEFINITIONS
-        out = [
-            {"id": g["id"], "title": g["title"], "description": g["description"]}
-            for g in AGENT_GRAPH_DEFINITIONS
-        ]
-        return json.dumps({"graphs": out}, indent=2)
-
-    def get_circuit_id(self) -> str:
-        from app.shared.annotation_agent_tools import get_circuit_id
-        att = get_circuit_id(self.df)
-        return json.dumps(att.content, default=str)
-
-    def get_graph_guidance(self, graph_ids: List[str]) -> str:
-        from app.shared.annotation_agent_tools import graph_analysis_prompt
-        text = graph_analysis_prompt(graph_ids=list(graph_ids))
-        return text or "(no guidance available for the requested graph(s))"
-
-    def render_graph(self, graph_id: str, start: int, end: int) -> Dict[str, Any]:
-        from app.shared.annotation_agent_tools import build_graph, render_graph_builds
-        s, e = self._clamp_to_window(start, end)
-        table = build_graph(graph_id, self.df)
-        if table is None or table.empty:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": (
-                        f"Cannot render `{graph_id}` over [{s}, {e}]: the "
-                        f"underlying telemetry columns are not present."
-                    ),
-                }],
-                "is_error": True,
-            }
-        rendered = render_graph_builds({graph_id: table}, s, e)
-        if not rendered:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": f"`{graph_id}` produced no image for [{s}, {e}].",
-                }],
-                "is_error": True,
-            }
-        img, desc = rendered[0]
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        png_bytes = buf.getvalue()
-        self.capture.rendered_images.append(png_bytes)
-        encoded = base64.b64encode(png_bytes).decode("ascii")
-        return {
-            "content": [
-                {"type": "image", "data": encoded, "mimeType": "image/png"},
-                {"type": "text", "text": f"{desc} (rendered over [{s}, {e}])"},
-            ],
-        }
-
-    def peek_graph(self, graph_id: str, start: int, end: int) -> Dict[str, Any]:
-        from app.shared.annotation_agent_tools import build_graph, render_graph_builds
-        s, e = self._clamp_to_window(start, end)
-        table = build_graph(graph_id, self.df)
-        if table is None or table.empty:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": (
-                        f"Cannot peek `{graph_id}` over [{s}, {e}]: the "
-                        f"underlying telemetry columns are not present."
-                    ),
-                }],
-                "is_error": True,
-            }
-        rendered = render_graph_builds({graph_id: table}, s, e)
-        if not rendered:
-            return {
-                "content": [{
-                    "type": "text",
-                    "text": f"`{graph_id}` produced no image for [{s}, {e}].",
-                }],
-                "is_error": True,
-            }
-        img, desc = rendered[0]
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        png_bytes = buf.getvalue()
-        self.capture.rendered_images.append(png_bytes)
-        encoded = base64.b64encode(png_bytes).decode("ascii")
-        return {
-            "content": [
-                {"type": "image", "data": encoded, "mimeType": "image/png"},
-                {"type": "text", "text": (
-                    f"{desc} (peek - context only, working range unchanged, "
-                    f"rendered over [{s}, {e}])"
-                )},
-            ],
-        }
 
     def query_telemetry(self, query_id: str, params_json: str) -> str:
         from app.shared.annotation_agent_tools import run_pipeline_query
@@ -709,16 +338,6 @@ class AnnotationToolSurface:
         return None
 
     def _call_annotation_capability(self, name: str, args: Dict[str, Any]) -> Any:
-        if name == "list_graphs":
-            return self.list_graphs()
-        if name == "get_circuit_id":
-            return self.get_circuit_id()
-        if name == "get_graph_guidance":
-            return self.get_graph_guidance(list(args.get("graph_ids") or []))
-        if name == "render_graph":
-            return self.render_graph(str(args["graph_id"]), int(args["start"]), int(args["end"]))
-        if name == "peek_graph":
-            return self.peek_graph(str(args["graph_id"]), int(args["start"]), int(args["end"]))
         if name == "query_telemetry":
             return self.query_telemetry(str(args["query_id"]), str(args.get("params_json") or ""))
         if name == "compute_expert_phases":
@@ -743,22 +362,7 @@ class AnnotationToolSurface:
         return json.dumps({"error": f"unknown annotation capability {name!r}"})
 
     def call_tool(self, name: str, args: Dict[str, Any]) -> Tuple[Any, str, List[str]]:
-        if name == "recommend_tools":
-            result = self.recommend_tools(
-                str(args.get("intent") or ""),
-                str(args.get("context_json") or ""),
-            )
-        elif name == "run_annotation_tool":
-            result = self.run_annotation_tool(
-                str(args.get("tool_id") or ""),
-                str(args.get("args_json") or ""),
-            )
-        elif name == "search_annotation_guidance":
-            result = self.search_annotation_guidance(
-                str(args.get("query") or ""),
-                str(args.get("scope") or ""),
-            )
-        elif name in _capability_by_name():
+        if name in _capability_by_name():
             result = self._call_annotation_capability(name, args)
         elif name == "submit_result":
             result = self.submit_result(str(args.get("payload_json") or ""), str(args.get("summary") or ""))
@@ -795,15 +399,19 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         )
 
     return (
-        "You are an analyst with agentic access to a domain dataset via tools. "
-        "Your task is described in the user message. Inspect the data, run "
-        "queries, then submit a final structured result.\n\n"
+        "You are an analyst with access to deterministic telemetry analysis "
+        "tools and label search. "
+        "Your task is described in the user message. "
+        "Use the upfront preflight data included in that user message as the "
+        "primary evidence package. Run deterministic analysis tools only when "
+        "a concrete numeric check is needed, then submit a final structured "
+        "result.\n\n"
         "The user message includes a Required Upfront Annotation Preflight "
         "block. Treat it as the primary analysis package: deterministic tool "
         "outputs, tool output tags, and semantic label candidates were already "
-        "computed before this session. Use additional tools only to resolve a "
-        "specific missing detail. Use `search_labels` for targeted semantic "
-        "re-queries with relevant tool output tags. Finish with "
+        "computed before this session. Use label search only for targeted "
+        "semantic re-queries and deterministic analysis tools only for "
+        "targeted numeric checks. Finish with "
         "`submit_result`.\n\n"
         "A label is valid only when its definition fits the whole range it "
         "will be attached to; if it fits only a smaller slice, omit that "

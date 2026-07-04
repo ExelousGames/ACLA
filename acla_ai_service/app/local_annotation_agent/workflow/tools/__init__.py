@@ -149,8 +149,8 @@ SEARCH_LABELS_TOOL: Dict[str, Any] = {
         "range, not just a smaller slice. Re-query with different wording to "
         "broaden. This is the only way to discover labels — there is no "
         "full catalog listing. Circuit + circuit_section labels are not "
-        "searchable here; pick them via the `get_circuit_id` / "
-        "`locate_circuit_section` tools instead."
+        "searchable here; pick them from splitter/preflight context or "
+        "with `locate_circuit_section`."
     ),
     "params_schema": {"query": str, "types": str, "parent_id": str},
     "handler": search_labels_handler,

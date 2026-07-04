@@ -271,6 +271,10 @@ def _parse_zoom_decision(
 
 
 def _planner(state: AgentState) -> Dict[str, Any]:
+    raise RuntimeError(
+        "visual graph inspection is disabled for AI annotation"
+    )
+
     from app.shared.annotation_agent_tools import (
         build_graph,
         render_graph_builds,

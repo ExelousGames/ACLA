@@ -44,10 +44,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 _FOLLOWUP_TOOL_NAMES = [
-    "list_graphs",
-    "get_graph_guidance",
-    "render_graph",
-    "peek_graph",
     "query_telemetry",
     "compute_expert_phases",
     "measure_segment_shape",
@@ -183,8 +179,8 @@ def _build_system_prompt(
         "\n"
         "### How to answer\n"
         "- Ground every claim in telemetry evidence. Cite ilocs and values. "
-        "Use `render_graph` / `query_telemetry` / `compute_expert_phases` "
-        "/ `measure_segment_shape` / `classify_opponent_interaction` "
+        "Use `query_telemetry` / `compute_expert_phases` / "
+        "`measure_segment_shape` / `classify_opponent_interaction` "
         "/ `find_nearest_opponent` / `query_opponent_trajectory` "
         "to re-inspect when the question demands fresh evidence.\n"
         "- Look labels up with `search_labels` (describe the behaviour, or "
@@ -218,7 +214,7 @@ def _build_initial_prompt(chat_history: List[Dict[str, str]], user_question: str
         f"{history_block}\n\n"
         f"Latest user question:\n{user_question.strip()}\n\n"
         "Answer concisely, cite ilocs / values, and use the telemetry "
-        "tools if you need fresh evidence."
+        "query tools if you need fresh evidence."
     )
 
 

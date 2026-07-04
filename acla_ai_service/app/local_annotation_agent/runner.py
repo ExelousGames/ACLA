@@ -60,7 +60,7 @@ from app.local_annotation_agent.framework import (
     AgentState,
 )
 
-# Side-effect import: registers describe_graphs and zoom with the framework.
+# Side-effect import: registers non-visual sub-agents with the framework.
 import app.local_annotation_agent.sub_agents  # noqa: F401
 
 LOGGER = logging.getLogger(__name__)

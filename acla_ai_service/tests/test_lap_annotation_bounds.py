@@ -6,9 +6,30 @@ import pytest
 from app.annotation_providers.tool_surface import (
     AnnotationToolSurface,
     ToolAgentCapture,
+    annotation_tool_definitions,
+    annotation_tool_registry,
+    tool_agent_excluded_tools,
 )
 from app.local_annotation_agent.workflow.flows import lap as lap_flow
 from app.shared.contracts import AgentRequest, AgentResponse, ProviderConfig
+
+
+PREFLIGHT_ONLY_EXCLUDED_TOOLS = {
+    "recommend_tools",
+    "run_annotation_tool",
+    "search_annotation_guidance",
+    "list_graphs",
+    "get_circuit_id",
+    "get_graph_guidance",
+    "query_telemetry",
+    "compute_expert_phases",
+    "measure_segment_shape",
+    "locate_circuit_section",
+    "find_nearest_opponent",
+    "classify_opponent_interaction",
+    "query_opponent_trajectory",
+    "search_labels",
+}
 
 
 def _request(df, *, parent_start=10, parent_end=20):
@@ -47,10 +68,21 @@ def test_lap_tool_agent_request_is_fixed_to_section():
         in request.planner_prompt
     )
     assert set(request.extra_state) == {
-        "tool_agent_extra_tools",
+        "tool_agent_excluded_tools",
         "annotation_session_context",
         "eligible_behavior_label_ids",
     }
+    assert tool_agent_excluded_tools(request) == PREFLIGHT_ONLY_EXCLUDED_TOOLS
+    assert [tool["name"] for tool in annotation_tool_definitions(request)] == [
+        "submit_result",
+    ]
+
+
+def test_visual_graph_tools_are_not_ai_annotation_capabilities():
+    tool_names = {tool["name"] for tool in annotation_tool_registry()}
+
+    assert "render_graph" not in tool_names
+    assert "peek_graph" not in tool_names
 
 
 def test_lap_annotation_prompt_includes_segment_action_model():
@@ -341,3 +373,35 @@ def test_tool_surface_queries_clamp_to_current_working_range():
     assert by_iloc[19]["value"] == 19.0
     assert by_iloc[9]["value"] is None
     assert by_iloc[50]["value"] is None
+
+
+def test_tool_surface_excludes_request_blocked_annotation_tools():
+    df = pd.DataFrame({"metric": [float(i) for i in range(100)]})
+    request = _request(df)
+    request.extra_state["tool_agent_excluded_tools"] = sorted(
+        PREFLIGHT_ONLY_EXCLUDED_TOOLS
+    )
+    surface = AnnotationToolSurface(
+        request,
+        ToolAgentCapture(cur_start=10, cur_end=20),
+    )
+
+    recommendations = json.loads(surface.recommend_tools(
+        "render or peek at the trajectory graph",
+        json.dumps({"top_k": 20}),
+    ))
+    tool_ids = {
+        row["tool_id"] for row in recommendations["recommendations"]
+    }
+
+    assert PREFLIGHT_ONLY_EXCLUDED_TOOLS.isdisjoint(tool_ids)
+    assert [tool["name"] for tool in annotation_tool_definitions(request)] == [
+        "submit_result",
+    ]
+    for tool_id in PREFLIGHT_ONLY_EXCLUDED_TOOLS:
+        blocked = json.loads(surface.run_annotation_tool(
+            tool_id,
+            json.dumps({"graph_id": "speed", "start": 10, "end": 20}),
+        ))
+        assert "not available" in blocked["error"]
+        assert tool_id not in blocked["known_tool_ids"]

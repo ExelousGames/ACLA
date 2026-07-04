@@ -19,7 +19,7 @@ Sub-modules:
     framework       Planner/executor/synthesizer/evaluator topology.
     evaluators      Format + evidence evaluator suite + formatter registry.
     backends        claude_sdk (Claude Agent SDK), OpenAI-compatible providers.
-    sub_agents      describe_graphs, zoom — generic plan-step capabilities.
+    sub_agents      label verification and non-visual plan-step capabilities.
     tools           Telemetry graph rendering + query dispatchers.
     runners         local (LangGraph) and claude (agentic) execution paths.
 """

@@ -1,7 +1,57 @@
 import json
+from types import SimpleNamespace
 
+from app.annotation_providers.tool_surface import (
+    annotation_tool_definitions,
+    tool_agent_excluded_tools,
+)
 from app.shared.contracts import AgentResponse
 from app.local_annotation_agent.workflow.flows import detailed as detailed_flow
+
+
+PREFLIGHT_ONLY_EXCLUDED_TOOLS = {
+    "recommend_tools",
+    "run_annotation_tool",
+    "search_annotation_guidance",
+    "list_graphs",
+    "get_circuit_id",
+    "get_graph_guidance",
+    "query_telemetry",
+    "compute_expert_phases",
+    "measure_segment_shape",
+    "locate_circuit_section",
+    "find_nearest_opponent",
+    "classify_opponent_interaction",
+    "query_opponent_trajectory",
+    "search_labels",
+}
+
+
+def test_detailed_tool_agent_request_excludes_graph_inspection_tools(monkeypatch):
+    monkeypatch.setattr(
+        detailed_flow,
+        "build_preflight_context",
+        lambda **_kwargs: SimpleNamespace(prompt_block="", attachments=[]),
+    )
+    monkeypatch.setattr(
+        detailed_flow,
+        "_embedding_label_candidates",
+        lambda **_kwargs: [],
+    )
+
+    request = detailed_flow.build_request(
+        provider_id="test",
+        prompt_mode="tool_agent",
+        df=[],
+        parent_start=0,
+        parent_end=20,
+        parent_main_labels=["MSP"],
+    )
+
+    assert tool_agent_excluded_tools(request) == PREFLIGHT_ONLY_EXCLUDED_TOOLS
+    assert [tool["name"] for tool in annotation_tool_definitions(request)] == [
+        "submit_result",
+    ]
 
 
 def test_detailed_prompt_requires_full_parent_scan():

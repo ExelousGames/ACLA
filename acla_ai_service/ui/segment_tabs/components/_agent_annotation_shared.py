@@ -610,8 +610,8 @@ def render_followup_chat() -> None:
     st.caption(
         "Use this to interrogate the just-finished annotation so you can "
         "refine the skill text (label catalog / graph `how_to_analyze` "
-        "blocks). Claude can still call `render_graph`, `query_telemetry`, "
-        "and `compute_expert_phases` to look at the data while answering."
+        "blocks). Claude can still call `query_telemetry` and "
+        "`compute_expert_phases` to inspect deterministic data while answering."
     )
 
     for turn in chat:

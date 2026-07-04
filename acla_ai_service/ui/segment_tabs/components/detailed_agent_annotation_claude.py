@@ -2,10 +2,8 @@
 
 Renders the **☁️ Claude** expander below the analysis section. Unlike the
 local-VLM variant — which chains 10-30 stateless VLM calls through a
-LangGraph pipeline — this backend runs ONE Claude session with telemetry
-tools (`render_graph`, `query_telemetry`, `compute_expert_phases`,
-`submit_proposal`) so Claude can iterate naturally instead of paying
-subprocess startup cost per step. See
+LangGraph pipeline — this backend runs ONE Claude session over the
+upfront preflight package and submits the result. See
 ``app.services.llm.claude_annotation_runner`` for the runner.
 
 Routed through ``claude-agent-sdk`` → the user's local ``claude`` CLI
@@ -34,11 +32,9 @@ def render_agent_annotation_claude(
     """Render the Claude sub-segment discovery expander."""
     with st.expander("☁️ Claude Sub-Segment Discovery"):
         st.markdown(
-            "Run **one agentic Claude session** with telemetry tools "
-            "(`render_graph`, `query_telemetry`, `compute_expert_phases`, "
-            "`submit_proposal`). Claude iterates: render → look → query → "
-            "reason → submit. One subprocess start vs. 10-30 in the chained "
-            "pipeline."
+            "Run **one agentic Claude session** using only the upfront "
+            "preflight package, then submit the result. One subprocess "
+            "start vs. 10-30 in the chained pipeline."
         )
 
         # --- Pipeline settings ---
@@ -52,8 +48,8 @@ def render_agent_annotation_claude(
             value=3,
             help=(
                 "Caps the agent loop at this many tool calls × 10. Raise for "
-                "complex segments where Claude needs to render many zooms or "
-                "run more queries."
+                "complex segments where Claude needs more turns to reason "
+                "from the preflight package."
             ),
             key="agent_annot_claude_max_iter",
         )
