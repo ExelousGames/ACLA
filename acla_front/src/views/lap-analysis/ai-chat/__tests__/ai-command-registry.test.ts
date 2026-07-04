@@ -594,14 +594,13 @@ describe('ai command registry recorded session tools', () => {
             status: 'success',
             session_id: 'session-1',
             samples_analyzed: 120,
-            segment_count: 1,
+            parent_segment_count: 1,
             segments: [
                 {
                     id: 'segment-1',
                     start_index: 10,
                     end_index: 40,
                     parent_labels: ['brands_hatch1'],
-                    labels: ['brands_hatch1', 'late_brake'],
                     child_segments: [
                         {
                             start_index: 20,
@@ -688,7 +687,6 @@ describe('ai command registry recorded session tools', () => {
             status: 'ready',
             session_id: 'session-1',
             analysis: {
-                segment_count: 1,
                 segments: [
                     {
                         id: 'segment-1',
@@ -714,7 +712,6 @@ describe('ai command registry recorded session tools', () => {
         expect(result.ui_output).toMatchObject({
             status: 'ready',
             analysis: {
-                returned_segment_count: 1,
                 samples_analyzed: 120,
             },
         });
@@ -856,15 +853,13 @@ describe('ai command registry live performance analyst tools', () => {
                 status: 'success',
                 session_id: 'session-1',
                 samples_analyzed: 120,
-                segment_count: 1,
+                parent_segment_count: 1,
                 segments: [
                     {
                         id: 'brands_hatch2:10-30',
                         parent_labels: ['brands_hatch2'],
                         start_index: 10,
                         end_index: 30,
-                        labels: ['brands_hatch2', 'MSP', 'late_brake'],
-                        sub_labels: ['late_brake'],
                         child_segments: [
                             {
                                 start_index: 12,
@@ -1535,14 +1530,13 @@ describe('ai command registry live performance analyst tools', () => {
                 status: 'success',
                 session_id: 'live-baseline',
                 samples_analyzed: 2,
-                segment_count: 1,
+                parent_segment_count: 1,
                 segments: [
                     {
                         id: 'live-segment-1',
                         start_index: 0,
                         end_index: 1,
                         parent_labels: ['brands_hatch2'],
-                        labels: ['brands_hatch2', 'late_brake'],
                         child_segments: [],
                     },
                 ],
@@ -1615,8 +1609,6 @@ describe('ai command registry live performance analyst tools', () => {
                 },
                 analysis: {
                     samples_analyzed: 2,
-                    segment_count: 1,
-                    returned_segment_count: 1,
                     segments: [
                         expect.objectContaining({
                             parent_labels: ['Druids'],
@@ -1948,7 +1940,7 @@ describe('ai command registry live performance analyst tools', () => {
                 status: 'success',
                 session_id: 'live-baseline',
                 samples_analyzed: 2,
-                segment_count: 1,
+                parent_segment_count: 1,
                 expert_time_available: true,
                 segments: [
                     {
@@ -1956,7 +1948,6 @@ describe('ai command registry live performance analyst tools', () => {
                         start_index: 0,
                         end_index: 1,
                         parent_labels: ['brands_hatch2'],
-                        labels: ['brands_hatch2', 'late_brake'],
                         child_segments: [
                             {
                                 start_index: 0,

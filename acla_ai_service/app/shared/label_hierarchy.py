@@ -93,7 +93,7 @@ def _parent_labels(label_ids: List[str]) -> List[str]:
     ]
 
 
-def _sub_label_ids(label_ids: List[str], parent_labels: List[str]) -> List[str]:
+def _child_label_ids(label_ids: List[str], parent_labels: List[str]) -> List[str]:
     return [label_id for label_id in label_ids if label_id not in parent_labels]
 
 
@@ -198,7 +198,6 @@ def build_track_area_segments(
         parent_end = parent_window["end_index"]
         parent_labels = [parent_window["section_id"]]
         child_segments: List[Dict[str, Any]] = []
-        child_label_ids: List[str] = []
 
         for raw_segment in raw_segments:
             raw_start = raw_segment.get("start_index")
@@ -216,7 +215,6 @@ def build_track_area_segments(
             if not analysis_labels:
                 continue
 
-            child_label_ids.extend(analysis_labels)
             child_segments.append({
                 "start_index": int(raw_start),
                 "end_index": int(raw_end),
@@ -226,15 +224,11 @@ def build_track_area_segments(
         if not child_segments and not include_empty_sections:
             continue
 
-        segment_labels = _dedupe_label_ids(parent_labels + child_label_ids)
         segments.append({
             "id": f"{parent_labels[0]}:{parent_start}-{parent_end}",
-            "labels": segment_labels,
             "parent_labels": parent_labels,
             "start_index": parent_start,
             "end_index": parent_end,
-            "sub_labels": _dedupe_label_ids(child_label_ids),
-            "sub_segments": child_segments,
             "child_segments": child_segments,
         })
 
@@ -256,11 +250,11 @@ def build_parent_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict
         if start_index is None or end_index is None:
             continue
 
-        sub_label_ids = _sub_label_ids(cleaned_labels, parent_labels)
-        sub_segment = {
+        child_label_ids = _child_label_ids(cleaned_labels, parent_labels)
+        child_segment = {
             "start_index": start_index,
             "end_index": end_index,
-            "labels": _dedupe_label_ids(sub_label_ids),
+            "labels": _dedupe_label_ids(child_label_ids),
         }
 
         previous = segments[-1] if segments else None
@@ -270,20 +264,15 @@ def build_parent_label_segments(raw_segments: List[Dict[str, Any]]) -> List[Dict
             and previous["end_index"] == start_index
         ):
             previous["end_index"] = end_index
-            previous["labels"] = _dedupe_label_ids(previous["labels"] + cleaned_labels)
-            previous["sub_labels"] = _dedupe_label_ids(_sub_label_ids(previous["labels"], parent_labels))
-            previous["sub_segments"].append(sub_segment)
+            previous["child_segments"].append(child_segment)
             continue
 
-        segment_labels = _dedupe_label_ids(cleaned_labels)
         segments.append({
             "id": raw_segment.get("id"),
-            "labels": segment_labels,
             "parent_labels": parent_labels,
             "start_index": start_index,
             "end_index": end_index,
-            "sub_labels": _dedupe_label_ids(sub_label_ids),
-            "sub_segments": [sub_segment],
+            "child_segments": [child_segment],
         })
 
     return segments

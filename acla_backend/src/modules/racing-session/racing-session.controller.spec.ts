@@ -71,15 +71,13 @@ describe('RacingSessionController', () => {
       status: 'success',
       session_id: 'session-1',
       samples_analyzed: 1,
-      segment_count: 1,
+      parent_segment_count: 1,
       segments: [{
         id: 'segment-1',
-        labels: ['EA'],
         parent_labels: ['EA'],
         start_index: 0,
         end_index: 1,
-        sub_labels: [],
-        sub_segments: [{ start_index: 0, end_index: 1, labels: [] }],
+        child_segments: [{ start_index: 0, end_index: 1, labels: [] }],
       }],
     });
 
@@ -92,15 +90,13 @@ describe('RacingSessionController', () => {
       status: 'success',
       session_id: 'session-1',
       samples_analyzed: 1,
-      segment_count: 1,
+      parent_segment_count: 1,
       segments: [{
         id: 'segment-1',
-        labels: ['EA'],
         parent_labels: ['EA'],
         start_index: 0,
         end_index: 1,
-        sub_labels: [],
-        sub_segments: [{ start_index: 0, end_index: 1, labels: [] }],
+        child_segments: [{ start_index: 0, end_index: 1, labels: [] }],
       }],
     });
 
@@ -118,7 +114,7 @@ describe('RacingSessionController', () => {
       status: 'success',
       session_id: 'live-baseline-lap-2',
       samples_analyzed: 1,
-      segment_count: 0,
+      parent_segment_count: 0,
       segments: [],
       expert_time_available: false,
     });
@@ -137,7 +133,7 @@ describe('RacingSessionController', () => {
       status: 'success',
       session_id: 'live-baseline-lap-2',
       samples_analyzed: 1,
-      segment_count: 0,
+      parent_segment_count: 0,
       segments: [],
       expert_time_available: false,
     });

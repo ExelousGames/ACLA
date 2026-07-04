@@ -6,7 +6,7 @@ export type SegmentClassificationResult = {
     status: string;
     session_id: string;
     samples_analyzed: number;
-    segment_count: number;
+    parent_segment_count: number;
     segments: SegmentClassificationSegment[];
     expert_time_available?: boolean;
 };
@@ -55,22 +55,25 @@ export const createEmptyRecordedPlaybackSummary = (
 export const normalizeSegmentClassificationResult = (
     result: Partial<SegmentClassificationResult> | null | undefined,
     sessionId: string,
-): SegmentClassificationResult => ({
-    ...(result || {}),
-    segments: result && Array.isArray(result.segments) ? result.segments : [],
-    segment_count: Number(result?.segment_count) || 0,
-    samples_analyzed: Number(result?.samples_analyzed) || 0,
-    session_id: result?.session_id || sessionId,
-    status: result?.status || 'success',
-    ...(typeof result?.expert_time_available === 'boolean'
-        ? { expert_time_available: result.expert_time_available }
-        : {}),
-});
+): SegmentClassificationResult => {
+    const segments = result && Array.isArray(result.segments) ? result.segments : [];
+
+    return {
+        status: result?.status || 'success',
+        session_id: result?.session_id || sessionId,
+        samples_analyzed: Number(result?.samples_analyzed) || 0,
+        parent_segment_count: segments.length,
+        segments,
+        ...(typeof result?.expert_time_available === 'boolean'
+            ? { expert_time_available: result.expert_time_available }
+            : {}),
+    };
+};
 
 export const getRecordedAnalysisStateForResult = (
     result: SegmentClassificationResult,
 ): Pick<RecordedAiAnalysisState, 'status' | 'message'> => (
-    result.segment_count > 0
+    result.parent_segment_count > 0
         ? { status: 'ready' }
         : { status: 'empty', message: 'AI analysis found no classified segments.' }
 );

@@ -26,7 +26,7 @@ import {
 } from './mapTelemetry';
 import {
     getSegmentParentLabelText,
-    resolveActiveSubLabelTexts,
+    resolveActiveChildLabelTexts,
     resolveSegmentChildLabelTexts,
     SegmentClassificationSegment
 } from './segmentClassificationDisplay';
@@ -81,7 +81,7 @@ const getCarColor = (carKey: string, isPlayer: boolean): string => {
 };
 
 const getSegmentColor = (segment: SegmentClassificationSegment, index: number): string => {
-    const key = segment.parent_labels?.join('|') || segment.labels?.join('|') || segment.id || String(index);
+    const key = segment.parent_labels?.join('|') || segment.id || String(index);
     let hash = index;
 
     for (let charIndex = 0; charIndex < key.length; charIndex += 1) {
@@ -305,7 +305,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             startIndex: activeSegment.start_index,
             endIndex: activeSegment.end_index,
             parentLabel: getSegmentParentLabelText(activeSegment, getLabelName),
-            childLabels: resolveActiveSubLabelTexts(activeSegment, currentFrame.sourceIndex, getLabelName)
+            childLabels: resolveActiveChildLabelTexts(activeSegment, currentFrame.sourceIndex, getLabelName)
         };
     }, [currentFrame, getLabelName, segmentClassification]);
 
@@ -846,7 +846,9 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                                         ? 'AI analyzing'
                                         : segmentLoadState.status === 'error'
                                             ? 'AI analysis failed'
-                                            : `${segmentClassification?.segment_count ?? 0} AI segments`}
+                                            : segmentLoadState.status === 'empty'
+                                                ? 'No AI segments'
+                                                : 'AI analysis ready'}
                                 </Badge>
                                 {segmentLoadState.status === 'ready' && activeSegmentSummary && (
                                     <Text size="1" className="map-visualization__metric">

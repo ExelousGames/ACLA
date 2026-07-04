@@ -312,7 +312,7 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             "status": "success",
             "session_id": request.session_id,
             "samples_analyzed": len(request.telemetry_data),
-            "segment_count": len(segments),
+            "parent_segment_count": len(segments),
             "segments": segments,
         }
     except HTTPException:
@@ -344,7 +344,7 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
                 if request.baseline_lap is not None
                 else "live-baseline",
             "samples_analyzed": len(request.records),
-            "segment_count": len(segments),
+            "parent_segment_count": len(segments),
             "segments": segments,
             "expert_time_available": expert_time_available,
         }

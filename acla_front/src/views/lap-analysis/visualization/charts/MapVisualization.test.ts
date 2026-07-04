@@ -2,8 +2,8 @@ import { buildCircuitTrackLayout, getAccTelemetryTrackKey } from './circuitTrack
 import { getPlaybackFrameIndex, parseTelemetryFrame, parseTelemetryFrames, segmentVisiblePoints } from './mapTelemetry';
 import {
     getSegmentParentLabelText,
-    getSegmentSubLabelTexts,
-    resolveActiveSubLabelTexts,
+    getSegmentChildLabelTexts,
+    resolveActiveChildLabelTexts,
     resolveSegmentChildLabelTexts
 } from './segmentClassificationDisplay';
 
@@ -307,7 +307,6 @@ describe('MapVisualization AI segment labels', () => {
 
     it('formats parent track areas with active child analysis labels', () => {
         const segment = {
-            labels: ['brands_hatch2', 'MSP', 'MSP1', 'EA'],
             parent_labels: ['brands_hatch2'],
             start_index: 10,
             end_index: 30,
@@ -326,49 +325,42 @@ describe('MapVisualization AI segment labels', () => {
         };
 
         expect(getSegmentParentLabelText(segment, resolveLabel)).toBe('Paddock Hill Bend');
-        expect(getSegmentSubLabelTexts(segment)).toEqual(['MSP', 'MSP1', 'EA']);
+        expect(getSegmentChildLabelTexts(segment)).toEqual(['MSP', 'MSP1', 'EA']);
         expect(resolveSegmentChildLabelTexts(segment, resolveLabel)).toEqual([
             'Mistake (Practice)',
             'Initiate brake too late',
             'Expert Adherence (Training)'
         ]);
-        expect(resolveActiveSubLabelTexts(segment, 14, resolveLabel)).toEqual([
+        expect(resolveActiveChildLabelTexts(segment, 14, resolveLabel)).toEqual([
             'Mistake (Practice)',
             'Initiate brake too late'
         ]);
-        expect(resolveActiveSubLabelTexts(segment, 20, resolveLabel)).toEqual([
+        expect(resolveActiveChildLabelTexts(segment, 20, resolveLabel)).toEqual([
             'Mistake (Practice)',
             'Initiate brake too late',
             'Expert Adherence (Training)'
         ]);
     });
 
-    it('formats main-first segment labels with sub labels', () => {
+    it('formats behavior-parent segments with child labels', () => {
         const segment = {
-            labels: ['MSP', 'MSP1', 'ST3'],
             parent_labels: ['MSP'],
             start_index: 0,
             end_index: 3,
-            sub_labels: ['MSP1', 'ST3'],
-            sub_segments: []
+            child_segments: [
+                {
+                    start_index: 0,
+                    end_index: 3,
+                    labels: ['MSP1', 'ST3']
+                }
+            ]
         };
 
         expect(getSegmentParentLabelText(segment, resolveLabel)).toBe('Mistake (Practice)');
-        expect(getSegmentSubLabelTexts(segment)).toEqual(['MSP1', 'ST3']);
+        expect(getSegmentChildLabelTexts(segment)).toEqual(['MSP1', 'ST3']);
         expect(resolveSegmentChildLabelTexts(segment, resolveLabel)).toEqual([
             'Initiate brake too late',
             'Approach to corner'
         ]);
-    });
-
-    it('falls back to flat labels for older segment responses', () => {
-        const segment = {
-            labels: ['EA', 'ST2'],
-            start_index: 0,
-            end_index: 3
-        };
-
-        expect(getSegmentParentLabelText(segment)).toBe('EA, ST2');
-        expect(getSegmentSubLabelTexts(segment)).toEqual([]);
     });
 });

@@ -159,12 +159,9 @@ export class SegmentClassificationSubSegmentDto {
 
 export class SegmentClassificationSegmentDto {
     id?: string;
-    labels: string[];
     parent_labels?: string[];
     start_index: number;
     end_index: number;
-    sub_labels: string[];
-    sub_segments: SegmentClassificationSubSegmentDto[];
     child_segments?: SegmentClassificationSubSegmentDto[];
     time_gap?: LiveBaselineTimeGapDto;
 }
@@ -173,7 +170,7 @@ export class SegmentClassificationResponseDto {
     status: string;
     session_id: string;
     samples_analyzed: number;
-    segment_count: number;
+    parent_segment_count: number;
     segments: SegmentClassificationSegmentDto[];
 }
 

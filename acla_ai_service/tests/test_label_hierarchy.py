@@ -66,10 +66,7 @@ def test_track_area_segments_can_include_empty_lap_sections():
         ["brands_hatch2"],
         ["brands_hatch3"],
     ]
-    assert segments[0]["labels"] == ["brands_hatch2"]
-    assert segments[0]["sub_labels"] == []
     assert segments[0]["child_segments"] == []
-    assert segments[1]["labels"] == ["brands_hatch3", "MSP", "MSP1"]
     assert segments[1]["child_segments"][0]["labels"] == ["MSP", "MSP1"]
 
 
@@ -82,4 +79,4 @@ def test_track_area_segments_fall_back_without_section_positions():
 
     assert len(segments) == 1
     assert segments[0]["parent_labels"] == ["MSP"]
-    assert segments[0]["sub_segments"][0]["labels"][0] == "MSP1"
+    assert segments[0]["child_segments"][0]["labels"][0] == "MSP1"

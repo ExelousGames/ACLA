@@ -149,12 +149,9 @@ export interface SegmentClassificationSubSegment {
 
 export interface SegmentClassificationSegment {
     id?: string;
-    labels: string[];
     parent_labels?: string[];
     start_index: number;
     end_index: number;
-    sub_labels: string[];
-    sub_segments: SegmentClassificationSubSegment[];
     child_segments?: SegmentClassificationSubSegment[];
     time_gap?: LiveBaselineTimeGap;
 }
@@ -163,7 +160,7 @@ export interface SegmentClassificationResponse {
     status: string;
     session_id: string;
     samples_analyzed: number;
-    segment_count: number;
+    parent_segment_count: number;
     segments: SegmentClassificationSegment[];
 }
 

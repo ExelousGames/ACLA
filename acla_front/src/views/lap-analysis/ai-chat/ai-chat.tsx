@@ -836,7 +836,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     status: recordedAiAnalysis?.status || 'idle',
                     message: recordedAiAnalysis?.message || null,
                     session_id: recordedAiAnalysis?.sessionId || null,
-                    segment_count: recordedAnalysisResult?.segment_count ?? 0,
                     samples_analyzed: recordedAnalysisResult?.samples_analyzed ?? 0,
                     result_ready: Boolean(recordedAnalysisResult),
                 },

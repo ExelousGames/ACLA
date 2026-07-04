@@ -473,9 +473,8 @@ const summarizeRecordedSegment = (
     end_index: segment.end_index,
     parent_labels: resolveSegmentParentLabelTexts(segment, context.getLabelName),
     child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
-    label_ids: segment.labels ?? [],
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
-    child_segments: (segment.child_segments || segment.sub_segments || [])
+    child_segments: (segment.child_segments || [])
         .slice(0, 8)
         .map((child) => ({
             start_index: child.start_index,
@@ -516,9 +515,8 @@ const summarizeLiveRecordedSegment = (
     end_position: getBaselineRecordPosition(records, segment.end_index),
     parent_labels: resolveSegmentParentLabelTexts(segment, context.getLabelName),
     child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
-    label_ids: segment.labels ?? [],
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
-    child_segments: (segment.child_segments || segment.sub_segments || [])
+    child_segments: (segment.child_segments || [])
         .slice(0, 8)
         .map((child) => ({
             start_position: getBaselineRecordPosition(records, child.start_index),
@@ -547,6 +545,9 @@ const buildRecordedAnalysisToolResult = (
     const result = analysisState?.result as SegmentClassificationResult | null | undefined;
     const limit = getRecordedSegmentLimit(args.limit);
     const segments = result && Array.isArray(result.segments) ? result.segments : [];
+    const summarizedSegments = segments
+        .slice(0, limit)
+        .map((segment) => summarizeRecordedSegment(segment, context));
 
     return {
         status: analysisState?.status || 'idle',
@@ -560,9 +561,7 @@ const buildRecordedAnalysisToolResult = (
                 status: result.status,
                 session_id: result.session_id,
                 samples_analyzed: result.samples_analyzed,
-                segment_count: result.segment_count,
-                returned_segment_count: Math.min(segments.length, limit),
-                segments: segments.slice(0, limit).map((segment) => summarizeRecordedSegment(segment, context)),
+                segments: summarizedSegments,
             }
             : null,
     };
@@ -576,10 +575,13 @@ const buildLiveRecordedAnalysisToolResult = (
 ) => {
     const limit = getRecordedSegmentLimit(args.limit);
     const segments = Array.isArray(result.segments) ? result.segments : [];
+    const summarizedSegments = segments
+        .slice(0, limit)
+        .map((segment) => summarizeLiveRecordedSegment(segment, context, baselineRecord.records));
 
     return {
-        status: result.segment_count > 0 ? 'ready' : 'empty',
-        message: result.segment_count > 0
+        status: segments.length > 0 ? 'ready' : 'empty',
+        message: segments.length > 0
             ? 'Live baseline lap analysis is ready.'
             : 'Live baseline lap analysis found no classified segments.',
         source: 'baseline_lap_record',
@@ -595,14 +597,10 @@ const buildLiveRecordedAnalysisToolResult = (
             status: result.status,
             session_id: result.session_id,
             samples_analyzed: result.samples_analyzed,
-            segment_count: result.segment_count,
-            returned_segment_count: Math.min(segments.length, limit),
             ...(typeof result.expert_time_available === 'boolean'
                 ? { expert_time_available: result.expert_time_available }
                 : {}),
-            segments: segments
-                .slice(0, limit)
-                .map((segment) => summarizeLiveRecordedSegment(segment, context, baselineRecord.records)),
+            segments: summarizedSegments,
         },
     };
 };
@@ -1849,7 +1847,6 @@ const buildToolAiOutput = (
         case 'run_recorded_ai_analysis':
         case 'get_recorded_session_analysis':
             output.session_id = uiOutput.session_id ?? uiOutput.analysis?.session_id ?? null;
-            output.segment_count = uiOutput.segment_count ?? uiOutput.analysis?.segment_count ?? 0;
             output.samples_analyzed = uiOutput.samples_analyzed ?? uiOutput.analysis?.samples_analyzed ?? 0;
             break;
         case 'get_recorded_session_context':
@@ -1866,7 +1863,6 @@ const buildToolAiOutput = (
             break;
         case 'analyze_live_recorded_analysis':
             output.source = uiOutput.source ?? null;
-            output.segment_count = uiOutput.analysis?.segment_count ?? 0;
             output.samples_analyzed = uiOutput.analysis?.samples_analyzed ?? 0;
             output.expert_time_available = uiOutput.analysis?.expert_time_available ?? null;
             output.segments = summarizeLiveRecordedSegmentsForAi(uiOutput.analysis?.segments);
