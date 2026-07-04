@@ -32,6 +32,8 @@ const labelNames: Record<string, string> = {
     brands_hatch: 'Brands Hatch',
     brands_hatch1: 'Paddock Hill Bend',
     brands_hatch2: 'Druids',
+    MSP: 'Mistake (Practice)',
+    MSP1: 'Initiate brake too late',
     monza: 'Monza',
     monza1: 'Rettifilo',
 };
@@ -600,14 +602,8 @@ describe('ai command registry recorded session tools', () => {
                     id: 'segment-1',
                     start_index: 10,
                     end_index: 40,
-                    parent_labels: ['brands_hatch1'],
-                    child_segments: [
-                        {
-                            start_index: 20,
-                            end_index: 28,
-                            labels: ['late_brake'],
-                        },
-                    ],
+                    labels: ['MSP', 'MSP1'],
+                    track_section: 'brands_hatch1',
                 },
             ],
         },
@@ -636,8 +632,8 @@ describe('ai command registry recorded session tools', () => {
                     segmentId: 'segment-1',
                     startIndex: 10,
                     endIndex: 40,
-                    parentLabel: 'Paddock Hill Bend',
-                    childLabels: ['late_brake'],
+                    trackSection: 'Paddock Hill Bend',
+                    labels: ['Mistake (Practice)', 'Initiate brake too late'],
                 },
             },
             runRecordedAiAnalysis: jest.fn(async () => recordedAnalysisState),
@@ -690,7 +686,8 @@ describe('ai command registry recorded session tools', () => {
                 segments: [
                     {
                         id: 'segment-1',
-                        parent_labels: ['Paddock Hill Bend'],
+                        track_section: 'Paddock Hill Bend',
+                        labels: ['Mistake (Practice)', 'Initiate brake too late'],
                     },
                 ],
             },
@@ -738,7 +735,8 @@ describe('ai command registry recorded session tools', () => {
                 sample_count: 120,
                 playback_time_seconds: 18.25,
                 active_segment: {
-                    parentLabel: 'Paddock Hill Bend',
+                    trackSection: 'Paddock Hill Bend',
+                    labels: ['Mistake (Practice)', 'Initiate brake too late'],
                 },
             },
         });
@@ -857,16 +855,10 @@ describe('ai command registry live performance analyst tools', () => {
                 segments: [
                     {
                         id: 'brands_hatch2:10-30',
-                        parent_labels: ['brands_hatch2'],
+                        labels: ['MSP', 'MSP1'],
+                        track_section: 'brands_hatch2',
                         start_index: 10,
                         end_index: 30,
-                        child_segments: [
-                            {
-                                start_index: 12,
-                                end_index: 24,
-                                labels: ['MSP', 'late_brake'],
-                            },
-                        ],
                     },
                 ],
             },
@@ -1536,8 +1528,8 @@ describe('ai command registry live performance analyst tools', () => {
                         id: 'live-segment-1',
                         start_index: 0,
                         end_index: 1,
-                        parent_labels: ['brands_hatch2'],
-                        child_segments: [],
+                        labels: ['MSP'],
+                        track_section: 'brands_hatch2',
                     },
                 ],
             },
@@ -1611,7 +1603,8 @@ describe('ai command registry live performance analyst tools', () => {
                     samples_analyzed: 2,
                     segments: [
                         expect.objectContaining({
-                            parent_labels: ['Druids'],
+                            track_section: 'Druids',
+                            labels: ['Mistake (Practice)'],
                             start_position: 0.01,
                             end_position: 0.99,
                         }),
@@ -1947,19 +1940,13 @@ describe('ai command registry live performance analyst tools', () => {
                         id: 'live-segment-1',
                         start_index: 0,
                         end_index: 1,
-                        parent_labels: ['brands_hatch2'],
-                        child_segments: [
-                            {
-                                start_index: 0,
-                                end_index: 2,
-                                labels: ['late_brake'],
-                                time_gap: {
-                                    start_ms: 0,
-                                    end_ms: 125,
-                                    delta_ms: 125,
-                                },
-                            },
-                        ],
+                        labels: ['MSP', 'MSP1'],
+                        track_section: 'brands_hatch2',
+                        time_gap: {
+                            start_ms: 0,
+                            end_ms: 125,
+                            delta_ms: 125,
+                        },
                     },
                 ],
             },
@@ -2019,20 +2006,15 @@ describe('ai command registry live performance analyst tools', () => {
                 expert_time_available: true,
                 segments: [
                     expect.objectContaining({
-                        parent_labels: ['Druids'],
+                        track_section: 'Druids',
+                        labels: ['Mistake (Practice)', 'Initiate brake too late'],
                         start_position: 0.98,
                         end_position: 0.03,
-                        child_segments: [
-                            expect.objectContaining({
-                                start_position: 0.98,
-                                end_position: 0.03,
-                                time_gap: {
-                                    start_ms: 0,
-                                    end_ms: 125,
-                                    delta_ms: 125,
-                                },
-                            }),
-                        ],
+                        time_gap: {
+                            start_ms: 0,
+                            end_ms: 125,
+                            delta_ms: 125,
+                        },
                     }),
                 ],
             }),
@@ -2040,7 +2022,8 @@ describe('ai command registry live performance analyst tools', () => {
         expect((result.output as any)).toMatchObject({
             segments: [
                 expect.objectContaining({
-                    parent_labels: ['Druids'],
+                    track_section: 'Druids',
+                    labels: ['Mistake (Practice)', 'Initiate brake too late'],
                     start_position: 0.98,
                     end_position: 0.03,
                 }),

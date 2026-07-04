@@ -25,9 +25,9 @@ import {
     VisibilitySample
 } from './mapTelemetry';
 import {
-    getSegmentParentLabelText,
-    resolveActiveChildLabelTexts,
-    resolveSegmentChildLabelTexts,
+    getSegmentTrackSectionText,
+    resolveActiveSegmentLabelTexts,
+    resolveSegmentLabelTexts,
     SegmentClassificationSegment
 } from './segmentClassificationDisplay';
 import {
@@ -81,7 +81,7 @@ const getCarColor = (carKey: string, isPlayer: boolean): string => {
 };
 
 const getSegmentColor = (segment: SegmentClassificationSegment, index: number): string => {
-    const key = segment.parent_labels?.join('|') || segment.id || String(index);
+    const key = segment.labels?.join('|') || segment.track_section || segment.id || String(index);
     let hash = index;
 
     for (let charIndex = 0; charIndex < key.length; charIndex += 1) {
@@ -304,8 +304,8 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             segmentId: activeSegment.id,
             startIndex: activeSegment.start_index,
             endIndex: activeSegment.end_index,
-            parentLabel: getSegmentParentLabelText(activeSegment, getLabelName),
-            childLabels: resolveActiveChildLabelTexts(activeSegment, currentFrame.sourceIndex, getLabelName)
+            trackSection: getSegmentTrackSectionText(activeSegment, getLabelName),
+            labels: resolveActiveSegmentLabelTexts(activeSegment, currentFrame.sourceIndex, getLabelName)
         };
     }, [currentFrame, getLabelName, segmentClassification]);
 
@@ -852,9 +852,9 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                                 </Badge>
                                 {segmentLoadState.status === 'ready' && activeSegmentSummary && (
                                     <Text size="1" className="map-visualization__metric">
-                                        Parent: {activeSegmentSummary.parentLabel}
-                                        {activeSegmentSummary.childLabels.length > 0
-                                            ? ` - Child: ${activeSegmentSummary.childLabels.join(', ')}`
+                                        Section: {activeSegmentSummary.trackSection}
+                                        {activeSegmentSummary.labels.length > 0
+                                            ? ` - Labels: ${activeSegmentSummary.labels.join(', ')}`
                                             : ''}
                                     </Text>
                                 )}
@@ -867,7 +867,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                             {segmentLoadState.status === 'ready' && segmentClassification?.segments?.length ? (
                                 <div className="map-visualization__segment-legend">
                                     {segmentClassification.segments.slice(0, 6).map((segment, index) => {
-                                        const childLabelTexts = resolveSegmentChildLabelTexts(segment, getLabelName);
+                                        const labelTexts = resolveSegmentLabelTexts(segment, getLabelName);
 
                                         return (
                                             <span key={segment.id || `${segment.start_index}-${segment.end_index}`} className="map-visualization__segment-legend-item">
@@ -877,11 +877,11 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                                                 />
                                                 <span className="map-visualization__segment-copy">
                                                     <span className="map-visualization__segment-parent-label">
-                                                        Parent: {getSegmentParentLabelText(segment, getLabelName)}
+                                                        Section: {getSegmentTrackSectionText(segment, getLabelName)}
                                                     </span>
-                                                    {childLabelTexts.length > 0 && (
+                                                    {labelTexts.length > 0 && (
                                                         <span className="map-visualization__segment-sub-labels">
-                                                            Child: {childLabelTexts.join(', ')}
+                                                            Labels: {labelTexts.join(', ')}
                                                         </span>
                                                     )}
                                                 </span>

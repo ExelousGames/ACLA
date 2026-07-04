@@ -15,8 +15,8 @@ export type RecordedActiveSegmentSummary = {
     segmentId?: string;
     startIndex: number;
     endIndex: number;
-    parentLabel: string;
-    childLabels: string[];
+    trackSection: string;
+    labels: string[];
 };
 
 export type RecordedPlaybackSummary = {
@@ -56,7 +56,13 @@ export const normalizeSegmentClassificationResult = (
     result: Partial<SegmentClassificationResult> | null | undefined,
     sessionId: string,
 ): SegmentClassificationResult => {
-    const segments = result && Array.isArray(result.segments) ? result.segments : [];
+    const segments = result && Array.isArray(result.segments)
+        ? result.segments.map((segment) => ({
+            ...segment,
+            labels: Array.isArray(segment.labels) ? segment.labels : [],
+            track_section: typeof segment.track_section === 'string' ? segment.track_section : undefined,
+        }))
+        : [];
 
     return {
         status: result?.status || 'success',

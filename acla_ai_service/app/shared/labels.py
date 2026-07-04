@@ -355,8 +355,25 @@ LABEL_IMAGE_MAP: Dict[str, str] = {
     "silverstone": "Silverstone_Circuit_2020.jpg"
 }
 
+BEHAVIOR_LABELS: List[str] = ["O", "OD", "EA", "PS", "RM", "MSP", "MSR"]
+
+TRACK_LABELS: List[str] = [
+    "brands_hatch",
+    "silverstone",
+    "moza",
+    "kyalami",
+    "suzuka",
+    "laguna_seca",
+    "mount_panorama",
+    "watkins_glen",
+    "indianapolis",
+    "cota",
+]
+
 LABEL_CATEGORIES: Dict[str, List[str]] = {
-    "Main Labels": ["O", "OD","EA","PS","RM","MSP","MSR","brands_hatch","silverstone","kyalami","suzuka","watkins_glen","indianapolis","cota"],
+    "Main Labels": BEHAVIOR_LABELS + ["brands_hatch","silverstone","kyalami","suzuka","watkins_glen","indianapolis","cota"],
+    "Behavior": BEHAVIOR_LABELS,
+    "Track": TRACK_LABELS,
     "O":["O1","O3","O4","O5"],
     "OD":["OD1","OD2"],
     "EA":[],
@@ -382,6 +399,8 @@ __all__ = [
     "LABEL_MAPPING",
     "LABEL_NAME_TO_ID",
     "LABEL_IMAGE_MAP",
+    "BEHAVIOR_LABELS",
+    "TRACK_LABELS",
     "LABEL_CATEGORIES",
     "normalize_label_id",
     "normalize_label_ids",

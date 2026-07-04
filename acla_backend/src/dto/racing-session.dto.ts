@@ -150,19 +150,12 @@ export class LiveBaselineTimeGapDto {
     delta_ms: number;
 }
 
-export class SegmentClassificationSubSegmentDto {
-    start_index: number;
-    end_index: number;
-    labels: string[];
-    time_gap?: LiveBaselineTimeGapDto;
-}
-
 export class SegmentClassificationSegmentDto {
     id?: string;
-    parent_labels?: string[];
+    labels: string[];
+    track_section?: string;
     start_index: number;
     end_index: number;
-    child_segments?: SegmentClassificationSubSegmentDto[];
     time_gap?: LiveBaselineTimeGapDto;
 }
 

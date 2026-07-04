@@ -11,8 +11,7 @@ import {
     normalizeSegmentClassificationResult,
 } from 'views/lap-analysis/recorded-session-analysis';
 import {
-    resolveSegmentParentLabelTexts,
-    resolveSegmentChildLabelTexts,
+    getSegmentLabelIds,
     SegmentClassificationSegment,
 } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import {
@@ -464,6 +463,14 @@ const getSelectedRecordedSession = (context: AiCommandRegistryContext): Record<s
     return selectedSession;
 };
 
+const getAiLabelText = (
+    labelId: string | null | undefined,
+    context: AiCommandRegistryContext,
+): string | null => {
+    if (!labelId) return null;
+    return context.getLabelName?.(labelId) || null;
+};
+
 const summarizeRecordedSegment = (
     segment: SegmentClassificationSegment,
     context: AiCommandRegistryContext,
@@ -471,18 +478,11 @@ const summarizeRecordedSegment = (
     id: segment.id ?? null,
     start_index: segment.start_index,
     end_index: segment.end_index,
-    parent_labels: resolveSegmentParentLabelTexts(segment, context.getLabelName),
-    child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
+    track_section: getAiLabelText(segment.track_section, context),
+    labels: getSegmentLabelIds(segment)
+        .map((labelId) => getAiLabelText(labelId, context))
+        .filter((label): label is string => Boolean(label)),
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
-    child_segments: (segment.child_segments || [])
-        .slice(0, 8)
-        .map((child) => ({
-            start_index: child.start_index,
-            end_index: child.end_index,
-            labels: child.labels,
-            label_names: child.labels.map((labelId) => context.getLabelName?.(labelId) || labelId),
-            ...(child.time_gap ? { time_gap: child.time_gap } : {}),
-        })),
 });
 
 const getBaselineRecordPosition = (
@@ -513,18 +513,11 @@ const summarizeLiveRecordedSegment = (
     id: segment.id ?? null,
     start_position: getBaselineRecordPosition(records, segment.start_index),
     end_position: getBaselineRecordPosition(records, segment.end_index),
-    parent_labels: resolveSegmentParentLabelTexts(segment, context.getLabelName),
-    child_labels: resolveSegmentChildLabelTexts(segment, context.getLabelName),
+    track_section: getAiLabelText(segment.track_section, context),
+    labels: getSegmentLabelIds(segment)
+        .map((labelId) => getAiLabelText(labelId, context))
+        .filter((label): label is string => Boolean(label)),
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
-    child_segments: (segment.child_segments || [])
-        .slice(0, 8)
-        .map((child) => ({
-            start_position: getBaselineRecordPosition(records, child.start_index),
-            end_position: getBaselineRecordPosition(records, child.end_index),
-            labels: child.labels,
-            label_names: child.labels.map((labelId) => context.getLabelName?.(labelId) || labelId),
-            ...(child.time_gap ? { time_gap: child.time_gap } : {}),
-        })),
 });
 
 const buildRecordedAnalysisToolResult = (
@@ -1755,8 +1748,8 @@ const summarizeLiveRecordedSegmentsForAi = (segments: unknown): Record<string, u
             const record = getToolUiRecord(segment);
             return {
                 id: record.id ?? null,
-                parent_labels: Array.isArray(record.parent_labels) ? record.parent_labels : [],
-                child_labels: Array.isArray(record.child_labels) ? record.child_labels : [],
+                track_section: record.track_section ?? null,
+                labels: Array.isArray(record.labels) ? record.labels : [],
                 start_position: record.start_position ?? null,
                 end_position: record.end_position ?? null,
             };

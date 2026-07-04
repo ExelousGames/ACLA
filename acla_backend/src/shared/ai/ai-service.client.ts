@@ -140,19 +140,12 @@ export interface LiveBaselineTimeGap {
     delta_ms: number;
 }
 
-export interface SegmentClassificationSubSegment {
-    start_index: number;
-    end_index: number;
-    labels: string[];
-    time_gap?: LiveBaselineTimeGap;
-}
-
 export interface SegmentClassificationSegment {
     id?: string;
-    parent_labels?: string[];
+    labels: string[];
+    track_section?: string;
     start_index: number;
     end_index: number;
-    child_segments?: SegmentClassificationSubSegment[];
     time_gap?: LiveBaselineTimeGap;
 }
 

@@ -1,10 +1,10 @@
 import { buildCircuitTrackLayout, getAccTelemetryTrackKey } from './circuitTrackLayout';
 import { getPlaybackFrameIndex, parseTelemetryFrame, parseTelemetryFrames, segmentVisiblePoints } from './mapTelemetry';
 import {
-    getSegmentParentLabelText,
-    getSegmentChildLabelTexts,
-    resolveActiveChildLabelTexts,
-    resolveSegmentChildLabelTexts
+    getSegmentTrackSectionText,
+    getSegmentLabelIds,
+    resolveActiveSegmentLabelTexts,
+    resolveSegmentLabelTexts
 } from './segmentClassificationDisplay';
 
 describe('MapVisualization telemetry parsing', () => {
@@ -305,60 +305,39 @@ describe('MapVisualization AI segment labels', () => {
     };
     const resolveLabel = (labelId: string) => labelNames[labelId];
 
-    it('formats parent track areas with active child analysis labels', () => {
+    it('formats track sections with flat analysis labels', () => {
         const segment = {
-            parent_labels: ['brands_hatch2'],
+            track_section: 'brands_hatch2',
+            labels: ['MSP', 'MSP1', 'EA'],
             start_index: 10,
             end_index: 30,
-            child_segments: [
-                {
-                    start_index: 12,
-                    end_index: 18,
-                    labels: ['MSP', 'MSP1']
-                },
-                {
-                    start_index: 22,
-                    end_index: 26,
-                    labels: ['EA']
-                }
-            ]
         };
 
-        expect(getSegmentParentLabelText(segment, resolveLabel)).toBe('Paddock Hill Bend');
-        expect(getSegmentChildLabelTexts(segment)).toEqual(['MSP', 'MSP1', 'EA']);
-        expect(resolveSegmentChildLabelTexts(segment, resolveLabel)).toEqual([
+        expect(getSegmentTrackSectionText(segment, resolveLabel)).toBe('Paddock Hill Bend');
+        expect(getSegmentLabelIds(segment)).toEqual(['MSP', 'MSP1', 'EA']);
+        expect(resolveSegmentLabelTexts(segment, resolveLabel)).toEqual([
             'Mistake (Practice)',
             'Initiate brake too late',
             'Expert Adherence (Training)'
         ]);
-        expect(resolveActiveChildLabelTexts(segment, 14, resolveLabel)).toEqual([
-            'Mistake (Practice)',
-            'Initiate brake too late'
-        ]);
-        expect(resolveActiveChildLabelTexts(segment, 20, resolveLabel)).toEqual([
+        expect(resolveActiveSegmentLabelTexts(segment, 14, resolveLabel)).toEqual([
             'Mistake (Practice)',
             'Initiate brake too late',
             'Expert Adherence (Training)'
         ]);
     });
 
-    it('formats behavior-parent segments with child labels', () => {
+    it('formats behavior labels without a track section', () => {
         const segment = {
-            parent_labels: ['MSP'],
+            labels: ['MSP', 'MSP1', 'ST3'],
             start_index: 0,
             end_index: 3,
-            child_segments: [
-                {
-                    start_index: 0,
-                    end_index: 3,
-                    labels: ['MSP1', 'ST3']
-                }
-            ]
         };
 
-        expect(getSegmentParentLabelText(segment, resolveLabel)).toBe('Mistake (Practice)');
-        expect(getSegmentChildLabelTexts(segment)).toEqual(['MSP1', 'ST3']);
-        expect(resolveSegmentChildLabelTexts(segment, resolveLabel)).toEqual([
+        expect(getSegmentTrackSectionText(segment, resolveLabel)).toBe('Unknown section');
+        expect(getSegmentLabelIds(segment)).toEqual(['MSP', 'MSP1', 'ST3']);
+        expect(resolveSegmentLabelTexts(segment, resolveLabel)).toEqual([
+            'Mistake (Practice)',
             'Initiate brake too late',
             'Approach to corner'
         ]);

@@ -22,20 +22,18 @@ def test_track_area_segments_keep_classifier_child_range_under_overlapping_paren
 
     segments = build_track_area_segments(raw_segments, telemetry_data, "brands_hatch")
 
-    assert [segment["parent_labels"] for segment in segments] == [
-        ["brands_hatch2"],
-        ["brands_hatch3"],
+    assert [segment["track_section"] for segment in segments] == [
+        "brands_hatch2",
+        "brands_hatch3",
     ]
-    assert segments[0]["start_index"] == 0
+    assert segments[0]["start_index"] == 1
     assert segments[0]["end_index"] == 4
-    assert segments[0]["child_segments"][0]["start_index"] == 1
-    assert segments[0]["child_segments"][0]["end_index"] == 7
-    assert segments[0]["child_segments"][0]["labels"] == [
+    assert segments[0]["labels"] == [
         "MSP",
         "MSP1",
     ]
-    assert segments[1]["child_segments"][0]["start_index"] == 1
-    assert segments[1]["child_segments"][0]["end_index"] == 7
+    assert segments[1]["start_index"] == 4
+    assert segments[1]["end_index"] == 7
 
 
 def test_track_area_segments_can_include_empty_lap_sections():
@@ -62,12 +60,12 @@ def test_track_area_segments_can_include_empty_lap_sections():
         include_empty_sections=True,
     )
 
-    assert [segment["parent_labels"] for segment in segments] == [
-        ["brands_hatch2"],
-        ["brands_hatch3"],
+    assert [segment["track_section"] for segment in segments] == [
+        "brands_hatch2",
+        "brands_hatch3",
     ]
-    assert segments[0]["child_segments"] == []
-    assert segments[1]["child_segments"][0]["labels"] == ["MSP", "MSP1"]
+    assert segments[0]["labels"] == []
+    assert segments[1]["labels"] == ["MSP", "MSP1"]
 
 
 def test_track_area_segments_fall_back_without_section_positions():
@@ -78,5 +76,5 @@ def test_track_area_segments_fall_back_without_section_positions():
     )
 
     assert len(segments) == 1
-    assert segments[0]["parent_labels"] == ["MSP"]
-    assert segments[0]["child_segments"][0]["labels"][0] == "MSP1"
+    assert segments[0]["labels"] == ["MSP", "MSP1"]
+    assert segments[0].get("track_section") is None

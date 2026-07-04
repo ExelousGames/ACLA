@@ -74,10 +74,10 @@ describe('RacingSessionController', () => {
       parent_segment_count: 1,
       segments: [{
         id: 'segment-1',
-        parent_labels: ['EA'],
+        labels: ['EA'],
+        track_section: 'brands_hatch2',
         start_index: 0,
         end_index: 1,
-        child_segments: [{ start_index: 0, end_index: 1, labels: [] }],
       }],
     });
 
@@ -93,10 +93,10 @@ describe('RacingSessionController', () => {
       parent_segment_count: 1,
       segments: [{
         id: 'segment-1',
-        parent_labels: ['EA'],
+        labels: ['EA'],
+        track_section: 'brands_hatch2',
         start_index: 0,
         end_index: 1,
-        child_segments: [{ start_index: 0, end_index: 1, labels: [] }],
       }],
     });
 

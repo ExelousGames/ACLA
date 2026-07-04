@@ -135,7 +135,7 @@ describe('formatToolResultForLlm', () => {
             event: 'recorded_analysis_ready',
             analysis: {
                 analysis: {
-                    segments: [{ id: 'segment-1', child_labels: ['late brake'] }],
+                    segments: [{ id: 'segment-1', labels: ['late brake'] }],
                 },
             },
         })).toEqual({
