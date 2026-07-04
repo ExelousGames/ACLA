@@ -125,21 +125,7 @@ describe('executeSubscribedFrontendTool', () => {
                 },
             }),
         ]);
-        expect((frames[0] as any).messages).toEqual([
-            {
-                role: 'tool',
-                tool_call_id: 'tool-1',
-                content: JSON.stringify({
-                    type: 'tool_result',
-                    id: 'tool-1',
-                    name: 'read_context',
-                    result: {
-                        status: 'ready',
-                        args: { session_id: 's1' },
-                    },
-                }),
-            },
-        ]);
+        expect((frames[0] as any).messages).toBeUndefined();
     });
 
     it('emits lifecycle events and a failed tool_result when the handler fails', async () => {
@@ -170,8 +156,8 @@ describe('executeSubscribedFrontendTool', () => {
             id: 'tool-2',
             name: 'explode',
             result: { ok: false, error: 'boom' },
-            messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-2' })],
         }));
+        expect((frames[0] as any).messages).toBeUndefined();
     });
 
     it('does not expose a secondary tool output callback', async () => {
@@ -199,9 +185,9 @@ describe('executeSubscribedFrontendTool', () => {
                 id: 'tool-3',
                 name: 'single_output',
                 result: { status: 'done' },
-                messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-3' })],
             }),
         ]);
+        expect((frames[0] as any).messages).toBeUndefined();
     });
 
     it('sends only envelope ai_output to the AI tool_result frame', async () => {
@@ -240,9 +226,9 @@ describe('executeSubscribedFrontendTool', () => {
                 id: 'tool-4',
                 name: 'collect_live_baseline',
                 result: aiOutput,
-                messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-4' })],
             }),
         ]);
+        expect((frames[0] as any).messages).toBeUndefined();
         expect((frames[0] as any).result).not.toHaveProperty('snapshot');
         expect(events).toContainEqual(expect.objectContaining({
             kind: 'tool_call',
@@ -293,9 +279,9 @@ describe('executeSubscribedFrontendTool', () => {
                 id: 'tool-5',
                 name: 'collect_live_baseline',
                 result: envelope.output,
-                messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'tool-5' })],
             }),
         ]);
+        expect((frames[0] as any).messages).toBeUndefined();
         expect(events).toContainEqual(expect.objectContaining({
             kind: 'tool_call',
             runId: 'tool-5',
@@ -334,7 +320,7 @@ describe('executeSubscribedFrontendTool', () => {
             id: 'plan-1',
             name: 'show_map',
             result: { status: 'displayed' },
-            messages: [expect.objectContaining({ role: 'tool', tool_call_id: 'plan-1' })],
         }));
+        expect((frames[0] as any).messages).toBeUndefined();
     });
 });

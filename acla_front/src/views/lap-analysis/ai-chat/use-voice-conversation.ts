@@ -212,32 +212,16 @@ const getToolResultForUi = (result: unknown): unknown => (
         : result
 );
 
-const buildNativeToolMessage = (
-    id: string,
-    payload: Record<string, unknown>,
-) => ({
-    role: 'tool',
-    tool_call_id: id,
-    content: JSON.stringify(payload),
-});
-
 const buildToolResultFrame = (
     id: string,
     name: string,
     result: unknown,
-    args?: Record<string, unknown>,
 ) => {
-    const payload = {
+    return {
         type: 'tool_result',
         id,
         name,
         result,
-    };
-    return {
-        ...payload,
-        ...(id && name
-            ? { messages: [buildNativeToolMessage(id, payload)] }
-            : {}),
     };
 };
 
@@ -261,7 +245,7 @@ export const executeSubscribedFrontendTool = async ({
 
     if (!name) {
         const error = 'tool call missing name';
-        sendText(buildToolResultFrame(id, name, { ok: false, error }, args));
+        sendText(buildToolResultFrame(id, name, { ok: false, error }));
         return { id, name, ok: false, error };
     }
 
@@ -290,7 +274,7 @@ export const executeSubscribedFrontendTool = async ({
         const envelopeError = isToolOutputEnvelope(result)
             ? getToolEnvelopeError(result)
             : null;
-        sendText(buildToolResultFrame(id, name, getToolResultForAi(result), args));
+        sendText(buildToolResultFrame(id, name, getToolResultForAi(result)));
         const envelopeComplete = isToolOutputEnvelope(result) ? result.final : true;
         emitEvent?.({
             kind: 'tool_call',
@@ -307,7 +291,7 @@ export const executeSubscribedFrontendTool = async ({
             : { id, name, ok: true, result };
     } catch (err) {
         const error = (err as Error)?.message || String(err);
-        sendText(buildToolResultFrame(id, name, { ok: false, error }, args));
+        sendText(buildToolResultFrame(id, name, { ok: false, error }));
         emitEvent?.({
             kind: 'tool_call',
             runId: id,
@@ -870,7 +854,6 @@ export function useVoiceConversation(
                 String(frame.id || ''),
                 String(frame.name || ''),
                 getToolResultForAi(frame.result),
-                frame.arguments,
             );
             const json = JSON.stringify(payload);
             console.log('[ai-tool] sent to ai', json);

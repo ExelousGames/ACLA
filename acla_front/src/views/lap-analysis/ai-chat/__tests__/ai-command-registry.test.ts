@@ -1006,16 +1006,16 @@ describe('ai command registry live performance analyst tools', () => {
         expect(restartBaselineCollection).toHaveBeenCalledTimes(1);
         expect(setBaselineCollectionEnabled).toHaveBeenCalledWith(true);
         expect(result).toMatchObject({
-            status: 'restarted',
+            status: 'complete',
             progress_percent: 0,
-            message: 'Baseline collection restarted.',
+            message: 'Baseline collection restart completed.',
             final: true,
             tool_name: 'restart_live_baseline',
-            ui_output: {
-                status: 'restarted',
-                progress_percent: 0,
-                message: 'Baseline collection restarted.',
-            },
+        });
+        expect(getUiOutput(result)).toMatchObject({
+            status: 'complete',
+            progress_percent: 0,
+            message: 'Baseline collection restart completed.',
         });
     });
 

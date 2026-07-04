@@ -924,9 +924,9 @@ const restartLiveBaselineCollection = (
     context.setBaselineCollectionEnabled?.(true);
 
     const payload = {
-        status: 'restarted',
+        status: 'complete',
         progress_percent: 0,
-        message: 'Baseline collection restarted.',
+        message: 'Baseline collection restart completed.',
     };
     return output.final(payload, { message: payload.message });
 };

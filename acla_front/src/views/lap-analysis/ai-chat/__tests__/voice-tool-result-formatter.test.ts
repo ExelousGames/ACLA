@@ -141,7 +141,7 @@ describe('formatToolResultForLlm', () => {
         });
     });
 
-    it('includes a native tool message when a run id is available', () => {
+    it('does not duplicate the run id in a nested native tool message', () => {
         const frame = buildFormattedToolResultFrame({
             run_id: 'tool-7',
             event: 'custom_alert',
@@ -152,9 +152,7 @@ describe('formatToolResultForLlm', () => {
             type: 'tool_result',
             id: 'tool-7',
             name: 'custom_alert',
-            messages: [
-                expect.objectContaining({ role: 'tool', tool_call_id: 'tool-7' }),
-            ],
         }));
+        expect((frame as any).messages).toBeUndefined();
     });
 });
