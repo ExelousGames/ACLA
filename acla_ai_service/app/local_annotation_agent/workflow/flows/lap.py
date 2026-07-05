@@ -56,11 +56,10 @@ def lap_annotation_prompt(session_context: str = "practice") -> str:
         if entry.get("id") in eligible_labels
     ]
     lines: List[str] = [
-        "#### Lap Annotation Skill — Candidate Label Characteristics",
-        "",
-        "Each candidate parent label below lists the telemetry pattern "
-        "that justifies attaching it. The session-specific global rules "
-        "at the end are the per-section detection procedure.",
+        *_lap_prompt_rule_list(
+            "candidate_characteristics_intro",
+            session_context=session_context,
+        ),
         "",
         _session_context_rule(session_context),
         "",
@@ -99,31 +98,80 @@ def lap_annotation_prompt(session_context: str = "practice") -> str:
     lines.extend(global_rules)
     lines.append("")
 
+    general_rules = _lap_prompt_rule_list(
+        "candidate_characteristics_general_rules",
+        required=False,
+    )
+    if general_rules:
+        lines.append("##### General lap rules")
+        lines.extend(general_rules)
+        lines.append("")
+
     return "\n".join(lines)
 
 
 LOGGER = logging.getLogger(__name__)
 
-WHOLE_RANGE_LABEL_RULE = (
-    "Every behavior, segment-type, and sub-label must describe the final "
-    "annotation range as a whole. Do not attach a label because it matches "
-    "only one phase, one apex moment, or a short slice inside the range; "
-    "omit that label or leave it for detailed child sub-segment annotation."
-)
 
-LAP_REASONING_NOTE_RULE = (
-    "Write `reasoning` as a longer human annotation note: 4-6 concise "
-    "sentences covering the final iloc range, selected label fit, key "
-    "telemetry values or trends, deterministic tool verdicts, and why "
-    "competing labels were omitted. When two plausible labels or circuit "
-    "sections are ambiguous, name the option that was not selected and "
-    "state why it was rejected. For time-delta prose, say "
-    "`losing time run` and avoid ranking/adjective phrasing."
-)
+def _render_lap_template(template: str, **values: Any) -> str:
+    rendered = str(template)
+    for key, value in values.items():
+        rendered = rendered.replace(f"{{{{{key}}}}}", str(value))
+    return rendered.strip()
 
-REQUIRED_BEHAVIOR_PARENT_LABEL_IDS = ("O", "OD", "PS", "RM", "MSP", "MSR")
-PRACTICE_BEHAVIOR_PARENT_LABEL_IDS = ("PS", "RM", "MSP")
-RACING_BEHAVIOR_PARENT_LABEL_IDS = ("O", "OD", "MSR", "PS")
+
+def _lap_prompt_rule(
+    path: str,
+    *,
+    required: bool = True,
+    **values: Any,
+) -> str:
+    value = skills.get(f"lap_annotation.prompt_rules.{path}", "")
+    if not isinstance(value, str):
+        raise RuntimeError(
+            f"lap_annotation.prompt_rules.{path} must be a string"
+        )
+    rendered = _render_lap_template(value, **values)
+    if required and not rendered:
+        raise RuntimeError(f"lap_annotation.prompt_rules.{path} is missing")
+    return rendered
+
+
+def _lap_prompt_rule_list(
+    path: str,
+    *,
+    required: bool = True,
+    **values: Any,
+) -> List[str]:
+    value = skills.get(f"lap_annotation.prompt_rules.{path}", [])
+    if not isinstance(value, list):
+        raise RuntimeError(f"lap_annotation.prompt_rules.{path} must be a list")
+    rules = [
+        _render_lap_template(str(rule), **values)
+        for rule in value
+        if str(rule).strip()
+    ]
+    if required and not rules:
+        raise RuntimeError(f"lap_annotation.prompt_rules.{path} is missing")
+    return rules
+
+
+def _lap_label_id_list(path: str) -> Tuple[str, ...]:
+    value = skills.get(f"lap_annotation.behavior_parent_label_ids.{path}", [])
+    if not isinstance(value, list):
+        raise RuntimeError(
+            f"lap_annotation.behavior_parent_label_ids.{path} must be a list"
+        )
+    label_ids = tuple(
+        str(label_id).strip()
+        for label_id in value
+        if str(label_id).strip()
+    )
+    if not label_ids:
+        raise RuntimeError(
+            f"lap_annotation.behavior_parent_label_ids.{path} is missing"
+        )
+    return label_ids
 
 
 def _is_racing_context(
@@ -147,11 +195,11 @@ def _session_context(
 
 
 def _eligible_behavior_label_ids(session_context: str) -> Tuple[str, ...]:
-    return (
-        RACING_BEHAVIOR_PARENT_LABEL_IDS
-        if session_context == "racing"
-        else PRACTICE_BEHAVIOR_PARENT_LABEL_IDS
-    )
+    return _lap_label_id_list(f"eligible_by_session.{session_context}")
+
+
+def _required_behavior_label_ids() -> Tuple[str, ...]:
+    return _lap_label_id_list("required")
 
 
 def _label_set_text(label_ids: Tuple[str, ...] | List[str]) -> str:
@@ -159,20 +207,16 @@ def _label_set_text(label_ids: Tuple[str, ...] | List[str]) -> str:
 
 
 def _session_context_rule(session_context: str) -> str:
+    eligible_label_ids = _eligible_behavior_label_ids(session_context)
+    eligible_labels = _label_set_text(eligible_label_ids)
     if session_context == "racing":
-        return (
-            "Detected session mode: racing / opponent interaction. Only "
-            f"behavior parent labels from {_label_set_text(RACING_BEHAVIOR_PARENT_LABEL_IDS)} "
-            "are eligible. Do not evaluate or attach practice-session "
-            "behavior parents MSP / RM for this work unit; if no "
-            "overtake / defense / racing mistake or pit-stop label fits, "
-            "submit an empty label_ids array."
+        return _lap_prompt_rule(
+            "session_context_rules.racing",
+            eligible_behavior_labels=eligible_labels,
         )
-    return (
-        "Detected session mode: practice / solo section. Only behavior "
-        f"parent labels from {_label_set_text(PRACTICE_BEHAVIOR_PARENT_LABEL_IDS)} "
-        "are eligible. Do not evaluate or attach racing-session behavior "
-        "parents O / OD / MSR for this work unit."
+    return _lap_prompt_rule(
+        "session_context_rules.practice",
+        eligible_behavior_labels=eligible_labels,
     )
 
 
@@ -181,15 +225,14 @@ def _mode_specific_global_rules(session_context: str) -> List[str]:
         f"lap_annotation.global_rules_by_session.{session_context}",
         [],
     )
-    common_rules = skills.get("lap_annotation.global_rules_by_session.common", [])
-    if not isinstance(mode_rules, list) or not isinstance(common_rules, list):
+    if not isinstance(mode_rules, list):
         raise RuntimeError(
             "lap_annotation.global_rules_by_session must contain list-valued "
-            f"{session_context!r} and 'common' rules"
+            f"{session_context!r} rules"
         )
     rules = [
         str(rule).strip()
-        for rule in [*mode_rules, *common_rules]
+        for rule in mode_rules
         if str(rule).strip()
     ]
     if not rules:
@@ -201,27 +244,15 @@ def _mode_specific_global_rules(session_context: str) -> List[str]:
 
 
 def _mode_exclusion_rule(session_context: str) -> str:
-    if session_context == "racing":
-        return (
-            "Pick at most one opponent-aware behavior parent from {O, OD, MSR}; "
-            "O + OD, O + MSR, and OD + MSR are contradictions. PS is allowed "
-            "only for Pit-section procedure and should not be combined with "
-            "O / OD / MSR."
-        )
-    return (
-        "Pick at most one technical/recovery behavior parent from {MSP, RM}; "
-        "MSP + RM is a contradiction. PS should not be combined with MSP."
+    return _lap_prompt_rule(
+        f"mode_exclusion_rules.{session_context}",
     )
 
 
 def _required_behavior_parent_label_rule(eligible_label_ids: List[str]) -> str:
-    return (
-        "Every saved lap segment must include at least one behavior parent "
-        f"label from {_label_set_text(eligible_label_ids)}. Circuit, "
-        "circuit_section, segment-type, sub-label, and EA labels do not "
-        "satisfy this required-parent rule. If no required behavior parent "
-        "label fits the whole split-section range, submit an empty label_ids "
-        "array to drop the range instead of saving a parentless segment."
+    return _lap_prompt_rule(
+        "required_behavior_parent_label_rule",
+        eligible_behavior_labels=_label_set_text(eligible_label_ids),
     )
 
 
@@ -325,22 +356,17 @@ def _interaction_focus_block(
                 f"({section_name}){suffix}."
             )
     target_block = (
-        "\nTarget-car hint from the splitter:\n" + "\n".join(target_lines) + "\n"
+        "\n"
+        + _lap_prompt_rule("interaction_focus.target_heading")
+        + "\n"
+        + "\n".join(target_lines)
+        + "\n"
         if target_lines else ""
     )
     return (
         "\n#### Opponent-session focus\n"
-        f"This split range {origin}. For this work unit, identify the "
-        "target car from the splitter evidence first, then do ONLY overtake "
-        "offence / defense "
-        "annotation: pick O for a successful attacking pass, OD for a held "
-        "defense, or MSR for a failed attack / broken defense. If the "
-        "opponent evidence is only close-following/draft context, or the "
-        "opponent stays tucked directly behind without a lateral/alongside "
-        "threat, submit "
-        "`label_ids: []` rather than labeling normal practice-driving "
-        "telemetry such as EA / MSP / RM. PS is still valid when the "
-        "range has Pit-section procedure evidence.\n"
+        + _lap_prompt_rule("interaction_focus.body", origin=origin)
+        + "\n"
         f"{target_block}"
     )
 
@@ -364,17 +390,7 @@ def _tool_agent_task_prompt(
     session_context = _session_context(section_split_basis, opponent_interaction)
     eligible_labels = list(_eligible_behavior_label_ids(session_context))
     required_label_rule = _required_behavior_parent_label_rule(eligible_labels)
-    if session_context == "racing":
-        mode_submit_rule = (
-            "- In opponent-interaction windows, use O / OD / MSR, or PS "
-            "when Pit-section procedure evidence fits the whole range; submit "
-            "an empty `label_ids` array to drop the range when none fit.\n"
-        )
-    else:
-        mode_submit_rule = (
-            "- In practice / solo sections, use MSP / RM / PS or submit "
-            "an empty `label_ids` array to drop the range.\n"
-        )
+    mode_submit_rule = _lap_prompt_rule(f"mode_submit_rules.{session_context}")
     interaction_focus = _interaction_focus_block(
         section_split_basis, opponent_interaction,
     )
@@ -386,38 +402,60 @@ def _tool_agent_task_prompt(
     )
     splitter_section_block = ""
     if circuit_id or section_id:
-        splitter_section_block = (
-            "- Splitter context: "
-            f"`{circuit_id}` ({circuit_name}), "
-            f"`{section_id}` ({section_name}). Use this as the selected "
-            "circuit_section unless Pit-section evidence makes the Pit "
-            "section the better knowledge-base fit. If "
-            "`locate_circuit_section` is ambiguous, use `top_matches` only "
-            "as competing evidence to resolve to one circuit_section id.\n"
+        splitter_section_block = "- " + _lap_prompt_rule(
+            "splitter_section_context",
+            circuit_id=circuit_id,
+            circuit_name=circuit_name,
+            section_id=section_id,
+            section_name=section_name,
+        ) + "\n"
+    eligible_labels_text = _label_set_text(eligible_labels)
+    selection_notes = "\n".join(
+        f"- {rule}"
+        for rule in _lap_prompt_rule_list("selection_notes")
+    )
+    payload_followup = "\n".join(
+        _lap_prompt_rule_list(
+            "payload_shape.followup",
+            eligible_behavior_labels=eligible_labels_text,
         )
+    )
+    reasoning_placeholder = _lap_prompt_rule("payload_shape.reasoning_placeholder")
+    hard_rules = [
+        f"Final range is fixed to [{section_start}, {section_end}].",
+        required_label_rule,
+        *_lap_prompt_rule_list("hard_rules"),
+        _mode_exclusion_rule(session_context),
+        _lap_prompt_rule("whole_range_label_rule"),
+        _lap_prompt_rule("segment_action_model_rule"),
+        _lap_prompt_rule("reasoning_note_rule"),
+        mode_submit_rule,
+        _lap_prompt_rule("time_delta_offset_evidence_rule"),
+        _segment_type_label_rule(),
+        _lap_prompt_rule("sub_label_parent_rule"),
+        _lap_prompt_rule("one_proposal_rule"),
+    ]
+    hard_rule_bullets = "\n".join(f"- {rule}" for rule in hard_rules if rule)
+    task_intro = _lap_prompt_rule("task_intro")
     preselected_section_id = _preselected_interaction_section_id(opponent_interaction)
     preselected_section_block = ""
     if preselected_section_id:
-        preselected_section_block = (
-            "- Splitter section context: "
-            f"`{preselected_section_id}` "
-            f"({LABEL_MAPPING.get(preselected_section_id, preselected_section_id)}) "
-            "from the opponent sub-segment; include it in `label_ids`.\n"
+        preselected_section_block = "- " + _lap_prompt_rule(
+            "preselected_section_context",
+            preselected_section_id=preselected_section_id,
+            preselected_section_name=LABEL_MAPPING.get(
+                preselected_section_id,
+                preselected_section_id,
+            ),
         )
+        preselected_section_block += "\n"
 
     return (
-        "Annotate ONE lap range. The deterministic splitter handed you a "
-        "fixed split-section boundary; if this is an opponent interaction window, "
-        "the boundary is event-shaped and circuit sections are context only. "
-        "Your job is to include the circuit id and one selected "
-        "circuit_section id from splitter or preflight context, "
-        "at least one required behavior parent label for any saved segment, optional "
-        "lap-parent-allowed segment-type labels, and an optional matching "
-        "sub-label.\n"
+        f"{task_intro}\n"
         "\n"
         "### Lap context\n"
         f"- Detected session mode: {session_context}\n"
-        f"- Eligible behavior parent labels: {_label_set_text(eligible_labels)}\n"
+        f"- Eligible behavior parent labels: {eligible_labels_text}\n"
         f"- Lap range: [{lap_start}, {lap_end}] "
         f"(length {lap_end - lap_start})\n"
         f"- Split section boundary: [{section_start}, {section_end}] "
@@ -428,58 +466,20 @@ def _tool_agent_task_prompt(
         f"{interaction_focus}"
         "\n"
         "### Selection notes\n"
-        "- Preflight semantic label candidates cover behavior, segment-type, "
-        "and sub-label choices.\n"
-        "- When any main-label, segment-type, or sub-label signature fits only part "
-        "of the range, omit that label or submit an empty `label_ids` array "
-        "to drop the range.\n"
+        f"{selection_notes}\n"
         "\n"
         "### Submit payload shape\n"
-        "`payload_json` must be a JSON object of this shape:\n"
+        f"{_lap_prompt_rule('payload_shape.intro')}\n"
         "```json\n"
         "{\n"
         '  "label_ids": ["<id>", "<id>", ...],\n'
-        '  "reasoning": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, range-fit rationale, and any ambiguous option rejected>"\n'
+        f'  "reasoning": "{reasoning_placeholder}"\n'
         "}\n"
         "```\n"
-        "`label_ids` carries the circuit id, one selected "
-        "circuit_section id, "
-        "and your main / segment-type / sub picks together. Every saved "
-        f"segment must contain at least one of {_label_set_text(eligible_labels)}; "
-        "otherwise submit an empty `label_ids` array as the valid "
-        "'drop this section' signal. The runner reports back "
-        "the split section range.\n"
+        f"{payload_followup}\n"
         "\n"
         "### Hard rules\n"
-        f"- Final range is fixed to [{section_start}, {section_end}].\n"
-        f"- {required_label_rule}\n"
-        "- Do not invent label IDs; circuit / circuit_section ids must come "
-        "from splitter or preflight context, every other id from "
-        "preflight semantic candidates.\n"
-        "- When `locate_circuit_section` reports ambiguity, choose exactly "
-        "one circuit_section id using splitter context and behavior evidence. "
-        "For Pit-vs-straight ties, choose Pit when Pit-section evidence "
-        "supports pit procedure; otherwise choose the normal racing-surface "
-        "section. A Pit-vs-adjacent-straight ambiguity plus sustained "
-        "pit-lane-style trajectory offset and large player/expert speed "
-        "separation or slow pit-exit acceleration counts as Pit-section "
-        "procedure evidence. Do not include multiple same-range "
-        "circuit_section ids.\n"
-        f"- {_mode_exclusion_rule(session_context)}\n"
-        f"- {WHOLE_RANGE_LABEL_RULE}\n"
-        "- Apply the segment/action model and segment completeness rules "
-        "from `lap_annotation.action_model` and "
-        "`lap_annotation.global_rules_by_session.common`. Do not treat "
-        "complete action-group evidence as optional sub-label evidence.\n"
-        f"- {LAP_REASONING_NOTE_RULE}\n" +
-        mode_submit_rule +
-        "- For time-delta and offset evidence, cite deterministic tool "
-        "preflight fact sentences, including units and whole-section "
-        "slope-shape trends when present; do not create strength judgments "
-        "from raw numbers.\n"
-        f"- {_segment_type_label_rule()}\n"
-        "- Sub-labels require their parent main label in `label_ids`.\n"
-        "- One proposal per session — do NOT annotate downstream sections."
+        f"{hard_rule_bullets}"
     )
 
 
@@ -713,18 +713,19 @@ def _clean_label_ids(
 
     from app.internal_knowledge_base.label_lookup import get_label
 
+    required_behavior_label_ids = _required_behavior_label_ids()
     eligible_behavior_label_ids = list(
-        eligible_behavior_label_ids or REQUIRED_BEHAVIOR_PARENT_LABEL_IDS
+        eligible_behavior_label_ids or required_behavior_label_ids
     )
     allowed: List[str] = []
     for label_id in cleaned:
         doc = get_label(label_id)
         parent_id = doc.get("parent") if doc else None
         if (
-            label_id in REQUIRED_BEHAVIOR_PARENT_LABEL_IDS
+            label_id in required_behavior_label_ids
             and label_id not in eligible_behavior_label_ids
         ) or (
-            parent_id in REQUIRED_BEHAVIOR_PARENT_LABEL_IDS
+            parent_id in required_behavior_label_ids
             and parent_id not in eligible_behavior_label_ids
         ):
             rejected.append({

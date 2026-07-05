@@ -83,7 +83,7 @@ def _format_preflight_tool(content: Any) -> str:
         import json
 
         lines.append("Result:")
-        lines.append(json.dumps(result, indent=2, sort_keys=True, default=str)[:3000])
+        lines.append(json.dumps(result, indent=2, sort_keys=True, default=str))
     return "\n".join(lines)
 
 

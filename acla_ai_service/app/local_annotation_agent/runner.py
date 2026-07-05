@@ -206,7 +206,7 @@ def _attachment_context(request: AgentRequest) -> str:
             f"### {att.name} - {att.label}\n"
             f"kind: {att.kind}\n"
             f"schema: {att.content_schema or '(none)'}\n"
-            f"{str(content)[:6000]}"
+            f"{content}"
         )
     return "\n\n".join(blocks)
 

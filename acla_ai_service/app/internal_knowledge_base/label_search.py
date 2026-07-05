@@ -1,9 +1,9 @@
 """Hybrid (vector + BM25) retrieval over the skill knowledge base.
 
-``search`` indexes **every record in every collection of every skill**
-held by the ``skills`` document store. Drop a new JSON into the skill
-folder and its records become searchable on the next run — no code
-change, nothing to register.
+``search`` indexes typed label records from the skill document store.
+Main-label records use the taxonomy fields from
+``sub_label_annotation.labels`` and the description text from
+``lap_annotation.labels``.
 
 Nothing is hardcoded: not the skill name, not the collection key, not
 the field names. A record's searchable text is the concatenation of all
@@ -13,12 +13,13 @@ or anything else a doc happens to define) become metadata you can filter
 on; a record that omits a field is simply not matched by a filter on
 that field — it is never dropped from the index.
 
-A "record" is an entry of any collection — a top-level key whose value
-is a dict-of-dicts (e.g. ``sub_label_annotation.labels.MSP1``). The
-index is built once and cached under
-``<repo>/acla_ai_service/.cache/labels_llama/``; it rebuilds whenever
-the embedding model or any indexed text changes (so adding/editing a
-skill JSON invalidates it automatically).
+A "record" is an entry of an indexed collection — a top-level key whose
+value is a dict-of-dicts (e.g. ``sub_label_annotation.labels.MSP1``).
+Raw ``lap_annotation.labels`` entries are source material for main-label
+descriptions, not standalone candidates. The index is built once and cached
+under ``<repo>/acla_ai_service/.cache/labels_llama/``; it rebuilds whenever
+the embedding model or any indexed text changes (so adding/editing a skill JSON
+invalidates it automatically).
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.infra.config import settings
-from app.internal_knowledge_base._registry import get_registry
+from app.internal_knowledge_base._registry import SkillRegistry, get_registry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,27 +48,70 @@ _docs_by_id: Dict[str, Dict[str, Any]] = {}
 _lock = threading.Lock()
 
 
+def _lap_main_descriptions(registry: SkillRegistry) -> Dict[str, str]:
+    labels = registry.get("lap_annotation.labels", {})
+    if not isinstance(labels, dict):
+        return {}
+    return {
+        str(label_id): str(doc.get("characteristics", "")).strip()
+        for label_id, doc in labels.items()
+        if isinstance(doc, dict) and str(doc.get("characteristics", "")).strip()
+    }
+
+
+def _label_doc(
+    *,
+    skill_name: str,
+    collection_key: str,
+    record_id: str,
+    record: Dict[str, Any],
+    lap_main_descriptions: Dict[str, str],
+) -> Dict[str, Any]:
+    doc = dict(record)
+    if (
+        skill_name == "sub_label_annotation"
+        and collection_key == "labels"
+        and doc.get("type") == "main"
+    ):
+        description = lap_main_descriptions.get(record_id)
+        if description:
+            doc["description"] = description
+    doc["id"] = record_id
+    doc["_skill"] = skill_name
+    doc["_collection"] = collection_key
+    return doc
+
+
 def _corpus_docs() -> List[Dict[str, Any]]:
-    """Every record across every skill, structure-agnostic.
+    """Indexed skill records with lap-flow main-label descriptions.
 
     Walks each skill body for collections (a key whose value is a
-    dict-of-dicts) and yields each inner entry with its ``id`` (the key)
-    plus ``_skill`` / ``_collection`` provenance injected.
+    dict-of-dicts) and yields each inner entry with provenance injected.
+    ``lap_annotation.labels`` provides descriptions for typed main-label
+    records, so those raw records are skipped as standalone candidates.
     """
     docs: List[Dict[str, Any]] = []
-    for skill in get_registry().all_skills():
+    registry = get_registry()
+    lap_main_descriptions = _lap_main_descriptions(registry)
+    for skill in registry.all_skills():
         body = skill.raw_body if isinstance(skill.raw_body, dict) else {}
         for coll_key, coll_val in body.items():
+            if skill.name == "lap_annotation" and coll_key == "labels":
+                continue
             if not isinstance(coll_val, dict) or not coll_val:
                 continue
             if not all(isinstance(v, dict) for v in coll_val.values()):
                 continue
             for rec_id, rec in coll_val.items():
-                doc = dict(rec)
-                doc["id"] = rec_id
-                doc["_skill"] = skill.name
-                doc["_collection"] = coll_key
-                docs.append(doc)
+                docs.append(
+                    _label_doc(
+                        skill_name=skill.name,
+                        collection_key=coll_key,
+                        record_id=rec_id,
+                        record=rec,
+                        lap_main_descriptions=lap_main_descriptions,
+                    )
+                )
     return docs
 
 

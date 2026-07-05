@@ -1309,11 +1309,20 @@ def _preflight_time_gap_slope_summary(extra: Dict[str, Any]) -> str:
     end_value = last.get("end_value")
     end_slope = extra.get("end_slope", last.get("slope"))
 
+    reversal_pairs = _time_gap_reversal_pairs(runs)
     parts = [
         "Time gap starts at index "
         f"{start_iloc} with value {_measurement(start_value, unit)} "
         f"and starting slope {_measurement(start_slope, slope_unit)}.",
-        "Time gap local runs: " + _time_gap_run_ranges(runs, unit, slope_unit) + ".",
+        "Time gap local curve changes: "
+        + _time_gap_slope_change_ranges(
+            runs,
+            slope_unit,
+            start_slope,
+            end_slope,
+            reversal_pairs,
+        )
+        + ".",
     ]
     reversal_summary = _time_gap_reversal_summary(runs, unit)
     if reversal_summary:
@@ -1329,26 +1338,107 @@ def _preflight_time_gap_slope_summary(extra: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _time_gap_run_ranges(
+def _time_gap_slope_change_ranges(
     runs: List[Dict[str, Any]],
-    unit: Any,
+    slope_unit: Any,
+    start_slope: Any,
+    end_slope: Any,
+    suppressed_pairs: set[Tuple[int, int]],
+) -> str:
+    ranges: List[str] = []
+    if len(runs) == 1:
+        change = _time_gap_slope_change(start_slope, end_slope)
+        if change:
+            ranges.append(_time_gap_slope_change_phrase(
+                change,
+                runs[0].get("start_iloc"),
+                runs[0].get("end_iloc"),
+                start_slope,
+                end_slope,
+                slope_unit,
+            ))
+        return "; ".join(ranges) if ranges else "none"
+
+    omitted = 0
+    for index, (before, after) in enumerate(zip(runs, runs[1:])):
+        if (index, index + 1) in suppressed_pairs:
+            continue
+        before_slope = before.get("slope")
+        after_slope = after.get("slope")
+        change = _time_gap_slope_change(before_slope, after_slope)
+        if not change:
+            continue
+        if len(ranges) >= 6:
+            omitted += 1
+            continue
+        ranges.append(_time_gap_slope_change_phrase(
+            change,
+            before.get("start_iloc"),
+            after.get("end_iloc"),
+            before_slope,
+            after_slope,
+            slope_unit,
+        ))
+    if omitted:
+        ranges.append(f"{omitted} more")
+    return "; ".join(ranges) if ranges else "none"
+
+
+def _time_gap_slope_change(
+    before_slope: Any,
+    after_slope: Any,
+) -> Optional[str]:
+    before_number = _as_number(before_slope)
+    after_number = _as_number(after_slope)
+    if before_number is None or after_number is None:
+        return None
+    delta = after_number - before_number
+    guard = max(max(abs(before_number), abs(after_number)) * 0.25, 1e-9)
+    if delta > guard:
+        return "raising"
+    if delta < -guard:
+        return "falling"
+    return None
+
+
+def _time_gap_slope_change_phrase(
+    change: str,
+    start_iloc: Any,
+    end_iloc: Any,
+    before_slope: Any,
+    after_slope: Any,
     slope_unit: Any,
 ) -> str:
-    ranges = [
-        (
-            f"{_time_gap_direction_word(run.get('direction'))} "
-            f"index {run.get('start_iloc')} to {run.get('end_iloc')} "
-            f"(start {_measurement(run.get('start_value'), unit)}, "
-            f"end {_measurement(run.get('end_value'), unit)}, "
-            "percent change "
-            f"{_percent_change_measurement(run.get('end_value'), run.get('start_value'))}, "
-            f"slope {_measurement(run.get('slope'), slope_unit)})"
-        )
-        for run in runs[:6]
-    ]
-    if len(runs) > 6:
-        ranges.append(f"{len(runs) - 6} more")
-    return "; ".join(ranges) if ranges else "none"
+    before_number = _as_number(before_slope)
+    after_number = _as_number(after_slope)
+    delta = (
+        after_number - before_number
+        if before_number is not None and after_number is not None
+        else None
+    )
+    return (
+        f"{change} index {start_iloc} to {end_iloc} "
+        f"(slope {_measurement(before_slope, slope_unit)} to "
+        f"{_measurement(after_slope, slope_unit)}, "
+        f"change {_measurement(delta, slope_unit)}, "
+        f"rate change {_percent_change_measurement(after_slope, before_slope)})"
+    )
+
+
+def _time_gap_reversal_pairs(
+    runs: List[Dict[str, Any]],
+) -> set[Tuple[int, int]]:
+    pairs: set[Tuple[int, int]] = set()
+    for index, (before, after) in enumerate(zip(runs, runs[1:])):
+        before_direction = before.get("direction")
+        after_direction = after.get("direction")
+        if (
+            before_direction == "rising" and after_direction == "falling"
+        ) or (
+            before_direction == "falling" and after_direction == "rising"
+        ):
+            pairs.add((index, index + 1))
+    return pairs
 
 
 def _time_gap_reversal_summary(
@@ -1382,17 +1472,6 @@ def _time_gap_reversal_event(
         f"{_measurement(before.get('end_value'), unit)}, "
         f"end {_measurement(after.get('end_value'), unit)})"
     )
-
-
-def _time_gap_direction_word(direction: Any) -> str:
-    if direction == "rising":
-        return "raising"
-    if direction == "falling":
-        return "falling"
-    if direction in {"flat", "stable"}:
-        return "flat"
-    return "unknown"
-
 
 def _value_comparison(end_value: Any, start_value: Any, unit: Any) -> str:
     return _percent_change_comparison(end_value, start_value, "starting value")

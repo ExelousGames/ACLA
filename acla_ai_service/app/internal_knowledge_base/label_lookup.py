@@ -3,11 +3,10 @@
 Two sources, each owning its own classification — nothing is re-derived
 in Python:
 
-* Prose labels (``main`` / ``sub`` / ``segment_type``) live in
-  ``sub_label_annotation.json``. They already declare ``type`` and
-  ``parent`` alongside their prose, so we read them straight through the
-  skill query engine — the same data the hybrid ``search`` retriever
-  indexes.
+* Prose label taxonomy (``main`` / ``sub`` / ``segment_type``) lives in
+  ``sub_label_annotation.json``. Main-label descriptions are hydrated from
+  ``lap_annotation.json``; sub-label and segment-type descriptions stay in
+  ``sub_label_annotation.json``.
 * Circuit sections are deterministic geometry, owned by
   ``app.shared.circuit_sections``. We synthesize their docs from the
   section ranges (``type="circuit_section"``, ``parent=<circuit>``,
@@ -47,8 +46,32 @@ def _circuit_section_docs() -> List[Dict[str, Any]]:
     return docs
 
 
+def _lap_main_descriptions() -> Dict[str, str]:
+    labels = skills.get("lap_annotation.labels", {})
+    if not isinstance(labels, dict):
+        return {}
+    return {
+        str(label_id): str(doc.get("characteristics", "")).strip()
+        for label_id, doc in labels.items()
+        if isinstance(doc, dict) and str(doc.get("characteristics", "")).strip()
+    }
+
+
+def _label_docs() -> List[Dict[str, Any]]:
+    lap_descriptions = _lap_main_descriptions()
+    docs: List[Dict[str, Any]] = []
+    for doc in skills.iter("sub_label_annotation.labels"):
+        next_doc = dict(doc)
+        if next_doc.get("type") == "main":
+            description = lap_descriptions.get(str(next_doc.get("id") or ""))
+            if description:
+                next_doc["description"] = description
+        docs.append(next_doc)
+    return docs
+
+
 def _all_docs() -> List[Dict[str, Any]]:
-    return skills.iter("sub_label_annotation.labels") + _circuit_section_docs()
+    return _label_docs() + _circuit_section_docs()
 
 
 def get_label(label_id: str) -> Optional[Dict[str, Any]]:

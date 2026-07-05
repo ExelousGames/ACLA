@@ -883,7 +883,7 @@ def test_detailed_preflight_uses_shared_time_gap_summary_without_percent_calcula
     text = "\n".join(preflight_detailed._time_gap_summary_sentences(tool_outputs))
 
     assert "Time gap starts at index 10" in text
-    assert "Time gap local runs:" in text
+    assert "Time gap local curve changes:" in text
     assert "Time gap ends at index 30" in text
     assert "percentage change from the starting value is unknown" in text
     assert "faster than expert" not in text
@@ -917,7 +917,7 @@ def test_preflight_time_gap_summary_accepts_negative_values_as_time_gap_values()
     text = "\n".join(preflight_detailed._time_gap_summary_sentences(tool_outputs))
 
     assert "Time gap starts at index 10" in text
-    assert "Time gap local runs:" in text
+    assert "Time gap local curve changes:" in text
     assert "end -400 ms" in text
     assert "percentage change from the starting value is unknown" in text
     assert "slower than expert" not in text
@@ -1746,6 +1746,34 @@ def test_racing_label_catalog_and_docs_use_reusable_opponent_phrases():
         assert forbidden not in docs_text
 
 
+def test_main_label_descriptions_are_sourced_from_lap_annotation():
+    from app.internal_knowledge_base import label_lookup, label_search
+
+    root = Path(__file__).resolve().parents[1]
+    sub_catalog = json.loads(
+        (root / "app/internal_knowledge_base/sub_label_annotation.json").read_text()
+    )
+    lap_catalog = json.loads(
+        (root / "app/internal_knowledge_base/lap_annotation.json").read_text()
+    )
+    main_ids = ["O", "OD", "EA", "PS", "RM", "MSP", "MSR"]
+
+    for label_id in main_ids:
+        assert "description" not in sub_catalog["labels"][label_id]
+
+    docs = label_search._corpus_docs()
+    docs_by_id = {doc["id"]: doc for doc in docs}
+    expected = lap_catalog["labels"]["MSP"]["characteristics"].strip()
+
+    assert docs_by_id["MSP"]["description"] == expected
+    assert docs_by_id["MSP"]["_skill"] == "sub_label_annotation"
+    assert not any(
+        doc.get("_skill") == "lap_annotation" and doc.get("_collection") == "labels"
+        for doc in docs
+    )
+    assert label_lookup.get_label("MSP")["description"] == expected
+
+
 def test_detailed_preflight_outputs_sentence_evidence_without_label_tool():
     semantic_search_text = preflight_detailed._semantic_search_text(
         [
@@ -2466,18 +2494,13 @@ def test_preflight_expert_time_summary_reports_spike_reversal():
         "Time gap starts at index 100 with value 0 ms and starting slope "
         "50 ms/iloc"
     ) in prompt
-    assert (
-        "raising index 100 to 104 (start 0 ms, end 300 ms, percent change unknown, "
-        "slope 75 ms/iloc)"
-    ) in prompt
-    assert (
-        "falling index 104 to 107 (start 300 ms, end 200 ms, percent change -33.333%, "
-        "slope -33.333 ms/iloc)"
-    ) in prompt
+    assert "Time gap local curve changes: none." in prompt
     assert (
         "spike index 100 to 107 (start 0 ms, peak index 104 value 300 ms, "
         "end 200 ms)"
     ) in prompt
+    assert "raising index 100 to 104 (start 0 ms" not in prompt
+    assert "falling index 104 to 107 (start 300 ms" not in prompt
     assert "percentage change from the starting value is unknown" in prompt
     assert "Ending slope is -40 ms/iloc" in prompt
     assert "lower than the starting slope by 180%" in prompt
@@ -2529,8 +2552,9 @@ def test_preflight_expert_time_summary_reports_endpoints_and_slope_comparison():
         "100 ms/iloc"
     ) in summary
     assert (
-        "raising index 0 to 6 (start 0 ms, end 4000.24 ms, "
-        "percent change unknown, slope 666.707 ms/iloc)"
+        "Time gap local curve changes: raising index 0 to 6 "
+        "(slope 100 ms/iloc to 300 ms/iloc, change 200 ms/iloc, "
+        "rate change 200%)"
     ) in summary
     assert "percentage change from the starting value is unknown" in summary
     assert "Ending slope is 300 ms/iloc" in summary
@@ -2538,6 +2562,38 @@ def test_preflight_expert_time_summary_reports_endpoints_and_slope_comparison():
     assert "Time gap value overall" not in summary
     assert "Loss-rate shape:" not in summary
     assert "toward zero:" not in summary
+
+
+def test_preflight_expert_time_summary_reports_falling_slope_change():
+    summary = _preflight_gap_slope_summary(
+        "expert_time_difference",
+        {
+            "unit": "ms",
+            "slope_unit": "ms/iloc",
+            "start_slope": 300.0,
+            "end_slope": 100.0,
+            "point_trend_runs": [
+                {
+                    "direction": "rising",
+                    "start_iloc": 30,
+                    "end_iloc": 33,
+                    "start_value": 0.0,
+                    "end_value": 600.0,
+                    "delta_value": 600.0,
+                    "slope": 200.0,
+                }
+            ],
+            "delta_value": 600.0,
+        },
+        True,
+    )
+
+    assert (
+        "Time gap local curve changes: falling index 30 to 33 "
+        "(slope 300 ms/iloc to 100 ms/iloc, change -200 ms/iloc, "
+        "rate change -66.667%)"
+    ) in summary
+    assert "Time gap reversal events:" not in summary
 
 
 def test_preflight_expert_time_summary_reports_dip_reversal():
@@ -2549,18 +2605,13 @@ def test_preflight_expert_time_summary_reports_dip_reversal():
     results = _run_queries(df, 20, 24)
     prompt = _prompt_block("lap", 20, 24, results, [], [])
 
-    assert (
-        "falling index 20 to 22 (start 300 ms, end 100 ms, percent change -66.667%, "
-        "slope -100 ms/iloc)"
-    ) in prompt
-    assert (
-        "raising index 22 to 24 (start 100 ms, end 160 ms, percent change 60%, "
-        "slope 30 ms/iloc)"
-    ) in prompt
+    assert "Time gap local curve changes: none." in prompt
     assert (
         "dip index 20 to 24 (start 300 ms, trough index 22 value 100 ms, "
         "end 160 ms)"
     ) in prompt
+    assert "falling index 20 to 22 (start 300 ms" not in prompt
+    assert "raising index 22 to 24 (start 100 ms" not in prompt
     assert "lower than the starting value by 46.667%" in prompt
     assert "Ending slope is 30 ms/iloc" in prompt
     assert "higher than the starting slope by 130%" in prompt
@@ -2614,10 +2665,7 @@ def test_preflight_trend_run_summary_omits_duplicate_time_delta_prompt_point():
         "Time gap starts at index 10 with value 0 ms and starting slope "
         "200 ms/iloc"
     ) in prompt
-    assert (
-        "raising index 10 to 14 (start 0 ms, end 800 ms, percent change unknown, "
-        "slope 200 ms/iloc)"
-    ) in prompt
+    assert "Time gap local curve changes:" in prompt
     assert "Time gap value starts" not in prompt
     assert "Time gap value runs" not in prompt
     assert "The selected losing time run spans" not in prompt
