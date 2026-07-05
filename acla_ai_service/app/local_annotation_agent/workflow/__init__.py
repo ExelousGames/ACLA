@@ -38,11 +38,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
-# Side-effect imports — register annotation-domain agents, tools, and
-# structured-attachment formatters with the agent box. Order matters:
-# these must run before any caller invokes run_annotation(). Was previously
-# triggered by importing the `annotation` package's __init__; now hoisted
-# here since pipelines/annotation/ doubles as the public entry.
+# Side-effect imports — register annotation-domain formatters and helpers.
+# The local provider now uses an explicit harness, so there are no graph
+# agents to register here.
 from app.local_annotation_agent.workflow import formatters  # noqa: F401
 from app.local_annotation_agent.workflow import agents      # noqa: F401
 from app.local_annotation_agent.workflow import tools       # noqa: F401

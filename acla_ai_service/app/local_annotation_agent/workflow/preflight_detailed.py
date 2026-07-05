@@ -11,6 +11,7 @@ from app.local_annotation_agent.workflow.preflight import (
     SPEED_INVESTIGATION_QUERY_SPECS,
     PreflightContext,
     _preflight_analysis_ids,
+    _preflight_semantic_summaries,
     _preflight_query_table,
     _run_queries,
     _run_tools,
@@ -29,13 +30,8 @@ DETAILED_PREFLIGHT_TOOL_IDS = (
     "classify_opponent_interaction",
     "find_nearest_opponent",
 )
-_DETAILED_SHARED_PREFLIGHT_QUERY_SPECS = tuple(
-    spec
-    for spec in SHARED_PREFLIGHT_QUERY_SPECS
-    if (spec.get("params") or {}).get("column") != "expert_time_difference"
-)
 DETAILED_PREFLIGHT_QUERY_SPECS = (
-    *_DETAILED_SHARED_PREFLIGHT_QUERY_SPECS,
+    *SHARED_PREFLIGHT_QUERY_SPECS,
     *SPEED_INVESTIGATION_QUERY_SPECS,
     {
         "tool_id": "query_telemetry.compute_slope.trajectory_offset",
@@ -247,11 +243,14 @@ def build_preflight_context(
         tool_outputs,
         parent_main_labels=parent_main_labels,
     )
-    event_text = _event_text(events, parent_main_labels, extra_query_terms)
-    semantic_search_text = _semantic_search_text(
-        events,
-        parent_main_labels,
-        extra_query_terms,
+    time_gap_summaries = _time_gap_summary_sentences(tool_outputs)
+    event_text = _join_evidence_text(
+        time_gap_summaries,
+        _event_text(events, parent_main_labels, extra_query_terms),
+    )
+    semantic_search_text = _join_evidence_text(
+        time_gap_summaries,
+        _semantic_search_text(events, parent_main_labels, extra_query_terms),
     )
     source_tool_ids = _dedupe(
         source
@@ -347,7 +346,6 @@ def _build_detailed_events(
     _extend(events, _peak_comparison_events(df, start, end, by_tool, "throttle"))
     _extend(events, _input_timing_comparison_events(df, start, end))
     _extend(events, _local_input_shape_events(df, start, end))
-    _extend(events, _time_delta_events(df, start, end, by_tool, phases))
     _extend(events, _trajectory_events(df, start, end, by_tool, phases))
     _extend(events, _speed_events(df, start, end, by_tool, phases))
     _extend(events, _gear_and_rpm_events(df, start, end, phases))
@@ -1291,64 +1289,6 @@ def _trajectory_events(
     return events
 
 
-def _time_delta_events(
-    df,
-    start: int,
-    end: int,
-    _by_tool: Dict[str, Dict[str, Any]],
-    phases: List[Dict[str, int]],
-) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    events.extend(_time_gap_percent_events(df, start, end, phases))
-    return events
-
-
-def _time_gap_percent_events(
-    df,
-    start: int,
-    end: int,
-    phases: List[Dict[str, int]],
-) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    for phase, range_ in [
-        ("whole_range", [start, end]),
-        *_time_gap_slope_ranges(start, end, phases),
-    ]:
-        values = _time_gap_percent_values(df, range_[0], range_[1])
-        analysis = _gap_percent_change(values, kind="time")
-        if not analysis:
-            continue
-        if phase == "whole_range":
-            if analysis["relative_gain_percent"] < 0.0:
-                event_name = "gap grows"
-            else:
-                event_name = "gap shrinks"
-        else:
-            event_name = _time_gap_event_name(analysis["direction"], phase)
-        events.append(_event(
-            event_name,
-            phase,
-            range_,
-            analysis,
-            (
-                "strong"
-                if analysis.get("threshold_state") == "label_threshold_met"
-                else "moderate"
-            ),
-            ["local_expert_time_difference_percent_gap"],
-        ))
-        if phase == "whole_range" and analysis["relative_gain_percent"] < 0.0:
-            events.append(_event(
-                "time loss",
-                "whole_range",
-                [start, end],
-                analysis,
-                "moderate",
-                ["local_expert_time_difference_percent_gap"],
-            ))
-    return events
-
-
 def _time_gap_slope_ranges(
     start: int,
     end: int,
@@ -1774,49 +1714,6 @@ def _speed_gap_phase_events(
             ["local_speed_difference_percent_gap"],
         ))
     return events
-
-
-def _time_gap_percent_values(
-    df,
-    start: int,
-    end: int,
-) -> List[Tuple[int, float]]:
-    if df is None:
-        return []
-    if "Graphics_current_time" in getattr(df, "columns", []) and (
-        "expert_time_difference" in getattr(df, "columns", [])
-    ):
-        rows = _paired_series_values(
-            df,
-            start,
-            end,
-            "Graphics_current_time",
-            "expert_time_difference",
-        )
-        out: List[Tuple[int, float]] = []
-        for iloc, player_time, time_gap in rows:
-            expert_time = player_time - time_gap
-            percent = _percent_gap(player_time, expert_time)
-            if percent is not None:
-                out.append((iloc, percent))
-        return out
-    if "Graphics_current_time" in getattr(df, "columns", []) and (
-        "expert_optimal_time" in getattr(df, "columns", [])
-    ):
-        rows = _paired_series_values(
-            df,
-            start,
-            end,
-            "Graphics_current_time",
-            "expert_optimal_time",
-        )
-        return [
-            (iloc, percent)
-            for iloc, player_time, expert_time in rows
-            for percent in [_percent_gap(player_time, expert_time)]
-            if percent is not None
-        ]
-    return []
 
 
 def _speed_gap_percent_values(
@@ -2730,13 +2627,6 @@ def _phase_for_iloc(iloc: Any, phases: List[Dict[str, int]]) -> str:
     return "unknown"
 
 
-def _time_gap_event_name(direction: str, phase: str) -> str:
-    base = f"time gap {direction}"
-    if phase in {"entry", "apex", "exit"}:
-        return f"{base} at {phase}"
-    return base
-
-
 def _speed_gap_event_name(direction: str, phase: str) -> str:
     base = f"speed gap {direction}"
     if phase in {"entry", "apex", "exit"}:
@@ -2786,6 +2676,23 @@ def _event_text(
     extra_query_terms: Sequence[str],
 ) -> str:
     return _sentence_evidence_text(events, parent_main_labels, extra_query_terms)
+
+
+def _time_gap_summary_sentences(
+    tool_outputs: Sequence[Tuple[str, Dict[str, Any]]],
+) -> List[str]:
+    return [
+        summary
+        for summary in _preflight_semantic_summaries(list(tool_outputs))
+        if summary.startswith("Time gap ")
+    ]
+
+
+def _join_evidence_text(prefix_lines: Sequence[str], body: str) -> str:
+    lines = [line for line in prefix_lines if str(line).strip()]
+    if body.strip():
+        lines.append(body.strip())
+    return "\n".join(lines)
 
 
 def _semantic_search_text(
@@ -2906,7 +2813,7 @@ def _phase_sentence_prefix(phase: str) -> str:
 
 
 def _gap_event_has_phase(event_name: str) -> bool:
-    return event_name.startswith(("time gap ", "speed gap ")) and (
+    return event_name.startswith("speed gap ") and (
         event_name.endswith(" at entry")
         or event_name.endswith(" at apex")
         or event_name.endswith(" at exit")
@@ -3237,20 +3144,6 @@ def _measurement_sentence_fragments(
         threshold = measurements.get("threshold_state")
         if threshold:
             fragments.append(_humanize_token(str(threshold)))
-        return fragments
-
-    if event_name in {
-        "gap grows",
-        "gap shrinks",
-        "time loss",
-    } or event_name.startswith(("time gap rising", "time gap falling")):
-        fragments.extend(_gap_percent_sentence_fragments(measurements, "time"))
-        threshold = measurements.get("threshold_state")
-        if threshold:
-            fragments.append(_humanize_token(str(threshold)))
-        slope_shape = measurements.get("slope_shape")
-        if slope_shape:
-            fragments.append(_humanize_token(str(slope_shape)))
         return fragments
 
     if event_name in {

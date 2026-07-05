@@ -1,8 +1,7 @@
 """Annotation-domain helpers.
 
-Generic telemetry tools (graph rendering, query dispatchers, expert-phase
-detection, circuit-section locator) stay in ``agent/tools/`` because they are
-agent capabilities, not annotation concerns.
+Live AI graph rendering/viewing has been removed from the local annotation
+path. Deterministic telemetry analysis remains in preflight/tool modules.
 """
 
 from __future__ import annotations
@@ -34,4 +33,3 @@ def shape_label_doc_for_llm(doc: Dict[str, Any]) -> Dict[str, Any]:
     if ex_with:
         row["exclusive_with"] = list(ex_with)
     return row
-

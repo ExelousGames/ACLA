@@ -595,25 +595,25 @@ def _time_delta_slope_shape_tags(extra: Dict[str, Any]) -> List[str]:
     if shape == "slope_decreasing_over_section":
         if gap_direction == "time_gap_rising":
             return [
-                "recovery trend",
-                "rate of losing time decreasing",
-                "time loss decelerating",
+                "gain trend",
+                "rate of gaining time decreasing",
+                "time gain decelerating",
             ]
         if gap_direction == "time_gap_falling":
-            return ["recovery accelerating", "time gap falling faster"]
+            return ["losing time accelerating", "time gap falling faster"]
         return ["slope decreasing over section"]
     if shape == "slope_increasing_over_section":
         if gap_direction == "time_gap_rising":
-            return ["losing time accelerating", "time gap rising faster"]
+            return ["gaining time accelerating", "time gap rising faster"]
         if gap_direction == "time_gap_falling":
-            return ["recovery easing", "time gap falling slower"]
+            return ["loss rate decreasing", "time gap falling slower"]
         return ["slope increasing over section"]
     if shape == "slope_steady_over_section":
         return ["time gap slope steady over section"]
     if shape == "reversing_to_falling_within_section":
-        return ["time gap reversing to recovery within section"]
-    if shape == "reversing_to_rising_within_section":
         return ["time gap reversing to loss within section"]
+    if shape == "reversing_to_rising_within_section":
+        return ["time gap reversing to gain within section"]
     return []
 
 
@@ -1340,7 +1340,8 @@ def _time_gap_run_ranges(
             f"index {run.get('start_iloc')} to {run.get('end_iloc')} "
             f"(start {_measurement(run.get('start_value'), unit)}, "
             f"end {_measurement(run.get('end_value'), unit)}, "
-            f"delta {_measurement(run.get('delta_value'), unit)}, "
+            "percent change "
+            f"{_percent_change_measurement(run.get('end_value'), run.get('start_value'))}, "
             f"slope {_measurement(run.get('slope'), slope_unit)})"
         )
         for run in runs[:6]
@@ -1394,29 +1395,48 @@ def _time_gap_direction_word(direction: Any) -> str:
 
 
 def _value_comparison(end_value: Any, start_value: Any, unit: Any) -> str:
-    end_number = _as_number(end_value)
-    start_number = _as_number(start_value)
-    if end_number is None or start_number is None:
-        return "comparison to the starting value is unknown"
-    delta = end_number - start_number
-    if delta > 0:
-        return f"higher than the starting value by {_measurement(delta, unit)}"
-    if delta < 0:
-        return f"lower than the starting value by {_measurement(abs(delta), unit)}"
-    return "equal to the starting value"
+    return _percent_change_comparison(end_value, start_value, "starting value")
 
 
 def _slope_comparison(end_slope: Any, start_slope: Any, slope_unit: Any) -> str:
-    end_number = _as_number(end_slope)
-    start_number = _as_number(start_slope)
+    return _percent_change_comparison(end_slope, start_slope, "starting slope")
+
+
+def _percent_change_comparison(end_value: Any, start_value: Any, subject: str) -> str:
+    end_number = _as_number(end_value)
+    start_number = _as_number(start_value)
     if end_number is None or start_number is None:
-        return "comparison to the starting slope is unknown"
-    delta = end_number - start_number
-    if delta > 0:
-        return f"higher than the starting slope by {_measurement(delta, slope_unit)}"
-    if delta < 0:
-        return f"lower than the starting slope by {_measurement(abs(delta), slope_unit)}"
-    return "equal to the starting slope"
+        return f"percentage change from the {subject} is unknown"
+    percent_change = _percent_change(end_number, start_number)
+    if percent_change is None:
+        return f"percentage change from the {subject} is unknown"
+    if percent_change > 0:
+        return f"higher than the {subject} by {_format_percent(abs(percent_change))}"
+    if percent_change < 0:
+        return f"lower than the {subject} by {_format_percent(abs(percent_change))}"
+    return f"equal to the {subject}"
+
+
+def _percent_change_measurement(end_value: Any, start_value: Any) -> str:
+    end_number = _as_number(end_value)
+    start_number = _as_number(start_value)
+    if end_number is None or start_number is None:
+        return "unknown"
+    percent_change = _percent_change(end_number, start_number)
+    if percent_change is None:
+        return "unknown"
+    return _format_percent(percent_change)
+
+
+def _percent_change(end_number: float, start_number: float) -> Optional[float]:
+    if abs(start_number) <= 1e-9:
+        return None
+    return ((end_number - start_number) / abs(start_number)) * 100.0
+
+
+def _format_percent(value: float) -> str:
+    text = f"{float(value):.3f}".rstrip("0").rstrip(".")
+    return f"{text}%"
 
 
 def _as_number(value: Any) -> Optional[float]:

@@ -61,7 +61,7 @@ def test_detailed_local_request_uses_shared_tool_agent_prompt(monkeypatch):
     )
 
     assert "root_agent" not in request.extra_state
-    assert "tool_agent_extra_tools" in request.extra_state
+    assert "tool_agent_excluded_tools" in request.extra_state
     assert request.planner_prompt.startswith("FRONT")
     assert '"agent": "label_verifier"' not in request.planner_prompt
     intro, outro = request.synth_prompt({})
@@ -112,7 +112,7 @@ def test_lap_local_request_uses_shared_tool_agent_prompt(monkeypatch):
     )
 
     assert "root_agent" not in request.extra_state
-    assert "tool_agent_extra_tools" in request.extra_state
+    assert "tool_agent_excluded_tools" in request.extra_state
     assert request.planner_prompt.startswith("FRONT")
     assert '"agent": "label_verifier"' not in request.planner_prompt
     intro, outro = request.synth_prompt({})

@@ -71,7 +71,7 @@ class AgentCallbacks(Protocol):
     """``vlm_reasoning(chunk)`` — streamed thinking blocks (claude only)."""
 
     step_event: Optional[Callable[[str, Dict[str, Any]], None]]
-    """``step_event(summary, stage)`` — non-VLM events (renders, queries, tools)."""
+    """``step_event(summary, stage)`` — non-VLM events (queries, tools)."""
 
 
 @dataclass
@@ -142,9 +142,9 @@ class AgentRequest:
     Fields:
         provider_id         selected annotation provider id.
         config              provider-neutral generation config.
-        planner_prompt      full text the planner sends to the VLM. The
-                            planner decides which sub-agents to schedule;
-                            constrain that choice in natural language here.
+        planner_prompt      full text the selected provider sends to its
+                            model/harness. Constrain the model's work in
+                            natural language here.
         synth_prompt        callable (state) -> (intro, outro). Always a
                             callable so the caller can read state /
                             attachments populated by earlier steps before
@@ -156,12 +156,10 @@ class AgentRequest:
         callbacks           observability hooks.
         session_id          opaque tag forwarded to step events for audit.
         extra_state         free-form bag forwarded into the runner's
-                            initial state. The local runner reads
-                            ``extra_state["root_agent"]`` to pick which
-                            registered Agent to invoke. Beyond that the
-                            framework does not inspect or mutate keys —
-                            only those declared in the active Agent's
-                            state schema survive LangGraph's filtering.
+                            initial state. Provider adapters may read
+                            provider-specific keys such as extra tool
+                            definitions, but the shared contract does not
+                            define agent topology keys.
     """
 
     provider_id: str
@@ -188,8 +186,8 @@ class AgentResponse:
 
     The agent returns raw text. The caller is responsible for parsing it
     into whatever typed result its flow defines. ``attachments`` lets the
-    caller surface intermediate artifacts (rendered graph PNGs, planner
-    plan text, observation paragraphs, sub-agent emissions) to the UI
+    caller surface intermediate artifacts (planner plan text, worker
+    outputs, verifier reports) to the UI
     without re-deriving them. Any domain-specific output (verified
     shortlists, label scores, etc.) rides through ``attachments`` —
     there are no domain-named fields on this dataclass.
@@ -199,9 +197,9 @@ class AgentResponse:
         verdict             ``"pass"`` / ``"fail"`` / ``""`` — evaluator verdict.
         attachments         everything the run produced, keyed by name.
         step_events         transcript of node/tool events for replay/audit.
-        graph_images        convenience accessor for rendered PNGs (bytes).
+        graph_images        legacy convenience accessor for rendered PNGs.
         plan_steps          the planner's chosen plan (for debugging/UI).
-        messages            role/content trace from planner/synth/sub-agents.
+        messages            role/content trace from provider stages.
     """
 
     raw_response: str

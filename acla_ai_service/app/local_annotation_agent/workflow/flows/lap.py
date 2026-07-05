@@ -34,6 +34,7 @@ from app.local_annotation_agent.workflow.results import (
 from app.local_annotation_agent.workflow.preflight_lap import (
     build_preflight_context,
 )
+from app.annotation_providers.tool_surface import PREFLIGHT_ONLY_TOOL_NAMES
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +567,7 @@ def build_request(
     planner_prompt = shared_front_prompt
     synth_prompt = lambda _state: ("", "")
     extra_state = {
+        "tool_agent_excluded_tools": sorted(PREFLIGHT_ONLY_TOOL_NAMES),
         "annotation_session_context": session_context,
         "eligible_behavior_label_ids": eligible_labels,
     }

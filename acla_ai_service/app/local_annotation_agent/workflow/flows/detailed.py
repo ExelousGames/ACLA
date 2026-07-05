@@ -35,6 +35,7 @@ from app.local_annotation_agent.workflow.preflight_detailed import (
     build_preflight_context,
 )
 from app.local_annotation_agent.workflow.tools import shape_label_doc_for_llm
+from app.annotation_providers.tool_surface import PREFLIGHT_ONLY_TOOL_NAMES
 
 
 def _is_full_parent_range(
@@ -342,7 +343,9 @@ def build_request(
     ])
     planner_prompt = shared_front_prompt
     synth_prompt = lambda _state: ("", "")
-    extra_state: Dict[str, Any] = {}
+    extra_state: Dict[str, Any] = {
+        "tool_agent_excluded_tools": sorted(PREFLIGHT_ONLY_TOOL_NAMES),
+    }
 
     return AgentRequest(
         provider_id=provider_id,

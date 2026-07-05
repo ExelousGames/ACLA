@@ -155,6 +155,23 @@ EXPOSED_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     },
 ]
 
+PREFLIGHT_ONLY_TOOL_NAMES = {
+    "recommend_tools",
+    "run_annotation_tool",
+    "search_annotation_guidance",
+    "list_graphs",
+    "get_circuit_id",
+    "get_graph_guidance",
+    "query_telemetry",
+    "compute_expert_phases",
+    "measure_segment_shape",
+    "locate_circuit_section",
+    "find_nearest_opponent",
+    "classify_opponent_interaction",
+    "query_opponent_trajectory",
+    "search_labels",
+}
+
 
 def annotation_tool_names() -> List[str]:
     return [str(defn["name"]) for defn in EXPOSED_TOOL_DEFINITIONS]
@@ -180,19 +197,63 @@ def _normalise_extra_tool_def(spec: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def annotation_tool_definitions(request: AgentRequest | None = None) -> List[Dict[str, Any]]:
+def tool_agent_excluded_tools(request: AgentRequest | None = None) -> set[str]:
+    excluded = set(PREFLIGHT_ONLY_TOOL_NAMES)
+    if request is not None:
+        excluded.update(
+            str(name)
+            for name in request.extra_state.get("tool_agent_excluded_tools", [])
+        )
+    return excluded
+
+
+def annotation_tool_definitions(
+    request: AgentRequest | None = None,
+    *,
+    include_control: bool = True,
+    include_domain: bool = True,
+) -> List[Dict[str, Any]]:
+    excluded = tool_agent_excluded_tools(request)
+    control = [] if not include_control else list(EXPOSED_TOOL_DEFINITIONS)
+    domain: List[Dict[str, Any]] = []
+    if include_domain:
+        domain.extend(
+            dict(defn)
+            for defn in ANNOTATION_TOOL_REGISTRY
+            if str(defn["name"]) not in excluded
+        )
+        domain.extend(
+            spec
+            for spec in (
+                _normalise_extra_tool_def(spec)
+                for spec in (
+                    tool_agent_extra_tools(request)
+                    if request is not None
+                    else []
+                )
+            )
+            if str(spec["name"]) not in excluded
+        )
     return [
-        *EXPOSED_TOOL_DEFINITIONS,
-        *ANNOTATION_TOOL_REGISTRY,
-        *(
-            _normalise_extra_tool_def(spec)
-            for spec in (tool_agent_extra_tools(request) if request is not None else [])
-        ),
+        *control,
+        *domain,
     ]
 
 
-def annotation_openai_tool_schemas(request: AgentRequest | None = None) -> List[Dict[str, Any]]:
-    return [_openai_tool_schema(defn) for defn in annotation_tool_definitions(request)]
+def annotation_openai_tool_schemas(
+    request: AgentRequest | None = None,
+    *,
+    include_control: bool = True,
+    include_domain: bool = True,
+) -> List[Dict[str, Any]]:
+    return [
+        _openai_tool_schema(defn)
+        for defn in annotation_tool_definitions(
+            request,
+            include_control=include_control,
+            include_domain=include_domain,
+        )
+    ]
 
 
 def tool_agent_extra_tools(request: AgentRequest) -> List[Dict[str, Any]]:
@@ -331,6 +392,44 @@ class AnnotationToolSurface:
         self.capture.submitted = True
         return json.dumps({"ok": True, "note": "Result captured. Session can end now."})
 
+    def _known_tool_ids(self) -> List[str]:
+        return [
+            str(defn["name"])
+            for defn in annotation_tool_definitions(
+                self.request,
+                include_control=False,
+                include_domain=True,
+            )
+        ]
+
+    def _not_available(self, tool_id: str) -> str:
+        return json.dumps({
+            "error": f"annotation tool {tool_id!r} is not available in this AI session",
+            "known_tool_ids": self._known_tool_ids(),
+        })
+
+    def recommend_tools(self, intent: str, params_json: str = "") -> str:
+        known_tool_ids = self._known_tool_ids()
+        return json.dumps({
+            "intent": intent,
+            "recommendations": [
+                {"tool_id": tool_id, "reason": "available live AI tool"}
+                for tool_id in known_tool_ids
+            ],
+        })
+
+    def run_annotation_tool(self, tool_id: str, params_json: str = "") -> str:
+        if str(tool_id) in tool_agent_excluded_tools(self.request):
+            return self._not_available(str(tool_id))
+        try:
+            params = json.loads(params_json) if params_json else {}
+        except json.JSONDecodeError as exc:
+            return json.dumps({"error": f"params_json was not valid JSON: {exc}"})
+        if not isinstance(params, dict):
+            return json.dumps({"error": "params_json must decode to a JSON object."})
+        _result, text, _images = self.call_tool(str(tool_id), params)
+        return text
+
     def _extra_tool_handler(self, name: str) -> Callable[["AnnotationToolSurface", Dict[str, Any]], Any] | None:
         for spec in tool_agent_extra_tools(self.request):
             if str(spec.get("name")) == name:
@@ -362,10 +461,22 @@ class AnnotationToolSurface:
         return json.dumps({"error": f"unknown annotation capability {name!r}"})
 
     def call_tool(self, name: str, args: Dict[str, Any]) -> Tuple[Any, str, List[str]]:
-        if name in _capability_by_name():
+        if name in tool_agent_excluded_tools(self.request):
+            result = self._not_available(name)
+        elif name in _capability_by_name():
             result = self._call_annotation_capability(name, args)
         elif name == "submit_result":
             result = self.submit_result(str(args.get("payload_json") or ""), str(args.get("summary") or ""))
+        elif name == "recommend_tools":
+            result = self.recommend_tools(
+                str(args.get("intent") or ""),
+                str(args.get("params_json") or ""),
+            )
+        elif name == "run_annotation_tool":
+            result = self.run_annotation_tool(
+                str(args.get("tool_id") or ""),
+                str(args.get("params_json") or ""),
+            )
         else:
             handler = self._extra_tool_handler(name)
             if handler is None:

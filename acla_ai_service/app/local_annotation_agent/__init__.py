@@ -6,19 +6,17 @@ Exposes one public entry point:
     from app.local_annotation_agent import run_agent, AgentRequest, AgentResponse
     response = run_agent(request)
 
-The box is domain-free. It knows how to run deterministic queries and
-capture structured submissions. It does NOT know what the caller wants —
-that intent rides in ``planner_prompt`` on the AgentRequest. Providers use
-the shared tool-agent contract and may register additional tools via
-``extra_state["tool_agent_extra_tools"]``.
+The box is domain-free. It runs provider-specific harnesses and captures
+structured submissions. It does NOT know what the caller wants — that
+intent rides in ``planner_prompt`` on the AgentRequest.
 
 Sub-modules:
     contracts       Public dataclasses crossing the box boundary.
-    framework       Planner/executor/synthesizer/evaluator topology.
+    runner          Local planner/worker/verifier/finalizer harness.
     evaluators      Format + evidence evaluator suite + formatter registry.
     backends        claude_sdk (Claude Agent SDK), OpenAI-compatible providers.
-    sub_agents      label verification and non-visual plan-step capabilities.
-    tools           Telemetry graph rendering + query dispatchers.
+    sub_agents      knowledge-backed helper capabilities.
+    tools           Annotation-domain helpers.
     runners         local / Claude / OpenAI execution paths.
 """
 

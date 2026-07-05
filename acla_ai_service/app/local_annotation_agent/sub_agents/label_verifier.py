@@ -1,20 +1,8 @@
-"""label_verifier sub-agent — hybrid-retrieval label shortlist.
+"""Knowledge-backed label shortlist helper.
 
-Sits alongside ``describe_graphs`` and ``zoom`` as a peer capability the
-agent box exposes. Two surfaces share the same core computation:
-
-  * ``compute_verified_labels(parent_main_labels, evidence_text)`` —
-    pure function the local runner's synth phase calls.
-  * ``LabelVerifier`` Agent — registered with the framework so the
-    LangGraph planner can delegate a plan step to it.
-
-The shortlist comes from the one hybrid retriever in
-:mod:`app.internal_knowledge_base.label_search`; this agent just queries it
-with the describe_graphs observations and scopes the result to the
-eligible tiers.
-
-Consumes  init.parent_segment, step_solver.*.observations
-Produces  verified_labels
+The local harness no longer registers graph sub-agents. This module keeps the
+useful part of the old label verifier: a pure retrieval/reranking helper that
+can be called by flows or future dedicated harness workers.
 """
 
 from __future__ import annotations
@@ -25,11 +13,7 @@ from typing import Any, Dict, List, Tuple
 from app.infra.config import settings
 from app.internal_knowledge_base.label_reranker import rerank_label_docs
 from app.internal_knowledge_base.label_search import get_doc, search
-from app.local_annotation_agent.framework import Agent, AgentState
-from app.local_annotation_agent.evaluators import (
-    AttachmentPool,
-    PipelineAttachment,
-)
+from app.shared.contracts import Attachment
 
 LOGGER = logging.getLogger(__name__)
 
@@ -123,6 +107,9 @@ def compute_verified_labels(
     return verified, all_scored
 
 
+AttachmentPool = Dict[str, Attachment]
+
+
 def evidence_text_from_pool(pool: AttachmentPool) -> str:
     """Concatenate preflight evidence and all ``*.observations`` attachments."""
     parts: List[str] = []
@@ -166,8 +153,8 @@ def eligible_behavior_label_ids_from_pool(pool: AttachmentPool) -> List[str]:
     return [str(x) for x in raw if isinstance(x, str)]
 
 
-def _emit_verified(payload: List[dict]) -> PipelineAttachment:
-    return PipelineAttachment(
+def _emit_verified(payload: List[dict]) -> Attachment:
+    return Attachment(
         name="label_verifier.verified_labels",
         kind="structured",
         content_schema="verified_labels",
@@ -176,10 +163,8 @@ def _emit_verified(payload: List[dict]) -> PipelineAttachment:
     )
 
 
-def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, Any]:
-    """Agent executor surface — wraps ``compute_verified_labels`` against the pool."""
-    messages = list(state.get("messages", []))
-    pool: AttachmentPool = state.get("attachment_pool", {})
+def run_label_verifier(pool: AttachmentPool) -> Dict[str, Any]:
+    """Run label retrieval against an attachment pool."""
     parent_main_labels = parent_main_labels_from_pool(pool)
     eligible_behavior_label_ids = eligible_behavior_label_ids_from_pool(pool)
     evidence = evidence_text_from_pool(pool)
@@ -192,10 +177,7 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
 
     if not evidence:
         LOGGER.warning("Label retrieval: no evidence text; empty shortlist.")
-        messages.append({
-            "role": "label_verifier",
-            "content": "No evidence text available; emitted an empty shortlist.",
-        })
+        message = "No evidence text available; emitted an empty shortlist."
     else:
         passed_log = "\n".join(
             f"✓ {p['label_id']} ({p['name']}): {p['similarity']:.3f}"
@@ -211,41 +193,14 @@ def _executor(state: AgentState, step: Dict[str, Any], registry) -> Dict[str, An
             "Label retrieval: %d/%d candidates shortlisted.",
             len(verified), len(all_scored),
         )
-        messages.append({
-            "role": "label_verifier",
-            "content": (
-                f"Hybrid retrieval: {len(verified)}/{len(all_scored)} labels shortlisted:\n"
-                f"{passed_log}"
-                + (f"\n\nNot shortlisted:\n{rejected_log}" if rejected_log else "")
-            ),
-        })
+        message = (
+            f"Hybrid retrieval: {len(verified)}/{len(all_scored)} labels shortlisted:\n"
+            f"{passed_log}"
+            + (f"\n\nNot shortlisted:\n{rejected_log}" if rejected_log else "")
+        )
 
     att = _emit_verified(verified)
     return {
         "attachment_pool": {att.name: att},
-        "messages": messages,
+        "messages": [{"role": "label_verifier", "content": message}],
     }
-
-
-class LabelVerifier(Agent):
-    """Deterministic step solver: hybrid-retrieval label shortlist."""
-
-    name = LABEL_VERIFIER_AGENT_NAME
-    consumes = ["init.parent_segment", "step_solver.*.observations"]
-    produces = ["verified_labels"]
-    delegates_to: list = []
-
-    def planner(self, state: AgentState):
-        return None
-
-    def synthesizer(self, state: AgentState):
-        return None
-
-    def evaluator(self, state: AgentState):
-        return None
-
-    def executor(self, state: AgentState, step, registry) -> Dict[str, Any]:
-        return _executor(state, step, registry)
-
-
-LABEL_VERIFIER_SPEC = LabelVerifier.register()

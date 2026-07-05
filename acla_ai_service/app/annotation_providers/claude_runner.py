@@ -1,8 +1,7 @@
 """
 Claude runner — one agentic Claude session per AgentRequest.
 
-Different paradigm from the local runner: instead of a LangGraph
-planner/executor/synth/eval cycle, this hands control to a single Claude
+Different paradigm from the local harness: this hands control to a single Claude
 session that calls MCP tools to inspect telemetry and submit a result.
 One subprocess start, multi-turn reasoning in one context.
 

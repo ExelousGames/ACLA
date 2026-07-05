@@ -105,7 +105,7 @@ def test_time_difference_to_expert_alias_is_not_used():
     assert result is None
 
 
-def test_time_difference_rising_concave_down_is_recovery_trend():
+def test_time_difference_rising_concave_down_is_gain_trend():
     df = pd.DataFrame(
         {
             "expert_time_difference": [
@@ -136,11 +136,11 @@ def test_time_difference_rising_concave_down_is_recovery_trend():
         },
         result,
     )
-    assert "recovery trend" in tags
-    assert "rate of losing time decreasing" in tags
+    assert "gain trend" in tags
+    assert "rate of gaining time decreasing" in tags
 
 
-def test_time_difference_rising_concave_up_is_losing_time_accelerating():
+def test_time_difference_rising_concave_up_is_gaining_time_accelerating():
     df = pd.DataFrame(
         {
             "expert_time_difference": [
@@ -171,7 +171,7 @@ def test_time_difference_rising_concave_up_is_losing_time_accelerating():
         },
         result,
     )
-    assert "losing time accelerating" in tags
+    assert "gaining time accelerating" in tags
 
 
 def test_time_difference_linear_rise_has_steady_slope_shape():
@@ -596,7 +596,7 @@ def test_detailed_preflight_missing_query_tables_are_nonfatal(monkeypatch):
     assert captured["query_specs"]
 
 
-def test_detailed_preflight_events_capture_late_brake_widening_and_time_loss():
+def test_detailed_preflight_events_capture_late_brake_widening_without_legacy_time_loss():
     df = pd.DataFrame(
         {
             "Physics_brake": [
@@ -729,8 +729,8 @@ def test_detailed_preflight_events_capture_late_brake_widening_and_time_loss():
     assert "brake initiation onset later than expert" in event_names
     assert "trajectory wider than expert" in event_names
     assert "moving toward positive" in event_names
-    assert "gap grows" in event_names
-    assert "time loss" in event_names
+    assert "gap grows" not in event_names
+    assert "time loss" not in event_names
 
 
 def test_detailed_preflight_outputs_corner_phase_boundaries_for_range_selection():
@@ -859,30 +859,8 @@ def test_detailed_preflight_marks_similar_trajectory_phases_aligned():
     assert "entry trajectory aligned with expert" in semantic_search_text
 
 
-def test_detailed_preflight_phases_time_gap_percent_changes_at_corner_entry_or_exit():
-    time_gap = [
-        200.0,
-        220.0,
-        240.0,
-        260.0,
-        280.0,
-        300.0,
-        320.0,
-        340.0,
-        360.0,
-        380.0,
-        400.0,
-        380.0,
-        360.0,
-        340.0,
-        320.0,
-        300.0,
-        280.0,
-        260.0,
-        240.0,
-        220.0,
-        200.0,
-    ]
+def test_detailed_preflight_uses_shared_time_gap_summary_without_percent_calculation():
+    time_gap = [float(value) for value in range(0, 420, 20)]
     df = pd.DataFrame(
         {
             "Graphics_current_time": [1000.0 + value for value in time_gap],
@@ -891,131 +869,58 @@ def test_detailed_preflight_phases_time_gap_percent_changes_at_corner_entry_or_e
         index=range(10, 31),
     )
 
-    events = preflight_detailed._build_detailed_events(
+    tool_outputs = _run_queries(
         df,
         10,
         30,
-        [
-            (
-                "compute_expert_phases",
-                {
-                    "phases": [
-                        {
-                            "entry": 10,
-                            "apex": 20,
-                            "exit": 30,
-                            "direction": "right",
-                        }
-                    ]
-                },
-            ),
-        ],
+        query_specs=tuple(
+            spec
+            for spec in preflight_detailed.DETAILED_PREFLIGHT_QUERY_SPECS
+            if (spec.get("params") or {}).get("column")
+            == "expert_time_difference"
+        ),
     )
+    text = "\n".join(preflight_detailed._time_gap_summary_sentences(tool_outputs))
 
-    rising = next(
-        event for event in events if event["event"] == "time gap rising at entry"
-    )
-    falling = next(
-        event for event in events if event["event"] == "time gap falling at exit"
-    )
-    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
-
-    assert rising["phase"] == "entry"
-    assert rising["measurements"]["relative_gain_percent"] < 0.0
-    assert falling["phase"] == "exit"
-    assert falling["measurements"]["relative_gain_percent"] > 0.0
-    assert "the evidence shows time gap rising at entry" in semantic_search_text
-    assert "the evidence shows time gap falling at exit" in semantic_search_text
-    assert "percentage points gained" in semantic_search_text
+    assert "Time gap starts at index 10" in text
+    assert "Time gap local runs:" in text
+    assert "Time gap ends at index 30" in text
+    assert "percentage change from the starting value is unknown" in text
+    assert "faster than expert" not in text
+    assert "slower than expert" not in text
+    assert "player time" not in text.lower()
+    assert "expert time" not in text.lower()
+    assert "the evidence shows time gap rising" not in text
 
 
-def test_detailed_preflight_phases_time_gap_percent_changes_at_corner_apex():
+def test_preflight_time_gap_summary_accepts_negative_values_as_time_gap_values():
+    time_gap = [float(value) for value in range(0, -420, -20)]
     df = pd.DataFrame(
         {
-            "expert_time_difference": [
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                200.0,
-                400.0,
-                400.0,
-                400.0,
-                400.0,
-                400.0,
-                400.0,
-                400.0,
-                400.0,
-                400.0,
-            ],
-            "Graphics_current_time": [
-                1000.0 + value
-                for value in [
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.0,
-                    200.0,
-                    400.0,
-                    400.0,
-                    400.0,
-                    400.0,
-                    400.0,
-                    400.0,
-                    400.0,
-                    400.0,
-                    400.0,
-                ]
-            ],
+            "Graphics_current_time": [1000.0 + value for value in time_gap],
+            "expert_time_difference": time_gap,
         },
         index=range(10, 31),
     )
 
-    events = preflight_detailed._build_detailed_events(
+    tool_outputs = _run_queries(
         df,
         10,
         30,
-        [
-            (
-                "compute_expert_phases",
-                {
-                    "phases": [
-                        {
-                            "entry": 10,
-                            "apex": 20,
-                            "exit": 30,
-                            "direction": "right",
-                        }
-                    ]
-                },
-            ),
-        ],
+        query_specs=tuple(
+            spec
+            for spec in preflight_detailed.DETAILED_PREFLIGHT_QUERY_SPECS
+            if (spec.get("params") or {}).get("column")
+            == "expert_time_difference"
+        ),
     )
+    text = "\n".join(preflight_detailed._time_gap_summary_sentences(tool_outputs))
 
-    apex = next(
-        event for event in events if event["event"] == "time gap rising at apex"
-    )
-    semantic_search_text = preflight_detailed._semantic_search_text(events, [], [])
-
-    assert apex["phase"] == "apex"
-    assert apex["range"] == [18, 22]
-    assert apex["measurements"]["relative_gain_percent"] < 0.0
-    assert apex["measurements"]["threshold_state"] == "label_threshold_met"
-    assert "the evidence shows time gap rising at apex" in semantic_search_text
+    assert "Time gap starts at index 10" in text
+    assert "Time gap local runs:" in text
+    assert "end -400 ms" in text
+    assert "percentage change from the starting value is unknown" in text
+    assert "slower than expert" not in text
 
 
 def test_detailed_preflight_phases_speed_gap_percent_changes_at_corner_entry_or_exit():
@@ -2562,20 +2467,20 @@ def test_preflight_expert_time_summary_reports_spike_reversal():
         "50 ms/iloc"
     ) in prompt
     assert (
-        "raising index 100 to 104 (start 0 ms, end 300 ms, delta 300 ms, "
+        "raising index 100 to 104 (start 0 ms, end 300 ms, percent change unknown, "
         "slope 75 ms/iloc)"
     ) in prompt
     assert (
-        "falling index 104 to 107 (start 300 ms, end 200 ms, delta -100 ms, "
+        "falling index 104 to 107 (start 300 ms, end 200 ms, percent change -33.333%, "
         "slope -33.333 ms/iloc)"
     ) in prompt
     assert (
         "spike index 100 to 107 (start 0 ms, peak index 104 value 300 ms, "
         "end 200 ms)"
     ) in prompt
-    assert "higher than the starting value by 200 ms" in prompt
+    assert "percentage change from the starting value is unknown" in prompt
     assert "Ending slope is -40 ms/iloc" in prompt
-    assert "lower than the starting slope by 90 ms/iloc" in prompt
+    assert "lower than the starting slope by 180%" in prompt
     assert "Time gap value starts" not in prompt
     assert "Time gap value runs" not in prompt
     assert "Time gap value overall" not in prompt
@@ -2625,11 +2530,11 @@ def test_preflight_expert_time_summary_reports_endpoints_and_slope_comparison():
     ) in summary
     assert (
         "raising index 0 to 6 (start 0 ms, end 4000.24 ms, "
-        "delta 4000.24 ms, slope 666.707 ms/iloc)"
+        "percent change unknown, slope 666.707 ms/iloc)"
     ) in summary
-    assert "higher than the starting value by 4000.24 ms" in summary
+    assert "percentage change from the starting value is unknown" in summary
     assert "Ending slope is 300 ms/iloc" in summary
-    assert "higher than the starting slope by 200 ms/iloc" in summary
+    assert "higher than the starting slope by 200%" in summary
     assert "Time gap value overall" not in summary
     assert "Loss-rate shape:" not in summary
     assert "toward zero:" not in summary
@@ -2645,20 +2550,20 @@ def test_preflight_expert_time_summary_reports_dip_reversal():
     prompt = _prompt_block("lap", 20, 24, results, [], [])
 
     assert (
-        "falling index 20 to 22 (start 300 ms, end 100 ms, delta -200 ms, "
+        "falling index 20 to 22 (start 300 ms, end 100 ms, percent change -66.667%, "
         "slope -100 ms/iloc)"
     ) in prompt
     assert (
-        "raising index 22 to 24 (start 100 ms, end 160 ms, delta 60 ms, "
+        "raising index 22 to 24 (start 100 ms, end 160 ms, percent change 60%, "
         "slope 30 ms/iloc)"
     ) in prompt
     assert (
         "dip index 20 to 24 (start 300 ms, trough index 22 value 100 ms, "
         "end 160 ms)"
     ) in prompt
-    assert "lower than the starting value by 140 ms" in prompt
+    assert "lower than the starting value by 46.667%" in prompt
     assert "Ending slope is 30 ms/iloc" in prompt
-    assert "higher than the starting slope by 130 ms/iloc" in prompt
+    assert "higher than the starting slope by 130%" in prompt
 
 
 def test_preflight_speed_gap_summary_uses_point_trend_indexes():
@@ -2710,7 +2615,7 @@ def test_preflight_trend_run_summary_omits_duplicate_time_delta_prompt_point():
         "200 ms/iloc"
     ) in prompt
     assert (
-        "raising index 10 to 14 (start 0 ms, end 800 ms, delta 800 ms, "
+        "raising index 10 to 14 (start 0 ms, end 800 ms, percent change unknown, "
         "slope 200 ms/iloc)"
     ) in prompt
     assert "Time gap value starts" not in prompt

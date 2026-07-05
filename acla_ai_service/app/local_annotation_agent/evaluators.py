@@ -9,9 +9,8 @@ evidence_evaluator skips when no evidence is attached). Callers wanting
 a specific chain pass ``evaluators=[...]`` explicitly.
 
 Also owns the shared attachment plumbing — ``PipelineAttachment``, the
-named pool, structured-content formatters, and the
-``set_eval_llm`` / ``set_active_stage`` callback holders that the box's
-runners and sub-agents share during a run.
+named pool, structured-content formatters, and legacy evaluator callback
+holders used by deterministic telemetry helpers.
 """
 
 from __future__ import annotations
@@ -46,20 +45,20 @@ _eval_llm_lock = threading.Lock()
 
 
 def set_eval_llm(vlm: Optional[Callable], llm: Optional[Callable]) -> None:
-    """Register VLM/LLM callables for evaluator + sub-agent use."""
+    """Register VLM/LLM callables for evaluator use."""
     with _eval_llm_lock:
         _eval_llm_holder["vlm"] = vlm
         _eval_llm_holder["llm"] = llm
 
 
 def set_vlm_chat_with_tools(fn: Optional[Callable]) -> None:
-    """Register the chat-with-tools closure sub-agents call for VLM tool use."""
+    """Register the chat-with-tools closure for evaluator VLM tool use."""
     with _eval_llm_lock:
         _eval_llm_holder["vlm_chat_with_tools"] = fn
 
 
 def set_step_event_callback(cb: Optional[Callable]) -> None:
-    """Register a callback for non-VLM step events (e.g. zoom rendering)."""
+    """Register a callback for non-VLM step events."""
     with _eval_llm_lock:
         _eval_llm_holder["step_event_callback"] = cb
 
@@ -75,10 +74,8 @@ def emit_step_event(
 ) -> None:
     """Surface a non-VLM event to the UI.
 
-    Used by render-only sub-agents (zoom) that don't go through
-    ``vlm_generate`` but still want a section in the live transcript.
-    Builds the stage payload locally so it doesn't disturb the global
-    stage state used by the next real VLM call.
+    Builds the stage payload locally so it doesn't disturb the global stage
+    state used by the next real VLM call.
     """
     cb = _eval_llm_holder.get("step_event_callback")
     if cb is None:
@@ -126,7 +123,7 @@ def set_active_stage(
 
 
 def set_active_iteration(iteration: Optional[int], total: Optional[int]) -> None:
-    """Set the iteration tag for the current node (e.g. describe_graphs k/N)."""
+    """Set the iteration tag for the current node."""
     with _eval_llm_lock:
         _eval_llm_holder["stage_iter"] = iteration
         _eval_llm_holder["stage_total"] = total
@@ -280,7 +277,7 @@ def merge_pool(
     left: Optional[AttachmentPool],
     right: Optional[AttachmentPool],
 ) -> AttachmentPool:
-    """LangGraph state reducer — later writes win on the same name."""
+    """Attachment pool merge helper — later writes win on the same name."""
     return {**(left or {}), **(right or {})}
 
 
