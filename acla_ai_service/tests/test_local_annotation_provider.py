@@ -6,9 +6,10 @@ from app.annotation_providers.registry import (
     list_annotation_providers,
 )
 from app.infra.config import settings
+from app.local_annotation_agent.workflow import AnnotationPipelineConfig
 from app.local_annotation_agent.workflow.flows import detailed as detailed_flow
 from app.local_annotation_agent.workflow.flows import lap as lap_flow
-from app.shared.contracts import AgentResponse
+from app.shared.contracts import DEFAULT_AGENT_MAX_TURNS, AgentResponse
 
 
 def test_local_vlm_provider_is_visible(monkeypatch):
@@ -22,6 +23,21 @@ def test_local_vlm_provider_is_visible(monkeypatch):
     local = next((provider for provider in providers if provider.id == "local_vlm"), None)
     assert local is not None
     assert local.runner == "local_pipeline"
+
+
+def test_annotation_pipeline_default_max_turns_is_lowered():
+    provider_config = AnnotationPipelineConfig().to_provider_config()
+
+    assert provider_config.provider_options["max_turns"] == DEFAULT_AGENT_MAX_TURNS
+    assert DEFAULT_AGENT_MAX_TURNS == 5
+
+
+def test_annotation_pipeline_preserves_explicit_max_turns():
+    provider_config = AnnotationPipelineConfig(
+        provider_options={"max_turns": 8}
+    ).to_provider_config()
+
+    assert provider_config.provider_options["max_turns"] == 8
 
 
 def test_detailed_local_request_uses_shared_tool_agent_prompt(monkeypatch):

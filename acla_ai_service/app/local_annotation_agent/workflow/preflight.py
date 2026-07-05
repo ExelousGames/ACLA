@@ -1017,9 +1017,6 @@ def _prompt_block(
         "These preflight sentences do not identify labels. They only provide "
         "facts with indices and values when available. The label catalog is "
         "the only place that judges which label fits.",
-        "Use these preflight fact sentences and semantic label candidates as "
-        "the primary analysis context. Call tools only to resolve a specific "
-        "missing detail.",
         f"The {flow} range is [{start}, {end}].",
         "",
         "Preflight fact sentences:",

@@ -57,6 +57,7 @@ from app.annotation_providers.tool_surface import (
 from app.shared.contracts import (
     AgentRequest,
     AgentResponse,
+    DEFAULT_AGENT_MAX_TURNS,
     StepEvent,
 )
 from app.local_annotation_agent.evaluators import (
@@ -502,7 +503,9 @@ def run_local(request: AgentRequest) -> AgentResponse:
         tool_handler=_call_tool,
         max_tokens=request.config.max_new_tokens,
         temperature=request.config.temperature,
-        max_rounds=int(request.config.provider_options.get("max_turns") or 30),
+        max_rounds=int(
+            request.config.provider_options.get("max_turns") or DEFAULT_AGENT_MAX_TURNS
+        ),
         stream_callback=cb.vlm_stream,
         reasoning_callback=cb.vlm_reasoning,
         system_prompt=build_tool_agent_system_prompt(request),

@@ -10,7 +10,7 @@ telemetry while debugging skill text.
         df=df, start_index=..., end_index=...,
         parent_main_labels=..., existing_children=...,
         claude_model="claude-sonnet-4-6",
-        use_thinking=False, max_turns=30,
+        use_thinking=False, max_turns=5,
         prior_result=annotation_result,
         chat_history=[{"role": "user", "content": "..."}],
         user_question="why didn't EA1 fit here?",

@@ -3408,9 +3408,6 @@ def _prompt_block(
         "These preflight sentences do not identify labels. They only provide "
         "facts with indices and values when available. The sub-label catalog "
         "is the only place that judges which label fits.",
-        "Use only these preflight fact sentences and the upfront searched "
-        "labels for initial detailed-label reasoning. Reuse the same fact "
-        "phrases in the final reasoning when they apply.",
         f"The detailed parent range is [{start}, {end}].",
         "",
         "Preflight fact sentences:",

@@ -18,6 +18,11 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Protocol, Tuple
 # ---------------------------------------------------------------------------
 
 
+DEFAULT_AGENT_MAX_ITERATIONS = 1
+DEFAULT_AGENT_MAX_TURNS_PER_ITERATION = 5
+DEFAULT_AGENT_MAX_TURNS = DEFAULT_AGENT_MAX_ITERATIONS * DEFAULT_AGENT_MAX_TURNS_PER_ITERATION
+
+
 @dataclass
 class ProviderConfig:
     """Provider-neutral annotation LLM config.

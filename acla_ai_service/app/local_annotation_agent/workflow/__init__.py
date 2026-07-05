@@ -50,6 +50,8 @@ from app.local_annotation_agent.workflow import tools       # noqa: F401
 from app.local_annotation_agent import AgentRequest, AgentResponse, run_agent
 from app.shared.contracts import (
     AgentCallbacks,
+    DEFAULT_AGENT_MAX_ITERATIONS,
+    DEFAULT_AGENT_MAX_TURNS_PER_ITERATION,
     NoopCallbacks,
     ProviderConfig,
 )
@@ -72,7 +74,7 @@ class AnnotationPipelineConfig:
 
     provider_id: str = "claude_cli"
     model: str = ""
-    max_iterations: int = 3
+    max_iterations: int = DEFAULT_AGENT_MAX_ITERATIONS
     max_new_tokens: int = 1500
     temperature: float = 0.7
     provider_options: Dict[str, Any] = field(default_factory=dict)
@@ -82,7 +84,10 @@ class AnnotationPipelineConfig:
         model = self.model or provider.default_model_id()
         options = dict(provider.option_defaults())
         options.update(self.provider_options or {})
-        options.setdefault("max_turns", int(self.max_iterations) * 10)
+        options.setdefault(
+            "max_turns",
+            int(self.max_iterations) * DEFAULT_AGENT_MAX_TURNS_PER_ITERATION,
+        )
         return ProviderConfig(
             provider_id=self.provider_id,
             model=model,

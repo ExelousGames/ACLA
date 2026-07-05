@@ -34,6 +34,7 @@ from app.local_annotation_agent.workflow import (
     LapAnnotationResult,
     run_annotation,
 )
+from app.shared.contracts import DEFAULT_AGENT_MAX_ITERATIONS
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ class _ConfigBody(BaseModel):
     model: str = ""
     max_new_tokens: int = 1500
     temperature: float = 0.7
-    max_iterations: int = 3
+    max_iterations: int = DEFAULT_AGENT_MAX_ITERATIONS
     provider_options: Dict[str, Any] = Field(default_factory=dict)
 
 
