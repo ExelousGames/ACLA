@@ -949,7 +949,7 @@ def _label_candidates(
         merged.values(),
         key=lambda item: float(item.get("score", 0.0)),
         reverse=True,
-    )[:16]
+    )[:10]
 
 
 def _allowed(doc: Dict[str, Any], eligible: List[str]) -> bool:
