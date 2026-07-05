@@ -308,7 +308,7 @@ def test_locate_circuit_section_filters_by_circuit_id():
     assert [match["label_id"] for match in moza["top_matches"]] == ["moza1"]
 
 
-def test_preflight_trajectory_offset_queries_repair_reset_segment_index():
+def test_preflight_trajectory_offset_extremum_queries_are_not_requested():
     theta = np.linspace(0.0, np.pi / 2.0, 100)
     radius = 30.0
     df = _trajectory_df(radius * np.cos(theta), radius * np.sin(theta))
@@ -319,14 +319,9 @@ def test_preflight_trajectory_offset_queries_repair_reset_segment_index():
 
     results = dict(_run_queries(df, 1000, 1100))
 
-    for tool_id in (
-        "query_telemetry.find_extremum.trajectory_offset.max",
-        "query_telemetry.find_extremum.trajectory_offset.min",
-    ):
-        content = results[tool_id]
-        assert "error" not in content
-        assert content["params"]["range"] == [1000, 1099]
-        assert 1000 <= content["result"]["iloc"] <= 1099
+    assert "query_telemetry.find_extremum.trajectory_offset.max" not in results
+    assert "query_telemetry.find_extremum.trajectory_offset.min" not in results
+    assert "query_telemetry.compute_slope.trajectory_offset" in results
 
 
 def test_query_telemetry_does_not_derive_trajectory_offset_from_raw_dataframe():
@@ -420,6 +415,36 @@ def test_preflight_trajectory_offset_summary_separates_side_from_distance():
     assert "```json" not in prompt
     absolute_offset = output["analysis"]["absolute_offset"]
     assert absolute_offset["moves_toward_expert_line"] is True
+
+
+def test_preflight_trajectory_offset_prompt_omits_extremum_points():
+    df = pd.DataFrame(
+        {
+            "trajectory_offset": [
+                -20.51,
+                -20.51,
+                -20.3,
+                -20.1,
+                -20.0,
+                -19.97,
+                -20.07,
+            ],
+            "expert_time_difference": np.linspace(0.0, 100.0, 7),
+            "speed_difference": np.linspace(-2.0, 4.0, 7),
+        },
+        index=range(7),
+    )
+
+    results = _run_queries(df, 0, 6)
+    prompt = _prompt_block("lap", 0, 6, results, [], [])
+
+    result_ids = {tool_id for tool_id, _content in results}
+    assert "query_telemetry.find_extremum.trajectory_offset.max" not in result_ids
+    assert "query_telemetry.find_extremum.trajectory_offset.min" not in result_ids
+    assert "The trajectory offset max was" not in prompt
+    assert "The trajectory offset min was" not in prompt
+    assert "The trajectory-offset slope shows a signed total change" in prompt
+    assert "Expert-line distance derivative" in prompt
 
 
 def test_trajectory_offset_derivative_finds_merge_and_move_away_runs():
@@ -2613,7 +2638,7 @@ def test_preflight_speed_gap_summary_uses_point_trend_indexes():
     assert "Speed gap value overall is decreasing" in prompt
 
 
-def test_preflight_trend_run_summary_uses_time_delta_selected_terms():
+def test_preflight_trend_run_summary_omits_duplicate_time_delta_prompt_point():
     df = pd.DataFrame(
         {"expert_time_difference": [0.0, 100.0, 250.0, 500.0, 800.0]},
         index=range(10, 15),
@@ -2622,10 +2647,12 @@ def test_preflight_trend_run_summary_uses_time_delta_selected_terms():
     results = _run_queries(df, 10, 14)
     prompt = _prompt_block("lap", 10, 14, results, [], [])
 
-    assert "The selected losing time run spans" in prompt
+    assert "Time gap value starts increasing from index 10 to 14" in prompt
+    assert "Time gap value runs: increases index 10 to 14" in prompt
+    assert "The selected losing time run spans" not in prompt
     assert "selected_losing_time_run" not in prompt
     assert "losing_time_run" not in prompt
-    assert "The time-gap trend verdict was time gap rising" in prompt
+    assert "The time-gap trend verdict was time gap rising" not in prompt
     assert "time_gap_rising_run" not in prompt
     assert "Required tool outputs" not in prompt
     assert "strong" + "est" not in prompt.lower()

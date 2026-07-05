@@ -39,18 +39,6 @@ SHARED_PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
         "query_id": "compute_slope",
         "params": {"column": "expert_time_difference"},
     },
-    {
-        "tool_id": "query_telemetry.find_extremum.trajectory_offset.max",
-        "graph_id": "trajectory_offset",
-        "query_id": "find_extremum",
-        "params": {"column": "trajectory_offset", "kind": "max"},
-    },
-    {
-        "tool_id": "query_telemetry.find_extremum.trajectory_offset.min",
-        "graph_id": "trajectory_offset",
-        "query_id": "find_extremum",
-        "params": {"column": "trajectory_offset", "kind": "min"},
-    },
 )
 PREFLIGHT_QUERY_SPECS: Tuple[Dict[str, Any], ...] = SHARED_PREFLIGHT_QUERY_SPECS
 SPEED_INVESTIGATION_QUERY_SPECS: Tuple[Dict[str, Any], ...] = (
@@ -1196,29 +1184,7 @@ def _preflight_trend_runs_summary(
         return None
     if column != "expert_time_difference":
         return _preflight_generic_trend_runs_summary(tool_id, extra, column)
-    unit = extra.get("unit")
-    selected_gap_increase, selected_gap_decrease = _time_delta_selected_runs(extra)
-    parts = [
-        "The time-gap trend verdict was "
-        f"{_humanize_value(_time_delta_trend_verdict(extra))}.",
-    ]
-    if isinstance(selected_gap_increase, dict):
-        parts.append(
-            "The selected losing time run spans iloc "
-            f"{selected_gap_increase.get('start_iloc')} to "
-            f"{selected_gap_increase.get('end_iloc')} and changes by "
-            f"{_measurement(selected_gap_increase.get('gap_change'), unit)}."
-        )
-    if isinstance(selected_gap_decrease, dict):
-        parts.append(
-            "The selected recovering time run spans iloc "
-            f"{selected_gap_decrease.get('start_iloc')} to "
-            f"{selected_gap_decrease.get('end_iloc')} and changes by "
-            f"{_measurement(selected_gap_decrease.get('gap_change'), unit)}."
-        )
-    if len(parts) == 1:
-        parts.append("No time-gap trend run was selected.")
-    return " ".join(parts)
+    return None
 
 
 def _preflight_generic_trend_runs_summary(

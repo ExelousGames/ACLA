@@ -75,7 +75,6 @@ def _tool_agent_task_prompt(
         ]
         if rule
     ]
-    annotation_rules_block = "\n".join(annotation_rules)
     annotation_rule_bullets = "\n".join(
         f"- {rule}" for rule in annotation_rules
     )
@@ -119,11 +118,7 @@ def _tool_agent_task_prompt(
         "Those candidates come from hybrid embedding search over the "
         "annotation knowledge base using the preflight semantic search "
         "words.\n"
-        "- Audit the parent range according to the detailed annotation "
-        "rules below.\n"
-        "\n"
-        "### Detailed annotation rules\n"
-        f"{annotation_rules_block}\n"
+        "- Audit the parent range according to the hard rules below.\n"
         "\n"
         "### Submit payload shape\n"
         "`payload_json` must be a JSON object of this shape:\n"
