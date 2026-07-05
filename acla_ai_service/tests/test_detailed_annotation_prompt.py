@@ -41,7 +41,6 @@ def test_detailed_tool_agent_request_excludes_graph_inspection_tools(monkeypatch
 
     request = detailed_flow.build_request(
         provider_id="test",
-        prompt_mode="tool_agent",
         df=[],
         parent_start=0,
         parent_end=20,
@@ -144,7 +143,6 @@ def test_detailed_parse_accepts_direct_label_ids_payload():
 
     result = detailed_flow.parse(
         response,
-        prompt_mode="tool_agent",
         parent_start=0,
         parent_end=20,
     )

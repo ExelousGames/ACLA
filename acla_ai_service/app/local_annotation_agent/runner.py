@@ -1,11 +1,21 @@
 """
-Local runner — drives a LangGraph subgraph backed by the local VLM service.
+Local runner — drives the shared annotation tool-agent surface via the
+local VLM service.
 
-Topology (built by the framework from the root Agent the caller registers):
+Current provider topology:
+
+    same tool-agent prompt as Claude/OpenAI ──► local llama-server
+        └─ tool calls through AnnotationToolSurface ──► submit_result
+
+Legacy LangGraph topology (available through the exported helpers):
 
     planner ──► executor (loops per plan step) ──► synthesizer ──► evaluator ──► END
 
-The runner:
+The legacy LangGraph helpers below are still exported for root Agent classes,
+but the provider entrypoint uses the same prompt + submit_result contract as
+the Claude and OpenAI annotation providers.
+
+The legacy graph runner:
   1. Wires the VLM/LLM callables into the shared eval-LLM holder so every
      sub-agent and evaluator picks them up.
   2. Seeds the initial graph state from the AgentRequest (df_ref, range,
@@ -14,11 +24,10 @@ The runner:
   4. Returns an AgentResponse — the synthesiser's raw text plus every
      attachment/graph-image/message the run produced.
 
-This runner contains NO domain logic. The planner sends ``planner_prompt``
-verbatim to the VLM; what comes back is parsed as a JSON plan of
-``{step_id, agent, description, requested_graphs, tools}`` steps and
-dispatched to registered sub-agents. The caller chooses the root Agent
-to invoke via ``AgentRequest.extra_state["root_agent"]``.
+This runner contains NO domain logic. The provider entrypoint sends
+``request.planner_prompt`` verbatim as the user message and uses the same
+tool definitions / ``submit_result`` capture as the other annotation
+providers.
 
 The phase helpers ``default_planner_node`` / ``default_synth_node`` /
 ``default_eval_node`` are exported so a root Agent class in the caller's
@@ -27,19 +36,27 @@ package can wire them without duplicating their logic.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.local_annotation_agent.backend import (
     LocalVLMConfig,
     get_or_start_service,
 )
+from app.annotation_providers.tool_surface import (
+    AnnotationToolSurface,
+    ToolAgentCapture,
+    annotation_openai_tool_schemas,
+    build_tool_agent_system_prompt,
+    tool_agent_response,
+    tool_agent_stage,
+)
 from app.shared.contracts import (
     AgentRequest,
     AgentResponse,
-    Attachment,
     StepEvent,
 )
 from app.local_annotation_agent.evaluators import (
@@ -56,7 +73,6 @@ from app.local_annotation_agent.evaluators import (
     set_vlm_chat_with_tools,
 )
 from app.local_annotation_agent.framework import (
-    AGENT_REGISTRY,
     AgentState,
 )
 
@@ -64,6 +80,8 @@ from app.local_annotation_agent.framework import (
 import app.local_annotation_agent.sub_agents  # noqa: F401
 
 LOGGER = logging.getLogger(__name__)
+
+_LOCAL_NODE = "local_vlm_tool_agent"
 
 
 class PlannerFormatError(RuntimeError):
@@ -302,13 +320,9 @@ def default_eval_node(state: AgentState) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _wire_local_vlm(
-    request: AgentRequest,
-    step_events: List[StepEvent],
-) -> None:
-    """Bind the local VLM callables every sub-agent + evaluator reads."""
+def _local_vlm_config_from_request(request: AgentRequest) -> LocalVLMConfig:
     opts = request.config.provider_options
-    cfg = LocalVLMConfig(
+    return LocalVLMConfig(
         gguf_path=opts.get("gguf_path") or None,
         mmproj_path=opts.get("mmproj_path") or None,
         context_size=int(opts.get("context_size") or 32768),
@@ -316,7 +330,14 @@ def _wire_local_vlm(
         hf_repo=request.config.model or str(opts.get("hf_repo") or "Qwen/Qwen2.5-VL-72B-Instruct"),
         quantization_type=str(opts.get("quantization_type") or "Q4_K_M"),
     )
-    vlm_service = get_or_start_service(cfg)
+
+
+def _wire_local_vlm(
+    request: AgentRequest,
+    step_events: List[StepEvent],
+) -> None:
+    """Bind the local VLM callables every sub-agent + evaluator reads."""
+    vlm_service = get_or_start_service(_local_vlm_config_from_request(request))
 
     cb = request.callbacks
 
@@ -383,134 +404,117 @@ def _wire_local_vlm(
     set_step_event_callback(step_event_bridge)
 
 
+def _extract_direct_json_payload(raw: str) -> Tuple[str, Dict[str, Any]] | None:
+    """Return a JSON object emitted as plain assistant text, if present."""
+
+    def _loads_object(text: str) -> Dict[str, Any] | None:
+        try:
+            parsed = json.loads(text.strip())
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, str):
+            try:
+                parsed = json.loads(parsed.strip())
+            except json.JSONDecodeError:
+                return None
+        return parsed if isinstance(parsed, dict) else None
+
+    text = str(raw or "").strip()
+    if not text:
+        return None
+
+    parsed = _loads_object(text)
+    if parsed is not None:
+        return json.dumps(parsed), parsed
+
+    if "```json" in text:
+        fenced = text.split("```json", 1)[1].split("```", 1)[0]
+        parsed = _loads_object(fenced)
+        if parsed is not None:
+            return json.dumps(parsed), parsed
+    elif "```" in text:
+        fenced = text.split("```", 1)[1].split("```", 1)[0]
+        parsed = _loads_object(fenced)
+        if parsed is not None:
+            return json.dumps(parsed), parsed
+
+    brace_match = re.search(r"\{[\s\S]*\}", text)
+    if brace_match:
+        parsed = _loads_object(brace_match.group())
+        if parsed is not None:
+            return json.dumps(parsed), parsed
+
+    return None
+
+
+def _capture_direct_submission(capture: ToolAgentCapture) -> None:
+    if capture.submitted:
+        return
+    extracted = _extract_direct_json_payload("".join(capture.text_chunks))
+    if extracted is None:
+        return
+    payload_json, parsed = extracted
+    if not any(key in parsed for key in ("label_ids", "proposals")):
+        return
+    capture.submit_payload = payload_json
+    capture.submit_summary = str(
+        parsed.get("reasoning") or parsed.get("summary") or ""
+    )
+    capture.submitted = True
+
+
 # ---------------------------------------------------------------------------
 # Public entry
 # ---------------------------------------------------------------------------
 
 
 def run_local(request: AgentRequest) -> AgentResponse:
-    """Execute one run on the local LangGraph backend.
-
-    The caller specifies which registered Agent to invoke as the root via
-    ``request.extra_state["root_agent"]``. The runner has no built-in root
-    name — that's the application's choice.
-    """
-    root_agent = str(request.extra_state.get("root_agent") or "").strip()
-    if not root_agent:
-        raise RuntimeError(
-            "local runner: request.extra_state['root_agent'] must name a "
-            "registered Agent. The agent box is domain-free; the caller "
-            "chooses the root."
-        )
-    if root_agent not in AGENT_REGISTRY:
-        raise RuntimeError(
-            f"local runner: root_agent '{root_agent}' is not registered. "
-            f"Registered agents: {sorted(AGENT_REGISTRY)}"
-        )
-
-    step_events: List[StepEvent] = []
-    _wire_local_vlm(request, step_events)
-
-    initial_state: Dict[str, Any] = {
-        "df_ref": request.df_ref,
-        "parent_start": int(request.parent_start),
-        "parent_end": int(request.parent_end),
-        "segment_data": {
-            "session_id": request.session_id,
-            "start_index": int(request.parent_start),
-            "end_index": int(request.parent_end),
-        },
-        "plan": "",
-        "plan_steps": [],
-        "current_step_index": 0,
-        "step_results": [],
-        "all_graph_images": [],
-        "all_graph_descriptions": [],
-        "attachment_pool": {},
-        "evaluation": "",
-        "final_synth_response": "",
-        "messages": [],
-        "depth": 0,
-        "call_stack": [],
-        "spawn_log": [],
-        "total_spawns": 0,
-        # Caller-provided prompts + initial pool seeds.
-        "planner_prompt": request.planner_prompt,
-        "synth_prompt": request.synth_prompt,
-        "initial_attachments": list(request.initial_attachments),
-    }
-    # Bag of arbitrary fields the caller passes through. Only keys that
-    # are declared in the registered Agent's state schema actually survive
-    # LangGraph's filtering; the rest are silently dropped.
-    for k, v in request.extra_state.items():
-        if k == "root_agent":
-            continue
-        if k not in initial_state:
-            initial_state[k] = v
-
+    """Execute one run on the local llama.cpp-backed tool-agent backend."""
+    service = get_or_start_service(_local_vlm_config_from_request(request))
+    capture = ToolAgentCapture(
+        node_name=_LOCAL_NODE,
+        cur_start=int(request.parent_start),
+        cur_end=int(request.parent_end),
+    )
+    surface = AnnotationToolSurface(request, capture)
     cb = request.callbacks
 
-    graph = AGENT_REGISTRY[root_agent]
-    final_state: Dict[str, Any] = dict(initial_state)
-    for event in graph.stream(initial_state, config={"recursion_limit": 100}):
-        for node_name, node_output in event.items():
-            if not isinstance(node_output, dict):
-                continue
-            final_state.update(node_output)
-            if cb.progress:
-                cb.progress(node_name, _progress_detail(node_name, final_state))
+    if cb.vlm_prompt:
+        cb.vlm_prompt(request.planner_prompt, tool_agent_stage(_LOCAL_NODE, "main"))
+    if cb.progress:
+        cb.progress(_LOCAL_NODE, "session starting")
 
-    set_eval_llm(None, None)
-    set_vlm_chat_with_tools(None)
+    def _call_tool(name: str, args: Dict[str, Any]) -> str:
+        capture.tool_calls += 1
+        if cb.progress:
+            cb.progress(_LOCAL_NODE, f"tool {capture.tool_calls}: {name}")
+        _result, text, images = surface.call_tool(name, args)
+        for img_b64 in images:
+            try:
+                capture.rendered_images.append(base64.b64decode(img_b64))
+            except (ValueError, TypeError):
+                LOGGER.warning("local tool-agent: invalid image payload from %s", name)
+        return text
 
-    # Build the AgentResponse. Repack the framework's PipelineAttachments
-    # into the contract's Attachment shape so the caller never sees the
-    # internal model.
-    attachments_out: Dict[str, Attachment] = {}
-    pool: Dict[str, PipelineAttachment] = final_state.get("attachment_pool", {})
-    for name, pa in pool.items():
-        attachments_out[name] = Attachment(
-            name=pa.name,
-            kind=_translate_attachment_kind(pa.kind),
-            label=pa.label,
-            content=pa.content,
-            content_schema=pa.content_schema or None,
-        )
-
-    return AgentResponse(
-        raw_response=final_state.get("final_synth_response", ""),
-        verdict=final_state.get("evaluation", ""),
-        attachments=attachments_out,
-        step_events=step_events,
-        graph_images=list(final_state.get("all_graph_images", [])),
-        plan_steps=list(final_state.get("plan_steps", [])),
-        messages=list(final_state.get("messages", [])),
+    raw_response = service.chat_with_tools(
+        request.planner_prompt,
+        tools=annotation_openai_tool_schemas(request),
+        tool_handler=_call_tool,
+        max_tokens=request.config.max_new_tokens,
+        temperature=request.config.temperature,
+        max_rounds=int(request.config.provider_options.get("max_turns") or 30),
+        stream_callback=cb.vlm_stream,
+        reasoning_callback=cb.vlm_reasoning,
+        system_prompt=build_tool_agent_system_prompt(request),
     )
+    if raw_response:
+        capture.text_chunks.append(raw_response)
 
+    _capture_direct_submission(capture)
 
-def _translate_attachment_kind(kind: str) -> str:
-    # PipelineAttachment uses ``image_set``; contract Attachment uses
-    # ``image``. Map either way to the contract vocabulary.
-    if kind == "image_set":
-        return "image"
-    return kind  # text, structured already match
-
-
-def _progress_detail(node_name: str, state: Dict[str, Any]) -> str:
-    """Human-readable progress line per node, surfaced via callbacks."""
-    if node_name == "planner":
-        return f"Planned {len(state.get('plan_steps', []))} step(s)"
-    if node_name == "executor":
-        idx = state.get("current_step_index", 0)
-        total = len(state.get("plan_steps", []))
-        steps = state.get("plan_steps", [])
-        just_done = idx - 1
-        if 0 <= just_done < len(steps):
-            step = steps[just_done]
-            return f"Ran step {idx}/{total} via agent '{step.get('agent', '?')}'"
-        return f"Ran step {idx}/{total}"
-    if node_name == "synthesizer":
-        return "Synthesizer emitted final response"
-    if node_name == "evaluator":
-        return f"Verdict: {state.get('evaluation', '?')}"
-    return ""
+    if cb.progress:
+        cb.progress(
+            _LOCAL_NODE,
+            f"done - {capture.tool_calls} tool call(s), submitted={capture.submitted}",
+        )
+    return tool_agent_response(capture, request)

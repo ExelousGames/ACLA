@@ -49,7 +49,6 @@ def test_lap_tool_agent_request_is_fixed_to_section():
 
     request = lap_flow.build_request(
         provider_id="test",
-        prompt_mode="tool_agent",
         df=df,
         lap_start=0,
         lap_end=100,
@@ -106,7 +105,6 @@ def test_lap_annotation_prompt_does_not_forbid_pit_stop_with_recovery_merge():
 def test_lap_tool_agent_prompt_allows_pit_evidence_without_direct_flags():
     request = lap_flow.build_request(
         provider_id="test",
-        prompt_mode="tool_agent",
         df=pd.DataFrame({"metric": range(100)}),
         lap_start=0,
         lap_end=100,
@@ -124,7 +122,6 @@ def test_lap_tool_agent_prompt_allows_pit_evidence_without_direct_flags():
 def test_lap_tool_agent_prompt_requires_rejected_ambiguous_option_reason():
     request = lap_flow.build_request(
         provider_id="test",
-        prompt_mode="tool_agent",
         df=pd.DataFrame({"metric": range(100)}),
         lap_start=0,
         lap_end=100,
@@ -154,7 +151,6 @@ def test_lap_parse_rejects_extra_range_fields():
     with pytest.raises(RuntimeError, match="unsupported output field"):
         lap_flow.parse(
             response,
-            prompt_mode="tool_agent",
             lap_start=0,
             lap_end=100,
             section_id="brands_hatch1",
@@ -175,7 +171,6 @@ def test_lap_parse_tool_agent_accepts_summary_field_as_reasoning_fallback():
 
     result = lap_flow.parse(
         response,
-        prompt_mode="tool_agent",
         lap_start=0,
         lap_end=100,
         section_id="brands_hatch1",
@@ -209,7 +204,6 @@ def test_lap_parse_accepts_direct_label_ids_payload():
 
     result = lap_flow.parse(
         response,
-        prompt_mode="tool_agent",
         lap_start=0,
         lap_end=100,
         section_id="brands_hatch1",
@@ -243,7 +237,6 @@ def test_lap_parse_does_not_add_section_when_agent_omits_it():
 
     result = lap_flow.parse(
         response,
-        prompt_mode="tool_agent",
         lap_start=0,
         lap_end=100,
         section_id="brands_hatch1",
@@ -270,7 +263,6 @@ def test_lap_parse_resolves_same_range_sections_to_racing_surface_without_ps():
 
     result = lap_flow.parse(
         response,
-        prompt_mode="tool_agent",
         lap_start=0,
         lap_end=100,
         section_id="brands_hatch1",
@@ -307,7 +299,6 @@ def test_lap_parse_resolves_same_range_sections_to_pit_with_ps():
 
     result = lap_flow.parse(
         response,
-        prompt_mode="tool_agent",
         lap_start=0,
         lap_end=100,
         section_id="brands_hatch1",
@@ -341,7 +332,6 @@ def test_lap_parse_does_not_add_splitter_section_to_empty_drop():
 
     result = lap_flow.parse(
         response,
-        prompt_mode="tool_agent",
         lap_start=0,
         lap_end=100,
         section_id="brands_hatch1",

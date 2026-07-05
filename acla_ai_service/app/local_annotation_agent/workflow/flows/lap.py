@@ -8,8 +8,8 @@ offence / defence engagement ranges. One run of this flow annotates ONE
 range: the agent inspects telemetry within that split section and submits
 a single label proposal.
 
-    build_request(provider_id, prompt_mode, df, lap_start, lap_end, section_id, ...)
-    parse(response, prompt_mode, ...) -> LapAnnotationResult
+    build_request(provider_id, df, lap_start, lap_end, section_id, ...)
+    parse(response, ...) -> LapAnnotationResult
 """
 
 from __future__ import annotations
@@ -512,7 +512,6 @@ def _tool_agent_task_prompt(
 def build_request(
     *,
     provider_id: str,
-    prompt_mode: str,
     df,
     lap_start: int,
     lap_end: int,
@@ -527,11 +526,6 @@ def build_request(
     callbacks: Optional[AgentCallbacks] = None,
     session_id: str = "",
 ) -> AgentRequest:
-    if prompt_mode != "tool_agent":
-        raise ValueError(
-            f"lap flow only supports prompt_mode='tool_agent'; got {prompt_mode!r}"
-        )
-
     config = config or ProviderConfig(provider_id=provider_id)
     callbacks = callbacks or NoopCallbacks()
 
@@ -580,7 +574,7 @@ def build_request(
     parent_start = int(section_start)
     parent_end = int(section_end)
 
-    planner_prompt = _tool_agent_task_prompt(
+    task_prompt = _tool_agent_task_prompt(
         lap_start=lap_start,
         lap_end=lap_end,
         circuit_id=circuit_id,
@@ -590,7 +584,8 @@ def build_request(
         section_split_basis=section_split_basis,
         opponent_interaction=opponent_interaction,
     )
-    planner_prompt = "\n\n".join([preflight.prompt_block, planner_prompt])
+    shared_front_prompt = "\n\n".join([preflight.prompt_block, task_prompt])
+    planner_prompt = shared_front_prompt
     synth_prompt = lambda _state: ("", "")
     extra_state = {
         "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
@@ -616,7 +611,6 @@ def build_request(
 def parse(
     response: AgentResponse,
     *,
-    prompt_mode: str,
     lap_start: int,
     lap_end: int,
     section_id: str,
@@ -628,7 +622,7 @@ def parse(
 ) -> LapAnnotationResult:
     """Decode the raw response into a LapAnnotationResult.
 
-    ``prompt_mode="tool_agent"`` reads the submitted tool-agent payload.
+    Reads the submitted JSON payload.
 
     Returns the LLM-committed labels after normalizing ambiguous same-range
     circuit_section ids to one selected section.
@@ -636,10 +630,6 @@ def parse(
     session_context = _session_context(section_split_basis, opponent_interaction)
     eligible_labels = list(_eligible_behavior_label_ids(session_context))
 
-    if prompt_mode != "tool_agent":
-        raise ValueError(
-            f"lap flow only supports prompt_mode='tool_agent'; got {prompt_mode!r}"
-        )
     return _parse_tool_agent(
         response, section_id, section_start, section_end, circuit_id,
         opponent_interaction, eligible_labels,
@@ -662,7 +652,11 @@ def _parse_tool_agent(
     rejected: List[Dict[str, Any]] = []
     reasoning = ""
     if parsed:
-        _reject_unknown_output_fields(parsed, "tool_agent", extra_allowed_keys={"summary"})
+        _reject_unknown_output_fields(
+            parsed,
+            "tool_agent",
+            extra_allowed_keys={"summary"},
+        )
         raw_label_ids = parsed.get("label_ids") or []
         cleaned, rejected = _clean_label_ids(
             raw_label_ids,
@@ -692,6 +686,12 @@ def _parse_tool_agent(
         if transcript_att and isinstance(transcript_att.content, str)
         else ""
     )
+    if not transcript:
+        transcript = "\n\n".join(
+            str(message.get("content", ""))
+            for message in response.messages
+            if isinstance(message, dict) and message.get("content")
+        )
 
     return LapAnnotationResult(
         section_id=section_id,

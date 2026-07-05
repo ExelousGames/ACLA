@@ -6,12 +6,10 @@ Exposes one public entry point:
     from app.local_annotation_agent import run_agent, AgentRequest, AgentResponse
     response = run_agent(request)
 
-The box is domain-free. It knows how to plan, render telemetry graphs,
-run deterministic queries, and synthesise responses. It does NOT know
-what the caller wants — that intent rides in ``planner_prompt`` and
-``synth_prompt`` on the AgentRequest. The caller also names the root
-Agent to invoke via ``request.extra_state["root_agent"]`` and may
-register additional tool-agent tools via
+The box is domain-free. It knows how to run deterministic queries and
+capture structured submissions. It does NOT know what the caller wants —
+that intent rides in ``planner_prompt`` on the AgentRequest. Providers use
+the shared tool-agent contract and may register additional tools via
 ``extra_state["tool_agent_extra_tools"]``.
 
 Sub-modules:
@@ -21,7 +19,7 @@ Sub-modules:
     backends        claude_sdk (Claude Agent SDK), OpenAI-compatible providers.
     sub_agents      label verification and non-visual plan-step capabilities.
     tools           Telemetry graph rendering + query dispatchers.
-    runners         local (LangGraph) and claude (agentic) execution paths.
+    runners         local / Claude / OpenAI execution paths.
 """
 
 from __future__ import annotations
@@ -66,6 +64,9 @@ def run_agent(request: AgentRequest) -> AgentResponse:
     if provider.runner == "openai_compatible":
         from app.annotation_providers.openai_runner import run_openai_compatible
         return run_openai_compatible(request)
+    if provider.runner == "local_pipeline":
+        from app.local_annotation_agent.runner import run_local
+        return run_local(request)
     raise ValueError(
         f"unknown annotation provider runner {provider.runner!r} for {provider.id!r}"
     )

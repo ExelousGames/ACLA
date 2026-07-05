@@ -4,7 +4,7 @@ Detailed (sub-segment discovery) flow.
 Wraps the agent box for the "discover ONE notable sub-segment within a
 parent segment" use case. Provides:
 
-    build_request(provider_id, prompt_mode, df, range_, ...) -> AgentRequest
+    build_request(provider_id, df, range_, ...) -> AgentRequest
     parse(response, ...) -> AnnotationResult
 
 The prompts and parsing here are racing-specific (parent_main_labels,
@@ -285,15 +285,9 @@ def _embedding_candidates_prompt_block(candidates: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Public flow API
-# ---------------------------------------------------------------------------
-
-
 def build_request(
     *,
     provider_id: str,
-    prompt_mode: str,
     df,
     parent_start: int,
     parent_end: int,
@@ -303,15 +297,7 @@ def build_request(
     callbacks: Optional[AgentCallbacks] = None,
     session_id: str = "",
 ) -> AgentRequest:
-    """Build the AgentRequest for one detailed-flow run.
-
-    Detailed annotation is driven by Claude/OpenAI tool-agent providers.
-    """
-    if prompt_mode != "tool_agent":
-        raise ValueError(
-            f"detailed flow only supports prompt_mode='tool_agent'; got {prompt_mode!r}"
-        )
-
+    """Build the AgentRequest for one detailed-flow run."""
     existing_children = list(existing_children or [])
     config = config or ProviderConfig(provider_id=provider_id)
     callbacks = callbacks or NoopCallbacks()
@@ -363,22 +349,20 @@ def build_request(
             ]
             break
 
-    planner_prompt = _tool_agent_task_prompt(
+    task_prompt = _tool_agent_task_prompt(
         parent_start=parent_start,
         parent_end=parent_end,
         parent_main_labels=parent_main_labels,
         existing_children=existing_children,
     )
-    planner_prompt = "\n\n".join([
+    shared_front_prompt = "\n\n".join([
         preflight.prompt_block,
         _embedding_candidates_prompt_block(embedding_candidates),
-        planner_prompt,
+        task_prompt,
     ])
+    planner_prompt = shared_front_prompt
     synth_prompt = lambda _state: ("", "")
-
-    extra_state: Dict[str, Any] = {
-        "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
-    }
+    extra_state: Dict[str, Any] = {"tool_agent_extra_tools": [SEARCH_LABELS_TOOL]}
 
     return AgentRequest(
         provider_id=provider_id,
@@ -411,23 +395,21 @@ def build_request(
 def parse(
     response: AgentResponse,
     *,
-    prompt_mode: str,
     parent_start: int,
     parent_end: int,
 ) -> AnnotationResult:
     """Decode the agent's raw_response into an AnnotationResult.
 
-    ``prompt_mode="tool_agent"`` expects a submitted JSON object with a
-    ``proposals`` key, or a direct ``label_ids`` payload from providers that
-    captured plain assistant JSON.
+    Reads a submitted JSON object with a ``proposals`` key, or a direct
+    ``label_ids`` payload from providers that captured plain assistant JSON.
     """
-    if prompt_mode != "tool_agent":
-        raise ValueError(
-            f"detailed flow only supports prompt_mode='tool_agent'; got {prompt_mode!r}"
-        )
-
     raw = response.raw_response or ""
-    return _parse_tool_agent(response, raw, parent_start, parent_end)
+    return _parse_tool_agent(
+        response,
+        raw,
+        parent_start,
+        parent_end,
+    )
 
 
 def _parse_tool_agent(
@@ -512,7 +494,10 @@ def _parse_tool_agent(
         sub_end=proposed_end,
         final_labels=list(dict.fromkeys(label_ids)),
         final_reasoning=reasoning,
-        accepted=response.verdict == "submitted" and len(label_proposals) > 0,
+        accepted=(
+            len(label_proposals) > 0
+            and response.verdict == "submitted"
+        ),
         iterations=1,
         messages=list(response.messages),
         graph_images=list(response.graph_images),

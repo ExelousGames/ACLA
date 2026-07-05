@@ -182,7 +182,6 @@ def run_annotation(
         vlm_reasoning_callback,
         step_event_callback,
     )
-    provider = get_annotation_provider(config.provider_id)
     provider_config = config.to_provider_config()
 
     if flow == "detailed":
@@ -190,7 +189,6 @@ def run_annotation(
         parent_end = _require(end_index, "end_index")
         return _run_detailed(
             provider_id=config.provider_id,
-            prompt_mode=provider.prompt_mode,
             df=_bounded_df(df, parent_start, parent_end),
             parent_start=parent_start,
             parent_end=parent_end,
@@ -207,7 +205,6 @@ def run_annotation(
         required_section_end = _require(section_end, "section_end")
         return _run_lap(
             provider_id=config.provider_id,
-            prompt_mode=provider.prompt_mode,
             df=_bounded_df(df, required_section_start, required_section_end),
             lap_start=required_lap_start,
             lap_end=required_lap_end,
@@ -228,7 +225,6 @@ def run_annotation(
 def _run_detailed(
     *,
     provider_id: str,
-    prompt_mode: str,
     df,
     parent_start: int,
     parent_end: int,
@@ -240,7 +236,6 @@ def _run_detailed(
 ) -> AnnotationResult:
     request = detailed_flow.build_request(
         provider_id=provider_id,
-        prompt_mode=prompt_mode,
         df=df,
         parent_start=parent_start,
         parent_end=parent_end,
@@ -253,7 +248,6 @@ def _run_detailed(
     response = run_agent(request)
     return detailed_flow.parse(
         response,
-        prompt_mode=prompt_mode,
         parent_start=parent_start,
         parent_end=parent_end,
     )
@@ -262,7 +256,6 @@ def _run_detailed(
 def _run_lap(
     *,
     provider_id: str,
-    prompt_mode: str,
     df,
     lap_start: int,
     lap_end: int,
@@ -279,7 +272,6 @@ def _run_lap(
 ) -> LapAnnotationResult:
     request = lap_flow.build_request(
         provider_id=provider_id,
-        prompt_mode=prompt_mode,
         df=df,
         lap_start=lap_start,
         lap_end=lap_end,
@@ -300,7 +292,6 @@ def _run_lap(
     # already carries them — no deterministic post-merge here.
     return lap_flow.parse(
         response,
-        prompt_mode=prompt_mode,
         lap_start=lap_start,
         lap_end=lap_end,
         section_id=section_id,

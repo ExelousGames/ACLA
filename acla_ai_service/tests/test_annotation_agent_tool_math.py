@@ -2243,7 +2243,6 @@ def test_detailed_build_request_adds_embedding_candidates_to_prompt(monkeypatch)
 
     request = detailed_flow.build_request(
         provider_id="claude_cli",
-        prompt_mode="tool_agent",
         df=pd.DataFrame(index=range(10)),
         parent_start=0,
         parent_end=10,

@@ -128,7 +128,10 @@ def evidence_text_from_pool(pool: AttachmentPool) -> str:
     parts: List[str] = []
     preflight = pool.get("init.annotation_preflight_context")
     if preflight and isinstance(preflight.content, dict):
-        semantic_text = preflight.content.get("semantic_evidence_text")
+        semantic_text = (
+            preflight.content.get("semantic_evidence_text")
+            or preflight.content.get("semantic_search_text")
+        )
         if semantic_text:
             parts.append(str(semantic_text))
     for name in sorted(pool.keys()):

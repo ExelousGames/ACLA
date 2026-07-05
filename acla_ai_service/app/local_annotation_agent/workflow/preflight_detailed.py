@@ -2818,7 +2818,7 @@ def _sentence_evidence_text(
         sentence = _event_sentence(event)
         if sentence:
             lines.append(sentence)
-    return "\n".join(line for line in lines if line.strip())[:12000]
+    return "\n".join(line for line in lines if line.strip())
 
 
 def _event_sentence(event: Dict[str, Any]) -> str:

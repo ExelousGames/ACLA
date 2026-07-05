@@ -998,7 +998,7 @@ def _evidence_text(
         "Fixed labels: " + _label_text(fixed_label_ids),
         "Extra terms: " + " ".join(str(term) for term in extra_query_terms),
     ]
-    return "\n".join(part for part in parts if not part.endswith(": "))[:12000]
+    return "\n".join(part for part in parts if not part.endswith(": "))
 
 
 def _prompt_block(

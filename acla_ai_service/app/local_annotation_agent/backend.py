@@ -197,6 +197,7 @@ class LocalVLMService:
         max_rounds: int = 3,
         stream_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        system_prompt: Optional[str] = None,
     ) -> str:
         """Run a chat-completion loop that lets the VLM emit tool calls.
 
@@ -224,7 +225,10 @@ class LocalVLMService:
                 })
         user_content.append({"type": "text", "text": prompt})
 
-        messages: list[dict] = [{"role": "user", "content": user_content}]
+        messages: list[dict] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_content})
 
         for round_idx in range(max_rounds + 1):
             payload = {
