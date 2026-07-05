@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -46,9 +46,6 @@ _SKILLS_ROOT = _PACKAGE_ROOT
 @dataclass
 class SkillSpec:
     name: str
-    description: str
-    when_to_use: List[str] = field(default_factory=list)
-    tags: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -92,9 +89,6 @@ class SkillRegistry:
                 continue
             spec = SkillSpec(
                 name=str(header.get("name", json_path.stem)),
-                description=str(header.get("description", "")).strip(),
-                when_to_use=list(header.get("when_to_use") or []),
-                tags=list(header.get("tags") or []),
             )
 
             self._skills[spec.name] = Skill(

@@ -1236,8 +1236,5 @@
         "ST19"
       ]
     }
-  },
-  "category_guidelines": {
-    "Segment Type": "Use one base segment-shape label when clear: ST1 In the corner, ST2 On the straight, ST3 Approach to corner, ST4 Exit corner leading to straight, ST5 Between consecutive corners, or ST6 Consecutive corners with no straight in between. ST3 means the range starts before the detected corner arc and ends before the apex; do not use ST3 for a range that includes the apex or corner exit. ST4 means the exit section of the corner itself as it leads toward a straight; it does not mean a range that includes the completed corner plus a substantial portion of the following straight. For corner segments, optionally add one corner-shape refinement when clear: ST7 Constant-radius corner, ST8 Increasing-radius corner, ST9 Decreasing-radius corner, ST10 Hairpin corner, or ST11 Chicane or esses. Add a corner-shape refinement only when preflight corner-shape refinement reports the matching shape_key for the final range; non-empty phases alone are not enough. ST10 requires preflight corner-shape refinement to report the hairpin flag true: is_near_u_turn. Entry/apex/exit altitude labels (ST12-ST20) are phase-specific subsegment labels gated by preflight altitude trend and slope_angle_degrees for the matching phase; do not choose them from raw height difference alone. Do not attach them to a lap parent segment that covers the whole corner; use them only when the annotation range is the matching corner phase subsegment.\n"
   }
 }

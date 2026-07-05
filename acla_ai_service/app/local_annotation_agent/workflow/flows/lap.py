@@ -37,79 +37,6 @@ from app.local_annotation_agent.workflow.preflight_lap import (
 from app.annotation_providers.tool_surface import PREFLIGHT_ONLY_TOOL_NAMES
 
 
-# ---------------------------------------------------------------------------
-# lap_annotation skill — prompt rendering
-# ---------------------------------------------------------------------------
-
-
-def lap_annotation_prompt(session_context: str = "practice") -> str:
-    """Per-label `characteristics` block for the lap-flow planner / synthesizer.
-
-    The skill carries only main-label characteristics; circuit and
-    circuit_section labels are attached upstream by the splitter and
-    never appear here.
-    """
-    eligible_labels = set(_eligible_behavior_label_ids(session_context))
-    labels = [
-        entry
-        for entry in skills.iter("lap_annotation.labels")
-        if entry.get("id") in eligible_labels
-    ]
-    lines: List[str] = [
-        *_lap_prompt_rule_list(
-            "candidate_characteristics_intro",
-            session_context=session_context,
-        ),
-        "",
-        _session_context_rule(session_context),
-        "",
-    ]
-
-    action_model = skills.get("lap_annotation.action_model", {})
-    if isinstance(action_model, dict):
-        model_lines = [
-            str(action_model.get("parent_segment", "")).strip(),
-            str(action_model.get("action", "")).strip(),
-            str(action_model.get("child_segment", "")).strip(),
-        ]
-        model_lines = [line for line in model_lines if line]
-        if model_lines:
-            lines.extend([
-                "##### Segment / Action Model",
-                *model_lines,
-                "",
-            ])
-
-    for entry in labels:
-        lid = entry["id"]
-        name = entry.get("name", lid)
-        applies_when = str(entry.get("applies_when", "")).strip()
-        characteristics = str(entry.get("characteristics", "")).strip()
-
-        lines.append(f"##### `{lid}` — {name}")
-        if applies_when:
-            lines.append(f"_Applies when:_ {applies_when}")
-        if characteristics:
-            lines.append(characteristics)
-        lines.append("")
-
-    global_rules = _mode_specific_global_rules(session_context)
-    lines.append(f"##### Global rules — {session_context} mode")
-    lines.extend(global_rules)
-    lines.append("")
-
-    general_rules = _lap_prompt_rule_list(
-        "candidate_characteristics_general_rules",
-        required=False,
-    )
-    if general_rules:
-        lines.append("##### General lap rules")
-        lines.extend(general_rules)
-        lines.append("")
-
-    return "\n".join(lines)
-
-
 LOGGER = logging.getLogger(__name__)
 
 
@@ -206,43 +133,6 @@ def _label_set_text(label_ids: Tuple[str, ...] | List[str]) -> str:
     return "{" + ", ".join(label_ids) + "}"
 
 
-def _session_context_rule(session_context: str) -> str:
-    eligible_label_ids = _eligible_behavior_label_ids(session_context)
-    eligible_labels = _label_set_text(eligible_label_ids)
-    if session_context == "racing":
-        return _lap_prompt_rule(
-            "session_context_rules.racing",
-            eligible_behavior_labels=eligible_labels,
-        )
-    return _lap_prompt_rule(
-        "session_context_rules.practice",
-        eligible_behavior_labels=eligible_labels,
-    )
-
-
-def _mode_specific_global_rules(session_context: str) -> List[str]:
-    mode_rules = skills.get(
-        f"lap_annotation.global_rules_by_session.{session_context}",
-        [],
-    )
-    if not isinstance(mode_rules, list):
-        raise RuntimeError(
-            "lap_annotation.global_rules_by_session must contain list-valued "
-            f"{session_context!r} rules"
-        )
-    rules = [
-        str(rule).strip()
-        for rule in mode_rules
-        if str(rule).strip()
-    ]
-    if not rules:
-        raise RuntimeError(
-            "lap_annotation.global_rules_by_session missing rules for "
-            f"{session_context!r}"
-        )
-    return rules
-
-
 def _mode_exclusion_rule(session_context: str) -> str:
     return _lap_prompt_rule(
         f"mode_exclusion_rules.{session_context}",
@@ -254,12 +144,6 @@ def _required_behavior_parent_label_rule(eligible_label_ids: List[str]) -> str:
         "required_behavior_parent_label_rule",
         eligible_behavior_labels=_label_set_text(eligible_label_ids),
     )
-
-
-def _segment_type_label_rule() -> str:
-    return str(
-        skills.get("sub_label_annotation.category_guidelines.Segment Type", "")
-    ).strip()
 
 
 def _interaction_section_context(
@@ -390,7 +274,6 @@ def _tool_agent_task_prompt(
     session_context = _session_context(section_split_basis, opponent_interaction)
     eligible_labels = list(_eligible_behavior_label_ids(session_context))
     required_label_rule = _required_behavior_parent_label_rule(eligible_labels)
-    mode_submit_rule = _lap_prompt_rule(f"mode_submit_rules.{session_context}")
     interaction_focus = _interaction_focus_block(
         section_split_basis, opponent_interaction,
     )
@@ -422,18 +305,12 @@ def _tool_agent_task_prompt(
     )
     reasoning_placeholder = _lap_prompt_rule("payload_shape.reasoning_placeholder")
     hard_rules = [
-        f"Final range is fixed to [{section_start}, {section_end}].",
         required_label_rule,
         *_lap_prompt_rule_list("hard_rules"),
         _mode_exclusion_rule(session_context),
         _lap_prompt_rule("whole_range_label_rule"),
         _lap_prompt_rule("segment_action_model_rule"),
         _lap_prompt_rule("reasoning_note_rule"),
-        mode_submit_rule,
-        _lap_prompt_rule("time_delta_offset_evidence_rule"),
-        _segment_type_label_rule(),
-        _lap_prompt_rule("sub_label_parent_rule"),
-        _lap_prompt_rule("one_proposal_rule"),
     ]
     hard_rule_bullets = "\n".join(f"- {rule}" for rule in hard_rules if rule)
     task_intro = _lap_prompt_rule("task_intro")

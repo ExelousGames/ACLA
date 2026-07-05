@@ -66,6 +66,8 @@ def test_lap_tool_agent_request_is_fixed_to_section():
         "resolve to one circuit_section id"
         in request.planner_prompt
     )
+    assert "complete action group" in request.planner_prompt
+    assert "lap_annotation.action_model" not in request.planner_prompt
     assert set(request.extra_state) == {
         "tool_agent_excluded_tools",
         "annotation_session_context",
@@ -82,24 +84,6 @@ def test_visual_graph_tools_are_not_ai_annotation_capabilities():
 
     assert "render_graph" not in tool_names
     assert "peek_graph" not in tool_names
-
-
-def test_lap_annotation_prompt_includes_segment_action_model():
-    prompt = lap_flow.lap_annotation_prompt("practice")
-
-    assert "Segment / Action Model" in prompt
-    assert "parent segment is a group of one or more complete driving actions" in prompt
-    assert "turning / trajectory, throttle input, and brake input" in prompt
-    assert "Every behavior, segment-type, and sub-label" in prompt
-    assert "describe the final annotation range as a whole" in prompt
-
-
-def test_lap_annotation_prompt_does_not_forbid_pit_stop_with_recovery_merge():
-    prompt = lap_flow.lap_annotation_prompt("practice")
-
-    assert "PS is incompatible with MSP / RM" not in prompt
-    assert "do NOT combine with EA / MSP / MSR / RM / O / OD" not in prompt
-    assert "Do NOT attach for normal pit exit" not in prompt
 
 
 def test_lap_tool_agent_prompt_allows_pit_evidence_without_direct_flags():
