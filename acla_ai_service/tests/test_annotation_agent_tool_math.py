@@ -69,6 +69,8 @@ def test_time_difference_uses_exact_expert_time_difference_column():
     assert result["extra"]["start_trend"]["start_iloc"] == 10
     assert result["extra"]["start_trend"]["end_iloc"] == 13
     assert result["extra"]["start_trend"]["direction"] == "rising"
+    assert result["extra"]["start_slope"] == 50.0
+    assert result["extra"]["end_slope"] == 75.0
     assert result["extra"]["overall_point_trend"]["direction"] == "rising"
     assert result["extra"]["rising_steps"] == 3
 
@@ -2539,8 +2541,8 @@ def test_preflight_expert_time_summary_reports_spike_reversal():
         {
             "expert_time_difference": [
                 0.0,
-                100.0,
-                200.0,
+                50.0,
+                150.0,
                 260.0,
                 300.0,
                 280.0,
@@ -2557,7 +2559,7 @@ def test_preflight_expert_time_summary_reports_spike_reversal():
 
     assert (
         "Time gap starts at index 100 with value 0 ms and starting slope "
-        "75 ms/iloc"
+        "50 ms/iloc"
     ) in prompt
     assert (
         "raising index 100 to 104 (start 0 ms, end 300 ms, delta 300 ms, "
@@ -2572,8 +2574,8 @@ def test_preflight_expert_time_summary_reports_spike_reversal():
         "end 200 ms)"
     ) in prompt
     assert "higher than the starting value by 200 ms" in prompt
-    assert "Ending slope is -33.333 ms/iloc" in prompt
-    assert "lower than the starting slope by 108.333 ms/iloc" in prompt
+    assert "Ending slope is -40 ms/iloc" in prompt
+    assert "lower than the starting slope by 90 ms/iloc" in prompt
     assert "Time gap value starts" not in prompt
     assert "Time gap value runs" not in prompt
     assert "Time gap value overall" not in prompt
@@ -2587,6 +2589,8 @@ def test_preflight_expert_time_summary_reports_endpoints_and_slope_comparison():
         {
             "unit": "ms",
             "slope_unit": "ms/iloc",
+            "start_slope": 100.0,
+            "end_slope": 300.0,
             "start_trend": {
                 "direction": "rising",
                 "start_iloc": 0,
@@ -2617,14 +2621,15 @@ def test_preflight_expert_time_summary_reports_endpoints_and_slope_comparison():
 
     assert (
         "Time gap starts at index 0 with value 0 ms and starting slope "
-        "666.707 ms/iloc"
+        "100 ms/iloc"
     ) in summary
     assert (
         "raising index 0 to 6 (start 0 ms, end 4000.24 ms, "
         "delta 4000.24 ms, slope 666.707 ms/iloc)"
     ) in summary
     assert "higher than the starting value by 4000.24 ms" in summary
-    assert "Ending slope is 666.707 ms/iloc, equal to the starting slope" in summary
+    assert "Ending slope is 300 ms/iloc" in summary
+    assert "higher than the starting slope by 200 ms/iloc" in summary
     assert "Time gap value overall" not in summary
     assert "Loss-rate shape:" not in summary
     assert "toward zero:" not in summary

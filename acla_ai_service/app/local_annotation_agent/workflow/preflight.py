@@ -1304,10 +1304,10 @@ def _preflight_time_gap_slope_summary(extra: Dict[str, Any]) -> str:
     last = runs[-1]
     start_iloc = first.get("start_iloc")
     start_value = first.get("start_value")
-    start_slope = first.get("slope")
+    start_slope = extra.get("start_slope", first.get("slope"))
     end_iloc = last.get("end_iloc")
     end_value = last.get("end_value")
-    end_slope = last.get("slope")
+    end_slope = extra.get("end_slope", last.get("slope"))
 
     parts = [
         "Time gap starts at index "

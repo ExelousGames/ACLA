@@ -3494,6 +3494,8 @@ def _slope_shape(arr: np.ndarray, overall_slope: float, column: str) -> str:
 def _empty_point_trend() -> Dict[str, Any]:
     return {
         "slope": None,
+        "start_slope": None,
+        "end_slope": None,
         "delta_value": None,
         "delta_iloc": None,
         "overall": {"direction": "flat", "domain_direction": "stable"},
@@ -3582,6 +3584,8 @@ def _point_trend_runs(
     overall_direction, overall_domain_direction = _signed_trend(delta_value, meta, eps)
     return {
         "slope": float(np.nanmean(step_slopes)),
+        "start_slope": float(step_slopes[0]),
+        "end_slope": float(step_slopes[-1]),
         "delta_value": delta_value,
         "delta_iloc": delta_iloc,
         "overall": {
@@ -3906,6 +3910,8 @@ def _query_compute_slope(
         "unit": meta["unit"],
         "slope_unit": f"{meta['unit']}/iloc",
         "slope": slope,
+        "start_slope": point_trend["start_slope"],
+        "end_slope": point_trend["end_slope"],
         "delta_value": delta_v,
         "delta_iloc": delta_i,
         "total_change_direction": overall_class["direction"],
