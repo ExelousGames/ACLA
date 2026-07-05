@@ -2534,7 +2534,7 @@ def test_lap_preflight_skips_player_speed_investigation(monkeypatch):
     )
 
 
-def test_preflight_expert_time_summary_uses_slope_shape():
+def test_preflight_expert_time_summary_reports_spike_reversal():
     df = pd.DataFrame(
         {
             "expert_time_difference": [
@@ -2555,19 +2555,33 @@ def test_preflight_expert_time_summary_uses_slope_shape():
     results = _run_queries(df, 100, 107)
     prompt = _prompt_block("lap", 100, 107, results, [], [])
 
-    assert "Time gap value starts increasing from index 100 to 104" in prompt
-    assert "Time gap value runs: increases index 100 to 104" in prompt
-    assert "decreases index 104 to 107" in prompt
-    assert "Time gap value overall is increasing" in prompt
     assert (
-        "Loss-rate shape: gap value reverses from increasing to decreasing "
-        "within the section"
+        "Time gap starts at index 100 with value 0 ms and starting slope "
+        "75 ms/iloc"
     ) in prompt
+    assert (
+        "raising index 100 to 104 (start 0 ms, end 300 ms, delta 300 ms, "
+        "slope 75 ms/iloc)"
+    ) in prompt
+    assert (
+        "falling index 104 to 107 (start 300 ms, end 200 ms, delta -100 ms, "
+        "slope -33.333 ms/iloc)"
+    ) in prompt
+    assert (
+        "spike index 100 to 107 (start 0 ms, peak index 104 value 300 ms, "
+        "end 200 ms)"
+    ) in prompt
+    assert "higher than the starting value by 200 ms" in prompt
+    assert "Ending slope is -33.333 ms/iloc" in prompt
+    assert "lower than the starting slope by 108.333 ms/iloc" in prompt
+    assert "Time gap value starts" not in prompt
+    assert "Time gap value runs" not in prompt
+    assert "Time gap value overall" not in prompt
     assert "end_moves_toward_zero" not in prompt
     assert "tool_results_json" not in prompt
 
 
-def test_preflight_expert_time_summary_separates_gap_value_from_loss_rate():
+def test_preflight_expert_time_summary_reports_endpoints_and_slope_comparison():
     summary = _preflight_gap_slope_summary(
         "expert_time_difference",
         {
@@ -2577,7 +2591,10 @@ def test_preflight_expert_time_summary_separates_gap_value_from_loss_rate():
                 "direction": "rising",
                 "start_iloc": 0,
                 "end_iloc": 6,
+                "start_value": 0.0,
+                "end_value": 4000.24,
                 "delta_value": 4000.24,
+                "slope": 666.7066666667,
             },
             "overall_point_trend": {"direction": "rising"},
             "point_trend_runs": [
@@ -2585,7 +2602,10 @@ def test_preflight_expert_time_summary_separates_gap_value_from_loss_rate():
                     "direction": "rising",
                     "start_iloc": 0,
                     "end_iloc": 6,
+                    "start_value": 0.0,
+                    "end_value": 4000.24,
                     "delta_value": 4000.24,
+                    "slope": 666.7066666667,
                 }
             ],
             "delta_value": 4000.24,
@@ -2595,12 +2615,45 @@ def test_preflight_expert_time_summary_separates_gap_value_from_loss_rate():
         True,
     )
 
-    assert "Time gap value overall is increasing" in summary
     assert (
-        "Loss-rate shape: gap growth is slowing, which can still mean the gap "
-        "value is increasing"
+        "Time gap starts at index 0 with value 0 ms and starting slope "
+        "666.707 ms/iloc"
     ) in summary
-    assert "toward zero: yes" in summary
+    assert (
+        "raising index 0 to 6 (start 0 ms, end 4000.24 ms, "
+        "delta 4000.24 ms, slope 666.707 ms/iloc)"
+    ) in summary
+    assert "higher than the starting value by 4000.24 ms" in summary
+    assert "Ending slope is 666.707 ms/iloc, equal to the starting slope" in summary
+    assert "Time gap value overall" not in summary
+    assert "Loss-rate shape:" not in summary
+    assert "toward zero:" not in summary
+
+
+def test_preflight_expert_time_summary_reports_dip_reversal():
+    df = pd.DataFrame(
+        {"expert_time_difference": [300.0, 200.0, 100.0, 120.0, 160.0]},
+        index=range(20, 25),
+    )
+
+    results = _run_queries(df, 20, 24)
+    prompt = _prompt_block("lap", 20, 24, results, [], [])
+
+    assert (
+        "falling index 20 to 22 (start 300 ms, end 100 ms, delta -200 ms, "
+        "slope -100 ms/iloc)"
+    ) in prompt
+    assert (
+        "raising index 22 to 24 (start 100 ms, end 160 ms, delta 60 ms, "
+        "slope 30 ms/iloc)"
+    ) in prompt
+    assert (
+        "dip index 20 to 24 (start 300 ms, trough index 22 value 100 ms, "
+        "end 160 ms)"
+    ) in prompt
+    assert "lower than the starting value by 140 ms" in prompt
+    assert "Ending slope is 30 ms/iloc" in prompt
+    assert "higher than the starting slope by 130 ms/iloc" in prompt
 
 
 def test_preflight_speed_gap_summary_uses_point_trend_indexes():
@@ -2647,8 +2700,16 @@ def test_preflight_trend_run_summary_omits_duplicate_time_delta_prompt_point():
     results = _run_queries(df, 10, 14)
     prompt = _prompt_block("lap", 10, 14, results, [], [])
 
-    assert "Time gap value starts increasing from index 10 to 14" in prompt
-    assert "Time gap value runs: increases index 10 to 14" in prompt
+    assert (
+        "Time gap starts at index 10 with value 0 ms and starting slope "
+        "200 ms/iloc"
+    ) in prompt
+    assert (
+        "raising index 10 to 14 (start 0 ms, end 800 ms, delta 800 ms, "
+        "slope 200 ms/iloc)"
+    ) in prompt
+    assert "Time gap value starts" not in prompt
+    assert "Time gap value runs" not in prompt
     assert "The selected losing time run spans" not in prompt
     assert "selected_losing_time_run" not in prompt
     assert "losing_time_run" not in prompt

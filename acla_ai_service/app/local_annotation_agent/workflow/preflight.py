@@ -1251,6 +1251,9 @@ def _preflight_gap_slope_summary(
     extra: Dict[str, Any],
     moves_toward_zero: Any,
 ) -> str:
+    if column == "expert_time_difference":
+        return _preflight_time_gap_slope_summary(extra)
+
     subject = "time gap" if column == "expert_time_difference" else "speed gap"
     unit = extra.get("unit")
     start = extra.get("start_trend")
@@ -1284,6 +1287,142 @@ def _preflight_gap_slope_summary(
         f"toward zero: {_yes_no_unknown(moves_toward_zero)}."
     )
     return " ".join(parts)
+
+
+def _preflight_time_gap_slope_summary(extra: Dict[str, Any]) -> str:
+    unit = extra.get("unit")
+    slope_unit = extra.get("slope_unit")
+    raw_runs = extra.get("point_trend_runs")
+    runs = [
+        run for run in raw_runs
+        if isinstance(run, dict)
+    ] if isinstance(raw_runs, list) else []
+    if not runs:
+        return "Time gap slope summary is unavailable because no local runs were detected."
+
+    first = runs[0]
+    last = runs[-1]
+    start_iloc = first.get("start_iloc")
+    start_value = first.get("start_value")
+    start_slope = first.get("slope")
+    end_iloc = last.get("end_iloc")
+    end_value = last.get("end_value")
+    end_slope = last.get("slope")
+
+    parts = [
+        "Time gap starts at index "
+        f"{start_iloc} with value {_measurement(start_value, unit)} "
+        f"and starting slope {_measurement(start_slope, slope_unit)}.",
+        "Time gap local runs: " + _time_gap_run_ranges(runs, unit, slope_unit) + ".",
+    ]
+    reversal_summary = _time_gap_reversal_summary(runs, unit)
+    if reversal_summary:
+        parts.append(reversal_summary)
+    parts.append(
+        "Time gap ends at index "
+        f"{end_iloc} with value {_measurement(end_value, unit)}, "
+        f"{_value_comparison(end_value, start_value, unit)}. "
+        "Ending slope is "
+        f"{_measurement(end_slope, slope_unit)}, "
+        f"{_slope_comparison(end_slope, start_slope, slope_unit)}."
+    )
+    return " ".join(parts)
+
+
+def _time_gap_run_ranges(
+    runs: List[Dict[str, Any]],
+    unit: Any,
+    slope_unit: Any,
+) -> str:
+    ranges = [
+        (
+            f"{_time_gap_direction_word(run.get('direction'))} "
+            f"index {run.get('start_iloc')} to {run.get('end_iloc')} "
+            f"(start {_measurement(run.get('start_value'), unit)}, "
+            f"end {_measurement(run.get('end_value'), unit)}, "
+            f"delta {_measurement(run.get('delta_value'), unit)}, "
+            f"slope {_measurement(run.get('slope'), slope_unit)})"
+        )
+        for run in runs[:6]
+    ]
+    if len(runs) > 6:
+        ranges.append(f"{len(runs) - 6} more")
+    return "; ".join(ranges) if ranges else "none"
+
+
+def _time_gap_reversal_summary(
+    runs: List[Dict[str, Any]],
+    unit: Any,
+) -> str:
+    events = []
+    for before, after in zip(runs, runs[1:]):
+        before_direction = before.get("direction")
+        after_direction = after.get("direction")
+        if before_direction == "rising" and after_direction == "falling":
+            events.append(_time_gap_reversal_event("spike", before, after, unit))
+        elif before_direction == "falling" and after_direction == "rising":
+            events.append(_time_gap_reversal_event("dip", before, after, unit))
+    if not events:
+        return ""
+    return "Time gap reversal events: " + "; ".join(events) + "."
+
+
+def _time_gap_reversal_event(
+    event_type: str,
+    before: Dict[str, Any],
+    after: Dict[str, Any],
+    unit: Any,
+) -> str:
+    pivot_label = "peak" if event_type == "spike" else "trough"
+    return (
+        f"{event_type} index {before.get('start_iloc')} to {after.get('end_iloc')} "
+        f"(start {_measurement(before.get('start_value'), unit)}, "
+        f"{pivot_label} index {before.get('end_iloc')} value "
+        f"{_measurement(before.get('end_value'), unit)}, "
+        f"end {_measurement(after.get('end_value'), unit)})"
+    )
+
+
+def _time_gap_direction_word(direction: Any) -> str:
+    if direction == "rising":
+        return "raising"
+    if direction == "falling":
+        return "falling"
+    if direction in {"flat", "stable"}:
+        return "flat"
+    return "unknown"
+
+
+def _value_comparison(end_value: Any, start_value: Any, unit: Any) -> str:
+    end_number = _as_number(end_value)
+    start_number = _as_number(start_value)
+    if end_number is None or start_number is None:
+        return "comparison to the starting value is unknown"
+    delta = end_number - start_number
+    if delta > 0:
+        return f"higher than the starting value by {_measurement(delta, unit)}"
+    if delta < 0:
+        return f"lower than the starting value by {_measurement(abs(delta), unit)}"
+    return "equal to the starting value"
+
+
+def _slope_comparison(end_slope: Any, start_slope: Any, slope_unit: Any) -> str:
+    end_number = _as_number(end_slope)
+    start_number = _as_number(start_slope)
+    if end_number is None or start_number is None:
+        return "comparison to the starting slope is unknown"
+    delta = end_number - start_number
+    if delta > 0:
+        return f"higher than the starting slope by {_measurement(delta, slope_unit)}"
+    if delta < 0:
+        return f"lower than the starting slope by {_measurement(abs(delta), slope_unit)}"
+    return "equal to the starting slope"
+
+
+def _as_number(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
 
 
 def _capitalize_sentence(value: str) -> str:
