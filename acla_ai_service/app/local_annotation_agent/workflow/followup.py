@@ -21,7 +21,6 @@ telemetry while debugging skill text.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -76,20 +75,6 @@ def _build_tool_set(surface: AnnotationToolSurface):
         if str(defn["name"]) in _FOLLOWUP_TOOL_NAME_SET
     ]
     tool_names = [f"mcp__followup__{name}" for name in _FOLLOWUP_TOOL_NAMES]
-
-    from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
-
-    @tool(
-        SEARCH_LABELS_TOOL["name"],
-        SEARCH_LABELS_TOOL["description"],
-        SEARCH_LABELS_TOOL["params_schema"],
-    )
-    async def search_labels(args):
-        _result, text, _images = surface.call_tool("search_labels", args or {})
-        return {"content": [{"type": "text", "text": text}]}
-
-    tools_list.append(search_labels)
-    tool_names.append("mcp__followup__search_labels")
 
     server = create_sdk_mcp_server(
         name="followup", version="1.0.0", tools=tools_list,
@@ -183,12 +168,10 @@ def _build_system_prompt(
         "`measure_segment_shape` / `classify_opponent_interaction` "
         "/ `find_nearest_opponent` / `query_opponent_trajectory` "
         "to re-inspect when the question demands fresh evidence.\n"
-        "- Look labels up with `search_labels` (describe the behaviour, or "
-        "pass the label's name/parent) to pull its description + guideline "
-        "from the skill — don't rely on memory.\n"
-        "- When asked 'why didn't label X fit?', `search_labels` for X, "
-        "quote the relevant text from its description / guideline, then say "
-        "which predicate failed against the data.\n"
+        "- Use the prior proposal labels and parent-label context already "
+        "shown in this prompt when explaining label fit.\n"
+        "- When asked 'why didn't label X fit?', explain which predicate "
+        "failed against the telemetry evidence available to you.\n"
         "- If the prior proposal was wrong, say so directly.\n"
         "- When the user is debugging the skill text, suggest concrete "
         "edits — the specific wording that was ambiguous or missing.\n"
@@ -263,8 +246,6 @@ async def _run_async(
 ) -> str:
     sdk = _import_sdk_types()
 
-    from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
-
     capture = ToolAgentCapture(
         node_name="followup",
         cur_start=int(parent_start),
@@ -283,7 +264,7 @@ async def _run_async(
         parent_start=int(parent_start),
         parent_end=int(parent_end),
         callbacks=NoopCallbacks(),
-        extra_state={"tool_agent_extra_tools": [SEARCH_LABELS_TOOL]},
+        extra_state={},
     )
     surface = AnnotationToolSurface(request, capture)
     server, tool_names = _build_tool_set(surface)

@@ -34,10 +34,7 @@ from app.local_annotation_agent.workflow.results import (
 from app.local_annotation_agent.workflow.preflight_detailed import (
     build_preflight_context,
 )
-from app.local_annotation_agent.workflow.tools import (
-    SEARCH_LABELS_TOOL,
-    shape_label_doc_for_llm,
-)
+from app.local_annotation_agent.workflow.tools import shape_label_doc_for_llm
 
 
 def _is_full_parent_range(
@@ -124,14 +121,11 @@ def _tool_agent_task_prompt(
         "Those candidates come from hybrid embedding search over the "
         "annotation knowledge base using the preflight semantic search "
         "words.\n"
-        "3. Use `search_labels` only for a targeted semantic re-query when "
-        "the upfront candidates miss a specific observation. Include "
-        "relevant `tool_output_tags` in the query.\n"
-        "4. Run deterministic analysis tools only when a concrete numeric "
+        "3. Run deterministic analysis tools only when a concrete numeric "
         "check is needed beyond the upfront facts.\n"
-        "5. Audit the parent range according to the detailed annotation "
+        "4. Audit the parent range according to the detailed annotation "
         "rules below.\n"
-        "6. Submit via `submit_result(payload_json, summary)` when evidence "
+        "5. Submit via `submit_result(payload_json, summary)` when evidence "
         "is sufficient, then stop after it returns `ok: true`. If the "
         "evidence only supports the whole parent range, submit an empty "
         "`proposals` list and say no strict child sub-segment was found.\n"
@@ -145,7 +139,7 @@ def _tool_agent_task_prompt(
         "{\n"
         '  "proposals": [\n'
         '    {\n'
-        '      "label_id": "<a label_id from upfront candidates or search_labels>",\n'
+        '      "label_id": "<a label_id from upfront candidates>",\n'
         f'      "start_index": <int in [{parent_start}, {parent_end}]>,\n'
         f'      "end_index": <int in [{parent_start}, {parent_end}]>,\n'
         '      "reasoning": "<2-4 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and any ambiguous option rejected>"\n'
@@ -161,7 +155,7 @@ def _tool_agent_task_prompt(
         f"{annotation_rule_bullets}\n"
         "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
         "- Only propose label_ids from the Upfront Detailed Embedding Label "
-        "Candidates block or a targeted `search_labels` response.\n"
+        "Candidates block.\n"
         "- For O, OD, and MSR racing sub-labels, do not use expert/reference-lap "
         "comparisons as evidence. Use opponent-relative preflight facts such "
         "as who started ahead, who ended ahead, who drew alongside whom, "
@@ -362,7 +356,7 @@ def build_request(
     ])
     planner_prompt = shared_front_prompt
     synth_prompt = lambda _state: ("", "")
-    extra_state: Dict[str, Any] = {"tool_agent_extra_tools": [SEARCH_LABELS_TOOL]}
+    extra_state: Dict[str, Any] = {}
 
     return AgentRequest(
         provider_id=provider_id,

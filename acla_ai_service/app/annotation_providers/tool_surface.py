@@ -400,7 +400,7 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
 
     return (
         "You are an analyst with access to deterministic telemetry analysis "
-        "tools and label search. "
+        "tools. "
         "Your task is described in the user message. "
         "Use the upfront preflight data included in that user message as the "
         "primary evidence package. Run deterministic analysis tools only when "
@@ -409,9 +409,9 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         "The user message includes a Required Upfront Annotation Preflight "
         "block. Treat it as the primary analysis package: deterministic tool "
         "outputs, tool output tags, and semantic label candidates were already "
-        "computed before this session. Use label search only for targeted "
-        "semantic re-queries and deterministic analysis tools only for "
-        "targeted numeric checks. Finish with "
+        "computed before this session. Use deterministic analysis tools only "
+        "for targeted numeric checks. "
+        "Finish with "
         "`submit_result`.\n\n"
         "A label is valid only when its definition fits the whole range it "
         "will be attached to; if it fits only a smaller slice, omit that "

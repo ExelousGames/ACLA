@@ -991,7 +991,6 @@ def _evidence_text(
     parts = [
         f"Flow: {flow}",
         f"Range: [{start}, {end}]",
-        "tool_output_tags: " + ", ".join(tags),
         "Preflight fact sentences: " + " ".join(semantic_summaries),
         "Parent main labels: " + _label_text(parent_main_labels),
         "Eligible behavior labels: " + _label_text(eligible_behavior_label_ids),
@@ -1022,9 +1021,6 @@ def _prompt_block(
         "the primary analysis context. Call tools only to resolve a specific "
         "missing detail.",
         f"The {flow} range is [{start}, {end}].",
-        "",
-        "Search tags for targeted re-query:",
-        ", ".join(tags) if tags else "(none)",
         "",
         "Preflight fact sentences:",
     ]

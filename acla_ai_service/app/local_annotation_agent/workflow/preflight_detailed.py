@@ -2810,7 +2810,7 @@ def _sentence_evidence_text(
     )
     if context_terms:
         lines.append(
-            "Parent context for detailed label search includes "
+            "Parent context for upfront detailed label retrieval includes "
             + ", ".join(context_terms)
             + "."
         )

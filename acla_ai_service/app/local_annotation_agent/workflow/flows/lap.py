@@ -34,7 +34,6 @@ from app.local_annotation_agent.workflow.results import (
 from app.local_annotation_agent.workflow.preflight_lap import (
     build_preflight_context,
 )
-from app.local_annotation_agent.workflow.tools import SEARCH_LABELS_TOOL
 
 
 # ---------------------------------------------------------------------------
@@ -430,16 +429,10 @@ def _tool_agent_task_prompt(
         "### How to work\n"
         "1. Use the Required Upfront Annotation Preflight block as the "
         "primary evidence package. It contains deterministic fact sentences, "
-        "search tags, and semantic label candidates from hybrid search.\n"
-        "2. Use `search_labels` only for a targeted semantic re-query when "
-        "the preflight candidates miss a specific observation. Include "
-        "relevant `tool_output_tags` in the query. Query `types=\"main\"` "
-        "for the required behavior parent "
-        f"label from {_label_set_text(eligible_labels)}, "
-        "`types=\"segment_type\"` for segment-type labels, and "
-        "`parent_id` for sub-labels under a chosen main label. Do not "
-        "submit labels whose returned catalog metadata says "
-        "`lap_parent_allowed: false`.\n"
+        "and semantic label candidates from hybrid search.\n"
+        "2. Use the preflight semantic label candidates for behavior, "
+        "segment-type, and sub-label choices. Do not invent labels beyond "
+        "the candidates and splitter/preflight context.\n"
         "3. Run deterministic analysis tools only when a concrete numeric "
         "check is needed beyond the upfront facts.\n"
         "4. When any "
@@ -474,7 +467,7 @@ def _tool_agent_task_prompt(
         f"- {required_label_rule}\n"
         "- Do not invent label IDs; circuit / circuit_section ids must come "
         "from splitter or preflight context, every other id from "
-        "preflight semantic candidates or a targeted `search_labels` response.\n"
+        "preflight semantic candidates.\n"
         "- When `locate_circuit_section` reports ambiguity, choose exactly "
         "one circuit_section id using splitter context and behavior evidence. "
         "For Pit-vs-straight ties, choose Pit when Pit-section evidence "
@@ -588,7 +581,6 @@ def build_request(
     planner_prompt = shared_front_prompt
     synth_prompt = lambda _state: ("", "")
     extra_state = {
-        "tool_agent_extra_tools": [SEARCH_LABELS_TOOL],
         "annotation_session_context": session_context,
         "eligible_behavior_label_ids": eligible_labels,
     }
