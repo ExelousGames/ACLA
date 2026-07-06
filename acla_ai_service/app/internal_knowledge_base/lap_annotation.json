@@ -5,8 +5,8 @@
   "behavior_parent_label_ids": {
     "required": ["O", "OD", "PS", "RM", "MSP", "MSR"],
     "eligible_by_session": {
-      "practice": ["PS", "RM", "MSP", "ST"],
-      "racing": ["O", "OD", "MSR", "PS", "ST"]
+      "practice": ["PS", "RM", "MSP", "Segment Type"],
+      "racing": ["O", "OD", "MSR", "PS", "Segment Type"]
     }
   },
   "labels": {

@@ -9,7 +9,7 @@ from app.internal_knowledge_base import skills
 from app.internal_knowledge_base.label_search import get_doc, search
 from app.local_annotation_agent.workflow.tools import shape_label_doc_for_llm
 from app.shared.contracts import Attachment
-from app.shared.labels import LABEL_MAPPING
+from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING
 
 
 SHARED_PREFLIGHT_TOOL_IDS: Tuple[str, ...] = (
@@ -928,7 +928,7 @@ def _label_candidates(
 
     for label_id in _dedupe(candidate_label_ids):
         doc = get_doc(label_id)
-        if _is_main_label(label_id, doc):
+        if _is_main_label(label_id):
             main_doc = doc or _synthetic_main_doc(label_id)
             if main_doc is not None:
                 add([main_doc])
@@ -937,21 +937,32 @@ def _label_candidates(
                 filters={"parent": label_id},
                 top_k=_sub_label_search_limit(label_id),
             ))
+        elif _category_child_ids(label_id):
+            child_ids = set(_category_child_ids(label_id))
+            child_types = _category_child_types(child_ids)
+            filters = {"type": child_types} if child_types else None
+            add(
+                doc
+                for doc in search(
+                    evidence,
+                    filters=filters,
+                    top_k=_sub_label_search_limit(label_id),
+                )
+                if str(doc.get("id") or "") in child_ids
+            )
         elif doc is not None:
             add([doc])
 
     return list(merged.values())
 
 
-def _is_main_label(label_id: str, doc: Optional[Dict[str, Any]]) -> bool:
-    if doc is not None:
-        return doc.get("type") == "main"
-    return str(label_id or "").strip() in LABEL_MAPPING
+def _is_main_label(label_id: str) -> bool:
+    return str(label_id or "").strip() in _main_label_ids()
 
 
 def _synthetic_main_doc(label_id: str) -> Optional[Dict[str, Any]]:
     label_id = str(label_id or "").strip()
-    if not label_id or label_id not in LABEL_MAPPING:
+    if not label_id or not _is_main_label(label_id):
         return None
     return {
         "id": label_id,
@@ -968,24 +979,73 @@ def _candidate_section_order(
     order: List[str] = []
     for label_id in _dedupe(candidate_label_ids):
         doc = get_doc(label_id)
-        if _is_main_label(label_id, doc):
+        if _is_main_label(label_id):
+            order.append(label_id)
+        elif _category_child_ids(label_id):
             order.append(label_id)
         elif doc is not None and doc.get("parent"):
             order.append(str(doc["parent"]))
+        else:
+            order.append(label_id)
+    category_lookup = _category_parent_lookup(candidate_label_ids)
     for candidate in candidates:
-        label_id = str(candidate.get("id") or "")
-        parent_id = str(candidate.get("parent") or "")
-        group_id = label_id if candidate.get("type") == "main" else parent_id
+        group_id = _candidate_group_id(candidate, category_lookup)
         if group_id:
             order.append(group_id)
     return _dedupe(order)
 
 
 def _sub_label_search_limit(parent_id: str) -> int:
-    count = len(skills.find("sub_label_annotation.labels", parent=parent_id))
+    count = len(_category_child_ids(parent_id))
     if count <= 0:
         return 2
     return max(2, min(10, (count + 9) // 10))
+
+
+def _main_label_ids() -> set[str]:
+    return {
+        str(label_id).strip()
+        for label_id in LABEL_CATEGORIES.get("Main Labels", [])
+        if str(label_id).strip()
+    }
+
+
+def _category_child_ids(category_id: str) -> List[str]:
+    return [
+        str(label_id).strip()
+        for label_id in LABEL_CATEGORIES.get(str(category_id or "").strip(), [])
+        if str(label_id).strip()
+    ]
+
+
+def _category_child_types(child_ids: Iterable[str]) -> List[str]:
+    return _dedupe(
+        str(doc.get("type") or "")
+        for child_id in child_ids
+        for doc in [get_doc(child_id)]
+        if doc is not None and str(doc.get("type") or "")
+    )
+
+
+def _category_parent_lookup(candidate_label_ids: Sequence[str]) -> Dict[str, str]:
+    lookup: Dict[str, str] = {}
+    for category_id in _dedupe(candidate_label_ids):
+        if _is_main_label(category_id):
+            continue
+        for child_id in _category_child_ids(category_id):
+            lookup.setdefault(child_id, category_id)
+    return lookup
+
+
+def _candidate_group_id(
+    candidate: Dict[str, Any],
+    category_lookup: Dict[str, str],
+) -> str:
+    label_id = str(candidate.get("id") or "")
+    if candidate.get("type") == "main":
+        return label_id
+    parent_id = str(candidate.get("parent") or "")
+    return parent_id or category_lookup.get(label_id, "")
 
 
 def _evidence_text(
@@ -1827,10 +1887,9 @@ def _candidate_lines(
             group: [] for group in section_order
         }
         other: List[Dict[str, Any]] = []
+        category_lookup = _category_parent_lookup(candidate_label_ids)
         for candidate in candidates:
-            label_id = str(candidate.get("id") or "")
-            parent_id = str(candidate.get("parent") or "")
-            group_id = label_id if candidate.get("type") == "main" else parent_id
+            group_id = _candidate_group_id(candidate, category_lookup)
             if group_id in by_group:
                 by_group[group_id].append(candidate)
             else:
@@ -1839,9 +1898,7 @@ def _candidate_lines(
             group_candidates = by_group.get(group_id) or []
             if not group_candidates:
                 continue
-            lines.append(
-                f"##### Main label `{group_id}` {LABEL_MAPPING.get(group_id, '')}".rstrip()
-            )
+            lines.append(_candidate_section_heading(group_id))
             for c in group_candidates:
                 lines.append(_candidate_line(c))
         if other:
@@ -1853,6 +1910,12 @@ def _candidate_lines(
     for c in candidates:
         lines.append(_candidate_line(c))
     return lines
+
+
+def _candidate_section_heading(group_id: str) -> str:
+    if _is_main_label(group_id):
+        return f"##### Main label `{group_id}` {LABEL_MAPPING.get(group_id, '')}".rstrip()
+    return f"##### {LABEL_MAPPING.get(group_id, group_id)}".rstrip()
 
 
 def _candidate_line(candidate: Dict[str, Any]) -> str:

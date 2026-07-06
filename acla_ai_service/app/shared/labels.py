@@ -371,7 +371,7 @@ TRACK_LABELS: List[str] = [
 ]
 
 LABEL_CATEGORIES: Dict[str, List[str]] = {
-    "Main Labels": BEHAVIOR_LABELS + ["brands_hatch","silverstone","kyalami","suzuka","watkins_glen","indianapolis","cota"],
+    "Main Labels": BEHAVIOR_LABELS + TRACK_LABELS,
     "Behavior": BEHAVIOR_LABELS,
     "Track": TRACK_LABELS,
     "O":["O1","O3","O4","O5"],
