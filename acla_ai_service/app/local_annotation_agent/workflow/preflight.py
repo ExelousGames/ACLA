@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from app.internal_knowledge_base import skills
 from app.internal_knowledge_base.label_search import get_doc, search
 from app.local_annotation_agent.workflow.tools import shape_label_doc_for_llm
 from app.shared.contracts import Attachment
@@ -110,9 +111,6 @@ _TAG_KEYS = {
     "type",
     "verdict",
 }
-_REQUIRED_PARENTS = {"O", "OD", "PS", "RM", "MSP", "MSR"}
-
-
 @dataclass(frozen=True)
 class PreflightContext:
     prompt_block: str
@@ -266,8 +264,7 @@ def build_preflight_context(
     tool_ids: Optional[Sequence[str]] = None,
     query_specs: Optional[Sequence[Dict[str, Any]]] = None,
     parent_main_labels: Optional[Sequence[str]] = None,
-    eligible_behavior_label_ids: Optional[Sequence[str]] = None,
-    fixed_label_ids: Optional[Sequence[str]] = None,
+    candidate_label_ids: Optional[Sequence[str]] = None,
     extra_query_terms: Optional[Sequence[str]] = None,
     strict_query_errors: bool = False,
 ) -> PreflightContext:
@@ -295,14 +292,12 @@ def build_preflight_context(
         tags=tags,
         semantic_summaries=semantic_summaries,
         parent_main_labels=list(parent_main_labels or []),
-        eligible_behavior_label_ids=list(eligible_behavior_label_ids or []),
-        fixed_label_ids=list(fixed_label_ids or []),
+        candidate_label_ids=list(candidate_label_ids or []),
         extra_query_terms=list(extra_query_terms or []),
     )
     candidates = _label_candidates(
         evidence,
-        parent_main_labels=list(parent_main_labels or []),
-        eligible_behavior_label_ids=list(eligible_behavior_label_ids or []),
+        candidate_label_ids=list(candidate_label_ids or []),
     )
 
     attachments = [
@@ -313,6 +308,7 @@ def build_preflight_context(
             content={
                 "range": [s, e],
                 "tool_output_tags": tags,
+                "candidate_label_ids": list(candidate_label_ids or []),
                 "candidates": candidates,
             },
             content_schema="annotation_preflight_labels",
@@ -330,6 +326,7 @@ def build_preflight_context(
                 ),
                 "tool_output_tags": tags,
                 "semantic_summaries": semantic_summaries,
+                "candidate_label_ids": list(candidate_label_ids or []),
                 "label_candidate_ids": [c["id"] for c in candidates],
                 "semantic_evidence_text": evidence,
             },
@@ -346,6 +343,7 @@ def build_preflight_context(
             tags,
             candidates,
             semantic_summaries,
+            candidate_label_ids=list(candidate_label_ids or []),
         ),
         attachments=attachments,
         label_candidates=candidates,
@@ -917,50 +915,77 @@ def _preflight_query_range(table, start: int, end: int) -> Optional[List[int]]:
 def _label_candidates(
     evidence: str,
     *,
-    parent_main_labels: List[str],
-    eligible_behavior_label_ids: List[str],
+    candidate_label_ids: Sequence[str],
 ) -> List[Dict[str, Any]]:
     merged: Dict[str, Dict[str, Any]] = {}
 
     def add(docs: Iterable[Dict[str, Any]]) -> None:
         for doc in docs:
-            if not _allowed(doc, eligible_behavior_label_ids):
-                continue
             shaped = shape_label_doc_for_llm(doc)
             current = merged.get(shaped["id"])
             if current is None or shaped.get("score", 0.0) > current.get("score", 0.0):
                 merged[shaped["id"]] = shaped
 
-    main_parents = [
-        label_id
-        for label_id in parent_main_labels
-        if (get_doc(label_id) or {}).get("type") == "main"
-    ]
-    add(search(evidence, filters={"type": "segment_type"}, top_k=12))
-    if main_parents:
-        for parent_id in main_parents:
-            add(search(evidence, filters={"parent": parent_id}, top_k=12))
-    else:
-        add(search(evidence, filters={"type": "main"}, top_k=12))
-        for parent_id in eligible_behavior_label_ids:
-            add(search(evidence, filters={"parent": parent_id}, top_k=4))
+    for label_id in _dedupe(candidate_label_ids):
+        doc = get_doc(label_id)
+        if _is_main_label(label_id, doc):
+            main_doc = doc or _synthetic_main_doc(label_id)
+            if main_doc is not None:
+                add([main_doc])
+            add(search(
+                evidence,
+                filters={"parent": label_id},
+                top_k=_sub_label_search_limit(label_id),
+            ))
+        elif doc is not None:
+            add([doc])
 
-    return sorted(
-        merged.values(),
-        key=lambda item: float(item.get("score", 0.0)),
-        reverse=True,
-    )[:10]
+    return list(merged.values())
 
 
-def _allowed(doc: Dict[str, Any], eligible: List[str]) -> bool:
-    if not eligible:
-        return True
-    label_id = str(doc.get("id") or "")
-    parent_id = str(doc.get("parent") or "")
-    return not (
-        (label_id in _REQUIRED_PARENTS and label_id not in eligible)
-        or (parent_id in _REQUIRED_PARENTS and parent_id not in eligible)
-    )
+def _is_main_label(label_id: str, doc: Optional[Dict[str, Any]]) -> bool:
+    if doc is not None:
+        return doc.get("type") == "main"
+    return str(label_id or "").strip() in LABEL_MAPPING
+
+
+def _synthetic_main_doc(label_id: str) -> Optional[Dict[str, Any]]:
+    label_id = str(label_id or "").strip()
+    if not label_id or label_id not in LABEL_MAPPING:
+        return None
+    return {
+        "id": label_id,
+        "name": LABEL_MAPPING.get(label_id, label_id),
+        "type": "main",
+        "score": 0.0,
+    }
+
+
+def _candidate_section_order(
+    candidate_label_ids: Sequence[str],
+    candidates: Sequence[Dict[str, Any]],
+) -> List[str]:
+    order: List[str] = []
+    for label_id in _dedupe(candidate_label_ids):
+        doc = get_doc(label_id)
+        if _is_main_label(label_id, doc):
+            order.append(label_id)
+        elif doc is not None and doc.get("parent"):
+            order.append(str(doc["parent"]))
+    for candidate in candidates:
+        label_id = str(candidate.get("id") or "")
+        parent_id = str(candidate.get("parent") or "")
+        group_id = label_id if candidate.get("type") == "main" else parent_id
+        if group_id:
+            order.append(group_id)
+    return _dedupe(order)
+
+
+def _sub_label_search_limit(parent_id: str) -> int:
+    count = len(skills.find("sub_label_annotation.labels", parent=parent_id))
+    if count <= 0:
+        return 2
+    return max(2, min(10, (count + 9) // 10))
 
 
 def _evidence_text(
@@ -972,8 +997,7 @@ def _evidence_text(
     tags: List[str],
     semantic_summaries: List[str],
     parent_main_labels: List[str],
-    eligible_behavior_label_ids: List[str],
-    fixed_label_ids: List[str],
+    candidate_label_ids: List[str],
     extra_query_terms: List[str],
 ) -> str:
     parts = [
@@ -981,8 +1005,7 @@ def _evidence_text(
         f"Range: [{start}, {end}]",
         "Preflight fact sentences: " + " ".join(semantic_summaries),
         "Parent main labels: " + _label_text(parent_main_labels),
-        "Eligible behavior labels: " + _label_text(eligible_behavior_label_ids),
-        "Fixed labels: " + _label_text(fixed_label_ids),
+        "Candidate labels: " + _label_text(candidate_label_ids),
         "Extra terms: " + " ".join(str(term) for term in extra_query_terms),
     ]
     return "\n".join(part for part in parts if not part.endswith(": "))
@@ -996,6 +1019,7 @@ def _prompt_block(
     tags: List[str],
     candidates: List[Dict[str, Any]],
     semantic_summaries: Optional[List[str]] = None,
+    candidate_label_ids: Optional[Sequence[str]] = None,
 ) -> str:
     semantic_summaries = list(semantic_summaries or [])
     lines = [
@@ -1017,7 +1041,7 @@ def _prompt_block(
         "",
         "Semantic label candidates from hybrid search:",
     ])
-    lines.extend(_candidate_lines(candidates))
+    lines.extend(_candidate_lines(candidates, candidate_label_ids or []))
     return "\n".join(lines)
 
 
@@ -1790,18 +1814,54 @@ def _preflight_trajectory_similarity_summary(
     )
 
 
-def _candidate_lines(candidates: List[Dict[str, Any]]) -> List[str]:
+def _candidate_lines(
+    candidates: List[Dict[str, Any]],
+    candidate_label_ids: Sequence[str] = (),
+) -> List[str]:
     if not candidates:
         return ["- (no semantic candidates found)"]
+    section_order = _candidate_section_order(candidate_label_ids, candidates)
+    if section_order:
+        lines: List[str] = []
+        by_group: Dict[str, List[Dict[str, Any]]] = {
+            group: [] for group in section_order
+        }
+        other: List[Dict[str, Any]] = []
+        for candidate in candidates:
+            label_id = str(candidate.get("id") or "")
+            parent_id = str(candidate.get("parent") or "")
+            group_id = label_id if candidate.get("type") == "main" else parent_id
+            if group_id in by_group:
+                by_group[group_id].append(candidate)
+            else:
+                other.append(candidate)
+        for group_id in section_order:
+            group_candidates = by_group.get(group_id) or []
+            if not group_candidates:
+                continue
+            lines.append(
+                f"##### Main label `{group_id}` {LABEL_MAPPING.get(group_id, '')}".rstrip()
+            )
+            for c in group_candidates:
+                lines.append(_candidate_line(c))
+        if other:
+            lines.append("##### Other candidates")
+            lines.extend(_candidate_line(c) for c in other)
+        return lines
+
     lines: List[str] = []
     for c in candidates:
-        desc = str(c.get("description") or "").strip()
-        lines.append(
-            f"- `{c['id']}` {c.get('name', '')} "
-            f"({_humanize_value(c.get('type'))})"
-            + (f": {desc}" if desc else "")
-        )
+        lines.append(_candidate_line(c))
     return lines
+
+
+def _candidate_line(candidate: Dict[str, Any]) -> str:
+    desc = str(candidate.get("description") or "").strip()
+    return (
+        f"- `{candidate['id']}` {candidate.get('name', '')} "
+        f"({_humanize_value(candidate.get('type'))})"
+        + (f": {desc}" if desc else "")
+    )
 
 
 def _tags(value: Any) -> List[str]:

@@ -388,6 +388,11 @@ def build_request(
     section_name = LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
     session_context = _session_context(section_split_basis, opponent_interaction)
     eligible_labels = list(_eligible_behavior_label_ids(session_context))
+    candidate_label_ids = [
+        label_id
+        for label_id in [circuit_id, *eligible_labels]
+        if label_id
+    ]
 
     parent_segment = Attachment(
         name="init.parent_segment",
@@ -410,16 +415,11 @@ def build_request(
         },
     )
 
-    fixed_label_ids = [label_id for label_id in (circuit_id, section_id) if label_id]
-    preselected_section_id = _preselected_interaction_section_id(opponent_interaction)
-    if preselected_section_id:
-        fixed_label_ids.append(preselected_section_id)
     preflight = build_preflight_context(
         df=df,
         start=section_start,
         end=section_end,
-        eligible_behavior_label_ids=eligible_labels,
-        fixed_label_ids=fixed_label_ids,
+        candidate_label_ids=candidate_label_ids,
         extra_query_terms=[
             session_context,
             section_split_basis or "circuit_section",

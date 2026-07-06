@@ -34,7 +34,6 @@ from app.local_annotation_agent.workflow.results import (
 from app.local_annotation_agent.workflow.preflight_detailed import (
     build_preflight_context,
 )
-from app.local_annotation_agent.workflow.tools import shape_label_doc_for_llm
 from app.annotation_providers.tool_surface import PREFLIGHT_ONLY_TOOL_NAMES
 
 
@@ -170,102 +169,6 @@ def _tool_agent_task_prompt(
     )
 
 
-def _preflight_semantic_search_text(preflight) -> str:
-    for attachment in getattr(preflight, "attachments", []) or []:
-        if getattr(attachment, "name", "") != "init.annotation_preflight_context":
-            continue
-        content = getattr(attachment, "content", None)
-        if not isinstance(content, dict):
-            continue
-        evidence = str(
-            content.get("semantic_search_text")
-            or content.get("semantic_evidence_text")
-            or ""
-        ).strip()
-        if evidence:
-            return evidence
-    return ""
-
-
-def _embedding_label_candidates(
-    *,
-    evidence_text: str,
-    parent_main_labels: List[str],
-) -> List[Dict[str, Any]]:
-    """Hybrid-search candidate labels for detailed annotation.
-
-    Detailed preflight only prepares semantic evidence sentences; this flow-level
-    step performs the embedding retrieval before the AI chooses ranges.
-    """
-    from app.internal_knowledge_base.label_reranker import rerank_label_docs
-    from app.internal_knowledge_base.label_search import get_doc, search
-
-    query = (evidence_text or "").strip()
-    if not query:
-        return []
-
-    merged: Dict[str, Dict[str, Any]] = {}
-
-    def add(docs: List[Dict[str, Any]]) -> None:
-        for doc in docs:
-            label_id = str(doc.get("id") or "")
-            if not label_id:
-                continue
-            current = merged.get(label_id)
-            score = float(doc.get("score", 0.0) or 0.0)
-            current_score = float((current or {}).get("score", 0.0) or 0.0)
-            if current is None or score > current_score:
-                merged[label_id] = dict(doc)
-
-    main_parents = [
-        label_id
-        for label_id in parent_main_labels
-        if (get_doc(label_id) or {}).get("type") == "main"
-    ]
-
-    add(search(query, filters={"type": "segment_type"}, top_k=12))
-    if main_parents:
-        for parent_id in main_parents:
-            add(search(query, filters={"parent": parent_id}, top_k=12))
-    else:
-        add(search(query, filters={"type": "main"}, top_k=12))
-
-    return [
-        shape_label_doc_for_llm(doc)
-        for doc in rerank_label_docs(query, list(merged.values()))
-    ]
-
-
-def _embedding_candidates_prompt_block(candidates: List[Dict[str, Any]]) -> str:
-    lines = [
-        "#### Upfront Detailed Embedding Label Candidates",
-        "The detailed flow already ran hybrid embedding search over "
-        "annotation knowledge using the preflight semantic evidence sentences.",
-        "These are candidate labels, not final labels; attach one only "
-        "when its definition fits the whole proposed child range.",
-        "Candidate labels:",
-    ]
-    if not candidates:
-        lines.append(
-            "- (none found; submit an empty proposals list because no "
-            "label_id is authorized for this detailed pass)"
-        )
-        return "\n".join(lines)
-
-    for entry in candidates:
-        desc = str(entry.get("description") or "").strip()
-        row = (
-            f"- `{entry.get('id')}` ({entry.get('name', '')}) "
-            f"| type={entry.get('type')} | score={entry.get('score')}"
-        )
-        if entry.get("parent"):
-            row += f" | parent={entry.get('parent')}"
-        if desc:
-            row += f" — {desc}"
-        lines.append(row)
-    return "\n".join(lines)
-
-
 def build_request(
     *,
     provider_id: str,
@@ -311,24 +214,12 @@ def build_request(
         start=parent_start,
         end=parent_end,
         parent_main_labels=parent_main_labels,
+        candidate_label_ids=parent_main_labels,
         extra_query_terms=[
             LABEL_MAPPING.get(label_id, label_id)
             for label_id in parent_main_labels
         ],
     )
-    embedding_candidates = _embedding_label_candidates(
-        evidence_text=_preflight_semantic_search_text(preflight),
-        parent_main_labels=parent_main_labels,
-    )
-    for attachment in preflight.attachments:
-        if attachment.name == "init.annotation_preflight_context" and isinstance(
-            attachment.content,
-            dict,
-        ):
-            attachment.content["label_candidate_ids"] = [
-                c["id"] for c in embedding_candidates if c.get("id")
-            ]
-            break
 
     task_prompt = _tool_agent_task_prompt(
         parent_start=parent_start,
@@ -338,7 +229,6 @@ def build_request(
     )
     shared_front_prompt = "\n\n".join([
         preflight.prompt_block,
-        _embedding_candidates_prompt_block(embedding_candidates),
         task_prompt,
     ])
     planner_prompt = shared_front_prompt
@@ -358,16 +248,6 @@ def build_request(
         initial_attachments=[
             parent_segment,
             *preflight.attachments,
-            Attachment(
-                name="init.preflight_label_candidates",
-                kind="structured",
-                label="Upfront Detailed Embedding Label Candidates",
-                content={
-                    "range": [int(parent_start), int(parent_end)],
-                    "candidates": embedding_candidates,
-                },
-                content_schema="annotation_preflight_labels",
-            ),
         ],
         callbacks=callbacks,
         session_id=session_id,

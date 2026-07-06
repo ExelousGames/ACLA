@@ -15,6 +15,8 @@ from app.local_annotation_agent.workflow.preflight import (
     _preflight_query_table,
     _run_queries,
     _run_tools,
+    _candidate_lines,
+    _label_candidates,
     _semantic_tags,
     _semantic_tool_output,
 )
@@ -226,6 +228,7 @@ def build_preflight_context(
     start: int,
     end: int,
     parent_main_labels: Sequence[str],
+    candidate_label_ids: Sequence[str],
     extra_query_terms: Sequence[str],
 ) -> PreflightContext:
     s, e = int(start), int(end)
@@ -251,6 +254,10 @@ def build_preflight_context(
     semantic_search_text = _join_evidence_text(
         time_gap_summaries,
         _semantic_search_text(events, parent_main_labels, extra_query_terms),
+    )
+    candidates = _label_candidates(
+        semantic_search_text,
+        candidate_label_ids=candidate_label_ids,
     )
     source_tool_ids = _dedupe(
         source
@@ -280,6 +287,18 @@ def build_preflight_context(
     ]
     attachments.extend([
         Attachment(
+            name="init.preflight_label_candidates",
+            kind="structured",
+            label="Upfront Detailed Embedding Label Candidates",
+            content={
+                "range": [s, e],
+                "tool_output_tags": tags,
+                "candidate_label_ids": list(candidate_label_ids),
+                "candidates": candidates,
+            },
+            content_schema="annotation_preflight_labels",
+        ),
+        Attachment(
             name="init.detailed_preflight_events",
             kind="structured",
             label="Detailed Preflight Statistical Events",
@@ -305,6 +324,8 @@ def build_preflight_context(
                 ),
                 "tool_output_tags": tags,
                 "statistical_events": [event["event"] for event in events],
+                "candidate_label_ids": list(candidate_label_ids),
+                "label_candidate_ids": [c["id"] for c in candidates],
                 "semantic_evidence_text": event_text,
                 "semantic_search_text": semantic_search_text,
             },
@@ -317,9 +338,11 @@ def build_preflight_context(
             s,
             e,
             event_text,
+            candidates,
+            candidate_label_ids,
         ),
         attachments=attachments,
-        label_candidates=[],
+        label_candidates=candidates,
     )
 
 
@@ -3293,6 +3316,8 @@ def _prompt_block(
     start: int,
     end: int,
     event_text: str,
+    candidates: Sequence[Dict[str, Any]],
+    candidate_label_ids: Sequence[str],
 ) -> str:
     lines = [
         "#### Required Upfront Detailed Statistical Preflight",
@@ -3309,6 +3334,11 @@ def _prompt_block(
         lines.extend(f"- {line}" for line in event_text.splitlines() if line.strip())
     else:
         lines.append("- (none)")
+    lines.extend([
+        "",
+        "Semantic label candidates from hybrid search:",
+    ])
+    lines.extend(_candidate_lines(list(candidates), candidate_label_ids))
     return "\n".join(lines)
 
 

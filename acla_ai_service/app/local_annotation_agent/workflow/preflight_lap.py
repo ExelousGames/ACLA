@@ -66,8 +66,7 @@ def build_preflight_context(
     df,
     start: int,
     end: int,
-    eligible_behavior_label_ids: Sequence[str],
-    fixed_label_ids: Sequence[str],
+    candidate_label_ids: Sequence[str],
     extra_query_terms: Sequence[str],
 ) -> PreflightContext:
     return build_shared_preflight_context(
@@ -77,7 +76,6 @@ def build_preflight_context(
         end=end,
         tool_ids=LAP_PREFLIGHT_TOOL_IDS,
         query_specs=LAP_PREFLIGHT_QUERY_SPECS,
-        eligible_behavior_label_ids=eligible_behavior_label_ids,
-        fixed_label_ids=fixed_label_ids,
+        candidate_label_ids=candidate_label_ids,
         extra_query_terms=extra_query_terms,
     )
