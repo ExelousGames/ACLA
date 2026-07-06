@@ -592,7 +592,7 @@
     "MSP41": {
       "name": "Cutting the line",
       "type": "sub",
-      "description": "Across the whole corner range where the line cuts inside, the player's trajectory **cuts inside** the expert's line (offset is **tighter than expert** at multiple phases).\n",
+      "description": "Player cuts the line\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": []
