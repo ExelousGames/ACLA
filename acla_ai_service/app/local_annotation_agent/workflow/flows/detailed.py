@@ -98,8 +98,9 @@ def _tool_agent_task_prompt(
         )
 
     return (
-        "Discover strongly supported candidate-label sub-segment(s) within "
-        "the parent segment below. A valid sub-segment is a strict child "
+        "Discover strongly supported sub-segment(s) from Preflight label "
+        "candidates within the parent segment below. A valid sub-segment is "
+        "a strict child "
         "range: it may touch one parent boundary, but it must not be "
         "identical to the parent range.\n"
         "\n"
@@ -114,9 +115,9 @@ def _tool_agent_task_prompt(
         "### Selection notes\n"
         "- Preflight fact sentences are telemetry facts only; they do not "
         "identify labels.\n"
-        "- Review the Upfront Detailed Embedding Label Candidates block. "
-        "Those candidates come from hybrid embedding search over the "
-        "annotation knowledge base using the preflight semantic search "
+        "- Review the Preflight label candidates block. "
+        "Preflight label candidates come from hybrid embedding search over "
+        "the annotation knowledge base using the preflight semantic search "
         "words.\n"
         "- Audit the parent range according to the hard rules below.\n"
         "\n"
@@ -126,7 +127,7 @@ def _tool_agent_task_prompt(
         "{\n"
         '  "proposals": [\n'
         '    {\n'
-        '      "label_id": "<a label_id from upfront candidates>",\n'
+        '      "label_id": "<a label_id from Preflight label candidates>",\n'
         f'      "start_index": <int in [{parent_start}, {parent_end}]>,\n'
         f'      "end_index": <int in [{parent_start}, {parent_end}]>,\n'
         '      "reasoning": "<2-4 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, and any ambiguous option rejected>"\n'
@@ -141,8 +142,7 @@ def _tool_agent_task_prompt(
         f"- A proposed range must not be identical to the parent range [{parent_start}, {parent_end}].\n"
         f"{annotation_rule_bullets}\n"
         "- Parent labels are inherited context only; they are not enough evidence for a child proposal.\n"
-        "- Only propose label_ids from the Upfront Detailed Embedding Label "
-        "Candidates block.\n"
+        "- Only propose label_ids from the Preflight label candidates block.\n"
         "- For O, OD, and MSR racing sub-labels, do not use expert/reference-lap "
         "comparisons as evidence. Use opponent-relative preflight facts such "
         "as who started ahead, who ended ahead, who drew alongside whom, "

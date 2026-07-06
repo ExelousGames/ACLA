@@ -304,7 +304,7 @@ def build_preflight_context(
         Attachment(
             name="init.preflight_label_candidates",
             kind="structured",
-            label="Preflight Semantic Label Candidates",
+            label="Preflight label candidates",
             content={
                 "range": [s, e],
                 "tool_output_tags": tags,
@@ -1039,7 +1039,7 @@ def _prompt_block(
         lines.append("- (none)")
     lines.extend([
         "",
-        "Semantic label candidates from hybrid search:",
+        "Preflight label candidates from hybrid search:",
     ])
     lines.extend(_candidate_lines(candidates, candidate_label_ids or []))
     return "\n".join(lines)

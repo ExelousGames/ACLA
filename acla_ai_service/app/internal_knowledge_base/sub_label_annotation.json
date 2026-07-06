@@ -4,7 +4,7 @@
     "description": "LLM-facing label taxonomy (main, sub, segment_type only). Main labels keep hierarchy (parent/children), exclusive_with constraints, and annotation_guideline here; their search/display descriptions are sourced from lap_annotation.labels characteristics. Sub-label and segment-type descriptions live here and carry inline VLM / deterministic preflight predicates so hybrid (vector + BM25) similarity over observation text shortlists matching labels. Circuit and circuit_section labels are NOT in this catalog — the LLM picks them via the `get_circuit_id` / `locate_circuit_section` tools (geometry from app/shared/circuit_sections.py), not by search.\n",
     "when_to_use": [
       "Drilling into a parent-labelled section to pick sub-labels (detailed flow).",
-      "Hybrid-similarity shortlist of candidate labels from VLM observations.",
+      "Preflight label candidates from hybrid similarity over VLM observations.",
       "Validating label hierarchy (parent presence, mutual exclusion)."
     ],
     "tags": [
@@ -17,10 +17,10 @@
   },
   "range_fit_rule": "Whole-range label rule for detailed annotation: every proposed label must describe the proposed child range as a whole. Do not propose a label because it matches only one phase, one apex moment, or a short slice inside the child range; shrink the child range so the label fits throughout, submit a separate proposal for the smaller range, or omit that label.\n",
   "detailed_flow_rules": [
-    "Audit the full parent range before submitting. Do not stop after the first supported episode; submit every strongly supported child proposal whose candidate label fits its own tight range.",
+    "Audit the full parent range before submitting. Do not stop after the first supported episode; submit every strongly supported child proposal whose label from Preflight label candidates fits its own tight range.",
     "For labels describing a local event such as an onset, release, peak, spike, dip, or short instability, fit the child range to that event and its immediate supporting context. When the selected label description names supporting signs, and the reasoning uses one of those signs as evidence, include that supporting sign as part of the child segment range. A later reversal or recovery is not disqualifying unless the label definition requires sustained behavior.",
     "Already discovered sub-segments only block exact duplicate proposals. They do not mark their ilocs as handled, and they do not suppress different labels that overlap or nest inside them.",
-    "Segment-type, terrain, altitude, circuit-section, and technique labels describe different aspects of the same telemetry. One category does not explain away or cover another category when separate candidate-label evidence exists."
+    "Segment-type, terrain, altitude, circuit-section, and technique labels describe different aspects of the same telemetry. One category does not explain away or cover another category when separate evidence supports a label from Preflight label candidates."
   ],
   "labels": {
     "O": {

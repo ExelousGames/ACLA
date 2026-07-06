@@ -349,7 +349,9 @@ def _tool_agent_task_prompt(
         f"{_lap_prompt_rule('payload_shape.intro')}\n"
         "```json\n"
         "{\n"
-        '  "label_ids": ["<id>", "<id>", ...],\n'
+        '  "label_ids": ['
+        '"<id from Preflight label candidates>", '
+        '"<id from Preflight label candidates>", ...],\n'
         f'  "reasoning": "{reasoning_placeholder}"\n'
         "}\n"
         "```\n"

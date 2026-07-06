@@ -53,7 +53,7 @@
     "splitter_section_context": "Splitter context: `{{circuit_id}}` ({{circuit_name}}), `{{section_id}}` ({{section_name}}). Use this as the selected circuit_section unless Pit-section evidence makes the Pit section the better knowledge-base fit. If `locate_circuit_section` is ambiguous, use `top_matches` only as competing evidence to resolve to one circuit_section id.",
     "preselected_section_context": "Splitter section context: `{{preselected_section_id}}` ({{preselected_section_name}}) from the opponent sub-segment; include it in `label_ids`.",
     "selection_notes": [
-      "Preflight semantic label candidates cover current-session main-label and sub-label choices.",
+      "Preflight label candidates cover current-session main-label and sub-label choices.",
       "When any main-label or sub-label signature fits only part of the range, omit that label or submit an empty `label_ids` array to drop the range."
     ],
     "payload_shape": {
@@ -64,8 +64,8 @@
       ]
     },
     "hard_rules": [
-      "Do not invent label IDs; circuit / circuit_section ids must come from splitter or preflight context, every other id from preflight semantic candidates.",
-      "When `locate_circuit_section` reports ambiguity, choose exactly one circuit_section id using splitter context and behavior evidence. For Pit-vs-straight ties, choose Pit when Pit-section evidence supports pit procedure; otherwise choose the normal racing-surface section. A Pit-vs-adjacent-straight ambiguity plus sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration counts as Pit-section procedure evidence. Do not include multiple same-range circuit_section ids."
+      "Do not invent label IDs; circuit / circuit_section ids must come from splitter or preflight context, every other id from Preflight label candidates.",
+      "When `locate_circuit_section` reports ambiguity, choose exactly one circuit_section id using splitter context and behavior evidence. Do not include multiple same-range circuit_section ids."
     ],
     "whole_range_label_rule": "Every behavior and sub-label must describe the final annotation range as a whole. Do not attach a label because it matches only one phase, one apex moment, or a short slice inside the range; omit that label or leave it for detailed child sub-segment annotation.",
     "segment_action_model_rule": "Evaluate the saved lap parent segment as a complete action group over the final iloc range. Driver/expert turning / trajectory, brake, and throttle comparison is required for segment completeness at entry or exit; do not treat complete action-group evidence as optional sub-label evidence.",
