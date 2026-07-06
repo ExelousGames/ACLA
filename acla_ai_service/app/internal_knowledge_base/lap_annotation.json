@@ -50,7 +50,6 @@
       "target_heading": "Target-car hint from the splitter:"
     },
     "task_intro": "Annotate ONE lap range. The deterministic splitter handed you a fixed split-section boundary; if this is an opponent interaction window, the boundary is event-shaped and circuit sections are context only. Your job is to include the circuit id and one selected circuit_section id from splitter or preflight context, at least one required behavior parent label for any saved segment, and an optional matching sub-label.",
-    "splitter_section_context": "Splitter context: `{{circuit_id}}` ({{circuit_name}}), `{{section_id}}` ({{section_name}}). Use this as the selected circuit_section unless Pit-section evidence makes the Pit section the better knowledge-base fit. If `locate_circuit_section` is ambiguous, use `top_matches` only as competing evidence to resolve to one circuit_section id.",
     "preselected_section_context": "Splitter section context: `{{preselected_section_id}}` ({{preselected_section_name}}) from the opponent sub-segment; include it in `label_ids`.",
     "selection_notes": [
       "Preflight label candidates cover current-session main-label and sub-label choices.",

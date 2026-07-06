@@ -1075,8 +1075,6 @@ def _prompt_block(
     flow: str,
     start: int,
     end: int,
-    tool_outputs: List[Tuple[str, Dict[str, Any]]],
-    tags: List[str],
     candidates: List[Dict[str, Any]],
     semantic_summaries: Optional[List[str]] = None,
     candidate_label_ids: Optional[Sequence[str]] = None,
@@ -1235,6 +1233,23 @@ def _preflight_named_tool_summary(
                 f"{_measurement(best.get('overlap_fraction'))}."
             )
         if content.get("is_ambiguous"):
+            top_matches = content.get("top_matches")
+            if isinstance(top_matches, list) and top_matches:
+                matches = []
+                for match in top_matches[:3]:
+                    if not isinstance(match, dict):
+                        continue
+                    label_id = match.get("label_id")
+                    name = match.get("name")
+                    overlap = _measurement(match.get("overlap_fraction"))
+                    matches.append(
+                        f"{label_id} {name} overlap {overlap}"
+                    )
+                if matches:
+                    return (
+                        "Circuit-section location was ambiguous; competing "
+                        "top matches were " + "; ".join(matches) + "."
+                    )
             return (
                 "Circuit-section location was ambiguous; inspect the top "
                 "matches if section choice matters."

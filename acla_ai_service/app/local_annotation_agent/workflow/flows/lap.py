@@ -277,21 +277,6 @@ def _tool_agent_task_prompt(
     interaction_focus = _interaction_focus_block(
         section_split_basis, opponent_interaction,
     )
-    section_name = (
-        LABEL_MAPPING.get(section_id, section_id) if section_id else section_id
-    )
-    circuit_name = (
-        LABEL_MAPPING.get(circuit_id, circuit_id) if circuit_id else circuit_id
-    )
-    splitter_section_block = ""
-    if circuit_id or section_id:
-        splitter_section_block = "- " + _lap_prompt_rule(
-            "splitter_section_context",
-            circuit_id=circuit_id,
-            circuit_name=circuit_name,
-            section_id=section_id,
-            section_name=section_name,
-        ) + "\n"
     eligible_labels_text = _label_set_text(eligible_labels)
     selection_notes = "\n".join(
         f"- {rule}"
@@ -337,8 +322,6 @@ def _tool_agent_task_prompt(
         f"(length {lap_end - lap_start})\n"
         f"- Split section boundary: [{section_start}, {section_end}] "
         f"(length {section_end - section_start})\n"
-        f"- Split basis: {section_split_basis or 'circuit_section'}\n"
-        f"{splitter_section_block}"
         f"{preselected_section_block}"
         f"{interaction_focus}"
         "\n"
