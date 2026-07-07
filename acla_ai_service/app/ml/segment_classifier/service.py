@@ -27,7 +27,8 @@ from collections import defaultdict
 
 from app.storage import get_shared_telemetry_store
 from app.shared.labels import LABEL_MAPPING, normalize_label_id, normalize_label_ids
-from app.shared.segment import AnnotatedSegment, PredictedSegment, SegmentFeatureCatalog
+from app.shared.segment import AnnotatedSegment, PredictedSegment
+from app.shared.segment_classifier_features import SEGMENT_CLASSIFIER_FEATURES
 
 # Extracted in refactor/hexagonal-v4 — Page 5 of the architecture diagram.
 # Model classes are pure (no I/O); dataset + derived-features helper own I/O.
@@ -81,7 +82,7 @@ class SegmentClassifierService:
         self.max_length = max_length
 
     def _current_feature_names(self) -> List[str]:
-        return SegmentFeatureCatalog.get_all_available_features()
+        return list(SEGMENT_CLASSIFIER_FEATURES)
 
     def _legacy_feature_names_for_scaler(self, scaler_feature_count: Optional[int]) -> Optional[List[str]]:
         """Feature layout used by artifacts trained before gap columns were added."""
