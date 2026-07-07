@@ -1554,56 +1554,213 @@ def _speed_events(
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
 
+    values = _speed_gap_percent_values(df, start, end)
     whole_gap = _gap_percent_change(
-        _speed_gap_percent_values(df, start, end),
+        values,
         kind="speed",
     )
-    if whole_gap:
-        events.append(_event(
-            _speed_gap_event_name(whole_gap["direction"], "whole_range"),
-            "whole_range",
-            [start, end],
-            whole_gap,
-            (
-                "strong"
-                if whole_gap.get("threshold_state") == "label_threshold_met"
-                else "moderate"
-            ),
-            ["local_speed_difference_percent_gap"],
-        ))
+    if not whole_gap:
+        return events
 
-    events.extend(_speed_gap_phase_events(df, start, end, phases))
-    return events
-
-
-def _speed_gap_phase_events(
-    df,
-    start: int,
-    end: int,
-    phases: List[Dict[str, int]],
-) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    for phase, range_ in _corner_phase_ranges(start, end, phases):
-        analysis = _gap_percent_change(
-            _speed_gap_percent_values(df, range_[0], range_[1]),
-            kind="speed",
+    phase_ranges = _corner_phase_ranges(start, end, phases)
+    if phase_ranges:
+        whole_gap["corner_phase_ranges"] = [
+            {"phase": phase, "range": range_}
+            for phase, range_ in phase_ranges
+        ]
+        turning_points = _speed_difference_slope_turns(
+            _series_values(df, start, end, "speed_difference"),
+            phase_ranges,
         )
-        if not analysis:
-            continue
-        direction = analysis["direction"]
-        events.append(_event(
-            _speed_gap_event_name(direction, phase),
-            phase,
-            range_,
-            analysis,
-            (
-                "strong"
-                if analysis.get("threshold_state") == "label_threshold_met"
-                else "moderate"
-            ),
-            ["local_speed_difference_percent_gap"],
-        ))
+        if turning_points:
+            whole_gap["speed_difference_slope_turns"] = turning_points
+    event_range = [values[0][0], values[-1][0]] if values else [start, end]
+    events.append(_event(
+        _speed_gap_event_name(whole_gap["direction"]),
+        "whole_range",
+        event_range,
+        whole_gap,
+        (
+            "strong"
+            if whole_gap.get("threshold_state") == "label_threshold_met"
+            else "moderate"
+        ),
+        ["speed_difference_percent_gap"],
+    ))
     return events
+
+
+def _speed_difference_slope_turns(
+    values: Sequence[Tuple[int, float]],
+    phase_ranges: Sequence[Tuple[str, List[int]]],
+) -> List[Dict[str, Any]]:
+    finite = [
+        (int(iloc), float(value))
+        for iloc, value in values
+        if _is_number(value)
+    ]
+    if len(finite) < 3:
+        return []
+
+    slope_runs = _slope_sign_runs(finite)
+    turning_points: List[Dict[str, Any]] = []
+    for before, after in zip(slope_runs, slope_runs[1:]):
+        if before["sign"] == -1 and after["sign"] == 1:
+            kind = "dip"
+        elif before["sign"] == 1 and after["sign"] == -1:
+            kind = "spike"
+        else:
+            continue
+
+        center_candidates = range(before["end_pos"], after["start_pos"] + 1)
+        center_pos = _speed_difference_turn_center(finite, center_candidates, kind)
+        if center_pos is None:
+            continue
+        prominence = _speed_difference_turn_prominence(
+            finite,
+            before,
+            after,
+            center_pos,
+            kind,
+        )
+        if prominence < 5.0:
+            continue
+
+        range_ = _speed_difference_turn_range(finite, before, after, center_pos)
+        turning_points.append({
+            "kind": kind,
+            "phase": _phase_for_range(range_, phase_ranges),
+            "iloc": int(finite[center_pos][0]),
+            "range": range_,
+        })
+
+    return turning_points
+
+
+def _phase_for_range(
+    range_: Sequence[int],
+    phase_ranges: Sequence[Tuple[str, List[int]]],
+) -> str:
+    if len(range_) != 2:
+        return "unknown"
+    start, end = int(range_[0]), int(range_[1])
+    overlapping_phases: List[str] = []
+    for phase, phase_range in phase_ranges:
+        if len(phase_range) != 2:
+            continue
+        overlap = min(end, phase_range[1]) - max(start, phase_range[0]) + 1
+        if overlap > 0:
+            overlapping_phases.append(phase)
+    if not overlapping_phases:
+        return "unknown"
+    if len(overlapping_phases) == 1:
+        return overlapping_phases[0]
+    return _join_sentence_list(overlapping_phases)
+
+
+def _slope_sign_runs(
+    values: Sequence[Tuple[int, float]],
+) -> List[Dict[str, int]]:
+    runs: List[Dict[str, int]] = []
+    current: Optional[Dict[str, int]] = None
+
+    for index in range(1, len(values)):
+        prev_iloc, prev_value = values[index - 1]
+        iloc, value = values[index]
+        iloc_delta = iloc - prev_iloc
+        if iloc_delta <= 0:
+            continue
+        slope = (value - prev_value) / float(iloc_delta)
+        if slope > 0.0:
+            sign = 1
+        elif slope < 0.0:
+            sign = -1
+        else:
+            continue
+
+        if current is None:
+            current = {"sign": sign, "start_pos": index - 1, "end_pos": index}
+            continue
+        if current["sign"] == sign:
+            current["end_pos"] = index
+            continue
+
+        runs.append(current)
+        current = {"sign": sign, "start_pos": index - 1, "end_pos": index}
+
+    if current is not None:
+        runs.append(current)
+    return runs
+
+
+def _speed_difference_turn_center(
+    values: Sequence[Tuple[int, float]],
+    positions: Iterable[int],
+    kind: str,
+) -> Optional[int]:
+    valid_positions = [
+        int(position)
+        for position in positions
+        if 0 <= int(position) < len(values)
+    ]
+    if not valid_positions:
+        return None
+    target = min if kind == "dip" else max
+    target_value = target(values[position][1] for position in valid_positions)
+    peak_positions = [
+        position
+        for position in valid_positions
+        if abs(values[position][1] - target_value) <= 1e-9
+    ]
+    return peak_positions[len(peak_positions) // 2]
+
+
+def _speed_difference_turn_prominence(
+    values: Sequence[Tuple[int, float]],
+    before: Dict[str, int],
+    after: Dict[str, int],
+    center_pos: int,
+    kind: str,
+) -> float:
+    left_value = float(values[before["start_pos"]][1])
+    center_value = float(values[center_pos][1])
+    right_value = float(values[after["end_pos"]][1])
+    if kind == "dip":
+        return min(left_value - center_value, right_value - center_value)
+    return min(center_value - left_value, center_value - right_value)
+
+
+def _speed_difference_turn_range(
+    values: Sequence[Tuple[int, float]],
+    before: Dict[str, int],
+    after: Dict[str, int],
+    center_pos: int,
+) -> List[int]:
+    center_value = values[center_pos][1]
+    center_sign = 1 if center_value > 0.0 else -1 if center_value < 0.0 else 0
+    if center_sign == 0:
+        return [int(values[before["start_pos"]][0]), int(values[after["end_pos"]][0])]
+
+    left_pos = center_pos
+    while left_pos > 0 and _value_sign(values[left_pos - 1][1]) == center_sign:
+        left_pos -= 1
+    if left_pos > 0:
+        left_pos -= 1
+
+    right_pos = center_pos
+    last_pos = len(values) - 1
+    while right_pos < last_pos and _value_sign(values[right_pos + 1][1]) == center_sign:
+        right_pos += 1
+
+    return [int(values[left_pos][0]), int(values[right_pos][0])]
+
+
+def _value_sign(value: float) -> int:
+    if value > 0.0:
+        return 1
+    if value < 0.0:
+        return -1
+    return 0
 
 
 def _speed_gap_percent_values(
@@ -2437,11 +2594,8 @@ def _phase_for_iloc(iloc: Any, phases: List[Dict[str, int]]) -> str:
     return "unknown"
 
 
-def _speed_gap_event_name(direction: str, phase: str) -> str:
-    base = f"speed gap {direction}"
-    if phase in {"entry", "apex", "exit"}:
-        return f"{base} at {phase}"
-    return base
+def _speed_gap_event_name(direction: str) -> str:
+    return f"speed gap {direction}"
 
 
 def _query_result(content: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2544,8 +2698,6 @@ def _event_sentence(event: Dict[str, Any]) -> str:
         return ""
 
     phase = _phase_sentence_prefix(str(event.get("phase") or ""))
-    if _gap_event_has_phase(event_name):
-        phase = ""
     range_text = _range_sentence_fragment(event.get("range"))
     measurements = event.get("measurements")
     if not isinstance(measurements, dict):
@@ -2620,14 +2772,6 @@ def _phase_sentence_prefix(phase: str) -> str:
     if phase == "whole_range":
         return "Across the whole range, "
     return ""
-
-
-def _gap_event_has_phase(event_name: str) -> bool:
-    return event_name.startswith("speed gap ") and (
-        event_name.endswith(" at entry")
-        or event_name.endswith(" at apex")
-        or event_name.endswith(" at exit")
-    )
 
 
 def _range_sentence_fragment(range_: Any) -> str:
@@ -2932,8 +3076,10 @@ def _measurement_sentence_fragments(
     if event_name in {
         "speed gap closing",
         "speed gap growing",
-    } or event_name.startswith(("speed gap closing at", "speed gap growing at")):
+    }:
         fragments.extend(_gap_percent_sentence_fragments(measurements, "speed"))
+        turning_points = _speed_gap_turning_point_fragments(measurements)
+        fragments.extend(turning_points)
         threshold = measurements.get("threshold_state")
         if threshold:
             fragments.append(_humanize_token(str(threshold)))
@@ -3018,6 +3164,44 @@ def _measurement_sentence_fragments(
             fragments.append(
                 f"{_humanize_token(key)} was {_format_value(measurements[key])}"
             )
+    return fragments
+
+
+def _speed_gap_turning_point_fragments(measurements: Dict[str, Any]) -> List[str]:
+    turning_points = measurements.get("speed_difference_slope_turns")
+    if not isinstance(turning_points, list):
+        return []
+    fragments: List[str] = []
+    for point in turning_points:
+        if not isinstance(point, dict):
+            continue
+        kind = str(point.get("kind") or "").strip()
+        phase = str(point.get("phase") or "").strip()
+        iloc = point.get("iloc")
+        range_ = point.get("range")
+        if kind not in {"dip", "spike"}:
+            continue
+        if not isinstance(iloc, int):
+            continue
+        subject = f"speed gap {kind}"
+        if phase in {"entry", "apex", "exit"}:
+            location = f" in {phase}"
+        elif phase and phase != "unknown":
+            location = f" across {phase}"
+        else:
+            location = ""
+        if (
+            isinstance(range_, list)
+            and len(range_) == 2
+            and all(isinstance(value, int) for value in range_)
+            and range_[0] != range_[1]
+        ):
+            fragments.append(
+                f"{subject} was{location} from iloc {range_[0]} "
+                f"to {range_[1]}, centered at iloc {iloc}"
+            )
+        else:
+            fragments.append(f"{subject} was{location} at iloc {iloc}")
     return fragments
 
 

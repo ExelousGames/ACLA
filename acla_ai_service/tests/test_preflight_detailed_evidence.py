@@ -28,7 +28,7 @@ def test_brake_peak_speed_context_names_speed():
     assert "at the player brake peak" in sentence
 
 
-def test_speed_gap_evidence_uses_phase_ranges_not_legacy_extrema():
+def test_speed_gap_evidence_omits_phase_ranges_without_speed_difference_shape():
     df = pd.DataFrame(
         {
             "Physics_speed_kmh": [86.182, 90.47, 95.0, 102.277, 98.0, 99.75],
@@ -53,10 +53,81 @@ def test_speed_gap_evidence_uses_phase_ranges_not_legacy_extrema():
         ("exit", [126, 126]),
     ]
     assert "player faster than expert" not in event_names
-    assert "speed gap closing at entry" in event_names
-    assert "speed gap closing at apex" in event_names
+    assert event_names == ["speed gap closing"]
     assert any(
         "the player speed gap moved from 13.818% slower than expert "
-        "to 9.53% slower than expert" in sentence
+        "to 0.25% slower than expert" in sentence
+        for sentence in sentences
+    )
+    assert not any("corner phase ranges were" in sentence for sentence in sentences)
+    assert not any("internal" in sentence for sentence in sentences)
+
+
+def test_speed_gap_shape_uses_speed_difference_slope_turns():
+    df = pd.DataFrame(
+        {
+            "expert_optimal_speed": [100.0] * 18,
+            "speed_difference": [
+                10.0,
+                10.0,
+                2.0,
+                -27.0,
+                -35.0,
+                -34.0,
+                -21.0,
+                -4.0,
+                12.0,
+                22.0,
+                24.0,
+                24.0,
+                19.0,
+                6.0,
+                -2.0,
+                -7.0,
+                -11.0,
+                -10.0,
+            ],
+        },
+        index=list(range(33, 51)),
+    )
+    phases = [{"entry": 33, "apex": 40, "exit": 50}]
+
+    events = _speed_events(df, 33, 50, {}, phases)
+    sentences = [_event_sentence(event) for event in events]
+
+    assert any(
+        "speed_difference dip was across entry and apex" in sentence
+        and "from iloc 35 to 40" in sentence
+        for sentence in sentences
+    )
+    assert any(
+        "speed_difference spike was across apex and exit" in sentence
+        and "from iloc 40 to 46" in sentence
+        for sentence in sentences
+    )
+    assert not any("internal" in sentence for sentence in sentences)
+    assert not any("local" in sentence for sentence in sentences)
+    assert not any("from iloc 48 to 50" in sentence for sentence in sentences)
+
+
+def test_speed_gap_shape_requires_slope_turn():
+    df = pd.DataFrame(
+        {
+            "expert_optimal_speed": [100.0] * 5,
+            "speed_difference": [-10.0, -8.0, -6.0, -4.0, -2.0],
+        },
+        index=[10, 11, 12, 13, 14],
+    )
+    phases = [{"entry": 10, "apex": 12, "exit": 14}]
+
+    events = _speed_events(df, 10, 14, {}, phases)
+    sentences = [_event_sentence(event) for event in events]
+
+    assert not any(
+        "speed_difference spike" in sentence
+        for sentence in sentences
+    )
+    assert not any(
+        "speed_difference dip" in sentence
         for sentence in sentences
     )

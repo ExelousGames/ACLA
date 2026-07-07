@@ -174,7 +174,7 @@
     "MSP1": {
       "name": "Initiate brake too late",
       "type": "sub",
-      "description": "During entry, the player's **brake initiation onset is later than** the expert's. As the supporting signal, the time **gap grows** at the exit, and Player often **entry trajectory wider than expert**.\n",
+      "description": "During entry, the player's **brake initiation onset is later than** the expert's and **brake initiation end later than expert**. As the supporting signal, speed gap spike at entry and the time **gap grows** at the exit, and Player often **entry trajectory wider than expert**.\n",
       "parent": "MSP",
       "exclusive_with": [
         "MSP5"
@@ -210,7 +210,7 @@
     "MSP14": {
       "name": "Brake applied too quickly",
       "type": "sub",
-      "description": "During entry, the player's **brake initiation onset aligned with expert**, but **brake initiation end earlier than expert**. A later **apex trajectory wider than expert** can appear as a supporting sign around the label range.\n",
+      "description": "During entry, the player's **brake initiation onset aligned with expert**, but **brake initiation end earlier than expert**. A **apex trajectory wider than expert** or **entry trajectory wider than expert** and later **time gap growing**, can appear as a supporting sign.\n",
       "parent": "MSP",
       "exclusive_with": [
         "MSP24"
@@ -228,7 +228,7 @@
     "MSP17": {
       "name": "Release brake too quickly",
       "type": "sub",
-      "description": "During apex or exit, the player's **brake release onset aligned with expert** and **peak brake pressure** is held close to the expert's(no difference moroe than 10%), but **brake release end earlier than expert**. **Exit trajectory wider than expert** and **time gap grows** at exit can appear around or after the release range as supporting signs.\n",
+      "description": "During apex or exit, the player's **brake release onset aligned with expert** and **peak brake pressure** is held close to the expert's(no difference more than 10%), but **brake release end earlier than expert**. **Exit trajectory wider than expert** and **time gap grows** at exit can appear after the release range as supporting signs.\n",
       "parent": "MSP",
       "exclusive_with": [
         "MSP18"
@@ -237,7 +237,7 @@
     "MSP18": {
       "name": "Release brake too slowly",
       "type": "sub",
-      "description": "During apex or exit, the player's **brake release onset aligned with expert**, but **brake release end later than expert**. **Time gap grows** at exit can appear around or after the release range as a supporting sign.\n",
+      "description": "During apex or exit, the player's **brake release onset aligned with expert**, but **brake release end later than expert**. **Time gap grows** at exit can appear after the release range as a supporting sign.\n",
       "parent": "MSP",
       "exclusive_with": [
         "MSP17"
@@ -255,7 +255,7 @@
     "MSP28": {
       "name": "Initiate brake release too early",
       "type": "sub",
-      "description": "the player brake application onset end is aligned with expert, The player's brake **release onset** is earlier than the expert. **Apex trajectory wider than expert** and **time gap grows** at exit can appear around or after that onset as supporting signs.\n",
+      "description": "the player brake application onset end is aligned with expert and speed gap is , The player's brake **release onset** is earlier than the expert. **Apex trajectory wider than expert** and **time gap grows** at exit can appear around or after that onset as supporting signs.\n",
       "parent": "MSP",
       "exclusive_with": [
         "MSP27"

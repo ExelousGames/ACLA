@@ -112,7 +112,7 @@ _TAG_KEYS = {
     "type",
     "verdict",
 }
-_SUB_LABEL_CANDIDATE_PERCENTAGE = 0.10
+_SUB_LABEL_CANDIDATE_PERCENTAGE = 0.3
 
 @dataclass(frozen=True)
 class PreflightContext:
