@@ -3107,9 +3107,9 @@ def _measurement_sentence_fragments(
             relation = measurements.get("speed_gap_relation_at_player_peak")
             if speed_gap is not None and relation is not None:
                 fragments.append(
-                    "the player was "
+                    "the player speed was "
                     f"{_gap_percent_relation_text(speed_gap, relation)} "
-                    "at the player peak"
+                    "at the player brake peak"
                 )
         iloc = measurements.get("player_iloc")
         if iloc is not None:

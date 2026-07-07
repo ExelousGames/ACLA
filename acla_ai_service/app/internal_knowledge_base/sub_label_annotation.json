@@ -268,7 +268,7 @@
     "MSP1": {
       "name": "Initiate brake too late",
       "type": "sub",
-      "description": "During entry, the player's **brake initiation onset is later than** the expert's. As the supporting signal, the time **gap grows** at the exit, and Player often **entry trajectory wider than expert** as they brake later.\n",
+      "description": "During entry, the player's **brake initiation onset is later than** the expert's. As the supporting signal, the time **gap grows** at the exit, and Player often **entry trajectory wider than expert**.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
@@ -328,7 +328,7 @@
     "MSP17": {
       "name": "Release brake too quickly",
       "type": "sub",
-      "description": "During apex or exit, the player's **brake release onset aligned with expert**, but **brake release end earlier than expert**. **Exit trajectory wider than expert** and **time gap grows** at exit can appear around or after the release range as supporting signs.\n",
+      "description": "During apex or exit, the player's **brake release onset aligned with expert** and **peak brake pressure** is held close to the expert's(no difference moroe than 10%), but **brake release end earlier than expert**. **Exit trajectory wider than expert** and **time gap grows** at exit can appear around or after the release range as supporting signs.\n",
       "parent": "MSP",
       "children": [],
       "exclusive_with": [
