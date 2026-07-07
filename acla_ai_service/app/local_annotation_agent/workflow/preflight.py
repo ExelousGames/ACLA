@@ -336,13 +336,11 @@ def build_preflight_context(
 
     return PreflightContext(
         prompt_block=_prompt_block(
-            flow,
-            s,
-            e,
-            tool_outputs,
-            tags,
-            candidates,
-            semantic_summaries,
+            flow=flow,
+            start=s,
+            end=e,
+            candidates=candidates,
+            semantic_summaries=semantic_summaries,
             candidate_label_ids=list(candidate_label_ids or []),
         ),
         attachments=attachments,

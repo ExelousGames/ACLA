@@ -65,6 +65,8 @@ services:
       # annotation VLM GGUFs + mmproj, HuggingFace cache, LoRA adapters,
       # training datasets. Subdirs are created on demand by the service.
       - ai_models:/app/models
+      - ai_telemetry_store:/app/app/storage/telemetry_lance_store
+      - ai_telemetry_backups:/app/app/storage/telemetry_lance_backups
     ports:
       - '8000:8000'
     networks:
@@ -101,6 +103,10 @@ volumes:
   mongodb_data:
     driver: local
   ai_models:
+    driver: local
+  ai_telemetry_store:
+    driver: local
+  ai_telemetry_backups:
     driver: local
 
 networks:

@@ -86,7 +86,6 @@ def render_annotation_provider_config(
 
     provider_options = {}
     regular_options = [opt for opt in provider.options if not opt.advanced]
-    advanced_options = [opt for opt in provider.options if opt.advanced]
 
     def render_option(opt):
         key = f"{key_prefix}_option_{provider.id}_{opt.key}"
@@ -120,10 +119,6 @@ def render_annotation_provider_config(
 
     for opt in regular_options:
         provider_options[opt.key] = render_option(opt)
-    if advanced_options:
-        with st.expander("Advanced provider settings", expanded=False):
-            for opt in advanced_options:
-                provider_options[opt.key] = render_option(opt)
 
     provider_options["max_turns"] = int(tool_budget) * 10
     return AnnotationPipelineConfig(
