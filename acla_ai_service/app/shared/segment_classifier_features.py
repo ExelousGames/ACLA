@@ -47,7 +47,6 @@ SEGMENT_CLASSIFIER_FEATURES: List[str] = [
     "Physics_velocity_y",
     "Physics_velocity_z",
     "Graphics_track_grip_status",
-    "Static_car_model",
     "Car_1_pos_x",
     "Car_1_pos_y",
     "Car_1_pos_z",
