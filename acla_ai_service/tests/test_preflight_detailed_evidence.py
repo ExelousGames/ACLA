@@ -1,6 +1,7 @@
 import pandas as pd
 
 from app.local_annotation_agent.workflow.preflight_detailed import (
+    _corner_phase_ranges,
     _event_sentence,
     _speed_events,
 )
@@ -46,11 +47,16 @@ def test_speed_gap_evidence_uses_phase_ranges_not_legacy_extrema():
     event_names = [event["event"] for event in events]
     sentences = [_event_sentence(event) for event in events]
 
+    assert _corner_phase_ranges(121, 126, phases) == [
+        ("entry", [121, 122]),
+        ("apex", [123, 125]),
+        ("exit", [126, 126]),
+    ]
     assert "player faster than expert" not in event_names
     assert "speed gap closing at entry" in event_names
     assert "speed gap closing at apex" in event_names
     assert any(
         "the player speed gap moved from 13.818% slower than expert "
-        "to 2.277% faster than expert" in sentence
+        "to 9.53% slower than expert" in sentence
         for sentence in sentences
     )

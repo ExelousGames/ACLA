@@ -437,7 +437,11 @@ def _shape_events(
             ))
     altitude = shape.get("altitude")
     if isinstance(altitude, dict):
+        phase_ranges = dict(_corner_phase_ranges(start, end, phases)) if len(phases) == 1 else {}
         for phase_name in ("entry", "apex", "exit"):
+            range_ = phase_ranges.get(phase_name)
+            if range_ is None:
+                continue
             summary = altitude.get(phase_name)
             if not isinstance(summary, dict):
                 continue
@@ -448,7 +452,7 @@ def _shape_events(
             events.append(_event(
                 event,
                 phase_name,
-                [summary.get("start_iloc"), summary.get("end_iloc")],
+                range_,
                 {
                     "trend": trend,
                     "slope_angle_degrees": summary.get("slope_angle_degrees"),
@@ -1300,7 +1304,7 @@ def _trajectory_events(
     return events
 
 
-def _time_gap_slope_ranges(
+def _corner_phase_ranges(
     start: int,
     end: int,
     phases: List[Dict[str, int]],
@@ -1312,22 +1316,28 @@ def _time_gap_slope_ranges(
         exit_ = phase.get("exit")
         if not all(isinstance(value, int) for value in (entry, apex, exit_)):
             continue
-        entry_range = [max(start, entry), min(end, apex)]
-        if entry_range[1] > entry_range[0]:
-            ranges.append(("entry", entry_range))
-        apex_half_window = max(2, int(0.05 * max(end - start + 1, 1)))
-        apex_range = [
-            max(start, apex - apex_half_window),
-            min(end, apex + apex_half_window),
-        ]
-        if apex_range[1] > apex_range[0]:
-            ranges.append(("apex", apex_range))
-        exit_range = [max(start, apex + 1), min(end, exit_)]
-        if exit_range[1] > exit_range[0]:
-            ranges.append(("exit", exit_range))
-    if ranges:
-        return ranges
-    return [("whole_range", [start, end])]
+        if not entry <= apex <= exit_:
+            continue
+
+        entry = max(start, entry)
+        apex = min(max(start, apex), end)
+        exit_ = min(end, exit_)
+        if not entry <= apex <= exit_:
+            continue
+
+        entry_end = (entry + apex - 1) // 2
+        exit_start = ((apex + exit_) // 2) + 1
+        spans = (
+            ("entry", [entry, entry_end]),
+            ("apex", [entry_end + 1, exit_start - 1]),
+            ("exit", [exit_start, exit_]),
+        )
+        ranges.extend(
+            (phase_name, range_)
+            for phase_name, range_ in spans
+            if range_[0] <= range_[1]
+        )
+    return ranges
 
 
 def _trajectory_apex_timing_events(
@@ -1361,8 +1371,8 @@ def _trajectory_apex_timing_events(
         )
         if player_apex is None:
             continue
-        expert_range = _apex_range(expert_apex, entry, exit_)
-        player_range = _apex_range(player_apex, entry, exit_)
+        expert_range = [expert_apex, expert_apex]
+        player_range = [player_apex, player_apex]
         delta = player_apex - expert_apex
         if player_range[1] < expert_range[0]:
             relation = "earlier"
@@ -1431,14 +1441,6 @@ def _trajectory_apex_timing_events(
     return events
 
 
-def _apex_range(apex_iloc: int, entry: int, exit_: int) -> List[int]:
-    half_window = max(2, int(0.05 * max(exit_ - entry + 1, 1)))
-    return [
-        max(entry, int(apex_iloc) - half_window),
-        min(exit_, int(apex_iloc) + half_window),
-    ]
-
-
 def _curve_apex_iloc(
     df,
     start: int,
@@ -1502,51 +1504,44 @@ def _trajectory_phase_side_events(
         similarity is not None
         and similarity >= TRAJECTORY_ALIGNED_SIMILARITY_THRESHOLD
     )
-    for phase in phases:
-        spans = (
-            ("entry", phase.get("entry"), phase.get("apex")),
-            ("apex", phase.get("apex"), phase.get("apex")),
-            ("exit", phase.get("apex"), phase.get("exit")),
-        )
-        for phase_name, lo, hi in spans:
-            if not isinstance(lo, int) or not isinstance(hi, int):
-                continue
-            median = _median([
-                value
-                for iloc, value in values
-                if lo <= iloc <= hi and isinstance(value, (int, float))
-            ])
-            if median is None:
-                continue
-            if is_aligned_trajectory:
-                events.append(_event(
-                    f"{phase_name} trajectory aligned with expert",
-                    phase_name,
-                    [lo, hi],
-                    {
-                        "median_offset": median,
-                        "similarity_score": similarity,
-                    },
-                    "strong",
-                    [
-                        "trajectory_offset_phase_statistics",
-                        "query_telemetry.measure_trajectory_similarity.driver_expert_path",
-                    ],
-                ))
-                continue
-            if abs(median) < 0.5:
-                continue
+    for phase_name, range_ in _corner_phase_ranges(start, end, phases):
+        lo, hi = range_
+        median = _median([
+            value
+            for iloc, value in values
+            if lo <= iloc <= hi and isinstance(value, (int, float))
+        ])
+        if median is None:
+            continue
+        if is_aligned_trajectory:
             events.append(_event(
-                f"{phase_name} trajectory {'wider' if median > 0 else 'tighter'} than expert",
+                f"{phase_name} trajectory aligned with expert",
                 phase_name,
-                [lo, hi],
+                range_,
                 {
                     "median_offset": median,
                     "similarity_score": similarity,
                 },
-                "strong" if abs(median) >= 1.0 else "moderate",
-                ["trajectory_offset_phase_statistics"],
+                "strong",
+                [
+                    "trajectory_offset_phase_statistics",
+                    "query_telemetry.measure_trajectory_similarity.driver_expert_path",
+                ],
             ))
+            continue
+        if abs(median) < 0.5:
+            continue
+        events.append(_event(
+            f"{phase_name} trajectory {'wider' if median > 0 else 'tighter'} than expert",
+            phase_name,
+            range_,
+            {
+                "median_offset": median,
+                "similarity_score": similarity,
+            },
+            "strong" if abs(median) >= 1.0 else "moderate",
+            ["trajectory_offset_phase_statistics"],
+        ))
     return events
 
 
@@ -1588,7 +1583,7 @@ def _speed_gap_phase_events(
     phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    for phase, range_ in _time_gap_slope_ranges(start, end, phases):
+    for phase, range_ in _corner_phase_ranges(start, end, phases):
         analysis = _gap_percent_change(
             _speed_gap_percent_values(df, range_[0], range_[1]),
             kind="speed",
@@ -2428,16 +2423,17 @@ def _phase_windows(by_tool: Dict[str, Dict[str, Any]]) -> List[Dict[str, int]]:
 def _phase_for_iloc(iloc: Any, phases: List[Dict[str, int]]) -> str:
     if not isinstance(iloc, int):
         return "unknown"
-    for phase in phases:
-        entry = phase.get("entry")
-        apex = phase.get("apex")
-        exit_ = phase.get("exit")
-        if not all(isinstance(v, int) for v in (entry, apex, exit_)):
-            continue
-        if entry <= iloc <= apex:
-            return "entry" if iloc < apex else "apex"
-        if apex < iloc <= exit_:
-            return "exit"
+    bounds = [
+        value
+        for phase in phases
+        for value in (phase.get("entry"), phase.get("exit"))
+        if isinstance(value, int)
+    ]
+    if not bounds:
+        return "unknown"
+    for phase, range_ in _corner_phase_ranges(min(bounds), max(bounds), phases):
+        if range_[0] <= iloc <= range_[1]:
+            return phase
     return "unknown"
 
 
