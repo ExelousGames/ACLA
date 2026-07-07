@@ -951,7 +951,50 @@ def _label_candidates(
         elif doc is not None:
             add([doc])
 
-    return list(merged.values())
+    return _prune_exclusive_label_candidates(list(merged.values()))
+
+
+def _prune_exclusive_label_candidates(
+    candidates: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    indexed = list(enumerate(candidates))
+    kept: List[Tuple[int, Dict[str, Any]]] = []
+    for index, candidate in sorted(
+        indexed,
+        key=lambda item: (_candidate_score(item[1]), -item[0]),
+        reverse=True,
+    ):
+        if any(_exclusive_conflict(candidate, current) for _, current in kept):
+            continue
+        kept.append((index, candidate))
+    return [candidate for _, candidate in sorted(kept, key=lambda item: item[0])]
+
+
+def _exclusive_conflict(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    left_id = str(left.get("id") or "").strip()
+    right_id = str(right.get("id") or "").strip()
+    if not left_id or not right_id:
+        return False
+    return (
+        right_id in _exclusive_label_ids(left)
+        or left_id in _exclusive_label_ids(right)
+    )
+
+
+def _exclusive_label_ids(candidate: Dict[str, Any]) -> set[str]:
+    value = candidate.get("exclusive_with") or []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, Iterable):
+        return set()
+    return {str(label_id).strip() for label_id in value if str(label_id).strip()}
+
+
+def _candidate_score(candidate: Dict[str, Any]) -> float:
+    try:
+        return float(candidate.get("score", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _is_main_label(label_id: str) -> bool:

@@ -50,8 +50,8 @@ def compute_verified_labels(
 
     The eligible tiers depend on the flow, read off the given parents:
 
-    - a real ``type == "main"`` parent (detailed flow) ⇒ that parent's
-      sub-labels + segment types,
+    - a real ``type == "main"`` parent (detailed flow) ⇒ records whose
+      ``parent`` field is that label id, plus segment types,
     - no main parent (lap flow — the main label is still being
       discovered) ⇒ the main labels + segment types.
     """

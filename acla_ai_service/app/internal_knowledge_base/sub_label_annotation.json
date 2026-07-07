@@ -1,7 +1,7 @@
 {
   "_skill": {
     "name": "sub_label_annotation",
-    "description": "LLM-facing label taxonomy (main, sub, segment_type only). Main labels keep hierarchy (parent/children), exclusive_with constraints, and annotation_guideline here; their search/display descriptions are sourced from lap_annotation.labels characteristics. Sub-label and segment-type descriptions live here and carry inline VLM / deterministic preflight predicates so hybrid (vector + BM25) similarity over observation text shortlists matching labels. Circuit and circuit_section labels are NOT in this catalog — the LLM picks them via the `get_circuit_id` / `locate_circuit_section` tools (geometry from app/shared/circuit_sections.py), not by search.\n",
+    "description": "LLM-facing label taxonomy (main, sub, segment_type only). Labels keep hierarchy through parent fields, plus exclusive_with constraints and annotation_guideline here; their search/display descriptions are sourced from lap_annotation.labels characteristics. Sub-label and segment-type descriptions live here and carry inline VLM / deterministic preflight predicates so hybrid (vector + BM25) similarity over observation text shortlists matching labels. Circuit and circuit_section labels are NOT in this catalog — the LLM picks them via the `get_circuit_id` / `locate_circuit_section` tools (geometry from app/shared/circuit_sections.py), not by search.\n",
     "when_to_use": [
       "Drilling into a parent-labelled section to pick sub-labels (detailed flow).",
       "Preflight label candidates from hybrid similarity over VLM observations.",
@@ -28,12 +28,6 @@
       "type": "main",
       "annotation_guideline": "How to identify the sublabels for Successful Overtake: Step 1 — Confirm the pass. Call `classify_opponent_interaction(start, end)`. The result MUST have `outcome: pass_completed` with medium/high confidence. If not, do NOT propose any O sub-label — use the classifier outcome to decide OD, MSR, or no-O. Quote opponent-relative preflight phrases when available, such as opponent started ahead of the driver, driver ended ahead of the opponent, gap flipped from opponent ahead to driver ahead, driver drew alongside the opponent, opponent was on the driver's left/right side, gap to the opponent shrank, driver gained relative speed, driver accelerated better than the opponent, and driver slowed less than the opponent. Step 2 — Pick the technique sub-label from opponent/player position facts, not solo-lap comparisons:\n  - O1 (late-brake attack at corner entry): driver drew alongside the opponent under braking and ended ahead.\n  - O3 (outside-line sweep through a corner): opponent was on the driver's inside side while the driver stayed outside and ended ahead.\n  - O4 (switchback): opponent and driver swapped sides through the corner and the gap flipped from opponent ahead to driver ahead.\n  - O5 (slipstream on a straight): gap to the opponent shrank on the straight, driver gained relative speed, and the gap flipped from opponent ahead to driver ahead.\n",
       "parent": null,
-      "children": [
-        "O1",
-        "O3",
-        "O4",
-        "O5"
-      ],
       "exclusive_with": [
         "OD",
         "PS"
@@ -44,10 +38,6 @@
       "type": "main",
       "annotation_guideline": "How to identify the sublabels for Successful Defense: Step 1 — Confirm the defense. Call `classify_opponent_interaction(start, end)`. Require `outcome: held_defense` with medium/high confidence. If the classifier does not return held defense with enough confidence, the section is not OD. Quote opponent-relative preflight phrases when available, such as driver started ahead of the opponent, driver ended ahead of the opponent, opponent drew alongside the driver, opponent was on the driver's left/right side, gap to the opponent shrank, driver gained relative speed, driver accelerated better than the opponent, and driver slowed more/less than the opponent. Step 2 — Pick the technique sub-label by how the opponent/player positions evolved, not solo-lap comparisons:\n  - OD1 (inside cover at corner entry): opponent drew alongside the driver near the corner, but driver ended ahead of the opponent.\n  - OD2 (defensive lift on a straight): gap to the opponent shrank on the straight, but the driver still ended ahead of the opponent.\n",
       "parent": null,
-      "children": [
-        "OD1",
-        "OD2"
-      ],
       "exclusive_with": [
         "O",
         "PS"
@@ -58,7 +48,6 @@
       "type": "main",
       "annotation_guideline": "How to identify the sublabels for Expert Adherence (Training): The driver is following or cleanly outperforming the optimal racing line and speed profile closely. A time gap below 200ms is not a mistake by itself; when the rest of the evidence is clean, treat it as Expert Adherence. Nothing needs to be labeled right now.\n",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "MSP",
         "MSR",
@@ -71,9 +60,6 @@
       "type": "main",
       "annotation_guideline": "How to identify the sublabels for Pit Stop: Use PS for Pit-section procedure. First verify the segment position overlaps the Pit section, either directly or through a Pit-vs-adjacent-straight ambiguity supported by sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration. Add PS1 only when the PS segment specifically shows pit-exit / rejoin behavior: accelerating out of Pit and merging back toward the racing line.\n",
       "parent": null,
-      "children": [
-        "PS1"
-      ],
       "exclusive_with": [
         "O"
       ]
@@ -83,16 +69,6 @@
       "type": "main",
       "annotation_guideline": "How to identify sublabels for Recovery & Merge: The driver is recovering from a mistake. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; use its deterministic unit and trend-significance fields. A significant falling `total_change_direction` is strong RM evidence. A significant rising total change can still be RM only when the ending slope is lower than the starting slope, there is no spike or raising in the middle, and the action evidence shows recovery / merge rather than a new technical mistake. Tiny ms changes are not RM evidence. Step 2: Examine trajectory evidence to identify recovery - look for the driver line converging back toward the expert racing line from either side after a prior mistake/off-track, using near-line/toward-line verdict fields when available. Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating back toward the expert's speed profile. Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment contains the indices for entry/apex/exit). Do not infer RM from pit location alone.\n",
       "parent": null,
-      "children": [
-        "RM1",
-        "RM5",
-        "RM6",
-        "RM7",
-        "RM8",
-        "RM9",
-        "RM10",
-        "RM11"
-      ],
       "exclusive_with": [
         "EA",
         "PS"
@@ -103,57 +79,6 @@
       "type": "main",
       "annotation_guideline": "How to identify sublabels for Practice Mistake: The driver has committed a technical driving error. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; require `total_change_direction: \"rising\"`, `total_change_is_label_significant: true`, and at least 200ms of time-gap evidence for time-loss evidence. Mistake time-gap evidence is the opposite of RM: the time gap increased at the end, with a spike or raising in between. Cite `slope_shape` when the loss-rate slope changes over the section. Do not describe tiny positive ms changes as strong, and do not treat a time gap below 200ms as a mistake by itself. Do not use MSP when the trajectory is converging back toward the expert racing line and speed/throttle show a merge or rejoin recovery with the RM time-gap pattern. Step 2: Examine the differences in 'throttle' between the player and the expert to identify when the driver applied too much or too little throttle, or got on/off the throttle at the wrong time. Step 3: Examine the differences in 'brake' between the player and the expert to identify if the driver braked too hard or too softly, or got on/off the brake at the wrong time. Step 4: Examine the 'trajectory_balance' graph to find understeer (blue / front-slip dominant) or oversteer (red / rear-slip dominant), which could lead to lower speed. Step 5: For entry/apex/exit shape questions, use trajectory evidence with the 'compute_expert_phases' tool on the same step (it produces a 'phase_indices' attachment contains the phase indices for entry/apex/exit). Step 6: Before committing in opponent-capable data, call `classify_opponent_interaction(start, end)` — if it returns `failed_attack` or `broken_defense`, the section is MSR, not MSP.\n",
       "parent": null,
-      "children": [
-        "MSP1",
-        "MSP2",
-        "MSP3",
-        "MSP4",
-        "MSP5",
-        "MSP6",
-        "MSP7",
-        "MSP8",
-        "MSP9",
-        "MSP10",
-        "MSP11",
-        "MSP13",
-        "MSP14",
-        "MSP15",
-        "MSP16",
-        "MSP17",
-        "MSP18",
-        "MSP19",
-        "MSP20",
-        "MSP21",
-        "MSP22",
-        "MSP23",
-        "MSP24",
-        "MSP25",
-        "MSP26",
-        "MSP27",
-        "MSP28",
-        "MSP29",
-        "MSP30",
-        "MSP31",
-        "MSP32",
-        "MSP33",
-        "MSP34",
-        "MSP35",
-        "MSP36",
-        "MSP37",
-        "MSP38",
-        "MSP41",
-        "MSP42",
-        "MSP43",
-        "MSP44",
-        "MSP45",
-        "MSP46",
-        "MSP47",
-        "MSP48",
-        "MSP49",
-        "MSP50",
-        "MSP51",
-        "MSP52"
-      ],
       "exclusive_with": [
         "EA",
         "PS",
@@ -165,16 +90,6 @@
       "type": "main",
       "annotation_guideline": "How to identify sublabels for Racing Mistake: Step 1 — Confirm the adverse racing outcome. Require `outcome: failed_attack` or `outcome: broken_defense` with medium/high confidence. If not, the section is not MSR. Step 2 — Pick the outcome family from opponent-relative facts:\n  - Failed overtake attempt: opponent started ahead of the driver, the driver attacked or drew alongside the opponent, and the driver did not end ahead.\n  - Defense broken: driver started ahead of the opponent, the opponent drew alongside the driver, and the gap flipped from driver ahead to opponent ahead.\nStep 3 — Pick the specific subtype from opponent/player position and motion facts. Prefer a specific subtype over the generic label when the facts identify the attempt type:\n  - MSR3 (failed O1 late-brake attack at entry): driver drew alongside the opponent under braking but did not end ahead.\n  - MSR4 (failed O3 outside-line sweep): opponent was on the driver's inside side while the driver stayed outside, but the driver did not end ahead.\n  - MSR5 (failed O4 switchback): opponent and driver swapped sides through the corner, but the gap did not flip to driver ahead.\n  - MSR6 (failed O5 slipstream gain): gap to the opponent shrank on a straight and driver gained relative speed, but the gap did not flip to driver ahead.\n  - MSR7 (broken OD1 inside cover): opponent drew alongside the driver near the corner and the gap flipped from driver ahead to opponent ahead.\n  - MSR8 (broken OD2 defensive lift): gap to the opponent shrank on a straight and the gap flipped from driver ahead to opponent ahead.\n  - MSR1 / MSR2: only when the attempt-type signature cannot be identified from the opponent-relative facts.\n",
       "parent": null,
-      "children": [
-        "MSR1",
-        "MSR2",
-        "MSR3",
-        "MSR4",
-        "MSR5",
-        "MSR6",
-        "MSR7",
-        "MSR8"
-      ],
       "exclusive_with": [
         "EA",
         "PS",
@@ -186,7 +101,6 @@
       "type": "sub",
       "description": "Across the recovery range after an off-track excursion, the trajectory offset peaks far **wider than expert** earlier in the segment, then shows **recovery** as the driver moves back toward the expert line while speed rebuilds toward pace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
       "parent": "RM",
-      "children": [],
       "exclusive_with": []
     },
     "PS1": {
@@ -194,7 +108,6 @@
       "type": "sub",
       "description": "During pit exit, the driver re-joins from the Pit section and merges back toward the racing line. The segment position overlaps the circuit's known Pit section, and telemetry shows pit-exit acceleration plus merge / recovery back toward the racing line. A Pit-vs-adjacent-straight ambiguity can count as Pit-section position when sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration support pit procedure. This is pit procedure, not recovery from a mistake. Do not infer PS1 from low speed plus wide trajectory alone when the position is a normal racing section away from Pit.\n",
       "parent": "PS",
-      "children": [],
       "exclusive_with": []
     },
     "RM5": {
@@ -202,7 +115,6 @@
       "type": "sub",
       "description": "Across the recovery range, the player is more than 20 km/h slower than the expert while the speed gap is closing. The speed delta shows **expert faster than player** with a **large gap section** (|Δ| > 20 km/h) that trends toward zero across the segment. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
       "parent": "RM",
-      "children": [],
       "exclusive_with": [
         "RM6"
       ]
@@ -212,7 +124,6 @@
       "type": "sub",
       "description": "Across the recovery range, the player is less than 20 km/h slower than the expert while the speed gap is closing. The speed delta shows **expert faster than player** without any **large gap section** (|Δ| stays ≤ 20 km/h). Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
       "parent": "RM",
-      "children": [],
       "exclusive_with": [
         "RM5"
       ]
@@ -222,7 +133,6 @@
       "type": "sub",
       "description": "During exit or across the recovery range, the player trajectory converges toward the expert line. The trajectory offset shows **recovery** by trending back toward zero from either side, typically after corner exit. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
       "parent": "RM",
-      "children": [],
       "exclusive_with": []
     },
     "RM8": {
@@ -230,7 +140,6 @@
       "type": "sub",
       "description": "During exit recovery, the player's throttle **application onset is earlier than** the expert's, with a matching earlier **acceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
       "parent": "RM",
-      "children": [],
       "exclusive_with": [
         "RM9"
       ]
@@ -240,7 +149,6 @@
       "type": "sub",
       "description": "During exit recovery, the player's throttle **application onset is later than** the expert's, with a matching later **acceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
       "parent": "RM",
-      "children": [],
       "exclusive_with": [
         "RM8"
       ]
@@ -250,7 +158,6 @@
       "type": "sub",
       "description": "During entry recovery, the player's brake **initiation onset is earlier than** the expert's, with a matching earlier **deceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
       "parent": "RM",
-      "children": [],
       "exclusive_with": [
         "RM11"
       ]
@@ -260,7 +167,6 @@
       "type": "sub",
       "description": "During entry recovery, the player's brake **initiation onset is later than** the expert's, with a matching later **deceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
       "parent": "RM",
-      "children": [],
       "exclusive_with": [
         "RM10"
       ]
@@ -270,7 +176,6 @@
       "type": "sub",
       "description": "During entry, the player's **brake initiation onset is later than** the expert's. As the supporting signal, the time **gap grows** at the exit, and Player often **entry trajectory wider than expert**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP5"
       ]
@@ -280,7 +185,6 @@
       "type": "sub",
       "description": "During entry, the player's **brake initiation onset is earlier than** the expert's, as the supporting signal, the time **gap grows** at the entry.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP1"
       ]
@@ -290,7 +194,6 @@
       "type": "sub",
       "description": "During entry across the braking range, the player's **peak brake pressure is lower than** the expert. A wider entry trajectory can appear around that braking range as a supporting sign.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP22"
       ]
@@ -300,7 +203,6 @@
       "type": "sub",
       "description": "During entry across the braking range, the player's **peak brake pressure is higher than** the expert's. Later **speed gap growing** or **trajectory wider than expert** can appear after the braking range as supporting signs.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP13"
       ]
@@ -310,7 +212,6 @@
       "type": "sub",
       "description": "During entry, the player's **brake initiation onset aligned with expert**, but **brake initiation end earlier than expert**. A later **apex trajectory wider than expert** can appear as a supporting sign around the label range.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP24"
       ]
@@ -320,7 +221,6 @@
       "type": "sub",
       "description": "During entry, the player's **brake initiation onset aligned with expert**, but **brake initiation end later than expert**. A later **apex trajectory wider than expert** can appear as a supporting sign around the label range.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP14"
       ]
@@ -330,7 +230,6 @@
       "type": "sub",
       "description": "During apex or exit, the player's **brake release onset aligned with expert** and **peak brake pressure** is held close to the expert's(no difference moroe than 10%), but **brake release end earlier than expert**. **Exit trajectory wider than expert** and **time gap grows** at exit can appear around or after the release range as supporting signs.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP18"
       ]
@@ -340,7 +239,6 @@
       "type": "sub",
       "description": "During apex or exit, the player's **brake release onset aligned with expert**, but **brake release end later than expert**. **Time gap grows** at exit can appear around or after the release range as a supporting sign.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP17"
       ]
@@ -350,7 +248,6 @@
       "type": "sub",
       "description": "the player brake application onset end is aligned with expert, but the player's brake **release onset** is later than the expert. **Time gap grows** at exit can appear after that onset as a supporting sign.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP28"
       ]
@@ -360,7 +257,6 @@
       "type": "sub",
       "description": "the player brake application onset end is aligned with expert, The player's brake **release onset** is earlier than the expert. **Apex trajectory wider than expert** and **time gap grows** at exit can appear around or after that onset as supporting signs.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP27"
       ]
@@ -370,7 +266,6 @@
       "type": "sub",
       "description": "During entry across the braking range, the player's interval between **brake initiation** end and **release onset** is shorter than the expert's — **peak brake pressure** is held for too brief a span.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP32"
       ]
@@ -380,7 +275,6 @@
       "type": "sub",
       "description": "During entry or apex, the player's interval between **brake initiation** end and **release onset** is longer than the expert's — causing speed gap increases.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP31"
       ]
@@ -390,7 +284,6 @@
       "type": "sub",
       "description": "Across the overlap range, the player **applies throttle and brake simultaneously** for too long while the expert shows no overlap.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP15": {
@@ -398,7 +291,6 @@
       "type": "sub",
       "description": "The player's **throttle application onset aligned with expert**, but **throttle application end earlier than expert**, often co-occurring with **oversteer** or **understeer**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP25"
       ]
@@ -408,7 +300,6 @@
       "type": "sub",
       "description": "During exit, the player's **throttle application onset aligned with expert**, but **throttle application end later than expert**, often co-occurring with **gap grows** in the time delta.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP15"
       ]
@@ -418,7 +309,6 @@
       "type": "sub",
       "description": "Deprecated; no active annotation range.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP26"
       ]
@@ -428,7 +318,6 @@
       "type": "sub",
       "description": "Deprecated; no active annotation range.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP19"
       ]
@@ -438,7 +327,6 @@
       "type": "sub",
       "description": "During apex or exit, the player's throttle **application onset** is earlier than the expert. Understeer, oversteer, **gas grows** at exit or apex, or trajectory wider than expert can appear around or after the throttle onset as supporting signs.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP21"
       ]
@@ -448,7 +336,6 @@
       "type": "sub",
       "description": "During apex or exit, the player's throttle **application onset** is later than the expert. When no understeer or oversteer is present, poor grip utilization and **time gap rising at exit** can appear around or after the throttle onset as supporting signs.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP20"
       ]
@@ -458,7 +345,6 @@
       "type": "sub",
       "description": "During entry or apex, the player's throttle **release onset** aligns with expert, but throttle **release end** is earlier than the expert. The player's **brake initiation end** may also be earlier than the expert's, and trajectory wider than expert at entry or apex can appear around the label range as supporting signs.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP29": {
@@ -466,7 +352,6 @@
       "type": "sub",
       "description": "During entry or apex, the player's throttle **release onset** is later than the expert, with the player's brake **initiation end** also later than the expert's. Time gap rising at entry can appear around the label range as a supporting sign.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP30"
       ]
@@ -476,7 +361,6 @@
       "type": "sub",
       "description": "During entry or apex, the player's throttle **release onset** is earlier than the expert's while approaching the corner. Time gap rising at entry can appear around the label range as a supporting sign.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP29"
       ]
@@ -486,7 +370,6 @@
       "type": "sub",
       "description": "During entry or apex, the player's turn-in onset is later than the expert and the **entry trajectory wider than expert**. **Time gap rising at exit** can appear later as a supporting sign.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP6"
       ]
@@ -496,7 +379,6 @@
       "type": "sub",
       "description": "During entry or apex , the player's turn-in onset is earlier than the expert and the **entry trajectory tighter than expert**. **Apex trajectory tighter than expert**, **time gap rising at apex**, and **time gap rising at exit** can appear later as supporting signs.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP2"
       ]
@@ -506,7 +388,6 @@
       "type": "sub",
       "description": "During apex, the player **reaches apex later than** the expert.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP7"
       ]
@@ -516,7 +397,6 @@
       "type": "sub",
       "description": "During apex, the player **reaches apex earlier than** the expert.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP3"
       ]
@@ -526,7 +406,6 @@
       "type": "sub",
       "description": "During exit, the player times exit earlier than the expert: **apex trajectory aligned with expert**, but **exit trajectory wider than expert**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP8"
       ]
@@ -536,7 +415,6 @@
       "type": "sub",
       "description": "During exit, the player times exit later than the expert: **apex trajectory aligned with expert**, but **exit trajectory wider than expert**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP4"
       ]
@@ -546,7 +424,6 @@
       "type": "sub",
       "description": "During entry, the player's **entry trajectory tighter than expert**, usually with **brake initiation onset earlier than expert**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP33"
       ]
@@ -556,7 +433,6 @@
       "type": "sub",
       "description": "During entry, the player's **entry trajectory wider than expert**, usually with **brake initiation onset later than expert**. Understeer at entry can appear around that range as a supporting sign.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP9"
       ]
@@ -566,7 +442,6 @@
       "type": "sub",
       "description": "During apex, the player's apex is **closer to outside** than the expert's, with offset **wider than expert**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP11": {
@@ -574,7 +449,6 @@
       "type": "sub",
       "description": "During exit, the player's **exit trajectory tighter than expert**, and **speed gap grow** at exit.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP16"
       ]
@@ -584,7 +458,6 @@
       "type": "sub",
       "description": "During exit, the player's **exit trajectory wider than expert**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP11"
       ]
@@ -594,7 +467,6 @@
       "type": "sub",
       "description": "Player cuts the line\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP50": {
@@ -602,7 +474,6 @@
       "type": "sub",
       "description": "Deprecated; no active annotation range.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP51": {
@@ -610,7 +481,6 @@
       "type": "sub",
       "description": "Deprecated; no active annotation range.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP52": {
@@ -618,7 +488,6 @@
       "type": "sub",
       "description": "Deprecated; no active annotation range.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP42": {
@@ -626,7 +495,6 @@
       "type": "sub",
       "description": "During entry across the braking range, grip utilisation deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears while braking is active and speed is decreasing.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP43": {
@@ -634,7 +502,6 @@
       "type": "sub",
       "description": "During exit across the throttle application range, grip utilisation deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears while throttle is being applied and speed is increasing.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": []
     },
     "MSP44": {
@@ -642,7 +509,6 @@
       "type": "sub",
       "description": "During entry, the player shows **oversteer**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP45"
       ]
@@ -652,7 +518,6 @@
       "type": "sub",
       "description": "During entry, the player shows **understeer**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP44"
       ]
@@ -662,7 +527,6 @@
       "type": "sub",
       "description": "During exit, the player shows **oversteer**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP47"
       ]
@@ -672,7 +536,6 @@
       "type": "sub",
       "description": "During exit, the player shows **understeer**.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP46"
       ]
@@ -682,7 +545,6 @@
       "type": "sub",
       "description": "During exit or straight, the player's **upshift** onset occurs earlier than the expert's matching upshift.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP36"
       ]
@@ -692,7 +554,6 @@
       "type": "sub",
       "description": "During exit or straight, the player's **upshift** onset occurs later than the expert's matching upshift.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP35"
       ]
@@ -702,7 +563,6 @@
       "type": "sub",
       "description": "During entry, the player's **downshift** onset occurs earlier than the expert's matching downshift.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP38"
       ]
@@ -712,7 +572,6 @@
       "type": "sub",
       "description": "During entry, the player's **downshift** onset occurs later than the expert's matching downshift.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP37"
       ]
@@ -722,7 +581,6 @@
       "type": "sub",
       "description": "During exit while accelerating, the player is in a lower gear than the expert. The low/high verdict comes from comparing the player's exit gear with the expert's exit gear; use this for the exit gear mismatch, not for the shift instant itself. If the main evidence is an upshift that happened late, prefer MSP36.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP49"
       ]
@@ -732,7 +590,6 @@
       "type": "sub",
       "description": "During exit while accelerating, the player is in a higher gear than the expert. The low/high verdict comes from comparing the player's exit gear with the expert's exit gear; use this for the exit gear mismatch, especially exit bogging, not for the shift instant itself. If the main evidence is a downshift that happened late, prefer MSP38.\n",
       "parent": "MSP",
-      "children": [],
       "exclusive_with": [
         "MSP48"
       ]
@@ -742,7 +599,6 @@
       "type": "sub",
       "description": "Across the failed attack range, the overtake onset is clear but the attempt-type signature cannot be read from the player's trace. Required interaction evidence: `outcome: failed_attack` with medium/high confidence. Prefer a specific subtype (MSR3 / MSR4 / MSR5 / MSR6) when the trace lets you identify which O-style attempt was tried; use MSR1 only when none of those match. Distinguished from O by the missing pass-completed outcome, and from MSP by the close opponent being the cause.\n",
       "parent": "MSR",
-      "children": [],
       "exclusive_with": [
         "MSR2",
         "MSR3",
@@ -758,7 +614,6 @@
       "type": "sub",
       "description": "Across the broken defense range, the opponent move onset is clear but the defense-type signature cannot be read from the player's trace. Required interaction evidence: `outcome: broken_defense` with medium/high confidence. Prefer a specific subtype (MSR7 / MSR8) when the trace lets you identify which OD-style defense was tried; use MSR2 only when neither matches. Distinguished from OD by the broken-defense outcome instead of held defense.\n",
       "parent": "MSR",
-      "children": [],
       "exclusive_with": [
         "MSR1",
         "MSR3",
@@ -774,7 +629,6 @@
       "type": "sub",
       "description": "During entry, the failed attack onset is a late-brake move: driver drew alongside the opponent under braking, often with the opponent on the driver's left/right side near corner entry, but the driver did not end ahead of the opponent. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O1 by the missing pass-completed outcome; distinguished from MSR1 by the identifiable under-braking alongside attempt.\n",
       "parent": "MSR",
-      "children": [],
       "exclusive_with": [
         "MSR1",
         "MSR2",
@@ -788,7 +642,6 @@
       "type": "sub",
       "description": "Across the corner range, the driver remains outside the opponent but fails to complete the pass. Opponent was on the driver's inside side through the corner while the driver stayed outside, but the driver did not end ahead of the opponent. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O3 by the missing pass-completed outcome; from MSR1 by the identifiable outside-line opponent position; from MSP33 by the close opponent being the cause.\n",
       "parent": "MSR",
-      "children": [],
       "exclusive_with": [
         "MSR1",
         "MSR2",
@@ -802,7 +655,6 @@
       "type": "sub",
       "description": "Across the corner range, the side-swap onset occurs but the switchback fails. Opponent and driver swapped sides through the corner, or the side swap started, but the gap did not flip from opponent ahead to driver ahead by section end. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O4 by the missing pass-completed outcome; from MSR1 by the identifiable side-swap / cross-line signature.\n",
       "parent": "MSR",
-      "children": [],
       "exclusive_with": [
         "MSR1",
         "MSR2",
@@ -817,7 +669,6 @@
       "type": "sub",
       "description": "During straight, the failed slipstream attack onset does not become a completed pass. Gap to the opponent shrank and the driver gained relative speed, but the gap did not flip from opponent ahead to driver ahead. Required interaction outcome: `failed_attack` with medium/high confidence. Typically the straight ran out, the driver pulled out too late, or drew alongside the opponent too late for the pass to stick. Distinguished from O5 by the missing pass-completed outcome; from MSR1 by the identifiable straight-line closing signature.\n",
       "parent": "MSR",
-      "children": [],
       "exclusive_with": [
         "MSR1",
         "MSR2",
@@ -830,7 +681,6 @@
       "type": "sub",
       "description": "During entry, the opponent move onset breaks the inside-cover defense. Opponent drew alongside the driver near the corner and the gap flipped from driver ahead to opponent ahead. The opponent was often on the driver's left/right side while the driver tried to hold the inside. Required interaction outcome: `broken_defense` with medium/high confidence. Distinguished from OD1 by the broken-defense outcome; from MSR2 by the identifiable corner-defense position change.\n",
       "parent": "MSR",
-      "children": [],
       "exclusive_with": [
         "MSR1",
         "MSR2",
@@ -845,7 +695,6 @@
       "type": "sub",
       "description": "During straight, the opponent move onset breaks the defensive lift. Gap to the opponent shrank while the driver tried to hold position, and the gap flipped from driver ahead to opponent ahead. The driver may have slowed more than the opponent or accelerated worse after the lift. Required interaction outcome: `broken_defense` with medium/high confidence. Distinguished from OD2 by the broken-defense outcome; from MSR2 by the identifiable straight-line defense failure; from MSP25 by the close opponent being the cause.\n",
       "parent": "MSR",
-      "children": [],
       "exclusive_with": [
         "MSR1",
         "MSR2",
@@ -860,7 +709,6 @@
       "type": "sub",
       "description": "During entry, the overtake onset is a late-brake attack: driver drew alongside the opponent under braking near corner entry and the gap flipped from opponent ahead to driver ahead. Use this when the opponent started ahead of the driver, the driver drew alongside the opponent before or during the braking phase, and the driver ended ahead of the opponent.\n",
       "parent": "O",
-      "children": [],
       "exclusive_with": [
         "O4"
       ]
@@ -870,7 +718,6 @@
       "type": "sub",
       "description": "Across the corner range, the driver stays outside the opponent and completes the pass. Opponent was on the driver's inside side through the corner while the driver stayed outside, and the driver ended ahead of the opponent. Use this when the outside position against the opponent is the reason the pass works, not when the driver merely runs wide without a close opponent.\n",
       "parent": "O",
-      "children": [],
       "exclusive_with": [
         "O4"
       ]
@@ -880,7 +727,6 @@
       "type": "sub",
       "description": "Across the corner range, the side-swap onset becomes a completed switchback. Opponent and driver swapped sides through the corner, then the gap flipped from opponent ahead to driver ahead on exit. Use this when the driver gives up one side early, crosses back to the other side, and exits ahead of the opponent.\n",
       "parent": "O",
-      "children": [],
       "exclusive_with": [
         "O1",
         "O3"
@@ -891,7 +737,6 @@
       "type": "sub",
       "description": "During straight, the slipstream attack onset becomes a completed pass. Opponent started ahead of the driver, gap to the opponent shrank, driver gained relative speed, and the gap flipped from opponent ahead to driver ahead. Use this for straight-line draft / tow passes where the position change comes from opponent-relative speed.\n",
       "parent": "O",
-      "children": [],
       "exclusive_with": []
     },
     "OD1": {
@@ -899,7 +744,6 @@
       "type": "sub",
       "description": "During entry, the opponent move onset is held by inside-cover defense. Opponent drew alongside the driver near the corner, but the driver ended ahead of the opponent. Use this when the driver's position denied the opponent's corner attack; the label is decided from opponent/player position facts.\n",
       "parent": "OD",
-      "children": [],
       "exclusive_with": []
     },
     "OD2": {
@@ -907,7 +751,6 @@
       "type": "sub",
       "description": "During straight, the opponent move onset is held by defensive lift. Gap to the opponent shrank while the opponent attacked from behind, but the driver still ended ahead of the opponent. Use this when the driver holds position despite the opponent gaining relative speed or drawing alongside.\n",
       "parent": "OD",
-      "children": [],
       "exclusive_with": []
     },
     "ST1": {
@@ -918,7 +761,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the whole range is dominated by a corner arc: the driver is in a sustained turn, with meaningful curvature across most of the segment. This includes single curves, continuous arcs, and corner ranges where the turn remains the main shape.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST2",
         "ST3",
@@ -935,7 +777,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the whole range is a straight: no detected corner arc, minimal curvature, and the segment is primarily straight-line driving rather than entry, apex, exit, or transition between corners.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST1",
         "ST3",
@@ -952,7 +793,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the range is the approach or braking zone before a corner: it starts before the corner arc and ends before the apex, so the segment is leading into the turn rather than covering the full corner.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST1",
         "ST2",
@@ -969,7 +809,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the range is the exit phase of a corner leading toward a straight: it begins around or after the apex and remains focused on corner exit, with steering unwinding toward the end. Do not use for a completed corner followed by a substantial straight.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST1",
         "ST2",
@@ -986,7 +825,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the range connects consecutive corners with a short gap between detected corner arcs. The segment is a brief transition between turns, not a full straight.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST1",
         "ST2",
@@ -1003,7 +841,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the range contains multiple consecutive corner arcs with little or no straight between them, such as chicanes, esses, or tightly linked direction changes.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST1",
         "ST2",
@@ -1020,7 +857,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the corner keeps a broadly steady radius from entry to exit: curvature remains consistent through the turn without clearly opening or tightening.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST8",
         "ST9",
@@ -1036,7 +872,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the corner opens up toward exit: curvature decreases through the turn, so the radius increases and the driver can progressively unwind steering.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST7",
         "ST9",
@@ -1052,7 +887,6 @@
       "lap_parent_allowed": true,
       "description": "Use when the corner tightens toward apex or exit: curvature increases through the turn, so the radius decreases and the driver must keep adding or holding steering.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST7",
         "ST8",
@@ -1068,7 +902,6 @@
       "lap_parent_allowed": true,
       "description": "Use for a hairpin or near U-turn: the corner has a very large turn angle and wraps back on itself rather than behaving like a normal sweep.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST7",
         "ST8",
@@ -1084,7 +917,6 @@
       "lap_parent_allowed": true,
       "description": "Use for linked left-right or right-left corner sequences: chicanes, esses, S-bends, or multiple corner arcs with direction changes.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST7",
         "ST8",
@@ -1102,7 +934,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the corner entry phase is uphill: altitude rises over the entry window with a positive slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST13",
         "ST14"
@@ -1118,7 +949,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the corner entry phase is level: altitude stays nearly flat over the entry window with a near-zero slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST12",
         "ST14"
@@ -1134,7 +964,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the corner entry phase is downhill: altitude falls over the entry window with a negative slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST12",
         "ST13"
@@ -1150,7 +979,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the apex phase is uphill: altitude rises through the apex window with a positive slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST16",
         "ST17"
@@ -1166,7 +994,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the apex phase is level: altitude stays nearly flat through the apex window with a near-zero slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST15",
         "ST17"
@@ -1182,7 +1009,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the apex phase is downhill: altitude falls through the apex window with a negative slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST15",
         "ST16"
@@ -1198,7 +1024,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the corner exit phase is uphill: altitude rises over the exit window with a positive slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST19",
         "ST20"
@@ -1214,7 +1039,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the corner exit phase is level: altitude stays nearly flat over the exit window with a near-zero slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST18",
         "ST20"
@@ -1230,7 +1054,6 @@
       "lap_parent_allowed": false,
       "description": "Use when the corner exit phase is downhill: altitude falls over the exit window with a negative slope angle.",
       "parent": null,
-      "children": [],
       "exclusive_with": [
         "ST18",
         "ST19"
