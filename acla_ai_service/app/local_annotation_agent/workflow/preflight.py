@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -111,6 +112,8 @@ _TAG_KEYS = {
     "type",
     "verdict",
 }
+_SUB_LABEL_CANDIDATE_PERCENTAGE = 0.10
+
 @dataclass(frozen=True)
 class PreflightContext:
     prompt_block: str
@@ -915,43 +918,81 @@ def _label_candidates(
     *,
     candidate_label_ids: Sequence[str],
 ) -> List[Dict[str, Any]]:
-    merged: Dict[str, Dict[str, Any]] = {}
+    groups: Dict[str, Dict[str, Dict[str, Any]]] = {}
 
-    def add(docs: Iterable[Dict[str, Any]]) -> None:
+    def add(group_id: str, docs: Iterable[Dict[str, Any]]) -> None:
+        group_id = str(group_id or "").strip()
+        if not group_id:
+            return
+        group = groups.setdefault(group_id, {})
         for doc in docs:
             shaped = shape_label_doc_for_llm(doc)
-            current = merged.get(shaped["id"])
+            current = group.get(shaped["id"])
             if current is None or shaped.get("score", 0.0) > current.get("score", 0.0):
-                merged[shaped["id"]] = shaped
+                group[shaped["id"]] = shaped
 
     for label_id in _dedupe(candidate_label_ids):
         doc = get_doc(label_id)
         if _is_main_label(label_id):
             main_doc = doc or _synthetic_main_doc(label_id)
             if main_doc is not None:
-                add([main_doc])
-            add(search(
-                evidence,
-                filters={"parent": label_id},
-                top_k=_sub_label_search_limit(label_id),
-            ))
+                add(label_id, [main_doc])
+            child_count = len(_category_child_ids(label_id))
+            if child_count:
+                add(
+                    label_id,
+                    search(
+                        evidence,
+                        filters={"parent": label_id},
+                        top_k=child_count,
+                    ),
+                )
         elif _category_child_ids(label_id):
             child_ids = set(_category_child_ids(label_id))
             child_types = _category_child_types(child_ids)
             filters = {"type": child_types} if child_types else None
             add(
-                doc
-                for doc in search(
-                    evidence,
-                    filters=filters,
-                    top_k=_sub_label_search_limit(label_id),
+                label_id,
+                (
+                    doc
+                    for doc in search(
+                        evidence,
+                        filters=filters,
+                        top_k=len(child_ids),
+                    )
+                    if str(doc.get("id") or "") in child_ids
                 )
-                if str(doc.get("id") or "") in child_ids
             )
         elif doc is not None:
-            add([doc])
+            add(str(doc.get("parent") or label_id), [doc])
 
-    return _prune_exclusive_label_candidates(list(merged.values()))
+    return [
+        candidate
+        for group_id, candidates in groups.items()
+        for candidate in _finalize_label_candidate_group(
+            group_id,
+            list(candidates.values()),
+        )
+    ]
+
+
+def _finalize_label_candidate_group(
+    group_id: str,
+    candidates: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    main_candidates = [
+        candidate
+        for candidate in candidates
+        if str(candidate.get("type") or "") == "main"
+    ]
+    child_candidates = [
+        candidate
+        for candidate in candidates
+        if str(candidate.get("type") or "") != "main"
+    ]
+    child_limit = _sub_label_candidate_limit(group_id)
+    pruned_children = _prune_exclusive_label_candidates(child_candidates)
+    return [*main_candidates, *pruned_children[:child_limit]]
 
 
 def _prune_exclusive_label_candidates(
@@ -1036,11 +1077,11 @@ def _candidate_section_order(
     return _dedupe(order)
 
 
-def _sub_label_search_limit(parent_id: str) -> int:
+def _sub_label_candidate_limit(parent_id: str) -> int:
     count = len(_category_child_ids(parent_id))
     if count <= 0:
         return 2
-    return max(2, min(10, (count + 9) // 10))
+    return max(2, min(10, math.ceil(count * _SUB_LABEL_CANDIDATE_PERCENTAGE)))
 
 
 def _main_label_ids() -> set[str]:

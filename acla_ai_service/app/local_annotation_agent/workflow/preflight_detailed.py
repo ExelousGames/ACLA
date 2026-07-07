@@ -113,18 +113,6 @@ DETAILED_PREFLIGHT_QUERY_SPECS = (
         "tags": ["throttle modulation dip", "release throttle"],
     },
     {
-        "tool_id": "query_telemetry.find_extremum.speed_difference.max",
-        "graph_id": "speed_delta",
-        "query_id": "find_extremum",
-        "params": {"column": "speed_difference", "kind": "max"},
-    },
-    {
-        "tool_id": "query_telemetry.find_extremum.speed_difference.min",
-        "graph_id": "speed_delta",
-        "query_id": "find_extremum",
-        "params": {"column": "speed_difference", "kind": "min"},
-    },
-    {
         "tool_id": "query_telemetry.find_extremum.push_limit.max",
         "graph_id": "push_limit",
         "query_id": "find_extremum",
@@ -1570,68 +1558,6 @@ def _speed_events(
     phases: List[Dict[str, int]],
 ) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    events.extend(_player_speed_extremum_events(by_tool, phases))
-    events.extend(_player_speed_local_curve_events(by_tool, phases))
-
-    max_result = _query_result(
-        by_tool.get("query_telemetry.find_extremum.speed_difference.max")
-    )
-    min_result = _query_result(
-        by_tool.get("query_telemetry.find_extremum.speed_difference.min")
-    )
-    percent_by_iloc = dict(_speed_gap_percent_values(df, start, end))
-    for result, event_name, threshold, source in (
-        (
-            max_result,
-            "expert faster than player",
-            -2.0,
-            "query_telemetry.find_extremum.speed_difference.max",
-        ),
-        (
-            min_result,
-            "player faster than expert",
-            2.0,
-            "query_telemetry.find_extremum.speed_difference.min",
-        ),
-    ):
-        if not isinstance(result, dict):
-            continue
-        iloc = result.get("iloc")
-        gap_percent = percent_by_iloc.get(iloc) if isinstance(iloc, int) else None
-        if (
-            event_name.startswith("expert")
-            and isinstance(gap_percent, (int, float))
-            and gap_percent <= threshold
-        ) or (
-            event_name.startswith("player")
-            and isinstance(gap_percent, (int, float))
-            and gap_percent >= threshold
-        ):
-            events.append(_event(
-                event_name,
-                _phase_for_iloc(iloc, phases) if isinstance(iloc, int) else "unknown",
-                [iloc, iloc] if isinstance(iloc, int) else None,
-                {
-                    "gap_percent": gap_percent,
-                    "gap_relation": _gap_percent_relation("speed", gap_percent),
-                    "iloc": iloc,
-                },
-                "strong" if abs(float(gap_percent)) >= 10.0 else "moderate",
-                [source],
-            ))
-            if abs(float(gap_percent)) >= 10.0:
-                events.append(_event(
-                    "large speed percentage gap",
-                    _phase_for_iloc(iloc, phases) if isinstance(iloc, int) else "unknown",
-                    [iloc, iloc] if isinstance(iloc, int) else None,
-                    {
-                        "gap_percent": gap_percent,
-                        "gap_relation": _gap_percent_relation("speed", gap_percent),
-                        "iloc": iloc,
-                    },
-                    "strong",
-                    [source],
-                ))
 
     whole_gap = _gap_percent_change(
         _speed_gap_percent_values(df, start, end),
@@ -1652,60 +1578,6 @@ def _speed_events(
         ))
 
     events.extend(_speed_gap_phase_events(df, start, end, phases))
-
-    player_speed = _query_analysis(
-        by_tool.get("query_telemetry.compute_slope.player_speed")
-    )
-    speed_total = (
-        player_speed.get("total_change")
-        if isinstance(player_speed, dict)
-        else {}
-    )
-    if isinstance(speed_total, dict):
-        domain = speed_total.get("domain_direction")
-        direction = speed_total.get("direction")
-        if domain in {"rising", "falling", "stable"}:
-            events.append(_event(
-                f"speed overall trend {domain}",
-                "whole_range",
-                [start, end],
-                {
-                    "change": speed_total.get("value"),
-                    "direction": direction,
-                    "domain_direction": domain,
-                    "slope_shape": player_speed.get("slope_shape"),
-                },
-                (
-                    "strong"
-                    if speed_total.get("is_label_significant") is True
-                    else "moderate"
-                ),
-                ["query_telemetry.compute_slope.player_speed"],
-            ))
-        if domain == "rising":
-            events.append(_event(
-                "acceleration onset",
-                "whole_range",
-                [start, end],
-                {
-                    "change": speed_total.get("value"),
-                    "slope_shape": player_speed.get("slope_shape"),
-                },
-                "moderate",
-                ["query_telemetry.compute_slope.player_speed"],
-            ))
-        elif domain == "falling":
-            events.append(_event(
-                "deceleration onset",
-                "whole_range",
-                [start, end],
-                {
-                    "change": speed_total.get("value"),
-                    "slope_shape": player_speed.get("slope_shape"),
-                },
-                "moderate",
-                ["query_telemetry.compute_slope.player_speed"],
-            ))
     return events
 
 
@@ -1904,87 +1776,6 @@ def _paired_series_values(
         if _is_number(left) and _is_number(right):
             out.append((int(iloc), float(left), float(right)))
     return out
-
-
-def _player_speed_extremum_events(
-    by_tool: Dict[str, Dict[str, Any]],
-    phases: List[Dict[str, int]],
-) -> List[Dict[str, Any]]:
-    events: List[Dict[str, Any]] = []
-    for tool_id, event_name in (
-        ("query_telemetry.find_extremum.player_speed.max", "player speed maximum"),
-        ("query_telemetry.find_extremum.player_speed.min", "player speed minimum"),
-    ):
-        result = _query_result(by_tool.get(tool_id))
-        if not result:
-            continue
-        value = result.get("value")
-        if not isinstance(value, (int, float)):
-            continue
-        iloc = result.get("iloc")
-        extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
-        events.append(_event(
-            event_name,
-            _phase_for_iloc(iloc, phases) if isinstance(iloc, int) else "unknown",
-            [iloc, iloc] if isinstance(iloc, int) else None,
-            {"value": value, "unit": extra.get("unit"), "iloc": iloc},
-            "strong",
-            [tool_id],
-        ))
-    return events
-
-
-def _player_speed_local_curve_events(
-    by_tool: Dict[str, Dict[str, Any]],
-    phases: List[Dict[str, int]],
-) -> List[Dict[str, Any]]:
-    trend = _query_analysis(
-        by_tool.get("query_telemetry.find_trend_runs.player_speed")
-    )
-    runs = trend.get("runs") if isinstance(trend, dict) else None
-    if not isinstance(runs, list):
-        return []
-
-    events: List[Dict[str, Any]] = []
-    for run in runs:
-        if not isinstance(run, dict):
-            continue
-        direction = run.get("direction")
-        if direction not in {"rising", "falling", "flat"}:
-            continue
-        event_name = {
-            "rising": "player accelerating",
-            "falling": "player decelerating",
-            "flat": "player maintaining steady speed",
-        }[direction]
-        start_iloc = run.get("start_iloc")
-        end_iloc = run.get("end_iloc")
-        phase_iloc = (
-            int((start_iloc + end_iloc) / 2)
-            if isinstance(start_iloc, int) and isinstance(end_iloc, int)
-            else None
-        )
-        events.append(_event(
-            event_name,
-            (
-                _phase_for_iloc(phase_iloc, phases)
-                if phase_iloc is not None
-                else "unknown"
-            ),
-            _range_from_values(start_iloc, end_iloc),
-            {
-                "start_value": run.get("start_value"),
-                "end_value": run.get("end_value"),
-                "change": run.get("change"),
-                "unit": run.get("unit"),
-                "slope": run.get("slope"),
-                "domain_direction": run.get("domain_direction"),
-                "is_label_significant": run.get("is_label_significant"),
-            },
-            "strong" if run.get("is_label_significant") is True else "moderate",
-            ["query_telemetry.find_trend_runs.player_speed"],
-        ))
-    return events
 
 
 def _gear_and_rpm_events(
@@ -3117,23 +2908,6 @@ def _measurement_sentence_fragments(
                 fragments.append(f"the player lowest occurred at iloc {iloc}")
             else:
                 fragments.append(f"the player peak occurred at iloc {iloc}")
-        return fragments
-
-    if event_name in {
-        "expert faster than player",
-        "player faster than expert",
-        "large speed percentage gap",
-    }:
-        gap_percent = measurements.get("gap_percent")
-        relation = measurements.get("gap_relation")
-        if gap_percent is not None and relation is not None:
-            fragments.append(
-                "the player was "
-                + _gap_percent_relation_text(gap_percent, relation)
-            )
-        iloc = measurements.get("iloc")
-        if iloc is not None:
-            fragments.append(f"detected at iloc {iloc}")
         return fragments
 
     if "trajectory" in event_name or "moving toward" in event_name or "expert line" in event_name:
