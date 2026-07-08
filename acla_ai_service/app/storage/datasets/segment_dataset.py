@@ -29,6 +29,7 @@ from torch.utils.data import IterableDataset
 
 from app.shared.labels import normalize_label_ids
 from app.shared.segment import AnnotatedSegment
+from app.ml.segment_classifier.label_heads import head_is_active, labels_for_head
 
 
 def compute_derived_features(df: pd.DataFrame) -> pd.DataFrame:
@@ -125,4 +126,86 @@ class StreamingSegmentDataset(IterableDataset):
                 yield torch.FloatTensor(scaled_X), torch.FloatTensor(seg_y), torch.FloatTensor(mask)
 
 
-__all__ = ["compute_derived_features", "StreamingSegmentDataset"]
+class MultiHeadStreamingSegmentDataset(IterableDataset):
+    def __init__(self, store, cache_key, head_mlbs, head_specs, scaler, max_length, expected_features):
+        self.store = store
+        self.cache_key = cache_key
+        self.head_mlbs = head_mlbs
+        self.head_specs = head_specs
+        self.scaler = scaler
+        self.max_length = max_length
+        self.expected_features = expected_features
+
+    def __iter__(self):
+        chunks = self.store.get_cached_data_chunks(self.cache_key)
+
+        for chunk in chunks:
+            chunk_data = []
+            if isinstance(chunk, list):
+                chunk_data = chunk
+            elif isinstance(chunk, dict) and "data" in chunk:
+                 chunk_data = chunk["data"]
+            elif isinstance(chunk, dict) and "payload" in chunk:
+                 chunk_data = [chunk["payload"]]
+            else:
+                 chunk_data = [chunk]
+
+            for d in chunk_data:
+                if not isinstance(d, dict):
+                    continue
+
+                try:
+                    ann = AnnotatedSegment.from_dict(d)
+                except Exception:
+                    continue
+
+                if not ann.telemetry_data:
+                    continue
+
+                df = pd.DataFrame(ann.telemetry_data)
+                if df.columns.tolist() != self.expected_features:
+                     df = df.reindex(columns=self.expected_features, fill_value=0)
+
+                df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
+                df = compute_derived_features(df)
+
+                if df.empty:
+                    continue
+
+                seg_X = df.values
+                mapped_labels = normalize_label_ids(ann.labels)
+                scaled_X = self.scaler.transform(seg_X)
+                base_mask = np.ones((len(scaled_X), 1))
+
+                targets = {}
+                head_masks = {}
+                for spec in self.head_specs:
+                    mlb = self.head_mlbs.get(spec.name)
+                    if mlb is None:
+                        continue
+
+                    target_labels = labels_for_head(mapped_labels, spec)
+                    label_vec = mlb.transform([target_labels])[0]
+                    targets[spec.name] = np.tile(label_vec, (len(scaled_X), 1))
+                    head_masks[spec.name] = base_mask.copy() if head_is_active(mapped_labels, spec) else np.zeros_like(base_mask)
+
+                pad_len = self.max_length - len(scaled_X)
+                if pad_len > 0:
+                    scaled_X = np.pad(scaled_X, ((0, pad_len), (0, 0)), 'constant')
+                    for head_name in list(targets.keys()):
+                        targets[head_name] = np.pad(targets[head_name], ((0, pad_len), (0, 0)), 'constant')
+                        head_masks[head_name] = np.pad(head_masks[head_name], ((0, pad_len), (0, 0)), 'constant')
+                elif pad_len < 0:
+                    scaled_X = scaled_X[:self.max_length]
+                    for head_name in list(targets.keys()):
+                        targets[head_name] = targets[head_name][:self.max_length]
+                        head_masks[head_name] = head_masks[head_name][:self.max_length]
+
+                yield (
+                    torch.FloatTensor(scaled_X),
+                    {name: torch.FloatTensor(value) for name, value in targets.items()},
+                    {name: torch.FloatTensor(value) for name, value in head_masks.items()},
+                )
+
+
+__all__ = ["compute_derived_features", "StreamingSegmentDataset", "MultiHeadStreamingSegmentDataset"]

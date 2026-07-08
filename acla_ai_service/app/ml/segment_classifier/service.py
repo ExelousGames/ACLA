@@ -33,9 +33,15 @@ from app.shared.segment_classifier_features import SEGMENT_CLASSIFIER_FEATURES
 # Extracted in refactor/hexagonal-v4 — Page 5 of the architecture diagram.
 # Model classes are pure (no I/O); dataset + derived-features helper own I/O.
 # Re-imported here so SegmentClassifierService keeps the same internal API.
-from app.ml.segment_classifier.model import CNN1DModel, FocalLoss
+from app.ml.segment_classifier.label_heads import (
+    LabelHeadSpec,
+    build_label_head_specs,
+    head_is_active,
+    labels_for_head,
+)
+from app.ml.segment_classifier.model import CNN1DModel, FocalLoss, MultiHeadCNN1DModel
 from app.storage.datasets.segment_dataset import (
-    StreamingSegmentDataset,
+    MultiHeadStreamingSegmentDataset,
     compute_derived_features,
 )
 
@@ -48,15 +54,23 @@ class SegmentClassifierService:
         self.models_directory.mkdir(exist_ok=True)
         self.model_path = self.models_directory / "segment_classifier.pth"
         self.mlb_path = self.models_directory / "segment_labels.joblib"
+        self.head_mlbs_path = self.models_directory / "segment_head_labels.joblib"
         self.scaler_path = self.models_directory / "segment_scaler.joblib"
         self.pos_weight_path = self.models_directory / "segment_pos_weight.pt"
+        self.head_pos_weight_path = self.models_directory / "segment_head_pos_weights.pt"
         self.store = get_shared_telemetry_store()
         self.model = None
         self.mlb = None 
+        self.head_specs = build_label_head_specs()
+        self.head_mlbs = None
         self.scaler = None
         self.pos_weight = None
+        self.head_pos_weights = None
         self.label_counts = {}
+        self.head_label_counts = {}
+        self.head_active_counts = {}
         self.feature_names = None
+        self.model_format = "segment_classifier/v1"
         
         # Device selection with explicit AMD/NVIDIA support check
         if torch.cuda.is_available():
@@ -80,6 +94,59 @@ class SegmentClassifierService:
                 print(f"Debug: Error getting torch version info: {e}")
 
         self.max_length = max_length
+
+    def _head_specs_from_config(self, raw_specs: Any) -> List[LabelHeadSpec]:
+        if not isinstance(raw_specs, list):
+            return build_label_head_specs()
+
+        specs = []
+        for item in raw_specs:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            label_ids = item.get("label_ids")
+            active_label_ids = item.get("active_label_ids")
+            if not isinstance(name, str) or not isinstance(label_ids, list):
+                continue
+            specs.append(LabelHeadSpec(
+                name=name,
+                label_ids=tuple(str(label_id) for label_id in label_ids),
+                active_label_ids=(
+                    tuple(str(label_id) for label_id in active_label_ids)
+                    if isinstance(active_label_ids, list)
+                    else None
+                ),
+            ))
+
+        return specs or build_label_head_specs()
+
+    def _head_specs_to_config(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "name": spec.name,
+                "label_ids": list(spec.label_ids),
+                "active_label_ids": list(spec.active_label_ids) if spec.active_label_ids else None,
+            }
+            for spec in self.head_specs
+        ]
+
+    def _refresh_flat_mlb_from_heads(self) -> None:
+        if not self.head_mlbs:
+            return
+
+        labels = []
+        for spec in self.head_specs:
+            mlb = self.head_mlbs.get(spec.name)
+            if mlb is None:
+                continue
+            labels.extend(normalize_label_id(label) for label in mlb.classes_)
+
+        labels = list(dict.fromkeys(labels))
+        self.mlb = MultiLabelBinarizer()
+        self.mlb.fit([labels])
+
+    def _is_multi_head_model(self) -> bool:
+        return self.head_mlbs is not None and isinstance(self.model, MultiHeadCNN1DModel)
 
     def _current_feature_names(self) -> List[str]:
         return list(SEGMENT_CLASSIFIER_FEATURES)
@@ -553,6 +620,12 @@ class SegmentClassifierService:
         
         all_labels = set()
         self.label_counts = {}
+        self.head_specs = build_label_head_specs()
+        self.head_label_counts = {
+            spec.name: {label_id: 0 for label_id in spec.label_ids}
+            for spec in self.head_specs
+        }
+        self.head_active_counts = {spec.name: 0 for spec in self.head_specs}
         total_segments = 0
         self.scaler = StandardScaler()
         max_seq_len = 0
@@ -586,6 +659,14 @@ class SegmentClassifierService:
                 all_labels.update(mapped_labels)
                 for l in mapped_labels:
                     self.label_counts[l] = self.label_counts.get(l, 0) + 1
+                for spec in self.head_specs:
+                    if not head_is_active(mapped_labels, spec):
+                        continue
+                    self.head_active_counts[spec.name] += 1
+                    for label_id in labels_for_head(mapped_labels, spec):
+                        self.head_label_counts[spec.name][label_id] = (
+                            self.head_label_counts[spec.name].get(label_id, 0) + 1
+                        )
                 total_segments += 1
                 
                 if not ann.telemetry_data:
@@ -608,24 +689,29 @@ class SegmentClassifierService:
         if not has_data:
             raise ValueError("No valid training data found in cache.")
             
-        self.mlb = MultiLabelBinarizer()
-        self.mlb.fit([list(all_labels)])
-        
-        # Calculate pos_weight
-        pos_weights = []
-        for label in self.mlb.classes_:
-            pos = self.label_counts.get(label, 0)
-            neg = total_segments - pos
-            if pos > 0:
-                # Use sqrt dampening to prevent precision collapse on rare classes
-                # Original linear weighting (neg/pos) can result in weights > 100, causing massive false positives
-                weight = (neg / pos) ** 0.5
-            else:
-                weight = 1.0
-            pos_weights.append(weight)
-        
-        self.pos_weight = torch.FloatTensor(pos_weights).to(self.device)
-        print(f"Calculated pos_weights (dampened): {self.pos_weight}")
+        self.head_mlbs = {}
+        self.head_pos_weights = {}
+
+        for spec in self.head_specs:
+            mlb = MultiLabelBinarizer()
+            mlb.fit([list(spec.label_ids)])
+            self.head_mlbs[spec.name] = mlb
+
+            active_count = self.head_active_counts.get(spec.name, total_segments)
+            pos_weights = []
+            for label in mlb.classes_:
+                pos = self.head_label_counts.get(spec.name, {}).get(label, 0)
+                neg = max(active_count - pos, 0)
+                if pos > 0:
+                    # Use sqrt dampening to prevent precision collapse on rare classes.
+                    weight = (neg / pos) ** 0.5
+                else:
+                    weight = 1.0
+                pos_weights.append(weight)
+            self.head_pos_weights[spec.name] = torch.FloatTensor(pos_weights).to(self.device)
+
+        self._refresh_flat_mlb_from_heads()
+        print("Calculated multi-head pos_weights (dampened).")
         
         if max_seq_len > self.max_length:
             print(f"Updating max_length from {self.max_length} to {max_seq_len}")
@@ -653,19 +739,21 @@ class SegmentClassifierService:
         
         await self.fit_preprocessors(train_key)
         
-        train_dataset = StreamingSegmentDataset(
+        train_dataset = MultiHeadStreamingSegmentDataset(
             self.store, 
             train_key, 
-            self.mlb, 
+            self.head_mlbs,
+            self.head_specs,
             self.scaler, 
             self.max_length,
             self._feature_names_for_model()
         )
 
-        val_dataset = StreamingSegmentDataset(
+        val_dataset = MultiHeadStreamingSegmentDataset(
             self.store, 
             val_key, 
-            self.mlb, 
+            self.head_mlbs,
+            self.head_specs,
             self.scaler, 
             self.max_length,
             self._feature_names_for_model()
@@ -676,13 +764,19 @@ class SegmentClassifierService:
         val_loader = DataLoader(val_dataset, batch_size=batch_size)
         
         input_dim = self.scaler.mean_.shape[0]
-        output_dim = len(self.mlb.classes_)
+        head_output_dims = {
+            head_name: len(mlb.classes_)
+            for head_name, mlb in self.head_mlbs.items()
+        }
         # Increased network size to handle larger label set (~50+ labels)
         hidden_dim = 256
         num_layers = 3
         
-        self.model = CNN1DModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
-        criterion = FocalLoss(reduction='none', pos_weight=self.pos_weight)
+        self.model = MultiHeadCNN1DModel(input_dim, hidden_dim, head_output_dims, num_layers=num_layers).to(self.device)
+        criteria = {
+            head_name: FocalLoss(reduction='none', pos_weight=pos_weight)
+            for head_name, pos_weight in self.head_pos_weights.items()
+        }
         # Added weight_decay for regularization
         optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
         # Scheduler to reduce LR when validation metric plateaus
@@ -698,15 +792,26 @@ class SegmentClassifierService:
             total_loss = 0
             batch_count = 0
             for batch_X, batch_y, batch_mask in train_loader:
-                batch_X, batch_y, batch_mask = batch_X.to(self.device), batch_y.to(self.device), batch_mask.to(self.device)
+                batch_X = batch_X.to(self.device)
+                batch_y = {name: target.to(self.device) for name, target in batch_y.items()}
+                batch_mask = {name: mask.to(self.device) for name, mask in batch_mask.items()}
                 
                 optimizer.zero_grad()
                 outputs, _ = self.model(batch_X)
-                loss = criterion(outputs, batch_y)
-                
-                # Apply mask
-                masked_loss = loss * batch_mask
-                loss = masked_loss.sum() / (batch_mask.sum() * output_dim + 1e-8)
+                head_losses = []
+                for head_name, head_outputs in outputs.items():
+                    head_mask = batch_mask[head_name]
+                    if head_mask.sum().item() <= 0:
+                        continue
+                    raw_loss = criteria[head_name](head_outputs, batch_y[head_name])
+                    masked_loss = raw_loss * head_mask
+                    head_losses.append(
+                        masked_loss.sum() / (head_mask.sum() * head_outputs.shape[-1] + 1e-8)
+                    )
+
+                if not head_losses:
+                    continue
+                loss = torch.stack(head_losses).mean()
                 
                 loss.backward()
                 optimizer.step()
@@ -722,12 +827,23 @@ class SegmentClassifierService:
             val_count = 0
             with torch.no_grad():
                 for val_X, val_y, val_mask in val_loader:
-                    val_X, val_y, val_mask = val_X.to(self.device), val_y.to(self.device), val_mask.to(self.device)
+                    val_X = val_X.to(self.device)
+                    val_y = {name: target.to(self.device) for name, target in val_y.items()}
+                    val_mask = {name: mask.to(self.device) for name, mask in val_mask.items()}
                     outputs, _ = self.model(val_X)
-                    loss = criterion(outputs, val_y)
-                    
-                    masked_loss = loss * val_mask
-                    loss = masked_loss.sum() / (val_mask.sum() * output_dim + 1e-8)
+                    head_losses = []
+                    for head_name, head_outputs in outputs.items():
+                        head_mask = val_mask[head_name]
+                        if head_mask.sum().item() <= 0:
+                            continue
+                        raw_loss = criteria[head_name](head_outputs, val_y[head_name])
+                        masked_loss = raw_loss * head_mask
+                        head_losses.append(
+                            masked_loss.sum() / (head_mask.sum() * head_outputs.shape[-1] + 1e-8)
+                        )
+                    if not head_losses:
+                        continue
+                    loss = torch.stack(head_losses).mean()
                     
                     val_loss += loss.item()
                     val_count += 1
@@ -759,91 +875,76 @@ class SegmentClassifierService:
         # Final Evaluation Report
         print("\nGenerating final evaluation report on validation set...")
         self.model.eval()
-        all_probs = []
-        all_targets = []
-        
-        # Segment-level accumulation
-        all_segment_probs = []
-        all_segment_targets = []
+        head_probs = defaultdict(list)
+        head_targets = defaultdict(list)
+        head_segment_probs = defaultdict(list)
+        head_segment_targets = defaultdict(list)
         
         with torch.no_grad():
             for val_X, val_y, val_mask in val_loader:
-                val_X, val_y, val_mask = val_X.to(self.device), val_y.to(self.device), val_mask.to(self.device)
+                val_X = val_X.to(self.device)
+                val_y = {name: target.to(self.device) for name, target in val_y.items()}
+                val_mask = {name: mask.to(self.device) for name, mask in val_mask.items()}
                 outputs, _ = self.model(val_X)
-                
-                probs = torch.sigmoid(outputs)
-                
-                # Filter by mask
-                mask_flat = val_mask.cpu().bool().numpy().flatten()
-                probs_flat = probs.cpu().numpy().reshape(-1, output_dim)
-                targets_flat = val_y.cpu().numpy().reshape(-1, output_dim)
-                
-                if len(mask_flat) > 0:
-                    all_probs.append(probs_flat[mask_flat])
-                    all_targets.append(targets_flat[mask_flat])
+                for head_name, head_outputs in outputs.items():
+                    probs = torch.sigmoid(head_outputs)
+                    mask_flat = val_mask[head_name].cpu().bool().numpy().flatten()
+                    probs_flat = probs.cpu().numpy().reshape(-1, head_outputs.shape[-1])
+                    targets_flat = val_y[head_name].cpu().numpy().reshape(-1, head_outputs.shape[-1])
+                    if len(mask_flat) > 0 and np.any(mask_flat):
+                        head_probs[head_name].append(probs_flat[mask_flat])
+                        head_targets[head_name].append(targets_flat[mask_flat])
 
-                # --- Per-Segment Evaluation ---
-                batch_size_curr = val_X.size(0)
-                
-                for i in range(batch_size_curr):
-                    # Get actual length from mask
-                    length = int(val_mask[i].sum().item())
-                    if length == 0:
-                        continue
-                        
-                    # Target is the same for the whole segment, just take the first valid one
-                    # val_y shape: (batch, seq_len, num_classes)
-                    seg_target = val_y[i, 0].cpu().numpy()
-                    
-                    # Average probability over valid timesteps.
-                    seg_probs = probs[i, :length].mean(dim=0)
-                    
-                    all_segment_probs.append(seg_probs.cpu().numpy())
-                    all_segment_targets.append(seg_target)
+                    for i in range(val_X.size(0)):
+                        length = int(val_mask[head_name][i].sum().item())
+                        if length == 0:
+                            continue
+                        head_segment_probs[head_name].append(probs[i, :length].mean(dim=0).cpu().numpy())
+                        head_segment_targets[head_name].append(val_y[head_name][i, 0].cpu().numpy())
 
-        target_names = [
-            LABEL_MAPPING.get(normalize_label_id(l), normalize_label_id(l))
-            for l in self.mlb.classes_
-        ]
-
-        if all_segment_probs:
-            y_seg_probs = np.array(all_segment_probs)
-            y_seg_true = np.array(all_segment_targets)
-            self._print_probability_summary(
-                "\n=== Segment-Level Probability Summary (Aggregated) ===",
-                y_seg_probs,
-                y_seg_true,
-                target_names,
-            )
-            print("========================================================\n")
-
-        if all_probs:
-            # Concatenate
-            y_probs = np.concatenate(all_probs)
-            y_true = np.concatenate(all_targets)
-            self._print_probability_summary(
-                "Validation Probability Summary (Per-Timestep):",
-                y_probs,
-                y_true,
-                target_names,
-            )
+        for spec in self.head_specs:
+            mlb = self.head_mlbs.get(spec.name)
+            if mlb is None:
+                continue
+            target_names = [
+                LABEL_MAPPING.get(normalize_label_id(l), normalize_label_id(l))
+                for l in mlb.classes_
+            ]
+            if head_segment_probs[spec.name]:
+                self._print_probability_summary(
+                    f"\n=== Segment-Level Probability Summary ({spec.name}) ===",
+                    np.array(head_segment_probs[spec.name]),
+                    np.array(head_segment_targets[spec.name]),
+                    target_names,
+                )
+            if head_probs[spec.name]:
+                self._print_probability_summary(
+                    f"Validation Probability Summary ({spec.name}, Per-Timestep):",
+                    np.concatenate(head_probs[spec.name]),
+                    np.concatenate(head_targets[spec.name]),
+                    target_names,
+                )
 
         # Save model and artifacts
         torch.save(self.model.state_dict(), self.model_path)
         joblib.dump(self.mlb, self.mlb_path)
+        joblib.dump(self.head_mlbs, self.head_mlbs_path)
         joblib.dump(self.scaler, self.scaler_path)
-        if self.pos_weight is not None:
-            torch.save(self.pos_weight, self.pos_weight_path)
+        if self.head_pos_weights is not None:
+            torch.save(self.head_pos_weights, self.head_pos_weight_path)
         
         # Save config with model architecture
         config = {
+            "format": "segment_classifier/v2",
             "max_length": self.max_length,
             "hidden_dim": hidden_dim,
             "num_layers": num_layers,
             "feature_names": self._feature_names_for_model(),
+            "head_specs": self._head_specs_to_config(),
         }
         with open(self.models_directory / "segment_config.json", "w") as f:
             json.dump(config, f)
+        self.model_format = "segment_classifier/v2"
 
         print(f"Model saved to {self.model_path}")
 
@@ -860,6 +961,11 @@ class SegmentClassifierService:
                     "max_length": self.max_length,
                     "hidden_dim": hidden_dim,
                     "num_layers": num_layers,
+                    "num_heads": len(self.head_mlbs) if self.head_mlbs else 0,
+                    "head_label_counts": {
+                        head_name: len(mlb.classes_)
+                        for head_name, mlb in (self.head_mlbs or {}).items()
+                    },
                     "num_labels": len(self.mlb.classes_) if self.mlb is not None else 0,
                     "feature_count": self._scaler_feature_count() or 0,
                 },
@@ -871,39 +977,75 @@ class SegmentClassifierService:
 
     def load_model(self):
         """Load the trained model."""
-        if self.model_path.exists() and self.mlb_path.exists() and self.scaler_path.exists():
-            self.feature_names = None
+        if not (self.model_path.exists() and self.scaler_path.exists()):
+            return False
+
+        self.feature_names = None
+        self.scaler = joblib.load(self.scaler_path)
+
+        hidden_dim = 256
+        num_layers = 3
+        config = {}
+        config_path = self.models_directory / "segment_config.json"
+        if config_path.exists():
+            with open(config_path, "r") as f:
+                config = json.load(f)
+                self.max_length = config.get("max_length", self.max_length)
+                hidden_dim = config.get("hidden_dim", hidden_dim)
+                num_layers = config.get("num_layers", num_layers)
+                feature_names = config.get("feature_names")
+                scaler_feature_count = self._scaler_feature_count()
+                if (
+                    isinstance(feature_names, list)
+                    and all(isinstance(f, str) for f in feature_names)
+                    and (
+                        scaler_feature_count is None
+                        or len(feature_names) * 2 == scaler_feature_count
+                    )
+                ):
+                    self.feature_names = feature_names
+
+        self._feature_names_for_model()
+        input_dim = self.scaler.mean_.shape[0]
+
+        is_v2 = (
+            config.get("format") == "segment_classifier/v2"
+            and self.head_mlbs_path.exists()
+        )
+        if is_v2:
+            self.model_format = "segment_classifier/v2"
+            self.head_specs = self._head_specs_from_config(config.get("head_specs"))
+            self.head_mlbs = joblib.load(self.head_mlbs_path)
+            if self.head_pos_weight_path.exists():
+                self.head_pos_weights = torch.load(
+                    self.head_pos_weight_path,
+                    map_location=self.device,
+                    weights_only=True,
+                )
+            self._refresh_flat_mlb_from_heads()
+
+            head_output_dims = {
+                head_name: len(mlb.classes_)
+                for head_name, mlb in self.head_mlbs.items()
+            }
+            self.model = MultiHeadCNN1DModel(
+                input_dim,
+                hidden_dim,
+                head_output_dims,
+                num_layers=num_layers,
+            ).to(self.device)
+            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
+            self.model.eval()
+            return True
+
+        if self.mlb_path.exists():
+            self.model_format = "segment_classifier/v1"
+            self.head_mlbs = None
+            self.head_pos_weights = None
             self.mlb = joblib.load(self.mlb_path)
-            self.scaler = joblib.load(self.scaler_path)
             if self.pos_weight_path.exists():
                 self.pos_weight = torch.load(self.pos_weight_path, map_location=self.device, weights_only=True)
-
-            # Load config if exists
-            hidden_dim = 256
-            num_layers = 3
-            config_path = self.models_directory / "segment_config.json"
-            if config_path.exists():
-                with open(config_path, "r") as f:
-                    config = json.load(f)
-                    self.max_length = config.get("max_length", self.max_length)
-                    hidden_dim = config.get("hidden_dim", hidden_dim)
-                    num_layers = config.get("num_layers", num_layers)
-                    feature_names = config.get("feature_names")
-                    scaler_feature_count = self._scaler_feature_count()
-                    if (
-                        isinstance(feature_names, list)
-                        and all(isinstance(f, str) for f in feature_names)
-                        and (
-                            scaler_feature_count is None
-                            or len(feature_names) * 2 == scaler_feature_count
-                        )
-                    ):
-                        self.feature_names = feature_names
-
-            self._feature_names_for_model()
-            input_dim = self.scaler.mean_.shape[0]
             output_dim = len(self.mlb.classes_)
-
             self.model = CNN1DModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
             self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
             self.model.eval()
@@ -911,30 +1053,66 @@ class SegmentClassifierService:
         return False
 
     # Artifact filenames packed into / unpacked from the backend payload.
-    # pos_weight is optional to keep old classifier payloads loadable.
-    _ARTIFACT_FILES_REQUIRED = (
+    # weight files are optional to keep old classifier payloads loadable.
+    _ARTIFACT_FILES_REQUIRED_V1 = (
         "segment_classifier.pth",
         "segment_labels.joblib",
         "segment_scaler.joblib",
         "segment_config.json",
     )
-    _ARTIFACT_FILES_OPTIONAL = ("segment_pos_weight.pt",)
+    _ARTIFACT_FILES_REQUIRED_V2 = (
+        "segment_classifier.pth",
+        "segment_head_labels.joblib",
+        "segment_scaler.joblib",
+        "segment_config.json",
+    )
+    _ARTIFACT_FILES_OPTIONAL_V1 = ("segment_pos_weight.pt",)
+    _ARTIFACT_FILES_OPTIONAL_V2 = ("segment_head_pos_weights.pt", "segment_labels.joblib")
 
     def serialize_artifacts(self) -> Dict[str, Any]:
         """Pack the on-disk model files into a JSON-safe dict for backend upload."""
+        config_format = None
+        config_path = self.models_directory / "segment_config.json"
+        if config_path.is_file():
+            try:
+                with open(config_path, "r") as f:
+                    config_format = json.load(f).get("format")
+            except Exception:
+                config_format = None
+
+        has_v2_files = all(
+            (self.models_directory / name).is_file()
+            for name in self._ARTIFACT_FILES_REQUIRED_V2
+        )
+        artifact_format = (
+            "segment_classifier/v2"
+            if config_format == "segment_classifier/v2" and has_v2_files
+            else "segment_classifier/v1"
+        )
+        required_files = (
+            self._ARTIFACT_FILES_REQUIRED_V2
+            if artifact_format == "segment_classifier/v2"
+            else self._ARTIFACT_FILES_REQUIRED_V1
+        )
+        optional_files = (
+            self._ARTIFACT_FILES_OPTIONAL_V2
+            if artifact_format == "segment_classifier/v2"
+            else self._ARTIFACT_FILES_OPTIONAL_V1
+        )
+
         files: Dict[str, str] = {}
-        for name in self._ARTIFACT_FILES_REQUIRED:
+        for name in required_files:
             path = self.models_directory / name
             if not path.is_file():
                 raise FileNotFoundError(f"Cannot serialize — missing required artifact: {path}")
             files[name] = base64.b64encode(path.read_bytes()).decode("ascii")
 
-        for name in self._ARTIFACT_FILES_OPTIONAL:
+        for name in optional_files:
             path = self.models_directory / name
             if path.is_file():
                 files[name] = base64.b64encode(path.read_bytes()).decode("ascii")
 
-        return {"format": "segment_classifier/v1", "files": files}
+        return {"format": artifact_format, "files": files}
 
     def deserialize_artifacts(self, payload: Dict[str, Any]) -> None:
         """Write a backend-fetched payload back to ``self.models_directory``."""
@@ -944,7 +1122,14 @@ class SegmentClassifierService:
         if not isinstance(files, dict):
             raise ValueError("segment_classifier payload missing 'files' dict")
 
-        for name in self._ARTIFACT_FILES_REQUIRED:
+        artifact_format = payload.get("format")
+        required_files = (
+            self._ARTIFACT_FILES_REQUIRED_V2
+            if artifact_format == "segment_classifier/v2" or "segment_head_labels.joblib" in files
+            else self._ARTIFACT_FILES_REQUIRED_V1
+        )
+
+        for name in required_files:
             if name not in files:
                 raise ValueError(f"segment_classifier payload missing required artifact: {name}")
 
@@ -954,10 +1139,54 @@ class SegmentClassifierService:
 
     def has_local_artifacts(self) -> bool:
         """True when every required artifact already lives on disk."""
-        return all(
-            (self.models_directory / name).is_file()
-            for name in self._ARTIFACT_FILES_REQUIRED
+        config_format = None
+        config_path = self.models_directory / "segment_config.json"
+        if config_path.is_file():
+            try:
+                with open(config_path, "r") as f:
+                    config_format = json.load(f).get("format")
+            except Exception:
+                config_format = None
+
+        has_v2 = (
+            config_format == "segment_classifier/v2"
+            and all((self.models_directory / name).is_file() for name in self._ARTIFACT_FILES_REQUIRED_V2)
         )
+        has_v1 = all(
+            (self.models_directory / name).is_file()
+            for name in self._ARTIFACT_FILES_REQUIRED_V1
+        )
+        return has_v2 or has_v1
+
+    def _scaled_tensor_from_numeric_df(self, numeric_df: pd.DataFrame) -> Tuple[torch.Tensor, int]:
+        X_scaled = self.scaler.transform(numeric_df.values)
+        original_len = len(X_scaled)
+        if original_len > self.max_length:
+             X_scaled = X_scaled[:self.max_length]
+             original_len = self.max_length
+        elif original_len < self.max_length:
+             pad_len = self.max_length - original_len
+             X_scaled = np.pad(X_scaled, ((0, pad_len), (0, 0)), 'constant')
+
+        return torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device), original_len
+
+    def _predict_multi_head_probabilities_from_numeric_df(self, numeric_df: pd.DataFrame) -> Dict[str, float]:
+        X_tensor, original_len = self._scaled_tensor_from_numeric_df(numeric_df)
+        
+        with torch.no_grad():
+            outputs, _ = self.model(X_tensor)
+            result = {}
+            for head_name, head_outputs in outputs.items():
+                mlb = self.head_mlbs.get(head_name)
+                if mlb is None:
+                    continue
+                probs_tensor = torch.sigmoid(head_outputs)
+                valid_probs = probs_tensor[0, :original_len, :]
+                probs = valid_probs.mean(dim=0).cpu().numpy()
+                for i, p in enumerate(probs):
+                    label = normalize_label_id(mlb.classes_[i])
+                    result[label] = max(result.get(label, 0.0), float(p))
+        return result
 
     def predict_segment(self, segment_df: pd.DataFrame) -> List[str]:
         """Return labels ranked by raw model probability for a single segment."""
@@ -970,24 +1199,18 @@ class SegmentClassifierService:
         if numeric_df.empty:
             return []
 
-        X_scaled = self.scaler.transform(numeric_df.values)
-        
-        # Handle max_length and padding
-        original_len = len(X_scaled)
-        if original_len > self.max_length:
-             X_scaled = X_scaled[:self.max_length]
-             original_len = self.max_length
-        elif original_len < self.max_length:
-             pad_len = self.max_length - original_len
-             X_scaled = np.pad(X_scaled, ((0, pad_len), (0, 0)), 'constant')
+        if self._is_multi_head_model():
+            probabilities = self._predict_multi_head_probabilities_from_numeric_df(numeric_df)
+            return [
+                label
+                for label, _ in sorted(probabilities.items(), key=lambda item: item[1], reverse=True)
+            ]
 
-        X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device)
+        X_tensor, original_len = self._scaled_tensor_from_numeric_df(numeric_df)
         
         with torch.no_grad():
             outputs, _ = self.model(X_tensor)
-            # Apply sigmoid to get probabilities from logits
             probs_tensor = torch.sigmoid(outputs)
-            
             valid_probs = probs_tensor[0, :original_len, :]
             probs = valid_probs.mean(dim=0).cpu().numpy()
             
@@ -1004,18 +1227,11 @@ class SegmentClassifierService:
         if df.empty:
             return {}
 
-        X_scaled = self.scaler.transform(df.values)
-        
-        # Handle max_length and padding
-        original_len = len(X_scaled)
-        if original_len > self.max_length:
-             X_scaled = X_scaled[:self.max_length]
-             original_len = self.max_length
-        elif original_len < self.max_length:
-             pad_len = self.max_length - original_len
-             X_scaled = np.pad(X_scaled, ((0, pad_len), (0, 0)), 'constant')
+        if self._is_multi_head_model():
+            result = self._predict_multi_head_probabilities_from_numeric_df(df)
+            return dict(sorted(result.items(), key=lambda item: item[1], reverse=True))
 
-        X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device)
+        X_tensor, original_len = self._scaled_tensor_from_numeric_df(df)
         
         with torch.no_grad():
             outputs, _ = self.model(X_tensor)
@@ -1057,30 +1273,69 @@ class SegmentClassifierService:
         
         with torch.no_grad():
             outputs, _ = self.model(X_tensor)
-            probs = torch.sigmoid(outputs).squeeze(0).cpu().numpy()
-            
-        # Apply smoothing to probabilities to reduce jitter and enforce segment continuity
-        # Rolling mean with a window of 5 steps
-        probs_df = pd.DataFrame(probs, columns=self.mlb.classes_)
-
-        probs_smoothed = probs_df.rolling(window=5, center=True, min_periods=1).mean().values
+            if self._is_multi_head_model():
+                probs_by_head = {
+                    head_name: pd.DataFrame(
+                        torch.sigmoid(head_outputs).squeeze(0).cpu().numpy(),
+                        columns=self.head_mlbs[head_name].classes_,
+                    ).rolling(window=5, center=True, min_periods=1).mean().values
+                    for head_name, head_outputs in outputs.items()
+                    if head_name in self.head_mlbs
+                }
+            else:
+                probs = torch.sigmoid(outputs).squeeze(0).cpu().numpy()
+                probs_df = pd.DataFrame(probs, columns=self.mlb.classes_)
+                probs_smoothed = probs_df.rolling(window=5, center=True, min_periods=1).mean().values
             
         found_segments = []
         current_labels = []
+        current_boundary_labels = []
         current_start = 0
+
+        def top_label(head_name: str, row_index: int) -> Optional[str]:
+            if not self._is_multi_head_model() or head_name not in probs_by_head:
+                return None
+            mlb = self.head_mlbs.get(head_name)
+            if mlb is None:
+                return None
+            top_idx = int(np.argmax(probs_by_head[head_name][row_index]))
+            return normalize_label_id(mlb.classes_[top_idx])
         
         # Iterate through to find contiguous segments with the same top label.
         # This keeps scanning threshold-free without marking every sigmoid
         # output as active everywhere.
         for i in range(len(numeric_df)):
-            top_idx = int(np.argmax(probs_smoothed[i]))
-            labels_at_i = [normalize_label_id(self.mlb.classes_[top_idx])]
+            if self._is_multi_head_model():
+                behavior_label = top_label("behavior_main", i)
+                labels_at_i = [behavior_label] if behavior_label else []
+                boundary_labels_at_i = [behavior_label] if behavior_label else []
+
+                if behavior_label:
+                    sub_label = top_label(f"sub:{behavior_label}", i)
+                    if sub_label:
+                        labels_at_i.append(sub_label)
+
+                track_label = top_label("track_main", i)
+                if track_label:
+                    labels_at_i.append(track_label)
+                    track_sub_label = top_label(f"sub:{track_label}", i)
+                    if track_sub_label:
+                        labels_at_i.append(track_sub_label)
+
+                segment_type_label = top_label("segment_type", i)
+                if segment_type_label:
+                    labels_at_i.append(segment_type_label)
+            else:
+                top_idx = int(np.argmax(probs_smoothed[i]))
+                labels_at_i = [normalize_label_id(self.mlb.classes_[top_idx])]
+                boundary_labels_at_i = labels_at_i
             
             if i == 0:
                 current_labels = labels_at_i
+                current_boundary_labels = boundary_labels_at_i
                 current_start = 0
             else:
-                if labels_at_i != current_labels:
+                if boundary_labels_at_i != current_boundary_labels:
                     # Close previous segment if it had labels
                     if current_labels:
                         found_segments.append({
@@ -1089,6 +1344,7 @@ class SegmentClassifierService:
                             "labels": current_labels
                         })
                     current_labels = labels_at_i
+                    current_boundary_labels = boundary_labels_at_i
                     current_start = i
         
         # Close final segment

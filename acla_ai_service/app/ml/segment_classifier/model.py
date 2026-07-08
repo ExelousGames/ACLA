@@ -5,6 +5,8 @@ Two PyTorch ``nn.Module`` classes:
     used during training to handle class imbalance across segment labels.
   - ``CNN1DModel``: 1D-CNN feature extractor + linear head that scores each
     timestep against the full label set.
+  - ``MultiHeadCNN1DModel``: the same 1D-CNN feature extractor with separate
+    linear heads for independent label groups.
 
 This module imports NOTHING from the rest of the app — it's a pure leaf,
 testable in isolation. The training and inference orchestrators in
@@ -76,4 +78,37 @@ class CNN1DModel(nn.Module):
         return out, None
 
 
-__all__ = ["FocalLoss", "CNN1DModel"]
+class MultiHeadCNN1DModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, head_output_dims, num_layers=3):
+        super(MultiHeadCNN1DModel, self).__init__()
+
+        layers = []
+        in_channels = input_dim
+
+        for _ in range(num_layers):
+            layers.append(nn.Conv1d(in_channels, hidden_dim, kernel_size=3, padding='same'))
+            layers.append(nn.BatchNorm1d(hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.2))
+            in_channels = hidden_dim
+
+        self.features = nn.Sequential(*layers)
+        self.heads = nn.ModuleDict({
+            head_name: nn.Linear(hidden_dim, output_dim)
+            for head_name, output_dim in head_output_dims.items()
+            if output_dim > 0
+        })
+
+    def forward(self, x, hidden=None):
+        # x: (batch, seq_len, input_dim)
+        x = x.transpose(1, 2)
+        out = self.features(x)
+        out = out.transpose(1, 2)
+
+        return {
+            head_name: head(out)
+            for head_name, head in self.heads.items()
+        }, None
+
+
+__all__ = ["FocalLoss", "CNN1DModel", "MultiHeadCNN1DModel"]
