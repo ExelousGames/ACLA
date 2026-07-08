@@ -201,7 +201,7 @@
     "MSP22": {
       "name": "Highest brake pressure too high",
       "type": "sub",
-      "description": "During entry across the braking range, the player's **peak brake pressure is higher than** the expert's. Later **speed gap growing** or **trajectory wider than expert** can appear after the braking range as supporting signs.\n",
+      "description": "During entry across the braking range, the player's **peak brake pressure is higher than** the expert's. Later **speed gap dip** or **trajectory wider than expert** can appear after the braking range as supporting signs.\n",
       "parent": "MSP",
       "exclusive_with": [
         "MSP13"
@@ -255,7 +255,7 @@
     "MSP28": {
       "name": "Initiate brake release too early",
       "type": "sub",
-      "description": "the player brake application onset end is aligned with expert and speed gap is , The player's brake **release onset** is earlier than the expert. **Apex trajectory wider than expert** and **time gap grows** at exit can appear around or after that onset as supporting signs.\n",
+      "description": "the player brake application onset end is aligned with expert and, the player's brake **release onset** is earlier than the expert. **Apex trajectory wider than expert** and **speed gap spike** at exit can appear around or after that onset as supporting signs.\n",
       "parent": "MSP",
       "exclusive_with": [
         "MSP27"
@@ -273,7 +273,7 @@
     "MSP32": {
       "name": "Highest brake length too long",
       "type": "sub",
-      "description": "During entry or apex, the player's interval between **brake initiation** end and **release onset** is longer than the expert's — causing speed gap increases.\n",
+      "description": "During entry or apex, the player's interval between **brake initiation** end and **release onset** is longer than the expert's — causing speed gap spike.\n",
       "parent": "MSP",
       "exclusive_with": [
         "MSP31"
@@ -343,7 +343,7 @@
     "MSP23": {
       "name": "Release throttle too quickly",
       "type": "sub",
-      "description": "During entry or apex, the player's throttle **release onset** aligns with expert, but throttle **release end** is earlier than the expert. The player's **brake initiation end** may also be earlier than the expert's, and trajectory wider than expert at entry or apex can appear around the label range as supporting signs.\n",
+      "description": "During entry or apex, the player's throttle **release onset** aligns with expert, but throttle **release end** is earlier than the expert. speed gap spike at entry as supporting signs.\n",
       "parent": "MSP",
       "exclusive_with": []
     },
@@ -493,14 +493,14 @@
     "MSP42": {
       "name": "Inefficient grip utilization at entry",
       "type": "sub",
-      "description": "During entry across the braking range, grip utilisation deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears while braking is active and speed is decreasing.\n",
+      "description": "During entry across the braking range, grip utilisation deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears while braking is active and speed gap spike at apex or entry.\n",
       "parent": "MSP",
       "exclusive_with": []
     },
     "MSP43": {
       "name": "Inefficient grip utilization at exit",
       "type": "sub",
-      "description": "During exit across the throttle application range, grip utilisation deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears while throttle is being applied and speed is increasing.\n",
+      "description": "During exit across the throttle application range, grip utilisation deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears while throttle is being applied and speed gap spike at exit.\n",
       "parent": "MSP",
       "exclusive_with": []
     },
