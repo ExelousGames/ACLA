@@ -150,8 +150,6 @@ def render_detailed_labeling(
         selected_session_key,
         selected_annotation_key,
         session_id,
-        bool(input_segments),
-        len(saved_annotations),
     )
     if st.session_state.get("detailed_loaded_state_key") != state_key:
         if input_segments and not saved_annotations:

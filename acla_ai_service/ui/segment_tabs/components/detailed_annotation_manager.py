@@ -24,11 +24,18 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             return
             
         # 1. Select Mode/Annotation
-        existing_ids = {getattr(a, 'id', None) for a in st.session_state.current_annotations if getattr(a, 'id', None)}
-        annotation_options = [
-            i for i, ann in enumerate(st.session_state.current_annotations) 
-            if not getattr(ann, 'parent_id', None) or getattr(ann, 'parent_id', None) not in existing_ids
-        ]
+        def root_annotation_options():
+            existing_ids = {
+                getattr(a, 'id', None)
+                for a in st.session_state.current_annotations
+                if getattr(a, 'id', None)
+            }
+            return [
+                i for i, ann in enumerate(st.session_state.current_annotations)
+                if not getattr(ann, 'parent_id', None) or getattr(ann, 'parent_id', None) not in existing_ids
+            ]
+
+        annotation_options = root_annotation_options()
         
         if not annotation_options:
             st.warning("No root segments found in this session.")
@@ -249,7 +256,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             ann.opponent_interaction = opponent_interaction
 
             if go_next:
-                root_options = [i for i, a in enumerate(st.session_state.current_annotations) if not getattr(a, 'parent_id', None)]
+                root_options = root_annotation_options()
                 try:
                     curr_idx = root_options.index(selected_option)
                     if curr_idx + 1 < len(root_options):
@@ -272,6 +279,12 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         def handle_delete():
             """Delete the currently selected annotation, its children, and move to the next one."""
             if isinstance(selected_option, int) and selected_option < len(st.session_state.current_annotations):
+                root_options_before_delete = root_annotation_options()
+                try:
+                    selected_root_position = root_options_before_delete.index(selected_option)
+                except ValueError:
+                    selected_root_position = 0
+
                 # Remove the annotation
                 deleted_ann = st.session_state.current_annotations.pop(selected_option)
                 labels = ", ".join(get_display_labels(deleted_ann.labels))
@@ -285,17 +298,16 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 children_deleted = original_len - len(st.session_state.current_annotations)
                 child_msg = f" and {children_deleted} child segment(s)" if children_deleted > 0 else ""
                 
-                # Determine next selection
-                # We need to recalculate annotation_options because indexes might have changed
-                root_options = [i for i, ann in enumerate(st.session_state.current_annotations) if not getattr(ann, 'parent_id', None)]
+                # Determine next selection from the root selector position, not the old list index.
+                root_options = root_annotation_options()
 
                 if len(root_options) == 0:
                     # No annotations left
-                    update_selection_state(0)
+                    update_selection_state(None)
                     st.session_state.temp_success = f"Deleted annotation ({labels}){child_msg}. No annotations remaining."
                 else:
-                    # Try to select the same index, or the last available if we were at the end
-                    next_idx = root_options[min(selected_option, len(root_options) - 1)]
+                    # Keep the same root-selector position, or the last available if we were at the end.
+                    next_idx = root_options[min(selected_root_position, len(root_options) - 1)]
                     update_selection_state(next_idx)
                     st.session_state.temp_success = f"Deleted annotation ({labels}){child_msg}. Moved to next annotation."
                 
