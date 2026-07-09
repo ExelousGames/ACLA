@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES, LABEL_MAPPING, TRACK_LABELS
+from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES, LABEL_MAPPING
 
 
 @dataclass(frozen=True)
@@ -22,11 +22,10 @@ def _known_labels(label_ids: Iterable[str]) -> Tuple[str, ...]:
 def build_label_head_specs() -> List[LabelHeadSpec]:
     specs: List[LabelHeadSpec] = [
         LabelHeadSpec("behavior_main", _known_labels(BEHAVIOR_LABELS)),
-        LabelHeadSpec("track_main", _known_labels(TRACK_LABELS)),
         LabelHeadSpec("segment_type", _known_labels(LABEL_CATEGORIES.get("Segment Type", []))),
     ]
 
-    for parent_id in tuple(BEHAVIOR_LABELS) + tuple(TRACK_LABELS):
+    for parent_id in tuple(BEHAVIOR_LABELS):
         child_ids = _known_labels(LABEL_CATEGORIES.get(parent_id, []))
         if not child_ids:
             continue

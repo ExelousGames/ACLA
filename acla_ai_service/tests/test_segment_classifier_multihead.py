@@ -5,7 +5,7 @@ from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
 from app.ml.segment_classifier.label_heads import build_label_head_specs
 from app.ml.segment_classifier.model import MultiHeadCNN1DModel
 from app.storage.datasets.segment_dataset import MultiHeadStreamingSegmentDataset, compute_derived_features
-from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES, TRACK_LABELS
+from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES
 
 
 class _Store:
@@ -20,16 +20,16 @@ def test_label_head_specs_split_label_types():
     specs = {spec.name: spec for spec in build_label_head_specs()}
 
     assert specs["behavior_main"].label_ids == tuple(BEHAVIOR_LABELS)
-    assert specs["track_main"].label_ids == tuple(TRACK_LABELS)
     assert specs["segment_type"].label_ids == tuple(LABEL_CATEGORIES["Segment Type"])
     assert specs["sub:MSP"].label_ids == tuple(LABEL_CATEGORIES["MSP"])
-    assert specs["sub:silverstone"].label_ids == tuple(LABEL_CATEGORIES["silverstone"])
+    assert "track_main" not in specs
+    assert "sub:silverstone" not in specs
 
 
 def test_multihead_dataset_targets_and_subhead_masks():
     specs = [
         spec for spec in build_label_head_specs()
-        if spec.name in {"behavior_main", "track_main", "segment_type", "sub:MSP", "sub:MSR"}
+        if spec.name in {"behavior_main", "segment_type", "sub:MSP", "sub:MSR"}
     ]
     head_mlbs = {}
     for spec in specs:
@@ -64,13 +64,12 @@ def test_multihead_dataset_targets_and_subhead_masks():
 
     behavior_idx = list(head_mlbs["behavior_main"].classes_).index("MSP")
     sub_idx = list(head_mlbs["sub:MSP"].classes_).index("MSP1")
-    track_idx = list(head_mlbs["track_main"].classes_).index("silverstone")
     segment_type_idx = list(head_mlbs["segment_type"].classes_).index("ST1")
 
     assert targets["behavior_main"][0, behavior_idx].item() == 1
     assert targets["sub:MSP"][0, sub_idx].item() == 1
-    assert targets["track_main"][0, track_idx].item() == 1
     assert targets["segment_type"][0, segment_type_idx].item() == 1
+    assert "track_main" not in targets
     assert masks["sub:MSP"][:2].sum().item() == 2
     assert masks["sub:MSR"].sum().item() == 0
 

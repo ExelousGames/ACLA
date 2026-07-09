@@ -96,8 +96,12 @@ class SegmentClassifierService:
         self.max_length = max_length
 
     def _head_specs_from_config(self, raw_specs: Any) -> List[LabelHeadSpec]:
+        allowed_specs = {
+            spec.name: spec
+            for spec in build_label_head_specs()
+        }
         if not isinstance(raw_specs, list):
-            return build_label_head_specs()
+            return list(allowed_specs.values())
 
         specs = []
         for item in raw_specs:
@@ -105,20 +109,21 @@ class SegmentClassifierService:
                 continue
             name = item.get("name")
             label_ids = item.get("label_ids")
-            active_label_ids = item.get("active_label_ids")
-            if not isinstance(name, str) or not isinstance(label_ids, list):
+            allowed_spec = allowed_specs.get(name) if isinstance(name, str) else None
+            if allowed_spec is None or not isinstance(label_ids, list):
                 continue
+            allowed_labels = set(allowed_spec.label_ids)
             specs.append(LabelHeadSpec(
                 name=name,
-                label_ids=tuple(str(label_id) for label_id in label_ids),
-                active_label_ids=(
-                    tuple(str(label_id) for label_id in active_label_ids)
-                    if isinstance(active_label_ids, list)
-                    else None
+                label_ids=tuple(
+                    label_id
+                    for label_id in (str(label_id) for label_id in label_ids)
+                    if label_id in allowed_labels
                 ),
+                active_label_ids=allowed_spec.active_label_ids,
             ))
 
-        return specs or build_label_head_specs()
+        return [spec for spec in specs if spec.label_ids] or list(allowed_specs.values())
 
     def _head_specs_to_config(self) -> List[Dict[str, Any]]:
         return [
@@ -1176,8 +1181,11 @@ class SegmentClassifierService:
         with torch.no_grad():
             outputs, _ = self.model(X_tensor)
             result = {}
-            for head_name, head_outputs in outputs.items():
-                mlb = self.head_mlbs.get(head_name)
+            for spec in self.head_specs:
+                head_outputs = outputs.get(spec.name)
+                mlb = self.head_mlbs.get(spec.name)
+                if head_outputs is None:
+                    continue
                 if mlb is None:
                     continue
                 probs_tensor = torch.sigmoid(head_outputs)
@@ -1314,13 +1322,6 @@ class SegmentClassifierService:
                     sub_label = top_label(f"sub:{behavior_label}", i)
                     if sub_label:
                         labels_at_i.append(sub_label)
-
-                track_label = top_label("track_main", i)
-                if track_label:
-                    labels_at_i.append(track_label)
-                    track_sub_label = top_label(f"sub:{track_label}", i)
-                    if track_sub_label:
-                        labels_at_i.append(track_sub_label)
 
                 segment_type_label = top_label("segment_type", i)
                 if segment_type_label:
