@@ -3,20 +3,20 @@
     "name": "lap_annotation"
   },
   "behavior_parent_label_ids": {
-    "required": ["O", "OD", "PS", "RM", "MSP", "MSR"],
+    "required": ["O", "OD", "PS", "RM", "MSP", "MSR","EA"],
     "eligible_by_session": {
-      "practice": ["PS", "RM", "MSP", "Segment Type"],
+      "practice": ["EA","PS", "RM", "MSP", "Segment Type"],
       "racing": ["O", "OD", "MSR", "PS", "Segment Type"]
     }
   },
   "labels": {
     "EA": {
       "name": "Expert Adherence (Training)",
-      "characteristics": "trajectory stays near the expert line, and a sub-200ms or shrinking time gap at the end is considered as Expert Adherence. If there is no off-track, cutting, instability, adverse opponent outcome, pit evidence, its not consider as EA"
+      "characteristics": "a sub-150ms time gap at the end or is considered as Expert Adherence. or the end index is negative with negative slope. The time gap may spike in the middle of the section, but it should not be a sustained spike, the time gap at the end of the section should be less than 150ms."
     },
     "MSP": {
       "name": "Mistake (Practice)",
-      "characteristics": "Technical driving error causing time loss or instability, not caused by a close opponent. A rising time gap supports MSP when the absolute gap or change is at least 200ms; also Time-gap evidence should show mid-section spike or raising. If the section contains the new mistake action, label MSP even if the driver later time gap flattens. do not infer MSP from a sub-200ms gap, one endpoint, near-zero start, total endpoint change alone, or one speed sample. Speed gap supports MSP when it shows the player falling farther from the expert and aligns with the mistake."
+      "characteristics": "Technical driving error causing time loss or instability, not caused by a close opponent. A rising time gap supports MSP when the absolute gap is at least 150ms; and time-gap evidence should show mid-section spike or raising. If the section contains the new mistake action, label MSP even if the driver later time gap flattens. if the absoulte gap is less than 150ms, it will not be a pratice mistake"
     },
     "MSR": {
       "name": "Mistake (Racing)",
@@ -24,7 +24,7 @@
     },
     "RM": {
       "name": "Recovery & Merge",
-      "characteristics": "Recovery or merge after a prior mistake. Use RM when this section does not contain the new mistake action. Rising or near-zero start is not new MSP by itself. Time-gap recovery should end lower, dip, shrink, or show a lower ending loss rate without a mid-section spike or raising run; do not use RM from speed alone if the gap keeps worsening. Speed gap and line should move back toward parity/expert line, with brake/throttle consistent with rejoining. If the section starts clean, use EA or empty; if it starts with the new mistake, use MSP. Mutually exclusive with EA and MSP."
+      "characteristics": "Recovery or merge after a prior mistake. the slope is postive. Use RM when this section does not contain new spike in the middle. The time gap is flattened at the end, this means the slope is less than the starting slope."
     },
     "PS": {
       "name": "Pit Stop",

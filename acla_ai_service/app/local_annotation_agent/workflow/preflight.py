@@ -1655,7 +1655,30 @@ def _time_gap_reversal_event(
     )
 
 def _value_comparison(end_value: Any, start_value: Any, unit: Any) -> str:
-    return _percent_change_comparison(end_value, start_value, "starting value")
+    end_number = _as_number(end_value)
+    start_number = _as_number(start_value)
+    if end_number is None or start_number is None:
+        return "percentage change from the starting value is unknown"
+    delta = end_number - start_number
+    total_change = _measurement(abs(delta), unit)
+    if delta == 0:
+        return f"equal to the starting value with {_measurement(0, unit)} total change"
+
+    percent_change = _percent_change(end_number, start_number)
+    percent_text = (
+        _format_percent(abs(percent_change))
+        if percent_change is not None
+        else "percentage change unknown"
+    )
+    if delta > 0:
+        return (
+            "higher than the starting value by "
+            f"{total_change} total change ({percent_text})"
+        )
+    return (
+        "lower than the starting value by "
+        f"{total_change} total change ({percent_text})"
+    )
 
 
 def _slope_comparison(end_slope: Any, start_slope: Any, slope_unit: Any) -> str:
