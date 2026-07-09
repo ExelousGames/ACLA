@@ -121,64 +121,56 @@ def render_feature_visualization(df: pd.DataFrame, numeric_cols: list, viz_start
                     start = getattr(ann, "start_index", None)
                     end = getattr(ann, "end_index", None)
 
-                    # Skip if annotation is completely outside the visualization range
-                    if start is not None and end is not None:
-                        if end <= viz_start_idx or start >= viz_end_idx:
-                            continue
-
                     labels = ann.labels
                     display_labels = get_display_labels(labels)
                     label_str = ", ".join(display_labels)
                     
                     if start is not None and end is not None:
+                        start = int(start)
+                        end = int(end)
+                        if start < 0 or end > len(df) or end <= start:
+                            continue
+                        if end <= viz_start_idx or start > viz_end_idx:
+                            continue
+
                         # Add hoverable invisible marker for segment stats
                         hover_summary = [f"<b>Segment: {label_str}</b>", f"Range: {start}-{end}"]
+                        segment_df = df.iloc[start:end]
                         for col in viz_cols:
                             if col in df.columns:
-                                try:
-                                    s_idx = max(0, min(start, len(df)-1))
-                                    e_idx = max(0, min(end, len(df)-1))
-                                    val_start = df[col].iloc[s_idx]
-                                    val_end = df[col].iloc[e_idx]
+                                col_values = segment_df[col]
+                                if not col_values.empty:
+                                    val_start = col_values.iloc[0]
+                                    val_end = col_values.iloc[-1]
                                     diff = val_end - val_start
                                     hover_summary.append(f"Total {col} Δ: {diff:+.2f}")
-                                except Exception:
-                                    pass
                         
-                        # Create hover trace for the inner segment (start+1 to end-1)
+                        # Create hover trace for the selected segment's actual rows.
                         if viz_cols:
-                             s_inner = start + 1
-                             e_inner = end - 1
-                             s_safe = max(0, min(s_inner, len(df)-1))
-                             e_safe = max(0, min(e_inner, len(df)-1))
+                            visible_start = max(start, viz_start_idx)
+                            visible_end = min(end, viz_end_idx + 1)
+                            if visible_start < visible_end:
+                                # Anchor to the first visualized column
+                                anchor_col = viz_cols[0]
+                                x_path = df.index[visible_start:visible_end]
+                                y_path = display_df[anchor_col].reindex(x_path)
 
-                             if s_safe <= e_safe:
-                                 # Anchor to the first visualized column
-                                 anchor_col = viz_cols[0]
-                                 # Extract path
-                                 visible_start = max(s_safe, viz_start_idx)
-                                 visible_end = min(e_safe, viz_end_idx)
-                                 if visible_start > visible_end:
-                                     continue
-                                 x_path = df.index[visible_start : visible_end+1]
-                                 y_path = display_df[anchor_col].reindex(x_path)
-                                 
-                                 # Generate per-point hover text
-                                 segment_hover_texts = []
-                                 for i in range(visible_start, visible_end + 1):
-                                     point_lines = hover_summary.copy()
-                                     point_lines.append(f"<b>Index: {i}</b>")
-                                     
-                                     for col in viz_cols:
-                                         if col in df.columns:
-                                             val = df[col].iloc[i]
-                                             prev_val = df[col].iloc[i-1] if i > 0 else val
-                                             step_diff = val - prev_val
-                                             point_lines.append(f"{col}: {val:.2f} (Δ {step_diff:+.4f})")
-                                     
-                                     segment_hover_texts.append("<br>".join(point_lines))
+                                # Generate per-point hover text
+                                segment_hover_texts = []
+                                for i in range(visible_start, visible_end):
+                                    point_lines = hover_summary.copy()
+                                    point_lines.append(f"<b>Index: {i}</b>")
 
-                                 fig.add_trace(go.Scatter(
+                                    for col in viz_cols:
+                                        if col in df.columns:
+                                            val = df[col].iloc[i]
+                                            prev_val = df[col].iloc[i-1] if i > 0 else val
+                                            step_diff = val - prev_val
+                                            point_lines.append(f"{col}: {val:.2f} (Δ {step_diff:+.4f})")
+
+                                    segment_hover_texts.append("<br>".join(point_lines))
+
+                                fig.add_trace(go.Scatter(
                                     x=x_path,
                                     y=y_path,
                                     mode="lines",
@@ -187,7 +179,7 @@ def render_feature_visualization(df: pd.DataFrame, numeric_cols: list, viz_start
                                     hovertext=segment_hover_texts,
                                     showlegend=False,
                                     hoverlabel=dict(bgcolor="rgba(255, 255, 255, 0.9)")
-                                 ))
+                                ))
 
                         fig.add_vrect(
                             x0=start, 

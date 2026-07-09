@@ -25,9 +25,11 @@ def render_feature_calculator(df, numeric_cols, form_start, form_end, selected_o
             )
         
         with f_col2:
-            if calc_feature and form_start < form_end and int(form_end) < len(df):
+            if calc_feature and form_start < form_end and int(form_start) >= 0 and int(form_end) <= len(df):
                 # Calculate changes
-                calc_slice = df.iloc[int(form_start):int(form_end)+1][calc_feature]
+                calc_slice = df.iloc[int(form_start):int(form_end)][calc_feature]
+                if calc_slice.empty:
+                    return
                 
                 # Comprehensive Statistical Analysis
                 min_val = calc_slice.min()
