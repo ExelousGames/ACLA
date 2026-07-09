@@ -12,11 +12,11 @@
   "labels": {
     "EA": {
       "name": "Expert Adherence (Training)",
-      "characteristics": "a sub-150ms time gap at the end or is considered as Expert Adherence. or the end index is negative with negative slope. The time gap may spike in the middle of the section, but it should not be a sustained spike, the time gap at the end of the section should be less than 150ms."
+      "characteristics": "a sub-150ms absolute time gap or is considered as Expert Adherence. or the absoulte time gap is negative. The time gap may spike in the middle of the section, but it should not be a sustained spike, the absoulte time gap is negative should be less than 150ms and slope should be negative."
     },
     "MSP": {
       "name": "Mistake (Practice)",
-      "characteristics": "Technical driving error causing time loss or instability, not caused by a close opponent. A rising time gap supports MSP when the absolute gap is at least 150ms; and time-gap evidence should show mid-section spike or raising. If the section contains the new mistake action, label MSP even if the driver later time gap flattens. if the absoulte gap is less than 150ms, it will not be a pratice mistake"
+      "characteristics": "Technical driving error causing time loss or instability, not caused by a close opponent. A rising time gap supports MSP when the absolute gap is at least 150ms; and time-gap evidence should show mid-section spike or raising. this indicates a mistake made in the middle section. A decreasing time gap also can be MSP if the end value is still postive, the multi-point slope trend is still raising, and the mid section contains spikes or raising, label MSP even if the driver later time gap flattens. it shows the driver is not able to recover from the mistakes."
     },
     "MSR": {
       "name": "Mistake (Racing)",
@@ -24,7 +24,7 @@
     },
     "RM": {
       "name": "Recovery & Merge",
-      "characteristics": "Recovery or merge after a prior mistake. the slope is postive. Use RM when this section does not contain new spike in the middle. The time gap is flattened at the end, this means the slope is less than the starting slope."
+      "characteristics": "Recovery or merge after a prior mistake. Use RM when this section does not contain a new spike in the middle. The time gap can flatten at the end when the multi-point slope trend is raising then flattening or falling then flattening."
     },
     "PS": {
       "name": "Pit Stop",

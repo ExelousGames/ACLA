@@ -188,13 +188,16 @@ def render_detailed_labeling(
     numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
     default_cols = ["speed_kmh", "gas", "brake", "steer_angle"]
 
+    viz_col, manager_col = st.columns([3, 1])
+
     from .components.detailed_annotation_manager import render_annotation_manager
 
-    render_annotation_manager(df, session_id, selected_annotation_key, numeric_cols)
+    with manager_col:
+        render_annotation_manager(df, session_id, selected_annotation_key, numeric_cols)
 
-    from .components.detailed_subsegment_manager import render_subsegment_manager
+        from .components.detailed_subsegment_manager import render_subsegment_manager
 
-    render_subsegment_manager(df, session_id, selected_annotation_key)
+        render_subsegment_manager(df, session_id, selected_annotation_key)
 
     selected_annotation = st.session_state.get("detailed_annotation_selector")
     root_indices = _root_segment_indices(current_annotations)
@@ -212,65 +215,69 @@ def render_detailed_labeling(
         start, end = st.session_state.detailed_global_viz_range
         _set_visualization_range(start, end, max_index)
 
-    st.markdown("---")
-    st.caption("Visualization Range")
+    with viz_col:
+        viz_scroll = st.container(height=1200)
 
-    def update_global_inputs_from_slider():
-        start, end = st.session_state.detailed_global_viz_range
-        st.session_state.detailed_global_viz_start_input = start
-        st.session_state.detailed_global_viz_end_input = end
+    with viz_scroll:
+        st.markdown("---")
+        st.caption("Visualization Range")
 
-    def update_global_slider_range():
-        start = st.session_state.get("detailed_global_viz_start_input", 0)
-        end = st.session_state.get("detailed_global_viz_end_input", 0)
-        if start <= end:
-            st.session_state.detailed_global_viz_range = (start, end)
+        def update_global_inputs_from_slider():
+            start, end = st.session_state.detailed_global_viz_range
+            st.session_state.detailed_global_viz_start_input = start
+            st.session_state.detailed_global_viz_end_input = end
 
-    col_global_slider, col_global_inputs = st.columns([3, 1])
-    with col_global_slider:
-        viz_start_idx, viz_end_idx = st.slider(
-            "Select Range",
-            min_value=0,
-            max_value=max_index,
-            key="detailed_global_viz_range",
-            on_change=update_global_inputs_from_slider,
-            label_visibility="collapsed",
+        def update_global_slider_range():
+            start = st.session_state.get("detailed_global_viz_start_input", 0)
+            end = st.session_state.get("detailed_global_viz_end_input", 0)
+            if start <= end:
+                st.session_state.detailed_global_viz_range = (start, end)
+
+        col_global_slider, col_global_inputs = st.columns([3, 1])
+        with col_global_slider:
+            viz_start_idx, viz_end_idx = st.slider(
+                "Select Range",
+                min_value=0,
+                max_value=max_index,
+                key="detailed_global_viz_range",
+                on_change=update_global_inputs_from_slider,
+                label_visibility="collapsed",
+            )
+
+        with col_global_inputs:
+            c_input1, c_input2 = st.columns(2)
+            with c_input1:
+                st.number_input(
+                    "Start",
+                    min_value=0,
+                    max_value=max_index,
+                    key="detailed_global_viz_start_input",
+                    on_change=update_global_slider_range,
+                )
+            with c_input2:
+                st.number_input(
+                    "End",
+                    min_value=0,
+                    max_value=max_index,
+                    key="detailed_global_viz_end_input",
+                    on_change=update_global_slider_range,
+                )
+
+        from .components.detailed_feature_visualization import render_feature_visualization
+
+        render_feature_visualization(
+            df,
+            viz_start_idx,
+            viz_end_idx,
+            session_id,
+            numeric_cols,
+            default_cols,
         )
 
-    with col_global_inputs:
-        c_input1, c_input2 = st.columns(2)
-        with c_input1:
-            st.number_input(
-                "Start",
-                min_value=0,
-                max_value=max_index,
-                key="detailed_global_viz_start_input",
-                on_change=update_global_slider_range,
-            )
-        with c_input2:
-            st.number_input(
-                "End",
-                min_value=0,
-                max_value=max_index,
-                key="detailed_global_viz_end_input",
-                on_change=update_global_slider_range,
-            )
+        from .components.detailed_track_map import render_track_map
 
-    from .components.detailed_feature_visualization import render_feature_visualization
+        render_track_map(df, viz_start_idx, viz_end_idx, session_id)
 
-    render_feature_visualization(
-        df,
-        viz_start_idx,
-        viz_end_idx,
-        session_id,
-        numeric_cols,
-        default_cols,
-    )
+        from .components.detailed_list_view import render_list_view
 
-    from .components.detailed_track_map import render_track_map
-
-    render_track_map(df, viz_start_idx, viz_end_idx, session_id)
-
-    from .components.detailed_list_view import render_list_view
-
-    render_list_view(session_id, selected_annotation_key)
+        render_list_view(session_id, selected_annotation_key)

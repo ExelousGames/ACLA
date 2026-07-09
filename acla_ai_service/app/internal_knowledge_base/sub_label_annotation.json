@@ -67,7 +67,7 @@
     "RM": {
       "name": "Recovery & Merge",
       "type": "main",
-      "annotation_guideline": "How to identify sublabels for Recovery & Merge: The driver is recovering from a mistake. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; use its deterministic unit and trend-significance fields. A significant falling `total_change_direction` is strong RM evidence. A significant rising total change can still be RM only when the ending slope is lower than the starting slope, there is no spike or raising in the middle, and the action evidence shows recovery / merge rather than a new technical mistake. Tiny ms changes are not RM evidence. Step 2: Examine trajectory evidence to identify recovery - look for the driver line converging back toward the expert racing line from either side after a prior mistake/off-track, using near-line/toward-line verdict fields when available. Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating back toward the expert's speed profile. Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment contains the indices for entry/apex/exit). Do not infer RM from pit location alone.\n",
+      "annotation_guideline": "How to identify sublabels for Recovery & Merge: The driver is recovering from a mistake. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; use its deterministic unit and trend-significance fields. A significant falling `total_change_direction` is strong RM evidence. A significant rising total change can still be RM only when the multi-point slope trend is flattening, there is no spike or raising in the middle, and the action evidence shows recovery / merge rather than a new technical mistake. Tiny ms changes are not RM evidence. Step 2: Examine trajectory evidence to identify recovery - look for the driver line converging back toward the expert racing line from either side after a prior mistake/off-track, using near-line/toward-line verdict fields when available. Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating back toward the expert's speed profile. Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment contains the indices for entry/apex/exit). Do not infer RM from pit location alone.\n",
       "parent": null,
       "exclusive_with": [
         "EA",
@@ -99,7 +99,7 @@
     "RM1": {
       "name": "Recover from off-track",
       "type": "sub",
-      "description": "Across the recovery range after an off-track excursion, the trajectory offset peaks far **wider than expert** earlier in the segment, then shows **recovery** as the driver moves back toward the expert line while speed rebuilds toward pace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
+      "description": "Across the recovery range after an off-track excursion, the trajectory offset peaks far **wider than expert** earlier in the segment, then shows **recovery** as the driver moves back toward the expert line while speed rebuilds toward pace. Time gap should be lower at the end, or higher at the end only when the multi-point slope trend is flattening and there is no spike or raising in the middle.\n",
       "parent": "RM",
       "exclusive_with": []
     },
@@ -113,7 +113,7 @@
     "RM5": {
       "name": "Recover from speed gap over 20",
       "type": "sub",
-      "description": "Across the recovery range, the player is more than 20 km/h slower than the expert while the speed gap is closing. The speed delta shows **expert faster than player** with a **large gap section** (|Δ| > 20 km/h) that trends toward zero across the segment. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
+      "description": "Across the recovery range, the player is more than 20 km/h slower than the expert while the speed gap is closing. The speed delta shows **expert faster than player** with a **large gap section** (|Δ| > 20 km/h) that trends toward zero across the segment. Time gap should be lower at the end, or higher at the end only when the multi-point slope trend is flattening and there is no spike or raising in the middle.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM6"
@@ -122,7 +122,7 @@
     "RM6": {
       "name": "Recover from small speed gap under 20",
       "type": "sub",
-      "description": "Across the recovery range, the player is less than 20 km/h slower than the expert while the speed gap is closing. The speed delta shows **expert faster than player** without any **large gap section** (|Δ| stays ≤ 20 km/h). Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
+      "description": "Across the recovery range, the player is less than 20 km/h slower than the expert while the speed gap is closing. The speed delta shows **expert faster than player** without any **large gap section** (|Δ| stays ≤ 20 km/h). Time gap should be lower at the end, or higher at the end only when the multi-point slope trend is flattening and there is no spike or raising in the middle.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM5"
@@ -131,14 +131,14 @@
     "RM7": {
       "name": "Merge back to expert line",
       "type": "sub",
-      "description": "During exit or across the recovery range, the player trajectory converges toward the expert line. The trajectory offset shows **recovery** by trending back toward zero from either side, typically after corner exit. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
+      "description": "During exit or across the recovery range, the player trajectory converges toward the expert line. The trajectory offset shows **recovery** by trending back toward zero from either side, typically after corner exit. Time gap should be lower at the end, or higher at the end only when the multi-point slope trend is flattening and there is no spike or raising in the middle.\n",
       "parent": "RM",
       "exclusive_with": []
     },
     "RM8": {
       "name": "Accelerate earlier at exit",
       "type": "sub",
-      "description": "During exit recovery, the player's throttle **application onset is earlier than** the expert's, with a matching earlier **acceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
+      "description": "During exit recovery, the player's throttle **application onset is earlier than** the expert's, with a matching earlier **acceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the multi-point slope trend is flattening and there is no spike or raising in the middle.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM9"
@@ -147,7 +147,7 @@
     "RM9": {
       "name": "Accelerate later at exit",
       "type": "sub",
-      "description": "During exit recovery, the player's throttle **application onset is later than** the expert's, with a matching later **acceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
+      "description": "During exit recovery, the player's throttle **application onset is later than** the expert's, with a matching later **acceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the multi-point slope trend is flattening and there is no spike or raising in the middle.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM8"
@@ -156,7 +156,7 @@
     "RM10": {
       "name": "Brake earlier at entry",
       "type": "sub",
-      "description": "During entry recovery, the player's brake **initiation onset is earlier than** the expert's, with a matching earlier **deceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
+      "description": "During entry recovery, the player's brake **initiation onset is earlier than** the expert's, with a matching earlier **deceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the multi-point slope trend is flattening and there is no spike or raising in the middle.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM11"
@@ -165,7 +165,7 @@
     "RM11": {
       "name": "Brake later at entry",
       "type": "sub",
-      "description": "During entry recovery, the player's brake **initiation onset is later than** the expert's, with a matching later **deceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope is lower than the starting slope and there is no spike or raising in the middle.\n",
+      "description": "During entry recovery, the player's brake **initiation onset is later than** the expert's, with a matching later **deceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the multi-point slope trend is flattening and there is no spike or raising in the middle.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM10"

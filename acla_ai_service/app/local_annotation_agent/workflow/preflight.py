@@ -281,7 +281,7 @@ def build_preflight_context(
         *_run_tools(df, s, e, selected_tool_ids),
         *_run_queries(df, s, e, selected_query_specs, strict=strict_query_errors),
     ]
-    semantic_summaries = _preflight_semantic_summaries(tool_outputs)
+    semantic_summaries = _preflight_semantic_summaries(tool_outputs, flow=flow)
     tags = _dedupe(
         tag
         for tool_id, content in tool_outputs
@@ -1205,13 +1205,15 @@ def _prompt_block(
 
 def _preflight_semantic_summaries(
     tool_outputs: List[Tuple[str, Dict[str, Any]]],
+    *,
+    flow: str = "",
 ) -> List[str]:
     summaries = [
         *_preflight_pair_summaries(tool_outputs),
         *[
             summary
             for tool_id, content in tool_outputs
-            for summary in [_preflight_tool_summary(tool_id, content)]
+            for summary in [_preflight_tool_summary(tool_id, content, flow=flow)]
             if summary
         ],
     ]
@@ -1273,7 +1275,12 @@ def _query_result(content: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]
     return result if isinstance(result, dict) else None
 
 
-def _preflight_tool_summary(tool_id: str, content: Dict[str, Any]) -> Optional[str]:
+def _preflight_tool_summary(
+    tool_id: str,
+    content: Dict[str, Any],
+    *,
+    flow: str = "",
+) -> Optional[str]:
     if not tool_id.startswith("query_telemetry."):
         return _preflight_named_tool_summary(tool_id, content)
     if content.get("error"):
@@ -1287,7 +1294,7 @@ def _preflight_tool_summary(tool_id: str, content: Dict[str, Any]) -> Optional[s
     if query_id == "find_trend_runs":
         return _preflight_trend_runs_summary(tool_id, result, column)
     if query_id == "compute_slope":
-        return _preflight_slope_summary(tool_id, result, column)
+        return _preflight_slope_summary(tool_id, result, column, flow=flow)
     if query_id == "find_extremum":
         return _preflight_extremum_summary(tool_id, result, column, params)
     if query_id == "find_threshold_crossing":
@@ -1451,8 +1458,12 @@ def _preflight_gap_slope_summary(
     column: str,
     extra: Dict[str, Any],
     moves_toward_zero: Any,
+    *,
+    flow: str = "",
 ) -> str:
     if column == "expert_time_difference":
+        if flow == "lap":
+            return _preflight_lap_time_gap_slope_summary(extra)
         return _preflight_time_gap_slope_summary(extra)
 
     subject = "time gap" if column == "expert_time_difference" else "speed gap"
@@ -1537,6 +1548,93 @@ def _preflight_time_gap_slope_summary(extra: Dict[str, Any]) -> str:
         f"{_slope_comparison(end_slope, start_slope, slope_unit)}."
     )
     return " ".join(parts)
+
+
+def _preflight_lap_time_gap_slope_summary(extra: Dict[str, Any]) -> str:
+    unit = extra.get("unit")
+    raw_runs = extra.get("point_trend_runs")
+    runs = [
+        run for run in raw_runs
+        if isinstance(run, dict)
+    ] if isinstance(raw_runs, list) else []
+    if not runs:
+        return "Time gap slope summary is unavailable because no local runs were detected."
+
+    first = runs[0]
+    last = runs[-1]
+    start_iloc = first.get("start_iloc")
+    start_value = first.get("start_value")
+    end_iloc = last.get("end_iloc")
+    end_value = last.get("end_value")
+
+    parts = [
+        "Time gap starts at index "
+        f"{start_iloc} with value {_measurement(start_value, unit)}.",
+        "Time gap local slope trend: "
+        f"{_lap_time_gap_slope_trend_phrase(runs, extra.get('slope_unit'))}.",
+    ]
+    reversal_summary = _time_gap_reversal_summary(runs, unit)
+    if reversal_summary:
+        parts.append(reversal_summary)
+    parts.append(
+        "Time gap ends at index "
+        f"{end_iloc} with value {_measurement(end_value, unit)}, "
+        f"{_value_comparison(end_value, start_value, unit)}."
+    )
+    return " ".join(parts)
+
+
+def _lap_time_gap_slope_trend_phrase(
+    runs: List[Dict[str, Any]],
+    slope_unit: Any,
+) -> str:
+    slope_points = [
+        (
+            run.get("start_iloc"),
+            run.get("end_iloc"),
+            _as_number(run.get("slope")),
+        )
+        for run in runs
+    ]
+    slope_points = [
+        point for point in slope_points
+        if point[2] is not None
+    ]
+    if len(slope_points) < 3:
+        return (
+            "unavailable because at least 3 local slope points are required "
+            f"and only {len(slope_points)} were available"
+        )
+
+    changes = []
+    for before, after in zip(slope_points, slope_points[1:]):
+        change = _time_gap_slope_change(before[2], after[2])
+        changes.append(change or "steady")
+
+    trend = _lap_time_gap_slope_trend_label(changes)
+    point_text = "; ".join(
+        f"{start_iloc}-{end_iloc}: {_measurement(slope, slope_unit)}"
+        for start_iloc, end_iloc, slope in slope_points[:6]
+    )
+    if len(slope_points) > 6:
+        point_text += f"; {len(slope_points) - 6} more"
+    return f"{trend} based on {len(slope_points)} local slope points ({point_text})"
+
+
+def _lap_time_gap_slope_trend_label(changes: List[str]) -> str:
+    moving_changes = [change for change in changes if change != "steady"]
+    moving_directions = set(moving_changes)
+    if not moving_changes:
+        return "steady"
+    if moving_directions == {"raising"}:
+        if changes[-1] == "steady" and "raising" in changes:
+            return "raising then flattening"
+        return "raising"
+    if moving_directions == {"falling"}:
+        if changes[-1] == "steady" and "falling" in changes:
+            return "falling then flattening"
+        return "falling"
+    return "mixed"
 
 
 def _time_gap_slope_change_ranges(
@@ -1863,6 +1961,8 @@ def _preflight_slope_summary(
     tool_id: str,
     result: Dict[str, Any],
     column: str,
+    *,
+    flow: str = "",
 ) -> Optional[str]:
     extra = result.get("extra")
     if not isinstance(extra, dict):
@@ -1872,7 +1972,9 @@ def _preflight_slope_summary(
         zero.get("moves_toward_zero") if isinstance(zero, dict) else None
     )
     if column == "expert_time_difference":
-        return _preflight_gap_slope_summary(column, extra, moves_toward_zero)
+        return _preflight_gap_slope_summary(
+            column, extra, moves_toward_zero, flow=flow,
+        )
     if column == "speed_difference":
         return _preflight_gap_slope_summary(column, extra, moves_toward_zero)
     if column == "trajectory_offset":
