@@ -76,9 +76,13 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             st.session_state.detailed_annotation_selector = st.session_state.pending_detailed_selection
             del st.session_state.pending_detailed_selection
 
-        # Initialize the session state key if not present or invalid
-        if "detailed_annotation_selector" not in st.session_state or st.session_state.detailed_annotation_selector not in annotation_options:
+        # Initialize the session state key if not present.
+        if "detailed_annotation_selector" not in st.session_state:
             st.session_state.detailed_annotation_selector = annotation_options[0] if annotation_options else None
+        elif st.session_state.detailed_annotation_selector not in annotation_options:
+            raise ValueError(
+                "detailed_annotation_selector is not in the current annotation options"
+            )
         
         selected_option = st.selectbox(
             "Select Action / Annotation",
@@ -280,10 +284,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             """Delete the currently selected annotation, its children, and move to the next one."""
             if isinstance(selected_option, int) and selected_option < len(st.session_state.current_annotations):
                 root_options_before_delete = root_annotation_options()
-                try:
-                    selected_root_position = root_options_before_delete.index(selected_option)
-                except ValueError:
-                    selected_root_position = 0
+                selected_root_position = root_options_before_delete.index(selected_option)
 
                 # Remove the annotation
                 deleted_ann = st.session_state.current_annotations.pop(selected_option)

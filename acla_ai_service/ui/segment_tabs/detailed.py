@@ -111,9 +111,9 @@ def render_detailed_labeling(
             return f"{status} {session_id} | {count} segments"
         return f"{status} {session_id}"
 
-    index = 0
     previous_selection = st.session_state.get("detailed_session_selector")
-    if previous_selection in session_options:
+    index = None
+    if previous_selection is not None:
         index = session_options.index(previous_selection)
 
     st.subheader("Detailed Segment Annotation")
