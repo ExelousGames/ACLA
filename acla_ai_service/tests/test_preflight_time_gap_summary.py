@@ -82,43 +82,54 @@ def test_shared_time_gap_summary_keeps_existing_endpoint_slope_wording():
 def test_lap_time_gap_slope_trend_requires_three_points():
     summary = _preflight_lap_time_gap_slope_summary(_extra_with_slopes([1.0, 2.0]))
 
-    assert "at least 3 local slope points are required" in summary
+    assert (
+        "Time gap starting slope trend: unavailable because at least 3 local "
+        "slope points are required and only 2 were available."
+    ) in summary
+    assert (
+        "Time gap ending slope trend: unavailable because at least 3 local "
+        "slope points are required and only 2 were available."
+    ) in summary
     assert "Time gap ends at index 20" in summary
 
 
-def test_lap_time_gap_slope_trend_detects_raising():
+def test_lap_time_gap_starting_slope_trend_detects_raising():
     summary = _preflight_lap_time_gap_slope_summary(
-        _extra_with_slopes([1.0, 2.0, 3.0])
-    )
-
-    assert "Time gap local slope trend: raising based on 3 local slope points" in summary
-
-
-def test_lap_time_gap_slope_trend_detects_raising_then_flattening():
-    summary = _preflight_lap_time_gap_slope_summary(
-        _extra_with_slopes([1.0, 2.0, 2.1])
+        _extra_with_slopes([1.0, 2.0, 3.0, 3.0])
     )
 
     assert (
-        "Time gap local slope trend: raising then flattening "
-        "based on 3 local slope points"
+        "Time gap starting slope trend: raising based on the first 3 local slope points"
     ) in summary
 
 
-def test_lap_time_gap_slope_trend_detects_falling():
+def test_lap_time_gap_ending_slope_trend_detects_raising_then_flattening():
     summary = _preflight_lap_time_gap_slope_summary(
-        _extra_with_slopes([3.0, 2.0, 1.0])
-    )
-
-    assert "Time gap local slope trend: falling based on 3 local slope points" in summary
-
-
-def test_lap_time_gap_slope_trend_detects_falling_then_flattening():
-    summary = _preflight_lap_time_gap_slope_summary(
-        _extra_with_slopes([3.0, 1.0, 0.9])
+        _extra_with_slopes([4.0, 4.0, 1.0, 2.0, 2.1])
     )
 
     assert (
-        "Time gap local slope trend: falling then flattening "
-        "based on 3 local slope points"
+        "Time gap ending slope trend: raising then flattening "
+        "based on the last 3 local slope points"
+    ) in summary
+
+
+def test_lap_time_gap_starting_slope_trend_detects_falling():
+    summary = _preflight_lap_time_gap_slope_summary(
+        _extra_with_slopes([3.0, 2.0, 1.0, 1.0])
+    )
+
+    assert (
+        "Time gap starting slope trend: falling based on the first 3 local slope points"
+    ) in summary
+
+
+def test_lap_time_gap_ending_slope_trend_detects_falling_then_flattening():
+    summary = _preflight_lap_time_gap_slope_summary(
+        _extra_with_slopes([4.0, 4.0, 3.0, 1.0, 0.9])
+    )
+
+    assert (
+        "Time gap ending slope trend: falling then flattening "
+        "based on the last 3 local slope points"
     ) in summary

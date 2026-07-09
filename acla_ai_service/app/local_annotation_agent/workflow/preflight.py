@@ -1570,8 +1570,10 @@ def _preflight_lap_time_gap_slope_summary(extra: Dict[str, Any]) -> str:
     parts = [
         "Time gap starts at index "
         f"{start_iloc} with value {_measurement(start_value, unit)}.",
-        "Time gap local slope trend: "
-        f"{_lap_time_gap_slope_trend_phrase(runs, extra.get('slope_unit'))}.",
+        "Time gap starting slope trend: "
+        f"{_lap_time_gap_slope_trend_phrase(runs, extra.get('slope_unit'), 'start')}.",
+        "Time gap ending slope trend: "
+        f"{_lap_time_gap_slope_trend_phrase(runs, extra.get('slope_unit'), 'end')}.",
     ]
     reversal_summary = _time_gap_reversal_summary(runs, unit)
     if reversal_summary:
@@ -1587,6 +1589,7 @@ def _preflight_lap_time_gap_slope_summary(extra: Dict[str, Any]) -> str:
 def _lap_time_gap_slope_trend_phrase(
     runs: List[Dict[str, Any]],
     slope_unit: Any,
+    edge: str,
 ) -> str:
     slope_points = [
         (
@@ -1606,19 +1609,24 @@ def _lap_time_gap_slope_trend_phrase(
             f"and only {len(slope_points)} were available"
         )
 
+    if edge == "end":
+        trend_points = slope_points[-3:]
+        point_scope = "last 3"
+    else:
+        trend_points = slope_points[:3]
+        point_scope = "first 3"
+
     changes = []
-    for before, after in zip(slope_points, slope_points[1:]):
+    for before, after in zip(trend_points, trend_points[1:]):
         change = _time_gap_slope_change(before[2], after[2])
         changes.append(change or "steady")
 
     trend = _lap_time_gap_slope_trend_label(changes)
     point_text = "; ".join(
         f"{start_iloc}-{end_iloc}: {_measurement(slope, slope_unit)}"
-        for start_iloc, end_iloc, slope in slope_points[:6]
+        for start_iloc, end_iloc, slope in trend_points
     )
-    if len(slope_points) > 6:
-        point_text += f"; {len(slope_points) - 6} more"
-    return f"{trend} based on {len(slope_points)} local slope points ({point_text})"
+    return f"{trend} based on the {point_scope} local slope points ({point_text})"
 
 
 def _lap_time_gap_slope_trend_label(changes: List[str]) -> str:
