@@ -531,6 +531,10 @@ def _query_semantic_tags(
         tags.extend(
             _trajectory_similarity_tags(extra if isinstance(extra, dict) else {})
         )
+    elif query_id == "measure_point_similarity":
+        tags.extend(
+            _point_similarity_tags(extra if isinstance(extra, dict) else {})
+        )
     elif query_id == "find_threshold_crossing":
         tags.extend(_threshold_crossing_tags(result.get("samples")))
     elif query_id == "find_dips_on_main_slope":
@@ -797,6 +801,20 @@ def _trajectory_similarity_tags(extra: Dict[str, Any]) -> List[str]:
         tags.extend(["line separation increasing", "trajectory divergence"])
     if isinstance(mean_separation, (int, float)) and float(mean_separation) <= 0.5:
         tags.append("driver path closely follows expert")
+    return tags
+
+
+def _point_similarity_tags(extra: Dict[str, Any]) -> List[str]:
+    mean_similarity = extra.get("mean_similarity")
+    tags = [
+        "driver expert input similarity",
+        "input similarity score",
+    ]
+    if isinstance(mean_similarity, (int, float)):
+        if float(mean_similarity) >= 0.85:
+            tags.append("driver input closely follows expert")
+        elif float(mean_similarity) <= 0.65:
+            tags.append("driver input diverges from expert")
     return tags
 
 
@@ -1278,6 +1296,8 @@ def _preflight_tool_summary(tool_id: str, content: Dict[str, Any]) -> Optional[s
         return _preflight_dips_summary(tool_id, result, column)
     if query_id == "measure_trajectory_similarity":
         return _preflight_trajectory_similarity_summary(tool_id, result)
+    if query_id == "measure_point_similarity":
+        return _preflight_point_similarity_summary(tool_id, result, params)
     return None
 
 
@@ -1994,6 +2014,33 @@ def _preflight_trajectory_similarity_summary(
     )
 
 
+def _preflight_point_similarity_summary(
+    tool_id: str,
+    result: Dict[str, Any],
+    params: Dict[str, Any],
+) -> Optional[str]:
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    control = _control_similarity_name(params)
+    return (
+        f"Driver {control} similarity to expert: "
+        f"{_percentage(extra.get('mean_similarity'))}."
+    )
+
+
+def _control_similarity_name(params: Dict[str, Any]) -> str:
+    text = " ".join(
+        str(params.get(key) or "").lower()
+        for key in ("player_column", "expert_column")
+    )
+    if "brake" in text:
+        return "brake"
+    if "throttle" in text or "gas" in text:
+        return "throttle"
+    return "input"
+
+
 def _candidate_lines(
     candidates: List[Dict[str, Any]],
     candidate_label_ids: Sequence[str] = (),
@@ -2132,6 +2179,8 @@ def _query_analysis(content: Dict[str, Any]) -> Dict[str, Any]:
         return _dips_analysis(result)
     if query_id == "measure_trajectory_similarity":
         return _trajectory_similarity_analysis(result)
+    if query_id == "measure_point_similarity":
+        return _point_similarity_analysis(result, params)
     return _compact_query_result(result)
 
 
@@ -2348,6 +2397,21 @@ def _trajectory_similarity_analysis(result: Dict[str, Any]) -> Dict[str, Any]:
         "widening_fraction": extra.get("widening_fraction"),
         "longest_widening_run_steps": extra.get("longest_widening_run_steps"),
         "peak_line_separation": extra.get("peak_line_separation"),
+    }
+
+
+def _point_similarity_analysis(
+    result: Dict[str, Any],
+    params: Dict[str, Any],
+) -> Dict[str, Any]:
+    extra = result.get("extra")
+    if not isinstance(extra, dict):
+        return {}
+    return {
+        "player_column": params.get("player_column"),
+        "expert_column": params.get("expert_column"),
+        "mean_similarity": extra.get("mean_similarity"),
+        "similarity_percent": _percentage_value(extra.get("mean_similarity")),
     }
 
 
@@ -2590,6 +2654,17 @@ def _measurement(value: Any, unit: Any = None) -> str:
         text = str(value)
     unit_text = str(unit or "").strip()
     return f"{text} {unit_text}".strip()
+
+
+def _percentage(value: Any) -> str:
+    percent = _percentage_value(value)
+    return "unknown" if percent is None else f"{percent:g}%"
+
+
+def _percentage_value(value: Any) -> Optional[float]:
+    if not isinstance(value, (int, float)):
+        return None
+    return round(float(value) * 100.0, 1)
 
 
 def _humanize_value(value: Any) -> str:

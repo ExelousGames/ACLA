@@ -4037,6 +4037,79 @@ def _query_find_dips_on_main_slope(
     }
 
 
+def _control_similarity_scale(player: np.ndarray, expert: np.ndarray) -> float:
+    finite = np.concatenate([
+        player[np.isfinite(player)],
+        expert[np.isfinite(expert)],
+    ])
+    if len(finite) == 0:
+        return 1.0
+    max_abs = float(np.nanmax(np.abs(finite)))
+    if max_abs <= 1.5:
+        return 1.0
+    if max_abs <= 100.0:
+        return 100.0
+    return max(1.0, max_abs)
+
+
+def _query_measure_point_similarity(
+    df: pd.DataFrame, start_index: int, end_index: int,
+    player_column: str, expert_column: str, smoothing_window: int,
+) -> Optional[Dict[str, Any]]:
+    """Compare aligned driver/expert control traces as one similarity score."""
+    try:
+        window = int(smoothing_window)
+    except (TypeError, ValueError):
+        return None
+    if window < 1:
+        return None
+
+    segment = df.loc[int(start_index): int(end_index)]
+    player_raw = _resolve_column(player_column, segment)
+    expert_raw = _resolve_column(expert_column, segment)
+    if player_raw is None or expert_raw is None:
+        return None
+    if len(player_raw) == 0 or len(player_raw) != len(expert_raw):
+        return None
+
+    if window > 1:
+        player = (
+            pd.Series(player_raw)
+            .rolling(window=window, center=True, min_periods=1)
+            .median()
+            .to_numpy()
+        )
+        expert = (
+            pd.Series(expert_raw)
+            .rolling(window=window, center=True, min_periods=1)
+            .median()
+            .to_numpy()
+        )
+    else:
+        player = player_raw
+        expert = expert_raw
+
+    finite_mask = np.isfinite(player) & np.isfinite(expert)
+    if int(finite_mask.sum()) == 0:
+        return None
+
+    player_valid = player[finite_mask]
+    expert_valid = expert[finite_mask]
+    abs_delta = np.abs(player_valid - expert_valid)
+    scale = _control_similarity_scale(player_valid, expert_valid)
+    point_similarity = np.maximum(0.0, 1.0 - (abs_delta / scale))
+    mean_similarity = float(np.nanmean(point_similarity))
+    return {
+        "iloc": int(end_index),
+        "value": mean_similarity,
+        "extra": {
+            "smoothing_window": window,
+            "sample_count": int(len(point_similarity)),
+            "mean_similarity": mean_similarity,
+        },
+    }
+
+
 def _merge_trend_runs(runs: List[Dict[str, int]]) -> List[Dict[str, int]]:
     if not runs:
         return []
@@ -4540,6 +4613,24 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
             ),
         },
         "callable": _query_measure_trajectory_similarity,
+    },
+    {
+        "id": "measure_point_similarity",
+        "label": "Driver/expert point similarity",
+        "description": (
+            "Compare aligned driver and expert telemetry columns point by "
+            "point over <range>. Returns one aggregate similarity score."
+        ),
+        "params_schema": {
+            "range": _RANGE_PARAM_DESC,
+            "player_column": "Driver/player DataFrame column name",
+            "expert_column": "Expert DataFrame column name",
+            "smoothing_window": (
+                "int >= 1 - rolling-median width "
+                "(1=off, 3=light, 5=moderate)"
+            ),
+        },
+        "callable": _query_measure_point_similarity,
     },
     {
         "id": "find_threshold_crossing",

@@ -28,7 +28,7 @@
     },
     "PS": {
       "name": "Pit Stop",
-      "characteristics": "Pit-section procedure, including pit exit while accelerating back toward the racing surface. Require pit evidence from the selected section, splitter context, or overlap with the known Pit section. If Pit and an adjacent straight share a range, sustained pit-lane offset plus large player/expert speed separation or slow pit-exit acceleration is enough. Do not label PS from speed, offset, or acceleration alone in a normal racing section. Compatible with the circuit label; do not combine with EA, MSP, MSR, O, or OD."
+      "characteristics": "Pit-section procedure. Require pit evidence from the selected section, splitter context, or overlap with the known Pit section. If Pit and an adjacent straight share a range, sustained pit-lane offset plus large player/expert speed separation (over 50km/hm different) and trajectory deviation are required. do not combine with EA, MSP, MSR, O, or OD."
     },
     "O": {
       "name": "Successful Overtake",

@@ -44,6 +44,34 @@ LAP_PREFLIGHT_QUERY_SPECS = (
             "speed gap slope shape",
         ],
     },
+    {
+        "tool_id": "query_telemetry.measure_point_similarity.throttle",
+        "graph_id": "throttle",
+        "query_id": "measure_point_similarity",
+        "params": {
+            "player_column": "Physics_gas",
+            "expert_column": "expert_optimal_throttle",
+            "smoothing_window": 3,
+        },
+        "tags": [
+            "driver expert throttle similarity",
+            "throttle similarity score",
+        ],
+    },
+    {
+        "tool_id": "query_telemetry.measure_point_similarity.brake",
+        "graph_id": "brake",
+        "query_id": "measure_point_similarity",
+        "params": {
+            "player_column": "Physics_brake",
+            "expert_column": "expert_optimal_brake",
+            "smoothing_window": 3,
+        },
+        "tags": [
+            "driver expert brake similarity",
+            "brake similarity score",
+        ],
+    },
 )
 
 
