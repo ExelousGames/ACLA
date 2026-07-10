@@ -3,7 +3,7 @@
 Layout::
 
     app/skills/internal/annotation/             (this package — code + json data)
-      __init__.py, _registry.py, _query.py, _embedder.py, label_search.py
+      __init__.py, _registry.py, _query.py
       <name>.json                      (data — drop a json in, restart)
 
 Skills are single JSON files; no Python escape hatches. Filtering,
@@ -16,8 +16,8 @@ The ``skills`` singleton is a read-only document store with three verbs:
   * ``skills.find(path, **filters)``   — Mongo-style filter over a collection
   * ``skills.iter(path)``              — yield every document in a collection
 
-Semantic retrieval over the label catalog lives separately in
-:mod:`app.internal_knowledge_base.label_search` (``search_labels``).
+Annotation labels are evaluated from deterministic requirements in the JSON
+catalog; this package intentionally has no semantic label retriever.
 """
 
 from __future__ import annotations

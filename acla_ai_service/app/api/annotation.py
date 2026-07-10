@@ -7,8 +7,8 @@ Two routes:
 
 Both replace the in-process ``from app.local_annotation_agent.workflow import
 run_annotation`` import that the Streamlit researcher UI uses today.
-The streaming variant surfaces the agent's progress / VLM-token /
-step-event callbacks live so callers can render incremental output.
+The streaming variant surfaces deterministic calculation progress and the
+final result so callers can render incremental output.
 
 Telemetry is supplied directly by the request body. Annotation tools must
 only inspect the incoming segment/lap records, not reload a broader session
@@ -45,7 +45,7 @@ Flow = Literal["detailed", "lap"]
 class _ConfigBody(BaseModel):
     """Provider-neutral config forwarded to AnnotationPipelineConfig."""
 
-    provider_id: str = "claude_cli"
+    provider_id: str = "deterministic"
     model: str = ""
     max_new_tokens: int = 1500
     temperature: float = 0.7
@@ -128,14 +128,14 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
     """Run one annotation pass.
 
     Replaces the in-process `run_annotation(...)` call the Streamlit UI
-    makes today. Streaming progress is NOT surfaced here — clients that
-    need per-step VLM tokens should wait for `/annotation/run/stream`.
+    makes today. Calculation progress is available from
+    `/annotation/run/stream`.
     """
     df = _dataframe_from_records(req.telemetry_data, _telemetry_origin(req))
 
     config_body = req.config or _ConfigBody()
     config = AnnotationPipelineConfig(
-        provider_id=config_body.provider_id,
+        provider_id="deterministic",
         model=config_body.model,
         max_new_tokens=config_body.max_new_tokens,
         temperature=config_body.temperature,
@@ -221,15 +221,11 @@ def _sse(event_type: str, **payload: Any) -> str:
 async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse:
     """Streaming variant of `/annotation/run`.
 
-    Emits the same final result as the blocking endpoint, plus live events
-    as the agent executes. Useful for the Streamlit UI's live VLM-token
-    display (was driven by in-process callbacks pre-refactor).
+    Emits the same final result as the blocking endpoint, plus calculation
+    progress events.
 
     Event payloads:
       progress     {"node": str, "detail": str}
-      vlm_prompt   {"prompt": str, "stage": dict}
-      vlm_stream   {"chunk": str}            ← user-visible VLM tokens
-      vlm_reasoning{"chunk": str}            ← thinking blocks (claude only)
       step_event   {"summary": str, "stage": dict}
       done         {"flow": "detailed"|"lap", "provider_id": str, "result": dict}
       error        {"message": str, "error_type": str}
@@ -238,7 +234,7 @@ async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse
 
     config_body = req.config or _ConfigBody()
     config = AnnotationPipelineConfig(
-        provider_id=config_body.provider_id,
+        provider_id="deterministic",
         model=config_body.model,
         max_new_tokens=config_body.max_new_tokens,
         temperature=config_body.temperature,

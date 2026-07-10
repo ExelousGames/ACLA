@@ -39,35 +39,65 @@
       "characteristics": "Player holds position against a real close opponent. Require held defense with medium/high confidence, with the opponent threatening from behind or alongside but not ahead by exit. A close car without held-defense outcome is not OD; weak confidence needs trajectory support or an empty label list. Primary opponent, nearest distance, and relative trajectory identify the target; player trace can explain technique. Brief time-gap growth is allowed if position holds. Failed defense is MSR."
     }
   },
-  "prompt_rules": {
-    "required_behavior_parent_label_rule": "Every saved lap segment must include at least one behavior parent label from {{eligible_behavior_labels}}.If no required behavior parent label fits the whole split-section range, submit an empty label_ids array to drop the range instead of saving a parentless segment.",
-    "mode_exclusion_rules": {
-      "practice": "Pick at most one technical/recovery behavior parent from {MSP, RM}; MSP + RM is a contradiction. PS should not be combined with MSP.",
-      "racing": "Pick at most one opponent-aware behavior parent from {O, OD, MSR}; O + OD, O + MSR, and OD + MSR are contradictions. PS is allowed only for Pit-section procedure and should not be combined with O / OD / MSR."
-    },
-    "interaction_focus": {
-      "body": "This split range {{origin}}. For this work unit, identify the target car from the splitter evidence first, then do ONLY overtake offence / defense annotation: pick O for a successful attacking pass, OD for a held defense, or MSR for a failed attack / broken defense. If the opponent evidence is only close-following/draft context, or the opponent stays tucked directly behind without a lateral/alongside threat, submit `label_ids: []` rather than labeling normal practice-driving telemetry such as EA / MSP / RM. PS is still valid when the range has Pit-section procedure evidence.",
-      "target_heading": "Target-car hint from the splitter:"
-    },
-    "task_intro": "Annotate ONE lap range. The deterministic splitter handed you a fixed split-section boundary; if this is an opponent interaction window, the boundary is event-shaped and circuit sections are context only. Your job is to include the circuit id and one selected circuit_section id from splitter or preflight context, at least one required behavior parent label for any saved segment, and an optional matching sub-label.",
-    "preselected_section_context": "Splitter section context: `{{preselected_section_id}}` ({{preselected_section_name}}) from the opponent sub-segment; include it in `label_ids`.",
-    "selection_notes": [
-      "Preflight label candidates cover current-session main-label and sub-label choices.",
-      "When any main-label or sub-label signature fits only part of the range, omit that label or submit an empty `label_ids` array to drop the range."
-    ],
-    "payload_shape": {
-      "intro": "`payload_json` must be a JSON object of this shape:",
-      "reasoning_placeholder": "<4-6 sentence human-readable evidence note citing ilocs, values, trends, tool verdicts, range-fit rationale, and any ambiguous option rejected>",
-      "followup": [
-        "`label_ids` carries the circuit id, one selected circuit_section id, and your main / sub-label picks together. Every saved segment must contain at least one of {{eligible_behavior_labels}}; otherwise submit an empty `label_ids` array as the valid 'drop this section' signal. The runner reports back the split section range."
+  "selection_requirements": {
+    "EA": {
+      "enabled": true,
+      "any_of": [
+        {"all_of": [
+          {"fact": "time_gap.total_change_abs_ms", "operator": "lt", "value": 50},
+          {"fact": "time_gap.ending_direction", "operator": "in", "value": ["falling", "flat"]}
+        ]},
+        {"all_of": [
+          {"fact": "time_gap.has_spike", "operator": "eq", "value": false},
+          {"fact": "brake.similarity", "operator": "eq", "value": 1.0},
+          {"fact": "throttle.similarity", "operator": "eq", "value": 1.0}
+        ]}
       ]
     },
-    "hard_rules": [
-      "Do not invent label IDs; circuit / circuit_section ids must come from splitter or preflight context, every other id from Preflight label candidates.",
-      "When `locate_circuit_section` reports ambiguity, choose exactly one circuit_section id using splitter context and behavior evidence. Do not include multiple same-range circuit_section ids."
-    ],
-    "whole_range_label_rule": "Every behavior and sub-label must describe the final annotation range as a whole. Do not attach a label because it matches only one phase, one apex moment, or a short slice inside the range; omit that label or leave it for detailed child sub-segment annotation.",
-    "segment_action_model_rule": "Evaluate the saved lap parent segment as a complete action group over the final iloc range. Driver/expert turning / trajectory, brake, and throttle comparison is required for segment completeness at entry or exit; do not treat complete action-group evidence as optional sub-label evidence.",
-    "reasoning_note_rule": "Write `reasoning` as a longer human annotation note: 4-6 concise sentences covering the final iloc range, selected label fit, key telemetry values or trends, deterministic tool verdicts, and why competing labels were omitted. When two plausible labels or circuit sections are ambiguous, name the option that was not selected and state why it was rejected. For time-delta prose, say `losing time run` and avoid ranking/adjective phrasing."
+    "MSP": {
+      "enabled": true,
+      "any_of": [
+        {"all_of": [
+          {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
+          {"fact": "time_gap.significant", "operator": "eq", "value": true},
+          {"fact": "time_gap.has_spike", "operator": "eq", "value": true}
+        ]},
+        {"all_of": [
+          {"fact": "time_gap.end_ms", "operator": "gt", "value": 0},
+          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "rising"},
+          {"fact": "time_gap.has_spike", "operator": "eq", "value": true}
+        ]}
+      ]
+    },
+    "MSR": {"enabled": true, "any_of": [{"all_of": [
+      {"fact": "opponent.outcome", "operator": "in", "value": ["failed_attack", "broken_defense"]},
+      {"fact": "opponent.confidence_level", "operator": "in", "value": ["medium", "high"]}
+    ]}]},
+    "RM": {
+      "enabled": true,
+      "any_of": [
+        {"all_of": [
+          {"fact": "time_gap.direction", "operator": "eq", "value": "falling"},
+          {"fact": "time_gap.significant", "operator": "eq", "value": true}
+        ]},
+        {"all_of": [
+          {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
+          {"fact": "time_gap.has_spike", "operator": "eq", "value": false},
+          {"fact": "time_gap.slope_shape", "operator": "in", "value": ["slope_decreasing_over_section", "reversing_to_falling_within_section"]},
+          {"fact": "trajectory.converging", "operator": "eq", "value": true}
+        ]}
+      ]
+    },
+    "PS": {"enabled": true, "any_of": [{"all_of": [
+      {"fact": "section.is_pit", "operator": "eq", "value": true}
+    ]}]},
+    "O": {"enabled": true, "any_of": [{"all_of": [
+      {"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"},
+      {"fact": "opponent.confidence_level", "operator": "in", "value": ["medium", "high"]}
+    ]}]},
+    "OD": {"enabled": true, "any_of": [{"all_of": [
+      {"fact": "opponent.outcome", "operator": "eq", "value": "held_defense"},
+      {"fact": "opponent.confidence_level", "operator": "in", "value": ["medium", "high"]}
+    ]}]}
   }
 }

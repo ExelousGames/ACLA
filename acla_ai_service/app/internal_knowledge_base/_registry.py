@@ -3,7 +3,7 @@
 Layout::
 
     app/skills/internal/annotation/             (this package — code + json data)
-      __init__.py, _registry.py, _query.py, _embedder.py
+      __init__.py, _registry.py, _query.py
       <name>.json                      (skill definitions — drop a json in, restart)
 
 The registry is a read-only document store. It exposes three verbs,
@@ -13,8 +13,7 @@ uniform across every skill:
   * ``find(path, **filters)``   — Mongo-style filter over a collection at *path*
   * ``iter(path)``              — yield every document in a collection
 
-Semantic retrieval over the label catalog is a separate concern — see
-:mod:`app.internal_knowledge_base.label_search`.
+Label selection is handled by deterministic requirements in the catalog.
 """
 
 from __future__ import annotations

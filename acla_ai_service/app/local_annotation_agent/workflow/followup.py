@@ -31,7 +31,7 @@ from app.annotation_providers.tool_surface import (
 )
 from app.shared.contracts import AgentRequest, NoopCallbacks, ProviderConfig
 from app.shared.labels import LABEL_MAPPING
-from app.internal_knowledge_base.label_search import get_doc
+from app.internal_knowledge_base.label_lookup import get_label
 
 LOGGER = logging.getLogger(__name__)
 
@@ -117,7 +117,7 @@ def _build_system_prompt(
 ) -> str:
     parent_label_blocks: List[str] = []
     for pid in parent_main_labels:
-        entry = get_doc(pid)
+        entry = get_label(pid)
         if entry is None:
             parent_label_blocks.append(f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})")
             continue
@@ -147,9 +147,8 @@ def _build_system_prompt(
     return (
         "You are a racing telemetry analyst answering follow-up questions "
         "about a prior annotation pass. Your job is to help the user "
-        "understand the prior proposals so they can edit the skill YAMLs "
-        "(label catalog descriptions / annotation guidelines / per-graph "
-        "`how_to_analyze` blocks). You are NOT producing new proposals — "
+        "understand the prior deterministic proposals so they can edit the "
+        "label requirements or calculation thresholds. You are NOT producing new proposals — "
         "no submit tool is available.\n"
         "\n"
         "### Parent segment\n"
@@ -170,8 +169,8 @@ def _build_system_prompt(
         "to re-inspect when the question demands fresh evidence.\n"
         "- Use the prior proposal labels and parent-label context already "
         "shown in this prompt when explaining label fit.\n"
-        "- When asked 'why didn't label X fit?', explain which predicate "
-        "failed against the telemetry evidence available to you.\n"
+        "- When asked 'why didn't label X fit?', explain which deterministic "
+        "requirement predicate failed against the telemetry evidence.\n"
         "- If the prior proposal was wrong, say so directly.\n"
         "- When the user is debugging the skill text, suggest concrete "
         "edits — the specific wording that was ambiguous or missing.\n"

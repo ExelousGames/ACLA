@@ -1,10 +1,10 @@
 {
   "_skill": {
     "name": "sub_label_annotation",
-    "description": "LLM-facing label taxonomy (main, sub, segment_type only). Labels keep hierarchy through parent fields, plus exclusive_with constraints and annotation_guideline here; their search/display descriptions are sourced from lap_annotation.labels characteristics. Sub-label and segment-type descriptions live here and carry inline VLM / deterministic preflight predicates so hybrid (vector + BM25) similarity over observation text shortlists matching labels. Circuit and circuit_section labels are NOT in this catalog — the LLM picks them via the `get_circuit_id` / `locate_circuit_section` tools (geometry from app/shared/circuit_sections.py), not by search.\n",
+    "description": "Deterministic label taxonomy for main, sub, and segment-type labels. Machine-readable selection requirements are evaluated against normalized telemetry facts; hierarchy and mutual exclusions remain in the label records. Circuit and circuit-section labels are supplied by deterministic circuit geometry.\n",
     "when_to_use": [
       "Drilling into a parent-labelled section to pick sub-labels (detailed flow).",
-      "Preflight label candidates from hybrid similarity over VLM observations.",
+      "Deterministic label selection from calculated telemetry facts.",
       "Validating label hierarchy (parent presence, mutual exclusion)."
     ],
     "tags": [
@@ -12,22 +12,120 @@
       "taxonomy",
       "hierarchy",
       "telemetry",
-      "embedding"
+      "deterministic"
     ]
   },
   "range_fit_rule": "Whole-range label rule for detailed annotation: every proposed label must describe the proposed child range as a whole. Do not propose a label because it matches only one phase, one apex moment, or a short slice inside the child range; shrink the child range so the label fits throughout, submit a separate proposal for the smaller range, or omit that label.\n",
   "detailed_flow_rules": [
-    "Audit the full parent range before submitting. Do not stop after the first supported episode; submit every strongly supported child proposal whose label from Preflight label candidates fits its own tight range.",
+    "Audit the full parent range and return every calculated child proposal whose requirements fit its own tight range.",
     "For labels describing a local event such as an onset, release, peak, spike, dip, or short instability, fit the child range to that event and its immediate supporting context. When the selected label description names supporting signs, and the reasoning uses one of those signs as evidence, include that supporting sign as part of the child segment range. A later reversal or recovery is not disqualifying unless the label definition requires sustained behavior.",
     "Already discovered sub-segments only block exact duplicate proposals. They do not mark their ilocs as handled, and they do not suppress different labels that overlap or nest inside them.",
-    "Segment-type, terrain, altitude, circuit-section, and technique labels describe different aspects of the same telemetry. One category does not explain away or cover another category when separate evidence supports a label from Preflight label candidates."
+    "Segment-type, terrain, altitude, circuit-section, and technique labels describe different aspects of the same telemetry. One category does not suppress another when separate calculated facts satisfy both labels."
   ],
+  "selection_requirements": {
+    "RM1": {"enabled": true, "any_of": [{"all_of": [{"fact": "trajectory.peak_abs_offset_m", "operator": "gt", "value": 1.0}, {"fact": "trajectory.converging", "operator": "eq", "value": true}]}]},
+    "PS1": {"enabled": true, "any_of": [{"all_of": [{"fact": "section.is_pit", "operator": "eq", "value": true}, {"fact": "throttle.application_onset_relation", "operator": "exists", "value": true}]}]},
+    "RM5": {"enabled": true, "any_of": [{"all_of": [{"fact": "speed.expert_faster", "operator": "eq", "value": true}, {"fact": "speed.gap_peak_abs_kmh", "operator": "gt", "value": 20}, {"fact": "speed.gap_closing", "operator": "eq", "value": true}]}]},
+    "RM6": {"enabled": true, "any_of": [{"all_of": [{"fact": "speed.expert_faster", "operator": "eq", "value": true}, {"fact": "speed.gap_peak_abs_kmh", "operator": "lte", "value": 20}, {"fact": "speed.gap_closing", "operator": "eq", "value": true}]}]},
+    "RM7": {"enabled": true, "any_of": [{"all_of": [{"fact": "trajectory.converging", "operator": "eq", "value": true}]}]},
+    "RM8": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "throttle.application_onset_relation", "operator": "eq", "value": "earlier"}]}]},
+    "RM9": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "throttle.application_onset_relation", "operator": "eq", "value": "later"}]}]},
+    "RM10": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "brake.application_onset_relation", "operator": "eq", "value": "earlier"}]}]},
+    "RM11": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "brake.application_onset_relation", "operator": "eq", "value": "later"}]}]},
+
+    "MSP1": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_onset_relation", "operator": "eq", "value": "later"}, {"fact": "brake.application_end_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP5": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_onset_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP13": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.peak_relation", "operator": "eq", "value": "lower"}]}]},
+    "MSP22": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.peak_relation", "operator": "eq", "value": "higher"}]}]},
+    "MSP14": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.application_end_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP24": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.application_end_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP17": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.release_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.peak_ratio", "operator": "between", "value": [0.9, 1.1]}, {"fact": "brake.release_end_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP18": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.release_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.release_end_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP27": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_end_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.release_onset_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP28": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_end_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.release_onset_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP31": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.hold_length_relation", "operator": "eq", "value": "shorter"}]}]},
+    "MSP32": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.hold_length_relation", "operator": "eq", "value": "longer"}]}]},
+    "MSP34": {"enabled": true, "any_of": [{"all_of": [{"fact": "controls.overlap_count", "operator": "gt", "value": 3}, {"fact": "controls.expert_overlap_count", "operator": "eq", "value": 0}]}]},
+    "MSP15": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "throttle.application_end_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP25": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "throttle.application_end_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP19": {"enabled": false, "any_of": []},
+    "MSP26": {"enabled": false, "any_of": []},
+    "MSP20": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP21": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP23": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.release_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "throttle.release_end_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP29": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.release_onset_relation", "operator": "eq", "value": "later"}, {"fact": "brake.application_end_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP30": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.release_onset_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP2": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.in_relation", "operator": "eq", "value": "later"}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
+    "MSP6": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.in_relation", "operator": "eq", "value": "earlier"}, {"fact": "trajectory.position", "operator": "eq", "value": "tighter"}]}]},
+    "MSP3": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.apex_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP7": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.apex_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP4": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.exit_relation", "operator": "eq", "value": "earlier"}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
+    "MSP8": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.exit_relation", "operator": "eq", "value": "later"}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
+    "MSP9": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "tighter"}]}]},
+    "MSP33": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
+    "MSP10": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.apex", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
+    "MSP11": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "tighter"}]}]},
+    "MSP16": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
+    "MSP41": {"enabled": true, "any_of": [{"all_of": [{"fact": "trajectory.peak_abs_offset_m", "operator": "gt", "value": 3.0}]}]},
+    "MSP50": {"enabled": false, "any_of": []},
+    "MSP51": {"enabled": false, "any_of": []},
+    "MSP52": {"enabled": false, "any_of": []},
+    "MSP42": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "grip.over_limit", "operator": "eq", "value": true}]}, {"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "grip.sustained_low", "operator": "eq", "value": true}]}]},
+    "MSP43": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "grip.over_limit", "operator": "eq", "value": true}]}, {"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "grip.sustained_low", "operator": "eq", "value": true}]}]},
+    "MSP44": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "balance.oversteer", "operator": "eq", "value": true}]}]},
+    "MSP45": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "balance.understeer", "operator": "eq", "value": true}]}]},
+    "MSP46": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "balance.oversteer", "operator": "eq", "value": true}]}]},
+    "MSP47": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "balance.understeer", "operator": "eq", "value": true}]}]},
+    "MSP35": {"enabled": true, "any_of": [{"all_of": [{"fact": "gear.upshift_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP36": {"enabled": true, "any_of": [{"all_of": [{"fact": "gear.upshift_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP37": {"enabled": true, "any_of": [{"all_of": [{"fact": "gear.downshift_relation", "operator": "eq", "value": "earlier"}]}]},
+    "MSP38": {"enabled": true, "any_of": [{"all_of": [{"fact": "gear.downshift_relation", "operator": "eq", "value": "later"}]}]},
+    "MSP48": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "gear.exit_relation", "operator": "eq", "value": "lower"}]}]},
+    "MSP49": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "gear.exit_relation", "operator": "eq", "value": "higher"}]}]},
+
+    "MSR1": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": false}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": false}]}]},
+    "MSR2": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "broken_defense"}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": false}]}]},
+    "MSR3": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
+    "MSR4": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "segment.shape_key", "operator": "eq", "value": "in_corner"}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
+    "MSR5": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "opponent.side_swap", "operator": "eq", "value": true}]}]},
+    "MSR6": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "segment.shape_key", "operator": "eq", "value": "straight"}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": true}]}]},
+    "MSR7": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "broken_defense"}, {"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
+    "MSR8": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "broken_defense"}, {"fact": "segment.shape_key", "operator": "eq", "value": "straight"}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": true}]}]},
+    "O1": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"}, {"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
+    "O3": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"}, {"fact": "segment.shape_key", "operator": "eq", "value": "in_corner"}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
+    "O4": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"}, {"fact": "opponent.side_swap", "operator": "eq", "value": true}]}]},
+    "O5": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"}, {"fact": "segment.shape_key", "operator": "eq", "value": "straight"}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": true}]}]},
+    "OD1": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "held_defense"}, {"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
+    "OD2": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "held_defense"}, {"fact": "segment.shape_key", "operator": "eq", "value": "straight"}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": true}]}]},
+
+    "ST1": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "in_corner"}]}]},
+    "ST2": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "straight"}]}]},
+    "ST3": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "approach_to_corner"}]}]},
+    "ST4": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "exit_corner_to_straight"}]}]},
+    "ST5": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "between_consecutive_corners"}]}]},
+    "ST6": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "consecutive_corners_no_straight"}]}]},
+    "ST7": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "constant_radius"}]}]},
+    "ST8": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "increasing_radius"}]}]},
+    "ST9": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "decreasing_radius"}]}]},
+    "ST10": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "hairpin"}]}]},
+    "ST11": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "chicane_or_esses"}]}]},
+    "ST12": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.entry.trend", "operator": "eq", "value": "uphill"}]}]},
+    "ST13": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.entry.trend", "operator": "eq", "value": "level"}]}]},
+    "ST14": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.entry.trend", "operator": "eq", "value": "downhill"}]}]},
+    "ST15": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.apex.trend", "operator": "eq", "value": "uphill"}]}]},
+    "ST16": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.apex.trend", "operator": "eq", "value": "level"}]}]},
+    "ST17": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.apex.trend", "operator": "eq", "value": "downhill"}]}]},
+    "ST18": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.exit.trend", "operator": "eq", "value": "uphill"}]}]},
+    "ST19": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.exit.trend", "operator": "eq", "value": "level"}]}]},
+    "ST20": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.exit.trend", "operator": "eq", "value": "downhill"}]}]}
+  },
   "labels": {
     "O": {
       "name": "Successful Overtake",
       "type": "main",
-      "annotation_guideline": "How to identify the sublabels for Successful Overtake: Step 1 — Confirm the pass. Call `classify_opponent_interaction(start, end)`. The result MUST have `outcome: pass_completed` with medium/high confidence. If not, do NOT propose any O sub-label — use the classifier outcome to decide OD, MSR, or no-O. Quote opponent-relative preflight phrases when available, such as opponent started ahead of the driver, driver ended ahead of the opponent, gap flipped from opponent ahead to driver ahead, driver drew alongside the opponent, opponent was on the driver's left/right side, gap to the opponent shrank, driver gained relative speed, driver accelerated better than the opponent, and driver slowed less than the opponent. Step 2 — Pick the technique sub-label from opponent/player position facts, not solo-lap comparisons:\n  - O1 (late-brake attack at corner entry): driver drew alongside the opponent under braking and ended ahead.\n  - O3 (outside-line sweep through a corner): opponent was on the driver's inside side while the driver stayed outside and ended ahead.\n  - O4 (switchback): opponent and driver swapped sides through the corner and the gap flipped from opponent ahead to driver ahead.\n  - O5 (slipstream on a straight): gap to the opponent shrank on the straight, driver gained relative speed, and the gap flipped from opponent ahead to driver ahead.\n",
+      "annotation_guideline": "The deterministic interaction calculation must return `pass_completed` with medium/high confidence. Technique sub-label requirements then use the calculated braking phase, segment shape, side-by-side state, side swap, and gap-shrink facts.\n",
       "parent": null,
+      "selection_requirements_ref": "lap_annotation.selection_requirements.O",
       "exclusive_with": [
         "OD",
         "PS"
@@ -36,8 +134,9 @@
     "OD": {
       "name": "Successful Defense",
       "type": "main",
-      "annotation_guideline": "How to identify the sublabels for Successful Defense: Step 1 — Confirm the defense. Call `classify_opponent_interaction(start, end)`. Require `outcome: held_defense` with medium/high confidence. If the classifier does not return held defense with enough confidence, the section is not OD. Quote opponent-relative preflight phrases when available, such as driver started ahead of the opponent, driver ended ahead of the opponent, opponent drew alongside the driver, opponent was on the driver's left/right side, gap to the opponent shrank, driver gained relative speed, driver accelerated better than the opponent, and driver slowed more/less than the opponent. Step 2 — Pick the technique sub-label by how the opponent/player positions evolved, not solo-lap comparisons:\n  - OD1 (inside cover at corner entry): opponent drew alongside the driver near the corner, but driver ended ahead of the opponent.\n  - OD2 (defensive lift on a straight): gap to the opponent shrank on the straight, but the driver still ended ahead of the opponent.\n",
+      "annotation_guideline": "The deterministic interaction calculation must return `held_defense` with medium/high confidence. Technique sub-label requirements then use the calculated braking phase, segment shape, side-by-side state, and gap-shrink facts.\n",
       "parent": null,
+      "selection_requirements_ref": "lap_annotation.selection_requirements.OD",
       "exclusive_with": [
         "O",
         "PS"
@@ -48,6 +147,7 @@
       "type": "main",
       "annotation_guideline": "How to identify the sublabels for Expert Adherence (Training): The driver is following or cleanly outperforming the optimal racing line and speed profile closely. A time gap below 200ms is not a mistake by itself; when the rest of the evidence is clean, treat it as Expert Adherence. Nothing needs to be labeled right now.\n",
       "parent": null,
+      "selection_requirements_ref": "lap_annotation.selection_requirements.EA",
       "exclusive_with": [
         "MSP",
         "MSR",
@@ -60,6 +160,7 @@
       "type": "main",
       "annotation_guideline": "How to identify the sublabels for Pit Stop: Use PS for Pit-section procedure. First verify the segment position overlaps the Pit section, either directly or through a Pit-vs-adjacent-straight ambiguity supported by sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration. Add PS1 only when the PS segment specifically shows pit-exit / rejoin behavior: accelerating out of Pit and merging back toward the racing line.\n",
       "parent": null,
+      "selection_requirements_ref": "lap_annotation.selection_requirements.PS",
       "exclusive_with": [
         "O"
       ]
@@ -69,6 +170,7 @@
       "type": "main",
       "annotation_guideline": "How to identify sublabels for Recovery & Merge: The driver is recovering from a mistake. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; use its deterministic unit and trend-significance fields. A significant falling `total_change_direction` is strong RM evidence. A significant rising total change can still be RM only when the ending slope trend is flattening, there is no spike or raising in the middle, and the action evidence shows recovery / merge rather than a new technical mistake. Tiny ms changes are not RM evidence. Step 2: Examine trajectory evidence to identify recovery - look for the driver line converging back toward the expert racing line from either side after a prior mistake/off-track, using near-line/toward-line verdict fields when available. Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating back toward the expert's speed profile. Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment contains the indices for entry/apex/exit). Do not infer RM from pit location alone.\n",
       "parent": null,
+      "selection_requirements_ref": "lap_annotation.selection_requirements.RM",
       "exclusive_with": [
         "EA",
         "PS"
@@ -79,6 +181,7 @@
       "type": "main",
       "annotation_guideline": "How to identify sublabels for Practice Mistake: The driver has committed a technical driving error. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; require `total_change_direction: \"rising\"`, `total_change_is_label_significant: true`, and at least 200ms of time-gap evidence for time-loss evidence. Mistake time-gap evidence is the opposite of RM: the time gap increased at the end, with a spike or raising in between. Cite `slope_shape` when the loss-rate slope changes over the section. Do not describe tiny positive ms changes as strong, and do not treat a time gap below 200ms as a mistake by itself. Do not use MSP when the trajectory is converging back toward the expert racing line and speed/throttle show a merge or rejoin recovery with the RM time-gap pattern. Step 2: Examine the differences in 'throttle' between the player and the expert to identify when the driver applied too much or too little throttle, or got on/off the throttle at the wrong time. Step 3: Examine the differences in 'brake' between the player and the expert to identify if the driver braked too hard or too softly, or got on/off the brake at the wrong time. Step 4: Examine the 'trajectory_balance' graph to find understeer (blue / front-slip dominant) or oversteer (red / rear-slip dominant), which could lead to lower speed. Step 5: For entry/apex/exit shape questions, use trajectory evidence with the 'compute_expert_phases' tool on the same step (it produces a 'phase_indices' attachment contains the phase indices for entry/apex/exit). Step 6: Before committing in opponent-capable data, call `classify_opponent_interaction(start, end)` — if it returns `failed_attack` or `broken_defense`, the section is MSR, not MSP.\n",
       "parent": null,
+      "selection_requirements_ref": "lap_annotation.selection_requirements.MSP",
       "exclusive_with": [
         "EA",
         "PS",
@@ -90,6 +193,7 @@
       "type": "main",
       "annotation_guideline": "How to identify sublabels for Racing Mistake: Step 1 — Confirm the adverse racing outcome. Require `outcome: failed_attack` or `outcome: broken_defense` with medium/high confidence. If not, the section is not MSR. Step 2 — Pick the outcome family from opponent-relative facts:\n  - Failed overtake attempt: opponent started ahead of the driver, the driver attacked or drew alongside the opponent, and the driver did not end ahead.\n  - Defense broken: driver started ahead of the opponent, the opponent drew alongside the driver, and the gap flipped from driver ahead to opponent ahead.\nStep 3 — Pick the specific subtype from opponent/player position and motion facts. Prefer a specific subtype over the generic label when the facts identify the attempt type:\n  - MSR3 (failed O1 late-brake attack at entry): driver drew alongside the opponent under braking but did not end ahead.\n  - MSR4 (failed O3 outside-line sweep): opponent was on the driver's inside side while the driver stayed outside, but the driver did not end ahead.\n  - MSR5 (failed O4 switchback): opponent and driver swapped sides through the corner, but the gap did not flip to driver ahead.\n  - MSR6 (failed O5 slipstream gain): gap to the opponent shrank on a straight and driver gained relative speed, but the gap did not flip to driver ahead.\n  - MSR7 (broken OD1 inside cover): opponent drew alongside the driver near the corner and the gap flipped from driver ahead to opponent ahead.\n  - MSR8 (broken OD2 defensive lift): gap to the opponent shrank on a straight and the gap flipped from driver ahead to opponent ahead.\n  - MSR1 / MSR2: only when the attempt-type signature cannot be identified from the opponent-relative facts.\n",
       "parent": null,
+      "selection_requirements_ref": "lap_annotation.selection_requirements.MSR",
       "exclusive_with": [
         "EA",
         "PS",

@@ -106,14 +106,7 @@ class Settings(BaseSettings):
     # 512-token max.
     racing_kb_max_chunk_chars: int = 2000
 
-    # Annotation skill registry (hybrid index over discovery headers).
-    # Same bge-large default as the racing KB — the index is tiny (one
-    # vector per skill) so the heavier model is paid for once at startup.
-    annotation_skill_embedding_model: str = "BAAI/bge-large-en-v1.5"
-    annotation_skill_query_prefix: str = "Represent this sentence for searching relevant passages: "
-    # Hybrid retrieval — vector and BM25 sub-retrievers per registry,
-    # combined by QueryFusionRetriever in `relative_score` mode (the
-    # user-selected fusion strategy).
+    # Hybrid retrieval settings used by the external racing knowledge base.
     hybrid_fusion_mode: str = "relative_score"
     # How many candidates each sub-retriever pulls before fusion. Wider
     # than the final top_k so the fusion has overlap to work with.

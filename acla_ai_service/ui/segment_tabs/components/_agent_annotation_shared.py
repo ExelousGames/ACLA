@@ -342,7 +342,7 @@ def execute_pipeline_run(
     live = LiveVlmOutput()
     live.attach_progress(progress_bar, status_text)
 
-    spinner_msg = f"Running sub-segment discovery with {provider_id}..."
+    spinner_msg = "Calculating deterministic sub-segment labels..."
     try:
         with st.spinner(spinner_msg):
             result = run_annotation(
@@ -521,7 +521,7 @@ def render_staged_review(
 
     st.markdown("##### Review & Edit Before Saving")
     st.caption(
-        "Each row is one AI-discovered sub-segment. Labels sharing the "
+        "Each row is one calculated sub-segment. Labels sharing the "
         "same range are grouped. Edit ranges/labels per row, or remove "
         "a row by clearing its labels."
     )

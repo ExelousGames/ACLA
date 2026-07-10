@@ -46,7 +46,8 @@ gguf
 timm
 langgraph>=0.2.0
 langchain-core>=0.3.0
-# LlamaIndex powers hybrid (vector + BM25) retrieval in app/skills/.
+# LlamaIndex powers hybrid (vector + BM25) retrieval for the external racing
+# knowledge base. Annotation label selection does not use these packages.
 # llama-index-core ships the VectorStoreIndex + QueryFusionRetriever;
 # the two sibling packages add the BGE embedding wrapper and the BM25
 # retriever respectively.
@@ -73,4 +74,3 @@ soundfile>=0.12.1
 # faster-whisper is the streaming STT backend; runs on CPU or GPU.
 pipecat-ai[silero,openai,websocket]>=0.0.50
 faster-whisper>=1.0.3
-

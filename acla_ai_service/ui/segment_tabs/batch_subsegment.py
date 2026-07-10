@@ -4,7 +4,6 @@ import traceback
 import copy
 import pandas as pd
 
-from .components.annotation_provider_controls import render_annotation_provider_config
 from .shared import (
     build_segment,
     get_available_sessions,
@@ -14,27 +13,16 @@ from .shared import (
     LABEL_CATEGORIES,
     LABEL_MAPPING,
 )
-from app.local_annotation_agent import ClaudeUsageExhausted
-
-
-_USAGE_EXHAUSTED_WARNING = (
-    "⚠️ Claude usage is exhausted (Max-plan quota / 5-hour window / "
-    "credit balance). Batch halted — try again later."
-)
+from app.local_annotation_agent.workflow import AnnotationPipelineConfig
 _MIN_DISCOVERED_CHILD_LENGTH = 3
 
 
 def _render_provider_config(key_prefix: str, *, default_temperature: float, default_max_new_tokens: int):
-    return render_annotation_provider_config(
-        key_prefix=key_prefix,
-        default_temperature=default_temperature,
-        default_max_new_tokens=default_max_new_tokens,
-        default_tool_budget=3,
-    )
+    return AnnotationPipelineConfig(provider_id="deterministic")
 
 
 def _persist_children_for_parent(parent, result, session_id, selected_annotation_key, df):
-    """Auto-save AI-discovered children under ``parent``."""
+    """Auto-save deterministically discovered children under ``parent``."""
     from .components._agent_annotation_shared import (
         group_proposals_by_range,
         with_parent_label_ids,
@@ -241,11 +229,11 @@ def _load_batch_segment_input(
 
 
 def render_batch_auto_annotation(df, selected_annotation_key):
-    """Batch sub-segment discovery powered by a selected AI provider."""
+    """Batch deterministic sub-segment discovery."""
     st.header("Batch Auto-Annotation (Sub-Segment Discovery)")
     st.write(
         "For each parent segment in the selected range, run the **Sub-Segment Discovery** "
-        "agent with the selected AI provider and auto-save discovered children."
+        "deterministic requirements and auto-save discovered children."
     )
 
     if not st.session_state.get("current_annotations"):
@@ -330,7 +318,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     if not run_clicked:
         return
     if config is None:
-        st.error("No annotation AI provider is available.")
+        st.error("Deterministic annotation configuration is unavailable.")
         return
 
     try:
@@ -338,12 +326,9 @@ def render_batch_auto_annotation(df, selected_annotation_key):
     except ImportError as e:
         st.error(
             f"Missing dependency: {e}\n\n"
-            "Install with: `pip install langgraph langchain-core` "
-            "(or the selected provider's SDK, e.g. `claude-agent-sdk`)."
+            "Install the AI service requirements before running calculations."
         )
         return
-
-    provider_id = config.provider_id
 
     main_label_set = set(LABEL_CATEGORIES.get("Main Labels", []))
     st.session_state["batch_agent_stop"] = False
@@ -360,7 +345,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
             del logs[: len(logs) - 1000]
         _flush_log()
 
-    log(f"Starting batch sub-segment discovery: {total} parent(s), provider={provider_id}")
+    log(f"Starting deterministic sub-segment discovery: {total} parent(s)")
     if delete_existing_subsegments:
         deleted = _delete_session_subsegments(session_id, selected_annotation_key)
         log(f"Deleted {deleted} existing sub-segment(s) from this session.")
@@ -402,7 +387,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
         status_text.markdown(
             f"**Parent #{idx}** _({i + 1}/{total})_ — [{p_start}, {p_end}], "
-            f"running {provider_id} pipeline..."
+            "calculating labels..."
         )
         log(f"Parent #{idx}: running [{p_start}, {p_end}] "
             f"main_labels={parent_main_labels or '∅'}")
@@ -418,11 +403,6 @@ def render_batch_auto_annotation(df, selected_annotation_key):
                 existing_children=children_by_parent.get(parent.id, []),
                 config=config,
             )
-        except ClaudeUsageExhausted as e:
-            log(f"Parent #{idx}: HALTED — Claude usage exhausted: {e}")
-            st.warning(_USAGE_EXHAUSTED_WARNING)
-            progress_bar.progress((i + 1) / total)
-            break
         except Exception as e:
             error_parents += 1
             log(f"Parent #{idx}: ERROR — {e}")

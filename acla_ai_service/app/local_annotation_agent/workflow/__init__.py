@@ -8,7 +8,7 @@ Public annotation pipeline entry — the only function the UI calls.
         LapAnnotationResult,
     )
 
-    config = AnnotationPipelineConfig(provider_id="claude_cli", ...)
+    config = AnnotationPipelineConfig(provider_id="deterministic", ...)
 
     result = run_annotation(
         flow="detailed",                # "detailed" or "lap"
@@ -22,14 +22,8 @@ Public annotation pipeline entry — the only function the UI calls.
         circuit_id=..., existing_section_annotations=[...],
     )
 
-Internally:
-    1. Picks the flow module (annotation.flows.detailed / .lap).
-    2. ``flow.build_request(...)`` translates domain intent into AgentRequest.
-    3. ``run_agent(request)`` dispatches through the annotation provider registry.
-    4. ``flow.parse(response, ...)`` decodes raw text into a typed result.
-
-Each layer has one job. The agent box never sees racing types; the flows
-never see runners; the UI never sees the box.
+Label selection is deterministic. Provider configuration is accepted for UI
+compatibility but is not consulted by the calculation path.
 """
 
 from __future__ import annotations
@@ -38,25 +32,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
-# Side-effect imports — register annotation-domain formatters and helpers.
-# The local provider now uses an explicit harness, so there are no graph
-# agents to register here.
-from app.local_annotation_agent.workflow import formatters  # noqa: F401
-from app.local_annotation_agent.workflow import agents      # noqa: F401
-from app.local_annotation_agent.workflow import tools       # noqa: F401
-
-from app.local_annotation_agent import AgentRequest, AgentResponse, run_agent
 from app.shared.contracts import (
     AgentCallbacks,
     DEFAULT_AGENT_MAX_ITERATIONS,
     DEFAULT_AGENT_MAX_TURNS_PER_ITERATION,
-    NoopCallbacks,
     ProviderConfig,
 )
-from app.annotation_providers.registry import get_annotation_provider
-from app.local_annotation_agent.workflow.flows import detailed as detailed_flow
-from app.local_annotation_agent.workflow.flows import lap as lap_flow
-from app.local_annotation_agent.workflow.followup import run_claude_followup
+from app.local_annotation_agent.workflow.deterministic import (
+    calculate_detailed_annotation,
+    calculate_lap_annotation,
+)
 from app.local_annotation_agent.workflow.results import (
     AnnotationResult,
     LapAnnotationResult,
@@ -70,7 +55,7 @@ Flow = Literal["detailed", "lap"]
 class AnnotationPipelineConfig:
     """Provider-neutral config the annotation UI/API passes."""
 
-    provider_id: str = "claude_cli"
+    provider_id: str = "deterministic"
     model: str = ""
     max_iterations: int = DEFAULT_AGENT_MAX_ITERATIONS
     max_new_tokens: int = 1500
@@ -78,6 +63,16 @@ class AnnotationPipelineConfig:
     provider_options: Dict[str, Any] = field(default_factory=dict)
 
     def to_provider_config(self) -> ProviderConfig:
+        if self.provider_id == "deterministic":
+            return ProviderConfig(
+                provider_id="deterministic",
+                model="",
+                max_new_tokens=self.max_new_tokens,
+                temperature=self.temperature,
+                provider_options=dict(self.provider_options),
+            )
+        from app.annotation_providers.registry import get_annotation_provider
+
         provider = get_annotation_provider(self.provider_id)
         model = self.model or provider.default_model_id()
         options = dict(provider.option_defaults())
@@ -171,13 +166,11 @@ def run_annotation(
     opponent_interaction: Optional[dict] = None,
     existing_section_annotations: Optional[List[dict]] = None,
 ) -> Union[AnnotationResult, LapAnnotationResult]:
-    """Run one annotation across the chosen flow and annotation provider.
+    """Run deterministic annotation for the requested flow.
 
-    The dispatch is data: pick the flow module, build the request, run
-    the agent, parse the response. No provider-specific logic
-    here — that's resolved inside the agent runner.
+    ``config`` remains accepted so existing UI call sites do not need a data
+    migration; provider fields are ignored during label calculation.
     """
-    config = config or AnnotationPipelineConfig()
     callbacks = _bag_from_kwargs(
         progress_callback,
         vlm_prompt_callback,
@@ -185,19 +178,15 @@ def run_annotation(
         vlm_reasoning_callback,
         step_event_callback,
     )
-    provider_config = config.to_provider_config()
-
     if flow == "detailed":
         parent_start = _require(start_index, "start_index")
         parent_end = _require(end_index, "end_index")
         return _run_detailed(
-            provider_id=config.provider_id,
             df=_bounded_df(df, parent_start, parent_end),
             parent_start=parent_start,
             parent_end=parent_end,
             parent_main_labels=list(parent_main_labels or []),
             existing_children=list(existing_children or []),
-            provider_config=provider_config,
             callbacks=callbacks,
             session_id=session_id,
         )
@@ -207,7 +196,6 @@ def run_annotation(
         required_section_start = _require(section_start, "section_start")
         required_section_end = _require(section_end, "section_end")
         return _run_lap(
-            provider_id=config.provider_id,
             df=_bounded_df(df, required_section_start, required_section_end),
             lap_start=required_lap_start,
             lap_end=required_lap_end,
@@ -218,7 +206,6 @@ def run_annotation(
             section_split_basis=section_split_basis,
             opponent_interaction=opponent_interaction,
             existing_section_annotations=list(existing_section_annotations or []),
-            provider_config=provider_config,
             callbacks=callbacks,
             session_id=session_id,
         )
@@ -227,38 +214,27 @@ def run_annotation(
 
 def _run_detailed(
     *,
-    provider_id: str,
     df,
     parent_start: int,
     parent_end: int,
     parent_main_labels: List[str],
     existing_children: List[dict],
-    provider_config: ProviderConfig,
     callbacks: AgentCallbacks,
     session_id: str,
 ) -> AnnotationResult:
-    request = detailed_flow.build_request(
-        provider_id=provider_id,
+    if callbacks.progress:
+        callbacks.progress("deterministic", "Calculating detailed label requirements")
+    return calculate_detailed_annotation(
         df=df,
         parent_start=parent_start,
         parent_end=parent_end,
         parent_main_labels=parent_main_labels,
         existing_children=existing_children,
-        config=provider_config,
-        callbacks=callbacks,
-        session_id=session_id,
-    )
-    response = run_agent(request)
-    return detailed_flow.parse(
-        response,
-        parent_start=parent_start,
-        parent_end=parent_end,
     )
 
 
 def _run_lap(
     *,
-    provider_id: str,
     df,
     lap_start: int,
     lap_end: int,
@@ -269,32 +245,13 @@ def _run_lap(
     section_split_basis: Optional[str],
     opponent_interaction: Optional[dict],
     existing_section_annotations: List[dict],
-    provider_config: ProviderConfig,
     callbacks: AgentCallbacks,
     session_id: str,
 ) -> LapAnnotationResult:
-    request = lap_flow.build_request(
-        provider_id=provider_id,
+    if callbacks.progress:
+        callbacks.progress("deterministic", "Calculating lap label requirements")
+    return calculate_lap_annotation(
         df=df,
-        lap_start=lap_start,
-        lap_end=lap_end,
-        section_id=section_id,
-        section_start=section_start,
-        section_end=section_end,
-        circuit_id=circuit_id,
-        section_split_basis=section_split_basis,
-        opponent_interaction=opponent_interaction,
-        existing_section_annotations=existing_section_annotations,
-        config=provider_config,
-        callbacks=callbacks,
-        session_id=session_id,
-    )
-    response = run_agent(request)
-    # The LLM picks the circuit + circuit_section labels itself (via the
-    # get_circuit_id / locate_circuit_section tools), so result.label_ids
-    # already carries them — no deterministic post-merge here.
-    return lap_flow.parse(
-        response,
         lap_start=lap_start,
         lap_end=lap_end,
         section_id=section_id,
@@ -310,6 +267,12 @@ def _require(value, name: str):
     if value is None:
         raise ValueError(f"run_annotation: required argument '{name}' is missing")
     return value
+
+
+def run_claude_followup(**kwargs):
+    """Load the optional provider-backed follow-up path only when requested."""
+    from app.local_annotation_agent.workflow.followup import run_claude_followup as _run
+    return _run(**kwargs)
 
 
 __all__ = [

@@ -155,24 +155,6 @@ EXPOSED_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
     },
 ]
 
-PREFLIGHT_ONLY_TOOL_NAMES = {
-    "recommend_tools",
-    "run_annotation_tool",
-    "search_annotation_guidance",
-    "list_graphs",
-    "get_circuit_id",
-    "get_graph_guidance",
-    "query_telemetry",
-    "compute_expert_phases",
-    "measure_segment_shape",
-    "locate_circuit_section",
-    "find_nearest_opponent",
-    "classify_opponent_interaction",
-    "query_opponent_trajectory",
-    "search_labels",
-}
-
-
 def annotation_tool_names() -> List[str]:
     return [str(defn["name"]) for defn in EXPOSED_TOOL_DEFINITIONS]
 
@@ -198,7 +180,7 @@ def _normalise_extra_tool_def(spec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def tool_agent_excluded_tools(request: AgentRequest | None = None) -> set[str]:
-    excluded = set(PREFLIGHT_ONLY_TOOL_NAMES)
+    excluded: set[str] = set()
     if request is not None:
         excluded.update(
             str(name)
@@ -513,15 +495,8 @@ def build_tool_agent_system_prompt(request: AgentRequest) -> str:
         "You are an analyst with access to deterministic telemetry analysis "
         "tools. "
         "Your task is described in the user message. "
-        "Use the upfront preflight data included in that user message as the "
-        "primary evidence package. Run deterministic analysis tools only when "
-        "a concrete numeric check is needed, then submit a final structured "
-        "result.\n\n"
-        "The user message includes a Required Upfront Annotation Preflight "
-        "block. Treat it as the primary analysis package: deterministic tool "
-        "outputs, tool output tags, and semantic label candidates were already "
-        "computed before this session. Use deterministic analysis tools only "
-        "for targeted numeric checks. "
+        "Use deterministic analysis tools for concrete numeric checks, then "
+        "submit a final structured result. "
         "Finish with "
         "`submit_result`.\n\n"
         "A label is valid only when its definition fits the whole range it "

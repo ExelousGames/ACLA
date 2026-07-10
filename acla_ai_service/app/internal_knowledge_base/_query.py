@@ -11,7 +11,7 @@ Dotted paths into the document tree::
 
     sub_label_annotation.labels.MSP1
     sub_label_annotation.labels.MSP1.description
-    lap_annotation.prompt_rules.mode_submit_rules.practice
+    lap_annotation.selection_requirements.EA
     graph_analysis.cross_graph_guidelines.brake_and_speed
 
 Path segments containing dots can be escaped with a backslash::

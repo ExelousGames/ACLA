@@ -23,6 +23,7 @@ plain values for equality, ``{"$in": [...]}`` etc. for operators.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
@@ -59,26 +60,45 @@ def _lap_main_descriptions() -> Dict[str, str]:
 
 def _label_docs() -> List[Dict[str, Any]]:
     lap_descriptions = _lap_main_descriptions()
+    lap_requirements = skills.get("lap_annotation.selection_requirements", {})
+    sub_requirements = skills.get("sub_label_annotation.selection_requirements", {})
     docs: List[Dict[str, Any]] = []
     for doc in skills.iter("sub_label_annotation.labels"):
         next_doc = dict(doc)
+        label_id = str(next_doc.get("id") or "")
         if next_doc.get("type") == "main":
-            description = lap_descriptions.get(str(next_doc.get("id") or ""))
+            description = lap_descriptions.get(label_id)
             if description:
                 next_doc["description"] = description
+            requirements = lap_requirements.get(label_id) if isinstance(lap_requirements, dict) else None
+            if isinstance(requirements, dict):
+                next_doc["selection_requirements"] = dict(requirements)
+                next_doc["selection_requirements_ref"] = (
+                    f"lap_annotation.selection_requirements.{label_id}"
+                )
+        else:
+            requirements = sub_requirements.get(label_id) if isinstance(sub_requirements, dict) else None
+            if isinstance(requirements, dict):
+                next_doc["selection_requirements"] = dict(requirements)
         docs.append(next_doc)
     return docs
 
 
+@lru_cache(maxsize=1)
+def _label_index() -> Dict[str, Dict[str, Any]]:
+    return {
+        str(doc["id"]): doc
+        for doc in [*_label_docs(), *_circuit_section_docs()]
+    }
+
+
 def _all_docs() -> List[Dict[str, Any]]:
-    return _label_docs() + _circuit_section_docs()
+    return [dict(doc) for doc in _label_index().values()]
 
 
 def get_label(label_id: str) -> Optional[Dict[str, Any]]:
-    for doc in _all_docs():
-        if doc.get("id") == label_id:
-            return doc
-    return None
+    doc = _label_index().get(label_id)
+    return dict(doc) if doc is not None else None
 
 
 def find_labels(**filters: Any) -> List[Dict[str, Any]]:

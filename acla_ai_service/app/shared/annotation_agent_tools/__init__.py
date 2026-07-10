@@ -754,8 +754,8 @@ def measure_segment_shape(
 
     Uses expert-anchored curvature phases for base shape and corner-shape
     refinements, then reads z-position angle over entry / apex / exit windows.
-    It reports shape keys and measurements only; preflight performs any
-    label-catalog wording or retrieval.
+    It reports shape keys and measurements only; deterministic catalog
+    requirements map those facts to labels.
     """
     from app.local_annotation_agent.evaluators import PipelineAttachment
 
@@ -1518,8 +1518,8 @@ def classify_opponent_interaction(
 
     Computes opponent-relative position math over ``[start_index, end_index)``
     and returns the opponent interaction outcome and evidence. Mapping that
-    outcome to annotation labels is handled by the annotation preflight / label
-    search layer, not by this tool.
+    outcome to annotation labels is handled by deterministic catalog
+    requirements, not by this tool.
 
     Signed longitudinal and lateral gaps are computed from the driver's local
     path / heading. The classifier intentionally reads only positional
@@ -3207,7 +3207,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "and optional `corner_shape_refinement` shape keys, plus entry / "
             "apex / exit altitude slope-angle summaries. It does not output "
             "labels; "
-            "preflight or label search maps shape keys to annotation wording. "
+            "deterministic requirements map shape keys to annotation labels. "
             "Use this whenever deciding segment shape or reading corner "
             "altitude trends; uphill, level, and downhill are classified from "
             "slope angle, not raw height difference."
@@ -3292,7 +3292,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "cars can be relevant even when they never become side-by-side, "
             "but `close_following` does not imply an overtake or defense "
             "outcome by itself. Use this as deterministic interaction "
-            "evidence; annotation preflight/search maps outcomes to label "
+            "evidence; deterministic requirements map outcomes to label "
             "vocabulary."
         ),
         "callable": classify_opponent_interaction,

@@ -29,12 +29,6 @@ from app.shared.contracts import (
     ProviderConfig,
     StepEvent,
 )
-from app.annotation_providers.registry import (
-    get_annotation_provider,
-    validate_provider_ready,
-)
-from app.annotation_providers.claude_runner import ClaudeUsageExhausted
-
 BackendConfig = ProviderConfig
 
 __all__ = [
@@ -52,6 +46,11 @@ __all__ = [
 
 def run_agent(request: AgentRequest) -> AgentResponse:
     """Dispatch to the selected annotation provider."""
+    from app.annotation_providers.registry import (
+        get_annotation_provider,
+        validate_provider_ready,
+    )
+
     provider = get_annotation_provider(request.provider_id)
     validate_provider_ready(provider)
 
@@ -67,3 +66,10 @@ def run_agent(request: AgentRequest) -> AgentResponse:
     raise ValueError(
         f"unknown annotation provider runner {provider.runner!r} for {provider.id!r}"
     )
+
+
+def __getattr__(name: str):
+    if name == "ClaudeUsageExhausted":
+        from app.annotation_providers.claude_runner import ClaudeUsageExhausted
+        return ClaudeUsageExhausted
+    raise AttributeError(name)
