@@ -9,9 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, TensorDataset, IterableDataset
+from torch.utils.data import DataLoader
 from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
-from sklearn.model_selection import train_test_split
 import joblib
 from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Iterator
@@ -20,7 +19,6 @@ import base64
 import json
 import logging
 import shutil
-import random
 import hashlib
 import copy
 from collections import defaultdict
@@ -298,154 +296,6 @@ class SegmentClassifierService:
         
         return "val" if hash_normalized < val_split else "train"
 
-    def _segment_group_key(self, segment_dict: Dict[str, Any]) -> str:
-        """Return the Static_track split key for an annotated segment."""
-        value = segment_dict.get("Static_track")
-        if value not in (None, ""):
-            value = str(value).strip()
-            if value:
-                return value
-
-        telemetry_data = segment_dict.get("telemetry_data")
-        if isinstance(telemetry_data, list) and telemetry_data:
-            first_row = telemetry_data[0]
-            if isinstance(first_row, dict):
-                value = first_row.get("Static_track")
-                if value not in (None, ""):
-                    value = str(value).strip()
-                    if value:
-                        return value
-
-        for row in telemetry_data or []:
-            if not isinstance(row, dict):
-                continue
-            value = row.get("Static_track")
-            if value not in (None, ""):
-                value = str(value).strip()
-                if value:
-                    return value
-
-        try:
-            fallback_data = json.dumps(segment_dict, sort_keys=True, default=str)
-        except Exception:
-            fallback_data = str(segment_dict)
-        fallback_hash = hashlib.md5(fallback_data.encode()).hexdigest()
-        return f"segment:{fallback_hash}"
-
-    def _segment_session_key(self, segment_dict: Dict[str, Any]) -> str:
-        """Return the session-level split key within a Static_track group."""
-        for key in ("session_id", "sessionId", "sessionID", "chunk_index", "chunk_id"):
-            value = segment_dict.get(key)
-            if value not in (None, ""):
-                value = str(value).strip()
-                if value:
-                    return value
-
-        telemetry_data = segment_dict.get("telemetry_data")
-        for row in telemetry_data or []:
-            if not isinstance(row, dict):
-                continue
-            for key in ("session_id", "sessionId", "sessionID", "chunk_index", "chunk_id"):
-                value = row.get(key)
-                if value not in (None, ""):
-                    value = str(value).strip()
-                    if value:
-                        return value
-
-        try:
-            fallback_data = json.dumps(segment_dict, sort_keys=True, default=str)
-        except Exception:
-            fallback_data = str(segment_dict)
-        fallback_hash = hashlib.md5(fallback_data.encode()).hexdigest()
-        return f"segment:{fallback_hash}"
-
-    def _rebalance_track_label_splits(
-        self,
-        track_key: str,
-        session_keys: List[str],
-        session_splits: Dict[str, str],
-        session_label_counts: Dict[str, Dict[Any, int]],
-    ) -> None:
-        """Move sessions within a track so splittable labels appear in train and val."""
-        if len(session_keys) < 2:
-            return
-
-        label_to_sessions = defaultdict(list)
-        for session_key in session_keys:
-            for label, count in session_label_counts[session_key].items():
-                if count > 0:
-                    label_to_sessions[label].append(session_key)
-
-        splittable_labels = sorted(
-            label
-            for label, label_session_keys in label_to_sessions.items()
-            if len(label_session_keys) > 1
-        )
-        if not splittable_labels:
-            return
-
-        splittable_label_set = set(splittable_labels)
-        max_moves = len(session_keys) * len(splittable_labels) * 2
-
-        for _ in range(max_moves):
-            train_counts = defaultdict(int)
-            val_counts = defaultdict(int)
-            split_session_counts = defaultdict(int)
-
-            for session_key in session_keys:
-                split = session_splits[session_key]
-                split_session_counts[split] += 1
-                target_counts = val_counts if split == "val" else train_counts
-                for label, count in session_label_counts[session_key].items():
-                    target_counts[label] += count
-
-            move = None
-            for label in splittable_labels:
-                if train_counts[label] == 0:
-                    source_split = "val"
-                    target_split = "train"
-                    source_counts = val_counts
-                elif val_counts[label] == 0:
-                    source_split = "train"
-                    target_split = "val"
-                    source_counts = train_counts
-                else:
-                    continue
-
-                candidates = [
-                    session_key
-                    for session_key in label_to_sessions[label]
-                    if session_splits[session_key] == source_split
-                ]
-                valid_candidates = []
-                for session_key in candidates:
-                    if split_session_counts[source_split] <= 1:
-                        continue
-                    candidate_counts = session_label_counts[session_key]
-                    would_empty_label = any(
-                        moved_label in splittable_label_set
-                        and source_counts[moved_label] - moved_count <= 0
-                        for moved_label, moved_count in candidate_counts.items()
-                    )
-                    if not would_empty_label:
-                        valid_candidates.append(session_key)
-
-                if valid_candidates:
-                    move = min(
-                        valid_candidates,
-                        key=lambda session_key: hashlib.md5(
-                            f"{track_key}:{label}:{session_key}:{target_split}".encode()
-                        ).hexdigest(),
-                    )
-                    move = (move, target_split)
-                    break
-
-            if move is None:
-                break
-
-            session_key, target_split = move
-            session_splits[session_key] = target_split
-
     async def prepare_training_data(
         self,
         source_cache_key: str,
@@ -453,45 +303,29 @@ class SegmentClassifierService:
         val_cache_key: str,
         val_split: float = 0.2,
         chunk_size: int = 100,
-        session_ids: Optional[List[str]] = None,
     ):
         """
-        Splits data from source_cache_key into train and val keys within each track.
-        Uses two-pass approach:
-        1. First pass: collect valid segments and group sessions by Static_track
-        2. Second pass: assign sessions within each track using deterministic hashing,
-           then rebalance labels that can appear in both train and validation
+        Splits annotated segments from source_cache_key into train and val keys.
+        Uses deterministic segment-level hashing so preparation does not depend
+        on session boundaries.
         """
-        selected_session_ids = {str(session_id) for session_id in session_ids} if session_ids is not None else None
         print(f"Preparing training data: splitting {source_cache_key} into {train_cache_key} and {val_cache_key}")
-        if selected_session_ids is not None:
-            print(f"Filtering source annotation chunks to {len(selected_session_ids)} selected session(s)")
-        print("Using deterministic per-track, per-label session splitting to avoid same-session leakage...")
+        print("Using deterministic segment-level train/validation splitting...")
         
         # Clear existing keys
         for key in [train_cache_key, val_cache_key]:
             self.store.clear_cache(key)
         
         # PASS 1: Collect label statistics
-        print("Pass 1: Collecting track/session groups and label statistics...")
-        track_to_session_items = defaultdict(lambda: defaultdict(list))
-        track_session_label_counts = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+        print("Pass 1: Collecting annotated segments and label statistics...")
         label_counts = defaultdict(int)
         chunk_index = []  # Store (chunk_data, chunk_idx)
+        segment_index = []  # Store (item_key, item, labels)
         
-        chunks = self.store.get_cached_data_chunks(
-            source_cache_key,
-            include_ids=selected_session_ids is not None,
-        )
+        chunks = self.store.get_cached_data_chunks(source_cache_key)
         chunk_idx = 0
         
         for chunk in chunks:
-            chunk_id = None
-            if selected_session_ids is not None:
-                chunk, chunk_id = chunk
-                if str(chunk_id) not in selected_session_ids:
-                    continue
-
             chunk_data = []
             if isinstance(chunk, list):
                 chunk_data = chunk
@@ -521,75 +355,54 @@ class SegmentClassifierService:
                     item = dict(d)
                     item["labels"] = labels
 
+                if not labels:
+                    continue
+
                 valid_items.append(item)
                 item_key = (chunk_idx, len(valid_items) - 1)
+                segment_index.append((item_key, item, labels))
 
-                if labels:
-                    track_key = self._segment_group_key(item)
-                    session_key = self._segment_session_key(item)
-                    track_to_session_items[track_key][session_key].append(item_key)
-
-                    for lbl in set(labels):
-                        track_session_label_counts[track_key][session_key][lbl] += 1
-                        label_counts[lbl] += 1
+                for lbl in set(labels):
+                    label_counts[lbl] += 1
             
             if valid_items:
                 chunk_index.append((valid_items, chunk_idx))
                 chunk_idx += 1
         
-        print(f"Found {len(chunk_index)} chunks with {sum(len(items) for items, _ in chunk_index)} valid segments")
-        print(f"Found {len(track_to_session_items)} track groups for splitting")
+        print(f"Found {len(chunk_index)} chunks with {len(segment_index)} valid annotated segments")
         print(f"Label distribution: {[(label, count) for label, count in sorted(label_counts.items())]}")
         
-        # PASS 2: Per-track session split using deterministic hashing, then label rebalancing
-        print("Pass 2: Performing per-track session split with label coverage balancing...")
+        # PASS 2: Segment-level deterministic split
+        print("Pass 2: Performing segment-level deterministic split...")
         
-        # For each label, split segments deterministically
         train_segments_set = set()  # Set of (chunk_idx, item_idx)
         val_segments_set = set()
         
         train_label_counts = defaultdict(int)
         val_label_counts = defaultdict(int)
         
-        for track_key, session_items in track_to_session_items.items():
-            session_keys = sorted(
-                session_items.keys(),
-                key=lambda session_key: hashlib.md5(f"{track_key}:{session_key}".encode()).hexdigest(),
-            )
-            val_session_keys = {
-                session_key
-                for session_key in session_keys
-                if self._assign_split(
-                    hashlib.md5(f"{track_key}:{session_key}".encode()).hexdigest(),
-                    val_split,
-                ) == "val"
-            }
+        split_records = []
+        for item_key, item, labels in segment_index:
+            segment_hash = self._compute_segment_hash(item)
+            split_records.append((segment_hash, item_key, labels))
+            if self._assign_split(segment_hash, val_split) == "val":
+                val_segments_set.add(item_key)
+            else:
+                train_segments_set.add(item_key)
 
-            if session_keys and not val_session_keys:
-                val_session_keys.add(session_keys[0])
-            if len(session_keys) > 1 and len(val_session_keys) == len(session_keys):
-                val_session_keys.remove(session_keys[-1])
+        if split_records and not train_segments_set:
+            _, item_key, _ = min(split_records, key=lambda record: record[0])
+            val_segments_set.discard(item_key)
+            train_segments_set.add(item_key)
+        if val_split > 0 and len(split_records) > 1 and not val_segments_set:
+            _, item_key, _ = max(split_records, key=lambda record: record[0])
+            train_segments_set.discard(item_key)
+            val_segments_set.add(item_key)
 
-            session_splits = {
-                session_key: "val" if session_key in val_session_keys else "train"
-                for session_key in session_keys
-            }
-            self._rebalance_track_label_splits(
-                track_key,
-                session_keys,
-                session_splits,
-                track_session_label_counts[track_key],
-            )
-
-            for session_key in session_keys:
-                split = session_splits[session_key]
-                target_set = val_segments_set if split == "val" else train_segments_set
-                target_counts = val_label_counts if split == "val" else train_label_counts
-
-                for item_key in session_items[session_key]:
-                    target_set.add(item_key)
-                for label, count in track_session_label_counts[track_key][session_key].items():
-                    target_counts[label] += count
+        for _, item_key, labels in split_records:
+            target_counts = val_label_counts if item_key in val_segments_set else train_label_counts
+            for label in set(labels):
+                target_counts[label] += 1
         
         print(f"Train segments: {len(train_segments_set)}, Val segments: {len(val_segments_set)}")
         print(f"Train label distribution: {dict(train_label_counts)}")
@@ -602,7 +415,7 @@ class SegmentClassifierService:
         if unsplit_labels:
             print(
                 "Labels without both train and validation coverage "
-                f"(not splittable without breaking session grouping): {unsplit_labels}"
+                f"after segment-level splitting: {unsplit_labels}"
             )
         
         # PASS 3: Write splits to storage
@@ -751,7 +564,6 @@ class SegmentClassifierService:
         learning_rate=0.001,
         val_split=0.1,
         annotation_cache_key: Optional[str] = None,
-        session_ids: Optional[List[str]] = None,
     ):
         """Train the CNN classifier using streaming data with train/val split."""
         from app.pipelines.training.config import TrainingPipelineConfig
@@ -766,7 +578,6 @@ class SegmentClassifierService:
             train_key,
             val_key,
             val_split,
-            session_ids=session_ids,
         )
         
         await self.fit_preprocessors(train_key)
