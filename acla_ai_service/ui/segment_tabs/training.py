@@ -16,6 +16,7 @@ import streamlit as st
 from app.pipelines.training.config import TrainingPipelineConfig
 
 from segment_tabs._training_runner import render_card, spawn
+from segment_tabs.shared import get_available_sessions
 
 
 _AI_SERVICE_DIR = Path(__file__).resolve().parents[2]
@@ -89,8 +90,19 @@ def _show_input_location(label: str, value: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _classifier_form(default_ann_key: str) -> None:
+    ann_key = st.text_input("Annotation key", value=default_ann_key)
+    available_sessions = get_available_sessions(ann_key) if ann_key else []
+    selected_sessions = st.multiselect(
+        "Training sessions",
+        options=available_sessions,
+        default=available_sessions,
+        key=f"classifier_training_sessions_{ann_key}",
+        help="Annotation chunks/sessions to include in classifier training.",
+    )
+    if not selected_sessions:
+        st.warning("Select at least one session before starting training.")
+
     with st.form("classifier_form"):
-        ann_key = st.text_input("Annotation key", value=default_ann_key)
         c1, c2, c3, c4 = st.columns(4)
         epochs = c1.number_input("Epochs", min_value=1, max_value=500, value=10)
         batch_size = c2.number_input("Batch size", min_value=1, max_value=2048, value=32)
@@ -98,7 +110,11 @@ def _classifier_form(default_ann_key: str) -> None:
             "Learning rate", min_value=1e-6, max_value=1.0, value=1e-3, format="%.6f",
         )
         val_split = c4.slider("Val split", 0.0, 0.5, 0.1, 0.05)
-        if st.form_submit_button("🚀 Start", width="stretch"):
+        if st.form_submit_button(
+            "🚀 Start",
+            width="stretch",
+            disabled=not selected_sessions,
+        ):
             cmd = [
                 sys.executable, "-u", str(_TRAINING_ENTRYPOINTS / "train_segment_classifier.py"),
                 "--epochs", str(int(epochs)),
@@ -107,6 +123,8 @@ def _classifier_form(default_ann_key: str) -> None:
                 "--val-split", str(float(val_split)),
                 "--annotation-key", ann_key,
             ]
+            for session_id in selected_sessions:
+                cmd.extend(["--session-id", session_id])
             spawn("classifier", cmd)
             st.rerun()
 

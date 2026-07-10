@@ -12,7 +12,7 @@
   "labels": {
     "EA": {
       "name": "Expert Adherence (Training)",
-      "characteristics": "a sub-150ms absolute time gap is considered as Expert Adherence. or the absoulte time gap is negative. The time gap may spike in the middle of the section, but it should not be a sustained spike, the absoulte time gap should be less than 150ms and the ending slope trend should be falling. if the absoulte time gap is over 150ms, then it should contain no time gap spike, and brake similarity and throttle similarity should be 100%, this happens when the driver is doing exactly the same as the expert."
+      "characteristics": "a sub-50ms absolute time gap is considered as Expert Adherence. or the absoulte time gap is negative. The time gap may spike in the middle of the section, but it should not be a sustained spike, the absoulte time gap should be less than 50ms and the ending slope trend should be falling. if the absoulte time gap is over 50ms, then it should contain no time gap spike, and brake similarity and throttle similarity should be 100%, this happens when the driver is doing exactly the same as the expert."
     },
     "MSP": {
       "name": "Mistake (Practice)",

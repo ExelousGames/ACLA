@@ -446,7 +446,15 @@ class SegmentClassifierService:
             session_key, target_split = move
             session_splits[session_key] = target_split
 
-    async def prepare_training_data(self, source_cache_key: str, train_cache_key: str, val_cache_key: str, val_split: float = 0.2, chunk_size: int = 100):
+    async def prepare_training_data(
+        self,
+        source_cache_key: str,
+        train_cache_key: str,
+        val_cache_key: str,
+        val_split: float = 0.2,
+        chunk_size: int = 100,
+        session_ids: Optional[List[str]] = None,
+    ):
         """
         Splits data from source_cache_key into train and val keys within each track.
         Uses two-pass approach:
@@ -454,7 +462,10 @@ class SegmentClassifierService:
         2. Second pass: assign sessions within each track using deterministic hashing,
            then rebalance labels that can appear in both train and validation
         """
+        selected_session_ids = {str(session_id) for session_id in session_ids} if session_ids is not None else None
         print(f"Preparing training data: splitting {source_cache_key} into {train_cache_key} and {val_cache_key}")
+        if selected_session_ids is not None:
+            print(f"Filtering source annotation chunks to {len(selected_session_ids)} selected session(s)")
         print("Using deterministic per-track, per-label session splitting to avoid same-session leakage...")
         
         # Clear existing keys
@@ -468,10 +479,19 @@ class SegmentClassifierService:
         label_counts = defaultdict(int)
         chunk_index = []  # Store (chunk_data, chunk_idx)
         
-        chunks = self.store.get_cached_data_chunks(source_cache_key)
+        chunks = self.store.get_cached_data_chunks(
+            source_cache_key,
+            include_ids=selected_session_ids is not None,
+        )
         chunk_idx = 0
         
         for chunk in chunks:
+            chunk_id = None
+            if selected_session_ids is not None:
+                chunk, chunk_id = chunk
+                if str(chunk_id) not in selected_session_ids:
+                    continue
+
             chunk_data = []
             if isinstance(chunk, list):
                 chunk_data = chunk
@@ -731,6 +751,7 @@ class SegmentClassifierService:
         learning_rate=0.001,
         val_split=0.1,
         annotation_cache_key: Optional[str] = None,
+        session_ids: Optional[List[str]] = None,
     ):
         """Train the CNN classifier using streaming data with train/val split."""
         from app.pipelines.training.config import TrainingPipelineConfig
@@ -740,7 +761,13 @@ class SegmentClassifierService:
         train_key = f"{cache_key}_train"
         val_key = f"{cache_key}_val"
         
-        await self.prepare_training_data(cache_key, train_key, val_key, val_split)
+        await self.prepare_training_data(
+            cache_key,
+            train_key,
+            val_key,
+            val_split,
+            session_ids=session_ids,
+        )
         
         await self.fit_preprocessors(train_key)
         

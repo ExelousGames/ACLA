@@ -26,12 +26,13 @@ async def main() -> int:
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val-split", type=float, default=0.1)
     parser.add_argument("--annotation-key", default=cfg.annotation_cache_key)
+    parser.add_argument("--session-id", action="append", default=None)
     args = parser.parse_args()
 
     print(
         f"[INFO] Starting classifier training: epochs={args.epochs} "
         f"batch_size={args.batch_size} lr={args.lr} val_split={args.val_split} "
-        f"annotation_key={args.annotation_key}"
+        f"annotation_key={args.annotation_key} session_ids={args.session_id or 'all'}"
     )
     await segment_classifier.train_model(
         epochs=args.epochs,
@@ -39,6 +40,7 @@ async def main() -> int:
         learning_rate=args.lr,
         val_split=args.val_split,
         annotation_cache_key=args.annotation_key,
+        session_ids=args.session_id,
     )
     print("[INFO] Classifier training complete.")
     return 0
