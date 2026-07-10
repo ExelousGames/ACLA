@@ -118,14 +118,6 @@ class Settings(BaseSettings):
     # How many candidates each sub-retriever pulls before fusion. Wider
     # than the final top_k so the fusion has overlap to work with.
     hybrid_candidate_pool: int = 20
-    # Optional semantic reranking for annotation label candidates. Embedding
-    # search keeps recall broad; the cross-encoder reads each evidence/label
-    # pair together before the annotation agent sees the final shortlist.
-    annotation_label_reranker_enabled: bool = True
-    annotation_label_reranker_model: str = "BAAI/bge-reranker-large"
-    annotation_label_reranker_top_k: int = 16
-    annotation_label_reranker_min_score: Optional[float] = None
-
     # AI annotation providers. This is intentionally separate from the
     # hosted Groq/chatbot settings above; annotation provider selection is
     # per-run in the Streamlit annotation UI.

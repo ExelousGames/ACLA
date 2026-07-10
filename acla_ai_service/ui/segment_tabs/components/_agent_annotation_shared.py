@@ -52,7 +52,6 @@ _NODE_ICONS = {
     "step_solver": "🛠️",
     "describe_graphs": "🔍",
     "zoom": "🔬",
-    "label_verifier": "✅",
     "proposal_synthesizer": "📝",
 }
 

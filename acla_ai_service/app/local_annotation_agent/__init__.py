@@ -15,7 +15,6 @@ Sub-modules:
     runner          Local planner/worker/verifier/finalizer harness.
     evaluators      Format + evidence evaluator suite + formatter registry.
     backends        claude_sdk (Claude Agent SDK), OpenAI-compatible providers.
-    sub_agents      knowledge-backed helper capabilities.
     tools           Annotation-domain helpers.
     runners         local / Claude / OpenAI execution paths.
 """

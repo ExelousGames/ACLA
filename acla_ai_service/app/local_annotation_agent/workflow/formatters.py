@@ -43,28 +43,6 @@ def _format_parent_segment(content: Any) -> str:
     return "\n".join(parts)
 
 
-def _format_verified_labels(content: Any) -> str:
-    if not isinstance(content, list):
-        return str(content)
-    if not content:
-        return "(no labels passed verification)"
-    lines: list[str] = []
-    for entry in content:
-        if not isinstance(entry, dict):
-            lines.append(str(entry))
-            continue
-        lid = entry.get("label_id", "?")
-        name = entry.get("name", "")
-        sim = entry.get("similarity")
-        desc = entry.get("description", "")
-        sim_part = f" | sim={sim:.3f}" if isinstance(sim, (int, float)) else ""
-        line = f"- {lid} | {name}{sim_part}"
-        if desc:
-            line = f"{line} — {desc}"
-        lines.append(line)
-    return "\n".join(lines)
-
-
 def _format_preflight_tool(content: Any) -> str:
     if not isinstance(content, dict):
         return str(content)
@@ -181,7 +159,6 @@ def _format_detailed_preflight_events(content: Any) -> str:
 
 def register_annotation_formatters() -> None:
     register_structured_formatter("parent_segment", _format_parent_segment)
-    register_structured_formatter("verified_labels", _format_verified_labels)
     register_structured_formatter("annotation_preflight_tool", _format_preflight_tool)
     register_structured_formatter("annotation_preflight_labels", _format_preflight_labels)
     register_structured_formatter("annotation_preflight_context", _format_preflight_context)
