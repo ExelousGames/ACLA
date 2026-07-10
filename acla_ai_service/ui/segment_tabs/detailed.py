@@ -26,6 +26,52 @@ def _root_segment_indices(annotations: list[AnnotatedSegment]) -> list[int]:
     ]
 
 
+def _annotation_signature(annotation: AnnotatedSegment) -> tuple:
+    return (
+        getattr(annotation, "id", None),
+        getattr(annotation, "parent_id", None),
+        getattr(annotation, "start_index", None),
+        getattr(annotation, "end_index", None),
+        getattr(annotation, "segment_length", None),
+        getattr(annotation, "chunk_index", None),
+        tuple(getattr(annotation, "labels", []) or []),
+        getattr(annotation, "notes", None),
+        getattr(annotation, "opponent_interaction", None),
+        len(getattr(annotation, "telemetry_data", None) or []),
+    )
+
+
+def _annotations_signature(annotations: list[AnnotatedSegment]) -> tuple:
+    return tuple(_annotation_signature(annotation) for annotation in annotations)
+
+
+def _resolve_loaded_annotation_selection(
+    annotations: list[AnnotatedSegment],
+    requested_selection: int | None,
+) -> int | None:
+    root_indices = _root_segment_indices(annotations)
+    if not root_indices:
+        return None
+
+    if not isinstance(requested_selection, int):
+        return root_indices[0]
+
+    for root_index in root_indices:
+        if root_index >= requested_selection:
+            return root_index
+
+    return root_indices[-1]
+
+
+def _clear_detailed_form_state() -> None:
+    form_keys = [
+        key for key in st.session_state.keys()
+        if key.startswith("detailed_form_")
+    ]
+    for key in form_keys:
+        st.session_state.pop(key, None)
+
+
 def _segments_to_positioned_dataframe(
     segments: Iterable[AnnotatedSegment],
 ) -> pd.DataFrame:
@@ -74,6 +120,22 @@ def _set_visualization_range(start: int, end: int, max_index: int) -> None:
     st.session_state.detailed_global_viz_end_input = safe_end
 
 
+def _set_selection_visualization(
+    annotations: list[AnnotatedSegment],
+    selected_annotation: int | None,
+    max_index: int,
+) -> None:
+    if isinstance(selected_annotation, int) and selected_annotation < len(annotations):
+        annotation = annotations[selected_annotation]
+        _set_visualization_range(
+            getattr(annotation, "start_index", 0) or 0,
+            getattr(annotation, "end_index", max_index) or max_index,
+            max_index,
+        )
+    else:
+        _set_visualization_range(0, min(100, max_index), max_index)
+
+
 def _segment_session_counts(
     selected_session_key: str,
     available_sessions: list[str],
@@ -118,13 +180,15 @@ def render_detailed_labeling(
 
     top_cols = st.columns([1.2, 1, 1, 1])
     with top_cols[0]:
+        if st.session_state.get("detailed_session_selector") not in session_options:
+            st.session_state.detailed_session_selector = session_options[0]
+
         session_id = st.selectbox(
             "Session / segment chunk",
             options=session_options,
             format_func=format_session_option,
-            key="detailed_session_id_selector",
+            key="detailed_session_selector",
         )
-        st.session_state.detailed_session_selector = session_id
     with top_cols[1]:
         st.metric("Input segments", segment_counts.get(session_id, 0))
     with top_cols[2]:
@@ -139,25 +203,43 @@ def render_detailed_labeling(
         return
 
     saved_annotations = _safe_load_annotations(session_id, selected_annotation_key)
+    if input_segments and not saved_annotations:
+        current_annotations = copy.deepcopy(input_segments)
+    else:
+        current_annotations = saved_annotations
+    st.session_state.current_annotations = current_annotations
 
-    state_key = (
-        "detailed_loaded_source",
+    loaded_signature = (
         selected_session_key,
         selected_annotation_key,
         session_id,
+        _annotations_signature(current_annotations),
     )
-    if st.session_state.get("detailed_loaded_state_key") != state_key:
-        if input_segments and not saved_annotations:
-            st.session_state.current_annotations = copy.deepcopy(input_segments)
-        else:
-            st.session_state.current_annotations = saved_annotations
-        st.session_state.detailed_loaded_state_key = state_key
-        st.session_state.last_session_id = session_id
-        st.session_state.last_annotation_key = selected_annotation_key
+    data_reloaded = st.session_state.get("detailed_loaded_signature") != loaded_signature
+    pending_selection = st.session_state.pop("pending_detailed_selection", None)
+    requested_selection = (
+        pending_selection
+        if pending_selection is not None
+        else st.session_state.get("detailed_annotation_selector")
+    )
+    resolved_selection = _resolve_loaded_annotation_selection(
+        current_annotations,
+        requested_selection,
+    )
+    if resolved_selection is not None:
+        selection_changed = (
+            st.session_state.get("detailed_annotation_selector") != resolved_selection
+        )
+        st.session_state.detailed_annotation_selector = resolved_selection
+        if data_reloaded or selection_changed:
+            _clear_detailed_form_state()
+
+    st.session_state.detailed_loaded_signature = loaded_signature
+    st.session_state.last_session_id = session_id
+    st.session_state.last_annotation_key = selected_annotation_key
+    if data_reloaded:
         st.session_state.pop("detailed_last_focus_segment", None)
         st.session_state.pop("detailed_focus_segment_selector", None)
-
-    current_annotations = st.session_state.get("current_annotations", [])
 
     df = _segments_to_positioned_dataframe(input_segments)
 
@@ -166,6 +248,13 @@ def render_detailed_labeling(
         st.stop()
 
     max_index = max(0, len(df) - 1)
+    if data_reloaded or pending_selection is not None:
+        _set_selection_visualization(
+            current_annotations,
+            st.session_state.get("detailed_annotation_selector"),
+            max_index,
+        )
+
     root_count = len(_root_segment_indices(current_annotations))
     child_count = max(0, len(current_annotations) - root_count)
     st.write(

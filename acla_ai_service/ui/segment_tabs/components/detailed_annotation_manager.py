@@ -71,11 +71,6 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
                 st.session_state.detailed_global_viz_end_input = ann_sel.end_index
                 st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
 
-        # Apply pending selection from previous actions (like 'Update & Next' or 'Delete')
-        if "pending_detailed_selection" in st.session_state:
-            st.session_state.detailed_annotation_selector = st.session_state.pending_detailed_selection
-            del st.session_state.pending_detailed_selection
-
         # Initialize the session state key if not present.
         if "detailed_annotation_selector" not in st.session_state:
             st.session_state.detailed_annotation_selector = annotation_options[0] if annotation_options else None
