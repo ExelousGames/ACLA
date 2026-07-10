@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
 import joblib
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional, Iterator
+from typing import List, Dict, Any, Tuple, Optional, Iterator, Collection
 import asyncio
 import base64
 import json
@@ -303,13 +303,23 @@ class SegmentClassifierService:
         val_cache_key: str,
         val_split: float = 0.2,
         chunk_size: int = 100,
+        session_ids: Optional[Collection[str]] = None,
     ):
         """
         Splits annotated segments from source_cache_key into train and val keys.
         Uses deterministic segment-level hashing so preparation does not depend
-        on session boundaries.
+        on session boundaries. When session_ids is provided, only source chunks
+        whose IDs are selected are included.
         """
+        selected_session_ids = (
+            None if session_ids is None else {str(session_id) for session_id in session_ids}
+        )
+        if selected_session_ids is not None and not selected_session_ids:
+            raise ValueError("At least one session must be selected for classifier training.")
+
         print(f"Preparing training data: splitting {source_cache_key} into {train_cache_key} and {val_cache_key}")
+        if selected_session_ids is not None:
+            print(f"Selected training sessions: {sorted(selected_session_ids)}")
         print("Using deterministic segment-level train/validation splitting...")
         
         # Clear existing keys
@@ -322,10 +332,16 @@ class SegmentClassifierService:
         chunk_index = []  # Store (chunk_data, chunk_idx)
         segment_index = []  # Store (item_key, item, labels)
         
-        chunks = self.store.get_cached_data_chunks(source_cache_key)
+        chunks = self.store.get_cached_data_chunks(source_cache_key, include_ids=True)
         chunk_idx = 0
+        matched_session_ids = set()
         
-        for chunk in chunks:
+        for chunk, session_id in chunks:
+            session_id = str(session_id)
+            if selected_session_ids is not None and session_id not in selected_session_ids:
+                continue
+            matched_session_ids.add(session_id)
+
             chunk_data = []
             if isinstance(chunk, list):
                 chunk_data = chunk
@@ -368,8 +384,17 @@ class SegmentClassifierService:
             if valid_items:
                 chunk_index.append((valid_items, chunk_idx))
                 chunk_idx += 1
+
+        if selected_session_ids is not None and not segment_index:
+            selected = ", ".join(sorted(selected_session_ids))
+            raise ValueError(
+                "No valid labeled segments found in the selected training "
+                f"sessions: {selected}"
+            )
         
         print(f"Found {len(chunk_index)} chunks with {len(segment_index)} valid annotated segments")
+        if selected_session_ids is not None:
+            print(f"Matched source sessions: {sorted(matched_session_ids)}")
         print(f"Label distribution: {[(label, count) for label, count in sorted(label_counts.items())]}")
         
         # PASS 2: Segment-level deterministic split
@@ -564,6 +589,7 @@ class SegmentClassifierService:
         learning_rate=0.001,
         val_split=0.1,
         annotation_cache_key: Optional[str] = None,
+        session_ids: Optional[Collection[str]] = None,
     ):
         """Train the CNN classifier using streaming data with train/val split."""
         from app.pipelines.training.config import TrainingPipelineConfig
@@ -578,6 +604,7 @@ class SegmentClassifierService:
             train_key,
             val_key,
             val_split,
+            session_ids=session_ids,
         )
         
         await self.fit_preprocessors(train_key)

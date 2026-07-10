@@ -16,6 +16,7 @@ import streamlit as st
 from app.pipelines.training.config import TrainingPipelineConfig
 
 from segment_tabs._training_runner import render_card, spawn
+from segment_tabs.shared import get_available_sessions
 
 
 _AI_SERVICE_DIR = Path(__file__).resolve().parents[2]
@@ -90,6 +91,34 @@ def _show_input_location(label: str, value: Optional[str]) -> None:
 
 def _classifier_form(default_ann_key: str) -> None:
     ann_key = st.text_input("Annotation key", value=default_ann_key)
+    ann_key = ann_key.strip()
+    available_sessions = get_available_sessions(ann_key) if ann_key else []
+
+    selection_key = "classifier_selected_sessions"
+    selection_source_key = "classifier_selected_sessions_source"
+    if st.session_state.get(selection_source_key) != ann_key:
+        st.session_state[selection_source_key] = ann_key
+        st.session_state[selection_key] = available_sessions
+    elif selection_key not in st.session_state:
+        st.session_state[selection_key] = available_sessions
+    else:
+        available_set = set(available_sessions)
+        st.session_state[selection_key] = [
+            session_id
+            for session_id in st.session_state[selection_key]
+            if session_id in available_set
+        ]
+
+    selected_sessions = st.multiselect(
+        "Training sessions",
+        options=available_sessions,
+        key=selection_key,
+        help="Selected sessions are pooled into one classifier training run.",
+    )
+    if not available_sessions:
+        st.warning("The annotation dataset has no session chunks available for training.")
+    elif not selected_sessions:
+        st.warning("Select at least one session before starting training.")
 
     with st.form("classifier_form"):
         c1, c2, c3, c4 = st.columns(4)
@@ -102,6 +131,7 @@ def _classifier_form(default_ann_key: str) -> None:
         if st.form_submit_button(
             "🚀 Start",
             width="stretch",
+            disabled=not available_sessions or not selected_sessions,
         ):
             cmd = [
                 sys.executable, "-u", str(_TRAINING_ENTRYPOINTS / "train_segment_classifier.py"),
@@ -111,6 +141,8 @@ def _classifier_form(default_ann_key: str) -> None:
                 "--val-split", str(float(val_split)),
                 "--annotation-key", ann_key,
             ]
+            for session_id in selected_sessions:
+                cmd.extend(["--session-id", session_id])
             spawn("classifier", cmd)
             st.rerun()
 

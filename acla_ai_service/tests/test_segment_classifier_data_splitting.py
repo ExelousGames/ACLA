@@ -75,6 +75,58 @@ async def test_prepare_training_data_uses_all_segments_from_all_chunks():
 
 
 @pytest.mark.asyncio
+async def test_prepare_training_data_uses_only_selected_sessions():
+    store = _Store({
+        "source": {
+            "session-a": [_segment(1), _segment(2)],
+            "session-b": [_segment(3)],
+            "session-c": [_segment(4), _segment(5)],
+        }
+    })
+    service = _service_with_store(store)
+
+    await service.prepare_training_data(
+        "source",
+        "train",
+        "val",
+        val_split=0.2,
+        session_ids=["session-a", "session-c"],
+    )
+
+    assert _saved_segment_ids(store, "train", "val") == {1, 2, 4, 5}
+
+
+@pytest.mark.asyncio
+async def test_prepare_training_data_rejects_empty_session_selection():
+    store = _Store({"source": {"session-a": [_segment(1)]}})
+    service = _service_with_store(store)
+
+    with pytest.raises(ValueError, match="At least one session must be selected"):
+        await service.prepare_training_data(
+            "source", "train", "val", session_ids=[]
+        )
+
+
+@pytest.mark.asyncio
+async def test_prepare_training_data_rejects_selected_sessions_without_valid_segments():
+    store = _Store({
+        "source": {
+            "session-a": [_segment(1)],
+            "session-empty": [{"labels": ["MSP"], "telemetry_data": []}],
+        }
+    })
+    service = _service_with_store(store)
+
+    with pytest.raises(ValueError, match="No valid labeled segments.*session-empty"):
+        await service.prepare_training_data(
+            "source",
+            "train",
+            "val",
+            session_ids=["session-empty"],
+        )
+
+
+@pytest.mark.asyncio
 async def test_single_source_chunk_can_still_produce_training_data():
     store = _Store({
         "source": {
