@@ -111,11 +111,6 @@ def render_detailed_labeling(
             return f"{status} {session_id} | {count} segments"
         return f"{status} {session_id}"
 
-    previous_selection = st.session_state.get("detailed_session_selector")
-    index = None
-    if previous_selection is not None:
-        index = session_options.index(previous_selection)
-
     st.subheader("Detailed Segment Annotation")
     st.caption(
         "Refine imported parent segments into detailed labels and child sub-segments."
@@ -127,9 +122,9 @@ def render_detailed_labeling(
             "Session / segment chunk",
             options=session_options,
             format_func=format_session_option,
-            index=index,
-            key="detailed_session_selector",
+            key="detailed_session_id_selector",
         )
+        st.session_state.detailed_session_selector = session_id
     with top_cols[1]:
         st.metric("Input segments", segment_counts.get(session_id, 0))
     with top_cols[2]:
