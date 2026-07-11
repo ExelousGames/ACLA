@@ -13,7 +13,6 @@
     "EA": {
       "name": "Expert Adherence (Training)",
       "type": "main",
-      "characteristics": "A time-gap total change over the section below 50ms is considered Expert Adherence. The time gap may spike in the middle of the section, but it should not be a sustained spike; this meansthe time-gap total change over the section should be less than 50ms and the ending slope trend should be falling. If the time-gap total change over the section is over 50ms, then it should contain no time gap spike, and brake similarity and throttle similarity should be 100%; this happens when the driver is doing exactly the same as the expert. diverage trajecotry doesnt mean its not Expert Adherence.",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.EA",
       "exclusive_with": ["MSP", "MSR", "RM", "PS"]
@@ -21,7 +20,6 @@
     "MSP": {
       "name": "Mistake (Practice)",
       "type": "main",
-      "characteristics": "Technical driving error causing time loss or instability, not caused by a close opponent. Time-gap evidence should show mid-section spike or raising causing the time gap to increase further. this indicates a mistake made in the middle section. A decreasing time gap also can be MSP if the end value is still positive, the ending slope trend is still raising, and the mid section contains spikes or raising, label MSP, it shows the driver is not able to recover from the mistakes, or cannot keep the same pace as the expert.",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.MSP",
       "exclusive_with": ["EA", "PS", "MSR"]
@@ -29,7 +27,6 @@
     "MSR": {
       "name": "Mistake (Racing)",
       "type": "main",
-      "characteristics": "Time or position loss from a close-opponent interaction. Require failed attack or broken defense with medium/high confidence; weak confidence needs trajectory support or an empty label list. Primary opponent, nearest distance, and relative trajectory support the interaction and technique. Time gap may grow, but the adverse opponent outcome is the gate. No close opponent, primary opponent, or failed/broken outcome means not MSR. Mutually exclusive with EA, RM, and MSP.",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.MSR",
       "exclusive_with": ["EA", "PS", "MSP"]
@@ -37,7 +34,6 @@
     "RM": {
       "name": "Recovery & Merge",
       "type": "main",
-      "characteristics": "Driver takes action to recovery or merge after the starting slope raising. Use RM when this section does not contain a new raising in the middle. The time gap flatten at the end.",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.RM",
       "exclusive_with": ["EA", "PS"]
@@ -45,7 +41,6 @@
     "PS": {
       "name": "Pit Stop",
       "type": "main",
-      "characteristics": "Pit-section procedure. Require pit evidence from the selected section, splitter context, or overlap with the known Pit section. If Pit and an adjacent straight share a range, sustained pit-lane offset plus large player/expert speed separation (over 50km/hm different) and trajectory deviation are required. do not combine with EA, MSP, MSR, O, or OD.",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.PS",
       "exclusive_with": ["O"]
@@ -53,7 +48,6 @@
     "O": {
       "name": "Successful Overtake",
       "type": "main",
-      "characteristics": "Player gains position on a specific opponent. Multi-car positional data is the gate. Require pass completed with medium/high confidence, with opponent ahead at entry and behind by exit. Empty, unavailable, low-confidence, or non-pass outcomes mean not O. Primary opponent, nearest distance, and relative trajectory identify the target; player trace can explain technique. Failed attack is MSR; successful defense is OD.",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.O",
       "exclusive_with": ["OD", "PS"]
@@ -61,7 +55,6 @@
     "OD": {
       "name": "Successful Defense",
       "type": "main",
-      "characteristics": "Player holds position against a real close opponent. Require held defense with medium/high confidence, with the opponent threatening from behind or alongside but not ahead by exit. A close car without held-defense outcome is not OD; weak confidence needs trajectory support or an empty label list. Primary opponent, nearest distance, and relative trajectory identify the target; player trace can explain technique. Brief time-gap growth is allowed if position holds. Failed defense is MSR.",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.OD",
       "exclusive_with": ["O", "PS"]

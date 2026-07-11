@@ -22,7 +22,8 @@ def test_main_labels_are_owned_by_lap_annotation_catalog():
     assert all(doc["type"] != "main" for doc in sub_labels)
 
     msp = deterministic.get_label("MSP")
-    assert msp["description"] == msp["characteristics"]
+    assert "characteristics" not in msp
+    assert "description" not in msp
     assert msp["selection_requirements"]
     assert msp["selection_requirements_ref"] == (
         "lap_annotation.selection_requirements.MSP"

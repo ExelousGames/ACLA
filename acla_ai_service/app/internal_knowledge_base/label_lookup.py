@@ -3,7 +3,7 @@
 Two sources, each owning its own classification — nothing is re-derived
 in Python:
 
-* Main-label taxonomy and descriptions live in ``lap_annotation.json``.
+* Main-label taxonomy lives in ``lap_annotation.json``.
   Sub-label and segment-type taxonomy stays in
   ``sub_label_annotation.json``.
 * Circuit sections are deterministic geometry, owned by
@@ -54,9 +54,6 @@ def _label_docs() -> List[Dict[str, Any]]:
     for doc in skills.iter("lap_annotation.labels"):
         next_doc = dict(doc)
         label_id = str(next_doc.get("id") or "")
-        description = str(next_doc.get("characteristics") or "").strip()
-        if description:
-            next_doc["description"] = description
         requirements = (
             lap_requirements.get(label_id)
             if isinstance(lap_requirements, dict)
