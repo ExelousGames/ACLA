@@ -32,8 +32,6 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from app.internal_knowledge_base import skills
-
 LOGGER = logging.getLogger(__name__)
 
 _HAIRPIN_NEAR_U_TURN_MIN_DEGREES = 130.0
@@ -4682,118 +4680,6 @@ def render_query_catalog_for_prompt(columns: List[str]) -> str:
         "**Available columns:** "
         + (", ".join(f"`{c}`" for c in columns) if columns else "(none)")
     )
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# graph_analysis skill — prompt rendering
-# ---------------------------------------------------------------------------
-
-_GRAPH_GUIDELINE_TRIGGERS: Dict[str, Dict[str, Any]] = {
-    "brake_and_speed":            {"required": {"brake", "speed"},                     "any_of": []},
-    "throttle_and_speed":         {"required": {"throttle", "speed"},                  "any_of": []},
-    "time_delta_and_features":    {"required": {"time_delta"},                         "any_of": [
-        {"brake", "throttle", "speed", "speed_delta", "push_limit", "trajectory_balance"},
-    ]},
-    "trajectory_and_features":    {"required": set(),                                  "any_of": [
-        {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset", "altitude_profile"},
-        {"throttle", "brake", "speed", "speed_delta", "push_limit", "trajectory_balance"},
-    ]},
-    "balance_and_push_limit":     {"required": {"trajectory_balance", "push_limit"},   "any_of": []},
-    "brake_and_throttle_overlap": {"required": {"brake", "throttle"},                  "any_of": []},
-}
-
-_TRAJECTORY_IDS = {"trajectory_detailed", "trajectory_gas_brake", "trajectory_offset"}
-_GRAPH_ANALYSIS_SKILL_ALIASES = {
-    "trajectory_offset": "trajectory_lateral_deviation",
-}
-
-
-def _render_graph_section(key: str, value: Any, indent: str = "  ") -> List[str]:
-    if not value:
-        return []
-    out: List[str] = [key.replace("_", " ") + ":"]
-
-    if isinstance(value, str):
-        for ln in value.rstrip("\n").split("\n"):
-            out.append(f"{indent}{ln}" if ln else "")
-    elif isinstance(value, list):
-        for item in value:
-            out.append(f"{indent}- {item}")
-    elif isinstance(value, dict):
-        for k, v in value.items():
-            v_str = "" if v is None else str(v).rstrip("\n")
-            v_lines = v_str.split("\n")
-            first = v_lines[0]
-            out.append(f"{indent}- {k}: {first}" if first else f"{indent}- {k}:")
-            cont_indent = indent + "    "
-            for cont in v_lines[1:]:
-                out.append(f"{cont_indent}{cont}" if cont else "")
-    else:
-        out.append(f"{indent}{value}")
-
-    return out
-
-
-def graph_analysis_prompt(graph_ids: List[str]) -> str:
-    """Per-graph description block for VLM prompts that read graph images.
-
-    Walks each graph's yaml record with a uniform formatter, appends the
-    cross-graph guidelines whose triggers match this graph combination,
-    and (when trajectory graphs are present) appends the trajectory shape
-    vocabulary.
-    """
-    requested = list(graph_ids)
-    paired: List[tuple] = []
-    for gid in requested:
-        skill_gid = _GRAPH_ANALYSIS_SKILL_ALIASES.get(gid, gid)
-        entry = skills.get(f"graph_analysis.graphs.{skill_gid}")
-        if entry:
-            paired.append((gid, entry))
-    if not paired:
-        return ""
-
-    lines: List[str] = [
-        "#### Graph Description Skill — How to Describe These Graphs",
-        "",
-    ]
-
-    for gid, entry in paired:
-        title = entry.get("title", gid)
-        lines.append(f"##### {title} (id: {gid})")
-        lines.append("")
-        for key, value in entry.items():
-            if key in ("title", "id"):
-                continue
-            section = _render_graph_section(key, value)
-            if section:
-                lines.extend(section)
-                lines.append("")
-
-    graph_id_set = set(requested)
-    relevant: List[str] = []
-    for gid, spec in _GRAPH_GUIDELINE_TRIGGERS.items():
-        if not spec["required"].issubset(graph_id_set):
-            continue
-        if not all(any_set & graph_id_set for any_set in spec["any_of"]):
-            continue
-        text = skills.get(f"graph_analysis.cross_graph_guidelines.{gid}", "")
-        if text:
-            relevant.append(f"[{gid}] {str(text).strip()}")
-
-    if relevant:
-        lines.append("#### Cross-Graph Description Guidelines")
-        for g in relevant:
-            lines.append(g)
-        lines.append("")
-
-    if graph_id_set & _TRAJECTORY_IDS:
-        traj_vocab = skills.get("graph_analysis.trajectory_shape_vocabulary", "")
-        if traj_vocab:
-            lines.append("#### Trajectory Shape Vocabulary")
-            lines.append(str(traj_vocab).strip())
-            lines.append("")
-
     return "\n".join(lines)
 
 
