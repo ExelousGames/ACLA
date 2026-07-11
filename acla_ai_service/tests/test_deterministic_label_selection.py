@@ -130,6 +130,29 @@ def test_public_pipeline_bypasses_provider_and_returns_lap_contract(monkeypatch)
     assert result.submitted
 
 
+def test_lap_result_explains_failed_behavior_requirements(monkeypatch):
+    monkeypatch.setattr(
+        deterministic,
+        "calculate_facts",
+        lambda *_args, **_kwargs: ({"time_gap.has_spike": False}, []),
+    )
+
+    result = deterministic.calculate_lap_annotation(
+        pd.DataFrame(index=range(10)),
+        lap_start=0,
+        lap_end=9,
+        section_id="silverstone1",
+        section_start=0,
+        section_end=9,
+        circuit_id="silverstone",
+    )
+
+    rejected = {item["value"]: item["reason"] for item in result.rejected_proposals}
+    assert set(rejected) == {"EA", "PS", "RM", "MSP"}
+    assert "time_gap.total_change_abs_ms" in rejected["EA"]
+    assert "actual=None" in rejected["EA"]
+
+
 def test_annotation_flows_do_not_import_removed_retrieval_code():
     root = Path(__file__).parents[1]
     flow_text = "\n".join(

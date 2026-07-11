@@ -542,10 +542,16 @@ def render_lap_staged_review(
     st.markdown("---")
     st.markdown("##### Review & Edit Before Saving")
     if staged.get("rejected"):
-        st.caption(
-            f"⚠️ {len(staged['rejected'])} label_id(s) rejected by the runner: "
-            + ", ".join(str(r.get("value")) for r in staged["rejected"])
-        )
+        with st.expander(
+            f"⚠️ Why {len(staged['rejected'])} label(s) were rejected"
+        ):
+            for rejection in staged["rejected"]:
+                label_id = str(rejection.get("value", "unknown"))
+                label_name = LABEL_MAPPING.get(label_id, label_id)
+                st.markdown(
+                    f"- **{label_name} (`{label_id}`)**: "
+                    f"{rejection.get('reason', 'No rejection reason was provided.')}"
+                )
 
     with st.container(border=True):
         col_r1, col_r2 = st.columns(2)

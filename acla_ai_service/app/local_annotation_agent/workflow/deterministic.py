@@ -572,9 +572,18 @@ def calculate_lap_annotation(
         for label in children.labels
     )
     rejected = [
-        {"label_ids": list(pair), "reason": "exclusive deterministic matches"}
-        for pair in [*evaluated.conflicts, *children.conflicts, *segment_types.conflicts]
+        {"value": label_id, "reason": "; ".join(evaluation.failed)}
+        for label_id, evaluation in evaluated.evaluations.items()
+        if not evaluation.matched
     ]
+    rejected.extend(
+        {
+            "value": " / ".join(pair),
+            "label_ids": list(pair),
+            "reason": "exclusive deterministic matches",
+        }
+        for pair in [*evaluated.conflicts, *children.conflicts, *segment_types.conflicts]
+    )
     return LapAnnotationResult(
         section_id=resolved_section_id,
         start_index=int(section_start),
