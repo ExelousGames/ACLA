@@ -24,7 +24,7 @@
     },
     "RM": {
       "name": "Recovery & Merge",
-      "characteristics": "Recovery or merge after a prior mistake. Use RM when this section does not contain a new spike in the middle. The time gap can flatten at the end when the ending slope trend is raising then flattening or falling then flattening."
+      "characteristics": "Driver takes action to recovery or merge after the starting slope raising. Use RM when this section does not contain a new raising in the middle. The time gap flatten at the end."
     },
     "PS": {
       "name": "Pit Stop",
@@ -45,10 +45,11 @@
       "any_of": [
         {"all_of": [
           {"fact": "time_gap.total_change_abs_ms", "operator": "lt", "value": 50},
-          {"fact": "time_gap.ending_direction", "operator": "in", "value": ["falling", "flat"]}
+          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "falling"}
         ]},
         {"all_of": [
-          {"fact": "time_gap.has_spike", "operator": "eq", "value": false},
+          {"fact": "time_gap.total_change_abs_ms", "operator": "gte", "value": 50},
+          {"fact": "time_gap.has_significant_rise", "operator": "eq", "value": false},
           {"fact": "brake.similarity", "operator": "eq", "value": 1.0},
           {"fact": "throttle.similarity", "operator": "eq", "value": 1.0}
         ]}
@@ -60,12 +61,13 @@
         {"all_of": [
           {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
           {"fact": "time_gap.significant", "operator": "eq", "value": true},
-          {"fact": "time_gap.has_spike", "operator": "eq", "value": true}
+          {"fact": "time_gap.middle_has_significant_rise", "operator": "eq", "value": true}
         ]},
         {"all_of": [
+          {"fact": "time_gap.direction", "operator": "eq", "value": "falling"},
           {"fact": "time_gap.end_ms", "operator": "gt", "value": 0},
           {"fact": "time_gap.ending_direction", "operator": "eq", "value": "rising"},
-          {"fact": "time_gap.has_spike", "operator": "eq", "value": true}
+          {"fact": "time_gap.middle_has_significant_rise", "operator": "eq", "value": true}
         ]}
       ]
     },
@@ -77,20 +79,31 @@
       "enabled": true,
       "any_of": [
         {"all_of": [
-          {"fact": "time_gap.direction", "operator": "eq", "value": "falling"},
-          {"fact": "time_gap.significant", "operator": "eq", "value": true}
+          {"fact": "time_gap.starting_direction", "operator": "eq", "value": "rising"},
+          {"fact": "time_gap.middle_has_significant_rise", "operator": "eq", "value": false},
+          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "flat"},
+          {"fact": "trajectory.converging", "operator": "eq", "value": true}
         ]},
         {"all_of": [
-          {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
-          {"fact": "time_gap.has_spike", "operator": "eq", "value": false},
-          {"fact": "time_gap.slope_shape", "operator": "in", "value": ["slope_decreasing_over_section", "reversing_to_falling_within_section"]},
-          {"fact": "trajectory.converging", "operator": "eq", "value": true}
+          {"fact": "time_gap.starting_direction", "operator": "eq", "value": "rising"},
+          {"fact": "time_gap.middle_has_significant_rise", "operator": "eq", "value": false},
+          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "flat"},
+          {"fact": "speed.gap_closing", "operator": "eq", "value": true}
         ]}
       ]
     },
-    "PS": {"enabled": true, "any_of": [{"all_of": [
-      {"fact": "section.is_pit", "operator": "eq", "value": true}
-    ]}]},
+    "PS": {"enabled": true, "any_of": [
+      {"all_of": [
+        {"fact": "section.overlap_names", "operator": "contains", "value": "Pit"},
+        {"fact": "trajectory.peak_abs_offset_m", "operator": "gt", "value": 3.0},
+        {"fact": "speed.expert_faster", "operator": "eq", "value": true},
+        {"fact": "speed.gap_peak_abs_kmh", "operator": "gt", "value": 50}
+      ]},
+      {"all_of": [
+        {"fact": "section.overlap_names", "operator": "contains", "value": "Pit"},
+        {"fact": "trajectory.peak_abs_offset_m", "operator": "gte", "value": 10.0}
+      ]}
+    ]},
     "O": {"enabled": true, "any_of": [{"all_of": [
       {"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"},
       {"fact": "opponent.confidence_level", "operator": "in", "value": ["medium", "high"]}

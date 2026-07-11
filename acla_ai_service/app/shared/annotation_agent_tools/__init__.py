@@ -5200,8 +5200,8 @@ def _build_trajectory_gas_brake(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     return out
 
 
-def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
-    """The signed offset line + expert positions (for phase marker placement)."""
+def calculate_trajectory_offset(df: pd.DataFrame) -> Optional[np.ndarray]:
+    """Calculate signed player-to-expert offset from raw position telemetry."""
     track = _resolve_track_config(df)
     if not all(track.get(k) for k in ("player_x", "player_y", "expert_x", "expert_y")):
         return None
@@ -5235,12 +5235,21 @@ def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
 
     sign_flip = -np.sign(kappa[kappa_idx])
     sign_flip = np.where(sign_flip == 0, 1.0, sign_flip)
-    offset = lateral_offset * sign_flip
+    return (lateral_offset * sign_flip).astype(float)
+
+
+def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """The signed offset line + expert positions (for phase marker placement)."""
+    offset = calculate_trajectory_offset(df)
+    if offset is None:
+        return None
+    track = _resolve_track_config(df)
+    ex_col, ey_col = track["expert_x"], track["expert_y"]
 
     # Expert positions stay in the table so the renderer's phase detection
     # has the kinematic inputs it needs after the parent's projection.
     out = df.loc[:, [ex_col, ey_col]].copy()
-    out["trajectory_offset"] = offset.astype(float)
+    out["trajectory_offset"] = offset
     return out
 
 

@@ -260,7 +260,7 @@ LABEL_MAPPING: Dict[str, str] = {
     "mount_panorama19":"The Chase 2nd turn",
     "mount_panorama20":"The Chase 3rd turn",
     "mount_panorama21":"Murray's Corner",
-    "mount_panorama22":"Pit Straight",
+    "mount_panorama22":"Pit",
 
     #watkins_glen
     "watkins_glen":"Watkins Glen",
@@ -323,7 +323,7 @@ LABEL_MAPPING: Dict[str, str] = {
     "cota17":"Turn 16, 17 and 18",
     "cota18":"Turn 19",
     "cota19":"Turn 20",
-    "cota20":"Pit Straight",
+    "cota20":"Pit",
 
     
     ################### Segment Type ###################

@@ -24,13 +24,100 @@ def test_ea_accepts_either_complete_requirement_branch():
     second = deterministic.evaluate_requirements(
         requirements,
         {
-            "time_gap.has_spike": False,
+            "time_gap.total_change_abs_ms": 50,
+            "time_gap.has_significant_rise": False,
             "brake.similarity": 1.0,
             "throttle.similarity": 1.0,
         },
     )
     assert first.matched and first.branch == 0
     assert second.matched and second.branch == 1
+
+
+def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
+    def fake_query(_df, _name, _args):
+        return ({
+            "samples": [{"value": 0}, {"value": 100}],
+            "extra": {
+                "delta_value": 100,
+                "total_change_direction": "rising",
+                "total_change_is_label_significant": True,
+                "slope_shape": "slope_steady_over_section",
+                "point_trend_runs": [
+                    {
+                        "start_iloc": 0, "end_iloc": 2, "direction": "rising",
+                        "is_label_significant": True,
+                    },
+                    {
+                        "start_iloc": 2, "end_iloc": 8, "direction": "falling",
+                        "is_label_significant": True,
+                    },
+                    {
+                        "start_iloc": 8, "end_iloc": 10, "direction": "rising",
+                        "is_label_significant": True,
+                    },
+                ],
+            },
+        }, None)
+
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
+    )
+
+    facts = deterministic._slope_facts(pd.DataFrame(), 0, 10)
+
+    assert facts["time_gap.starting_direction"] == "rising"
+    assert facts["time_gap.ending_direction"] == "rising"
+    assert facts["time_gap.has_significant_rise"] is True
+    assert facts["time_gap.middle_has_significant_rise"] is False
+
+
+def test_behavior_requirements_respect_slope_location():
+    msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
+    rm = deterministic._requirements_for("RM", deterministic.get_label("RM"))
+
+    rising_only_at_start = {
+        "time_gap.direction": "rising",
+        "time_gap.significant": True,
+        "time_gap.middle_has_significant_rise": False,
+    }
+    falling_with_middle_rise = {
+        "time_gap.direction": "falling",
+        "time_gap.significant": True,
+        "time_gap.middle_has_significant_rise": True,
+    }
+    recovery_merge = {
+        "time_gap.starting_direction": "rising",
+        "time_gap.middle_has_significant_rise": False,
+        "time_gap.ending_direction": "flat",
+        "trajectory.converging": True,
+    }
+    no_recovery_action = {
+        "time_gap.starting_direction": "rising",
+        "time_gap.middle_has_significant_rise": False,
+        "time_gap.ending_direction": "flat",
+        "trajectory.converging": False,
+        "speed.gap_closing": False,
+    }
+
+    assert not deterministic.evaluate_requirements(msp, rising_only_at_start).matched
+    assert not deterministic.evaluate_requirements(rm, falling_with_middle_rise).matched
+    assert deterministic.evaluate_requirements(rm, recovery_merge).matched
+    assert deterministic.evaluate_requirements(rm, {
+        **recovery_merge,
+        "trajectory.converging": False,
+        "speed.gap_closing": True,
+    }).matched
+    assert not deterministic.evaluate_requirements(rm, {
+        **recovery_merge, "time_gap.starting_direction": "falling",
+    }).matched
+    assert not deterministic.evaluate_requirements(rm, {
+        **recovery_merge, "time_gap.middle_has_significant_rise": True,
+    }).matched
+    assert not deterministic.evaluate_requirements(rm, {
+        **recovery_merge, "time_gap.ending_direction": "falling",
+    }).matched
+    assert not deterministic.evaluate_requirements(rm, no_recovery_action).matched
 
 
 def test_missing_fact_fails_closed():
@@ -44,6 +131,143 @@ def test_missing_fact_fails_closed():
         {},
     )
     assert not result.matched
+
+
+def test_pit_stop_requires_pit_section_and_raw_telemetry():
+    df = pd.DataFrame({
+        "Graphics_player_pos_x": [0.0, 1.0, 2.0, 3.0],
+        "Graphics_player_pos_y": [4.0, 4.0, 4.0, 4.0],
+        "expert_optimal_player_pos_x": [0.0, 1.0, 2.0, 3.0],
+        "expert_optimal_player_pos_y": [0.0, 0.0, 0.0, 0.0],
+        "Physics_speed_kmh": [40.0, 40.0, 40.0, 40.0],
+        "expert_optimal_speed": [100.0, 100.0, 100.0, 100.0],
+        "speed_difference": [-999.0, -999.0, -999.0, -999.0],
+        "trajectory_offset": [0.0, 0.0, 0.0, 0.0],
+    })
+    requirements = deterministic._requirements_for(
+        "PS", deterministic.get_label("PS")
+    )
+    pit_facts, _ = deterministic.calculate_facts(
+        df, 0, 3, section_id="silverstone22"
+    )
+    straight_facts, _ = deterministic.calculate_facts(
+        df, 0, 3, section_id="silverstone13"
+    )
+
+    assert pit_facts["section.name"] == "Pit"
+    assert pit_facts["section.overlap_names"] == ["Pit"]
+    assert pit_facts["trajectory.peak_abs_offset_m"] == 4.0
+    assert pit_facts["speed.gap_peak_abs_kmh"] == 60.0
+    assert deterministic.evaluate_requirements(requirements, pit_facts).matched
+    assert not deterministic.evaluate_requirements(requirements, straight_facts).matched
+
+
+def test_pit_stop_checks_overlaps_when_splitter_selects_adjacent_straight(monkeypatch):
+    class Attachment:
+        content = {
+            "best_match": None,
+            "top_matches": [
+                {"label_id": "brands_hatch1"},
+                {"label_id": "brands_hatch17"},
+            ],
+        }
+
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.locate_circuit_section",
+        lambda *_args, **_kwargs: Attachment(),
+    )
+    monkeypatch.setattr(
+        deterministic,
+        "calculate_facts",
+        lambda *_args, **_kwargs: ({
+            "trajectory.peak_abs_offset_m": 4.0,
+            "speed.expert_faster": True,
+            "speed.gap_peak_abs_kmh": 60.0,
+        }, []),
+    )
+
+    result = deterministic.calculate_lap_annotation(
+        pd.DataFrame(index=range(4)),
+        lap_start=0,
+        lap_end=3,
+        section_id="brands_hatch1",
+        section_start=0,
+        section_end=3,
+        circuit_id="brands_hatch",
+    )
+
+    assert result.section_id == "brands_hatch17"
+    assert result.label_ids == ["brands_hatch", "brands_hatch17", "PS"]
+
+
+def test_pit_stop_accepts_ten_metre_separation_without_speed_evidence():
+    requirements = deterministic._requirements_for(
+        "PS", deterministic.get_label("PS")
+    )
+
+    assert deterministic.evaluate_requirements(requirements, {
+        "section.overlap_names": ["Pit"],
+        "trajectory.peak_abs_offset_m": 10.0,
+    }).matched
+    assert not deterministic.evaluate_requirements(requirements, {
+        "section.overlap_names": ["Pit"],
+        "trajectory.peak_abs_offset_m": 9.9,
+    }).matched
+    assert not deterministic.evaluate_requirements(requirements, {
+        "section.overlap_names": ["Straight"],
+        "trajectory.peak_abs_offset_m": 10.0,
+    }).matched
+
+
+def test_far_driver_in_overlapping_pit_prefers_ps_over_rm(monkeypatch):
+    monkeypatch.setattr(
+        deterministic,
+        "calculate_facts",
+        lambda *_args, **_kwargs: ({
+            "trajectory.peak_abs_offset_m": 10.0,
+            "time_gap.direction": "falling",
+            "time_gap.significant": True,
+        }, []),
+    )
+
+    result = deterministic.calculate_lap_annotation(
+        pd.DataFrame(index=range(4)),
+        lap_start=0,
+        lap_end=3,
+        section_id="silverstone22",
+        section_start=0,
+        section_end=3,
+        circuit_id="silverstone",
+    )
+
+    assert result.label_ids == ["silverstone", "silverstone22", "PS"]
+    assert all(item["value"] != "PS / RM" for item in result.rejected_proposals)
+
+
+def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():
+    df = pd.DataFrame({
+        "Physics_slip_angle_front_left": [0.01, 0.01],
+        "Physics_slip_angle_front_right": [0.01, 0.01],
+        "Physics_slip_angle_rear_left": [0.20, 0.20],
+        "Physics_slip_angle_rear_right": [0.20, 0.20],
+        "Physics_slip_ratio_front_left": [0.01, 0.01],
+        "Physics_slip_ratio_front_right": [0.01, 0.01],
+        "Physics_slip_ratio_rear_left": [0.20, 0.20],
+        "Physics_slip_ratio_rear_right": [0.20, 0.20],
+        "trajectory_balance": [-1.0, -1.0],
+        "driver_push_to_limit": [0.0, 0.0],
+    })
+    facts, _ = deterministic.calculate_facts(df, 0, 1)
+    assert facts["balance.oversteer"] is True
+    assert facts["balance.understeer"] is False
+    assert facts["grip.over_limit"] is True
+
+
+def test_section_name_comes_from_catalog_mapping():
+    facts, _ = deterministic.calculate_facts(
+        pd.DataFrame(index=range(3)), 0, 2, section_id="silverstone22"
+    )
+    assert facts["section.name"] == "Pit"
 
 
 def test_disabled_label_never_matches():

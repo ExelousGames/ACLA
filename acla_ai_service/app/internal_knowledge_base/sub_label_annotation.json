@@ -24,7 +24,7 @@
   ],
   "selection_requirements": {
     "RM1": {"enabled": true, "any_of": [{"all_of": [{"fact": "trajectory.peak_abs_offset_m", "operator": "gt", "value": 1.0}, {"fact": "trajectory.converging", "operator": "eq", "value": true}]}]},
-    "PS1": {"enabled": true, "any_of": [{"all_of": [{"fact": "section.is_pit", "operator": "eq", "value": true}, {"fact": "throttle.application_onset_relation", "operator": "exists", "value": true}]}]},
+    "PS1": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "exists", "value": true}, {"fact": "trajectory.converging", "operator": "eq", "value": true}]}]},
     "RM5": {"enabled": true, "any_of": [{"all_of": [{"fact": "speed.expert_faster", "operator": "eq", "value": true}, {"fact": "speed.gap_peak_abs_kmh", "operator": "gt", "value": 20}, {"fact": "speed.gap_closing", "operator": "eq", "value": true}]}]},
     "RM6": {"enabled": true, "any_of": [{"all_of": [{"fact": "speed.expert_faster", "operator": "eq", "value": true}, {"fact": "speed.gap_peak_abs_kmh", "operator": "lte", "value": 20}, {"fact": "speed.gap_closing", "operator": "eq", "value": true}]}]},
     "RM7": {"enabled": true, "any_of": [{"all_of": [{"fact": "trajectory.converging", "operator": "eq", "value": true}]}]},

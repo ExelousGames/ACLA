@@ -21,7 +21,7 @@ from app.shared.labels import LABEL_MAPPING
 
 SUPPORTED_OPERATORS = frozenset({
     "eq", "neq", "in", "not_in", "lt", "lte", "gt", "gte",
-    "between", "exists",
+    "between", "contains", "exists",
 })
 KNOWN_FACTS = frozenset({
     "altitude.apex.trend", "altitude.entry.trend", "altitude.exit.trend",
@@ -34,14 +34,17 @@ KNOWN_FACTS = frozenset({
     "grip.over_limit", "grip.sustained_low",
     "opponent.confidence_level", "opponent.drew_alongside", "opponent.gap_shrank",
     "opponent.outcome", "opponent.side_swap",
-    "phase.apex", "phase.entry", "phase.exit", "section.is_pit",
+    "phase.apex", "phase.entry", "phase.exit",
+    "section.name", "section.overlap_names",
     "segment.corner_shape_key", "segment.shape_key",
     "speed.expert_faster", "speed.gap_closing", "speed.gap_peak_abs_kmh",
     "throttle.application_end_relation", "throttle.application_onset_relation",
     "throttle.release_end_relation", "throttle.release_onset_relation",
     "throttle.similarity", "time_gap.direction", "time_gap.end_ms",
-    "time_gap.ending_direction", "time_gap.has_spike", "time_gap.significant",
-    "time_gap.slope_shape", "time_gap.total_change_abs_ms",
+    "time_gap.ending_direction", "time_gap.has_significant_rise",
+    "time_gap.has_spike", "time_gap.middle_has_significant_rise",
+    "time_gap.significant", "time_gap.slope_shape", "time_gap.starting_direction",
+    "time_gap.total_change_abs_ms",
     "trajectory.converging", "trajectory.peak_abs_offset_m", "trajectory.position",
     "turn.apex_relation", "turn.exit_relation", "turn.in_relation",
 })
@@ -76,6 +79,60 @@ def _series(df: pd.DataFrame, *names: str) -> Optional[np.ndarray]:
             if np.any(np.isfinite(values)):
                 return values
     return None
+
+
+def _raw_speed_delta(segment: pd.DataFrame) -> Optional[np.ndarray]:
+    player = _series(segment, "Physics_speed_kmh")
+    expert = _series(segment, "expert_optimal_speed")
+    if player is None or expert is None or len(player) != len(expert):
+        return None
+    return expert - player
+
+
+def _raw_trajectory_offset(segment: pd.DataFrame) -> Optional[np.ndarray]:
+    from app.shared.annotation_agent_tools import calculate_trajectory_offset
+
+    return calculate_trajectory_offset(segment)
+
+
+def _raw_slip_balance(segment: pd.DataFrame) -> Optional[np.ndarray]:
+    front_left = _series(segment, "Physics_slip_angle_front_left")
+    front_right = _series(segment, "Physics_slip_angle_front_right")
+    rear_left = _series(segment, "Physics_slip_angle_rear_left")
+    rear_right = _series(segment, "Physics_slip_angle_rear_right")
+    if any(value is None for value in (front_left, front_right, rear_left, rear_right)):
+        return None
+    return (np.abs(rear_left) + np.abs(rear_right)) / 2.0 - (
+        np.abs(front_left) + np.abs(front_right)
+    ) / 2.0
+
+
+def _raw_push_to_limit(segment: pd.DataFrame) -> Optional[np.ndarray]:
+    from app.shared.tire_grip_features import SlipEnvelopeConfig
+
+    angle_names = (
+        "Physics_slip_angle_front_left", "Physics_slip_angle_front_right",
+        "Physics_slip_angle_rear_left", "Physics_slip_angle_rear_right",
+    )
+    ratio_names = (
+        "Physics_slip_ratio_front_left", "Physics_slip_ratio_front_right",
+        "Physics_slip_ratio_rear_left", "Physics_slip_ratio_rear_right",
+    )
+    angles = [_series(segment, name) for name in angle_names]
+    ratios = [_series(segment, name) for name in ratio_names]
+    if any(value is None for value in [*angles, *ratios]):
+        return None
+    config = SlipEnvelopeConfig()
+    lateral = np.maximum.reduce([np.abs(value) for value in angles])
+    longitudinal = np.maximum.reduce([np.abs(value) for value in ratios])
+    normalized_lateral = lateral / max(config.front_slip_limit, config.rear_slip_limit)
+    normalized_longitudinal = longitudinal / max(
+        config.front_longitudinal_slip_limit, config.rear_longitudinal_slip_limit,
+    )
+    return np.sqrt(
+        (config.slip_angle_weight * normalized_lateral) ** 2
+        + (config.slip_ratio_weight * normalized_longitudinal) ** 2
+    )
 
 
 def _first(mask: np.ndarray, index: np.ndarray) -> Optional[int]:
@@ -166,12 +223,27 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
     values = [s.get("value") for s in samples if isinstance(s, dict)]
     delta = extra.get("delta_value")
     runs = extra.get("point_trend_runs") or []
+    significant_rises = [
+        run for run in runs
+        if isinstance(run, dict)
+        and run.get("direction") == "rising"
+        and run.get("is_label_significant") is True
+    ]
     has_spike = any(
         isinstance(run, dict)
         and run.get("direction") == "rising"
         and run.get("is_label_significant") is True
         for run in runs[:-1]
     )
+    section_length = max(int(end) - int(start), 1)
+    middle_start = int(start) + section_length / 3.0
+    middle_end = int(end) - section_length / 3.0
+    middle_has_significant_rise = any(
+        float(run.get("end_iloc", start)) > middle_start
+        and float(run.get("start_iloc", end)) < middle_end
+        for run in significant_rises
+    )
+    start_direction = runs[0].get("direction") if runs and isinstance(runs[0], dict) else None
     end_direction = runs[-1].get("direction") if runs and isinstance(runs[-1], dict) else None
     return {
         "time_gap.total_change_ms": delta,
@@ -179,7 +251,10 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
         "time_gap.direction": extra.get("total_change_direction"),
         "time_gap.significant": extra.get("total_change_is_label_significant"),
         "time_gap.slope_shape": extra.get("slope_shape"),
+        "time_gap.starting_direction": start_direction,
         "time_gap.ending_direction": end_direction,
+        "time_gap.has_significant_rise": bool(significant_rises),
+        "time_gap.middle_has_significant_rise": middle_has_significant_rise,
         "time_gap.has_spike": has_spike,
         "time_gap.start_ms": values[0] if values else None,
         "time_gap.end_ms": values[-1] if values else None,
@@ -268,24 +343,28 @@ def calculate_facts(
 ) -> Tuple[Dict[str, Any], List[Tuple[int, int]]]:
     """Calculate normalized facts and reusable phase windows for one range."""
     segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
-    facts: Dict[str, Any] = {"section.id": section_id, "section.is_pit": "pit" in section_id.lower()}
+    facts: Dict[str, Any] = {
+        "section.id": section_id,
+        "section.name": LABEL_MAPPING.get(section_id),
+        "section.overlap_names": [LABEL_MAPPING[section_id]] if section_id in LABEL_MAPPING else [],
+    }
     facts.update(_slope_facts(df, start, end))
     shape, phase_ranges = _shape_facts(df, start, end)
     facts.update(shape)
     facts.update(_opponent_facts(df, start, end))
 
     index = segment.index.to_numpy(dtype=int)
-    brake = _input_landmarks(_series(segment, "Physics_brake", "brake"), index)
-    expert_brake = _input_landmarks(_series(segment, "expert_optimal_brake", "expert_brake"), index)
-    throttle = _input_landmarks(_series(segment, "Physics_gas", "throttle"), index)
-    expert_throttle = _input_landmarks(_series(segment, "expert_optimal_throttle", "expert_throttle"), index)
+    brake = _input_landmarks(_series(segment, "Physics_brake"), index)
+    expert_brake = _input_landmarks(_series(segment, "expert_optimal_brake"), index)
+    throttle = _input_landmarks(_series(segment, "Physics_gas"), index)
+    expert_throttle = _input_landmarks(_series(segment, "expert_optimal_throttle"), index)
     _add_input_facts(facts, "brake", brake, expert_brake)
     _add_input_facts(facts, "throttle", throttle, expert_throttle)
 
-    player_brake = _series(segment, "Physics_brake", "brake")
-    player_throttle = _series(segment, "Physics_gas", "throttle")
-    expert_b = _series(segment, "expert_optimal_brake", "expert_brake")
-    expert_t = _series(segment, "expert_optimal_throttle", "expert_throttle")
+    player_brake = _series(segment, "Physics_brake")
+    player_throttle = _series(segment, "Physics_gas")
+    expert_b = _series(segment, "expert_optimal_brake")
+    expert_t = _series(segment, "expert_optimal_throttle")
     if player_brake is not None and expert_b is not None:
         facts["brake.similarity"] = float(np.mean(np.isclose(player_brake, expert_b, atol=0.02, equal_nan=False)))
     if player_throttle is not None and expert_t is not None:
@@ -306,7 +385,7 @@ def calculate_facts(
     if "phase.entry" in facts and "phase.exit" in facts:
         facts["phase.apex"] = bool(facts["phase.entry"] and facts["phase.exit"])
 
-    speed_delta = _series(segment, "speed_difference", "speed_delta")
+    speed_delta = _raw_speed_delta(segment)
     if speed_delta is not None:
         finite = speed_delta[np.isfinite(speed_delta)]
         if len(finite):
@@ -314,7 +393,7 @@ def calculate_facts(
             facts["speed.expert_faster"] = float(np.nanmedian(finite)) > 0
             facts["speed.gap_closing"] = abs(float(finite[-1])) < abs(float(finite[0]))
 
-    trajectory = _series(segment, "trajectory_offset")
+    trajectory = _raw_trajectory_offset(segment)
     if trajectory is not None:
         finite = trajectory[np.isfinite(trajectory)]
         if len(finite):
@@ -325,8 +404,8 @@ def calculate_facts(
             median = float(np.nanmedian(finite))
             facts["trajectory.position"] = "aligned" if abs(median) <= 0.5 else "wider" if median > 0 else "tighter"
 
-    player_steer = _series(segment, "Physics_steer", "steering")
-    expert_steer = _series(segment, "expert_optimal_steer", "expert_steering")
+    player_steer = _series(segment, "Physics_steer_angle")
+    expert_steer = _series(segment, "expert_optimal_steering")
     if player_steer is not None and expert_steer is not None:
         def _steer_marks(values: np.ndarray) -> Tuple[Optional[int], Optional[int], Optional[int]]:
             absolute = np.abs(values)
@@ -345,19 +424,19 @@ def calculate_facts(
         facts["turn.apex_relation"] = _relation(p_apex, e_apex)
         facts["turn.exit_relation"] = _relation(p_exit, e_exit)
 
-    balance = _series(segment, "trajectory_balance")
+    balance = _raw_slip_balance(segment)
     if balance is not None:
         facts["balance.oversteer"] = bool(np.nanmax(balance) > 0.02)
         facts["balance.understeer"] = bool(np.nanmin(balance) < -0.02)
-    push = _series(segment, "driver_push_to_limit", "push_limit")
+    push = _raw_push_to_limit(segment)
     if push is not None:
         facts["grip.max"] = float(np.nanmax(push))
         facts["grip.min"] = float(np.nanmin(push))
         facts["grip.over_limit"] = bool(np.nanmax(push) > 1.0)
         facts["grip.sustained_low"] = bool(np.mean(push < 0.8) >= 0.5)
 
-    player_gear = _series(segment, "Physics_gear", "gear")
-    expert_gear = _series(segment, "expert_optimal_gear", "expert_gear")
+    player_gear = _series(segment, "Physics_gear")
+    expert_gear = _series(segment, "expert_optimal_gear")
     if player_gear is not None and expert_gear is not None:
         facts["gear.exit_relation"] = (
             "lower" if player_gear[-1] < expert_gear[-1]
@@ -389,6 +468,7 @@ def _compare(actual: Any, operator: str, expected: Any = None) -> bool:
         if operator == "gt": return actual > expected
         if operator == "gte": return actual >= expected
         if operator == "between": return expected[0] <= actual <= expected[1]
+        if operator == "contains": return expected in actual
     except (TypeError, ValueError, IndexError):
         return False
     return False
@@ -508,20 +588,21 @@ def _reason(label_id: str, evaluation: RequirementEvaluation, start: int, end: i
     return f"Deterministic requirements matched branch {branch} over [{start}, {end}]. {evidence}"
 
 
-def _resolve_circuit_section(
+def _resolve_circuit_sections(
     df: pd.DataFrame, circuit_id: str, section_id: str, start: int, end: int,
     opponent_interaction: Optional[dict],
-) -> str:
-    if section_id in LABEL_MAPPING and section_id != "interaction_window":
-        return section_id
+) -> Tuple[str, List[str]]:
+    primary_id = (
+        section_id
+        if section_id in LABEL_MAPPING and section_id != "interaction_window"
+        else None
+    )
     context_ids = []
     if isinstance(opponent_interaction, dict):
         for context in opponent_interaction.get("section_context") or []:
             candidate = context.get("circuit_section_id") if isinstance(context, dict) else None
             if candidate in LABEL_MAPPING and candidate not in context_ids:
                 context_ids.append(candidate)
-    if len(context_ids) == 1:
-        return context_ids[0]
     try:
         from app.shared.annotation_agent_tools import locate_circuit_section
         content = _attachment_content(locate_circuit_section(df, circuit_id, start, end))
@@ -529,12 +610,42 @@ def _resolve_circuit_section(
         content = {}
     best = content.get("best_match") or {}
     candidate = best.get("label_id") if isinstance(best, dict) else None
-    if candidate in LABEL_MAPPING:
-        return candidate
     matches = content.get("top_matches") or []
-    if matches and isinstance(matches[0], dict) and matches[0].get("label_id") in LABEL_MAPPING:
-        return str(matches[0]["label_id"])
-    return section_id
+    overlap_ids = [
+        str(match["label_id"])
+        for match in matches
+        if isinstance(match, dict) and match.get("label_id") in LABEL_MAPPING
+    ]
+    candidate_ids = [*([primary_id] if primary_id else []), *context_ids, *overlap_ids]
+    candidate_ids = [
+        value for index, value in enumerate(candidate_ids)
+        if value not in candidate_ids[:index]
+    ]
+    if primary_id:
+        return primary_id, candidate_ids
+    if len(context_ids) == 1:
+        return context_ids[0], candidate_ids
+    if candidate in LABEL_MAPPING:
+        return str(candidate), candidate_ids or [str(candidate)]
+    if candidate_ids:
+        return candidate_ids[0], candidate_ids
+    return section_id, []
+
+
+def _resolve_circuit_section(
+    df: pd.DataFrame, circuit_id: str, section_id: str, start: int, end: int,
+    opponent_interaction: Optional[dict],
+) -> str:
+    resolved, _ = _resolve_circuit_sections(
+        df, circuit_id, section_id, start, end, opponent_interaction,
+    )
+    return resolved
+
+
+def _is_far_from_expert_in_pit(facts: Mapping[str, Any]) -> bool:
+    overlap_names = facts.get("section.overlap_names") or []
+    offset = facts.get("trajectory.peak_abs_offset_m")
+    return "Pit" in overlap_names and isinstance(offset, (int, float)) and offset >= 10.0
 
 
 def calculate_lap_annotation(
@@ -546,15 +657,30 @@ def calculate_lap_annotation(
     session = "racing" if opponent_interaction or "interaction" in str(section_split_basis or "") else "practice"
     eligible = skills.get(f"lap_annotation.behavior_parent_label_ids.eligible_by_session.{session}", [])
     eligible = [label for label in eligible if label in skills.get("lap_annotation.labels", {})]
-    resolved_section_id = _resolve_circuit_section(
+    resolved_section_id, overlap_section_ids = _resolve_circuit_sections(
         df, circuit_id, section_id, section_start, section_end, opponent_interaction,
     )
     facts, _ = calculate_facts(
         df, section_start, section_end, section_id=resolved_section_id,
     )
+    facts["section.overlap_names"] = [
+        LABEL_MAPPING[candidate]
+        for candidate in overlap_section_ids
+        if candidate in LABEL_MAPPING
+    ]
+    if _is_far_from_expert_in_pit(facts):
+        eligible = [label for label in eligible if label != "RM"]
     evaluated = evaluate_labels(eligible, facts)
     segment_types = evaluate_labels([f"ST{i}" for i in range(1, 12)], facts)
     behavior = evaluated.labels
+    if "PS" in behavior:
+        resolved_section_id = next(
+            (
+                candidate for candidate in overlap_section_ids
+                if LABEL_MAPPING.get(candidate) == "Pit"
+            ),
+            resolved_section_id,
+        )
     child_ids = [
         doc["id"] for doc in skills.iter("sub_label_annotation.labels")
         if doc.get("type") == "sub" and doc.get("parent") in set(behavior)
@@ -603,9 +729,8 @@ def _candidate_ranges(
     ranges: List[Tuple[int, int]] = list(phase_ranges)
     segment = df.loc[(df.index >= start) & (df.index <= end)]
     for names in (
-        ("Physics_brake", "brake"), ("Physics_gas", "throttle"),
-        ("trajectory_balance",), ("trajectory_offset",),
-        ("Physics_gear", "gear"), ("driver_push_to_limit", "push_limit"),
+        ("Physics_brake",), ("Physics_gas",),
+        ("Physics_steer_angle",), ("Physics_gear",),
     ):
         values = _series(segment, *names)
         if values is None or len(values) < 3:
@@ -662,8 +787,6 @@ def calculate_detailed_annotation(
                     facts[key] = value
                 else:
                     facts.setdefault(key, value)
-        if "PS" in parent_main_labels:
-            facts["section.is_pit"] = True
         evaluated = evaluate_labels([*parent_children, *segment_types], facts)
         conflicts.extend(evaluated.conflicts)
         for label_id in evaluated.labels:
