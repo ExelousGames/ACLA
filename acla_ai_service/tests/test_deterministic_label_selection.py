@@ -218,6 +218,32 @@ def test_missing_fact_fails_closed():
         {},
     )
     assert not result.matched
+    assert result.passed == []
+    assert result.failed == ["time_gap.direction: unavailable"]
+
+
+def test_failed_requirement_reports_facts_from_closest_branch_only():
+    result = deterministic.evaluate_requirements(
+        {
+            "enabled": True,
+            "any_of": [
+                {"all_of": [
+                    {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
+                    {"fact": "time_gap.significant", "operator": "eq", "value": True},
+                ]},
+                {"all_of": [
+                    {"fact": "time_gap.direction", "operator": "eq", "value": "falling"},
+                    {"fact": "time_gap.end_ms", "operator": "gt", "value": 0},
+                    {"fact": "time_gap.ending_direction", "operator": "eq", "value": "rising"},
+                ]},
+            ],
+        },
+        {"time_gap.direction": "rising", "time_gap.significant": False},
+    )
+
+    assert not result.matched
+    assert result.passed == ["time_gap.direction: 'rising'"]
+    assert result.failed == ["time_gap.significant: False"]
 
 
 def test_pit_stop_requires_pit_section_and_raw_telemetry():
@@ -484,7 +510,9 @@ def test_lap_result_explains_failed_behavior_requirements(monkeypatch):
     rejected = {item["value"]: item["reason"] for item in result.rejected_proposals}
     assert set(rejected) == {"EA", "PS", "RM", "MSP"}
     assert "time_gap.total_change_abs_ms" in rejected["EA"]
-    assert "actual=None" in rejected["EA"]
+    assert "Failed — time_gap.total_change_abs_ms: unavailable" in rejected["EA"]
+    assert "branch" not in rejected["EA"]
+    assert " operator " not in rejected["EA"]
 
 
 def test_annotation_flows_do_not_import_removed_retrieval_code():

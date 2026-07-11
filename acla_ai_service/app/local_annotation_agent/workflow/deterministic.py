@@ -502,11 +502,10 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
     branches = requirements.get("any_of")
     if not isinstance(branches, list) or not branches:
         return RequirementEvaluation(False, failed=["no valid requirement branches"])
-    all_failures: List[str] = []
+    closest_branch: Optional[RequirementEvaluation] = None
     for branch_index, branch in enumerate(branches):
         predicates = branch.get("all_of") if isinstance(branch, dict) else None
         if not isinstance(predicates, list) or not predicates:
-            all_failures.append(f"branch {branch_index}: empty all_of")
             continue
         passed: List[str] = []
         failed: List[str] = []
@@ -518,12 +517,17 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
             operator = str(predicate.get("operator") or "")
             expected = predicate.get("value")
             actual = facts.get(fact, _MISSING)
-            text = f"{fact} {operator} {expected!r} (actual={None if actual is _MISSING else actual!r})"
+            value = "unavailable" if actual is _MISSING else repr(actual)
+            text = f"{fact}: {value}"
             (passed if _compare(actual, operator, expected) else failed).append(text)
         if not failed:
             return RequirementEvaluation(True, branch_index, passed, [])
-        all_failures.extend(f"branch {branch_index}: {item}" for item in failed)
-    return RequirementEvaluation(False, failed=all_failures)
+        candidate = RequirementEvaluation(False, branch_index, passed, failed)
+        if closest_branch is None or (len(failed), -len(passed)) < (
+            len(closest_branch.failed), -len(closest_branch.passed)
+        ):
+            closest_branch = candidate
+    return closest_branch or RequirementEvaluation(False, failed=["facts unavailable"])
 
 
 def validate_catalog() -> List[str]:
@@ -620,9 +624,7 @@ def evaluate_labels(label_ids: Iterable[str], facts: Mapping[str, Any]) -> Label
 
 
 def _reason(label_id: str, evaluation: RequirementEvaluation, start: int, end: int) -> str:
-    branch = evaluation.branch if evaluation.branch is not None else "?"
-    evidence = "; ".join(evaluation.passed)
-    return f"Deterministic requirements matched branch {branch} over [{start}, {end}]. {evidence}"
+    return "; ".join(f"Passed — {fact}" for fact in evaluation.passed)
 
 
 def _resolve_circuit_sections(
@@ -735,7 +737,13 @@ def calculate_lap_annotation(
         for label in children.labels
     )
     rejected = [
-        {"value": label_id, "reason": "; ".join(evaluation.failed)}
+        {
+            "value": label_id,
+            "reason": "; ".join([
+                *(f"Passed — {fact}" for fact in evaluation.passed),
+                *(f"Failed — {fact}" for fact in evaluation.failed),
+            ]),
+        }
         for label_id, evaluation in evaluated.evaluations.items()
         if not evaluation.matched
     ]
