@@ -42,8 +42,10 @@ KNOWN_FACTS = frozenset({
     "throttle.release_end_relation", "throttle.release_onset_relation",
     "throttle.similarity", "time_gap.direction", "time_gap.end_ms",
     "time_gap.ending_direction", "time_gap.has_significant_rise",
-    "time_gap.has_spike", "time_gap.middle_has_significant_rise",
-    "time_gap.significant", "time_gap.slope_shape", "time_gap.starting_direction",
+    "time_gap.has_spike", "time_gap.middle_has_new_significant_rise",
+    "time_gap.middle_has_significant_rise",
+    "time_gap.rises_then_flattens", "time_gap.significant", "time_gap.slope_shape",
+    "time_gap.starting_direction",
     "time_gap.total_change_abs_ms",
     "trajectory.converging", "trajectory.peak_abs_offset_m", "trajectory.position",
     "turn.apex_relation", "turn.exit_relation", "turn.in_relation",
@@ -243,8 +245,24 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
         and float(run.get("start_iloc", end)) < middle_end
         for run in significant_rises
     )
-    start_direction = runs[0].get("direction") if runs and isinstance(runs[0], dict) else None
-    end_direction = runs[-1].get("direction") if runs and isinstance(runs[-1], dict) else None
+    middle_has_new_significant_rise = any(
+        middle_start <= float(run.get("start_iloc", start)) < middle_end
+        for run in significant_rises
+    )
+    start_direction = (
+        runs[0].get("direction") if runs and isinstance(runs[0], dict) else None
+    )
+    end_direction = (
+        runs[-1].get("direction") if runs and isinstance(runs[-1], dict) else None
+    )
+    preceding_non_flat_direction = next(
+        (
+            run.get("direction")
+            for run in reversed(runs[:-1])
+            if isinstance(run, dict) and run.get("direction") != "flat"
+        ),
+        None,
+    )
     return {
         "time_gap.total_change_ms": delta,
         "time_gap.total_change_abs_ms": abs(float(delta)) if delta is not None else None,
@@ -253,8 +271,12 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
         "time_gap.slope_shape": extra.get("slope_shape"),
         "time_gap.starting_direction": start_direction,
         "time_gap.ending_direction": end_direction,
+        "time_gap.rises_then_flattens": (
+            end_direction == "flat" and preceding_non_flat_direction == "rising"
+        ),
         "time_gap.has_significant_rise": bool(significant_rises),
         "time_gap.middle_has_significant_rise": middle_has_significant_rise,
+        "time_gap.middle_has_new_significant_rise": middle_has_new_significant_rise,
         "time_gap.has_spike": has_spike,
         "time_gap.start_ms": values[0] if values else None,
         "time_gap.end_ms": values[-1] if values else None,
@@ -507,14 +529,29 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
 def validate_catalog() -> List[str]:
     """Return structural errors in deterministic label requirements."""
     errors: List[str] = []
-    labels = {doc["id"]: doc for doc in skills.iter("sub_label_annotation.labels")}
+    main_labels = {doc["id"]: doc for doc in skills.iter("lap_annotation.labels")}
+    non_main_labels = {
+        doc["id"]: doc for doc in skills.iter("sub_label_annotation.labels")
+    }
+    duplicate_ids = set(main_labels) & set(non_main_labels)
+    if duplicate_ids:
+        errors.append(f"label IDs exist in both catalogs: {sorted(duplicate_ids)}")
+    labels = {**main_labels, **non_main_labels}
     lap_requirements = skills.get("lap_annotation.selection_requirements", {})
     sub_requirements = skills.get("sub_label_annotation.selection_requirements", {})
-    main_ids = {label_id for label_id, doc in labels.items() if doc.get("type") == "main"}
-    non_main_ids = set(labels) - main_ids
-    if not isinstance(lap_requirements, dict) or set(lap_requirements) != main_ids:
+    if any(doc.get("type") != "main" for doc in main_labels.values()):
+        errors.append("lap label catalog contains non-main labels")
+    if any(doc.get("type") == "main" for doc in non_main_labels.values()):
+        errors.append("sub-label catalog contains main labels")
+    if (
+        not isinstance(lap_requirements, dict)
+        or set(lap_requirements) != set(main_labels)
+    ):
         errors.append("lap requirement IDs do not exactly match main label IDs")
-    if not isinstance(sub_requirements, dict) or set(sub_requirements) != non_main_ids:
+    if (
+        not isinstance(sub_requirements, dict)
+        or set(sub_requirements) != set(non_main_labels)
+    ):
         errors.append("sub-label requirement IDs do not exactly match non-main label IDs")
     for label_id, doc in labels.items():
         requirements = _requirements_for(label_id, get_label(label_id) or doc)

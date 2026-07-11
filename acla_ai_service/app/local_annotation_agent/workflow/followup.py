@@ -122,10 +122,8 @@ def _build_system_prompt(
             parent_label_blocks.append(f"  - `{pid}` ({LABEL_MAPPING.get(pid, pid)})")
             continue
         desc = entry.get("description") or "(no description)"
-        guideline_text = entry.get("annotation_guideline")
-        guideline = f"\n      guideline: {guideline_text}" if guideline_text else ""
         parent_label_blocks.append(
-            f"  - `{entry['id']}` ({entry['name']}): {desc}{guideline}"
+            f"  - `{entry['id']}` ({entry['name']}): {desc}"
         )
 
     existing_block = ""

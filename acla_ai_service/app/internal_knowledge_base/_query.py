@@ -11,6 +11,7 @@ Dotted paths into the document tree::
 
     sub_label_annotation.labels.MSP1
     sub_label_annotation.labels.MSP1.description
+    lap_annotation.labels.MSP
     lap_annotation.selection_requirements.EA
 
 Path segments containing dots can be escaped with a backslash::
@@ -35,12 +36,12 @@ Operator dicts get the full vocabulary::
     find("sub_label_annotation.labels", id={"$in": ["MSP1", "MSP2"]})
     find("sub_label_annotation.labels", description={"$regex": "trail brake"})
     find("sub_label_annotation.labels", parent={"$ne": None})
-    find("sub_label_annotation.labels", annotation_guideline={"$exists": True})
+    find("lap_annotation.labels", type="main")
 
 Top-level logical combinators::
 
     find("sub_label_annotation.labels", **{
-        "$or": [{"type": "main"}, {"type": "segment_type"}],
+        "$or": [{"type": "sub"}, {"type": "segment_type"}],
     })
     find("sub_label_annotation.labels", **{
         "$not": {"type": "circuit_section"},

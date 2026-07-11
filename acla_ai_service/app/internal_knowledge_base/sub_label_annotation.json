@@ -1,7 +1,7 @@
 {
   "_skill": {
     "name": "sub_label_annotation",
-    "description": "Deterministic label taxonomy for main, sub, and segment-type labels. Machine-readable selection requirements are evaluated against normalized telemetry facts; hierarchy and mutual exclusions remain in the label records. Circuit and circuit-section labels are supplied by deterministic circuit geometry.\n",
+    "description": "Deterministic label taxonomy for sub-label and segment-type labels. Machine-readable selection requirements are evaluated against normalized telemetry facts; hierarchy and mutual exclusions remain in the label records. Main labels live in lap_annotation.json, while circuit and circuit-section labels are supplied by deterministic circuit geometry.\n",
     "when_to_use": [
       "Drilling into a parent-labelled section to pick sub-labels (detailed flow).",
       "Deterministic label selection from calculated telemetry facts.",
@@ -17,6 +17,7 @@
   },
   "range_fit_rule": "Whole-range label rule for detailed annotation: every proposed label must describe the proposed child range as a whole. Do not propose a label because it matches only one phase, one apex moment, or a short slice inside the child range; shrink the child range so the label fits throughout, submit a separate proposal for the smaller range, or omit that label.\n",
   "detailed_flow_rules": [
+    "A sub-label is eligible only when its parent main label is already present on the parent segment. The parent main label owns its shared classification characteristics; each sub-label requirement checks only the sub-label's distinguishing telemetry characteristics.",
     "Audit the full parent range and return every calculated child proposal whose requirements fit its own tight range.",
     "For labels describing a local event such as an onset, release, peak, spike, dip, or short instability, fit the child range to that event and its immediate supporting context. When the selected label description names supporting signs, and the reasoning uses one of those signs as evidence, include that supporting sign as part of the child segment range. A later reversal or recovery is not disqualifying unless the label definition requires sustained behavior.",
     "Already discovered sub-segments only block exact duplicate proposals. They do not mark their ilocs as handled, and they do not suppress different labels that overlap or nest inside them.",
@@ -120,90 +121,10 @@
     "ST20": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.exit.trend", "operator": "eq", "value": "downhill"}]}]}
   },
   "labels": {
-    "O": {
-      "name": "Successful Overtake",
-      "type": "main",
-      "annotation_guideline": "The deterministic interaction calculation must return `pass_completed` with medium/high confidence. Technique sub-label requirements then use the calculated braking phase, segment shape, side-by-side state, side swap, and gap-shrink facts.\n",
-      "parent": null,
-      "selection_requirements_ref": "lap_annotation.selection_requirements.O",
-      "exclusive_with": [
-        "OD",
-        "PS"
-      ]
-    },
-    "OD": {
-      "name": "Successful Defense",
-      "type": "main",
-      "annotation_guideline": "The deterministic interaction calculation must return `held_defense` with medium/high confidence. Technique sub-label requirements then use the calculated braking phase, segment shape, side-by-side state, and gap-shrink facts.\n",
-      "parent": null,
-      "selection_requirements_ref": "lap_annotation.selection_requirements.OD",
-      "exclusive_with": [
-        "O",
-        "PS"
-      ]
-    },
-    "EA": {
-      "name": "Expert Adherence (Training)",
-      "type": "main",
-      "annotation_guideline": "How to identify the sublabels for Expert Adherence (Training): The driver is following or cleanly outperforming the optimal racing line and speed profile closely. A time gap below 200ms is not a mistake by itself; when the rest of the evidence is clean, treat it as Expert Adherence. Nothing needs to be labeled right now.\n",
-      "parent": null,
-      "selection_requirements_ref": "lap_annotation.selection_requirements.EA",
-      "exclusive_with": [
-        "MSP",
-        "MSR",
-        "RM",
-        "PS"
-      ]
-    },
-    "PS": {
-      "name": "Pit Stop",
-      "type": "main",
-      "annotation_guideline": "How to identify the sublabels for Pit Stop: Use PS for Pit-section procedure. First verify the segment position overlaps the Pit section, either directly or through a Pit-vs-adjacent-straight ambiguity supported by sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration. Add PS1 only when the PS segment specifically shows pit-exit / rejoin behavior: accelerating out of Pit and merging back toward the racing line.\n",
-      "parent": null,
-      "selection_requirements_ref": "lap_annotation.selection_requirements.PS",
-      "exclusive_with": [
-        "O"
-      ]
-    },
-    "RM": {
-      "name": "Recovery & Merge",
-      "type": "main",
-      "annotation_guideline": "How to identify sublabels for Recovery & Merge: The driver is recovering from a mistake. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; use its deterministic unit and trend-significance fields. A significant falling `total_change_direction` is strong RM evidence. A significant rising total change can still be RM only when the ending slope trend is flattening, there is no spike or raising in the middle, and the action evidence shows recovery / merge rather than a new technical mistake. Tiny ms changes are not RM evidence. Step 2: Examine trajectory evidence to identify recovery - look for the driver line converging back toward the expert racing line from either side after a prior mistake/off-track, using near-line/toward-line verdict fields when available. Step 3: Examine the 'speed_delta' graph to identify if the player is accelerating back toward the expert's speed profile. Step 4: use the 'compute_expert_phases' tool (it produces a 'phase_indices' attachment contains the indices for entry/apex/exit). Do not infer RM from pit location alone.\n",
-      "parent": null,
-      "selection_requirements_ref": "lap_annotation.selection_requirements.RM",
-      "exclusive_with": [
-        "EA",
-        "PS"
-      ]
-    },
-    "MSP": {
-      "name": "Mistake (Practice)",
-      "type": "main",
-      "annotation_guideline": "How to identify sublabels for Practice Mistake: The driver has committed a technical driving error. Step 1: Analyze the 'Time Difference to Expert' graph with `compute_slope`; require `total_change_direction: \"rising\"`, `total_change_is_label_significant: true`, and at least 200ms of time-gap evidence for time-loss evidence. Mistake time-gap evidence is the opposite of RM: the time gap increased at the end, with a spike or raising in between. Cite `slope_shape` when the loss-rate slope changes over the section. Do not describe tiny positive ms changes as strong, and do not treat a time gap below 200ms as a mistake by itself. Do not use MSP when the trajectory is converging back toward the expert racing line and speed/throttle show a merge or rejoin recovery with the RM time-gap pattern. Step 2: Examine the differences in 'throttle' between the player and the expert to identify when the driver applied too much or too little throttle, or got on/off the throttle at the wrong time. Step 3: Examine the differences in 'brake' between the player and the expert to identify if the driver braked too hard or too softly, or got on/off the brake at the wrong time. Step 4: Examine the 'trajectory_balance' graph to find understeer (blue / front-slip dominant) or oversteer (red / rear-slip dominant), which could lead to lower speed. Step 5: For entry/apex/exit shape questions, use trajectory evidence with the 'compute_expert_phases' tool on the same step (it produces a 'phase_indices' attachment contains the phase indices for entry/apex/exit). Step 6: Before committing in opponent-capable data, call `classify_opponent_interaction(start, end)` — if it returns `failed_attack` or `broken_defense`, the section is MSR, not MSP.\n",
-      "parent": null,
-      "selection_requirements_ref": "lap_annotation.selection_requirements.MSP",
-      "exclusive_with": [
-        "EA",
-        "PS",
-        "MSR"
-      ]
-    },
-    "MSR": {
-      "name": "Mistake (Racing)",
-      "type": "main",
-      "annotation_guideline": "How to identify sublabels for Racing Mistake: Step 1 — Confirm the adverse racing outcome. Require `outcome: failed_attack` or `outcome: broken_defense` with medium/high confidence. If not, the section is not MSR. Step 2 — Pick the outcome family from opponent-relative facts:\n  - Failed overtake attempt: opponent started ahead of the driver, the driver attacked or drew alongside the opponent, and the driver did not end ahead.\n  - Defense broken: driver started ahead of the opponent, the opponent drew alongside the driver, and the gap flipped from driver ahead to opponent ahead.\nStep 3 — Pick the specific subtype from opponent/player position and motion facts. Prefer a specific subtype over the generic label when the facts identify the attempt type:\n  - MSR3 (failed O1 late-brake attack at entry): driver drew alongside the opponent under braking but did not end ahead.\n  - MSR4 (failed O3 outside-line sweep): opponent was on the driver's inside side while the driver stayed outside, but the driver did not end ahead.\n  - MSR5 (failed O4 switchback): opponent and driver swapped sides through the corner, but the gap did not flip to driver ahead.\n  - MSR6 (failed O5 slipstream gain): gap to the opponent shrank on a straight and driver gained relative speed, but the gap did not flip to driver ahead.\n  - MSR7 (broken OD1 inside cover): opponent drew alongside the driver near the corner and the gap flipped from driver ahead to opponent ahead.\n  - MSR8 (broken OD2 defensive lift): gap to the opponent shrank on a straight and the gap flipped from driver ahead to opponent ahead.\n  - MSR1 / MSR2: only when the attempt-type signature cannot be identified from the opponent-relative facts.\n",
-      "parent": null,
-      "selection_requirements_ref": "lap_annotation.selection_requirements.MSR",
-      "exclusive_with": [
-        "EA",
-        "PS",
-        "MSP"
-      ]
-    },
     "RM1": {
       "name": "Recover from off-track",
       "type": "sub",
-      "description": "Across the recovery range after an off-track excursion, the trajectory offset peaks far **wider than expert** earlier in the segment, then shows **recovery** as the driver moves back toward the expert line while speed rebuilds toward pace. Time gap should be lower at the end, or higher at the end only when the ending slope trend is flattening and there is no spike or raising in the middle.\n",
+      "description": "Within an RM segment, the trajectory offset peaks far **wider than expert** after an off-track excursion, then converges back toward the expert line.\n",
       "parent": "RM",
       "exclusive_with": []
     },
@@ -217,7 +138,7 @@
     "RM5": {
       "name": "Recover from speed gap over 20",
       "type": "sub",
-      "description": "Across the recovery range, the player is more than 20 km/h slower than the expert while the speed gap is closing. The speed delta shows **expert faster than player** with a **large gap section** (|Δ| > 20 km/h) that trends toward zero across the segment. Time gap should be lower at the end, or higher at the end only when the ending slope trend is flattening and there is no spike or raising in the middle.\n",
+      "description": "Within an RM segment, the speed delta shows the **expert faster than the player**, with a **large gap section** (|Δ| > 20 km/h) that closes toward zero.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM6"
@@ -226,7 +147,7 @@
     "RM6": {
       "name": "Recover from small speed gap under 20",
       "type": "sub",
-      "description": "Across the recovery range, the player is less than 20 km/h slower than the expert while the speed gap is closing. The speed delta shows **expert faster than player** without any **large gap section** (|Δ| stays ≤ 20 km/h). Time gap should be lower at the end, or higher at the end only when the ending slope trend is flattening and there is no spike or raising in the middle.\n",
+      "description": "Within an RM segment, the speed delta shows the **expert faster than the player**, the gap stays ≤ 20 km/h, and it closes toward zero.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM5"
@@ -235,14 +156,14 @@
     "RM7": {
       "name": "Merge back to expert line",
       "type": "sub",
-      "description": "During exit or across the recovery range, the player trajectory converges toward the expert line. The trajectory offset shows **recovery** by trending back toward zero from either side, typically after corner exit. Time gap should be lower at the end, or higher at the end only when the ending slope trend is flattening and there is no spike or raising in the middle.\n",
+      "description": "Within an RM segment, the player trajectory converges toward the expert line, with trajectory offset trending back toward zero from either side.\n",
       "parent": "RM",
       "exclusive_with": []
     },
     "RM8": {
       "name": "Accelerate earlier at exit",
       "type": "sub",
-      "description": "During exit recovery, the player's throttle **application onset is earlier than** the expert's, with a matching earlier **acceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope trend is flattening and there is no spike or raising in the middle.\n",
+      "description": "Within the exit phase of an RM segment, the player's throttle **application onset is earlier than** the expert's.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM9"
@@ -251,7 +172,7 @@
     "RM9": {
       "name": "Accelerate later at exit",
       "type": "sub",
-      "description": "During exit recovery, the player's throttle **application onset is later than** the expert's, with a matching later **acceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope trend is flattening and there is no spike or raising in the middle.\n",
+      "description": "Within the exit phase of an RM segment, the player's throttle **application onset is later than** the expert's.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM8"
@@ -260,7 +181,7 @@
     "RM10": {
       "name": "Brake earlier at entry",
       "type": "sub",
-      "description": "During entry recovery, the player's brake **initiation onset is earlier than** the expert's, with a matching earlier **deceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope trend is flattening and there is no spike or raising in the middle.\n",
+      "description": "Within the entry phase of an RM segment, the player's brake **application onset is earlier than** the expert's.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM11"
@@ -269,7 +190,7 @@
     "RM11": {
       "name": "Brake later at entry",
       "type": "sub",
-      "description": "During entry recovery, the player's brake **initiation onset is later than** the expert's, with a matching later **deceleration onset** on the speed trace. Time gap should be lower at the end, or higher at the end only when the ending slope trend is flattening and there is no spike or raising in the middle.\n",
+      "description": "Within the entry phase of an RM segment, the player's brake **application onset is later than** the expert's.\n",
       "parent": "RM",
       "exclusive_with": [
         "RM10"

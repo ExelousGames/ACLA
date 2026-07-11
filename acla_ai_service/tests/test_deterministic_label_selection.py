@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -8,6 +9,37 @@ from app.local_annotation_agent.workflow import deterministic
 
 def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
+
+
+def test_main_labels_are_owned_by_lap_annotation_catalog():
+    main_labels = list(deterministic.skills.iter("lap_annotation.labels"))
+    sub_labels = list(deterministic.skills.iter("sub_label_annotation.labels"))
+
+    assert {doc["id"] for doc in main_labels} == {
+        "EA", "MSP", "MSR", "RM", "PS", "O", "OD",
+    }
+    assert all(doc["type"] == "main" for doc in main_labels)
+    assert all(doc["type"] != "main" for doc in sub_labels)
+
+    msp = deterministic.get_label("MSP")
+    assert msp["description"] == msp["characteristics"]
+    assert msp["selection_requirements"]
+    assert msp["selection_requirements_ref"] == (
+        "lap_annotation.selection_requirements.MSP"
+    )
+    assert msp["exclusive_with"] == ["EA", "PS", "MSR"]
+    assert "annotation_guideline" not in msp
+
+    catalog_path = (
+        Path(__file__).parents[1]
+        / "app/internal_knowledge_base/sub_label_annotation.json"
+    )
+    catalog_text = catalog_path.read_text(encoding="utf-8")
+    sub_catalog = json.loads(catalog_text)
+    assert "annotation_guideline" not in catalog_text
+    assert all(
+        doc.get("type") != "main" for doc in sub_catalog["labels"].values()
+    )
 
 
 def test_ea_accepts_either_complete_requirement_branch():
@@ -70,6 +102,75 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
     assert facts["time_gap.ending_direction"] == "rising"
     assert facts["time_gap.has_significant_rise"] is True
     assert facts["time_gap.middle_has_significant_rise"] is False
+    assert facts["time_gap.middle_has_new_significant_rise"] is False
+    assert facts["time_gap.rises_then_flattens"] is False
+
+
+def test_slope_facts_identify_rising_then_flattening(monkeypatch):
+    def fake_query(_df, _name, _args):
+        return ({
+            "samples": [{"value": 0}, {"value": 100}, {"value": 100}],
+            "extra": {
+                "delta_value": 100,
+                "total_change_direction": "rising",
+                "total_change_is_label_significant": True,
+                "slope_shape": "slope_decreasing_over_section",
+                "point_trend_runs": [
+                    {
+                        "start_iloc": 0, "end_iloc": 7, "direction": "rising",
+                        "is_label_significant": True,
+                    },
+                    {
+                        "start_iloc": 7, "end_iloc": 10, "direction": "flat",
+                        "is_label_significant": False,
+                    },
+                ],
+            },
+        }, None)
+
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
+    )
+
+    facts = deterministic._slope_facts(pd.DataFrame(), 0, 10)
+
+    assert facts["time_gap.middle_has_significant_rise"] is True
+    assert facts["time_gap.middle_has_new_significant_rise"] is False
+    assert facts["time_gap.rises_then_flattens"] is True
+
+    def fake_rise_fall_flat_query(_df, _name, _args):
+        return ({
+            "samples": [{"value": 0}, {"value": 100}, {"value": 50}],
+            "extra": {
+                "delta_value": 50,
+                "total_change_direction": "rising",
+                "total_change_is_label_significant": True,
+                "slope_shape": "slope_decreasing_over_section",
+                "point_trend_runs": [
+                    {
+                        "start_iloc": 0, "end_iloc": 3, "direction": "rising",
+                        "is_label_significant": True,
+                    },
+                    {
+                        "start_iloc": 3, "end_iloc": 7, "direction": "falling",
+                        "is_label_significant": True,
+                    },
+                    {
+                        "start_iloc": 7, "end_iloc": 10, "direction": "flat",
+                        "is_label_significant": False,
+                    },
+                ],
+            },
+        }, None)
+
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.run_pipeline_query",
+        fake_rise_fall_flat_query,
+    )
+
+    facts = deterministic._slope_facts(pd.DataFrame(), 0, 10)
+
+    assert facts["time_gap.rises_then_flattens"] is False
 
 
 def test_behavior_requirements_respect_slope_location():
@@ -88,36 +189,22 @@ def test_behavior_requirements_respect_slope_location():
     }
     recovery_merge = {
         "time_gap.starting_direction": "rising",
-        "time_gap.middle_has_significant_rise": False,
-        "time_gap.ending_direction": "flat",
-        "trajectory.converging": True,
-    }
-    no_recovery_action = {
-        "time_gap.starting_direction": "rising",
-        "time_gap.middle_has_significant_rise": False,
-        "time_gap.ending_direction": "flat",
-        "trajectory.converging": False,
-        "speed.gap_closing": False,
+        "time_gap.middle_has_new_significant_rise": False,
+        "time_gap.rises_then_flattens": True,
     }
 
     assert not deterministic.evaluate_requirements(msp, rising_only_at_start).matched
     assert not deterministic.evaluate_requirements(rm, falling_with_middle_rise).matched
     assert deterministic.evaluate_requirements(rm, recovery_merge).matched
-    assert deterministic.evaluate_requirements(rm, {
-        **recovery_merge,
-        "trajectory.converging": False,
-        "speed.gap_closing": True,
-    }).matched
     assert not deterministic.evaluate_requirements(rm, {
         **recovery_merge, "time_gap.starting_direction": "falling",
     }).matched
     assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "time_gap.middle_has_significant_rise": True,
+        **recovery_merge, "time_gap.middle_has_new_significant_rise": True,
     }).matched
     assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "time_gap.ending_direction": "falling",
+        **recovery_merge, "time_gap.rises_then_flattens": False,
     }).matched
-    assert not deterministic.evaluate_requirements(rm, no_recovery_action).matched
 
 
 def test_missing_fact_fails_closed():
@@ -316,6 +403,29 @@ def test_detailed_discovery_preserves_multiple_ranges_and_deduplicates(monkeypat
     assert [(p["start_index"], p["end_index"], p["label_id"]) for p in result.label_annotations] == [
         (6, 9, "ST2")
     ]
+
+
+def test_rm_sub_labels_require_rm_parent_but_only_evaluate_own_facts(monkeypatch):
+    def fake_facts(_df, start, end, **_kwargs):
+        ranges = [(1, 4)] if (start, end) == (0, 5) else []
+        return {"trajectory.converging": True}, ranges
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    without_rm = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(6)),
+        parent_start=0,
+        parent_end=5,
+        parent_main_labels=["EA"],
+    )
+    with_rm = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(6)),
+        parent_start=0,
+        parent_end=5,
+        parent_main_labels=["RM"],
+    )
+
+    assert "RM7" not in without_rm.final_labels
+    assert "RM7" in with_rm.final_labels
 
 
 def test_interaction_section_uses_unique_splitter_context():
