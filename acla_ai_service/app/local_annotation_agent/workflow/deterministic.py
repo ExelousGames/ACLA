@@ -44,7 +44,7 @@ KNOWN_FACTS = frozenset({
     "time_gap.ending_direction", "time_gap.has_significant_rise",
     "time_gap.has_spike", "time_gap.middle_has_new_significant_rise",
     "time_gap.middle_has_significant_rise",
-    "time_gap.flattening_at_end", "time_gap.significant", "time_gap.slope_shape",
+    "time_gap.flattening_at_end", "time_gap.overall_gap", "time_gap.slope_shape",
     "time_gap.starting_direction",
     "time_gap.total_change_abs_ms",
     "trajectory.converging", "trajectory.peak_abs_offset_m", "trajectory.position",
@@ -53,6 +53,10 @@ KNOWN_FACTS = frozenset({
 _MISSING = object()
 _ALIGN_TOLERANCE = 2
 _TELEMETRY_SMOOTHING_WINDOW = 3
+_MIDDLE_RISE_MIN_RATE_MS_PER_SAMPLE = 10.0
+_MIDDLE_RISE_MIN_RATE_INCREASE_MS_PER_SAMPLE = 10.0
+_MIDDLE_RISE_MIN_SUSTAINED_TRANSITIONS = 2
+_MIDDLE_RISE_SPIKE_MIN_DELTA_MS = 150.0
 
 
 @dataclass
@@ -255,11 +259,61 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
     section_length = max(int(end) - int(start), 1)
     middle_start = int(start) + section_length / 3.0
     middle_end = int(end) - section_length / 3.0
-    middle_has_significant_rise = any(
-        float(run.get("end_iloc", start)) > middle_start
-        and float(run.get("start_iloc", end)) < middle_end
-        for run in significant_rises
-    )
+    segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
+    time_gap = _series(segment, "expert_time_difference")
+    middle_has_significant_rise = False
+    middle_significant_rise_ranges: List[List[int]] = []
+    if time_gap is not None and len(time_gap) >= 2:
+        rates = np.diff(time_gap)
+        middle_slice_start = len(time_gap) // 3
+        middle_slice_end = max(2 * len(time_gap) // 3, middle_slice_start + 1)
+        rate_slice_start = max(middle_slice_start - 1, 0)
+        rate_slice_end = max(middle_slice_end - 1, rate_slice_start)
+        middle_rates = rates[rate_slice_start:rate_slice_end]
+        middle_positions = np.arange(rate_slice_start, rate_slice_end) + 1
+
+        preceding_rates = rates[:rate_slice_start]
+        finite_preceding_rates = preceding_rates[np.isfinite(preceding_rates)]
+        baseline_rate = (
+            float(np.median(finite_preceding_rates))
+            if len(finite_preceding_rates) else 0.0
+        )
+        minimum_new_rate = max(
+            _MIDDLE_RISE_MIN_RATE_MS_PER_SAMPLE,
+            baseline_rate + _MIDDLE_RISE_MIN_RATE_INCREASE_MS_PER_SAMPLE,
+        )
+        sustained_mask = np.isfinite(middle_rates) & (middle_rates >= minimum_new_rate)
+        spike_mask = (
+            np.isfinite(middle_rates)
+            & (middle_rates >= _MIDDLE_RISE_SPIKE_MIN_DELTA_MS)
+            & (
+                middle_rates
+                >= baseline_rate + _MIDDLE_RISE_MIN_RATE_INCREASE_MS_PER_SAMPLE
+            )
+        )
+
+        sustained_positions: List[int] = []
+        candidate_positions = middle_positions[sustained_mask]
+        for positions in np.split(
+            candidate_positions,
+            np.flatnonzero(np.diff(candidate_positions) > 1) + 1,
+        ):
+            if len(positions) >= _MIDDLE_RISE_MIN_SUSTAINED_TRANSITIONS:
+                sustained_positions.extend(int(position) for position in positions)
+
+        rising_positions = np.unique(np.concatenate((
+            np.asarray(sustained_positions, dtype=int),
+            middle_positions[spike_mask],
+        )))
+        middle_has_significant_rise = bool(len(rising_positions))
+        for positions in np.split(
+            rising_positions, np.flatnonzero(np.diff(rising_positions) > 1) + 1,
+        ):
+            if len(positions):
+                middle_significant_rise_ranges.append([
+                    int(segment.index[int(positions[0])]),
+                    int(segment.index[int(positions[-1])]),
+                ])
     middle_has_new_significant_rise = any(
         middle_start <= float(run.get("start_iloc", start)) < middle_end
         for run in significant_rises
@@ -286,13 +340,14 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
         "time_gap.total_change_ms": delta,
         "time_gap.total_change_abs_ms": abs(float(delta)) if delta is not None else None,
         "time_gap.direction": extra.get("total_change_direction"),
-        "time_gap.significant": extra.get("total_change_is_label_significant"),
+        "time_gap.overall_gap": abs(float(delta)) if delta is not None else None,
         "time_gap.slope_shape": extra.get("slope_shape"),
         "time_gap.starting_direction": start_direction,
         "time_gap.ending_direction": end_direction,
         "time_gap.flattening_at_end": flattening_at_end,
         "time_gap.has_significant_rise": bool(significant_rises),
         "time_gap.middle_has_significant_rise": middle_has_significant_rise,
+        "time_gap.middle_significant_rise_ranges": middle_significant_rise_ranges,
         "time_gap.middle_has_new_significant_rise": middle_has_new_significant_rise,
         "time_gap.has_spike": has_spike,
         "time_gap.start_ms": values[0] if values else None,
@@ -536,6 +591,14 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
             actual = facts.get(fact, _MISSING)
             value = "unavailable" if actual is _MISSING else repr(actual)
             text = f"{fact}: {value}"
+            if fact == "time_gap.middle_has_significant_rise" and actual is True:
+                ranges = facts.get("time_gap.middle_significant_rise_ranges") or []
+                locations = ", ".join(
+                    str(a) if a == b else f"{a}-{b}"
+                    for a, b in ranges
+                )
+                if locations:
+                    text += f" (rising at iloc {locations})"
             (passed if _compare(actual, operator, expected) else failed).append(text)
         if not failed:
             return RequirementEvaluation(True, branch_index, passed, [])

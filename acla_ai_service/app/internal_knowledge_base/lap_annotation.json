@@ -81,7 +81,7 @@
       "any_of": [
         {"all_of": [
           {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
-          {"fact": "time_gap.significant", "operator": "eq", "value": true},
+          {"fact": "time_gap.overall_gap", "operator": "gt", "value": 50},
           {"fact": "time_gap.middle_has_significant_rise", "operator": "eq", "value": true}
         ]},
         {"all_of": [

@@ -3536,6 +3536,7 @@ def _point_trend_runs(
     meta = _column_semantics(column)
     eps = 1e-9
     step_slopes = value_deltas[valid] / iloc_deltas[valid]
+    slope_window = _slope_shape_window(len(step_slopes))
     delta_value = float(np.sum(value_deltas[valid]))
     delta_iloc = float(ilocs[-1] - ilocs[0])
     signs = np.where(value_deltas > eps, 1, np.where(value_deltas < -eps, -1, 0))
@@ -3583,10 +3584,11 @@ def _point_trend_runs(
     overall_direction, overall_domain_direction = _signed_trend(delta_value, meta, eps)
     return {
         "slope": float(np.nanmean(step_slopes)),
-        "start_slope": float(step_slopes[0]),
-        "end_slope": float(step_slopes[-1]),
+        "start_slope": float(np.nanmedian(step_slopes[:slope_window])),
+        "end_slope": float(np.nanmedian(step_slopes[-slope_window:])),
         "previous_end_slope": (
-            float(step_slopes[-2]) if len(step_slopes) >= 2 else None
+            float(np.nanmedian(step_slopes[-2 * slope_window:-slope_window]))
+            if len(step_slopes) >= 2 * slope_window else None
         ),
         "delta_value": delta_value,
         "delta_iloc": delta_iloc,

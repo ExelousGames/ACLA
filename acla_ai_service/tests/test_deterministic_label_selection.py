@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 import app.local_annotation_agent.workflow as workflow
@@ -107,7 +108,10 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
         "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
     )
 
-    facts = deterministic._slope_facts(pd.DataFrame(), 0, 10)
+    df = pd.DataFrame({
+        "expert_time_difference": [0, 20, 40, 40, 30, 20, 10, 0, 10, 20, 30],
+    })
+    facts = deterministic._slope_facts(df, 0, 10)
 
     assert facts["time_gap.starting_direction"] == "rising"
     assert facts["time_gap.ending_direction"] == "rising"
@@ -115,9 +119,45 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
     assert facts["time_gap.middle_has_significant_rise"] is False
     assert facts["time_gap.middle_has_new_significant_rise"] is False
     assert facts["time_gap.flattening_at_end"] is False
+    assert facts["time_gap.overall_gap"] == 100
+    assert "time_gap.significant" not in facts
 
 
-def test_slope_facts_identify_rising_then_flattening(monkeypatch):
+def test_slope_facts_smooth_ending_slope_windows():
+    step_slopes = [20.0] * 6 + [10.0] * 3 + [5.0, 5.0, 100.0]
+    df = pd.DataFrame({
+        "expert_time_difference": np.cumsum([0.0, *step_slopes]),
+    })
+
+    facts = deterministic._slope_facts(df, 0, 12)
+
+    assert facts["time_gap.flattening_at_end"] is True
+
+
+def test_slope_facts_ignore_gentle_middle_rise():
+    df = pd.DataFrame({
+        "expert_time_difference": [0, 0, 0, 5, 10, 15, 20, 20, 20, 20],
+    })
+
+    facts = deterministic._slope_facts(df, 0, 9)
+
+    assert facts["time_gap.middle_has_significant_rise"] is False
+    assert facts["time_gap.middle_significant_rise_ranges"] == []
+
+
+def test_slope_facts_ignore_steady_middle_rise():
+    for rate in (20, 200):
+        df = pd.DataFrame({
+            "expert_time_difference": np.arange(9) * rate,
+        })
+
+        facts = deterministic._slope_facts(df, 0, 8)
+
+        assert facts["time_gap.middle_has_significant_rise"] is False
+        assert facts["time_gap.middle_significant_rise_ranges"] == []
+
+
+def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypatch):
     def fake_query(_df, _name, _args):
         return ({
             "samples": [{"value": 0}, {"value": 100}, {"value": 150}],
@@ -145,11 +185,27 @@ def test_slope_facts_identify_rising_then_flattening(monkeypatch):
         "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
     )
 
-    facts = deterministic._slope_facts(pd.DataFrame(), 0, 10)
+    df = pd.DataFrame({
+        "expert_time_difference": [0, 0, 0, 10, 30, 70, 100, 110, 120, 125, 130],
+    })
+    facts = deterministic._slope_facts(df, 0, 10)
 
     assert facts["time_gap.middle_has_significant_rise"] is True
+    assert facts["time_gap.middle_significant_rise_ranges"] == [[3, 6]]
     assert facts["time_gap.middle_has_new_significant_rise"] is False
     assert facts["time_gap.flattening_at_end"] is True
+
+    evaluation = deterministic.evaluate_requirements(
+        {"any_of": [{"all_of": [{
+            "fact": "time_gap.middle_has_significant_rise",
+            "operator": "eq",
+            "value": True,
+        }]}]},
+        facts,
+    )
+    assert evaluation.passed == [
+        "time_gap.middle_has_significant_rise: True (rising at iloc 3-6)",
+    ]
 
     def fake_rise_fall_flat_query(_df, _name, _args):
         return ({
@@ -188,18 +244,40 @@ def test_slope_facts_identify_rising_then_flattening(monkeypatch):
     assert facts["time_gap.flattening_at_end"] is True
 
 
+def test_slope_facts_identify_significant_middle_spike():
+    df = pd.DataFrame({
+        "expert_time_difference": [0, 0, 0, 0, 200, 200, 200, 200, 200, 200],
+    })
+
+    facts = deterministic._slope_facts(df, 0, 9)
+
+    assert facts["time_gap.middle_has_significant_rise"] is True
+    assert facts["time_gap.middle_significant_rise_ranges"] == [[4, 4]]
+
+
+def test_slope_facts_ignore_single_sample_middle_noise():
+    df = pd.DataFrame({
+        "expert_time_difference": [0, 0, 0, 0, 200, 0, 0, 0, 0, 0],
+    })
+
+    facts = deterministic._slope_facts(df, 0, 9)
+
+    assert facts["time_gap.middle_has_significant_rise"] is False
+    assert facts["time_gap.middle_significant_rise_ranges"] == []
+
+
 def test_behavior_requirements_respect_slope_location():
     msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
     rm = deterministic._requirements_for("RM", deterministic.get_label("RM"))
 
     rising_only_at_start = {
         "time_gap.direction": "rising",
-        "time_gap.significant": True,
+        "time_gap.overall_gap": 100,
         "time_gap.middle_has_significant_rise": False,
     }
     falling_with_middle_rise = {
         "time_gap.direction": "falling",
-        "time_gap.significant": True,
+        "time_gap.overall_gap": 100,
         "time_gap.middle_has_significant_rise": True,
     }
     recovery_merge = {
@@ -209,6 +287,16 @@ def test_behavior_requirements_respect_slope_location():
     }
 
     assert not deterministic.evaluate_requirements(msp, rising_only_at_start).matched
+    assert not deterministic.evaluate_requirements(msp, {
+        **rising_only_at_start,
+        "time_gap.overall_gap": 50,
+        "time_gap.middle_has_significant_rise": True,
+    }).matched
+    assert deterministic.evaluate_requirements(msp, {
+        **rising_only_at_start,
+        "time_gap.overall_gap": 50.1,
+        "time_gap.middle_has_significant_rise": True,
+    }).matched
     assert not deterministic.evaluate_requirements(rm, falling_with_middle_rise).matched
     assert deterministic.evaluate_requirements(rm, recovery_merge).matched
     assert not deterministic.evaluate_requirements(rm, {
@@ -244,7 +332,7 @@ def test_failed_requirement_reports_facts_from_closest_branch_only():
             "any_of": [
                 {"all_of": [
                     {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
-                    {"fact": "time_gap.significant", "operator": "eq", "value": True},
+                    {"fact": "time_gap.overall_gap", "operator": "gt", "value": 50},
                 ]},
                 {"all_of": [
                     {"fact": "time_gap.direction", "operator": "eq", "value": "falling"},
@@ -253,12 +341,12 @@ def test_failed_requirement_reports_facts_from_closest_branch_only():
                 ]},
             ],
         },
-        {"time_gap.direction": "rising", "time_gap.significant": False},
+        {"time_gap.direction": "rising", "time_gap.overall_gap": 50},
     )
 
     assert not result.matched
     assert result.passed == ["time_gap.direction: 'rising'"]
-    assert result.failed == ["time_gap.significant: False"]
+    assert result.failed == ["time_gap.overall_gap: 50"]
 
 
 def test_pit_stop_requires_pit_section_and_raw_telemetry():
@@ -354,7 +442,7 @@ def test_far_driver_in_overlapping_pit_prefers_ps_over_rm(monkeypatch):
         lambda *_args, **_kwargs: ({
             "trajectory.peak_abs_offset_m": 10.0,
             "time_gap.direction": "falling",
-            "time_gap.significant": True,
+            "time_gap.overall_gap": 100,
         }, []),
     )
 
