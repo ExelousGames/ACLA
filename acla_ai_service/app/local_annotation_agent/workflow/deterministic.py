@@ -65,6 +65,7 @@ class RequirementEvaluation:
     branch: Optional[int] = None
     passed: List[str] = field(default_factory=list)
     failed: List[str] = field(default_factory=list)
+    fact_ids: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -72,6 +73,43 @@ class LabelEvaluation:
     labels: List[str]
     evaluations: Dict[str, RequirementEvaluation]
     conflicts: List[Tuple[str, str]] = field(default_factory=list)
+
+
+class FactSet(dict):
+    """Scalar facts plus the telemetry ranges that produced each fact."""
+
+    def __init__(
+        self,
+        values: Optional[Mapping[str, Any]] = None,
+        *,
+        evidence: Optional[Mapping[str, Sequence[Tuple[int, int]]]] = None,
+        phases: Optional[Mapping[str, Sequence[Tuple[int, int]]]] = None,
+    ) -> None:
+        super().__init__(values or {})
+        self.evidence = {
+            key: [(int(start), int(end)) for start, end in ranges]
+            for key, ranges in (evidence or {}).items()
+        }
+        self.phases = {
+            key: [(int(start), int(end)) for start, end in ranges]
+            for key, ranges in (phases or {}).items()
+        }
+
+
+def _point_range(*points: Optional[int]) -> List[Tuple[int, int]]:
+    finite = [int(point) for point in points if point is not None]
+    return [(min(finite), max(finite))] if finite else []
+
+
+def _mask_ranges(mask: np.ndarray, index: np.ndarray) -> List[Tuple[int, int]]:
+    positions = np.flatnonzero(mask)
+    if not len(positions):
+        return []
+    return [
+        (int(index[int(run[0])]), int(index[int(run[-1])]))
+        for run in np.split(positions, np.flatnonzero(np.diff(positions) > 1) + 1)
+        if len(run)
+    ]
 
 
 def _attachment_content(value: Any) -> Dict[str, Any]:
@@ -230,7 +268,10 @@ def _add_input_facts(
         )
 
 
-def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
+def _slope_facts(
+    df: pd.DataFrame, start: int, end: int,
+    evidence: Optional[Dict[str, List[Tuple[int, int]]]] = None,
+) -> Dict[str, Any]:
     from app.shared.annotation_agent_tools import run_pipeline_query
 
     payload, error = run_pipeline_query(
@@ -250,6 +291,17 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
         and run.get("direction") == "rising"
         and run.get("is_label_significant") is True
     ]
+    if evidence is not None:
+        rise_ranges = [
+            (int(run["start_iloc"]), int(run["end_iloc"]))
+            for run in significant_rises
+            if run.get("start_iloc") is not None and run.get("end_iloc") is not None
+        ]
+        if rise_ranges:
+            evidence["time_gap.has_significant_rise"] = rise_ranges
+            evidence["time_gap.direction"] = rise_ranges
+        evidence["time_gap.total_change_abs_ms"] = [(int(start), int(end))]
+        evidence["time_gap.overall_gap"] = [(int(start), int(end))]
     has_spike = any(
         isinstance(run, dict)
         and run.get("direction") == "rising"
@@ -314,6 +366,11 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
                     int(segment.index[int(positions[0])]),
                     int(segment.index[int(positions[-1])]),
                 ])
+    if evidence is not None and middle_significant_rise_ranges:
+        middle_ranges = [tuple(value) for value in middle_significant_rise_ranges]
+        evidence["time_gap.middle_has_significant_rise"] = middle_ranges
+        evidence["time_gap.middle_has_new_significant_rise"] = middle_ranges
+        evidence["time_gap.has_spike"] = middle_ranges
     middle_has_new_significant_rise = any(
         middle_start <= float(run.get("start_iloc", start)) < middle_end
         for run in significant_rises
@@ -355,7 +412,11 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
     }
 
 
-def _shape_facts(df: pd.DataFrame, start: int, end: int) -> Tuple[Dict[str, Any], List[Tuple[int, int]]]:
+def _shape_facts(
+    df: pd.DataFrame, start: int, end: int,
+    evidence: Optional[Dict[str, List[Tuple[int, int]]]] = None,
+    phases: Optional[Dict[str, List[Tuple[int, int]]]] = None,
+) -> Tuple[Dict[str, Any], List[Tuple[int, int]]]:
     from app.shared.annotation_agent_tools import measure_segment_shape
 
     try:
@@ -367,22 +428,38 @@ def _shape_facts(df: pd.DataFrame, start: int, end: int) -> Tuple[Dict[str, Any]
     refinement = content.get("corner_shape_refinement") or {}
     facts["segment.shape_key"] = base.get("shape_key")
     facts["segment.corner_shape_key"] = refinement.get("shape_key")
+    if evidence is not None:
+        evidence["segment.shape_key"] = [(int(start), int(end))]
+        evidence["segment.corner_shape_key"] = [(int(start), int(end))]
     phase_ranges: List[Tuple[int, int]] = []
     for phase in content.get("phases") or []:
         if not isinstance(phase, dict):
             continue
         entry, apex, exit_ = phase.get("entry"), phase.get("apex"), phase.get("exit")
         if all(isinstance(v, int) for v in (entry, apex, exit_)):
-            phase_ranges.extend([(entry, apex), (max(entry, apex - 2), min(exit_, apex + 2)), (apex, exit_)])
+            named_ranges = {
+                "entry": (entry, apex),
+                "apex": (max(entry, apex - 2), min(exit_, apex + 2)),
+                "exit": (apex, exit_),
+            }
+            phase_ranges.extend(named_ranges.values())
+            if phases is not None:
+                for name, value in named_ranges.items():
+                    phases.setdefault(name, []).append(value)
     altitude = content.get("altitude") or {}
     for phase_name in ("entry", "apex", "exit"):
         summary = altitude.get(phase_name) or {}
         facts[f"altitude.{phase_name}.trend"] = summary.get("trend")
         facts[f"altitude.{phase_name}.slope_angle_degrees"] = summary.get("slope_angle_degrees")
+        if evidence is not None and phases is not None and phases.get(phase_name):
+            evidence[f"altitude.{phase_name}.trend"] = list(phases[phase_name])
     return facts, phase_ranges
 
 
-def _opponent_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
+def _opponent_facts(
+    df: pd.DataFrame, start: int, end: int,
+    evidence: Optional[Dict[str, List[Tuple[int, int]]]] = None,
+) -> Dict[str, Any]:
     from app.shared.annotation_agent_tools import (
         classify_opponent_interaction,
         query_opponent_trajectory,
@@ -403,6 +480,8 @@ def _opponent_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
         "opponent.drew_alongside": None,
         "opponent.side_swap": None,
     }
+    if evidence is not None and content.get("outcome") not in (None, "no_data"):
+        evidence["opponent.outcome"] = [(int(start), int(end))]
     candidates = content.get("candidates") or []
     primary = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
     entry = primary.get("entry_signed_long_gap_m")
@@ -427,6 +506,32 @@ def _opponent_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
             for sample in trajectory.get("samples") or []
             if isinstance(sample, dict) and sample.get("lateral_offset_m") is not None
         ]
+        samples = [
+            sample for sample in trajectory.get("samples") or []
+            if isinstance(sample, dict) and sample.get("iloc") is not None
+        ]
+        if evidence is not None and samples:
+            sample_ilocs = [int(sample["iloc"]) for sample in samples]
+            evidence["opponent.gap_shrank"] = _point_range(
+                sample_ilocs[0], sample_ilocs[-1],
+            )
+            alongside = [
+                int(sample["iloc"])
+                for sample in samples
+                if sample.get("signed_long_gap_m") is not None
+                and sample.get("lateral_offset_m") is not None
+                and abs(float(sample["signed_long_gap_m"])) <= 6.0
+                and abs(float(sample["lateral_offset_m"])) >= 1.25
+            ]
+            if alongside:
+                evidence["opponent.drew_alongside"] = _point_range(*alongside)
+            if lateral and min(lateral) < 0 < max(lateral):
+                swap_ilocs = [
+                    int(sample["iloc"])
+                    for sample in samples
+                    if sample.get("lateral_offset_m") is not None
+                ]
+                evidence["opponent.side_swap"] = _point_range(*swap_ilocs)
         if lateral:
             facts["opponent.side_swap"] = min(lateral) < 0 < max(lateral)
     return facts
@@ -434,18 +539,20 @@ def _opponent_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
 
 def calculate_facts(
     df: pd.DataFrame, start: int, end: int, *, section_id: str = "",
-) -> Tuple[Dict[str, Any], List[Tuple[int, int]]]:
+) -> Tuple[FactSet, List[Tuple[int, int]]]:
     """Calculate normalized facts and reusable phase windows for one range."""
     segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
+    evidence: Dict[str, List[Tuple[int, int]]] = {}
+    phases: Dict[str, List[Tuple[int, int]]] = {}
     facts: Dict[str, Any] = {
         "section.id": section_id,
         "section.name": LABEL_MAPPING.get(section_id),
         "section.overlap_names": [LABEL_MAPPING[section_id]] if section_id in LABEL_MAPPING else [],
     }
-    facts.update(_slope_facts(df, start, end))
-    shape, phase_ranges = _shape_facts(df, start, end)
+    facts.update(_slope_facts(df, start, end, evidence))
+    shape, phase_ranges = _shape_facts(df, start, end, evidence, phases)
     facts.update(shape)
-    facts.update(_opponent_facts(df, start, end))
+    facts.update(_opponent_facts(df, start, end, evidence))
 
     index = segment.index.to_numpy(dtype=int)
     brake = _input_landmarks(_series(segment, "Physics_brake"), index)
@@ -454,6 +561,24 @@ def calculate_facts(
     expert_throttle = _input_landmarks(_series(segment, "expert_optimal_throttle"), index)
     _add_input_facts(facts, "brake", brake, expert_brake)
     _add_input_facts(facts, "throttle", throttle, expert_throttle)
+    for prefix, player, expert in (
+        ("brake", brake, expert_brake), ("throttle", throttle, expert_throttle),
+    ):
+        for key in ("application_onset", "application_end", "release_onset", "release_end"):
+            fact = f"{prefix}.{key}_relation"
+            if fact in facts:
+                evidence[fact] = _point_range(player.get(key), expert.get(key))
+        for fact in (f"{prefix}.peak_relation", f"{prefix}.peak_ratio"):
+            if fact in facts:
+                evidence[fact] = _point_range(
+                    player.get("peak_iloc"), expert.get("peak_iloc"),
+                )
+        hold_points = (
+            player.get("application_end"), player.get("release_onset"),
+            expert.get("application_end"), expert.get("release_onset"),
+        )
+        if f"{prefix}.hold_length_relation" in facts:
+            evidence[f"{prefix}.hold_length_relation"] = _point_range(*hold_points)
 
     player_brake = _series(segment, "Physics_brake")
     player_throttle = _series(segment, "Physics_gas")
@@ -461,14 +586,21 @@ def calculate_facts(
     expert_t = _series(segment, "expert_optimal_throttle")
     if player_brake is not None and expert_b is not None:
         facts["brake.similarity"] = float(np.mean(np.isclose(player_brake, expert_b, atol=0.02, equal_nan=False)))
+        evidence["brake.similarity"] = [(int(start), int(end))]
     if player_throttle is not None and expert_t is not None:
         facts["throttle.similarity"] = float(np.mean(np.isclose(player_throttle, expert_t, atol=0.02, equal_nan=False)))
+        evidence["throttle.similarity"] = [(int(start), int(end))]
     if player_brake is not None and player_throttle is not None:
         overlap = (player_brake > 0.05) & (player_throttle > 0.05)
         facts["controls.overlap_count"] = int(np.sum(overlap))
         facts["controls.overlap_fraction"] = float(np.mean(overlap))
         if expert_b is not None and expert_t is not None:
-            facts["controls.expert_overlap_count"] = int(np.sum((expert_b > 0.05) & (expert_t > 0.05)))
+            expert_overlap = (expert_b > 0.05) & (expert_t > 0.05)
+            facts["controls.expert_overlap_count"] = int(np.sum(expert_overlap))
+            evidence["controls.expert_overlap_count"] = (
+                _mask_ranges(expert_overlap, index) or [(int(start), int(end))]
+            )
+        evidence["controls.overlap_count"] = _mask_ranges(overlap, index)
     if player_brake is not None:
         facts["phase.entry"] = bool(np.mean(player_brake > 0.05) >= 0.15)
     if player_throttle is not None:
@@ -478,6 +610,10 @@ def calculate_facts(
         )
     if "phase.entry" in facts and "phase.exit" in facts:
         facts["phase.apex"] = bool(facts["phase.entry"] and facts["phase.exit"])
+    for phase_name in ("entry", "apex", "exit"):
+        fact = f"phase.{phase_name}"
+        if fact in facts and phases.get(phase_name):
+            evidence[fact] = list(phases[phase_name])
 
     speed_delta = _raw_speed_delta(segment)
     if speed_delta is not None:
@@ -486,6 +622,16 @@ def calculate_facts(
             facts["speed.gap_peak_abs_kmh"] = float(np.max(np.abs(finite)))
             facts["speed.expert_faster"] = float(np.nanmedian(finite)) > 0
             facts["speed.gap_closing"] = abs(float(finite[-1])) < abs(float(finite[0]))
+            finite_mask = np.isfinite(speed_delta)
+            peak_pos = int(np.nanargmax(np.abs(speed_delta)))
+            evidence["speed.gap_peak_abs_kmh"] = _point_range(index[peak_pos])
+            evidence["speed.expert_faster"] = _mask_ranges(
+                finite_mask & (speed_delta > 0), index,
+            )
+            finite_positions = np.flatnonzero(finite_mask)
+            evidence["speed.gap_closing"] = _point_range(
+                index[int(finite_positions[0])], index[int(finite_positions[-1])],
+            )
 
     trajectory = _raw_trajectory_offset(segment)
     if trajectory is not None:
@@ -497,6 +643,21 @@ def calculate_facts(
             facts["trajectory.converging"] = abs(float(finite[-1])) < abs(float(finite[0]))
             median = float(np.nanmedian(finite))
             facts["trajectory.position"] = "aligned" if abs(median) <= 0.5 else "wider" if median > 0 else "tighter"
+            finite_mask = np.isfinite(trajectory)
+            finite_positions = np.flatnonzero(finite_mask)
+            peak_pos = int(np.nanargmax(np.abs(trajectory)))
+            evidence["trajectory.peak_abs_offset_m"] = _point_range(index[peak_pos])
+            evidence["trajectory.converging"] = _point_range(
+                index[int(finite_positions[0])], index[int(finite_positions[-1])],
+            )
+            position_mask = (
+                np.abs(trajectory) <= 0.5 if facts["trajectory.position"] == "aligned"
+                else trajectory > 0.5 if facts["trajectory.position"] == "wider"
+                else trajectory < -0.5
+            )
+            evidence["trajectory.position"] = _mask_ranges(
+                finite_mask & position_mask, index,
+            )
 
     player_steer = _series(segment, "Physics_steer_angle")
     expert_steer = _series(segment, "expert_optimal_steering")
@@ -517,17 +678,24 @@ def calculate_facts(
         facts["turn.in_relation"] = _relation(p_turn, e_turn)
         facts["turn.apex_relation"] = _relation(p_apex, e_apex)
         facts["turn.exit_relation"] = _relation(p_exit, e_exit)
+        evidence["turn.in_relation"] = _point_range(p_turn, e_turn)
+        evidence["turn.apex_relation"] = _point_range(p_apex, e_apex)
+        evidence["turn.exit_relation"] = _point_range(p_exit, e_exit)
 
     balance = _raw_slip_balance(segment)
     if balance is not None:
         facts["balance.oversteer"] = bool(np.nanmax(balance) > 0.02)
         facts["balance.understeer"] = bool(np.nanmin(balance) < -0.02)
+        evidence["balance.oversteer"] = _mask_ranges(balance > 0.02, index)
+        evidence["balance.understeer"] = _mask_ranges(balance < -0.02, index)
     push = _raw_push_to_limit(segment)
     if push is not None:
         facts["grip.max"] = float(np.nanmax(push))
         facts["grip.min"] = float(np.nanmin(push))
         facts["grip.over_limit"] = bool(np.nanmax(push) > 1.0)
         facts["grip.sustained_low"] = bool(np.mean(push < 0.8) >= 0.5)
+        evidence["grip.over_limit"] = _mask_ranges(push > 1.0, index)
+        evidence["grip.sustained_low"] = _mask_ranges(push < 0.8, index)
 
     player_gear = _series(segment, "Physics_gear")
     expert_gear = _series(segment, "expert_optimal_gear")
@@ -536,13 +704,16 @@ def calculate_facts(
             "lower" if player_gear[-1] < expert_gear[-1]
             else "higher" if player_gear[-1] > expert_gear[-1] else "aligned"
         )
+        evidence["gear.exit_relation"] = _point_range(index[-1])
         p_changes = np.flatnonzero(np.diff(player_gear) != 0)
         e_changes = np.flatnonzero(np.diff(expert_gear) != 0)
         if len(p_changes) and len(e_changes):
             p_i, e_i = int(index[p_changes[0] + 1]), int(index[e_changes[0] + 1])
             direction = "up" if player_gear[p_changes[0] + 1] > player_gear[p_changes[0]] else "down"
             facts[f"gear.{direction}shift_relation"] = _relation(p_i, e_i)
-    return {k: v for k, v in facts.items() if v is not None}, phase_ranges
+            evidence[f"gear.{direction}shift_relation"] = _point_range(p_i, e_i)
+    filtered = {key: value for key, value in facts.items() if value is not None}
+    return FactSet(filtered, evidence=evidence, phases=phases), phase_ranges
 
 
 def _compare(actual: Any, operator: str, expected: Any = None) -> bool:
@@ -581,11 +752,13 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
             continue
         passed: List[str] = []
         failed: List[str] = []
+        fact_ids: List[str] = []
         for predicate in predicates:
             if not isinstance(predicate, dict):
                 failed.append("invalid predicate")
                 continue
             fact = str(predicate.get("fact") or "")
+            fact_ids.append(fact)
             operator = str(predicate.get("operator") or "")
             expected = predicate.get("value")
             actual = facts.get(fact, _MISSING)
@@ -601,8 +774,10 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
                     text += f" (rising at iloc {locations})"
             (passed if _compare(actual, operator, expected) else failed).append(text)
         if not failed:
-            return RequirementEvaluation(True, branch_index, passed, [])
-        candidate = RequirementEvaluation(False, branch_index, passed, failed)
+            return RequirementEvaluation(True, branch_index, passed, [], fact_ids)
+        candidate = RequirementEvaluation(
+            False, branch_index, passed, failed, fact_ids,
+        )
         if closest_branch is None or (len(failed), -len(passed)) < (
             len(closest_branch.failed), -len(closest_branch.passed)
         ):
@@ -623,6 +798,7 @@ def validate_catalog() -> List[str]:
     labels = {**main_labels, **non_main_labels}
     lap_requirements = skills.get("lap_annotation.selection_requirements", {})
     sub_requirements = skills.get("sub_label_annotation.selection_requirements", {})
+    range_policies = skills.get("sub_label_annotation.range_policies", {})
     if any(doc.get("type") != "main" for doc in main_labels.values()):
         errors.append("lap label catalog contains non-main labels")
     if any(doc.get("type") == "main" for doc in non_main_labels.values()):
@@ -637,6 +813,28 @@ def validate_catalog() -> List[str]:
         or set(sub_requirements) != set(non_main_labels)
     ):
         errors.append("sub-label requirement IDs do not exactly match non-main label IDs")
+    active_sub_ids = {
+        label_id for label_id, doc in non_main_labels.items()
+        if doc.get("type") == "sub"
+        and isinstance(sub_requirements, dict)
+        and (sub_requirements.get(label_id) or {}).get("enabled") is not False
+    }
+    if not isinstance(range_policies, dict) or set(range_policies) != active_sub_ids:
+        errors.append("range policy IDs do not exactly match active sub-label IDs")
+    for label_id, policy in (range_policies.items() if isinstance(range_policies, dict) else []):
+        if not isinstance(policy, dict):
+            errors.append(f"{label_id}: invalid range policy")
+            continue
+        invalid_phases = set(policy.get("phases") or []) - _VALID_RANGE_PHASES
+        if invalid_phases:
+            errors.append(f"{label_id}: invalid range phases {sorted(invalid_phases)}")
+        for predicate in policy.get("supporting_evidence") or []:
+            fact = predicate.get("fact") if isinstance(predicate, dict) else None
+            operator = predicate.get("operator") if isinstance(predicate, dict) else None
+            if fact not in KNOWN_FACTS:
+                errors.append(f"{label_id}: unknown supporting fact {fact!r}")
+            if operator not in SUPPORTED_OPERATORS:
+                errors.append(f"{label_id}: unknown supporting operator {operator!r}")
     for label_id, doc in labels.items():
         requirements = _requirements_for(label_id, get_label(label_id) or doc)
         enabled = requirements.get("enabled") is not False
@@ -704,7 +902,11 @@ def evaluate_labels(label_ids: Iterable[str], facts: Mapping[str, Any]) -> Label
 
 
 def _reason(label_id: str, evaluation: RequirementEvaluation, start: int, end: int) -> str:
-    return "; ".join(f"Passed — {fact}" for fact in evaluation.passed)
+    details = [
+        f"{label_id} selected for iloc range [{int(start)}, {int(end)}]",
+        *(f"Passed — {fact}" for fact in evaluation.passed),
+    ]
+    return "; ".join(details)
 
 
 def _resolve_circuit_sections(
@@ -883,6 +1085,106 @@ def _candidate_ranges(
     return cleaned
 
 
+_RANGE_CONTEXT_FACTS = frozenset({
+    "opponent.confidence_level", "opponent.outcome",
+})
+_RANGE_CONTEXT_PREFIXES = ("phase.", "section.", "segment.")
+_VALID_RANGE_PHASES = frozenset({"entry", "apex", "exit"})
+
+
+def _range_policy(label_id: str) -> Mapping[str, Any]:
+    value = skills.get(f"sub_label_annotation.range_policies.{label_id}", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _fact_ranges(facts: Mapping[str, Any], fact_ids: Iterable[str]) -> List[Tuple[int, int]]:
+    if not isinstance(facts, FactSet):
+        return []
+    ranges: List[Tuple[int, int]] = []
+    for fact_id in fact_ids:
+        if fact_id in _RANGE_CONTEXT_FACTS or fact_id.startswith(_RANGE_CONTEXT_PREFIXES):
+            continue
+        ranges.extend(facts.evidence.get(fact_id) or [])
+    return ranges
+
+
+def _supporting_facts(
+    policy: Mapping[str, Any], facts: Mapping[str, Any],
+) -> Tuple[List[str], List[str]]:
+    matched_ids: List[str] = []
+    reasons: List[str] = []
+    for predicate in policy.get("supporting_evidence") or []:
+        if not isinstance(predicate, dict):
+            continue
+        fact = str(predicate.get("fact") or "")
+        actual = facts.get(fact, _MISSING)
+        localized = isinstance(facts, FactSet) and bool(facts.evidence.get(fact))
+        if localized and _compare(
+            actual, str(predicate.get("operator") or ""), predicate.get("value"),
+        ):
+            matched_ids.append(fact)
+            reasons.append(f"Supporting — {fact}: {actual!r}")
+    return matched_ids, reasons
+
+
+def _intersect_range(
+    value: Tuple[int, int], allowed: Sequence[Tuple[int, int]],
+) -> Optional[Tuple[int, int]]:
+    intersections = [
+        (max(value[0], start), min(value[1], end))
+        for start, end in allowed
+        if max(value[0], start) <= min(value[1], end)
+    ]
+    if not intersections:
+        return None
+    return (
+        min(start for start, _ in intersections),
+        max(end for _, end in intersections),
+    )
+
+
+def _resolved_label_range(
+    label_id: str, evaluation: RequirementEvaluation, facts: Mapping[str, Any],
+    parent_start: int, parent_end: int,
+    supporting_facts: Optional[Mapping[str, Any]] = None,
+) -> Tuple[Optional[Tuple[int, int]], List[str]]:
+    policy = _range_policy(label_id)
+    required_ids = [
+        fact_id for fact_id in evaluation.fact_ids
+        if fact_id not in _RANGE_CONTEXT_FACTS
+        and not fact_id.startswith(_RANGE_CONTEXT_PREFIXES)
+    ]
+    if not isinstance(facts, FactSet) or not required_ids or any(
+        not facts.evidence.get(fact_id) for fact_id in required_ids
+    ):
+        return None, []
+    required_ranges = _fact_ranges(facts, required_ids)
+    core = (
+        min(start for start, _ in required_ranges),
+        max(end for _, end in required_ranges),
+    )
+    phase_names = policy.get("phases") or []
+    if phase_names:
+        if not isinstance(facts, FactSet):
+            return None, []
+        allowed = [
+            value for phase_name in phase_names
+            for value in facts.phases.get(str(phase_name), [])
+        ]
+        core = _intersect_range(core, allowed)
+        if core is None:
+            return None, []
+    support_source = supporting_facts or facts
+    support_ids, support_reasons = _supporting_facts(policy, support_source)
+    support_ranges = _fact_ranges(support_source, support_ids)
+    all_ranges = [core, *support_ranges]
+    resolved = (
+        max(int(parent_start), min(start for start, _ in all_ranges)),
+        min(int(parent_end), max(end for _, end in all_ranges)),
+    )
+    return (resolved if resolved[0] <= resolved[1] else None), support_reasons
+
+
 def calculate_detailed_annotation(
     df: pd.DataFrame, *, parent_start: int, parent_end: int,
     parent_main_labels: Sequence[str], existing_children: Sequence[dict] = (),
@@ -903,6 +1205,15 @@ def calculate_detailed_annotation(
     conflicts: List[Tuple[str, str]] = []
     for start, end in candidates:
         facts, _ = calculate_facts(df, start, end)
+        if isinstance(facts, FactSet) and isinstance(parent_facts, FactSet):
+            for phase_name, ranges in parent_facts.phases.items():
+                inherited = [
+                    (max(start, phase_start), min(end, phase_end))
+                    for phase_start, phase_end in ranges
+                    if max(start, phase_start) <= min(end, phase_end)
+                ]
+                if inherited:
+                    facts.phases[phase_name] = inherited
         for key, value in parent_facts.items():
             if key.startswith("opponent."):
                 if key in {
@@ -910,12 +1221,27 @@ def calculate_detailed_annotation(
                     "opponent.started_ahead", "opponent.driver_ended_ahead",
                 }:
                     facts[key] = value
+                    if isinstance(facts, FactSet) and isinstance(parent_facts, FactSet):
+                        if parent_facts.evidence.get(key):
+                            facts.evidence[key] = list(parent_facts.evidence[key])
                 else:
                     facts.setdefault(key, value)
         evaluated = evaluate_labels([*parent_children, *segment_types], facts)
         conflicts.extend(evaluated.conflicts)
         for label_id in evaluated.labels:
-            key = (start, end, label_id)
+            label_doc = get_label(label_id) or {}
+            support_reasons: List[str] = []
+            if label_doc.get("type") == "sub":
+                resolved, support_reasons = _resolved_label_range(
+                    label_id, evaluated.evaluations[label_id], facts,
+                    parent_start, parent_end, parent_facts,
+                )
+                if resolved is None:
+                    continue
+                label_start, label_end = resolved
+            else:
+                label_start, label_end = start, end
+            key = (label_start, label_end, label_id)
             if key in existing or any(
                 (a["start_index"], a["end_index"], a["label_id"]) == key
                 for a in annotations
@@ -923,9 +1249,12 @@ def calculate_detailed_annotation(
                 continue
             annotations.append({
                 "label_id": label_id,
-                "start_index": start,
-                "end_index": end,
-                "reasoning": _reason(label_id, evaluated.evaluations[label_id], start, end),
+                "start_index": label_start,
+                "end_index": label_end,
+                "reasoning": "; ".join([
+                    _reason(label_id, evaluated.evaluations[label_id], label_start, label_end),
+                    *support_reasons,
+                ]),
             })
     labels = list(dict.fromkeys(a["label_id"] for a in annotations))
     summary = f"Deterministically selected {len(annotations)} label proposal(s)."
