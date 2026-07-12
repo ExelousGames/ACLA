@@ -3494,6 +3494,7 @@ def _empty_point_trend() -> Dict[str, Any]:
         "slope": None,
         "start_slope": None,
         "end_slope": None,
+        "previous_end_slope": None,
         "delta_value": None,
         "delta_iloc": None,
         "overall": {"direction": "flat", "domain_direction": "stable"},
@@ -3584,6 +3585,9 @@ def _point_trend_runs(
         "slope": float(np.nanmean(step_slopes)),
         "start_slope": float(step_slopes[0]),
         "end_slope": float(step_slopes[-1]),
+        "previous_end_slope": (
+            float(step_slopes[-2]) if len(step_slopes) >= 2 else None
+        ),
         "delta_value": delta_value,
         "delta_iloc": delta_iloc,
         "overall": {
@@ -3910,6 +3914,7 @@ def _query_compute_slope(
         "slope": slope,
         "start_slope": point_trend["start_slope"],
         "end_slope": point_trend["end_slope"],
+        "previous_end_slope": point_trend["previous_end_slope"],
         "delta_value": delta_v,
         "delta_iloc": delta_i,
         "total_change_direction": overall_class["direction"],

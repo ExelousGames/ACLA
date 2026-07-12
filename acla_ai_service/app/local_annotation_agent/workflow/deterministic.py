@@ -44,7 +44,7 @@ KNOWN_FACTS = frozenset({
     "time_gap.ending_direction", "time_gap.has_significant_rise",
     "time_gap.has_spike", "time_gap.middle_has_new_significant_rise",
     "time_gap.middle_has_significant_rise",
-    "time_gap.rises_then_flattens", "time_gap.significant", "time_gap.slope_shape",
+    "time_gap.flattening_at_end", "time_gap.significant", "time_gap.slope_shape",
     "time_gap.starting_direction",
     "time_gap.total_change_abs_ms",
     "trajectory.converging", "trajectory.peak_abs_offset_m", "trajectory.position",
@@ -52,6 +52,7 @@ KNOWN_FACTS = frozenset({
 })
 _MISSING = object()
 _ALIGN_TOLERANCE = 2
+_TELEMETRY_SMOOTHING_WINDOW = 3
 
 
 @dataclass
@@ -74,12 +75,26 @@ def _attachment_content(value: Any) -> Dict[str, Any]:
     return content if isinstance(content, dict) else {}
 
 
+def _smooth_telemetry(values: np.ndarray) -> np.ndarray:
+    """Suppress single-sample noise with a centered three-sample median."""
+    if len(values) < 2:
+        return values
+    edge = _TELEMETRY_SMOOTHING_WINDOW // 2
+    padded = np.pad(values, edge, mode="edge")
+    return (
+        pd.Series(padded)
+        .rolling(_TELEMETRY_SMOOTHING_WINDOW, center=True, min_periods=1)
+        .median()
+        .to_numpy(dtype=float)[edge:-edge]
+    )
+
+
 def _series(df: pd.DataFrame, *names: str) -> Optional[np.ndarray]:
     for name in names:
         if name in df.columns:
             values = pd.to_numeric(df[name], errors="coerce").to_numpy(dtype=float)
             if np.any(np.isfinite(values)):
-                return values
+                return _smooth_telemetry(values)
     return None
 
 
@@ -255,14 +270,18 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
     end_direction = (
         runs[-1].get("direction") if runs and isinstance(runs[-1], dict) else None
     )
-    preceding_non_flat_direction = next(
-        (
-            run.get("direction")
-            for run in reversed(runs[:-1])
-            if isinstance(run, dict) and run.get("direction") != "flat"
-        ),
-        None,
-    )
+    flattening_at_end = False
+    previous_end_slope = extra.get("previous_end_slope")
+    end_slope = extra.get("end_slope")
+    if previous_end_slope is not None and end_slope is not None:
+        try:
+            previous_end_slope = float(previous_end_slope)
+            end_slope = float(end_slope)
+            flattening_at_end = (
+                previous_end_slope > 0 and end_slope < previous_end_slope
+            )
+        except (TypeError, ValueError):
+            pass
     return {
         "time_gap.total_change_ms": delta,
         "time_gap.total_change_abs_ms": abs(float(delta)) if delta is not None else None,
@@ -271,9 +290,7 @@ def _slope_facts(df: pd.DataFrame, start: int, end: int) -> Dict[str, Any]:
         "time_gap.slope_shape": extra.get("slope_shape"),
         "time_gap.starting_direction": start_direction,
         "time_gap.ending_direction": end_direction,
-        "time_gap.rises_then_flattens": (
-            end_direction == "flat" and preceding_non_flat_direction == "rising"
-        ),
+        "time_gap.flattening_at_end": flattening_at_end,
         "time_gap.has_significant_rise": bool(significant_rises),
         "time_gap.middle_has_significant_rise": middle_has_significant_rise,
         "time_gap.middle_has_new_significant_rise": middle_has_new_significant_rise,

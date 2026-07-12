@@ -7,6 +7,14 @@ import app.local_annotation_agent.workflow as workflow
 from app.local_annotation_agent.workflow import deterministic
 
 
+def test_telemetry_series_is_smoothed_with_centered_three_sample_median():
+    df = pd.DataFrame({"signal": [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]})
+
+    values = deterministic._series(df, "signal")
+
+    assert values.tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+
+
 def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
 
@@ -70,12 +78,14 @@ def test_ea_accepts_either_complete_requirement_branch():
 def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
     def fake_query(_df, _name, _args):
         return ({
-            "samples": [{"value": 0}, {"value": 100}],
+            "samples": [{"value": 0}, {"value": 50}, {"value": 100}],
             "extra": {
                 "delta_value": 100,
                 "total_change_direction": "rising",
                 "total_change_is_label_significant": True,
                 "slope_shape": "slope_steady_over_section",
+                "previous_end_slope": 50,
+                "end_slope": 50,
                 "point_trend_runs": [
                     {
                         "start_iloc": 0, "end_iloc": 2, "direction": "rising",
@@ -104,18 +114,20 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
     assert facts["time_gap.has_significant_rise"] is True
     assert facts["time_gap.middle_has_significant_rise"] is False
     assert facts["time_gap.middle_has_new_significant_rise"] is False
-    assert facts["time_gap.rises_then_flattens"] is False
+    assert facts["time_gap.flattening_at_end"] is False
 
 
 def test_slope_facts_identify_rising_then_flattening(monkeypatch):
     def fake_query(_df, _name, _args):
         return ({
-            "samples": [{"value": 0}, {"value": 100}, {"value": 100}],
+            "samples": [{"value": 0}, {"value": 100}, {"value": 150}],
             "extra": {
                 "delta_value": 100,
                 "total_change_direction": "rising",
                 "total_change_is_label_significant": True,
                 "slope_shape": "slope_decreasing_over_section",
+                "previous_end_slope": 100,
+                "end_slope": 50,
                 "point_trend_runs": [
                     {
                         "start_iloc": 0, "end_iloc": 7, "direction": "rising",
@@ -137,7 +149,7 @@ def test_slope_facts_identify_rising_then_flattening(monkeypatch):
 
     assert facts["time_gap.middle_has_significant_rise"] is True
     assert facts["time_gap.middle_has_new_significant_rise"] is False
-    assert facts["time_gap.rises_then_flattens"] is True
+    assert facts["time_gap.flattening_at_end"] is True
 
     def fake_rise_fall_flat_query(_df, _name, _args):
         return ({
@@ -147,6 +159,8 @@ def test_slope_facts_identify_rising_then_flattening(monkeypatch):
                 "total_change_direction": "rising",
                 "total_change_is_label_significant": True,
                 "slope_shape": "slope_decreasing_over_section",
+                "previous_end_slope": 100,
+                "end_slope": -50,
                 "point_trend_runs": [
                     {
                         "start_iloc": 0, "end_iloc": 3, "direction": "rising",
@@ -171,7 +185,7 @@ def test_slope_facts_identify_rising_then_flattening(monkeypatch):
 
     facts = deterministic._slope_facts(pd.DataFrame(), 0, 10)
 
-    assert facts["time_gap.rises_then_flattens"] is False
+    assert facts["time_gap.flattening_at_end"] is True
 
 
 def test_behavior_requirements_respect_slope_location():
@@ -191,7 +205,7 @@ def test_behavior_requirements_respect_slope_location():
     recovery_merge = {
         "time_gap.starting_direction": "rising",
         "time_gap.middle_has_new_significant_rise": False,
-        "time_gap.rises_then_flattens": True,
+        "time_gap.flattening_at_end": True,
     }
 
     assert not deterministic.evaluate_requirements(msp, rising_only_at_start).matched
@@ -204,7 +218,7 @@ def test_behavior_requirements_respect_slope_location():
         **recovery_merge, "time_gap.middle_has_new_significant_rise": True,
     }).matched
     assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "time_gap.rises_then_flattens": False,
+        **recovery_merge, "time_gap.flattening_at_end": False,
     }).matched
 
 
