@@ -697,26 +697,8 @@ def render_followup_chat() -> None:
 
 
 def group_proposals_by_range(result) -> list[tuple[tuple[int, int], list[dict]]]:
-    """Group per-label proposals into one entry per unique (start, end).
-
-    Falls back to a single entry covering ``[sub_start, sub_end]`` with
-    all final_labels if the pipeline didn't expose per-label annotations
-    (e.g. older result objects).
-    """
+    """Group per-label proposals into one entry per unique (start, end)."""
     label_annotations = list(getattr(result, "label_annotations", None) or [])
-
-    if not label_annotations and result.final_labels:
-        s = result.sub_start if result.sub_start is not None else 0
-        e = result.sub_end if result.sub_end is not None else 0
-        label_annotations = [
-            {
-                "label_id": l,
-                "start_index": s,
-                "end_index": e,
-                "reasoning": result.final_reasoning,
-            }
-            for l in result.final_labels
-        ]
 
     grouped: dict[tuple[int, int], list[dict]] = {}
     order: list[tuple[int, int]] = []

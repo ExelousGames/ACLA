@@ -16,6 +16,15 @@ def test_telemetry_series_is_smoothed_with_centered_three_sample_median():
     assert values.tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
 
 
+def test_closing_evidence_is_limited_to_decreasing_magnitude_runs():
+    ranges = deterministic._decreasing_magnitude_ranges(
+        np.array([5.0, 4.0, 3.0, 4.0, 2.0, 3.0]),
+        np.arange(8, 14),
+    )
+
+    assert ranges == [(8, 10), (11, 12)]
+
+
 def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
 
@@ -458,6 +467,51 @@ def test_far_driver_in_overlapping_pit_prefers_ps_over_rm(monkeypatch):
 
     assert result.label_ids == ["silverstone", "silverstone22", "PS"]
     assert all(item["value"] != "PS / RM" for item in result.rejected_proposals)
+
+
+def test_lap_sub_label_notes_use_each_labels_resolved_evidence_range(monkeypatch):
+    facts = deterministic.FactSet(
+        {
+            "time_gap.starting_direction": "rising",
+            "time_gap.middle_has_new_significant_rise": False,
+            "time_gap.flattening_at_end": True,
+            "trajectory.peak_abs_offset_m": 2.0,
+            "trajectory.converging": True,
+            "speed.expert_faster": True,
+            "speed.gap_peak_abs_kmh": 30.0,
+            "speed.gap_closing": True,
+        },
+        evidence={
+            "trajectory.peak_abs_offset_m": [(12, 12)],
+            "trajectory.converging": [(10, 16)],
+            "speed.expert_faster": [(18, 20)],
+            "speed.gap_peak_abs_kmh": [(19, 19)],
+            "speed.gap_closing": [(18, 22)],
+        },
+    )
+    monkeypatch.setattr(
+        deterministic, "calculate_facts", lambda *_args, **_kwargs: (facts, []),
+    )
+    monkeypatch.setattr(
+        deterministic, "_resolve_circuit_sections",
+        lambda *_args, **_kwargs: ("silverstone1", ["silverstone1"]),
+    )
+
+    result = deterministic.calculate_lap_annotation(
+        pd.DataFrame(index=range(8, 30)),
+        lap_start=8,
+        lap_end=29,
+        section_id="silverstone1",
+        section_start=8,
+        section_end=29,
+        circuit_id="silverstone",
+    )
+
+    assert "RM selected for iloc range [8, 29]" in result.reasoning
+    assert "RM1 selected for iloc range [10, 16]" in result.reasoning
+    assert "RM5 selected for iloc range [18, 22]" in result.reasoning
+    assert "RM7 selected for iloc range [10, 16]" in result.reasoning
+    assert result.reasoning.count("\n") == 3
 
 
 def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():

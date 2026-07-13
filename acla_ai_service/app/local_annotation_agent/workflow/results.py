@@ -33,8 +33,6 @@ class AnnotationResult:
     iterations: int
     messages: List[dict]
     graph_images: List[bytes] = field(default_factory=list)  # PNG bytes
-    sub_start: Optional[int] = None
-    sub_end: Optional[int] = None
     # Per-label proposals. Each entry:
     #   {label_id, start_index, end_index, reasoning}
     # The UI creates one sub-segment per AI-discovered range.

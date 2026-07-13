@@ -112,6 +112,24 @@ def _mask_ranges(mask: np.ndarray, index: np.ndarray) -> List[Tuple[int, int]]:
     ]
 
 
+def _decreasing_magnitude_ranges(
+    values: np.ndarray, index: np.ndarray,
+) -> List[Tuple[int, int]]:
+    if len(values) < 2 or len(values) != len(index):
+        return []
+    transitions = (
+        np.isfinite(values[:-1])
+        & np.isfinite(values[1:])
+        & (np.abs(values[1:]) < np.abs(values[:-1]))
+    )
+    positions = np.flatnonzero(transitions)
+    return [
+        (int(index[int(run[0])]), int(index[int(run[-1]) + 1]))
+        for run in np.split(positions, np.flatnonzero(np.diff(positions) > 1) + 1)
+        if len(run)
+    ]
+
+
 def _attachment_content(value: Any) -> Dict[str, Any]:
     content = getattr(value, "content", None)
     return content if isinstance(content, dict) else {}
@@ -628,9 +646,8 @@ def calculate_facts(
             evidence["speed.expert_faster"] = _mask_ranges(
                 finite_mask & (speed_delta > 0), index,
             )
-            finite_positions = np.flatnonzero(finite_mask)
-            evidence["speed.gap_closing"] = _point_range(
-                index[int(finite_positions[0])], index[int(finite_positions[-1])],
+            evidence["speed.gap_closing"] = _decreasing_magnitude_ranges(
+                speed_delta, index,
             )
 
     trajectory = _raw_trajectory_offset(segment)
@@ -644,11 +661,10 @@ def calculate_facts(
             median = float(np.nanmedian(finite))
             facts["trajectory.position"] = "aligned" if abs(median) <= 0.5 else "wider" if median > 0 else "tighter"
             finite_mask = np.isfinite(trajectory)
-            finite_positions = np.flatnonzero(finite_mask)
             peak_pos = int(np.nanargmax(np.abs(trajectory)))
             evidence["trajectory.peak_abs_offset_m"] = _point_range(index[peak_pos])
-            evidence["trajectory.converging"] = _point_range(
-                index[int(finite_positions[0])], index[int(finite_positions[-1])],
+            evidence["trajectory.converging"] = _decreasing_magnitude_ranges(
+                trajectory, index,
             )
             position_mask = (
                 np.abs(trajectory) <= 0.5 if facts["trajectory.position"] == "aligned"
@@ -1007,16 +1023,27 @@ def calculate_lap_annotation(
         if doc.get("type") == "sub" and doc.get("parent") in set(behavior)
     ]
     children = evaluate_labels(child_ids, facts)
+    resolved_children: List[Tuple[str, RequirementEvaluation, Tuple[int, int], List[str]]] = []
+    for label in children.labels:
+        child_range, support_reasons = _resolved_label_range(
+            label, children.evaluations[label], facts, section_start, section_end,
+        )
+        if child_range is not None:
+            resolved_children.append((
+                label, children.evaluations[label], child_range, support_reasons,
+            ))
     label_ids = [
-        circuit_id, resolved_section_id, *behavior, *children.labels, *segment_types.labels,
+        circuit_id, resolved_section_id, *behavior,
+        *(label for label, _, _, _ in resolved_children),
+        *segment_types.labels,
     ] if behavior else []
     notes = [
         _reason(label, evaluated.evaluations[label], section_start, section_end)
         for label in behavior
     ]
     notes.extend(
-        _reason(label, children.evaluations[label], section_start, section_end)
-        for label in children.labels
+        "; ".join([_reason(label, evaluation, *child_range), *support_reasons])
+        for label, evaluation, child_range, support_reasons in resolved_children
     )
     rejected = [
         {
@@ -1042,7 +1069,7 @@ def calculate_lap_annotation(
         start_index=int(section_start),
         end_index=int(section_end),
         label_ids=[label for i, label in enumerate(label_ids) if label and label not in label_ids[:i]],
-        reasoning=" ".join(notes) or "No behavior label satisfied a complete requirement branch.",
+        reasoning="\n".join(notes) or "No behavior label satisfied a complete requirement branch.",
         submitted=True,
         rejected_proposals=rejected,
         transcript="deterministic label evaluation",
@@ -1266,8 +1293,6 @@ def calculate_detailed_annotation(
         accepted=True,
         iterations=1,
         messages=[],
-        sub_start=min((a["start_index"] for a in annotations), default=None),
-        sub_end=max((a["end_index"] for a in annotations), default=None),
         label_annotations=annotations,
     )
 
