@@ -4148,11 +4148,11 @@ def _query_find_trend_runs(
     """Find rising, falling, and flat runs in <column> over the range.
 
     This is the deterministic shape reader for time-delta style graphs.
-    For ``expert_time_difference``, rising runs show the gap increasing
-    and falling runs show the gap decreasing. Parent-label prompts decide
-    whether that rate change is a new mistake or recovery from a carried
-    prior issue. Flat runs explicitly mean the existing gap is being
-    carried forward, not that a new mistake/recovery occurred.
+    For ``expert_time_difference``, rising runs show local gap increases
+    and falling runs show local gap decreases. These runs describe the
+    shape within a section; the section's signed start-to-end change
+    determines its parent mistake label. Flat runs mean the existing gap
+    is being carried forward.
     """
     try:
         window = int(smoothing_window)
@@ -4574,10 +4574,10 @@ PIPELINE_QUERY_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Up/down/flat trend runs",
         "description": (
             "Piecewise rising, falling, and flat runs in <column> over "
-            "<range>. Use this for `expert_time_difference` mistake/recovery "
-            "localization: rising runs are where the player loses "
-            "time, falling runs are where the player recovers, and "
-            "flat positive/negative runs are constant carried gap only."
+            "<range>. For `expert_time_difference`, rising runs show local "
+            "time loss, falling runs show local gains, and flat "
+            "positive/negative runs show a constant carried gap. Parent "
+            "mistake selection uses the signed start-to-end change."
         ),
         "params_schema": {
             "range": _RANGE_PARAM_DESC,

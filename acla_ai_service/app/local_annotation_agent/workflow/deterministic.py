@@ -314,15 +314,20 @@ def _slope_facts(
         ]
         for direction in ("rising", "falling", "flat")
     }
-    significant_rises = [
+    local_significant_rises = [
         run for run in runs
         if run.get("direction") == "rising"
         and run.get("is_label_significant") is True
     ]
     significant_rise_ranges = [
         [int(run["start_iloc"]), int(run["end_iloc"])]
-        for run in significant_rises
+        for run in local_significant_rises
     ]
+    total_change_direction = extra.get("total_change_direction")
+    has_significant_rise = bool(
+        total_change_direction == "rising"
+        and extra.get("total_change_is_label_significant") is True
+    )
     if evidence is not None:
         for direction, ranges in ranges_by_direction.items():
             if ranges:
@@ -332,8 +337,10 @@ def _slope_facts(
         if significant_rise_ranges:
             localized_rises = [tuple(value) for value in significant_rise_ranges]
             evidence["time_gap.significant_rise_ranges"] = localized_rises
-            evidence["time_gap.has_significant_rise"] = localized_rises
-            evidence["time_gap.direction"] = localized_rises
+        if total_change_direction is not None:
+            evidence["time_gap.direction"] = [(int(start), int(end))]
+        if has_significant_rise:
+            evidence["time_gap.has_significant_rise"] = [(int(start), int(end))]
         evidence["time_gap.total_change_abs_ms"] = [(int(start), int(end))]
         evidence["time_gap.overall_gap"] = [(int(start), int(end))]
     spike_runs = [
@@ -346,7 +353,7 @@ def _slope_facts(
     middle_start = int(start) + section_length / 3.0
     middle_end = int(end) - section_length / 3.0
     middle_significant_rises = [
-        run for run in significant_rises
+        run for run in local_significant_rises
         if middle_start <= float(run["start_iloc"]) < middle_end
     ]
     middle_has_new_significant_rise = bool(middle_significant_rises)
@@ -382,13 +389,13 @@ def _slope_facts(
     return {
         "time_gap.total_change_ms": delta,
         "time_gap.total_change_abs_ms": abs(float(delta)) if delta is not None else None,
-        "time_gap.direction": extra.get("total_change_direction"),
+        "time_gap.direction": total_change_direction,
         "time_gap.overall_gap": abs(float(delta)) if delta is not None else None,
         "time_gap.slope_shape": extra.get("slope_shape"),
         "time_gap.starting_direction": start_direction,
         "time_gap.ending_direction": end_direction,
         "time_gap.flattening_at_end": flattening_at_end,
-        "time_gap.has_significant_rise": bool(significant_rises),
+        "time_gap.has_significant_rise": has_significant_rise,
         "time_gap.rising_ranges": ranges_by_direction["rising"],
         "time_gap.falling_ranges": ranges_by_direction["falling"],
         "time_gap.flat_ranges": ranges_by_direction["flat"],
@@ -744,14 +751,6 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
             actual = facts.get(fact, _MISSING)
             value = "unavailable" if actual is _MISSING else repr(actual)
             text = f"{fact}: {value}"
-            if fact == "time_gap.has_significant_rise" and actual is True:
-                ranges = facts.get("time_gap.significant_rise_ranges") or []
-                locations = ", ".join(
-                    str(a) if a == b else f"{a}-{b}"
-                    for a, b in ranges
-                )
-                if locations:
-                    text += f" (rising at iloc {locations})"
             (passed if _compare(actual, operator, expected) else failed).append(text)
         if not failed:
             return RequirementEvaluation(True, branch_index, passed, [], fact_ids)
