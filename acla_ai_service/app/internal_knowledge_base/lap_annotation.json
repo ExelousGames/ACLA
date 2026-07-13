@@ -65,11 +65,11 @@
       "enabled": true,
       "any_of": [
         {"all_of": [
-          {"fact": "time_gap.total_change_abs_ms", "operator": "lt", "value": 50},
+          {"fact": "time_gap.total_change_ms", "operator": "lt", "value": 50},
           {"fact": "time_gap.ending_direction", "operator": "eq", "value": "falling"}
         ]},
         {"all_of": [
-          {"fact": "time_gap.total_change_abs_ms", "operator": "gte", "value": 50},
+          {"fact": "time_gap.total_change_ms", "operator": "gte", "value": 50},
           {"fact": "time_gap.has_significant_rise", "operator": "eq", "value": false},
           {"fact": "brake.similarity", "operator": "eq", "value": 1.0},
           {"fact": "throttle.similarity", "operator": "eq", "value": 1.0}
@@ -80,7 +80,8 @@
       "enabled": true,
       "any_of": [
         {"all_of": [
-          {"fact": "time_gap.has_significant_rise", "operator": "eq", "value": true}
+          {"fact": "time_gap.has_significant_rise", "operator": "eq", "value": true},
+          {"fact": "time_gap.middle_has_new_significant_rise", "operator": "eq", "value": true}
         ]}
       ]
     },

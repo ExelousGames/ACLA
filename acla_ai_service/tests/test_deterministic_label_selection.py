@@ -331,7 +331,7 @@ def test_slope_facts_ignore_insignificant_single_sample_noise():
     assert facts["time_gap.significant_rise_ranges"] == []
 
 
-def test_behavior_requirements_accept_total_significant_rise():
+def test_behavior_requirements_require_middle_significant_rise_for_msp():
     msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
     rm = deterministic._requirements_for("RM", deterministic.get_label("RM"))
 
@@ -339,6 +339,7 @@ def test_behavior_requirements_accept_total_significant_rise():
     significant_rise = {
         "time_gap.direction": "rising",
         "time_gap.has_significant_rise": True,
+        "time_gap.middle_has_new_significant_rise": True,
     }
     recovery_merge = {
         "time_gap.starting_direction": "rising",
@@ -348,6 +349,9 @@ def test_behavior_requirements_accept_total_significant_rise():
 
     assert not deterministic.evaluate_requirements(msp, no_significant_rise).matched
     assert deterministic.evaluate_requirements(msp, significant_rise).matched
+    assert not deterministic.evaluate_requirements(msp, {
+        **significant_rise, "time_gap.middle_has_new_significant_rise": False,
+    }).matched
     assert not deterministic.evaluate_requirements(rm, significant_rise).matched
     assert deterministic.evaluate_requirements(rm, recovery_merge).matched
     assert not deterministic.evaluate_requirements(rm, {
