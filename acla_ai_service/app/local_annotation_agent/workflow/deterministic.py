@@ -420,6 +420,7 @@ def _shape_facts(
         evidence["segment.shape_key"] = [(int(start), int(end))]
         evidence["segment.corner_shape_key"] = [(int(start), int(end))]
     phase_ranges: List[Tuple[int, int]] = []
+    phase_ranges_by_name: Dict[str, List[Tuple[int, int]]] = {}
     for phase in content.get("phases") or []:
         if not isinstance(phase, dict):
             continue
@@ -431,16 +432,22 @@ def _shape_facts(
                 "exit": (apex, exit_),
             }
             phase_ranges.extend(named_ranges.values())
-            if phases is not None:
-                for name, value in named_ranges.items():
+            for name, value in named_ranges.items():
+                phase_ranges_by_name.setdefault(name, []).append(value)
+                if phases is not None:
                     phases.setdefault(name, []).append(value)
     altitude = content.get("altitude") or {}
     for phase_name in ("entry", "apex", "exit"):
+        phase_evidence = list(phase_ranges_by_name.get(phase_name) or [])
+        if phase_evidence:
+            facts[f"phase.{phase_name}"] = True
+            if evidence is not None:
+                evidence[f"phase.{phase_name}"] = phase_evidence
         summary = altitude.get(phase_name) or {}
         facts[f"altitude.{phase_name}.trend"] = summary.get("trend")
         facts[f"altitude.{phase_name}.slope_angle_degrees"] = summary.get("slope_angle_degrees")
-        if evidence is not None and phases is not None and phases.get(phase_name):
-            evidence[f"altitude.{phase_name}.trend"] = list(phases[phase_name])
+        if evidence is not None and phase_evidence:
+            evidence[f"altitude.{phase_name}.trend"] = phase_evidence
     return facts, phase_ranges
 
 
@@ -589,19 +596,6 @@ def calculate_facts(
                 _mask_ranges(expert_overlap, index) or [(int(start), int(end))]
             )
         evidence["controls.overlap_count"] = _mask_ranges(overlap, index)
-    if player_brake is not None:
-        facts["phase.entry"] = bool(np.mean(player_brake > 0.05) >= 0.15)
-    if player_throttle is not None:
-        facts["phase.exit"] = bool(
-            player_throttle[-1] > player_throttle[0]
-            or np.mean(player_throttle > 0.5) >= 0.50
-        )
-    if "phase.entry" in facts and "phase.exit" in facts:
-        facts["phase.apex"] = bool(facts["phase.entry"] and facts["phase.exit"])
-    for phase_name in ("entry", "apex", "exit"):
-        fact = f"phase.{phase_name}"
-        if fact in facts and phases.get(phase_name):
-            evidence[fact] = list(phases[phase_name])
 
     speed_delta = _raw_speed_delta(segment)
     if speed_delta is not None:
@@ -1180,6 +1174,10 @@ def calculate_detailed_annotation(
     for start, end in candidates:
         facts, _ = calculate_facts(df, start, end)
         if isinstance(facts, FactSet) and isinstance(parent_facts, FactSet):
+            for phase_name in ("entry", "apex", "exit"):
+                facts.pop(f"phase.{phase_name}", None)
+                facts.evidence.pop(f"phase.{phase_name}", None)
+                facts.phases.pop(phase_name, None)
             for phase_name, ranges in parent_facts.phases.items():
                 inherited = [
                     (max(start, phase_start), min(end, phase_end))
@@ -1188,6 +1186,8 @@ def calculate_detailed_annotation(
                 ]
                 if inherited:
                     facts.phases[phase_name] = inherited
+                    facts[f"phase.{phase_name}"] = True
+                    facts.evidence[f"phase.{phase_name}"] = list(inherited)
         for key, value in parent_facts.items():
             if key.startswith("opponent."):
                 if key in {

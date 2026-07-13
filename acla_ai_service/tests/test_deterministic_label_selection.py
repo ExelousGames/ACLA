@@ -8,6 +8,24 @@ import app.local_annotation_agent.workflow as workflow
 from app.local_annotation_agent.workflow import deterministic
 
 
+def _expert_corner_dataframe() -> pd.DataFrame:
+    theta = np.linspace(0.0, np.pi / 2.0, 31)
+    return pd.DataFrame({
+        "expert_optimal_player_pos_x": 20.0 * np.cos(theta),
+        "expert_optimal_player_pos_y": 20.0 * np.sin(theta),
+        "Physics_brake": np.zeros(theta.size),
+        "expert_optimal_brake": np.zeros(theta.size),
+        "Physics_gas": np.zeros(theta.size),
+        "expert_optimal_throttle": np.zeros(theta.size),
+    })
+
+
+def _isolate_phase_fact_sources(monkeypatch) -> None:
+    monkeypatch.setattr(deterministic, "_slope_facts", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(deterministic, "_opponent_facts", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(deterministic, "_raw_trajectory_offset", lambda _segment: None)
+
+
 def test_telemetry_series_is_smoothed_with_centered_three_sample_median():
     df = pd.DataFrame({"signal": [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]})
 
@@ -837,6 +855,107 @@ def test_calculated_comparison_facts_keep_driver_and_expert_provenance(monkeypat
         "trajectory.position",
     ):
         assert facts.evidence[fact_id]
+
+
+def test_phase_facts_come_from_expert_curvature_independently_of_controls(
+    monkeypatch,
+):
+    _isolate_phase_fact_sources(monkeypatch)
+    no_controls = _expert_corner_dataframe()
+    changed_controls = no_controls.copy()
+    changed_controls["Physics_brake"] = np.linspace(0.0, 1.0, len(changed_controls))
+    changed_controls["expert_optimal_brake"] = 0.25
+    changed_controls["Physics_gas"] = np.linspace(1.0, 0.0, len(changed_controls))
+    changed_controls["expert_optimal_throttle"] = 0.75
+
+    no_control_facts, _ = deterministic.calculate_facts(
+        no_controls, 0, len(no_controls),
+    )
+    changed_control_facts, _ = deterministic.calculate_facts(
+        changed_controls, 0, len(changed_controls),
+    )
+
+    assert no_control_facts.phases == changed_control_facts.phases
+    for phase_name in ("entry", "apex", "exit"):
+        fact_id = f"phase.{phase_name}"
+        assert no_control_facts[fact_id] is True
+        assert changed_control_facts[fact_id] is True
+        assert no_control_facts.evidence[fact_id] == no_control_facts.phases[phase_name]
+        assert changed_control_facts.evidence[fact_id] == changed_control_facts.phases[phase_name]
+    assert no_control_facts["brake.peak_relation"] == "aligned"
+    assert changed_control_facts["brake.peak_relation"] == "higher"
+
+
+def test_controls_do_not_fallback_to_phase_facts_without_expert_curvature(
+    monkeypatch,
+):
+    _isolate_phase_fact_sources(monkeypatch)
+    controls = {
+        "Physics_brake": np.ones(31),
+        "expert_optimal_brake": np.full(31, 0.5),
+        "Physics_gas": np.linspace(0.0, 1.0, 31),
+        "expert_optimal_throttle": np.full(31, 0.5),
+    }
+    missing_expert = pd.DataFrame(controls)
+    straight_expert = pd.DataFrame({
+        **controls,
+        "expert_optimal_player_pos_x": np.arange(31, dtype=float),
+        "expert_optimal_player_pos_y": np.zeros(31),
+    })
+
+    for telemetry in (missing_expert, straight_expert):
+        facts, phase_ranges = deterministic.calculate_facts(
+            telemetry, 0, len(telemetry),
+        )
+
+        assert phase_ranges == []
+        assert facts.phases == {}
+        assert all(
+            f"phase.{phase_name}" not in facts
+            for phase_name in ("entry", "apex", "exit")
+        )
+
+
+def test_detailed_subrange_synchronizes_inherited_expert_phase_facts(monkeypatch):
+    parent_facts = deterministic.FactSet(
+        {"phase.entry": True},
+        evidence={"phase.entry": [(1, 5)]},
+        phases={"entry": [(1, 5)]},
+    )
+    candidate_facts = deterministic.FactSet(
+        {"phase.exit": True},
+        evidence={"phase.exit": [(2, 4)]},
+        phases={"exit": [(2, 4)]},
+    )
+    calls = iter(((parent_facts, [(1, 5)]), (candidate_facts, [])))
+    evaluated_facts = []
+
+    monkeypatch.setattr(
+        deterministic, "calculate_facts", lambda *_args, **_kwargs: next(calls),
+    )
+    monkeypatch.setattr(
+        deterministic, "_candidate_ranges", lambda *_args, **_kwargs: [(2, 4)],
+    )
+
+    def capture_evaluation(_label_ids, facts):
+        evaluated_facts.append(facts)
+        return deterministic.LabelEvaluation([], {})
+
+    monkeypatch.setattr(deterministic, "evaluate_labels", capture_evaluation)
+
+    deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(6)),
+        parent_start=0,
+        parent_end=5,
+        parent_main_labels=[],
+    )
+
+    assert evaluated_facts[0]["phase.entry"] is True
+    assert evaluated_facts[0].phases["entry"] == [(2, 4)]
+    assert evaluated_facts[0].evidence["phase.entry"] == [(2, 4)]
+    assert "phase.exit" not in evaluated_facts[0]
+    assert "exit" not in evaluated_facts[0].phases
+    assert "phase.exit" not in evaluated_facts[0].evidence
 
 
 def test_interaction_section_uses_unique_splitter_context():
