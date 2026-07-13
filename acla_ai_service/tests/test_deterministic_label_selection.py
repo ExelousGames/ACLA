@@ -460,18 +460,15 @@ def test_pit_stop_requires_pit_section_and_raw_telemetry():
 
 
 def test_pit_stop_checks_overlaps_when_splitter_selects_adjacent_straight(monkeypatch):
-    class Attachment:
-        content = {
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.locate_circuit_section",
+        lambda *_args, **_kwargs: {
             "best_match": None,
             "top_matches": [
                 {"label_id": "brands_hatch1"},
                 {"label_id": "brands_hatch17"},
             ],
-        }
-
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.locate_circuit_section",
-        lambda *_args, **_kwargs: Attachment(),
+        },
     )
     monkeypatch.setattr(
         deterministic,

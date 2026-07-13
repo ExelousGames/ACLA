@@ -747,7 +747,7 @@ def _altitude_phase_summary(
 
 def measure_segment_shape(
     df: pd.DataFrame, start_index: int, end_index: int,
-):
+) -> Dict[str, Any]:
     """Tool — deterministic shape and altitude summary for a segment.
 
     Uses expert-anchored curvature phases for base shape and corner-shape
@@ -755,8 +755,6 @@ def measure_segment_shape(
     It reports shape keys and measurements only; deterministic catalog
     requirements map those facts to labels.
     """
-    from app.local_annotation_agent.evaluators import PipelineAttachment
-
     start = int(start_index)
     end = int(end_index)
     segment = _absolute_iloc_slice(df, start, end)
@@ -797,12 +795,7 @@ def measure_segment_shape(
         alt_col = alt_cols[0]
         xy_cols = _position_columns_for_altitude(alt_col)
         if xy_cols is None or any(col not in segment.columns for col in xy_cols):
-            return PipelineAttachment(
-                name="segment_shape_measurement",
-                kind="structured",
-                label="Segment Shape Measurement",
-                content=_round_floats(shape),
-            )
+            return _round_floats(shape)
         alt = segment[alt_col].to_numpy(dtype=float)
         x_values = segment[xy_cols[0]].to_numpy(dtype=float)
         y_values = segment[xy_cols[1]].to_numpy(dtype=float)
@@ -825,12 +818,7 @@ def measure_segment_shape(
             summary["end_iloc"] = int(summary.pop("end_offset")) + start
             shape["altitude"][phase_name] = summary
 
-    return PipelineAttachment(
-        name="segment_shape_measurement",
-        kind="structured",
-        label="Segment Shape Measurement",
-        content=_round_floats(shape),
-    )
+    return _round_floats(shape)
 
 
 def _player_heading(seg_player_x: np.ndarray, seg_player_y: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -1362,7 +1350,7 @@ def query_opponent_trajectory(
     df: pd.DataFrame, start_index: int, end_index: int,
     slot: int,
     n_samples: int = 5,
-):
+) -> Dict[str, Any]:
     """Tool — sample one opponent's relative trajectory at N evenly-spaced ilocs.
 
     For opponent ``slot`` (``1..MAX_CARS``), reads
@@ -1387,7 +1375,7 @@ def query_opponent_trajectory(
     (switchback rotation), or lateral offset crossing zero
     (line-cross during a pass).
 
-    Produces an ``opponent_trajectory`` attachment::
+    Returns a telemetry-derived dictionary::
 
         {
             "range": [start_index, end_index],
@@ -1405,17 +1393,7 @@ def query_opponent_trajectory(
             ],
         }
     """
-    from app.local_annotation_agent.evaluators import PipelineAttachment
-
     slot_int = int(slot)
-
-    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
-        return PipelineAttachment(
-            name="opponent_trajectory",
-            kind="structured",
-            label=f"Opponent Trajectory (slot {slot_int})",
-            content=_round_floats(content),
-        )
 
     s, e = int(start_index), int(end_index)
     n_samples = max(2, int(n_samples))
@@ -1432,13 +1410,13 @@ def query_opponent_trajectory(
     missing = [c for c in required if c not in df.columns]
     if missing:
         base["message"] = f"required columns missing: {missing}"
-        return _attach(base)
+        return _round_floats(base)
 
     seg = _absolute_iloc_slice(df, s, e)
     n_rows = len(seg)
     if n_rows < 2:
         base["message"] = "range too short (need ≥ 2 rows)"
-        return _attach(base)
+        return _round_floats(base)
 
     player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
     player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
@@ -1484,7 +1462,7 @@ def query_opponent_trajectory(
             ),
         })
 
-    return _attach({
+    return _round_floats({
         "range": [s, e],
         "slot": slot_int,
         "data_available": True,
@@ -1511,7 +1489,7 @@ def classify_opponent_interaction(
     min_threat_overlap_ilocs: int = 3,
     min_active_fraction: float = 0.3,
     max_candidates: int = 5,
-):
+) -> Dict[str, Any]:
     """Tool — deterministic O / OD / MSR interaction classifier.
 
     Computes opponent-relative position math over ``[start_index, end_index)``
@@ -1535,16 +1513,7 @@ def classify_opponent_interaction(
     inline following is target-car context, not by itself an attack/defense
     outcome.
     """
-    from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.shared.telemetry import MAX_CARS
-
-    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
-        return PipelineAttachment(
-            name="opponent_interaction_classification",
-            kind="structured",
-            label="Opponent Interaction Classification",
-            content=_round_floats(content),
-        )
 
     def _clamp01(v: float) -> float:
         return max(0.0, min(1.0, float(v)))
@@ -1608,19 +1577,19 @@ def classify_opponent_interaction(
             "Player position columns (Graphics_player_pos_x/y) missing — "
             "cannot classify opponent interaction."
         )
-        return _attach(base_payload)
+        return _round_floats(base_payload)
 
     seg = _absolute_iloc_slice(df, s, e)
     n_rows = len(seg)
     if n_rows < 2:
         base_payload["message"] = "Range too short for opponent classification (need >= 2 rows)."
-        return _attach(base_payload)
+        return _round_floats(base_payload)
 
     player_x = seg["Graphics_player_pos_x"].to_numpy(dtype=float)
     player_y = seg["Graphics_player_pos_y"].to_numpy(dtype=float)
     if not (np.isfinite(player_x).any() and np.isfinite(player_y).any()):
         base_payload["message"] = "Player position trace is all NaN/inf."
-        return _attach(base_payload)
+        return _round_floats(base_payload)
 
     candidates: List[Dict[str, Any]] = []
     n_active_slots = 0
@@ -1890,7 +1859,7 @@ def classify_opponent_interaction(
     top = candidates[0] if candidates else None
 
     if top is None:
-        return _attach({
+        return _round_floats({
             **base_payload,
             "data_available": True,
             "n_active_slots": n_active_slots,
@@ -1898,7 +1867,7 @@ def classify_opponent_interaction(
             "message": "No active opponent slot met the active-fraction threshold.",
         })
 
-    return _attach({
+    return _round_floats({
         "range": [s, e],
         "data_available": True,
         "n_active_slots": n_active_slots,
@@ -2417,12 +2386,11 @@ def _align_interaction_windows_with_classifier(
     for window in windows:
         out = dict(window)
         try:
-            att = classify_opponent_interaction(
+            content = classify_opponent_interaction(
                 df,
                 int(out["start_index"]),
                 int(out["end_index"]),
             )
-            content = getattr(att, "content", None)
         except Exception:
             content = None
 
@@ -2981,7 +2949,7 @@ def locate_circuit_section(
     circuit_id: Optional[str],
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
-):
+) -> Dict[str, Any]:
     """Tool — identify which named ``circuit_section`` the segment overlaps.
 
     Reads ``Graphics_normalized_car_position`` over ``[start_index, end_index)``
@@ -2991,7 +2959,7 @@ def locate_circuit_section(
     span). Handles wrap-around sections where ``range_end < range_start``
     (e.g. the pit straight that crosses the start/finish line).
 
-    Returns a ``circuit_section_match`` attachment with shape::
+    Returns a telemetry-derived dictionary with shape::
 
         {
             "circuit_id": <str>,
@@ -3013,7 +2981,6 @@ def locate_circuit_section(
     otherwise ``is_ambiguous`` is true and callers should resolve the
     competing ``top_matches`` against splitter context and pit-lane evidence.
     """
-    from app.local_annotation_agent.evaluators import PipelineAttachment
     from app.internal_knowledge_base.label_lookup import find_labels
 
     # Backwards-compatible path for direct Python callers that still pass
@@ -3029,43 +2996,35 @@ def locate_circuit_section(
 
     s, e = int(start_index), int(end_index)
 
-    def _attach(content: Dict[str, Any]) -> "PipelineAttachment":
-        return PipelineAttachment(
-            name="circuit_section_match",
-            kind="structured",
-            label="Circuit Section Match",
-            content=_round_floats(content, ndigits=4),
-        )
-
     if NORMALIZED_POSITION_COLUMN not in df.columns:
-        return _attach({
+        return _round_floats({
             "circuit_id": circuit,
             "error": f"column '{NORMALIZED_POSITION_COLUMN}' missing from telemetry",
             "top_matches": [],
             "is_ambiguous": False,
             "best_match": None,
-        })
+        }, ndigits=4)
 
     if circuit is None:
-        return _attach({
+        return _round_floats({
             "circuit_id": None,
             "error": "circuit_id is required before locating a circuit section",
             "top_matches": [],
             "is_ambiguous": False,
             "best_match": None,
-        })
+        }, ndigits=4)
 
     segment = _absolute_iloc_slice(df, s, e)
     pos = segment[NORMALIZED_POSITION_COLUMN].to_numpy(dtype=float)
     pos = pos[np.isfinite(pos)]
     if pos.size == 0:
-        return _attach({
+        return _round_floats({
             "circuit_id": circuit,
             "error": "no finite values in normalized position over the segment",
             "top_matches": [],
             "is_ambiguous": False,
             "best_match": None,
-        })
+        }, ndigits=4)
 
     seg_lo, seg_hi = float(pos.min()), float(pos.max())
     seg_span = max(seg_hi - seg_lo, 1e-6)
@@ -3107,13 +3066,13 @@ def locate_circuit_section(
         and (top[0]["overlap_fraction"] - top[1]["overlap_fraction"]) < AMBIGUOUS_MARGIN
     )
     best = None if is_ambiguous or not top else top[0]
-    return _attach({
+    return _round_floats({
         "circuit_id": circuit,
         "segment_position_range": [seg_lo, seg_hi],
         "top_matches": top,
         "is_ambiguous": is_ambiguous,
         "best_match": best,
-    })
+    }, ndigits=4)
 
 
 STATIC_TRACK_COLUMN = "Static_track"
@@ -3200,8 +3159,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "label": "Segment shape + altitude angle measurement",
         "description": (
             "Measures expert-anchored curvature and z-position over the "
-            "segment. Produces a "
-            "'segment_shape_measurement' attachment with `base_segment_shape` "
+            "segment. Returns a dictionary with `base_segment_shape` "
             "and optional `corner_shape_refinement` shape keys, plus entry / "
             "apex / exit altitude slope-angle summaries. It does not output "
             "labels; "
@@ -3219,8 +3177,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
             "Takes a circuit id first, reads "
             "`Graphics_normalized_car_position` over the segment, and "
             "matches it against that circuit's `circuit_section` labels' "
-            "`normalized_position_range`. Produces a "
-            "'circuit_section_match' attachment with 'top_matches' "
+            "`normalized_position_range`. Returns 'top_matches' "
             "(ranked by overlap fraction), an 'is_ambiguous' flag, and "
             "a 'best_match' that is non-null ONLY when the leader clears "
             "the runner-up by a clear margin. When 'is_ambiguous' is true "
@@ -3280,8 +3237,7 @@ PIPELINE_TOOL_DEFINITIONS: List[Dict[str, Any]] = [
         "description": (
             "Deterministically classifies the opponent-relative position "
             "pattern over the iloc range using the driver's local path / "
-            "heading for signed longitudinal/lateral gaps. Returns a structured "
-            "'opponent_interaction_classification' attachment with "
+            "heading for signed longitudinal/lateral gaps. Returns a dictionary with "
             "`role` (attack / defense / following / side_by_side / incidental), "
             "`outcome` (pass_completed, held_defense, failed_attack, "
             "broken_defense, close_following, etc.), numeric `confidence`, "

@@ -334,14 +334,14 @@ class AnnotationToolSurface:
     def measure_segment_shape(self, start: int, end: int) -> str:
         from app.shared.annotation_agent_tools import measure_segment_shape
         s, e = self._clamp_to_window(start, end)
-        att = measure_segment_shape(self.df, s, e)
-        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+        data = measure_segment_shape(self.df, s, e)
+        return json.dumps({"range": [s, e], "data": data}, default=str)
 
     def locate_circuit_section(self, circuit_id: str, start: int, end: int) -> str:
         from app.shared.annotation_agent_tools import locate_circuit_section
         s, e = self._clamp_to_window(start, end)
-        att = locate_circuit_section(self.df, circuit_id, s, e)
-        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+        data = locate_circuit_section(self.df, circuit_id, s, e)
+        return json.dumps({"range": [s, e], "data": data}, default=str)
 
     def find_nearest_opponent(self, start: int, end: int) -> str:
         from app.shared.annotation_agent_tools import find_nearest_opponent
@@ -352,14 +352,14 @@ class AnnotationToolSurface:
     def classify_opponent_interaction(self, start: int, end: int) -> str:
         from app.shared.annotation_agent_tools import classify_opponent_interaction
         s, e = self._clamp_to_window(start, end)
-        att = classify_opponent_interaction(self.df, s, e)
-        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+        data = classify_opponent_interaction(self.df, s, e)
+        return json.dumps({"range": [s, e], "data": data}, default=str)
 
     def query_opponent_trajectory(self, start: int, end: int, slot: int, n_samples: int) -> str:
         from app.shared.annotation_agent_tools import query_opponent_trajectory
         s, e = self._clamp_to_window(start, end)
-        att = query_opponent_trajectory(self.df, s, e, slot=int(slot), n_samples=int(n_samples))
-        return json.dumps({"range": [s, e], "data": att.content}, default=str)
+        data = query_opponent_trajectory(self.df, s, e, slot=int(slot), n_samples=int(n_samples))
+        return json.dumps({"range": [s, e], "data": data}, default=str)
 
     def submit_result(self, payload_json: str, summary: str) -> str:
         try:

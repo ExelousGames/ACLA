@@ -128,11 +128,6 @@ def _decreasing_magnitude_ranges(
     ]
 
 
-def _attachment_content(value: Any) -> Dict[str, Any]:
-    content = getattr(value, "content", None)
-    return content if isinstance(content, dict) else {}
-
-
 def _smoothed_telemetry(df: pd.DataFrame) -> pd.DataFrame:
     """Return telemetry with every numeric column smoothed exactly once."""
     telemetry = df.copy()
@@ -398,7 +393,7 @@ def _shape_facts(
     from app.shared.annotation_agent_tools import measure_segment_shape
 
     try:
-        content = _attachment_content(measure_segment_shape(df, start, end))
+        content = measure_segment_shape(df, start, end)
     except Exception:
         return {}, []
     facts: Dict[str, Any] = {}
@@ -451,7 +446,7 @@ def _opponent_facts(
     )
 
     try:
-        content = _attachment_content(classify_opponent_interaction(df, start, end))
+        content = classify_opponent_interaction(df, start, end)
     except Exception:
         return {}
     facts = {
@@ -481,8 +476,8 @@ def _opponent_facts(
     slot = content.get("targeted_car_slot")
     if slot is not None:
         try:
-            trajectory = _attachment_content(
-                query_opponent_trajectory(df, start, end, int(slot), n_samples=7)
+            trajectory = query_opponent_trajectory(
+                df, start, end, int(slot), n_samples=7,
             )
         except Exception:
             trajectory = {}
@@ -894,9 +889,7 @@ def _resolve_circuit_sections(
     try:
         from app.shared.annotation_agent_tools import locate_circuit_section
         telemetry = _smoothed_telemetry(df)
-        content = _attachment_content(
-            locate_circuit_section(telemetry, circuit_id, start, end)
-        )
+        content = locate_circuit_section(telemetry, circuit_id, start, end)
     except Exception:
         content = {}
     best = content.get("best_match") or {}
