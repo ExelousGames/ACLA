@@ -99,6 +99,11 @@
           {"fact": "time_gap.starting_direction", "operator": "eq", "value": "rising"},
           {"fact": "time_gap.middle_has_rise", "operator": "eq", "value": false},
           {"fact": "time_gap.flattening_at_end", "operator": "eq", "value": true}
+        ]},
+        {"all_of": [
+          {"fact": "time_gap.starting_direction", "operator": "eq", "value": "rising"},
+          {"fact": "time_gap.middle_has_rise", "operator": "eq", "value": false},
+          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "flat"}
         ]}
       ]
     },
