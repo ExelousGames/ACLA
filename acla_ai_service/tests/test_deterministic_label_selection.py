@@ -23,15 +23,42 @@ def _expert_corner_dataframe() -> pd.DataFrame:
 def _isolate_phase_fact_sources(monkeypatch) -> None:
     monkeypatch.setattr(deterministic, "_slope_facts", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(deterministic, "_opponent_facts", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(deterministic, "_raw_trajectory_offset", lambda _segment: None)
+    monkeypatch.setattr(deterministic, "_trajectory_offset", lambda _segment: None)
 
 
-def test_telemetry_series_is_smoothed_with_centered_three_sample_median():
+def test_telemetry_is_smoothed_once_with_centered_three_sample_median():
     df = pd.DataFrame({"signal": [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]})
 
-    values = deterministic._series(df, "signal")
+    telemetry = deterministic._smoothed_telemetry(df)
+    values = deterministic._series(telemetry, "signal")
 
     assert values.tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    assert df["signal"].tolist() == [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]
+
+
+def test_all_dataframe_fact_sources_receive_centrally_smoothed_telemetry(monkeypatch):
+    df = pd.DataFrame({
+        "expert_time_difference": [0.0, 0.0, 40.0, 0.0, 0.0],
+    })
+    received = {}
+
+    def capture(name, result):
+        def fake(telemetry, *_args, **_kwargs):
+            received[name] = telemetry["expert_time_difference"].tolist()
+            return result
+        return fake
+
+    monkeypatch.setattr(deterministic, "_slope_facts", capture("slope", {}))
+    monkeypatch.setattr(deterministic, "_shape_facts", capture("shape", ({}, [])))
+    monkeypatch.setattr(deterministic, "_opponent_facts", capture("opponent", {}))
+    monkeypatch.setattr(deterministic, "_trajectory_offset", capture("trajectory", None))
+
+    deterministic.calculate_facts(df, 0, 4)
+
+    assert received == {
+        name: [0.0, 0.0, 0.0, 0.0, 0.0]
+        for name in ("slope", "shape", "opponent", "trajectory")
+    }
 
 
 def test_closing_evidence_is_limited_to_decreasing_magnitude_runs():
@@ -307,16 +334,21 @@ def test_slope_facts_identify_single_rise():
     assert facts["time_gap.total_change_ms"] == 200
 
 
-def test_slope_facts_ignore_insignificant_single_sample_noise():
+def test_calculate_facts_smooths_single_sample_noise_before_slope_facts(monkeypatch):
     df = pd.DataFrame({
         "expert_time_difference": [0, 0, 0, 0, 40, 0, 0, 0, 0, 0],
     })
+    monkeypatch.setattr(
+        deterministic, "_shape_facts", lambda *_args, **_kwargs: ({}, [])
+    )
+    monkeypatch.setattr(deterministic, "_opponent_facts", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(deterministic, "_trajectory_offset", lambda _segment: None)
 
-    facts = deterministic._slope_facts(df, 0, 9)
+    facts, _ = deterministic.calculate_facts(df, 0, 9)
 
-    assert facts["time_gap.rising_ranges"] == [[3, 4]]
+    assert facts["time_gap.rising_ranges"] == []
     assert facts["time_gap.total_change_ms"] == 0
-    assert facts["time_gap.middle_has_rise"] is True
+    assert facts["time_gap.middle_has_rise"] is False
 
 
 def test_behavior_requirements_use_middle_rise_for_msp():
@@ -341,7 +373,7 @@ def test_behavior_requirements_use_middle_rise_for_msp():
     assert not deterministic.evaluate_requirements(msp, no_middle_rise).matched
     assert deterministic.evaluate_requirements(msp, middle_rise).matched
     assert not deterministic.evaluate_requirements(msp, {
-        **middle_rise, "time_gap.total_change_ms": 149,
+        **middle_rise, "time_gap.total_change_ms": 49,
     }).matched
     assert not deterministic.evaluate_requirements(msp, {
         **middle_rise, "time_gap.middle_has_rise": False,
@@ -840,7 +872,7 @@ def test_calculated_comparison_facts_keep_driver_and_expert_provenance(monkeypat
     monkeypatch.setattr(deterministic, "_shape_facts", lambda *_args, **_kwargs: ({}, []))
     monkeypatch.setattr(deterministic, "_opponent_facts", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
-        deterministic, "_raw_trajectory_offset",
+        deterministic, "_trajectory_offset",
         lambda _segment: np.array([0.0, 0.2, 0.8, 1.2, 0.7, 0.3, 0.0]),
     )
     df = pd.DataFrame({

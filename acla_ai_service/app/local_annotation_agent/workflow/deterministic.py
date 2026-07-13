@@ -133,18 +133,22 @@ def _attachment_content(value: Any) -> Dict[str, Any]:
     return content if isinstance(content, dict) else {}
 
 
-def _smooth_telemetry(values: np.ndarray) -> np.ndarray:
-    """Suppress single-sample noise with a centered three-sample median."""
-    if len(values) < 2:
-        return values
+def _smoothed_telemetry(df: pd.DataFrame) -> pd.DataFrame:
+    """Return telemetry with every numeric column smoothed exactly once."""
+    telemetry = df.copy()
     edge = _TELEMETRY_SMOOTHING_WINDOW // 2
-    padded = np.pad(values, edge, mode="edge")
-    return (
-        pd.Series(padded)
-        .rolling(_TELEMETRY_SMOOTHING_WINDOW, center=True, min_periods=1)
-        .median()
-        .to_numpy(dtype=float)[edge:-edge]
-    )
+    for name in telemetry.select_dtypes(include=[np.number]).columns:
+        values = telemetry[name].to_numpy(dtype=float)
+        if len(values) < 2:
+            continue
+        padded = np.pad(values, edge, mode="edge")
+        telemetry[name] = (
+            pd.Series(padded)
+            .rolling(_TELEMETRY_SMOOTHING_WINDOW, center=True, min_periods=1)
+            .median()
+            .to_numpy(dtype=float)[edge:-edge]
+        )
+    return telemetry
 
 
 def _series(df: pd.DataFrame, *names: str) -> Optional[np.ndarray]:
@@ -152,11 +156,11 @@ def _series(df: pd.DataFrame, *names: str) -> Optional[np.ndarray]:
         if name in df.columns:
             values = pd.to_numeric(df[name], errors="coerce").to_numpy(dtype=float)
             if np.any(np.isfinite(values)):
-                return _smooth_telemetry(values)
+                return values
     return None
 
 
-def _raw_speed_delta(segment: pd.DataFrame) -> Optional[np.ndarray]:
+def _speed_delta(segment: pd.DataFrame) -> Optional[np.ndarray]:
     player = _series(segment, "Physics_speed_kmh")
     expert = _series(segment, "expert_optimal_speed")
     if player is None or expert is None or len(player) != len(expert):
@@ -164,13 +168,13 @@ def _raw_speed_delta(segment: pd.DataFrame) -> Optional[np.ndarray]:
     return expert - player
 
 
-def _raw_trajectory_offset(segment: pd.DataFrame) -> Optional[np.ndarray]:
+def _trajectory_offset(segment: pd.DataFrame) -> Optional[np.ndarray]:
     from app.shared.annotation_agent_tools import calculate_trajectory_offset
 
     return calculate_trajectory_offset(segment)
 
 
-def _raw_slip_balance(segment: pd.DataFrame) -> Optional[np.ndarray]:
+def _slip_balance(segment: pd.DataFrame) -> Optional[np.ndarray]:
     front_left = _series(segment, "Physics_slip_angle_front_left")
     front_right = _series(segment, "Physics_slip_angle_front_right")
     rear_left = _series(segment, "Physics_slip_angle_rear_left")
@@ -182,7 +186,7 @@ def _raw_slip_balance(segment: pd.DataFrame) -> Optional[np.ndarray]:
     ) / 2.0
 
 
-def _raw_push_to_limit(segment: pd.DataFrame) -> Optional[np.ndarray]:
+def _push_to_limit(segment: pd.DataFrame) -> Optional[np.ndarray]:
     from app.shared.tire_grip_features import SlipEnvelopeConfig
 
     angle_names = (
@@ -522,7 +526,10 @@ def calculate_facts(
     df: pd.DataFrame, start: int, end: int, *, section_id: str = "",
 ) -> Tuple[FactSet, List[Tuple[int, int]]]:
     """Calculate normalized facts and reusable phase windows for one range."""
-    segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
+    telemetry = _smoothed_telemetry(df)
+    segment = telemetry.loc[
+        (telemetry.index >= int(start)) & (telemetry.index <= int(end))
+    ]
     evidence: Dict[str, List[Tuple[int, int]]] = {}
     phases: Dict[str, List[Tuple[int, int]]] = {}
     facts: Dict[str, Any] = {
@@ -530,10 +537,12 @@ def calculate_facts(
         "section.name": LABEL_MAPPING.get(section_id),
         "section.overlap_names": [LABEL_MAPPING[section_id]] if section_id in LABEL_MAPPING else [],
     }
-    facts.update(_slope_facts(df, start, end, evidence))
-    shape, phase_ranges = _shape_facts(df, start, end, evidence, phases)
+    facts.update(_slope_facts(telemetry, start, end, evidence))
+    shape, phase_ranges = _shape_facts(
+        telemetry, start, end, evidence, phases,
+    )
     facts.update(shape)
-    facts.update(_opponent_facts(df, start, end, evidence))
+    facts.update(_opponent_facts(telemetry, start, end, evidence))
 
     index = segment.index.to_numpy(dtype=int)
     brake = _input_landmarks(_series(segment, "Physics_brake"), index)
@@ -583,7 +592,7 @@ def calculate_facts(
             )
         evidence["controls.overlap_count"] = _mask_ranges(overlap, index)
 
-    speed_delta = _raw_speed_delta(segment)
+    speed_delta = _speed_delta(segment)
     if speed_delta is not None:
         finite = speed_delta[np.isfinite(speed_delta)]
         if len(finite):
@@ -600,7 +609,7 @@ def calculate_facts(
                 speed_delta, index,
             )
 
-    trajectory = _raw_trajectory_offset(segment)
+    trajectory = _trajectory_offset(segment)
     if trajectory is not None:
         finite = trajectory[np.isfinite(trajectory)]
         if len(finite):
@@ -648,13 +657,13 @@ def calculate_facts(
         evidence["turn.apex_relation"] = _point_range(p_apex, e_apex)
         evidence["turn.exit_relation"] = _point_range(p_exit, e_exit)
 
-    balance = _raw_slip_balance(segment)
+    balance = _slip_balance(segment)
     if balance is not None:
         facts["balance.oversteer"] = bool(np.nanmax(balance) > 0.02)
         facts["balance.understeer"] = bool(np.nanmin(balance) < -0.02)
         evidence["balance.oversteer"] = _mask_ranges(balance > 0.02, index)
         evidence["balance.understeer"] = _mask_ranges(balance < -0.02, index)
-    push = _raw_push_to_limit(segment)
+    push = _push_to_limit(segment)
     if push is not None:
         facts["grip.max"] = float(np.nanmax(push))
         facts["grip.min"] = float(np.nanmin(push))
@@ -884,7 +893,10 @@ def _resolve_circuit_sections(
                 context_ids.append(candidate)
     try:
         from app.shared.annotation_agent_tools import locate_circuit_section
-        content = _attachment_content(locate_circuit_section(df, circuit_id, start, end))
+        telemetry = _smoothed_telemetry(df)
+        content = _attachment_content(
+            locate_circuit_section(telemetry, circuit_id, start, end)
+        )
     except Exception:
         content = {}
     best = content.get("best_match") or {}
@@ -1024,7 +1036,10 @@ def _candidate_ranges(
     df: pd.DataFrame, start: int, end: int, phase_ranges: Sequence[Tuple[int, int]],
 ) -> List[Tuple[int, int]]:
     ranges: List[Tuple[int, int]] = list(phase_ranges)
-    segment = df.loc[(df.index >= start) & (df.index <= end)]
+    telemetry = _smoothed_telemetry(df)
+    segment = telemetry.loc[
+        (telemetry.index >= start) & (telemetry.index <= end)
+    ]
     for names in (
         ("Physics_brake",), ("Physics_gas",),
         ("Physics_steer_angle",), ("Physics_gear",),
