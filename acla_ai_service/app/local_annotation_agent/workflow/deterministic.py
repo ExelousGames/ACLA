@@ -363,7 +363,9 @@ def _slope_facts(
             previous_end_slope = float(previous_end_slope)
             end_slope = float(end_slope)
             flattening_at_end = (
-                previous_end_slope > 0 and end_slope < previous_end_slope
+                previous_end_slope != 0
+                and previous_end_slope * end_slope >= 0
+                and abs(end_slope) <= abs(previous_end_slope) * 0.8
             )
         except (TypeError, ValueError):
             pass

@@ -84,7 +84,7 @@
         ]},
         {"all_of": [
           {"fact": "time_gap.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "time_gap.middle_has_rise", "operator": "eq", "value": true}
+          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "rising"}
         ]}
       ]
     },

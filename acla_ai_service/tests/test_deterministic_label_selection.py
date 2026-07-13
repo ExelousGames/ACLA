@@ -192,6 +192,46 @@ def test_slope_facts_smooth_ending_slope_windows():
     assert facts["time_gap.flattening_at_end"] is True
 
 
+def test_slope_facts_requires_same_sign_twenty_percent_drop_to_flatten(monkeypatch):
+    slopes = {"previous": 0.0, "end": 0.0}
+
+    def fake_query(_df, _name, _args):
+        return ({
+            "samples": [{"value": 0}, {"value": 1}],
+            "extra": {
+                "delta_value": 1,
+                "total_change_direction": "rising",
+                "previous_end_slope": slopes["previous"],
+                "end_slope": slopes["end"],
+                "point_trend_runs": [],
+            },
+        }, None)
+
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
+    )
+
+    cases = [
+        (100, 80, True),
+        (-100, -80, True),
+        (100, 81, False),
+        (-100, -81, False),
+        (100, 0, True),
+        (-100, 0, True),
+        (100, 150, False),
+        (-100, -150, False),
+        (100, -20, False),
+        (-100, 20, False),
+        (0, 0, False),
+    ]
+    for previous, end, expected in cases:
+        slopes.update(previous=previous, end=end)
+
+        facts = deterministic._slope_facts(pd.DataFrame(), 0, 1)
+
+        assert facts["time_gap.flattening_at_end"] is expected
+
+
 def test_slope_facts_preserve_insignificant_runs_without_selecting_mistake():
     df = pd.DataFrame({
         "expert_time_difference": [0, 0, 0, 5, 10, 15, 20, 20, 20, 20],
@@ -321,7 +361,7 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
     assert facts["time_gap.rising_ranges"] == [[0, 3]]
     assert facts["time_gap.falling_ranges"] == [[3, 7]]
     assert facts["time_gap.flat_ranges"] == [[7, 10]]
-    assert facts["time_gap.flattening_at_end"] is True
+    assert facts["time_gap.flattening_at_end"] is False
 
 
 def test_slope_facts_identify_single_rise():
