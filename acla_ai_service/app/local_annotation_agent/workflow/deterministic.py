@@ -15,6 +15,10 @@ import pandas as pd
 
 from app.internal_knowledge_base import skills
 from app.internal_knowledge_base.label_lookup import get_label
+from app.local_annotation_agent.workflow.label_evidence import (
+    LabelEvidence,
+    resolve_label_evidence,
+)
 from app.local_annotation_agent.workflow.results import AnnotationResult, LapAnnotationResult
 from app.shared.labels import LABEL_MAPPING
 
@@ -43,7 +47,6 @@ KNOWN_FACTS = frozenset({
     "throttle.similarity", "time_gap.direction", "time_gap.end_ms",
     "time_gap.ending_direction", "time_gap.has_significant_rise",
     "time_gap.has_spike", "time_gap.middle_has_new_significant_rise",
-    "time_gap.middle_has_significant_rise",
     "time_gap.flattening_at_end", "time_gap.overall_gap", "time_gap.slope_shape",
     "time_gap.starting_direction",
     "time_gap.total_change_abs_ms",
@@ -53,10 +56,6 @@ KNOWN_FACTS = frozenset({
 _MISSING = object()
 _ALIGN_TOLERANCE = 2
 _TELEMETRY_SMOOTHING_WINDOW = 3
-_MIDDLE_RISE_MIN_RATE_MS_PER_SAMPLE = 10.0
-_MIDDLE_RISE_MIN_RATE_INCREASE_MS_PER_SAMPLE = 10.0
-_MIDDLE_RISE_MIN_SUSTAINED_TRANSITIONS = 2
-_MIDDLE_RISE_SPIKE_MIN_DELTA_MS = 150.0
 
 
 @dataclass
@@ -302,97 +301,66 @@ def _slope_facts(
     samples = payload.get("samples") or []
     values = [s.get("value") for s in samples if isinstance(s, dict)]
     delta = extra.get("delta_value")
-    runs = extra.get("point_trend_runs") or []
+    runs = [
+        run for run in extra.get("point_trend_runs") or []
+        if isinstance(run, dict)
+        and run.get("start_iloc") is not None
+        and run.get("end_iloc") is not None
+    ]
+    ranges_by_direction = {
+        direction: [
+            [int(run["start_iloc"]), int(run["end_iloc"])]
+            for run in runs if run.get("direction") == direction
+        ]
+        for direction in ("rising", "falling", "flat")
+    }
     significant_rises = [
         run for run in runs
-        if isinstance(run, dict)
-        and run.get("direction") == "rising"
+        if run.get("direction") == "rising"
         and run.get("is_label_significant") is True
     ]
+    significant_rise_ranges = [
+        [int(run["start_iloc"]), int(run["end_iloc"])]
+        for run in significant_rises
+    ]
     if evidence is not None:
-        rise_ranges = [
-            (int(run["start_iloc"]), int(run["end_iloc"]))
-            for run in significant_rises
-            if run.get("start_iloc") is not None and run.get("end_iloc") is not None
-        ]
-        if rise_ranges:
-            evidence["time_gap.has_significant_rise"] = rise_ranges
-            evidence["time_gap.direction"] = rise_ranges
+        for direction, ranges in ranges_by_direction.items():
+            if ranges:
+                evidence[f"time_gap.{direction}_ranges"] = [
+                    tuple(value) for value in ranges
+                ]
+        if significant_rise_ranges:
+            localized_rises = [tuple(value) for value in significant_rise_ranges]
+            evidence["time_gap.significant_rise_ranges"] = localized_rises
+            evidence["time_gap.has_significant_rise"] = localized_rises
+            evidence["time_gap.direction"] = localized_rises
         evidence["time_gap.total_change_abs_ms"] = [(int(start), int(end))]
         evidence["time_gap.overall_gap"] = [(int(start), int(end))]
-    has_spike = any(
-        isinstance(run, dict)
-        and run.get("direction") == "rising"
+    spike_runs = [
+        run for run in runs[:-1]
+        if run.get("direction") == "rising"
         and run.get("is_label_significant") is True
-        for run in runs[:-1]
-    )
+    ]
+    has_spike = bool(spike_runs)
     section_length = max(int(end) - int(start), 1)
     middle_start = int(start) + section_length / 3.0
     middle_end = int(end) - section_length / 3.0
-    segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
-    time_gap = _series(segment, "expert_time_difference")
-    middle_has_significant_rise = False
-    middle_significant_rise_ranges: List[List[int]] = []
-    if time_gap is not None and len(time_gap) >= 2:
-        rates = np.diff(time_gap)
-        middle_slice_start = len(time_gap) // 3
-        middle_slice_end = max(2 * len(time_gap) // 3, middle_slice_start + 1)
-        rate_slice_start = max(middle_slice_start - 1, 0)
-        rate_slice_end = max(middle_slice_end - 1, rate_slice_start)
-        middle_rates = rates[rate_slice_start:rate_slice_end]
-        middle_positions = np.arange(rate_slice_start, rate_slice_end) + 1
-
-        preceding_rates = rates[:rate_slice_start]
-        finite_preceding_rates = preceding_rates[np.isfinite(preceding_rates)]
-        baseline_rate = (
-            float(np.median(finite_preceding_rates))
-            if len(finite_preceding_rates) else 0.0
-        )
-        minimum_new_rate = max(
-            _MIDDLE_RISE_MIN_RATE_MS_PER_SAMPLE,
-            baseline_rate + _MIDDLE_RISE_MIN_RATE_INCREASE_MS_PER_SAMPLE,
-        )
-        sustained_mask = np.isfinite(middle_rates) & (middle_rates >= minimum_new_rate)
-        spike_mask = (
-            np.isfinite(middle_rates)
-            & (middle_rates >= _MIDDLE_RISE_SPIKE_MIN_DELTA_MS)
-            & (
-                middle_rates
-                >= baseline_rate + _MIDDLE_RISE_MIN_RATE_INCREASE_MS_PER_SAMPLE
-            )
-        )
-
-        sustained_positions: List[int] = []
-        candidate_positions = middle_positions[sustained_mask]
-        for positions in np.split(
-            candidate_positions,
-            np.flatnonzero(np.diff(candidate_positions) > 1) + 1,
-        ):
-            if len(positions) >= _MIDDLE_RISE_MIN_SUSTAINED_TRANSITIONS:
-                sustained_positions.extend(int(position) for position in positions)
-
-        rising_positions = np.unique(np.concatenate((
-            np.asarray(sustained_positions, dtype=int),
-            middle_positions[spike_mask],
-        )))
-        middle_has_significant_rise = bool(len(rising_positions))
-        for positions in np.split(
-            rising_positions, np.flatnonzero(np.diff(rising_positions) > 1) + 1,
-        ):
-            if len(positions):
-                middle_significant_rise_ranges.append([
-                    int(segment.index[int(positions[0])]),
-                    int(segment.index[int(positions[-1])]),
-                ])
-    if evidence is not None and middle_significant_rise_ranges:
-        middle_ranges = [tuple(value) for value in middle_significant_rise_ranges]
-        evidence["time_gap.middle_has_significant_rise"] = middle_ranges
-        evidence["time_gap.middle_has_new_significant_rise"] = middle_ranges
-        evidence["time_gap.has_spike"] = middle_ranges
-    middle_has_new_significant_rise = any(
-        middle_start <= float(run.get("start_iloc", start)) < middle_end
-        for run in significant_rises
-    )
+    middle_significant_rises = [
+        run for run in significant_rises
+        if middle_start <= float(run["start_iloc"]) < middle_end
+    ]
+    middle_has_new_significant_rise = bool(middle_significant_rises)
+    if evidence is not None:
+        if middle_significant_rises:
+            evidence["time_gap.middle_has_new_significant_rise"] = [
+                (int(run["start_iloc"]), int(run["end_iloc"]))
+                for run in middle_significant_rises
+            ]
+        if spike_runs:
+            evidence["time_gap.has_spike"] = [
+                (int(run["start_iloc"]), int(run["end_iloc"]))
+                for run in spike_runs
+            ]
     start_direction = (
         runs[0].get("direction") if runs and isinstance(runs[0], dict) else None
     )
@@ -421,8 +389,10 @@ def _slope_facts(
         "time_gap.ending_direction": end_direction,
         "time_gap.flattening_at_end": flattening_at_end,
         "time_gap.has_significant_rise": bool(significant_rises),
-        "time_gap.middle_has_significant_rise": middle_has_significant_rise,
-        "time_gap.middle_significant_rise_ranges": middle_significant_rise_ranges,
+        "time_gap.rising_ranges": ranges_by_direction["rising"],
+        "time_gap.falling_ranges": ranges_by_direction["falling"],
+        "time_gap.flat_ranges": ranges_by_direction["flat"],
+        "time_gap.significant_rise_ranges": significant_rise_ranges,
         "time_gap.middle_has_new_significant_rise": middle_has_new_significant_rise,
         "time_gap.has_spike": has_spike,
         "time_gap.start_ms": values[0] if values else None,
@@ -780,8 +750,8 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
             actual = facts.get(fact, _MISSING)
             value = "unavailable" if actual is _MISSING else repr(actual)
             text = f"{fact}: {value}"
-            if fact == "time_gap.middle_has_significant_rise" and actual is True:
-                ranges = facts.get("time_gap.middle_significant_rise_ranges") or []
+            if fact == "time_gap.has_significant_rise" and actual is True:
+                ranges = facts.get("time_gap.significant_rise_ranges") or []
                 locations = ", ".join(
                     str(a) if a == b else f"{a}-{b}"
                     for a, b in ranges
@@ -1023,18 +993,16 @@ def calculate_lap_annotation(
         if doc.get("type") == "sub" and doc.get("parent") in set(behavior)
     ]
     children = evaluate_labels(child_ids, facts)
-    resolved_children: List[Tuple[str, RequirementEvaluation, Tuple[int, int], List[str]]] = []
+    resolved_children: List[Tuple[str, RequirementEvaluation, LabelEvidence]] = []
     for label in children.labels:
-        child_range, support_reasons = _resolved_label_range(
+        evidence = _label_evidence(
             label, children.evaluations[label], facts, section_start, section_end,
         )
-        if child_range is not None:
-            resolved_children.append((
-                label, children.evaluations[label], child_range, support_reasons,
-            ))
+        if evidence is not None and evidence.required_covers(section_start, section_end):
+            resolved_children.append((label, children.evaluations[label], evidence))
     label_ids = [
         circuit_id, resolved_section_id, *behavior,
-        *(label for label, _, _, _ in resolved_children),
+        *(label for label, _, _ in resolved_children),
         *segment_types.labels,
     ] if behavior else []
     notes = [
@@ -1042,8 +1010,11 @@ def calculate_lap_annotation(
         for label in behavior
     ]
     notes.extend(
-        "; ".join([_reason(label, evaluation, *child_range), *support_reasons])
-        for label, evaluation, child_range, support_reasons in resolved_children
+        "; ".join([
+            _reason(label, evaluation, *evidence.annotation_range),
+            *evidence.supporting_reasons,
+        ])
+        for label, evaluation, evidence in resolved_children
     )
     rejected = [
         {
@@ -1154,27 +1125,11 @@ def _supporting_facts(
     return matched_ids, reasons
 
 
-def _intersect_range(
-    value: Tuple[int, int], allowed: Sequence[Tuple[int, int]],
-) -> Optional[Tuple[int, int]]:
-    intersections = [
-        (max(value[0], start), min(value[1], end))
-        for start, end in allowed
-        if max(value[0], start) <= min(value[1], end)
-    ]
-    if not intersections:
-        return None
-    return (
-        min(start for start, _ in intersections),
-        max(end for _, end in intersections),
-    )
-
-
-def _resolved_label_range(
+def _label_evidence(
     label_id: str, evaluation: RequirementEvaluation, facts: Mapping[str, Any],
     parent_start: int, parent_end: int,
     supporting_facts: Optional[Mapping[str, Any]] = None,
-) -> Tuple[Optional[Tuple[int, int]], List[str]]:
+) -> Optional[LabelEvidence]:
     policy = _range_policy(label_id)
     required_ids = [
         fact_id for fact_id in evaluation.fact_ids
@@ -1184,32 +1139,24 @@ def _resolved_label_range(
     if not isinstance(facts, FactSet) or not required_ids or any(
         not facts.evidence.get(fact_id) for fact_id in required_ids
     ):
-        return None, []
-    required_ranges = _fact_ranges(facts, required_ids)
-    core = (
-        min(start for start, _ in required_ranges),
-        max(end for _, end in required_ranges),
-    )
+        return None
     phase_names = policy.get("phases") or []
-    if phase_names:
-        if not isinstance(facts, FactSet):
-            return None, []
-        allowed = [
+    allowed_phase_ranges = (
+        [
             value for phase_name in phase_names
             for value in facts.phases.get(str(phase_name), [])
         ]
-        core = _intersect_range(core, allowed)
-        if core is None:
-            return None, []
+        if phase_names else None
+    )
     support_source = supporting_facts or facts
     support_ids, support_reasons = _supporting_facts(policy, support_source)
-    support_ranges = _fact_ranges(support_source, support_ids)
-    all_ranges = [core, *support_ranges]
-    resolved = (
-        max(int(parent_start), min(start for start, _ in all_ranges)),
-        min(int(parent_end), max(end for _, end in all_ranges)),
+    return resolve_label_evidence(
+        required_ranges=_fact_ranges(facts, required_ids),
+        parent_range=(int(parent_start), int(parent_end)),
+        allowed_phase_ranges=allowed_phase_ranges,
+        supporting_ranges=_fact_ranges(support_source, support_ids),
+        supporting_reasons=support_reasons,
     )
-    return (resolved if resolved[0] <= resolved[1] else None), support_reasons
 
 
 def calculate_detailed_annotation(
@@ -1259,13 +1206,14 @@ def calculate_detailed_annotation(
             label_doc = get_label(label_id) or {}
             support_reasons: List[str] = []
             if label_doc.get("type") == "sub":
-                resolved, support_reasons = _resolved_label_range(
+                evidence = _label_evidence(
                     label_id, evaluated.evaluations[label_id], facts,
                     parent_start, parent_end, parent_facts,
                 )
-                if resolved is None:
+                if evidence is None:
                     continue
-                label_start, label_end = resolved
+                label_start, label_end = evidence.annotation_range
+                support_reasons = list(evidence.supporting_reasons)
             else:
                 label_start, label_end = start, end
             key = (label_start, label_end, label_id)

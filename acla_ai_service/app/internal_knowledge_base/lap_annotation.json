@@ -80,15 +80,7 @@
       "enabled": true,
       "any_of": [
         {"all_of": [
-          {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
-          {"fact": "time_gap.overall_gap", "operator": "gt", "value": 50},
-          {"fact": "time_gap.middle_has_significant_rise", "operator": "eq", "value": true}
-        ]},
-        {"all_of": [
-          {"fact": "time_gap.direction", "operator": "eq", "value": "falling"},
-          {"fact": "time_gap.end_ms", "operator": "gt", "value": 0},
-          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "rising"},
-          {"fact": "time_gap.middle_has_significant_rise", "operator": "eq", "value": true}
+          {"fact": "time_gap.has_significant_rise", "operator": "eq", "value": true}
         ]}
       ]
     },
