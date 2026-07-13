@@ -86,15 +86,14 @@ def test_ea_accepts_either_complete_requirement_branch():
     first = deterministic.evaluate_requirements(
         requirements,
         {
-            "time_gap.total_change_abs_ms": 20,
+            "time_gap.total_change_ms": -20,
             "time_gap.ending_direction": "falling",
         },
     )
     second = deterministic.evaluate_requirements(
         requirements,
         {
-            "time_gap.total_change_abs_ms": 50,
-            "time_gap.has_significant_rise": False,
+            "time_gap.total_change_ms": 50,
             "brake.similarity": 1.0,
             "throttle.similarity": 1.0,
         },
@@ -143,16 +142,13 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
 
     assert facts["time_gap.starting_direction"] == "rising"
     assert facts["time_gap.ending_direction"] == "rising"
-    assert facts["time_gap.has_significant_rise"] is True
     assert facts["time_gap.rising_ranges"] == [[0, 2], [8, 10]]
     assert facts["time_gap.falling_ranges"] == [[2, 8]]
     assert facts["time_gap.flat_ranges"] == []
-    assert facts["time_gap.significant_rise_ranges"] == [[0, 2], [8, 10]]
     assert evidence["time_gap.rising_ranges"] == [(0, 2), (8, 10)]
     assert evidence["time_gap.falling_ranges"] == [(2, 8)]
-    assert evidence["time_gap.has_significant_rise"] == [(0, 10)]
     assert evidence["time_gap.direction"] == [(0, 10)]
-    assert facts["time_gap.middle_has_new_significant_rise"] is False
+    assert facts["time_gap.middle_has_rise"] is False
     assert facts["time_gap.flattening_at_end"] is False
     assert facts["time_gap.overall_gap"] == 200
     assert "time_gap.significant" not in facts
@@ -179,8 +175,6 @@ def test_slope_facts_preserve_insignificant_runs_without_selecting_mistake():
     assert facts["time_gap.rising_ranges"] == [[2, 6]]
     assert facts["time_gap.falling_ranges"] == []
     assert facts["time_gap.flat_ranges"] == [[0, 2], [6, 9]]
-    assert facts["time_gap.significant_rise_ranges"] == []
-    assert facts["time_gap.has_significant_rise"] is False
 
 
 def test_slope_facts_do_not_select_local_rise_when_total_change_falls():
@@ -196,14 +190,13 @@ def test_slope_facts_do_not_select_local_rise_when_total_change_falls():
     msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
 
     assert facts["time_gap.total_change_ms"] == -55
+    assert evidence["time_gap.total_change_ms"] == [(0, 16)]
+    assert "time_gap.total_change_abs_ms" not in facts
     assert facts["time_gap.direction"] == "falling"
-    assert facts["time_gap.significant_rise_ranges"] == [[7, 11]]
-    assert facts["time_gap.has_significant_rise"] is False
-    assert "time_gap.has_significant_rise" not in evidence
     assert not deterministic.evaluate_requirements(msp, facts).matched
 
 
-def test_slope_facts_accept_significant_steady_rise():
+def test_slope_facts_accept_steady_rise():
     for rate in (20, 200):
         df = pd.DataFrame({
             "expert_time_difference": np.arange(9) * rate,
@@ -212,8 +205,6 @@ def test_slope_facts_accept_significant_steady_rise():
         facts = deterministic._slope_facts(df, 0, 8)
 
         assert facts["time_gap.rising_ranges"] == [[0, 8]]
-        assert facts["time_gap.significant_rise_ranges"] == [[0, 8]]
-        assert facts["time_gap.has_significant_rise"] is True
 
 
 def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypatch):
@@ -251,20 +242,19 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
 
     assert facts["time_gap.rising_ranges"] == [[0, 7]]
     assert facts["time_gap.flat_ranges"] == [[7, 10]]
-    assert facts["time_gap.significant_rise_ranges"] == [[0, 7]]
-    assert facts["time_gap.middle_has_new_significant_rise"] is False
+    assert facts["time_gap.middle_has_rise"] is False
     assert facts["time_gap.flattening_at_end"] is True
 
     evaluation = deterministic.evaluate_requirements(
         {"any_of": [{"all_of": [{
-            "fact": "time_gap.has_significant_rise",
-            "operator": "eq",
-            "value": True,
+            "fact": "time_gap.total_change_ms",
+            "operator": "gte",
+            "value": 150,
         }]}]},
         facts,
     )
     assert evaluation.passed == [
-        "time_gap.has_significant_rise: True",
+        "time_gap.total_change_ms: 200",
     ]
 
     def fake_rise_fall_flat_query(_df, _name, _args):
@@ -304,19 +294,17 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
     assert facts["time_gap.rising_ranges"] == [[0, 3]]
     assert facts["time_gap.falling_ranges"] == [[3, 7]]
     assert facts["time_gap.flat_ranges"] == [[7, 10]]
-    assert facts["time_gap.has_significant_rise"] is False
     assert facts["time_gap.flattening_at_end"] is True
 
 
-def test_slope_facts_identify_significant_single_run():
+def test_slope_facts_identify_single_rise():
     df = pd.DataFrame({
         "expert_time_difference": [0, 0, 0, 0, 200, 200, 200, 200, 200, 200],
     })
 
     facts = deterministic._slope_facts(df, 0, 9)
 
-    assert facts["time_gap.has_significant_rise"] is True
-    assert facts["time_gap.significant_rise_ranges"] == [[3, 4]]
+    assert facts["time_gap.total_change_ms"] == 200
 
 
 def test_slope_facts_ignore_insignificant_single_sample_noise():
@@ -327,38 +315,44 @@ def test_slope_facts_ignore_insignificant_single_sample_noise():
     facts = deterministic._slope_facts(df, 0, 9)
 
     assert facts["time_gap.rising_ranges"] == [[3, 4]]
-    assert facts["time_gap.has_significant_rise"] is False
-    assert facts["time_gap.significant_rise_ranges"] == []
+    assert facts["time_gap.total_change_ms"] == 0
+    assert facts["time_gap.middle_has_rise"] is True
 
 
-def test_behavior_requirements_require_middle_significant_rise_for_msp():
+def test_behavior_requirements_use_middle_rise_for_msp():
     msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
     rm = deterministic._requirements_for("RM", deterministic.get_label("RM"))
 
-    no_significant_rise = {"time_gap.has_significant_rise": False}
-    significant_rise = {
+    no_middle_rise = {
+        "time_gap.total_change_ms": 150,
+        "time_gap.middle_has_rise": False,
+    }
+    middle_rise = {
         "time_gap.direction": "rising",
-        "time_gap.has_significant_rise": True,
-        "time_gap.middle_has_new_significant_rise": True,
+        "time_gap.total_change_ms": 150,
+        "time_gap.middle_has_rise": True,
     }
     recovery_merge = {
         "time_gap.starting_direction": "rising",
-        "time_gap.middle_has_new_significant_rise": False,
+        "time_gap.middle_has_rise": False,
         "time_gap.flattening_at_end": True,
     }
 
-    assert not deterministic.evaluate_requirements(msp, no_significant_rise).matched
-    assert deterministic.evaluate_requirements(msp, significant_rise).matched
+    assert not deterministic.evaluate_requirements(msp, no_middle_rise).matched
+    assert deterministic.evaluate_requirements(msp, middle_rise).matched
     assert not deterministic.evaluate_requirements(msp, {
-        **significant_rise, "time_gap.middle_has_new_significant_rise": False,
+        **middle_rise, "time_gap.total_change_ms": 149,
     }).matched
-    assert not deterministic.evaluate_requirements(rm, significant_rise).matched
+    assert not deterministic.evaluate_requirements(msp, {
+        **middle_rise, "time_gap.middle_has_rise": False,
+    }).matched
+    assert not deterministic.evaluate_requirements(rm, middle_rise).matched
     assert deterministic.evaluate_requirements(rm, recovery_merge).matched
     assert not deterministic.evaluate_requirements(rm, {
         **recovery_merge, "time_gap.starting_direction": "falling",
     }).matched
     assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "time_gap.middle_has_new_significant_rise": True,
+        **recovery_merge, "time_gap.middle_has_rise": True,
     }).matched
     assert not deterministic.evaluate_requirements(rm, {
         **recovery_merge, "time_gap.flattening_at_end": False,
@@ -519,7 +513,7 @@ def test_lap_omits_sub_labels_that_cover_only_part_of_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
             "time_gap.starting_direction": "rising",
-            "time_gap.middle_has_new_significant_rise": False,
+            "time_gap.middle_has_rise": False,
             "time_gap.flattening_at_end": True,
             "trajectory.peak_abs_offset_m": 2.0,
             "trajectory.converging": True,
@@ -562,7 +556,7 @@ def test_lap_omits_sub_label_that_is_not_fully_inside_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
             "time_gap.starting_direction": "rising",
-            "time_gap.middle_has_new_significant_rise": False,
+            "time_gap.middle_has_rise": False,
             "time_gap.flattening_at_end": True,
             "trajectory.converging": True,
         },
@@ -595,7 +589,7 @@ def test_lap_selects_sub_label_that_covers_entire_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
             "time_gap.starting_direction": "rising",
-            "time_gap.middle_has_new_significant_rise": False,
+            "time_gap.middle_has_rise": False,
             "time_gap.flattening_at_end": True,
             "trajectory.converging": True,
         },
@@ -626,8 +620,8 @@ def test_lap_selects_sub_label_that_covers_entire_segment(monkeypatch):
 def test_lap_supporting_evidence_cannot_expand_partial_required_match(monkeypatch):
     facts = deterministic.FactSet(
         {
-            "time_gap.has_significant_rise": True,
-            "time_gap.significant_rise_ranges": [[0, 10]],
+            "time_gap.total_change_ms": 150,
+            "time_gap.middle_has_rise": True,
             "grip.over_limit": True,
             "speed.gap_peak_abs_kmh": 20.0,
         },
@@ -997,7 +991,7 @@ def test_public_pipeline_bypasses_provider_and_returns_lap_contract(monkeypatch)
         deterministic,
         "calculate_facts",
         lambda *_args, **_kwargs: ({
-            "time_gap.total_change_abs_ms": 10,
+            "time_gap.total_change_ms": -10,
             "time_gap.ending_direction": "falling",
             "segment.shape_key": "straight",
         }, []),
@@ -1035,8 +1029,8 @@ def test_lap_result_explains_failed_behavior_requirements(monkeypatch):
 
     rejected = {item["value"]: item["reason"] for item in result.rejected_proposals}
     assert set(rejected) == {"EA", "PS", "RM", "MSP"}
-    assert "time_gap.total_change_abs_ms" in rejected["EA"]
-    assert "Failed — time_gap.total_change_abs_ms: unavailable" in rejected["EA"]
+    assert "time_gap.total_change_ms" in rejected["EA"]
+    assert "Failed — time_gap.total_change_ms: unavailable" in rejected["EA"]
     assert "branch" not in rejected["EA"]
     assert " operator " not in rejected["EA"]
 

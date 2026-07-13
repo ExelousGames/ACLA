@@ -45,11 +45,10 @@ KNOWN_FACTS = frozenset({
     "throttle.application_end_relation", "throttle.application_onset_relation",
     "throttle.release_end_relation", "throttle.release_onset_relation",
     "throttle.similarity", "time_gap.direction", "time_gap.end_ms",
-    "time_gap.ending_direction", "time_gap.has_significant_rise",
-    "time_gap.has_spike", "time_gap.middle_has_new_significant_rise",
+    "time_gap.ending_direction", "time_gap.has_spike",
+    "time_gap.middle_has_rise",
     "time_gap.flattening_at_end", "time_gap.overall_gap", "time_gap.slope_shape",
-    "time_gap.starting_direction",
-    "time_gap.total_change_abs_ms",
+    "time_gap.starting_direction", "time_gap.total_change_ms",
     "trajectory.converging", "trajectory.peak_abs_offset_m", "trajectory.position",
     "turn.apex_relation", "turn.exit_relation", "turn.in_relation",
 })
@@ -314,34 +313,16 @@ def _slope_facts(
         ]
         for direction in ("rising", "falling", "flat")
     }
-    local_significant_rises = [
-        run for run in runs
-        if run.get("direction") == "rising"
-        and run.get("is_label_significant") is True
-    ]
-    significant_rise_ranges = [
-        [int(run["start_iloc"]), int(run["end_iloc"])]
-        for run in local_significant_rises
-    ]
     total_change_direction = extra.get("total_change_direction")
-    has_significant_rise = bool(
-        total_change_direction == "rising"
-        and extra.get("total_change_is_label_significant") is True
-    )
     if evidence is not None:
         for direction, ranges in ranges_by_direction.items():
             if ranges:
                 evidence[f"time_gap.{direction}_ranges"] = [
                     tuple(value) for value in ranges
                 ]
-        if significant_rise_ranges:
-            localized_rises = [tuple(value) for value in significant_rise_ranges]
-            evidence["time_gap.significant_rise_ranges"] = localized_rises
         if total_change_direction is not None:
             evidence["time_gap.direction"] = [(int(start), int(end))]
-        if has_significant_rise:
-            evidence["time_gap.has_significant_rise"] = [(int(start), int(end))]
-        evidence["time_gap.total_change_abs_ms"] = [(int(start), int(end))]
+        evidence["time_gap.total_change_ms"] = [(int(start), int(end))]
         evidence["time_gap.overall_gap"] = [(int(start), int(end))]
     spike_runs = [
         run for run in runs[:-1]
@@ -352,16 +333,17 @@ def _slope_facts(
     section_length = max(int(end) - int(start), 1)
     middle_start = int(start) + section_length / 3.0
     middle_end = int(end) - section_length / 3.0
-    middle_significant_rises = [
-        run for run in local_significant_rises
-        if middle_start <= float(run["start_iloc"]) < middle_end
+    middle_rises = [
+        run for run in runs
+        if run.get("direction") == "rising"
+        and middle_start <= float(run["start_iloc"]) < middle_end
     ]
-    middle_has_new_significant_rise = bool(middle_significant_rises)
+    middle_has_rise = bool(middle_rises)
     if evidence is not None:
-        if middle_significant_rises:
-            evidence["time_gap.middle_has_new_significant_rise"] = [
+        if middle_rises:
+            evidence["time_gap.middle_has_rise"] = [
                 (int(run["start_iloc"]), int(run["end_iloc"]))
-                for run in middle_significant_rises
+                for run in middle_rises
             ]
         if spike_runs:
             evidence["time_gap.has_spike"] = [
@@ -388,19 +370,16 @@ def _slope_facts(
             pass
     return {
         "time_gap.total_change_ms": delta,
-        "time_gap.total_change_abs_ms": abs(float(delta)) if delta is not None else None,
         "time_gap.direction": total_change_direction,
         "time_gap.overall_gap": abs(float(delta)) if delta is not None else None,
         "time_gap.slope_shape": extra.get("slope_shape"),
         "time_gap.starting_direction": start_direction,
         "time_gap.ending_direction": end_direction,
         "time_gap.flattening_at_end": flattening_at_end,
-        "time_gap.has_significant_rise": has_significant_rise,
         "time_gap.rising_ranges": ranges_by_direction["rising"],
         "time_gap.falling_ranges": ranges_by_direction["falling"],
         "time_gap.flat_ranges": ranges_by_direction["flat"],
-        "time_gap.significant_rise_ranges": significant_rise_ranges,
-        "time_gap.middle_has_new_significant_rise": middle_has_new_significant_rise,
+        "time_gap.middle_has_rise": middle_has_rise,
         "time_gap.has_spike": has_spike,
         "time_gap.start_ms": values[0] if values else None,
         "time_gap.end_ms": values[-1] if values else None,
