@@ -20,7 +20,7 @@ def _expert_corner_dataframe() -> pd.DataFrame:
     })
 
 
-def _time_gap_dataframe(values, times=None) -> pd.DataFrame:
+def _expert_time_difference_dataframe(values, times=None) -> pd.DataFrame:
     values = np.asarray(values, dtype=float)
     if times is None:
         times = np.arange(values.size, dtype=float) * 100.0
@@ -123,14 +123,14 @@ def test_ea_accepts_either_complete_requirement_branch():
     first = deterministic.evaluate_requirements(
         requirements,
         {
-            "time_gap.total_change_ms": -20,
-            "time_gap.ending_direction": "falling",
+            "expert_time_difference.total_change_ms": -20,
+            "expert_time_difference.ending_direction": "falling",
         },
     )
     second = deterministic.evaluate_requirements(
         requirements,
         {
-            "time_gap.total_change_ms": 50,
+            "expert_time_difference.total_change_ms": 50,
             "brake.similarity": 1.0,
             "throttle.similarity": 1.0,
         },
@@ -139,7 +139,7 @@ def test_ea_accepts_either_complete_requirement_branch():
     assert second.matched and second.branch == 1
 
 
-def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
+def test_slope_facts_detect_positive_acceleration_after_fall(monkeypatch):
     def fake_query(_df, _name, _args):
         return ({
             "samples": [{"value": 0}, {"value": 100}, {"value": 200}],
@@ -155,34 +155,36 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
         "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
     )
 
-    df = _time_gap_dataframe(
+    df = _expert_time_difference_dataframe(
         [0, 20, 40, 40, 30, 20, 10, 0, 10, 20, 30],
     )
     evidence = {}
     facts = deterministic._slope_facts(df, 0, 10, evidence)
 
-    assert facts["time_gap.starting_direction"] == "rising"
-    assert facts["time_gap.ending_direction"] == "rising"
-    assert facts["time_gap.rising_ranges"] == [[0, 2], [7, 10]]
-    assert facts["time_gap.falling_ranges"] == [[3, 7]]
-    assert facts["time_gap.flat_ranges"] == []
-    assert evidence["time_gap.rising_ranges"] == [(0, 2), (7, 10)]
-    assert evidence["time_gap.falling_ranges"] == [(3, 7)]
-    assert evidence["time_gap.direction"] == [(0, 10)]
-    assert facts["time_gap.middle_has_rise"] is False
-    assert facts["time_gap.flattening_at_end"] is False
-    assert facts["time_gap.overall_gap"] == 200
-    assert "time_gap.significant" not in facts
+    assert facts["expert_time_difference.starting_direction"] == "rising"
+    assert facts["expert_time_difference.ending_direction"] == "rising"
+    assert facts["expert_time_difference.rising_ranges"] == [[0, 2], [7, 10]]
+    assert facts["expert_time_difference.falling_ranges"] == [[3, 7]]
+    assert facts["expert_time_difference.flat_ranges"] == []
+    assert evidence["expert_time_difference.rising_ranges"] == [(0, 2), (7, 10)]
+    assert evidence["expert_time_difference.falling_ranges"] == [(3, 7)]
+    assert evidence["expert_time_difference.direction"] == [(0, 10)]
+    assert facts["expert_time_difference.middle_has_rise"] is True
+    assert evidence["expert_time_difference.middle_has_rise"] == [(7, 8)]
+    assert facts["expert_time_difference.flattening_at_end"] is False
+    assert facts["expert_time_difference.overall_gap"] == 200
+    assert "expert_time_difference.significant" not in facts
 
 
 def test_slope_facts_carry_flattening_through_a_stable_tail():
     step_slopes = [20.0] * 6 + [10.0] * 3 + [9.0, 9.0, 9.0]
-    df = _time_gap_dataframe(np.cumsum([0.0, *step_slopes]))
+    df = _expert_time_difference_dataframe(np.cumsum([0.0, *step_slopes]))
 
     facts = deterministic._slope_facts(df, 0, 12)
 
-    assert facts["time_gap.flattening_at_end"] is True
-    assert facts["time_gap.ending_direction"] == "flattening"
+    assert facts["expert_time_difference.middle_has_rise"] is False
+    assert facts["expert_time_difference.flattening_at_end"] is True
+    assert facts["expert_time_difference.ending_direction"] == "flattening"
 
 
 def test_slope_facts_requires_same_sign_five_degree_drop_to_flatten():
@@ -200,68 +202,51 @@ def test_slope_facts_requires_same_sign_five_degree_drop_to_flatten():
         (0.0, 0.0, False),
     ]
     for previous_angle, end_angle, expected in cases:
-        slopes = np.tan(np.radians([previous_angle, end_angle])) * 100.0
-        df = _time_gap_dataframe(np.cumsum([0.0, *slopes]))
+        direction = deterministic._expert_time_difference_slope_direction(
+            previous_angle, end_angle, False,
+        )
 
-        facts = deterministic._slope_facts(df, 0, 2)
-
-        assert facts["time_gap.flattening_at_end"] is expected
+        assert (direction == "flattening") is expected
 
 
-def test_slope_facts_use_elapsed_time_angle_at_any_sampling_interval():
-    directions = []
-    ranges = []
-    step_angles = np.array([0.0, 3.0, 8.0, 8.0, 3.0, 3.0])
-    for time_deltas in (
-        np.full(step_angles.size, 50.0),
-        np.full(step_angles.size, 100.0),
-        np.array([40.0, 70.0, 130.0, 90.0, 160.0, 60.0]),
-    ):
-        times = np.cumsum([0.0, *time_deltas])
-        gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
-        df = _time_gap_dataframe(np.cumsum([0.0, *gap_deltas]), times)
+def test_slope_facts_ignore_elapsed_time_values():
+    values = [0.0, 0.0, 10.0, 30.0, 25.0, 25.0, 50.0]
+    dataframes = [
+        pd.DataFrame({"expert_time_difference": values}),
+        _expert_time_difference_dataframe(values, np.zeros(len(values))),
+        _expert_time_difference_dataframe(values, [0.0, 10.0, 5.0, np.nan, 7.0, 7.0, 1.0]),
+    ]
 
+    comparable = []
+    for df in dataframes:
         facts = deterministic._slope_facts(df, 0, 6)
+        comparable.append({
+            key: value for key, value in facts.items()
+            if key in {
+                "expert_time_difference.starting_direction",
+                "expert_time_difference.ending_direction",
+                "expert_time_difference.flattening_at_end",
+                "expert_time_difference.rising_ranges",
+                "expert_time_difference.falling_ranges",
+                "expert_time_difference.flat_ranges",
+                "expert_time_difference.middle_has_rise",
+            }
+        })
 
-        directions.append((
-            facts["time_gap.starting_direction"],
-            facts["time_gap.ending_direction"],
-        ))
-        ranges.append((
-            facts["time_gap.rising_ranges"],
-            facts["time_gap.falling_ranges"],
-            facts["time_gap.flat_ranges"],
-        ))
-
-    assert directions == [("flat", "flattening")] * 3
-    assert ranges == [([[2, 4]], [], [[0, 2]])] * 3
-    assert "time_gap.flattening_ranges" not in facts
-
-
-def test_slope_facts_ignore_gentle_middle_acceleration_over_twenty_percent():
-    step_angles = np.array([1.0, 1.0, 1.0, 1.0, 1.3, 1.3, 1.3, 1.3, 1.3])
-    time_deltas = np.full(step_angles.size, 100.0)
-    times = np.cumsum([0.0, *time_deltas])
-    gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
-    df = _time_gap_dataframe(np.cumsum([0.0, *gap_deltas]), times)
-
-    facts = deterministic._slope_facts(df, 0, 9)
-
-    assert facts["time_gap.rising_ranges"] == []
-    assert facts["time_gap.middle_has_rise"] is False
+    assert comparable[0] == comparable[1] == comparable[2]
+    assert comparable[0]["expert_time_difference.middle_has_rise"] is True
 
 
-def test_slope_facts_middle_rise_uses_five_degree_boundary():
+def test_slope_facts_acceleration_uses_five_degree_boundary():
     results = []
-    for middle_angle in (4.99, 5.0, 5.01):
-        step_angles = np.array([0.0] * 4 + [middle_angle] * 6)
-        time_deltas = np.full(step_angles.size, 100.0)
-        times = np.cumsum([0.0, *time_deltas])
-        gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
-        df = _time_gap_dataframe(np.cumsum([0.0, *gap_deltas]), times)
+    for angle_change in (4.99, 5.0, 5.01):
+        current_delta = np.tan(np.radians(angle_change)) / 5.0
+        df = pd.DataFrame({
+            "expert_time_difference": [0.0, 1.0, np.nan, 0.0, 0.0, current_delta],
+        })
 
-        facts = deterministic._slope_facts(df, 0, 10)
-        results.append(facts["time_gap.middle_has_rise"])
+        facts = deterministic._slope_facts(df, 0, 5)
+        results.append(facts["expert_time_difference.middle_has_rise"])
 
     assert results == [False, True, True]
 
@@ -271,62 +256,75 @@ def test_slope_facts_keep_consecutive_five_degree_intervals_rising():
     time_deltas = np.full(step_angles.size, 100.0)
     times = np.cumsum([0.0, *time_deltas])
     gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
-    df = _time_gap_dataframe(np.cumsum([0.0, *gap_deltas]), times)
+    df = _expert_time_difference_dataframe(np.cumsum([0.0, *gap_deltas]), times)
 
     facts = deterministic._slope_facts(df, 0, 2)
 
-    assert facts["time_gap.rising_ranges"] == [[0, 2]]
-    assert facts["time_gap.flat_ranges"] == []
-    assert facts["time_gap.starting_direction"] == "rising"
-    assert facts["time_gap.ending_direction"] == "rising"
+    assert facts["expert_time_difference.rising_ranges"] == [[0, 2]]
+    assert facts["expert_time_difference.flat_ranges"] == []
+    assert facts["expert_time_difference.starting_direction"] == "rising"
+    assert facts["expert_time_difference.ending_direction"] == "rising"
 
 
-def test_slope_facts_fail_closed_without_valid_elapsed_time():
+def test_slope_facts_reset_acceleration_across_missing_data_and_index_gaps():
     dataframes = [
-        pd.DataFrame({"expert_time_difference": [0.0, 100.0, 200.0]}),
-        _time_gap_dataframe([0.0, 100.0, 200.0], [100.0, 100.0, 100.0]),
-        _time_gap_dataframe([0.0, 100.0, 200.0], [0.0, np.nan, 200.0]),
+        pd.DataFrame({"expert_time_difference": [0.0, 1.0, np.nan, 0.0, 1.0]}),
+        pd.DataFrame(
+            {"expert_time_difference": [0.0, 1.0, 0.0, 1.0]},
+            index=[0, 1, 3, 4],
+        ),
     ]
 
     for df in dataframes:
-        facts = deterministic._slope_facts(df, 0, 2)
+        facts = deterministic._slope_facts(df, 0, 4)
 
-        assert facts["time_gap.rising_ranges"] == []
-        assert facts["time_gap.falling_ranges"] == []
-        assert facts["time_gap.flat_ranges"] == []
-        assert facts["time_gap.middle_has_rise"] is False
-        assert facts["time_gap.has_spike"] is False
-        assert facts["time_gap.starting_direction"] is None
-        assert facts["time_gap.ending_direction"] is None
-        assert facts["time_gap.flattening_at_end"] is False
+        assert facts["expert_time_difference.middle_has_rise"] is False
 
 
 def test_slope_facts_classify_zero_baseline_and_sign_reversals():
-    df = _time_gap_dataframe(
+    df = _expert_time_difference_dataframe(
         np.cumsum([0.0, 0.0, 10.0, -10.0, 10.0]),
     )
 
     facts = deterministic._slope_facts(df, 0, 4)
 
-    assert facts["time_gap.starting_direction"] == "flat"
-    assert facts["time_gap.ending_direction"] == "rising"
-    assert facts["time_gap.rising_ranges"] == [[1, 2], [3, 4]]
-    assert facts["time_gap.falling_ranges"] == [[2, 3]]
-    assert facts["time_gap.flattening_at_end"] is False
+    assert facts["expert_time_difference.starting_direction"] == "flat"
+    assert facts["expert_time_difference.ending_direction"] == "rising"
+    assert facts["expert_time_difference.rising_ranges"] == [[1, 2], [3, 4]]
+    assert facts["expert_time_difference.falling_ranges"] == [[2, 3]]
+    assert facts["expert_time_difference.flattening_at_end"] is False
+
+
+def test_slope_facts_require_positive_current_slope_for_acceleration():
+    x_span = 7.0
+    step_angles = (-20.0, -10.0, -5.0, 1.0)
+    values = [0.5]
+    for angle in step_angles:
+        values.append(values[-1] + np.tan(np.radians(angle)) / x_span)
+    df = pd.DataFrame({
+        "expert_time_difference": [0.0, 1.0, np.nan, *values],
+    })
+    evidence = {}
+
+    facts = deterministic._slope_facts(df, 0, 7, evidence)
+
+    assert facts["expert_time_difference.middle_has_rise"] is True
+    assert evidence["expert_time_difference.middle_has_rise"] == [(6, 7)]
 
 
 def test_slope_facts_preserve_insignificant_runs_without_selecting_mistake():
-    df = _time_gap_dataframe([0, 0, 0, 5, 10, 15, 20, 20, 20, 20])
+    df = _expert_time_difference_dataframe([0, 0, 0, 5, 10, 15, 20, 20, 20, 20])
 
     facts = deterministic._slope_facts(df, 0, 9)
+    msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
 
-    assert facts["time_gap.rising_ranges"] == []
-    assert facts["time_gap.falling_ranges"] == []
-    assert facts["time_gap.flat_ranges"] == [[0, 9]]
+    assert facts["expert_time_difference.rising_ranges"] == [[2, 6]]
+    assert facts["expert_time_difference.has_spike"] is False
+    assert not deterministic.evaluate_requirements(msp, facts).matched
 
 
 def test_slope_facts_do_not_select_local_rise_when_total_change_falls():
-    df = _time_gap_dataframe(
+    df = _expert_time_difference_dataframe(
         [
             4240, 4230, 4220, 4195, 4145, 4070, 4020, 4000, 4050,
             4145, 4240, 4305, 4280, 4255, 4220, 4198, 4185,
@@ -337,25 +335,26 @@ def test_slope_facts_do_not_select_local_rise_when_total_change_falls():
     facts = deterministic._slope_facts(df, 0, 16, evidence)
     msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
 
-    assert facts["time_gap.total_change_ms"] == -55
-    assert evidence["time_gap.total_change_ms"] == [(0, 16)]
-    assert "time_gap.total_change_abs_ms" not in facts
-    assert facts["time_gap.direction"] == "falling"
+    assert facts["expert_time_difference.total_change_ms"] == -55
+    assert evidence["expert_time_difference.total_change_ms"] == [(0, 16)]
+    assert "expert_time_difference.total_change_abs_ms" not in facts
+    assert facts["expert_time_difference.direction"] == "falling"
     assert not deterministic.evaluate_requirements(msp, facts).matched
 
 
 def test_slope_facts_accept_steady_rise():
     for rate in (20, 200):
-        df = _time_gap_dataframe(np.arange(9) * rate)
+        df = _expert_time_difference_dataframe(np.arange(9) * rate)
 
         facts = deterministic._slope_facts(df, 0, 8)
 
-        assert facts["time_gap.rising_ranges"] == [[0, 8]]
-        assert facts["time_gap.flat_ranges"] == []
-        assert facts["time_gap.ending_direction"] == "rising"
+        assert facts["expert_time_difference.rising_ranges"] == [[0, 8]]
+        assert facts["expert_time_difference.flat_ranges"] == []
+        assert facts["expert_time_difference.middle_has_rise"] is False
+        assert facts["expert_time_difference.ending_direction"] == "rising"
 
 
-def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypatch):
+def test_slope_facts_identify_accelerating_interior_rise_then_flattening(monkeypatch):
     def fake_query(_df, _name, _args):
         return ({
             "samples": [{"value": 0}, {"value": 100}, {"value": 200}],
@@ -371,40 +370,75 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
         "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
     )
 
-    df = _time_gap_dataframe(
+    df = _expert_time_difference_dataframe(
         [0, 0, 0, 10, 30, 70, 100, 110, 120, 125, 130],
     )
-    facts = deterministic._slope_facts(df, 0, 10)
+    evidence = {}
+    facts = deterministic._slope_facts(df, 0, 10, evidence)
 
-    assert facts["time_gap.rising_ranges"] == [[2, 5]]
-    assert facts["time_gap.flat_ranges"] == [[0, 2]]
-    assert facts["time_gap.middle_has_rise"] is False
-    assert facts["time_gap.flattening_at_end"] is True
-    assert facts["time_gap.ending_direction"] == "flattening"
+    assert facts["expert_time_difference.rising_ranges"] == [[2, 5]]
+    assert facts["expert_time_difference.flat_ranges"] == [[0, 2]]
+    assert facts["expert_time_difference.middle_has_rise"] is True
+    assert evidence["expert_time_difference.middle_has_rise"] == [(2, 3), (3, 4), (4, 5)]
+    assert facts["expert_time_difference.flattening_at_end"] is True
+    assert facts["expert_time_difference.ending_direction"] == "flattening"
 
     evaluation = deterministic.evaluate_requirements(
         {"any_of": [{"all_of": [{
-            "fact": "time_gap.total_change_ms",
+            "fact": "expert_time_difference.total_change_ms",
             "operator": "gte",
             "value": 150,
         }]}]},
         facts,
     )
     assert evaluation.passed == [
-        "time_gap.total_change_ms: 200",
+        "expert_time_difference.total_change_ms: 200",
     ]
 
 
 def test_slope_facts_identify_single_rise():
-    df = _time_gap_dataframe([0, 0, 0, 0, 200, 200, 200, 200, 200, 200])
+    df = _expert_time_difference_dataframe([0, 0, 0, 0, 200, 200, 200, 200, 200, 200])
 
     facts = deterministic._slope_facts(df, 0, 9)
 
-    assert facts["time_gap.total_change_ms"] == 200
+    assert facts["expert_time_difference.total_change_ms"] == 200
+
+
+def test_slope_facts_detect_regression_expert_time_difference_accelerations():
+    values = [
+        12.49586190588792,
+        32.497635374792935,
+        44.72915398661007,
+        62.071942446043295,
+        70.53691275167785,
+        79.61250766401008,
+        88.0231749710315,
+        95.63715110683324,
+        113.97314758732045,
+        107.57011686143505,
+        76.4069438837314,
+        36.65047636839154,
+        36.52913067450936,
+        66.02738467193649,
+    ]
+    df = _expert_time_difference_dataframe(values)
+    df.index = np.arange(196, 210)
+    telemetry = deterministic._smoothed_telemetry(df)
+    evidence = {}
+
+    facts = deterministic._slope_facts(telemetry, 196, 209, evidence)
+    msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
+
+    assert facts["expert_time_difference.total_change_ms"] == 53.53
+    assert facts["expert_time_difference.middle_has_rise"] is True
+    assert evidence["expert_time_difference.middle_has_rise"] == [
+        (198, 199), (203, 204), (208, 209),
+    ]
+    assert deterministic.evaluate_requirements(msp, facts).matched
 
 
 def test_calculate_facts_smooths_single_sample_noise_before_slope_facts(monkeypatch):
-    df = _time_gap_dataframe([0, 0, 0, 0, 40, 0, 0, 0, 0, 0])
+    df = _expert_time_difference_dataframe([0, 0, 0, 0, 40, 0, 0, 0, 0, 0])
     monkeypatch.setattr(
         deterministic, "_shape_facts", lambda *_args, **_kwargs: ({}, [])
     )
@@ -413,9 +447,9 @@ def test_calculate_facts_smooths_single_sample_noise_before_slope_facts(monkeypa
 
     facts, _ = deterministic.calculate_facts(df, 0, 9)
 
-    assert facts["time_gap.rising_ranges"] == []
-    assert facts["time_gap.total_change_ms"] == 0
-    assert facts["time_gap.middle_has_rise"] is False
+    assert facts["expert_time_difference.rising_ranges"] == []
+    assert facts["expert_time_difference.total_change_ms"] == 0
+    assert facts["expert_time_difference.middle_has_rise"] is False
 
 
 def test_behavior_requirements_use_middle_rise_for_msp():
@@ -423,38 +457,38 @@ def test_behavior_requirements_use_middle_rise_for_msp():
     rm = deterministic._requirements_for("RM", deterministic.get_label("RM"))
 
     no_middle_rise = {
-        "time_gap.total_change_ms": 150,
-        "time_gap.middle_has_rise": False,
+        "expert_time_difference.total_change_ms": 150,
+        "expert_time_difference.middle_has_rise": False,
     }
     middle_rise = {
-        "time_gap.direction": "rising",
-        "time_gap.total_change_ms": 150,
-        "time_gap.middle_has_rise": True,
+        "expert_time_difference.direction": "rising",
+        "expert_time_difference.total_change_ms": 150,
+        "expert_time_difference.middle_has_rise": True,
     }
     recovery_merge = {
-        "time_gap.starting_direction": "rising",
-        "time_gap.middle_has_rise": False,
-        "time_gap.flattening_at_end": True,
+        "expert_time_difference.starting_direction": "rising",
+        "expert_time_difference.middle_has_rise": False,
+        "expert_time_difference.flattening_at_end": True,
     }
 
     assert not deterministic.evaluate_requirements(msp, no_middle_rise).matched
     assert deterministic.evaluate_requirements(msp, middle_rise).matched
     assert not deterministic.evaluate_requirements(msp, {
-        **middle_rise, "time_gap.total_change_ms": 49,
+        **middle_rise, "expert_time_difference.total_change_ms": 49,
     }).matched
     assert not deterministic.evaluate_requirements(msp, {
-        **middle_rise, "time_gap.middle_has_rise": False,
+        **middle_rise, "expert_time_difference.middle_has_rise": False,
     }).matched
     assert not deterministic.evaluate_requirements(rm, middle_rise).matched
     assert deterministic.evaluate_requirements(rm, recovery_merge).matched
     assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "time_gap.starting_direction": "falling",
+        **recovery_merge, "expert_time_difference.starting_direction": "falling",
     }).matched
     assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "time_gap.middle_has_rise": True,
+        **recovery_merge, "expert_time_difference.middle_has_rise": True,
     }).matched
     assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "time_gap.flattening_at_end": False,
+        **recovery_merge, "expert_time_difference.flattening_at_end": False,
     }).matched
 
 
@@ -463,14 +497,14 @@ def test_missing_fact_fails_closed():
         {
             "enabled": True,
             "any_of": [{"all_of": [
-                {"fact": "time_gap.direction", "operator": "eq", "value": "rising"}
+                {"fact": "expert_time_difference.direction", "operator": "eq", "value": "rising"}
             ]}],
         },
         {},
     )
     assert not result.matched
     assert result.passed == []
-    assert result.failed == ["time_gap.direction: unavailable"]
+    assert result.failed == ["expert_time_difference.direction: unavailable"]
 
 
 def test_failed_requirement_reports_facts_from_closest_branch_only():
@@ -479,22 +513,22 @@ def test_failed_requirement_reports_facts_from_closest_branch_only():
             "enabled": True,
             "any_of": [
                 {"all_of": [
-                    {"fact": "time_gap.direction", "operator": "eq", "value": "rising"},
-                    {"fact": "time_gap.overall_gap", "operator": "gt", "value": 50},
+                    {"fact": "expert_time_difference.direction", "operator": "eq", "value": "rising"},
+                    {"fact": "expert_time_difference.overall_gap", "operator": "gt", "value": 50},
                 ]},
                 {"all_of": [
-                    {"fact": "time_gap.direction", "operator": "eq", "value": "falling"},
-                    {"fact": "time_gap.end_ms", "operator": "gt", "value": 0},
-                    {"fact": "time_gap.ending_direction", "operator": "eq", "value": "rising"},
+                    {"fact": "expert_time_difference.direction", "operator": "eq", "value": "falling"},
+                    {"fact": "expert_time_difference.end_ms", "operator": "gt", "value": 0},
+                    {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "rising"},
                 ]},
             ],
         },
-        {"time_gap.direction": "rising", "time_gap.overall_gap": 50},
+        {"expert_time_difference.direction": "rising", "expert_time_difference.overall_gap": 50},
     )
 
     assert not result.matched
-    assert result.passed == ["time_gap.direction: 'rising'"]
-    assert result.failed == ["time_gap.overall_gap: 50"]
+    assert result.passed == ["expert_time_difference.direction: 'rising'"]
+    assert result.failed == ["expert_time_difference.overall_gap: 50"]
 
 
 def test_pit_stop_requires_pit_section_and_raw_telemetry():
@@ -586,8 +620,8 @@ def test_far_driver_in_overlapping_pit_prefers_ps_over_rm(monkeypatch):
         "calculate_facts",
         lambda *_args, **_kwargs: ({
             "trajectory.peak_abs_offset_m": 10.0,
-            "time_gap.direction": "falling",
-            "time_gap.overall_gap": 100,
+            "expert_time_difference.direction": "falling",
+            "expert_time_difference.overall_gap": 100,
         }, []),
     )
 
@@ -608,9 +642,9 @@ def test_far_driver_in_overlapping_pit_prefers_ps_over_rm(monkeypatch):
 def test_lap_omits_sub_labels_that_cover_only_part_of_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
-            "time_gap.starting_direction": "rising",
-            "time_gap.middle_has_rise": False,
-            "time_gap.flattening_at_end": True,
+            "expert_time_difference.starting_direction": "rising",
+            "expert_time_difference.middle_has_rise": False,
+            "expert_time_difference.flattening_at_end": True,
             "trajectory.peak_abs_offset_m": 2.0,
             "trajectory.converging": True,
             "speed.expert_faster": True,
@@ -651,9 +685,9 @@ def test_lap_omits_sub_labels_that_cover_only_part_of_segment(monkeypatch):
 def test_lap_omits_sub_label_that_is_not_fully_inside_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
-            "time_gap.starting_direction": "rising",
-            "time_gap.middle_has_rise": False,
-            "time_gap.flattening_at_end": True,
+            "expert_time_difference.starting_direction": "rising",
+            "expert_time_difference.middle_has_rise": False,
+            "expert_time_difference.flattening_at_end": True,
             "trajectory.converging": True,
         },
         evidence={"trajectory.converging": [(6, 12)]},
@@ -684,9 +718,9 @@ def test_lap_omits_sub_label_that_is_not_fully_inside_segment(monkeypatch):
 def test_lap_selects_sub_label_that_covers_entire_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
-            "time_gap.starting_direction": "rising",
-            "time_gap.middle_has_rise": False,
-            "time_gap.flattening_at_end": True,
+            "expert_time_difference.starting_direction": "rising",
+            "expert_time_difference.middle_has_rise": False,
+            "expert_time_difference.flattening_at_end": True,
             "trajectory.converging": True,
         },
         evidence={"trajectory.converging": [(0, 10)]},
@@ -716,8 +750,8 @@ def test_lap_selects_sub_label_that_covers_entire_segment(monkeypatch):
 def test_lap_supporting_evidence_cannot_expand_partial_required_match(monkeypatch):
     facts = deterministic.FactSet(
         {
-            "time_gap.total_change_ms": 150,
-            "time_gap.middle_has_rise": True,
+            "expert_time_difference.total_change_ms": 150,
+            "expert_time_difference.middle_has_rise": True,
             "grip.over_limit": True,
             "speed.gap_peak_abs_kmh": 20.0,
         },
@@ -886,8 +920,8 @@ def test_optional_supporting_evidence_expands_and_is_cited(monkeypatch):
     def fake_facts(_df, start, end, **_kwargs):
         if (start, end) == (0, 10):
             return deterministic.FactSet(
-                {"time_gap.direction": "rising"},
-                evidence={"time_gap.direction": [(7, 8)]},
+                {"expert_time_difference.direction": "rising"},
+                evidence={"expert_time_difference.direction": [(7, 8)]},
                 phases={"entry": [(1, 5)]},
             ), [(1, 5)]
         return deterministic.FactSet(
@@ -912,7 +946,7 @@ def test_optional_supporting_evidence_expands_and_is_cited(monkeypatch):
 
     proposal = next(item for item in result.label_annotations if item["label_id"] == "MSP1")
     assert (proposal["start_index"], proposal["end_index"]) == (2, 8)
-    assert "Supporting — time_gap.direction: 'rising'" in proposal["reasoning"]
+    assert "Supporting — expert_time_difference.direction: 'rising'" in proposal["reasoning"]
 
 
 def test_sub_label_without_required_provenance_is_omitted(monkeypatch):
@@ -1087,8 +1121,8 @@ def test_public_pipeline_bypasses_provider_and_returns_lap_contract(monkeypatch)
         deterministic,
         "calculate_facts",
         lambda *_args, **_kwargs: ({
-            "time_gap.total_change_ms": -10,
-            "time_gap.ending_direction": "falling",
+            "expert_time_difference.total_change_ms": -10,
+            "expert_time_difference.ending_direction": "falling",
             "segment.shape_key": "straight",
         }, []),
     )
@@ -1110,7 +1144,7 @@ def test_lap_result_explains_failed_behavior_requirements(monkeypatch):
     monkeypatch.setattr(
         deterministic,
         "calculate_facts",
-        lambda *_args, **_kwargs: ({"time_gap.has_spike": False}, []),
+        lambda *_args, **_kwargs: ({"expert_time_difference.has_spike": False}, []),
     )
 
     result = deterministic.calculate_lap_annotation(
@@ -1125,8 +1159,8 @@ def test_lap_result_explains_failed_behavior_requirements(monkeypatch):
 
     rejected = {item["value"]: item["reason"] for item in result.rejected_proposals}
     assert set(rejected) == {"EA", "PS", "RM", "MSP"}
-    assert "time_gap.total_change_ms" in rejected["EA"]
-    assert "Failed — time_gap.total_change_ms: unavailable" in rejected["EA"]
+    assert "expert_time_difference.total_change_ms" in rejected["EA"]
+    assert "Failed — expert_time_difference.total_change_ms: unavailable" in rejected["EA"]
     assert "branch" not in rejected["EA"]
     assert " operator " not in rejected["EA"]
 

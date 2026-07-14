@@ -65,19 +65,19 @@
       "enabled": true,
       "any_of": [
         {"all_of": [
-          {"fact": "time_gap.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "falling"}
+          {"fact": "expert_time_difference.total_change_ms", "operator": "lt", "value": 50},
+          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "falling"}
         ]},
         {"all_of": [
-          {"fact": "time_gap.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "flattening"}
+          {"fact": "expert_time_difference.total_change_ms", "operator": "lt", "value": 50},
+          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flattening"}
         ]},
         {"all_of": [
-          {"fact": "time_gap.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "flat"}
+          {"fact": "expert_time_difference.total_change_ms", "operator": "lt", "value": 50},
+          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flat"}
         ]},
         {"all_of": [
-          {"fact": "time_gap.total_change_ms", "operator": "gte", "value": 50},
+          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
           {"fact": "brake.similarity", "operator": "eq", "value": 1.0},
           {"fact": "throttle.similarity", "operator": "eq", "value": 1.0}
         ]}
@@ -87,12 +87,12 @@
       "enabled": true,
       "any_of": [
         {"all_of": [
-          {"fact": "time_gap.total_change_ms", "operator": "gte", "value": 50},
-          {"fact": "time_gap.middle_has_rise", "operator": "eq", "value": true}
+          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
+          {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": true}
         ]},
         {"all_of": [
-          {"fact": "time_gap.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "rising"}
+          {"fact": "expert_time_difference.total_change_ms", "operator": "lt", "value": 50},
+          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "rising"}
         ]}
       ]
     },
@@ -104,14 +104,14 @@
       "enabled": true,
       "any_of": [
         {"all_of": [
-          {"fact": "time_gap.starting_direction", "operator": "eq", "value": "rising"},
-          {"fact": "time_gap.middle_has_rise", "operator": "eq", "value": false},
-          {"fact": "time_gap.flattening_at_end", "operator": "eq", "value": true}
+          {"fact": "expert_time_difference.starting_direction", "operator": "eq", "value": "rising"},
+          {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": false},
+          {"fact": "expert_time_difference.flattening_at_end", "operator": "eq", "value": true}
         ]},
         {"all_of": [
-          {"fact": "time_gap.starting_direction", "operator": "eq", "value": "rising"},
-          {"fact": "time_gap.middle_has_rise", "operator": "eq", "value": false},
-          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "flat"}
+          {"fact": "expert_time_difference.starting_direction", "operator": "eq", "value": "rising"},
+          {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": false},
+          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flat"}
         ]}
       ]
     },

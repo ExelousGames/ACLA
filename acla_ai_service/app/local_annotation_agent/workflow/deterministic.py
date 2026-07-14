@@ -44,18 +44,18 @@ KNOWN_FACTS = frozenset({
     "speed.expert_faster", "speed.gap_closing", "speed.gap_peak_abs_kmh",
     "throttle.application_end_relation", "throttle.application_onset_relation",
     "throttle.release_end_relation", "throttle.release_onset_relation",
-    "throttle.similarity", "time_gap.direction", "time_gap.end_ms",
-    "time_gap.ending_direction", "time_gap.has_spike",
-    "time_gap.middle_has_rise",
-    "time_gap.flattening_at_end", "time_gap.overall_gap", "time_gap.slope_shape",
-    "time_gap.starting_direction", "time_gap.total_change_ms",
+    "throttle.similarity", "expert_time_difference.direction", "expert_time_difference.end_ms",
+    "expert_time_difference.ending_direction", "expert_time_difference.has_spike",
+    "expert_time_difference.middle_has_rise",
+    "expert_time_difference.flattening_at_end", "expert_time_difference.overall_gap", "expert_time_difference.slope_shape",
+    "expert_time_difference.starting_direction", "expert_time_difference.total_change_ms",
     "trajectory.converging", "trajectory.peak_abs_offset_m", "trajectory.position",
     "turn.apex_relation", "turn.exit_relation", "turn.in_relation",
 })
 _MISSING = object()
 _ALIGN_TOLERANCE = 2
 _TELEMETRY_SMOOTHING_WINDOW = 3
-_TIME_GAP_SLOPE_ANGLE_DEGREES = 5.0
+_EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES = 5.0
 
 
 @dataclass
@@ -284,83 +284,92 @@ def _add_input_facts(
         )
 
 
-def _time_gap_slope_direction(
+def _expert_time_difference_slope_direction(
     previous_angle: float, current_angle: float, flattening: bool,
 ) -> str:
     angle_change = current_angle - previous_angle
     moves_toward_zero = (
         previous_angle * current_angle >= 0.0
         and abs(current_angle) < abs(previous_angle)
-        and abs(angle_change) >= _TIME_GAP_SLOPE_ANGLE_DEGREES
+        and abs(angle_change) >= _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES
     )
     if moves_toward_zero:
         return "flattening"
     if flattening:
-        if angle_change >= _TIME_GAP_SLOPE_ANGLE_DEGREES:
+        if angle_change >= _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES:
             return "rising"
-        if angle_change <= -_TIME_GAP_SLOPE_ANGLE_DEGREES:
+        if angle_change <= -_EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES:
             return "falling"
         return "flattening"
-    if current_angle >= _TIME_GAP_SLOPE_ANGLE_DEGREES:
+    if current_angle >= _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES:
         return "rising"
-    if current_angle <= -_TIME_GAP_SLOPE_ANGLE_DEGREES:
+    if current_angle <= -_EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES:
         return "falling"
     return "flat"
 
 
-def _time_gap_slope_runs(
+def _expert_time_difference_slope_analysis(
     df: pd.DataFrame, start: int, end: int, significant_delta: float,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], List[Tuple[int, int]]]:
+    """Return normalized direction runs and positive acceleration steps."""
     segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
-    required_columns = {"expert_time_difference", "Graphics_current_time"}
-    if not required_columns.issubset(segment.columns):
-        return []
+    if "expert_time_difference" not in segment.columns:
+        return [], []
 
     values = pd.to_numeric(
         segment["expert_time_difference"], errors="coerce",
     ).to_numpy(dtype=float)
-    times = pd.to_numeric(
-        segment["Graphics_current_time"], errors="coerce",
-    ).to_numpy(dtype=float)
     ilocs = segment.index.to_numpy(dtype=float)
     if len(values) < 2:
-        return []
+        return [], []
 
     iloc_deltas = np.diff(ilocs)
-    time_deltas = np.diff(times)
     value_deltas = np.diff(values)
     valid = (
         np.isfinite(values[:-1])
         & np.isfinite(values[1:])
-        & np.isfinite(times[:-1])
-        & np.isfinite(times[1:])
         & np.isfinite(iloc_deltas)
-        & (iloc_deltas > 0.0)
-        & np.isfinite(time_deltas)
-        & (time_deltas > 0.0)
+        & (iloc_deltas == 1.0)
         & np.isfinite(value_deltas)
     )
     if not np.any(valid):
-        return []
+        return [], []
 
-    angles = np.degrees(np.arctan(value_deltas[valid] / time_deltas[valid]))
+    finite_values = values[np.isfinite(values)]
+    value_span = float(np.max(finite_values) - np.min(finite_values))
+    iloc_span = float(np.max(ilocs) - np.min(ilocs))
+    if value_span > 0.0 and iloc_span > 0.0:
+        normalized_slopes = (
+            value_deltas[valid] / iloc_deltas[valid]
+        ) * (iloc_span / value_span)
+    else:
+        normalized_slopes = np.zeros(int(np.sum(valid)), dtype=float)
+    angles = np.degrees(np.arctan(normalized_slopes))
     step_starts = ilocs[:-1][valid]
     step_ends = ilocs[1:][valid]
     step_start_values = values[:-1][valid]
     step_end_values = values[1:][valid]
 
     runs: List[Dict[str, Any]] = []
-    previous_angle = 0.0
+    accelerating_rises: List[Tuple[int, int]] = []
+    previous_angle: Optional[float] = None
     previous_end_iloc: Optional[int] = None
     flattening = False
     for angle, start_iloc, end_iloc, start_value, end_value in zip(
         angles, step_starts, step_ends, step_start_values, step_end_values,
     ):
         if previous_end_iloc is not None and int(start_iloc) != previous_end_iloc:
-            previous_angle = 0.0
+            previous_angle = None
             flattening = False
-        direction = _time_gap_slope_direction(
-            previous_angle, float(angle), flattening,
+        if (
+            previous_angle is not None
+            and float(angle) > 0.0
+            and float(angle) - previous_angle >= _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES
+        ):
+            accelerating_rises.append((int(start_iloc), int(end_iloc)))
+        direction = _expert_time_difference_slope_direction(
+            previous_angle if previous_angle is not None else 0.0,
+            float(angle), flattening,
         )
         flattening = direction == "flattening"
         step = {
@@ -385,7 +394,7 @@ def _time_gap_slope_runs(
     for run in runs:
         run_delta = float(run["end_value"]) - float(run["start_value"])
         run["is_label_significant"] = abs(run_delta) >= significant_delta
-    return runs
+    return runs, accelerating_rises
 
 
 def _slope_facts(
@@ -409,7 +418,9 @@ def _slope_facts(
         significant_delta = float(thresholds["label_significant_at_abs_delta"])
     except (KeyError, TypeError, ValueError):
         significant_delta = float("inf")
-    runs = _time_gap_slope_runs(df, start, end, significant_delta)
+    runs, accelerating_rises = _expert_time_difference_slope_analysis(
+        df, start, end, significant_delta,
+    )
     ranges_by_direction = {
         direction: [
             [int(run["start_iloc"]), int(run["end_iloc"])]
@@ -421,36 +432,25 @@ def _slope_facts(
     if evidence is not None:
         for direction, ranges in ranges_by_direction.items():
             if ranges:
-                evidence[f"time_gap.{direction}_ranges"] = [
+                evidence[f"expert_time_difference.{direction}_ranges"] = [
                     tuple(value) for value in ranges
                 ]
         if total_change_direction is not None:
-            evidence["time_gap.direction"] = [(int(start), int(end))]
-        evidence["time_gap.total_change_ms"] = [(int(start), int(end))]
-        evidence["time_gap.overall_gap"] = [(int(start), int(end))]
+            evidence["expert_time_difference.direction"] = [(int(start), int(end))]
+        evidence["expert_time_difference.total_change_ms"] = [(int(start), int(end))]
+        evidence["expert_time_difference.overall_gap"] = [(int(start), int(end))]
     spike_runs = [
         run for run in runs[:-1]
         if run.get("direction") == "rising"
         and run.get("is_label_significant") is True
     ]
     has_spike = bool(spike_runs)
-    section_length = max(int(end) - int(start), 1)
-    middle_start = int(start) + section_length / 3.0
-    middle_end = int(end) - section_length / 3.0
-    middle_rises = [
-        run for run in runs
-        if run.get("direction") == "rising"
-        and middle_start <= float(run["start_iloc"]) < middle_end
-    ]
-    middle_has_rise = bool(middle_rises)
+    middle_has_rise = bool(accelerating_rises)
     if evidence is not None:
-        if middle_rises:
-            evidence["time_gap.middle_has_rise"] = [
-                (int(run["start_iloc"]), int(run["end_iloc"]))
-                for run in middle_rises
-            ]
+        if accelerating_rises:
+            evidence["expert_time_difference.middle_has_rise"] = accelerating_rises
         if spike_runs:
-            evidence["time_gap.has_spike"] = [
+            evidence["expert_time_difference.has_spike"] = [
                 (int(run["start_iloc"]), int(run["end_iloc"]))
                 for run in spike_runs
             ]
@@ -462,20 +462,20 @@ def _slope_facts(
     )
     flattening_at_end = end_direction == "flattening"
     return {
-        "time_gap.total_change_ms": delta,
-        "time_gap.direction": total_change_direction,
-        "time_gap.overall_gap": abs(float(delta)) if delta is not None else None,
-        "time_gap.slope_shape": extra.get("slope_shape"),
-        "time_gap.starting_direction": start_direction,
-        "time_gap.ending_direction": end_direction,
-        "time_gap.flattening_at_end": flattening_at_end,
-        "time_gap.rising_ranges": ranges_by_direction["rising"],
-        "time_gap.falling_ranges": ranges_by_direction["falling"],
-        "time_gap.flat_ranges": ranges_by_direction["flat"],
-        "time_gap.middle_has_rise": middle_has_rise,
-        "time_gap.has_spike": has_spike,
-        "time_gap.start_ms": values[0] if values else None,
-        "time_gap.end_ms": values[-1] if values else None,
+        "expert_time_difference.total_change_ms": delta,
+        "expert_time_difference.direction": total_change_direction,
+        "expert_time_difference.overall_gap": abs(float(delta)) if delta is not None else None,
+        "expert_time_difference.slope_shape": extra.get("slope_shape"),
+        "expert_time_difference.starting_direction": start_direction,
+        "expert_time_difference.ending_direction": end_direction,
+        "expert_time_difference.flattening_at_end": flattening_at_end,
+        "expert_time_difference.rising_ranges": ranges_by_direction["rising"],
+        "expert_time_difference.falling_ranges": ranges_by_direction["falling"],
+        "expert_time_difference.flat_ranges": ranges_by_direction["flat"],
+        "expert_time_difference.middle_has_rise": middle_has_rise,
+        "expert_time_difference.has_spike": has_spike,
+        "expert_time_difference.start_ms": values[0] if values else None,
+        "expert_time_difference.end_ms": values[-1] if values else None,
     }
 
 
