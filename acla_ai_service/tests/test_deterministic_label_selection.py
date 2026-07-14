@@ -138,22 +138,6 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
                 "total_change_direction": "rising",
                 "total_change_is_label_significant": True,
                 "slope_shape": "slope_steady_over_section",
-                "previous_end_slope": 50,
-                "end_slope": 50,
-                "point_trend_runs": [
-                    {
-                        "start_iloc": 0, "end_iloc": 2, "direction": "rising",
-                        "is_label_significant": True,
-                    },
-                    {
-                        "start_iloc": 2, "end_iloc": 8, "direction": "falling",
-                        "is_label_significant": True,
-                    },
-                    {
-                        "start_iloc": 8, "end_iloc": 10, "direction": "rising",
-                        "is_label_significant": True,
-                    },
-                ],
             },
         }, None)
 
@@ -168,12 +152,12 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
     facts = deterministic._slope_facts(df, 0, 10, evidence)
 
     assert facts["time_gap.starting_direction"] == "rising"
-    assert facts["time_gap.ending_direction"] == "rising"
-    assert facts["time_gap.rising_ranges"] == [[0, 2], [8, 10]]
-    assert facts["time_gap.falling_ranges"] == [[2, 8]]
-    assert facts["time_gap.flat_ranges"] == []
-    assert evidence["time_gap.rising_ranges"] == [(0, 2), (8, 10)]
-    assert evidence["time_gap.falling_ranges"] == [(2, 8)]
+    assert facts["time_gap.ending_direction"] == "flat"
+    assert facts["time_gap.rising_ranges"] == [[0, 1], [7, 8]]
+    assert facts["time_gap.falling_ranges"] == [[3, 4]]
+    assert facts["time_gap.flat_ranges"] == [[1, 2], [4, 7], [8, 10]]
+    assert evidence["time_gap.rising_ranges"] == [(0, 1), (7, 8)]
+    assert evidence["time_gap.falling_ranges"] == [(3, 4)]
     assert evidence["time_gap.direction"] == [(0, 10)]
     assert facts["time_gap.middle_has_rise"] is False
     assert facts["time_gap.flattening_at_end"] is False
@@ -181,8 +165,8 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
     assert "time_gap.significant" not in facts
 
 
-def test_slope_facts_smooth_ending_slope_windows():
-    step_slopes = [20.0] * 6 + [10.0] * 3 + [5.0, 5.0, 100.0]
+def test_slope_facts_carry_flattening_through_a_stable_tail():
+    step_slopes = [20.0] * 6 + [10.0] * 3 + [9.0, 9.0, 9.0]
     df = pd.DataFrame({
         "expert_time_difference": np.cumsum([0.0, *step_slopes]),
     })
@@ -190,27 +174,10 @@ def test_slope_facts_smooth_ending_slope_windows():
     facts = deterministic._slope_facts(df, 0, 12)
 
     assert facts["time_gap.flattening_at_end"] is True
+    assert facts["time_gap.ending_direction"] == "flattening"
 
 
-def test_slope_facts_requires_same_sign_twenty_percent_drop_to_flatten(monkeypatch):
-    slopes = {"previous": 0.0, "end": 0.0}
-
-    def fake_query(_df, _name, _args):
-        return ({
-            "samples": [{"value": 0}, {"value": 1}],
-            "extra": {
-                "delta_value": 1,
-                "total_change_direction": "rising",
-                "previous_end_slope": slopes["previous"],
-                "end_slope": slopes["end"],
-                "point_trend_runs": [],
-            },
-        }, None)
-
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
-    )
-
+def test_slope_facts_requires_same_sign_twenty_percent_drop_to_flatten():
     cases = [
         (100, 80, True),
         (-100, -80, True),
@@ -225,11 +192,53 @@ def test_slope_facts_requires_same_sign_twenty_percent_drop_to_flatten(monkeypat
         (0, 0, False),
     ]
     for previous, end, expected in cases:
-        slopes.update(previous=previous, end=end)
+        df = pd.DataFrame({
+            "expert_time_difference": np.cumsum([0.0, previous, end]),
+        })
 
-        facts = deterministic._slope_facts(pd.DataFrame(), 0, 1)
+        facts = deterministic._slope_facts(df, 0, 2)
 
         assert facts["time_gap.flattening_at_end"] is expected
+
+
+def test_slope_facts_use_percentage_slope_change_at_any_scale():
+    directions = []
+    ranges = []
+    for scale in (1.0, 10.0):
+        slopes = np.array([0.0, 10.0, 12.0, 13.0, 10.4, 5.2]) * scale
+        df = pd.DataFrame({
+            "expert_time_difference": np.cumsum([0.0, *slopes]),
+        })
+
+        facts = deterministic._slope_facts(df, 0, 6)
+
+        directions.append((
+            facts["time_gap.starting_direction"],
+            facts["time_gap.ending_direction"],
+        ))
+        ranges.append((
+            facts["time_gap.rising_ranges"],
+            facts["time_gap.falling_ranges"],
+            facts["time_gap.flat_ranges"],
+        ))
+
+    assert directions == [("flat", "flattening")] * 2
+    assert ranges == [([[1, 3]], [], [[0, 1], [3, 4]])] * 2
+    assert "time_gap.flattening_ranges" not in facts
+
+
+def test_slope_facts_classify_zero_baseline_and_sign_reversals():
+    df = pd.DataFrame({
+        "expert_time_difference": np.cumsum([0.0, 0.0, 10.0, -10.0, 10.0]),
+    })
+
+    facts = deterministic._slope_facts(df, 0, 4)
+
+    assert facts["time_gap.starting_direction"] == "flat"
+    assert facts["time_gap.ending_direction"] == "rising"
+    assert facts["time_gap.rising_ranges"] == [[1, 2], [3, 4]]
+    assert facts["time_gap.falling_ranges"] == [[2, 3]]
+    assert facts["time_gap.flattening_at_end"] is False
 
 
 def test_slope_facts_preserve_insignificant_runs_without_selecting_mistake():
@@ -239,9 +248,9 @@ def test_slope_facts_preserve_insignificant_runs_without_selecting_mistake():
 
     facts = deterministic._slope_facts(df, 0, 9)
 
-    assert facts["time_gap.rising_ranges"] == [[2, 6]]
+    assert facts["time_gap.rising_ranges"] == [[2, 3]]
     assert facts["time_gap.falling_ranges"] == []
-    assert facts["time_gap.flat_ranges"] == [[0, 2], [6, 9]]
+    assert facts["time_gap.flat_ranges"] == [[0, 2], [3, 6]]
 
 
 def test_slope_facts_do_not_select_local_rise_when_total_change_falls():
@@ -271,7 +280,9 @@ def test_slope_facts_accept_steady_rise():
 
         facts = deterministic._slope_facts(df, 0, 8)
 
-        assert facts["time_gap.rising_ranges"] == [[0, 8]]
+        assert facts["time_gap.rising_ranges"] == [[0, 1]]
+        assert facts["time_gap.flat_ranges"] == [[1, 8]]
+        assert facts["time_gap.ending_direction"] == "flat"
 
 
 def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypatch):
@@ -283,18 +294,6 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
                 "total_change_direction": "rising",
                 "total_change_is_label_significant": True,
                 "slope_shape": "slope_decreasing_over_section",
-                "previous_end_slope": 100,
-                "end_slope": 50,
-                "point_trend_runs": [
-                    {
-                        "start_iloc": 0, "end_iloc": 7, "direction": "rising",
-                        "is_label_significant": True,
-                    },
-                    {
-                        "start_iloc": 7, "end_iloc": 10, "direction": "flat",
-                        "is_label_significant": False,
-                    },
-                ],
             },
         }, None)
 
@@ -307,10 +306,11 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
     })
     facts = deterministic._slope_facts(df, 0, 10)
 
-    assert facts["time_gap.rising_ranges"] == [[0, 7]]
-    assert facts["time_gap.flat_ranges"] == [[7, 10]]
+    assert facts["time_gap.rising_ranges"] == [[2, 5]]
+    assert facts["time_gap.flat_ranges"] == [[0, 2]]
     assert facts["time_gap.middle_has_rise"] is False
     assert facts["time_gap.flattening_at_end"] is True
+    assert facts["time_gap.ending_direction"] == "flattening"
 
     evaluation = deterministic.evaluate_requirements(
         {"any_of": [{"all_of": [{
@@ -323,45 +323,6 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
     assert evaluation.passed == [
         "time_gap.total_change_ms: 200",
     ]
-
-    def fake_rise_fall_flat_query(_df, _name, _args):
-        return ({
-            "samples": [{"value": 0}, {"value": 100}, {"value": 50}],
-            "extra": {
-                "delta_value": 50,
-                "total_change_direction": "rising",
-                "total_change_is_label_significant": False,
-                "slope_shape": "slope_decreasing_over_section",
-                "previous_end_slope": 100,
-                "end_slope": -50,
-                "point_trend_runs": [
-                    {
-                        "start_iloc": 0, "end_iloc": 3, "direction": "rising",
-                        "is_label_significant": True,
-                    },
-                    {
-                        "start_iloc": 3, "end_iloc": 7, "direction": "falling",
-                        "is_label_significant": True,
-                    },
-                    {
-                        "start_iloc": 7, "end_iloc": 10, "direction": "flat",
-                        "is_label_significant": False,
-                    },
-                ],
-            },
-        }, None)
-
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.run_pipeline_query",
-        fake_rise_fall_flat_query,
-    )
-
-    facts = deterministic._slope_facts(pd.DataFrame(), 0, 10)
-
-    assert facts["time_gap.rising_ranges"] == [[0, 3]]
-    assert facts["time_gap.falling_ranges"] == [[3, 7]]
-    assert facts["time_gap.flat_ranges"] == [[7, 10]]
-    assert facts["time_gap.flattening_at_end"] is False
 
 
 def test_slope_facts_identify_single_rise():

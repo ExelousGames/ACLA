@@ -55,6 +55,7 @@ KNOWN_FACTS = frozenset({
 _MISSING = object()
 _ALIGN_TOLERANCE = 2
 _TELEMETRY_SMOOTHING_WINDOW = 3
+_TIME_GAP_SLOPE_CHANGE_PERCENT = 20.0
 
 
 @dataclass
@@ -283,6 +284,90 @@ def _add_input_facts(
         )
 
 
+def _time_gap_slope_direction(
+    previous: float, current: float, flattening: bool,
+) -> str:
+    if previous == 0.0:
+        if current > 0.0:
+            return "rising"
+        if current < 0.0:
+            return "falling"
+        return "flattening" if flattening else "flat"
+
+    percent_change = (current - previous) / abs(previous) * 100.0
+    moves_toward_zero = (
+        previous * current >= 0.0
+        and abs(current) < abs(previous)
+        and abs(percent_change) >= _TIME_GAP_SLOPE_CHANGE_PERCENT
+    )
+    if moves_toward_zero:
+        return "flattening"
+    if percent_change >= _TIME_GAP_SLOPE_CHANGE_PERCENT:
+        return "rising"
+    if percent_change <= -_TIME_GAP_SLOPE_CHANGE_PERCENT:
+        return "falling"
+    return "flattening" if flattening else "flat"
+
+
+def _time_gap_slope_runs(
+    df: pd.DataFrame, start: int, end: int, significant_delta: float,
+) -> List[Dict[str, Any]]:
+    segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
+    if "expert_time_difference" not in segment.columns:
+        return []
+
+    values = pd.to_numeric(
+        segment["expert_time_difference"], errors="coerce",
+    ).to_numpy(dtype=float)
+    ilocs = segment.index.to_numpy(dtype=float)
+    finite = np.isfinite(values) & np.isfinite(ilocs)
+    values = values[finite]
+    ilocs = ilocs[finite]
+    if len(values) < 2:
+        return []
+
+    iloc_deltas = np.diff(ilocs)
+    value_deltas = np.diff(values)
+    valid = np.isfinite(value_deltas) & (iloc_deltas > 0.0)
+    if not np.any(valid):
+        return []
+
+    slopes = value_deltas[valid] / iloc_deltas[valid]
+    step_starts = ilocs[:-1][valid]
+    step_ends = ilocs[1:][valid]
+    step_start_values = values[:-1][valid]
+    step_end_values = values[1:][valid]
+
+    runs: List[Dict[str, Any]] = []
+    previous_slope = 0.0
+    flattening = False
+    for slope, start_iloc, end_iloc, start_value, end_value in zip(
+        slopes, step_starts, step_ends, step_start_values, step_end_values,
+    ):
+        direction = _time_gap_slope_direction(
+            previous_slope, float(slope), flattening,
+        )
+        flattening = direction == "flattening"
+        step = {
+            "start_iloc": int(start_iloc),
+            "end_iloc": int(end_iloc),
+            "start_value": float(start_value),
+            "end_value": float(end_value),
+            "direction": direction,
+        }
+        if runs and runs[-1]["direction"] == direction:
+            runs[-1]["end_iloc"] = step["end_iloc"]
+            runs[-1]["end_value"] = step["end_value"]
+        else:
+            runs.append(step)
+        previous_slope = float(slope)
+
+    for run in runs:
+        run_delta = float(run["end_value"]) - float(run["start_value"])
+        run["is_label_significant"] = abs(run_delta) >= significant_delta
+    return runs
+
+
 def _slope_facts(
     df: pd.DataFrame, start: int, end: int,
     evidence: Optional[Dict[str, List[Tuple[int, int]]]] = None,
@@ -299,12 +384,12 @@ def _slope_facts(
     samples = payload.get("samples") or []
     values = [s.get("value") for s in samples if isinstance(s, dict)]
     delta = extra.get("delta_value")
-    runs = [
-        run for run in extra.get("point_trend_runs") or []
-        if isinstance(run, dict)
-        and run.get("start_iloc") is not None
-        and run.get("end_iloc") is not None
-    ]
+    thresholds = extra.get("thresholds") or {}
+    try:
+        significant_delta = float(thresholds["label_significant_at_abs_delta"])
+    except (KeyError, TypeError, ValueError):
+        significant_delta = float("inf")
+    runs = _time_gap_slope_runs(df, start, end, significant_delta)
     ranges_by_direction = {
         direction: [
             [int(run["start_iloc"]), int(run["end_iloc"])]
@@ -355,20 +440,7 @@ def _slope_facts(
     end_direction = (
         runs[-1].get("direction") if runs and isinstance(runs[-1], dict) else None
     )
-    flattening_at_end = False
-    previous_end_slope = extra.get("previous_end_slope")
-    end_slope = extra.get("end_slope")
-    if previous_end_slope is not None and end_slope is not None:
-        try:
-            previous_end_slope = float(previous_end_slope)
-            end_slope = float(end_slope)
-            flattening_at_end = (
-                previous_end_slope != 0
-                and previous_end_slope * end_slope >= 0
-                and abs(end_slope) <= abs(previous_end_slope) * 0.8
-            )
-        except (TypeError, ValueError):
-            pass
+    flattening_at_end = end_direction == "flattening"
     return {
         "time_gap.total_change_ms": delta,
         "time_gap.direction": total_change_direction,
