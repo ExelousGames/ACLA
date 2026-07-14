@@ -55,7 +55,7 @@ KNOWN_FACTS = frozenset({
 _MISSING = object()
 _ALIGN_TOLERANCE = 2
 _TELEMETRY_SMOOTHING_WINDOW = 3
-_TIME_GAP_SLOPE_CHANGE_PERCENT = 20.0
+_TIME_GAP_SLOPE_ANGLE_DEGREES = 5.0
 
 
 @dataclass
@@ -285,67 +285,82 @@ def _add_input_facts(
 
 
 def _time_gap_slope_direction(
-    previous: float, current: float, flattening: bool,
+    previous_angle: float, current_angle: float, flattening: bool,
 ) -> str:
-    if previous == 0.0:
-        if current > 0.0:
-            return "rising"
-        if current < 0.0:
-            return "falling"
-        return "flattening" if flattening else "flat"
-
-    percent_change = (current - previous) / abs(previous) * 100.0
+    angle_change = current_angle - previous_angle
     moves_toward_zero = (
-        previous * current >= 0.0
-        and abs(current) < abs(previous)
-        and abs(percent_change) >= _TIME_GAP_SLOPE_CHANGE_PERCENT
+        previous_angle * current_angle >= 0.0
+        and abs(current_angle) < abs(previous_angle)
+        and abs(angle_change) >= _TIME_GAP_SLOPE_ANGLE_DEGREES
     )
     if moves_toward_zero:
         return "flattening"
-    if percent_change >= _TIME_GAP_SLOPE_CHANGE_PERCENT:
+    if flattening:
+        if angle_change >= _TIME_GAP_SLOPE_ANGLE_DEGREES:
+            return "rising"
+        if angle_change <= -_TIME_GAP_SLOPE_ANGLE_DEGREES:
+            return "falling"
+        return "flattening"
+    if current_angle >= _TIME_GAP_SLOPE_ANGLE_DEGREES:
         return "rising"
-    if percent_change <= -_TIME_GAP_SLOPE_CHANGE_PERCENT:
+    if current_angle <= -_TIME_GAP_SLOPE_ANGLE_DEGREES:
         return "falling"
-    return "flattening" if flattening else "flat"
+    return "flat"
 
 
 def _time_gap_slope_runs(
     df: pd.DataFrame, start: int, end: int, significant_delta: float,
 ) -> List[Dict[str, Any]]:
     segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
-    if "expert_time_difference" not in segment.columns:
+    required_columns = {"expert_time_difference", "Graphics_current_time"}
+    if not required_columns.issubset(segment.columns):
         return []
 
     values = pd.to_numeric(
         segment["expert_time_difference"], errors="coerce",
     ).to_numpy(dtype=float)
+    times = pd.to_numeric(
+        segment["Graphics_current_time"], errors="coerce",
+    ).to_numpy(dtype=float)
     ilocs = segment.index.to_numpy(dtype=float)
-    finite = np.isfinite(values) & np.isfinite(ilocs)
-    values = values[finite]
-    ilocs = ilocs[finite]
     if len(values) < 2:
         return []
 
     iloc_deltas = np.diff(ilocs)
+    time_deltas = np.diff(times)
     value_deltas = np.diff(values)
-    valid = np.isfinite(value_deltas) & (iloc_deltas > 0.0)
+    valid = (
+        np.isfinite(values[:-1])
+        & np.isfinite(values[1:])
+        & np.isfinite(times[:-1])
+        & np.isfinite(times[1:])
+        & np.isfinite(iloc_deltas)
+        & (iloc_deltas > 0.0)
+        & np.isfinite(time_deltas)
+        & (time_deltas > 0.0)
+        & np.isfinite(value_deltas)
+    )
     if not np.any(valid):
         return []
 
-    slopes = value_deltas[valid] / iloc_deltas[valid]
+    angles = np.degrees(np.arctan(value_deltas[valid] / time_deltas[valid]))
     step_starts = ilocs[:-1][valid]
     step_ends = ilocs[1:][valid]
     step_start_values = values[:-1][valid]
     step_end_values = values[1:][valid]
 
     runs: List[Dict[str, Any]] = []
-    previous_slope = 0.0
+    previous_angle = 0.0
+    previous_end_iloc: Optional[int] = None
     flattening = False
-    for slope, start_iloc, end_iloc, start_value, end_value in zip(
-        slopes, step_starts, step_ends, step_start_values, step_end_values,
+    for angle, start_iloc, end_iloc, start_value, end_value in zip(
+        angles, step_starts, step_ends, step_start_values, step_end_values,
     ):
+        if previous_end_iloc is not None and int(start_iloc) != previous_end_iloc:
+            previous_angle = 0.0
+            flattening = False
         direction = _time_gap_slope_direction(
-            previous_slope, float(slope), flattening,
+            previous_angle, float(angle), flattening,
         )
         flattening = direction == "flattening"
         step = {
@@ -355,12 +370,17 @@ def _time_gap_slope_runs(
             "end_value": float(end_value),
             "direction": direction,
         }
-        if runs and runs[-1]["direction"] == direction:
+        if (
+            runs
+            and runs[-1]["direction"] == direction
+            and runs[-1]["end_iloc"] == step["start_iloc"]
+        ):
             runs[-1]["end_iloc"] = step["end_iloc"]
             runs[-1]["end_value"] = step["end_value"]
         else:
             runs.append(step)
-        previous_slope = float(slope)
+        previous_angle = float(angle)
+        previous_end_iloc = int(end_iloc)
 
     for run in runs:
         run_delta = float(run["end_value"]) - float(run["start_value"])

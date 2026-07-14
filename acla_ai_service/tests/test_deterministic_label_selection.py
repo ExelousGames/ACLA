@@ -20,6 +20,16 @@ def _expert_corner_dataframe() -> pd.DataFrame:
     })
 
 
+def _time_gap_dataframe(values, times=None) -> pd.DataFrame:
+    values = np.asarray(values, dtype=float)
+    if times is None:
+        times = np.arange(values.size, dtype=float) * 100.0
+    return pd.DataFrame({
+        "Graphics_current_time": np.asarray(times, dtype=float),
+        "expert_time_difference": values,
+    })
+
+
 def _isolate_phase_fact_sources(monkeypatch) -> None:
     monkeypatch.setattr(deterministic, "_slope_facts", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(deterministic, "_opponent_facts", lambda *_args, **_kwargs: {})
@@ -145,19 +155,19 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
         "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
     )
 
-    df = pd.DataFrame({
-        "expert_time_difference": [0, 20, 40, 40, 30, 20, 10, 0, 10, 20, 30],
-    })
+    df = _time_gap_dataframe(
+        [0, 20, 40, 40, 30, 20, 10, 0, 10, 20, 30],
+    )
     evidence = {}
     facts = deterministic._slope_facts(df, 0, 10, evidence)
 
     assert facts["time_gap.starting_direction"] == "rising"
-    assert facts["time_gap.ending_direction"] == "flat"
-    assert facts["time_gap.rising_ranges"] == [[0, 1], [7, 8]]
-    assert facts["time_gap.falling_ranges"] == [[3, 4]]
-    assert facts["time_gap.flat_ranges"] == [[1, 2], [4, 7], [8, 10]]
-    assert evidence["time_gap.rising_ranges"] == [(0, 1), (7, 8)]
-    assert evidence["time_gap.falling_ranges"] == [(3, 4)]
+    assert facts["time_gap.ending_direction"] == "rising"
+    assert facts["time_gap.rising_ranges"] == [[0, 2], [7, 10]]
+    assert facts["time_gap.falling_ranges"] == [[3, 7]]
+    assert facts["time_gap.flat_ranges"] == []
+    assert evidence["time_gap.rising_ranges"] == [(0, 2), (7, 10)]
+    assert evidence["time_gap.falling_ranges"] == [(3, 7)]
     assert evidence["time_gap.direction"] == [(0, 10)]
     assert facts["time_gap.middle_has_rise"] is False
     assert facts["time_gap.flattening_at_end"] is False
@@ -167,9 +177,7 @@ def test_slope_facts_distinguish_start_middle_and_end_rises(monkeypatch):
 
 def test_slope_facts_carry_flattening_through_a_stable_tail():
     step_slopes = [20.0] * 6 + [10.0] * 3 + [9.0, 9.0, 9.0]
-    df = pd.DataFrame({
-        "expert_time_difference": np.cumsum([0.0, *step_slopes]),
-    })
+    df = _time_gap_dataframe(np.cumsum([0.0, *step_slopes]))
 
     facts = deterministic._slope_facts(df, 0, 12)
 
@@ -177,38 +185,41 @@ def test_slope_facts_carry_flattening_through_a_stable_tail():
     assert facts["time_gap.ending_direction"] == "flattening"
 
 
-def test_slope_facts_requires_same_sign_twenty_percent_drop_to_flatten():
+def test_slope_facts_requires_same_sign_five_degree_drop_to_flatten():
     cases = [
-        (100, 80, True),
-        (-100, -80, True),
-        (100, 81, False),
-        (-100, -81, False),
-        (100, 0, True),
-        (-100, 0, True),
-        (100, 150, False),
-        (-100, -150, False),
-        (100, -20, False),
-        (-100, 20, False),
-        (0, 0, False),
+        (10.0, 5.0, True),
+        (-10.0, -5.0, True),
+        (10.0, 5.01, False),
+        (-10.0, -5.01, False),
+        (10.0, 0.0, True),
+        (-10.0, 0.0, True),
+        (10.0, 15.0, False),
+        (-10.0, -15.0, False),
+        (10.0, -5.0, False),
+        (-10.0, 5.0, False),
+        (0.0, 0.0, False),
     ]
-    for previous, end, expected in cases:
-        df = pd.DataFrame({
-            "expert_time_difference": np.cumsum([0.0, previous, end]),
-        })
+    for previous_angle, end_angle, expected in cases:
+        slopes = np.tan(np.radians([previous_angle, end_angle])) * 100.0
+        df = _time_gap_dataframe(np.cumsum([0.0, *slopes]))
 
         facts = deterministic._slope_facts(df, 0, 2)
 
         assert facts["time_gap.flattening_at_end"] is expected
 
 
-def test_slope_facts_use_percentage_slope_change_at_any_scale():
+def test_slope_facts_use_elapsed_time_angle_at_any_sampling_interval():
     directions = []
     ranges = []
-    for scale in (1.0, 10.0):
-        slopes = np.array([0.0, 10.0, 12.0, 13.0, 10.4, 5.2]) * scale
-        df = pd.DataFrame({
-            "expert_time_difference": np.cumsum([0.0, *slopes]),
-        })
+    step_angles = np.array([0.0, 3.0, 8.0, 8.0, 3.0, 3.0])
+    for time_deltas in (
+        np.full(step_angles.size, 50.0),
+        np.full(step_angles.size, 100.0),
+        np.array([40.0, 70.0, 130.0, 90.0, 160.0, 60.0]),
+    ):
+        times = np.cumsum([0.0, *time_deltas])
+        gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
+        df = _time_gap_dataframe(np.cumsum([0.0, *gap_deltas]), times)
 
         facts = deterministic._slope_facts(df, 0, 6)
 
@@ -222,15 +233,78 @@ def test_slope_facts_use_percentage_slope_change_at_any_scale():
             facts["time_gap.flat_ranges"],
         ))
 
-    assert directions == [("flat", "flattening")] * 2
-    assert ranges == [([[1, 3]], [], [[0, 1], [3, 4]])] * 2
+    assert directions == [("flat", "flattening")] * 3
+    assert ranges == [([[2, 4]], [], [[0, 2]])] * 3
     assert "time_gap.flattening_ranges" not in facts
 
 
+def test_slope_facts_ignore_gentle_middle_acceleration_over_twenty_percent():
+    step_angles = np.array([1.0, 1.0, 1.0, 1.0, 1.3, 1.3, 1.3, 1.3, 1.3])
+    time_deltas = np.full(step_angles.size, 100.0)
+    times = np.cumsum([0.0, *time_deltas])
+    gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
+    df = _time_gap_dataframe(np.cumsum([0.0, *gap_deltas]), times)
+
+    facts = deterministic._slope_facts(df, 0, 9)
+
+    assert facts["time_gap.rising_ranges"] == []
+    assert facts["time_gap.middle_has_rise"] is False
+
+
+def test_slope_facts_middle_rise_uses_five_degree_boundary():
+    results = []
+    for middle_angle in (4.99, 5.0, 5.01):
+        step_angles = np.array([0.0] * 4 + [middle_angle] * 6)
+        time_deltas = np.full(step_angles.size, 100.0)
+        times = np.cumsum([0.0, *time_deltas])
+        gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
+        df = _time_gap_dataframe(np.cumsum([0.0, *gap_deltas]), times)
+
+        facts = deterministic._slope_facts(df, 0, 10)
+        results.append(facts["time_gap.middle_has_rise"])
+
+    assert results == [False, True, True]
+
+
+def test_slope_facts_keep_consecutive_five_degree_intervals_rising():
+    step_angles = np.array([5.0, 5.0])
+    time_deltas = np.full(step_angles.size, 100.0)
+    times = np.cumsum([0.0, *time_deltas])
+    gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
+    df = _time_gap_dataframe(np.cumsum([0.0, *gap_deltas]), times)
+
+    facts = deterministic._slope_facts(df, 0, 2)
+
+    assert facts["time_gap.rising_ranges"] == [[0, 2]]
+    assert facts["time_gap.flat_ranges"] == []
+    assert facts["time_gap.starting_direction"] == "rising"
+    assert facts["time_gap.ending_direction"] == "rising"
+
+
+def test_slope_facts_fail_closed_without_valid_elapsed_time():
+    dataframes = [
+        pd.DataFrame({"expert_time_difference": [0.0, 100.0, 200.0]}),
+        _time_gap_dataframe([0.0, 100.0, 200.0], [100.0, 100.0, 100.0]),
+        _time_gap_dataframe([0.0, 100.0, 200.0], [0.0, np.nan, 200.0]),
+    ]
+
+    for df in dataframes:
+        facts = deterministic._slope_facts(df, 0, 2)
+
+        assert facts["time_gap.rising_ranges"] == []
+        assert facts["time_gap.falling_ranges"] == []
+        assert facts["time_gap.flat_ranges"] == []
+        assert facts["time_gap.middle_has_rise"] is False
+        assert facts["time_gap.has_spike"] is False
+        assert facts["time_gap.starting_direction"] is None
+        assert facts["time_gap.ending_direction"] is None
+        assert facts["time_gap.flattening_at_end"] is False
+
+
 def test_slope_facts_classify_zero_baseline_and_sign_reversals():
-    df = pd.DataFrame({
-        "expert_time_difference": np.cumsum([0.0, 0.0, 10.0, -10.0, 10.0]),
-    })
+    df = _time_gap_dataframe(
+        np.cumsum([0.0, 0.0, 10.0, -10.0, 10.0]),
+    )
 
     facts = deterministic._slope_facts(df, 0, 4)
 
@@ -242,24 +316,22 @@ def test_slope_facts_classify_zero_baseline_and_sign_reversals():
 
 
 def test_slope_facts_preserve_insignificant_runs_without_selecting_mistake():
-    df = pd.DataFrame({
-        "expert_time_difference": [0, 0, 0, 5, 10, 15, 20, 20, 20, 20],
-    })
+    df = _time_gap_dataframe([0, 0, 0, 5, 10, 15, 20, 20, 20, 20])
 
     facts = deterministic._slope_facts(df, 0, 9)
 
-    assert facts["time_gap.rising_ranges"] == [[2, 3]]
+    assert facts["time_gap.rising_ranges"] == []
     assert facts["time_gap.falling_ranges"] == []
-    assert facts["time_gap.flat_ranges"] == [[0, 2], [3, 6]]
+    assert facts["time_gap.flat_ranges"] == [[0, 9]]
 
 
 def test_slope_facts_do_not_select_local_rise_when_total_change_falls():
-    df = pd.DataFrame({
-        "expert_time_difference": [
+    df = _time_gap_dataframe(
+        [
             4240, 4230, 4220, 4195, 4145, 4070, 4020, 4000, 4050,
             4145, 4240, 4305, 4280, 4255, 4220, 4198, 4185,
         ],
-    })
+    )
     evidence = {}
 
     facts = deterministic._slope_facts(df, 0, 16, evidence)
@@ -274,15 +346,13 @@ def test_slope_facts_do_not_select_local_rise_when_total_change_falls():
 
 def test_slope_facts_accept_steady_rise():
     for rate in (20, 200):
-        df = pd.DataFrame({
-            "expert_time_difference": np.arange(9) * rate,
-        })
+        df = _time_gap_dataframe(np.arange(9) * rate)
 
         facts = deterministic._slope_facts(df, 0, 8)
 
-        assert facts["time_gap.rising_ranges"] == [[0, 1]]
-        assert facts["time_gap.flat_ranges"] == [[1, 8]]
-        assert facts["time_gap.ending_direction"] == "flat"
+        assert facts["time_gap.rising_ranges"] == [[0, 8]]
+        assert facts["time_gap.flat_ranges"] == []
+        assert facts["time_gap.ending_direction"] == "rising"
 
 
 def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypatch):
@@ -301,9 +371,9 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
         "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
     )
 
-    df = pd.DataFrame({
-        "expert_time_difference": [0, 0, 0, 10, 30, 70, 100, 110, 120, 125, 130],
-    })
+    df = _time_gap_dataframe(
+        [0, 0, 0, 10, 30, 70, 100, 110, 120, 125, 130],
+    )
     facts = deterministic._slope_facts(df, 0, 10)
 
     assert facts["time_gap.rising_ranges"] == [[2, 5]]
@@ -326,9 +396,7 @@ def test_slope_facts_identify_accelerating_middle_rise_then_flattening(monkeypat
 
 
 def test_slope_facts_identify_single_rise():
-    df = pd.DataFrame({
-        "expert_time_difference": [0, 0, 0, 0, 200, 200, 200, 200, 200, 200],
-    })
+    df = _time_gap_dataframe([0, 0, 0, 0, 200, 200, 200, 200, 200, 200])
 
     facts = deterministic._slope_facts(df, 0, 9)
 
@@ -336,9 +404,7 @@ def test_slope_facts_identify_single_rise():
 
 
 def test_calculate_facts_smooths_single_sample_noise_before_slope_facts(monkeypatch):
-    df = pd.DataFrame({
-        "expert_time_difference": [0, 0, 0, 0, 40, 0, 0, 0, 0, 0],
-    })
+    df = _time_gap_dataframe([0, 0, 0, 0, 40, 0, 0, 0, 0, 0])
     monkeypatch.setattr(
         deterministic, "_shape_facts", lambda *_args, **_kwargs: ({}, [])
     )

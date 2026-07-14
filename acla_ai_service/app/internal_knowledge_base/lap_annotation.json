@@ -73,6 +73,10 @@
           {"fact": "time_gap.ending_direction", "operator": "eq", "value": "flattening"}
         ]},
         {"all_of": [
+          {"fact": "time_gap.total_change_ms", "operator": "lt", "value": 50},
+          {"fact": "time_gap.ending_direction", "operator": "eq", "value": "flat"}
+        ]},
+        {"all_of": [
           {"fact": "time_gap.total_change_ms", "operator": "gte", "value": 50},
           {"fact": "brake.similarity", "operator": "eq", "value": 1.0},
           {"fact": "throttle.similarity", "operator": "eq", "value": 1.0}
