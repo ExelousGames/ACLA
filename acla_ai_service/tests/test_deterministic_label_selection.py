@@ -171,7 +171,6 @@ def test_slope_facts_detect_positive_acceleration_after_fall(monkeypatch):
     assert evidence["expert_time_difference.direction"] == [(0, 10)]
     assert facts["expert_time_difference.middle_has_rise"] is True
     assert evidence["expert_time_difference.middle_has_rise"] == [(7, 8)]
-    assert facts["expert_time_difference.flattening_at_end"] is False
     assert facts["expert_time_difference.overall_gap"] == 200
     assert "expert_time_difference.significant" not in facts
 
@@ -183,7 +182,6 @@ def test_slope_facts_carry_flattening_through_a_stable_tail():
     facts = deterministic._slope_facts(df, 0, 12)
 
     assert facts["expert_time_difference.middle_has_rise"] is False
-    assert facts["expert_time_difference.flattening_at_end"] is True
     assert facts["expert_time_difference.ending_direction"] == "flattening"
 
 
@@ -225,7 +223,6 @@ def test_slope_facts_ignore_elapsed_time_values():
             if key in {
                 "expert_time_difference.starting_direction",
                 "expert_time_difference.ending_direction",
-                "expert_time_difference.flattening_at_end",
                 "expert_time_difference.rising_ranges",
                 "expert_time_difference.falling_ranges",
                 "expert_time_difference.flat_ranges",
@@ -292,7 +289,6 @@ def test_slope_facts_classify_zero_baseline_and_sign_reversals():
     assert facts["expert_time_difference.ending_direction"] == "rising"
     assert facts["expert_time_difference.rising_ranges"] == [[1, 2], [3, 4]]
     assert facts["expert_time_difference.falling_ranges"] == [[2, 3]]
-    assert facts["expert_time_difference.flattening_at_end"] is False
 
 
 def test_slope_facts_require_positive_current_slope_for_acceleration():
@@ -380,7 +376,6 @@ def test_slope_facts_identify_accelerating_interior_rise_then_flattening(monkeyp
     assert facts["expert_time_difference.flat_ranges"] == [[0, 2]]
     assert facts["expert_time_difference.middle_has_rise"] is True
     assert evidence["expert_time_difference.middle_has_rise"] == [(2, 3), (3, 4), (4, 5)]
-    assert facts["expert_time_difference.flattening_at_end"] is True
     assert facts["expert_time_difference.ending_direction"] == "flattening"
 
     evaluation = deterministic.evaluate_requirements(
@@ -468,7 +463,7 @@ def test_behavior_requirements_use_middle_rise_for_msp():
     recovery_merge = {
         "expert_time_difference.starting_direction": "rising",
         "expert_time_difference.middle_has_rise": False,
-        "expert_time_difference.flattening_at_end": True,
+        "expert_time_difference.ending_direction": "flattening",
     }
 
     assert not deterministic.evaluate_requirements(msp, no_middle_rise).matched
@@ -488,7 +483,7 @@ def test_behavior_requirements_use_middle_rise_for_msp():
         **recovery_merge, "expert_time_difference.middle_has_rise": True,
     }).matched
     assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "expert_time_difference.flattening_at_end": False,
+        **recovery_merge, "expert_time_difference.ending_direction": "rising",
     }).matched
 
 
@@ -644,7 +639,7 @@ def test_lap_omits_sub_labels_that_cover_only_part_of_segment(monkeypatch):
         {
             "expert_time_difference.starting_direction": "rising",
             "expert_time_difference.middle_has_rise": False,
-            "expert_time_difference.flattening_at_end": True,
+            "expert_time_difference.ending_direction": "flattening",
             "trajectory.peak_abs_offset_m": 2.0,
             "trajectory.converging": True,
             "speed.expert_faster": True,
@@ -687,7 +682,7 @@ def test_lap_omits_sub_label_that_is_not_fully_inside_segment(monkeypatch):
         {
             "expert_time_difference.starting_direction": "rising",
             "expert_time_difference.middle_has_rise": False,
-            "expert_time_difference.flattening_at_end": True,
+            "expert_time_difference.ending_direction": "flattening",
             "trajectory.converging": True,
         },
         evidence={"trajectory.converging": [(6, 12)]},
@@ -720,7 +715,7 @@ def test_lap_selects_sub_label_that_covers_entire_segment(monkeypatch):
         {
             "expert_time_difference.starting_direction": "rising",
             "expert_time_difference.middle_has_rise": False,
-            "expert_time_difference.flattening_at_end": True,
+            "expert_time_difference.ending_direction": "flattening",
             "trajectory.converging": True,
         },
         evidence={"trajectory.converging": [(0, 10)]},

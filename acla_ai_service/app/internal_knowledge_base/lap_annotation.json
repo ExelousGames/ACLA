@@ -104,14 +104,22 @@
       "enabled": true,
       "any_of": [
         {"all_of": [
+          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
           {"fact": "expert_time_difference.starting_direction", "operator": "eq", "value": "rising"},
           {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": false},
-          {"fact": "expert_time_difference.flattening_at_end", "operator": "eq", "value": true}
+          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flattening"}
         ]},
         {"all_of": [
+          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
           {"fact": "expert_time_difference.starting_direction", "operator": "eq", "value": "rising"},
           {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": false},
           {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flat"}
+        ]},
+        {"all_of": [
+          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
+          {"fact": "expert_time_difference.starting_direction", "operator": "eq", "value": "rising"},
+          {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": false},
+          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "falling"}
         ]}
       ]
     },

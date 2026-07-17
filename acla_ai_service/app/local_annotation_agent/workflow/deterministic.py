@@ -47,7 +47,7 @@ KNOWN_FACTS = frozenset({
     "throttle.similarity", "expert_time_difference.direction", "expert_time_difference.end_ms",
     "expert_time_difference.ending_direction", "expert_time_difference.has_spike",
     "expert_time_difference.middle_has_rise",
-    "expert_time_difference.flattening_at_end", "expert_time_difference.overall_gap", "expert_time_difference.slope_shape",
+    "expert_time_difference.overall_gap", "expert_time_difference.slope_shape",
     "expert_time_difference.starting_direction", "expert_time_difference.total_change_ms",
     "trajectory.converging", "trajectory.peak_abs_offset_m", "trajectory.position",
     "turn.apex_relation", "turn.exit_relation", "turn.in_relation",
@@ -460,7 +460,6 @@ def _slope_facts(
     end_direction = (
         runs[-1].get("direction") if runs and isinstance(runs[-1], dict) else None
     )
-    flattening_at_end = end_direction == "flattening"
     return {
         "expert_time_difference.total_change_ms": delta,
         "expert_time_difference.direction": total_change_direction,
@@ -468,7 +467,6 @@ def _slope_facts(
         "expert_time_difference.slope_shape": extra.get("slope_shape"),
         "expert_time_difference.starting_direction": start_direction,
         "expert_time_difference.ending_direction": end_direction,
-        "expert_time_difference.flattening_at_end": flattening_at_end,
         "expert_time_difference.rising_ranges": ranges_by_direction["rising"],
         "expert_time_difference.falling_ranges": ranges_by_direction["falling"],
         "expert_time_difference.flat_ranges": ranges_by_direction["flat"],
