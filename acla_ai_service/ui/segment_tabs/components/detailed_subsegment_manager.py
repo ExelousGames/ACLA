@@ -102,11 +102,6 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
             
             st.session_state.has_unsaved_changes = True
             save_annotations(session_id, st.session_state.current_annotations, selected_annotation_key)
-
-            # Update visualization range to match parent segment
-            st.session_state.detailed_global_viz_range = (p_start, p_end)
-            st.session_state.detailed_global_viz_start_input = p_start
-            st.session_state.detailed_global_viz_end_input = p_end
             st.rerun()
 
         def delete_sub_segment_callback():

@@ -10,7 +10,40 @@ from ..shared import (
     LABEL_CATEGORIES
 )
 
-def render_annotation_manager(df, session_id, selected_annotation_key, numeric_cols):
+
+_MANAGER_STATE_PREFIXES = (
+    "detailed_form_",
+    "detailed_calc_feat_",
+    "detailed_roc_smooth_",
+    "sub_start_",
+    "sub_end_",
+    "sub_labels_",
+    "sub_notes_",
+)
+
+_MANAGER_STATE_KEYS = (
+    "manage_subsegment_selector",
+    "detailed_interaction_focus_car",
+    "detailed_opponent_interaction_target",
+)
+
+
+def clear_annotation_manager_state():
+    """Clear session-specific controls owned by Manage Annotations."""
+    for key in list(st.session_state.keys()):
+        if key in _MANAGER_STATE_KEYS or key.startswith(_MANAGER_STATE_PREFIXES):
+            st.session_state.pop(key, None)
+    clear_agent_annotation_review_state()
+
+
+def render_annotation_manager(
+    df,
+    session_id,
+    selected_annotation_key,
+    numeric_cols,
+    start_limit,
+    end_limit,
+):
         # --- Unified Annotation Management (MOVED UP) ---
         st.markdown("---")
         st.subheader("Manage Annotations")
@@ -21,7 +54,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             
         if not st.session_state.current_annotations:
             st.warning("No segments found in this session.")
-            return
+            return None
             
         # 1. Select Mode/Annotation
         def root_annotation_options():
@@ -39,7 +72,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         
         if not annotation_options:
             st.warning("No root segments found in this session.")
-            return
+            return None
         
     
     
@@ -57,19 +90,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             )
     
         def on_detailed_annotation_change():
-            sel = st.session_state.get("detailed_annotation_selector")
-            
-            # Clear form inputs to force refresh of values
-            keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
-            for k in keys_to_clear:
-                del st.session_state[k]
-            clear_agent_annotation_review_state()
-                
-            if isinstance(sel, int) and sel < len(st.session_state.current_annotations):
-                ann_sel = st.session_state.current_annotations[sel]
-                st.session_state.detailed_global_viz_start_input = ann_sel.start_index
-                st.session_state.detailed_global_viz_end_input = ann_sel.end_index
-                st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
+            clear_annotation_manager_state()
 
         # Initialize the session state key if not present.
         if "detailed_annotation_selector" not in st.session_state:
@@ -88,8 +109,8 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         )
             
         # Manual Annotation Logic
-        input_min = 0
-        input_max = len(df)-1
+        input_min = start_limit
+        input_max = end_limit
     
         # Existing Annotation Selected - Edit Mode
         ann = st.session_state.current_annotations[selected_option]
@@ -203,23 +224,7 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
             # We track the next selection in a separate variable instead of forcing the widget key directly.
             # When the script reruns, we'll initialize the widget key with this value.
             st.session_state.pending_detailed_selection = next_selection_key
-            
-            keys_to_clear = [k for k in st.session_state.keys() if k.startswith("detailed_form_")]
-            for k in keys_to_clear:
-                del st.session_state[k]
-            clear_agent_annotation_review_state()
-                
-            if isinstance(next_selection_key, int) and next_selection_key < len(st.session_state.current_annotations):
-                ann_sel = st.session_state.current_annotations[next_selection_key]
-                st.session_state.detailed_global_viz_start_input = ann_sel.start_index
-                st.session_state.detailed_global_viz_end_input = ann_sel.end_index
-                st.session_state.detailed_global_viz_range = (ann_sel.start_index, ann_sel.end_index)
-            else:
-                 default_start = 0
-                 default_end = min(100, len(df)-1)
-                 st.session_state.detailed_global_viz_start_input = default_start
-                 st.session_state.detailed_global_viz_end_input = default_end
-                 st.session_state.detailed_global_viz_range = (default_start, default_end)
+            clear_annotation_manager_state()
     
         def handle_submit(go_next, s_start, s_end, s_labels):
             if s_start >= s_end:
@@ -329,4 +334,6 @@ def render_annotation_manager(df, session_id, selected_annotation_key, numeric_c
         if "temp_success" in st.session_state:
             st.success(st.session_state.temp_success)
             del st.session_state.temp_success
+
+        return int(form_start), int(form_end)
     
