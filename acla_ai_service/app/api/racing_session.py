@@ -111,17 +111,23 @@ def _classify_telemetry_segments(
     include_empty_track_sections: bool = False,
 ) -> List[Dict[str, Any]]:
     dataframe = pd.DataFrame(telemetry_data)
-    predicted_segments = get_segment_classifier().scan_telemetry_data(dataframe)
+    predicted_segments = get_segment_classifier().detect_segments(dataframe)
     raw_segments = []
 
     for segment in predicted_segments:
-        segment_dict = segment.to_dict() if hasattr(segment, "to_dict") else dict(segment)
         raw_segments.append({
-            "id": segment_dict.get("id"),
-            "labels": segment_dict.get("labels", []),
-            "start_index": segment_dict.get("start_index"),
-            "end_index": segment_dict.get("end_index"),
+            "id": segment.id,
+            "labels": [segment.label],
+            "start_index": segment.start_index,
+            "end_index": segment.end_index,
         })
+        for child in segment.subsegments:
+            raw_segments.append({
+                "id": child.id,
+                "labels": [segment.label, child.label],
+                "start_index": child.start_index,
+                "end_index": child.end_index,
+            })
 
     return build_track_area_segments(
         raw_segments,

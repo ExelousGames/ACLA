@@ -16,169 +16,161 @@ class _Store:
     def clear_cache(self, cache_key):
         self.saved[cache_key] = {}
 
-    def save_chunk(self, cache_key, chunk_index, payload):
-        self.saved.setdefault(cache_key, {})[str(chunk_index)] = payload
+    def save_chunk(self, cache_key, chunk_id, payload):
+        self.saved.setdefault(cache_key, {})[str(chunk_id)] = payload
         return True
 
 
-def _segment(segment_id, label="MSP"):
-    return {
+def _segment(segment_id, label="MSP", parent_id=None):
+    segment = {
+        "id": f"segment-{segment_id}",
         "labels": [label],
-        "chunk_index": segment_id,
         "start_index": segment_id,
-        "end_index": segment_id + 1,
-        "telemetry_data": [
-            {
-                "Static_track": "test-track",
-                "speed": 42 + segment_id,
-                "brake": 0,
-            }
-        ],
+        "end_index": segment_id + 2,
+        "telemetry_data": [{"speed": 40}, {"speed": 41}],
     }
+    if parent_id is not None:
+        segment["parent_id"] = parent_id
+    return segment
 
 
-def _service_with_store(store):
+def _service(store):
     service = SegmentClassifierService.__new__(SegmentClassifierService)
     service.store = store
-    service.max_length = 100
     return service
 
 
-def _saved_segments(store, cache_key):
-    saved_segments = []
-    for chunk in store.saved.get(cache_key, {}).values():
-        saved_segments.extend(chunk)
-    return saved_segments
-
-
-def _saved_segment_ids(store, *cache_keys):
-    saved_segments = []
-    for cache_key in cache_keys:
-        saved_segments.extend(_saved_segments(store, cache_key))
-    return {segment["chunk_index"] for segment in saved_segments}
+def _saved_session_ids(store, *keys):
+    return {
+        session_id
+        for key in keys
+        for session_id in store.saved.get(key, {})
+    }
 
 
 @pytest.mark.asyncio
-async def test_prepare_training_data_uses_all_segments_from_all_chunks():
+async def test_prepare_training_data_splits_samples_and_keeps_children_with_parent():
     store = _Store({
         "source": {
-            "chunk-a": [_segment(1), _segment(2)],
-            "chunk-b": [_segment(3)],
-            "chunk-c": [_segment(4)],
+            "session-a": [
+                _segment(1),
+                _segment(101, label="MSP1", parent_id="segment-1"),
+                _segment(2),
+            ],
+            "session-b": [_segment(3)],
+            "session-c": [_segment(4)],
         }
     })
-    service = _service_with_store(store)
 
-    await service.prepare_training_data("source", "train", "val", val_split=0.2)
+    await _service(store).prepare_training_data(
+        "source",
+        "train",
+        "val",
+        val_split=0.25,
+    )
 
-    assert _saved_segment_ids(store, "train", "val") == {1, 2, 3, 4}
+    train_records = [
+        record for records in store.saved["train"].values() for record in records
+    ]
+    val_records = [
+        record for records in store.saved["val"].values() for record in records
+    ]
+    train_parents = {record["id"] for record in train_records if not record.get("parent_id")}
+    val_parents = {record["id"] for record in val_records if not record.get("parent_id")}
+
+    assert len(train_parents) == 3
+    assert len(val_parents) == 1
+    assert train_parents.isdisjoint(val_parents)
+    assert train_parents | val_parents == {
+        "segment-1",
+        "segment-2",
+        "segment-3",
+        "segment-4",
+    }
+    child_records = [
+        record
+        for record in train_records + val_records
+        if record.get("parent_id")
+    ]
+    assert len(child_records) == 1
+    child_partition = train_parents if child_records[0] in train_records else val_parents
+    assert child_records[0]["parent_id"] in child_partition
 
 
 @pytest.mark.asyncio
 async def test_prepare_training_data_uses_only_selected_sessions():
     store = _Store({
         "source": {
-            "session-a": [_segment(1), _segment(2)],
-            "session-b": [_segment(3)],
-            "session-c": [_segment(4), _segment(5)],
+            "session-a": [_segment(1)],
+            "session-b": [_segment(2)],
+            "session-c": [_segment(3)],
         }
     })
-    service = _service_with_store(store)
 
-    await service.prepare_training_data(
+    await _service(store).prepare_training_data(
         "source",
         "train",
         "val",
-        val_split=0.2,
         session_ids=["session-a", "session-c"],
     )
 
-    assert _saved_segment_ids(store, "train", "val") == {1, 2, 4, 5}
+    assert _saved_session_ids(store, "train", "val") == {"session-a", "session-c"}
 
 
 @pytest.mark.asyncio
 async def test_prepare_training_data_rejects_empty_session_selection():
     store = _Store({"source": {"session-a": [_segment(1)]}})
-    service = _service_with_store(store)
 
-    with pytest.raises(ValueError, match="At least one session must be selected"):
-        await service.prepare_training_data(
-            "source", "train", "val", session_ids=[]
-        )
-
-
-@pytest.mark.asyncio
-async def test_prepare_training_data_rejects_selected_sessions_without_valid_segments():
-    store = _Store({
-        "source": {
-            "session-a": [_segment(1)],
-            "session-empty": [{"labels": ["MSP"], "telemetry_data": []}],
-        }
-    })
-    service = _service_with_store(store)
-
-    with pytest.raises(ValueError, match="No valid labeled segments.*session-empty"):
-        await service.prepare_training_data(
+    with pytest.raises(ValueError, match="At least one session"):
+        await _service(store).prepare_training_data(
             "source",
             "train",
             "val",
-            session_ids=["session-empty"],
+            session_ids=[],
         )
 
 
 @pytest.mark.asyncio
-async def test_single_source_chunk_can_still_produce_training_data():
-    store = _Store({
-        "source": {
-            "single-chunk": [_segment(1), _segment(2), _segment(3)],
-        }
-    })
-    service = _service_with_store(store)
+async def test_prepare_training_data_rejects_missing_selected_sessions():
+    store = _Store({"source": {"session-a": [_segment(1)]}})
 
-    await service.prepare_training_data("source", "train", "val", val_split=0.5)
-
-    assert _saved_segments(store, "train")
-    assert _saved_segment_ids(store, "train", "val") == {1, 2, 3}
+    with pytest.raises(ValueError, match="No annotation sessions.*session-missing"):
+        await _service(store).prepare_training_data(
+            "source",
+            "train",
+            "val",
+            session_ids=["session-missing"],
+        )
 
 
 @pytest.mark.asyncio
-async def test_empty_source_data_still_fails_during_preprocessor_fit():
-    store = _Store({"source": {}})
-    service = _service_with_store(store)
+async def test_zero_validation_split_keeps_every_session_in_training():
+    store = _Store({
+        "source": {
+            "session-a": [_segment(1)],
+            "session-b": [_segment(2)],
+        }
+    })
 
-    await service.prepare_training_data("source", "train", "val", val_split=0.2)
+    await _service(store).prepare_training_data(
+        "source",
+        "train",
+        "val",
+        val_split=0,
+    )
 
-    with pytest.raises(ValueError, match="No valid training data found in cache"):
-        await service.fit_preprocessors("train")
+    assert _saved_session_ids(store, "train") == {"session-a", "session-b"}
+    assert store.saved["val"] == {}
 
 
 @pytest.mark.asyncio
-async def test_val_split_zero_keeps_all_segments_in_train():
-    store = _Store({
-        "source": {
-            "chunk-a": [_segment(1), _segment(2)],
-            "chunk-b": [_segment(3)],
-        }
-    })
-    service = _service_with_store(store)
+async def test_positive_validation_split_requires_two_samples():
+    store = _Store({"source": {"session-a": [_segment(1)]}})
 
-    await service.prepare_training_data("source", "train", "val", val_split=0)
-
-    assert _saved_segment_ids(store, "train") == {1, 2, 3}
-    assert _saved_segments(store, "val") == []
-
-
-@pytest.mark.asyncio
-async def test_positive_val_split_creates_train_and_val_when_possible():
-    store = _Store({
-        "source": {
-            "chunk-a": [_segment(1), _segment(2)],
-        }
-    })
-    service = _service_with_store(store)
-
-    await service.prepare_training_data("source", "train", "val", val_split=0.2)
-
-    assert _saved_segments(store, "train")
-    assert _saved_segments(store, "val")
-    assert _saved_segment_ids(store, "train", "val") == {1, 2}
+    with pytest.raises(ValueError, match="at least two annotated behavior samples"):
+        await _service(store).prepare_training_data(
+            "source",
+            "train",
+            "val",
+            val_split=0.1,
+        )

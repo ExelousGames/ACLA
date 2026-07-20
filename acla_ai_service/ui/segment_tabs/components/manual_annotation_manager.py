@@ -264,40 +264,48 @@ def render_manual_annotation_manager(df, numeric_cols, session_id, selected_anno
                         try:
                             # Slice the dataframe
                             scan_df = df.iloc[int(form_start):int(form_end)]
-                            detected = segment_classifier.scan_telemetry_data(scan_df)
+                            detected = segment_classifier.detect_segments(scan_df)
                             
                             new_anns = []
                             if detected:
                                 for d in detected:
-                                    # Filter by selected labels if any are selected
-                                    relevant_labels = []
-                                    if form_labels:
-                                        relevant_labels = [l for l in d.labels if l in form_labels]
-                                    else:
-                                        relevant_labels = d.labels
+                                    selected_ids = {
+                                        LABEL_NAME_TO_ID[name]
+                                        for name in form_labels
+                                        if name in LABEL_NAME_TO_ID
+                                    }
+                                    selected_children = [
+                                        child for child in d.subsegments
+                                        if not selected_ids or child.label in selected_ids
+                                    ]
+                                    if selected_ids and d.label not in selected_ids and not selected_children:
+                                        continue
 
-                                    if relevant_labels:
-                                        # Convert to IDs
-                                        label_ids = []
-                                        for name in relevant_labels:
-                                            if name in LABEL_NAME_TO_ID:
-                                                label_ids.append(LABEL_NAME_TO_ID[name])
-                                        
-                                        if label_ids:
-                                            # Calculate absolute indices within the session
-                                            # d.start_index and d.end_index are relative to scan_df
-                                            abs_start = int(form_start) + (d.start_index if d.start_index is not None else 0)
-                                            abs_end = int(form_start) + (d.end_index if d.end_index is not None else len(d.telemetry_data))
-
-                                            ann = AnnotatedSegment(
-                                                labels=label_ids,
-                                                segment_length=len(d.telemetry_data),
-                                                telemetry_data=d.telemetry_data,
-                                                chunk_index=session_id,
-                                                start_index=abs_start,
-                                                end_index=abs_end
-                                            )
-                                            new_anns.append(ann)
+                                    abs_start = int(form_start) + int(d.start_index or 0)
+                                    abs_end = int(form_start) + int(d.end_index or 0)
+                                    parent = AnnotatedSegment(
+                                        labels=[d.label],
+                                        segment_length=abs_end - abs_start,
+                                        telemetry_data=d.telemetry_data,
+                                        chunk_index=session_id,
+                                        start_index=abs_start,
+                                        end_index=abs_end,
+                                        notes=f"Temporal detector score: {d.score:.3f}",
+                                    )
+                                    new_anns.append(parent)
+                                    for child in selected_children:
+                                        child_start = int(form_start) + int(child.start_index or 0)
+                                        child_end = int(form_start) + int(child.end_index or 0)
+                                        new_anns.append(AnnotatedSegment(
+                                            labels=[d.label, child.label],
+                                            segment_length=child_end - child_start,
+                                            telemetry_data=child.telemetry_data,
+                                            chunk_index=session_id,
+                                            start_index=child_start,
+                                            end_index=child_end,
+                                            parent_id=parent.id,
+                                            notes=f"Temporal detector score: {child.score:.3f}",
+                                        ))
                                 
                                 if new_anns:
                                     st.session_state.current_annotations.extend(new_anns)

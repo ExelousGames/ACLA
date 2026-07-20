@@ -15,7 +15,6 @@ from app.shared.telemetry import FeatureProcessor
 from app.local_llm.local_llm import GenerationRequest
 from app.ml.model_hub import (
     get_expert_imitation_learning,
-    get_segment_classifier,
     get_tire_grip_analysis,
 )
 from app.ml.prompts import generate_llm_prompt_from_labels
@@ -76,18 +75,15 @@ async def predict_expert_actions(
         if driver_request:
             segment_metadata["user_request"] = driver_request
 
-        try:
-            predicted_labels = get_segment_classifier().predict_segment(pd.DataFrame([processed_telemetry_dict]))
-        except ValueError as e:
-            raise RuntimeError(f"Segment classifier prediction failed: {e}")
-
-        print(f"[DEBUG] Generating LLM prompt from predicted labels...")
+        print("[DEBUG] Generating label-free LLM prompt for point-in-time guidance...")
         llm_model, llm_metadata = await service.llm_orchestrator.get_llm_for_inference()
         if llm_model is None:
             raise RuntimeError("LLM guidance model is not available")
 
         try:
-            user_prompt = generate_llm_prompt_from_labels(predicted_labels)
+            # This endpoint has one telemetry row. Temporal detection requires a
+            # sequence, so guidance deliberately uses the existing generic prompt.
+            user_prompt = generate_llm_prompt_from_labels([])
         except Exception as e:
             raise RuntimeError(f"Failed to generate LLM prompt from labels: {str(e)}")
 

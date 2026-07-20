@@ -61,8 +61,8 @@ def _segment_classifier_ready() -> bool:
     segment_classifier = get_segment_classifier()
     return (
         segment_classifier.model is not None
-        and segment_classifier.mlb is not None
         and segment_classifier.scaler is not None
+        and bool(segment_classifier.label_ids)
     )
 
 

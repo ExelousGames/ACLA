@@ -1,211 +1,194 @@
-"""Streaming dataset + derived-feature helper for the segment classifier.
-
-Two pieces sit here:
-
-  - ``compute_derived_features``: appends first-order deltas (`*_diff`)
-    to every column of a telemetry DataFrame. Pure function over a
-    DataFrame; not specific to the classifier and could grow more
-    callers later.
-
-  - ``StreamingSegmentDataset``: PyTorch ``IterableDataset`` that
-    streams ``AnnotatedSegment`` records from the shared telemetry
-    store (Lance-backed), applies scaling + label binarisation +
-    padding, and yields ``(X, y, mask)`` tensors. Used by training
-    (full pass) and by inference flows that need lazy iteration over
-    a large dataset.
-
-Lives in ``app/storage/datasets/`` because it owns I/O (reading from
-the telemetry store) — not pure ML model code. Extracted from
-``app/ml/segment_classifier/service.py`` in refactor/hexagonal-v4
-(Page 5 of acla-ai-service-architecture.drawio).
-"""
+"""Temporal sequence construction and streaming classifier dataset."""
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 import torch
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import IterableDataset
 
-from app.shared.labels import normalize_label_ids
+from app.shared.labels import BEHAVIOR_LABELS, normalize_label_ids
 from app.shared.segment import AnnotatedSegment
-from app.ml.segment_classifier.label_heads import head_is_active, labels_for_head
 
 
 def compute_derived_features(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Computes derived features for telemetry data.
-    Adds first-order differences (deltas) for all columns.
-    """
-    # Calculate difference
-    # We use fillna(0) for the first element
-    df_diff = df.diff().fillna(0).add_suffix('_diff')
-
-    # Concatenate
-    df_combined = pd.concat([df, df_diff], axis=1)
-    return df_combined
+    """Append first-order differences while preserving row alignment."""
+    return pd.concat([df, df.diff().fillna(0).add_suffix("_diff")], axis=1)
 
 
-class StreamingSegmentDataset(IterableDataset):
-    def __init__(self, store, cache_key, mlb, scaler, max_length, expected_features):
+@dataclass(frozen=True)
+class TemporalSequence:
+    features: np.ndarray
+    targets: np.ndarray
+    loss_mask: np.ndarray
+    start_index: int
+
+
+def _chunk_records(chunk: Any) -> list[dict]:
+    if isinstance(chunk, list):
+        return [record for record in chunk if isinstance(record, dict)]
+    if isinstance(chunk, dict) and isinstance(chunk.get("data"), list):
+        return [record for record in chunk["data"] if isinstance(record, dict)]
+    if isinstance(chunk, dict) and isinstance(chunk.get("payload"), dict):
+        return [chunk["payload"]]
+    return [chunk] if isinstance(chunk, dict) else []
+
+
+def _contiguous_index_runs(indices: Sequence[int]) -> Iterator[list[int]]:
+    current: list[int] = []
+    for index in indices:
+        if current and index != current[-1] + 1:
+            yield current
+            current = []
+        current.append(index)
+    if current:
+        yield current
+
+
+def build_temporal_sequences(
+    chunk: Any,
+    *,
+    expected_features: Sequence[str],
+    label_ids: Sequence[str],
+    child_parent: Mapping[str, str],
+) -> list[TemporalSequence]:
+    """Rebuild contiguous session runs and their per-timestep targets."""
+    annotations = []
+    for record in _chunk_records(chunk):
+        try:
+            annotation = AnnotatedSegment.from_dict(record)
+        except Exception:
+            continue
+        if annotation.start_index is None or annotation.end_index is None:
+            continue
+        annotations.append(annotation)
+
+    parents = [
+        annotation
+        for annotation in annotations
+        if not annotation.parent_id and annotation.telemetry_data
+    ]
+    if not parents:
+        return []
+
+    rows_by_index: Dict[int, dict] = {}
+    for parent in sorted(parents, key=lambda item: (int(item.start_index), int(item.end_index))):
+        start = int(parent.start_index)
+        end = int(parent.end_index)
+        for offset, row in enumerate(parent.telemetry_data):
+            index = start + offset
+            if index >= end:
+                break
+            if isinstance(row, dict):
+                rows_by_index.setdefault(index, row)
+
+    label_index = {label_id: index for index, label_id in enumerate(label_ids)}
+    behavior_ids = tuple(label_id for label_id in BEHAVIOR_LABELS if label_id in label_index)
+    sequences: list[TemporalSequence] = []
+
+    for run_indices in _contiguous_index_runs(sorted(rows_by_index)):
+        run_start = run_indices[0]
+        run_end = run_indices[-1] + 1
+        frame = pd.DataFrame([rows_by_index[index] for index in run_indices])
+        frame = frame.reindex(columns=list(expected_features), fill_value=0)
+        frame = frame.apply(pd.to_numeric, errors="coerce").fillna(0)
+        frame = compute_derived_features(frame)
+        if frame.empty:
+            continue
+
+        targets = np.zeros((len(frame), len(label_ids)), dtype=np.float32)
+        loss_mask = np.zeros_like(targets)
+        loss_mask[:, [label_index[label_id] for label_id in behavior_ids]] = 1.0
+
+        for annotation in parents:
+            start = max(run_start, int(annotation.start_index))
+            end = min(run_end, int(annotation.end_index))
+            if end <= start:
+                continue
+            local_start = start - run_start
+            local_end = end - run_start
+            for label_id in normalize_label_ids(annotation.labels):
+                if label_id in behavior_ids:
+                    targets[local_start:local_end, label_index[label_id]] = 1.0
+
+        for child_id, parent_id in child_parent.items():
+            child_column = label_index[child_id]
+            parent_column = label_index[parent_id]
+            loss_mask[:, child_column] = targets[:, parent_column]
+
+        for annotation in annotations:
+            if not annotation.parent_id:
+                continue
+            start = max(run_start, int(annotation.start_index))
+            end = min(run_end, int(annotation.end_index))
+            if end <= start:
+                continue
+            local_start = start - run_start
+            local_end = end - run_start
+            for label_id in normalize_label_ids(annotation.labels):
+                if label_id in child_parent:
+                    targets[local_start:local_end, label_index[label_id]] = 1.0
+
+        sequences.append(TemporalSequence(
+            features=frame.to_numpy(dtype=np.float32),
+            targets=targets,
+            loss_mask=loss_mask,
+            start_index=run_start,
+        ))
+
+    return sequences
+
+
+class TemporalStreamingDataset(IterableDataset):
+    def __init__(
+        self,
+        store,
+        cache_key: str,
+        scaler,
+        expected_features: Sequence[str],
+        label_ids: Sequence[str],
+        child_parent: Mapping[str, str],
+    ) -> None:
         self.store = store
         self.cache_key = cache_key
-        self.mlb = mlb
         self.scaler = scaler
-        self.max_length = max_length
-        self.expected_features = expected_features
+        self.expected_features = tuple(expected_features)
+        self.label_ids = tuple(label_ids)
+        self.child_parent = dict(child_parent)
 
     def __iter__(self):
-        chunks = self.store.get_cached_data_chunks(self.cache_key)
-
-        for chunk in chunks:
-            chunk_data = []
-            if isinstance(chunk, list):
-                chunk_data = chunk
-            elif isinstance(chunk, dict) and "data" in chunk:
-                 chunk_data = chunk["data"]
-            elif isinstance(chunk, dict) and "payload" in chunk:
-                 chunk_data = [chunk["payload"]]
-            else:
-                 chunk_data = [chunk]
-
-            for d in chunk_data:
-                if not isinstance(d, dict):
-                    continue
-
-                try:
-                    ann = AnnotatedSegment.from_dict(d)
-                except Exception:
-                    continue
-
-                if not ann.telemetry_data:
-                    continue
-
-                df = pd.DataFrame(ann.telemetry_data)
-
-                # Fast path if columns match
-                if df.columns.tolist() != self.expected_features:
-                     df = df.reindex(columns=self.expected_features, fill_value=0)
-
-                # Ensure numeric
-                df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-
-                # Compute derived features (deltas)
-                df = compute_derived_features(df)
-
-                if df.empty:
-                    continue
-
-                seg_X = df.values
-
-                # Use labels directly (IDs)
-                mapped_labels = normalize_label_ids(ann.labels)
-
-                # Create target
-                label_vec = self.mlb.transform([mapped_labels])[0]
-                seg_y = np.tile(label_vec, (len(seg_X), 1))
-
-                # Scale
-                scaled_X = self.scaler.transform(seg_X)
-
-                # Create mask
-                mask = np.ones((len(scaled_X), 1))
-
-                # Pad
-                pad_len = self.max_length - len(scaled_X)
-                if pad_len > 0:
-                    scaled_X = np.pad(scaled_X, ((0, pad_len), (0, 0)), 'constant')
-                    seg_y = np.pad(seg_y, ((0, pad_len), (0, 0)), 'constant')
-                    mask = np.pad(mask, ((0, pad_len), (0, 0)), 'constant')
-                elif pad_len < 0:
-                    # Truncate
-                    scaled_X = scaled_X[:self.max_length]
-                    seg_y = seg_y[:self.max_length]
-                    mask = mask[:self.max_length]
-
-                yield torch.FloatTensor(scaled_X), torch.FloatTensor(seg_y), torch.FloatTensor(mask)
-
-
-class MultiHeadStreamingSegmentDataset(IterableDataset):
-    def __init__(self, store, cache_key, head_mlbs, head_specs, scaler, max_length, expected_features):
-        self.store = store
-        self.cache_key = cache_key
-        self.head_mlbs = head_mlbs
-        self.head_specs = head_specs
-        self.scaler = scaler
-        self.max_length = max_length
-        self.expected_features = expected_features
-
-    def __iter__(self):
-        chunks = self.store.get_cached_data_chunks(self.cache_key)
-
-        for chunk in chunks:
-            chunk_data = []
-            if isinstance(chunk, list):
-                chunk_data = chunk
-            elif isinstance(chunk, dict) and "data" in chunk:
-                 chunk_data = chunk["data"]
-            elif isinstance(chunk, dict) and "payload" in chunk:
-                 chunk_data = [chunk["payload"]]
-            else:
-                 chunk_data = [chunk]
-
-            for d in chunk_data:
-                if not isinstance(d, dict):
-                    continue
-
-                try:
-                    ann = AnnotatedSegment.from_dict(d)
-                except Exception:
-                    continue
-
-                if not ann.telemetry_data:
-                    continue
-
-                df = pd.DataFrame(ann.telemetry_data)
-                if df.columns.tolist() != self.expected_features:
-                     df = df.reindex(columns=self.expected_features, fill_value=0)
-
-                df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-                df = compute_derived_features(df)
-
-                if df.empty:
-                    continue
-
-                seg_X = df.values
-                mapped_labels = normalize_label_ids(ann.labels)
-                scaled_X = self.scaler.transform(seg_X)
-                base_mask = np.ones((len(scaled_X), 1))
-
-                targets = {}
-                head_masks = {}
-                for spec in self.head_specs:
-                    mlb = self.head_mlbs.get(spec.name)
-                    if mlb is None:
-                        continue
-
-                    target_labels = labels_for_head(mapped_labels, spec)
-                    label_vec = mlb.transform([target_labels])[0]
-                    targets[spec.name] = np.tile(label_vec, (len(scaled_X), 1))
-                    head_masks[spec.name] = base_mask.copy() if head_is_active(mapped_labels, spec) else np.zeros_like(base_mask)
-
-                pad_len = self.max_length - len(scaled_X)
-                if pad_len > 0:
-                    scaled_X = np.pad(scaled_X, ((0, pad_len), (0, 0)), 'constant')
-                    for head_name in list(targets.keys()):
-                        targets[head_name] = np.pad(targets[head_name], ((0, pad_len), (0, 0)), 'constant')
-                        head_masks[head_name] = np.pad(head_masks[head_name], ((0, pad_len), (0, 0)), 'constant')
-                elif pad_len < 0:
-                    scaled_X = scaled_X[:self.max_length]
-                    for head_name in list(targets.keys()):
-                        targets[head_name] = targets[head_name][:self.max_length]
-                        head_masks[head_name] = head_masks[head_name][:self.max_length]
-
+        for chunk in self.store.get_cached_data_chunks(self.cache_key):
+            for sequence in build_temporal_sequences(
+                chunk,
+                expected_features=self.expected_features,
+                label_ids=self.label_ids,
+                child_parent=self.child_parent,
+            ):
+                scaled = self.scaler.transform(sequence.features)
                 yield (
-                    torch.FloatTensor(scaled_X),
-                    {name: torch.FloatTensor(value) for name, value in targets.items()},
-                    {name: torch.FloatTensor(value) for name, value in head_masks.items()},
+                    torch.tensor(scaled, dtype=torch.float32),
+                    torch.tensor(sequence.targets, dtype=torch.float32),
+                    torch.tensor(sequence.loss_mask, dtype=torch.float32),
                 )
 
 
-__all__ = ["compute_derived_features", "StreamingSegmentDataset", "MultiHeadStreamingSegmentDataset"]
+def pad_temporal_batch(batch):
+    features, targets, masks = zip(*batch)
+    return (
+        pad_sequence(features, batch_first=True),
+        pad_sequence(targets, batch_first=True),
+        pad_sequence(masks, batch_first=True),
+    )
+
+
+__all__ = [
+    "TemporalSequence",
+    "TemporalStreamingDataset",
+    "build_temporal_sequences",
+    "compute_derived_features",
+    "pad_temporal_batch",
+]

@@ -243,10 +243,15 @@ def _scan_window(
     track_id = _track_id(session_meta.get("map"))
     track_summary = _ensure_track(summary, track_id, str(session_meta.get("map") or track_id))
     df = pd.DataFrame(rows)
-    predicted_segments = get_segment_classifier().scan_telemetry_data(df)
+    predicted_segments = get_segment_classifier().detect_segments(df)
     session_id = str(session_meta.get("sessionId") or "")
 
-    for segment in predicted_segments:
+    detections = [
+        detection
+        for segment in predicted_segments
+        for detection in (segment, *segment.subsegments)
+    ]
+    for segment in detections:
         start = int(segment.start_index or 0)
         end = int(segment.end_index or start)
         if end <= start:
@@ -263,15 +268,14 @@ def _scan_window(
         if not section_id:
             continue
 
-        labels = sorted(str(label) for label in segment.labels)
-        dedupe_key = (session_id, global_start, global_end, tuple(labels))
+        label = str(segment.label)
+        dedupe_key = (session_id, global_start, global_end, label)
         if dedupe_key in seen:
             continue
         seen.add(dedupe_key)
 
         section_summary = _ensure_section(track_summary, section_id)
-        for label in labels:
-            _increment_label(section_summary, label)
+        _increment_label(section_summary, label)
 
 
 async def analyze_user_sessions(user_id: str, session_limit: int = 10) -> Dict[str, Any]:

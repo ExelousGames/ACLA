@@ -381,13 +381,13 @@ def render_bulk_label_utils(selected_annotation_key):
             st.info(f"Label '{selected_label_name}' was not found in any segment.")
 
 
-def render_classifier_auto_annotation(df, selected_annotation_key):
+def render_classifier_auto_annotation(df, selected_annotation_key, session_id):
     """
     Renders the Segment Classifier Auto-Annotation section.
-    Allows user to scan a range of telemetry data using the trained LSTM model.
+    Allows user to scan a range using the temporal behavior detector.
     """
     st.header("Classifier Auto-Annotation")
-    st.write("Automatically identify segments and apply main labels using trained LSTM Classifier.")
+    st.write("Automatically identify behavior segments and their sub-label ranges.")
     st.warning("⚠️ Warning: Any existing segments within the selected range will be removed and replaced by the newly identified segments.")
 
     try:
@@ -421,9 +421,7 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                     return
                 
                 scan_df = df.iloc[range_slider[0]:range_slider[1] + 1].copy()
-                found_segments = segment_classifier.scan_telemetry_data(scan_df)
-                
-                main_labels_set = set(LABEL_CATEGORIES.get("Main Labels", []))
+                found_segments = segment_classifier.detect_segments(scan_df)
                 
                 new_annotations = []
                 count_added = 0
@@ -431,25 +429,32 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                     start_idx = seg.start_index + range_slider[0]
                     end_idx = seg.end_index + range_slider[0]
                     
-                    filtered_labels = [lbl for lbl in seg.labels if str(lbl) in main_labels_set]
-                    
-                    if filtered_labels:
-                        from app.shared.segment import AnnotatedSegment
-                        # Classifier emits inclusive-end indices; the slice is
-                        # df.iloc[start_idx : end_idx + 1] to match. Stored
-                        # end_index stays inclusive to align with the rule-based
-                        # reader, which already adds +1 when slicing by it.
-                        seg_rows = df.iloc[start_idx:end_idx + 1].to_dict(orient="records")
-                        new_ann = AnnotatedSegment(
-                            labels=filtered_labels,
-                            segment_length=end_idx - start_idx + 1,
-                            start_index=start_idx,
-                            end_index=end_idx,
-                            notes="Auto-identified by Segment Classifier",
+                    from app.shared.segment import AnnotatedSegment
+                    seg_rows = df.iloc[start_idx:end_idx].to_dict(orient="records")
+                    new_ann = AnnotatedSegment(
+                        labels=[seg.label],
+                        segment_length=end_idx - start_idx,
+                        start_index=start_idx,
+                        end_index=end_idx,
+                        notes=f"Temporal detector score: {seg.score:.3f}",
+                        chunk_index=session_id,
+                        telemetry_data=seg_rows,
+                    )
+                    new_annotations.append(new_ann)
+                    count_added += 1
+                    for child in seg.subsegments:
+                        child_start = child.start_index + range_slider[0]
+                        child_end = child.end_index + range_slider[0]
+                        new_annotations.append(AnnotatedSegment(
+                            labels=[seg.label, child.label],
+                            segment_length=child_end - child_start,
+                            start_index=child_start,
+                            end_index=child_end,
+                            notes=f"Temporal detector score: {child.score:.3f}",
+                            parent_id=new_ann.id,
                             chunk_index=session_id,
-                            telemetry_data=seg_rows,
-                        )
-                        new_annotations.append(new_ann)
+                            telemetry_data=df.iloc[child_start:child_end].to_dict(orient="records"),
+                        ))
                         count_added += 1
                 
                 if count_added > 0:
@@ -462,7 +467,7 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                             start = ann.start_index if ann.start_index is not None else 0
                             end = ann.end_index if ann.end_index is not None else len(df) - 1
                             
-                            if start <= range_slider[1] and end >= range_slider[0]:
+                            if start < range_slider[1] + 1 and end > range_slider[0]:
                                 removed_count += 1
                             else:
                                 filtered_annotations.append(ann)
@@ -474,7 +479,7 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                     st.session_state.current_annotations.extend(new_annotations)
                     st.session_state.current_annotations.sort(key=lambda x: (x.start_index if x.start_index is not None else 0))
                     
-                    st.success(f"Successfully identified and added {count_added} segments with main labels.")
+                    st.success(f"Successfully identified and added {count_added} temporal segments.")
                     
                     if "last_session_id" in st.session_state and "last_annotation_key" in st.session_state:
                          save_annotations(
@@ -486,7 +491,7 @@ def render_classifier_auto_annotation(df, selected_annotation_key):
                          time.sleep(1)
                          st.rerun()
                 else:
-                    st.info("No new segments with main labels were identified in the selected range.")
+                    st.info("No behavior segments were identified in the selected range.")
                     
             except Exception as e:
                 st.error(f"Error classifying segments: {str(e)}")
@@ -582,4 +587,4 @@ def render_batch_classifier(selected_annotation_key, selected_session_key, avail
     )
     if df is None:
         return
-    render_classifier_auto_annotation(df, selected_annotation_key)
+    render_classifier_auto_annotation(df, selected_annotation_key, session_id)

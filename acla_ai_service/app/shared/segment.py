@@ -1,8 +1,8 @@
 """Segment dataclasses + the feature aggregator catalog.
 
 Pure domain types: ``AnnotatedSegment`` (a labelled telemetry slice
-produced by the annotation pipeline) and ``PredictedSegment`` (the
-same shape minus labels, emitted by the classifier).
+produced by the annotation pipeline) and ``PredictedSegment`` (a nested
+behavior or sub-label detection emitted by the temporal classifier).
 
 ``SegmentFeatureCatalog`` aggregates feature-name lists from the
 three upstream catalogs (telemetry, expert, tire-grip). All three
@@ -10,6 +10,8 @@ sources live in app/shared/ so this file is a true leaf.
 
 Moved from app/models/segment_models.py in refactor/hexagonal-v1, Step 3.
 """
+
+from __future__ import annotations
 
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -54,11 +56,13 @@ class AnnotatedSegment:
 
 @dataclass
 class PredictedSegment:
-    labels: List[str]
+    label: str
+    score: float
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     telemetry_data: List[Dict[str, Any]] = field(default_factory=list)
     start_index: Optional[int] = None
     end_index: Optional[int] = None
+    subsegments: List[PredictedSegment] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

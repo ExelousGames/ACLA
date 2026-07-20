@@ -1,114 +1,65 @@
-"""Pure model code for the segment classifier.
-
-Two PyTorch ``nn.Module`` classes:
-  - ``FocalLoss``: binary focal loss with optional positive-class weighting,
-    used during training to handle class imbalance across segment labels.
-  - ``CNN1DModel``: 1D-CNN feature extractor + linear head that scores each
-    timestep against the full label set.
-  - ``MultiHeadCNN1DModel``: the same 1D-CNN feature extractor with separate
-    linear heads for independent label groups.
-
-This module imports NOTHING from the rest of the app — it's a pure leaf,
-testable in isolation. The training and inference orchestrators in
-``app.ml.segment_classifier.service`` import these classes back.
-
-Extracted from app/ml/segment_classifier/service.py in
-refactor/hexagonal-v4 (Page 5 of acla-ai-service-architecture.drawio).
-"""
+"""Length-preserving temporal model for behavior segment detection."""
 
 from __future__ import annotations
 
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=1.0, gamma=2.0, reduction='none', pos_weight=None):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        self.pos_weight = pos_weight
+class TemporalResidualBlock(nn.Module):
+    """Non-causal dilated convolutions with a residual connection."""
 
-    def forward(self, inputs, targets):
-        bce_loss = F.binary_cross_entropy_with_logits(
-            inputs, targets, reduction='none', pos_weight=self.pos_weight
+    def __init__(self, channels: int, dilation: int, dropout: float) -> None:
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Conv1d(
+                channels,
+                channels,
+                kernel_size=3,
+                padding=dilation,
+                dilation=dilation,
+            ),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Conv1d(
+                channels,
+                channels,
+                kernel_size=3,
+                padding=dilation,
+                dilation=dilation,
+            ),
+            nn.ReLU(),
+            nn.Dropout(dropout),
         )
-        pt = torch.exp(-bce_loss)
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        self.activation = nn.ReLU()
 
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
+    def forward(self, inputs):
+        return self.activation(inputs + self.layers(inputs))
 
 
-class CNN1DModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers=3):
-        super(CNN1DModel, self).__init__()
+class TemporalDetectionModel(nn.Module):
+    """Emit one logit per label for every input timestep."""
 
-        layers = []
-        in_channels = input_dim
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        hidden_dim: int = 128,
+        dilations: tuple[int, ...] = (1, 2, 4, 8),
+        dropout: float = 0.2,
+    ) -> None:
+        super().__init__()
+        self.input_projection = nn.Conv1d(input_dim, hidden_dim, kernel_size=1)
+        self.blocks = nn.Sequential(*(
+            TemporalResidualBlock(hidden_dim, dilation, dropout)
+            for dilation in dilations
+        ))
+        self.output_projection = nn.Conv1d(hidden_dim, output_dim, kernel_size=1)
 
-        # Using padding='same' to keep sequence length equal
-        for _ in range(num_layers):
-            layers.append(nn.Conv1d(in_channels, hidden_dim, kernel_size=3, padding='same'))
-            layers.append(nn.BatchNorm1d(hidden_dim))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(0.2))
-            in_channels = hidden_dim
-
-        self.features = nn.Sequential(*layers)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-
-    def forward(self, x, hidden=None):
-        # x: (batch, seq_len, input_dim)
-        # Conv1d expects (batch, channels, seq_len)
-        x = x.transpose(1, 2)
-
-        out = self.features(x)
-
-        # out: (batch, channels, seq_len) -> (batch, seq_len, channels)
-        out = out.transpose(1, 2)
-        out = self.fc(out)
-
-        return out, None
+    def forward(self, inputs):
+        # inputs: (batch, sequence, features)
+        hidden = self.input_projection(inputs.transpose(1, 2))
+        hidden = self.blocks(hidden)
+        return self.output_projection(hidden).transpose(1, 2)
 
 
-class MultiHeadCNN1DModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, head_output_dims, num_layers=3):
-        super(MultiHeadCNN1DModel, self).__init__()
-
-        layers = []
-        in_channels = input_dim
-
-        for _ in range(num_layers):
-            layers.append(nn.Conv1d(in_channels, hidden_dim, kernel_size=3, padding='same'))
-            layers.append(nn.BatchNorm1d(hidden_dim))
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(0.2))
-            in_channels = hidden_dim
-
-        self.features = nn.Sequential(*layers)
-        self.heads = nn.ModuleDict({
-            head_name: nn.Linear(hidden_dim, output_dim)
-            for head_name, output_dim in head_output_dims.items()
-            if output_dim > 0
-        })
-
-    def forward(self, x, hidden=None):
-        # x: (batch, seq_len, input_dim)
-        x = x.transpose(1, 2)
-        out = self.features(x)
-        out = out.transpose(1, 2)
-
-        return {
-            head_name: head(out)
-            for head_name, head in self.heads.items()
-        }, None
-
-
-__all__ = ["FocalLoss", "CNN1DModel", "MultiHeadCNN1DModel"]
+__all__ = ["TemporalDetectionModel", "TemporalResidualBlock"]

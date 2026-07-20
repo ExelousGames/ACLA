@@ -1,300 +1,119 @@
-"""
-Service for training and using a 1D-CNN classifier to identify behavioral segments.
-Refactored to support variable length segments and learn local temporal relations.
-"""
+"""Training, artifact handling, and inference for temporal behavior detection."""
 
+from __future__ import annotations
+
+import base64
+import copy
+import hashlib
+import json
+import logging
+import math
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Collection, Dict, Iterable, Optional, Sequence
+
+import joblib
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
+from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
-from sklearn.preprocessing import MultiLabelBinarizer, StandardScaler
-import joblib
-from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional, Iterator, Collection
-import asyncio
-import base64
-import json
-import logging
-import shutil
-import hashlib
-import copy
-from collections import defaultdict
 
-from app.storage import get_shared_telemetry_store
-from app.shared.labels import LABEL_MAPPING, normalize_label_id, normalize_label_ids
-from app.shared.segment import AnnotatedSegment, PredictedSegment
+from app.ml.segment_classifier.model import TemporalDetectionModel
+from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES, LABEL_MAPPING
+from app.shared.segment import PredictedSegment
 from app.shared.segment_classifier_features import SEGMENT_CLASSIFIER_FEATURES
-
-# Extracted in refactor/hexagonal-v4 — Page 5 of the architecture diagram.
-# Model classes are pure (no I/O); dataset + derived-features helper own I/O.
-# Re-imported here so SegmentClassifierService keeps the same internal API.
-from app.ml.segment_classifier.label_heads import (
-    LabelHeadSpec,
-    build_label_head_specs,
-    head_is_active,
-    labels_for_head,
-)
-from app.ml.segment_classifier.model import CNN1DModel, FocalLoss, MultiHeadCNN1DModel
+from app.storage import get_shared_telemetry_store
 from app.storage.datasets.segment_dataset import (
-    MultiHeadStreamingSegmentDataset,
+    TemporalStreamingDataset,
+    build_temporal_sequences,
     compute_derived_features,
+    pad_temporal_batch,
 )
 
-logger = logging.getLogger(__name__)
+
+LOGGER = logging.getLogger(__name__)
+MODEL_FORMAT = "segment_classifier/temporal-v1"
+DEFAULT_THRESHOLD = 0.5
+DEFAULT_HIDDEN_DIM = 128
+DEFAULT_DILATIONS = (1, 2, 4, 8)
+DEFAULT_DROPOUT = 0.2
+
+
+def _behavior_and_child_labels() -> tuple[list[str], dict[str, str]]:
+    behaviors = [label_id for label_id in BEHAVIOR_LABELS if label_id in LABEL_MAPPING]
+    child_parent: dict[str, str] = {}
+    for behavior_id in behaviors:
+        for child_id in LABEL_CATEGORIES.get(behavior_id, []):
+            if child_id in LABEL_MAPPING:
+                child_parent[child_id] = behavior_id
+    return behaviors, child_parent
+
+
+def _chunk_records(chunk: Any) -> list[dict]:
+    if isinstance(chunk, list):
+        return [record for record in chunk if isinstance(record, dict)]
+    if isinstance(chunk, dict) and isinstance(chunk.get("data"), list):
+        return [record for record in chunk["data"] if isinstance(record, dict)]
+    if isinstance(chunk, dict) and isinstance(chunk.get("payload"), dict):
+        return [chunk["payload"]]
+    return [chunk] if isinstance(chunk, dict) else []
+
+
+def _annotation_samples(records: Sequence[dict]) -> list[tuple[str, list[dict]]]:
+    """Keep each behavior annotation and its child annotations as one sample."""
+    children_by_parent: dict[str, list[dict]] = defaultdict(list)
+    for record in records:
+        parent_id = record.get("parent_id")
+        if parent_id:
+            children_by_parent[str(parent_id)].append(record)
+
+    samples = []
+    for index, record in enumerate(records):
+        if record.get("parent_id"):
+            continue
+        if (
+            record.get("start_index") is None
+            or record.get("end_index") is None
+            or not record.get("telemetry_data")
+        ):
+            continue
+        fallback_id = f"{record['start_index']}:{record['end_index']}:{index}"
+        sample_id = str(record.get("id") or fallback_id)
+        samples.append((sample_id, [record, *children_by_parent.get(sample_id, [])]))
+    return samples
 
 
 class SegmentClassifierService:
-    def __init__(self, models_directory: str = "models", max_length: int = 100):
+    def __init__(self, models_directory: str = "models") -> None:
         self.models_directory = Path(models_directory).resolve()
-        self.models_directory.mkdir(exist_ok=True)
+        self.models_directory.mkdir(parents=True, exist_ok=True)
         self.model_path = self.models_directory / "segment_classifier.pth"
-        self.mlb_path = self.models_directory / "segment_labels.joblib"
-        self.head_mlbs_path = self.models_directory / "segment_head_labels.joblib"
         self.scaler_path = self.models_directory / "segment_scaler.joblib"
-        self.pos_weight_path = self.models_directory / "segment_pos_weight.pt"
-        self.head_pos_weight_path = self.models_directory / "segment_head_pos_weights.pt"
+        self.config_path = self.models_directory / "segment_config.json"
         self.store = get_shared_telemetry_store()
-        self.model = None
-        self.mlb = None 
-        self.head_specs = build_label_head_specs()
-        self.head_mlbs = None
-        self.scaler = None
-        self.pos_weight = None
-        self.head_pos_weights = None
-        self.label_counts = {}
-        self.head_label_counts = {}
-        self.head_active_counts = {}
-        self.feature_names = None
-        self.model_format = "segment_classifier/v1"
-        
-        # Device selection with explicit AMD/NVIDIA support check
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-            try:
-                device_name = torch.cuda.get_device_name(0)
-                if hasattr(torch.version, 'hip') and torch.version.hip:
-                    print(f"SegmentClassifierService: AMD GPU detected (ROCm): {device_name}")
-                else:
-                    print(f"SegmentClassifierService: NVIDIA GPU detected (CUDA): {device_name}")
-            except Exception as e:
-                print(f"SegmentClassifierService: GPU detected but failed to get name: {e}")
-        else:
-            self.device = torch.device("cpu")
-            print("SegmentClassifierService: No GPU detected, using CPU.")
-            try:
-                print(f"Debug: torch.cuda.is_available()={torch.cuda.is_available()}")
-                print(f"Debug: torch.version.cuda={torch.version.cuda}")
-                print(f"Debug: torch.version.hip={getattr(torch.version, 'hip', 'None')}")
-            except Exception as e:
-                print(f"Debug: Error getting torch version info: {e}")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model: Optional[TemporalDetectionModel] = None
+        self.scaler: Optional[StandardScaler] = None
+        self.feature_names = list(SEGMENT_CLASSIFIER_FEATURES)
+        self.behavior_label_ids, self.child_parent = _behavior_and_child_labels()
+        self.label_ids = [*self.behavior_label_ids, *self.child_parent]
+        self.pos_weight: Optional[torch.Tensor] = None
+        self.threshold = DEFAULT_THRESHOLD
+        self.hidden_dim = DEFAULT_HIDDEN_DIM
+        self.dilations = DEFAULT_DILATIONS
+        self.dropout = DEFAULT_DROPOUT
 
-        self.max_length = max_length
-
-    def _head_specs_from_config(self, raw_specs: Any) -> List[LabelHeadSpec]:
-        allowed_specs = {
-            spec.name: spec
-            for spec in build_label_head_specs()
-        }
-        if not isinstance(raw_specs, list):
-            return list(allowed_specs.values())
-
-        specs = []
-        for item in raw_specs:
-            if not isinstance(item, dict):
-                continue
-            name = item.get("name")
-            label_ids = item.get("label_ids")
-            allowed_spec = allowed_specs.get(name) if isinstance(name, str) else None
-            if allowed_spec is None or not isinstance(label_ids, list):
-                continue
-            allowed_labels = set(allowed_spec.label_ids)
-            specs.append(LabelHeadSpec(
-                name=name,
-                label_ids=tuple(
-                    label_id
-                    for label_id in (str(label_id) for label_id in label_ids)
-                    if label_id in allowed_labels
-                ),
-                active_label_ids=allowed_spec.active_label_ids,
-            ))
-
-        return [spec for spec in specs if spec.label_ids] or list(allowed_specs.values())
-
-    def _head_specs_to_config(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "name": spec.name,
-                "label_ids": list(spec.label_ids),
-                "active_label_ids": list(spec.active_label_ids) if spec.active_label_ids else None,
-            }
-            for spec in self.head_specs
-        ]
-
-    def _refresh_flat_mlb_from_heads(self) -> None:
-        if not self.head_mlbs:
+    def _configure_training_backend(self) -> None:
+        if self.device.type != "cuda" or not getattr(torch.version, "hip", None):
             return
+        torch.backends.miopen.immediate = True
+        print("[INFO] Enabled MIOpen Immediate Mode for ROCm classifier training.")
 
-        labels = []
-        for spec in self.head_specs:
-            mlb = self.head_mlbs.get(spec.name)
-            if mlb is None:
-                continue
-            labels.extend(normalize_label_id(label) for label in mlb.classes_)
-
-        labels = list(dict.fromkeys(labels))
-        self.mlb = MultiLabelBinarizer()
-        self.mlb.fit([labels])
-
-    def _is_multi_head_model(self) -> bool:
-        return self.head_mlbs is not None and isinstance(self.model, MultiHeadCNN1DModel)
-
-    def _current_feature_names(self) -> List[str]:
-        return list(SEGMENT_CLASSIFIER_FEATURES)
-
-    def _legacy_feature_names_for_scaler(self, scaler_feature_count: Optional[int]) -> Optional[List[str]]:
-        """Feature layout used by artifacts trained before gap columns were added."""
-        if scaler_feature_count is None:
-            return None
-
-        current_features = self._current_feature_names()
-        legacy_features = []
-        replaced_gap_columns = False
-
-        for feature in current_features:
-            if feature == "Graphics_gap_ahead":
-                legacy_features.append("Graphics_current_tyre_set")
-                replaced_gap_columns = True
-            elif feature == "Graphics_gap_behind":
-                replaced_gap_columns = True
-                continue
-            else:
-                legacy_features.append(feature)
-
-        if replaced_gap_columns and len(legacy_features) * 2 == scaler_feature_count:
-            return legacy_features
-        return None
-
-    def _scaler_feature_count(self) -> Optional[int]:
-        if self.scaler is None:
-            return None
-        count = getattr(self.scaler, "n_features_in_", None)
-        if count is not None:
-            return int(count)
-        mean = getattr(self.scaler, "mean_", None)
-        if mean is not None:
-            return int(len(mean))
-        return None
-
-    def _feature_names_for_model(self) -> List[str]:
-        scaler_feature_count = self._scaler_feature_count()
-        if self.feature_names:
-            if scaler_feature_count is None or len(self.feature_names) * 2 == scaler_feature_count:
-                return list(self.feature_names)
-            self.feature_names = None
-
-        current_features = self._current_feature_names()
-        if scaler_feature_count == len(current_features) * 2:
-            self.feature_names = current_features
-            return list(current_features)
-
-        legacy_features = self._legacy_feature_names_for_scaler(scaler_feature_count)
-        if legacy_features is not None:
-            self.feature_names = legacy_features
-            return list(legacy_features)
-
-        self.feature_names = current_features
-        return list(current_features)
-
-    def _prepare_numeric_features(self, dataframe: pd.DataFrame) -> pd.DataFrame:
-        """Return numeric model features in the exact order expected by the scaler."""
-        expected_features = self._feature_names_for_model()
-        missing_features = [feature for feature in expected_features if feature not in dataframe.columns]
-        if missing_features:
-            logger.warning(
-                "segment_classifier input missing %d/%d expected feature columns; filling with 0. Sample: %s",
-                len(missing_features),
-                len(expected_features),
-                missing_features[:10],
-            )
-        df = dataframe.reindex(columns=expected_features, fill_value=0)
-        df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-        if df.empty:
-            return df
-        return compute_derived_features(df)
-
-    def _labels_ranked_by_probability(self, probabilities: np.ndarray) -> List[str]:
-        """Return all labels in descending model-score order."""
-        ranked_indices = np.argsort(probabilities)[::-1]
-        labels = []
-        seen_labels = set()
-        for idx in ranked_indices:
-            normalized_label = normalize_label_id(self.mlb.classes_[idx])
-            if normalized_label not in seen_labels:
-                labels.append(normalized_label)
-                seen_labels.add(normalized_label)
-        return labels
-
-    def _print_probability_summary(
-        self,
-        title: str,
-        probabilities: np.ndarray,
-        targets: np.ndarray,
-        target_names: List[str],
-    ) -> None:
-        """Log threshold-free validation diagnostics."""
-        print(title)
-        print("label | support | mean_pos_prob | mean_neg_prob | max_prob")
-        for i, label_name in enumerate(target_names):
-            y_true = targets[:, i].astype(bool)
-            y_score = probabilities[:, i]
-            support = int(y_true.sum())
-            mean_pos = float(y_score[y_true].mean()) if support else 0.0
-            mean_neg = float(y_score[~y_true].mean()) if np.any(~y_true) else 0.0
-            max_prob = float(y_score.max()) if len(y_score) else 0.0
-            print(
-                f"{label_name}: Support={support}, "
-                f"MeanPosProb={mean_pos:.4f}, "
-                f"MeanNegProb={mean_neg:.4f}, "
-                f"MaxProb={max_prob:.4f}"
-            )
-
-    def _compute_segment_hash(self, segment_dict: Dict) -> str:
-        """Compute deterministic hash for a segment based on its content."""
-        # Create a stable string representation of key fields
-        # Use session_id and timestamp if available, otherwise use telemetry data
-        hash_data = ""
-        if "session_id" in segment_dict:
-            hash_data += str(segment_dict["session_id"])
-        if "timestamp" in segment_dict:
-            hash_data += str(segment_dict["timestamp"])
-        if "start_index" in segment_dict:
-            hash_data += str(segment_dict["start_index"])
-        if "end_index" in segment_dict:
-            hash_data += str(segment_dict["end_index"])
-            
-        # Fallback: use first few telemetry points
-        if not hash_data and "telemetry_data" in segment_dict and segment_dict["telemetry_data"]:
-            try:
-                first_point = segment_dict["telemetry_data"][0]
-                hash_data = json.dumps(first_point, sort_keys=True)
-            except Exception:
-                hash_data = str(segment_dict)
-        
-        if not hash_data:
-            hash_data = json.dumps(segment_dict, sort_keys=True)
-            
-        return hashlib.md5(hash_data.encode()).hexdigest()
-    
-    def _assign_split(self, hash_value: str, val_split: float) -> str:
-        """Deterministically assign an item/group to train or val based on hash."""
-        # Use first 8 characters of hash to generate a number between 0 and 1
-        hash_int = int(hash_value[:8], 16)
-        hash_normalized = hash_int / (16**8)
-        
-        return "val" if hash_normalized < val_split else "train"
+    @staticmethod
+    def _split_order(session_id: str, sample_id: str) -> str:
+        return hashlib.sha256(f"{session_id}\0{sample_id}".encode("utf-8")).hexdigest()
 
     async def prepare_training_data(
         self,
@@ -302,978 +121,535 @@ class SegmentClassifierService:
         train_cache_key: str,
         val_cache_key: str,
         val_split: float = 0.2,
-        chunk_size: int = 100,
         session_ids: Optional[Collection[str]] = None,
-    ):
-        """
-        Splits annotated segments from source_cache_key into train and val keys.
-        Uses deterministic segment-level hashing so preparation does not depend
-        on session boundaries. When session_ids is provided, only source chunks
-        whose IDs are selected are included.
-        """
-        selected_session_ids = (
-            None if session_ids is None else {str(session_id) for session_id in session_ids}
-        )
-        if selected_session_ids is not None and not selected_session_ids:
+    ) -> None:
+        """Split annotated behavior samples while keeping child ranges attached."""
+        if not 0 <= val_split < 1:
+            raise ValueError(
+                "Validation split must be greater than or equal to 0 and less than 1."
+            )
+        selected = None if session_ids is None else {str(value) for value in session_ids}
+        if selected is not None and not selected:
             raise ValueError("At least one session must be selected for classifier training.")
 
-        print(f"Preparing training data: splitting {source_cache_key} into {train_cache_key} and {val_cache_key}")
-        if selected_session_ids is not None:
-            print(f"Selected training sessions: {sorted(selected_session_ids)}")
-        print("Using deterministic segment-level train/validation splitting...")
-        
-        # Clear existing keys
-        for key in [train_cache_key, val_cache_key]:
-            self.store.clear_cache(key)
-        
-        # PASS 1: Collect label statistics
-        print("Pass 1: Collecting annotated segments and label statistics...")
-        label_counts = defaultdict(int)
-        chunk_index = []  # Store (chunk_data, chunk_idx)
-        segment_index = []  # Store (item_key, item, labels)
-        
-        chunks = self.store.get_cached_data_chunks(source_cache_key, include_ids=True)
-        chunk_idx = 0
-        matched_session_ids = set()
-        
-        for chunk, session_id in chunks:
-            session_id = str(session_id)
-            if selected_session_ids is not None and session_id not in selected_session_ids:
+        sessions_found: set[str] = set()
+        samples: list[tuple[str, str, list[dict]]] = []
+        for chunk, raw_session_id in self.store.get_cached_data_chunks(
+            source_cache_key,
+            include_ids=True,
+        ):
+            session_id = str(raw_session_id)
+            if selected is not None and session_id not in selected:
                 continue
-            matched_session_ids.add(session_id)
+            records = _chunk_records(chunk)
+            if records:
+                sessions_found.add(session_id)
+                for sample_id, sample_records in _annotation_samples(records):
+                    samples.append((session_id, sample_id, sample_records))
 
-            chunk_data = []
-            if isinstance(chunk, list):
-                chunk_data = chunk
-            elif isinstance(chunk, dict) and "data" in chunk:
-                chunk_data = chunk["data"]
-            elif isinstance(chunk, dict) and "payload" in chunk:
-                chunk_data = [chunk["payload"]]
-            else:
-                chunk_data = [chunk]
-            
-            valid_items = []
-            for item_idx, d in enumerate(chunk_data):
-                if not isinstance(d, dict):
-                    continue
-                
-                # Validate
-                try:
-                    if "telemetry_data" not in d or not d["telemetry_data"]:
-                        continue
-                except Exception:
-                    continue
-                
-                # Extract labels and migrate legacy IDs before any training split/cache.
-                labels = normalize_label_ids(d.get("labels", []))
-                item = d
-                if labels != d.get("labels", []):
-                    item = dict(d)
-                    item["labels"] = labels
-
-                if not labels:
-                    continue
-
-                valid_items.append(item)
-                item_key = (chunk_idx, len(valid_items) - 1)
-                segment_index.append((item_key, item, labels))
-
-                for lbl in set(labels):
-                    label_counts[lbl] += 1
-            
-            if valid_items:
-                chunk_index.append((valid_items, chunk_idx))
-                chunk_idx += 1
-
-        if selected_session_ids is not None and not segment_index:
-            selected = ", ".join(sorted(selected_session_ids))
+        if selected is not None and not sessions_found:
+            names = ", ".join(sorted(selected))
+            raise ValueError(f"No annotation sessions found for selection: {names}")
+        if not samples:
+            raise ValueError("No annotated behavior samples found for classifier training.")
+        if val_split > 0 and len(samples) < 2:
             raise ValueError(
-                "No valid labeled segments found in the selected training "
-                f"sessions: {selected}"
+                "Validation requires at least two annotated behavior samples when "
+                "Val split is greater than 0."
             )
-        
-        print(f"Found {len(chunk_index)} chunks with {len(segment_index)} valid annotated segments")
-        if selected_session_ids is not None:
-            print(f"Matched source sessions: {sorted(matched_session_ids)}")
-        print(f"Label distribution: {[(label, count) for label, count in sorted(label_counts.items())]}")
-        
-        # PASS 2: Segment-level deterministic split
-        print("Pass 2: Performing segment-level deterministic split...")
-        
-        train_segments_set = set()  # Set of (chunk_idx, item_idx)
-        val_segments_set = set()
-        
-        train_label_counts = defaultdict(int)
-        val_label_counts = defaultdict(int)
-        
-        split_records = []
-        for item_key, item, labels in segment_index:
-            segment_hash = self._compute_segment_hash(item)
-            split_records.append((segment_hash, item_key, labels))
-            if self._assign_split(segment_hash, val_split) == "val":
-                val_segments_set.add(item_key)
-            else:
-                train_segments_set.add(item_key)
 
-        if split_records and not train_segments_set:
-            _, item_key, _ = min(split_records, key=lambda record: record[0])
-            val_segments_set.discard(item_key)
-            train_segments_set.add(item_key)
-        if val_split > 0 and len(split_records) > 1 and not val_segments_set:
-            _, item_key, _ = max(split_records, key=lambda record: record[0])
-            train_segments_set.discard(item_key)
-            val_segments_set.add(item_key)
+        ordered_samples = sorted(
+            samples,
+            key=lambda item: self._split_order(item[0], item[1]),
+        )
+        validation_count = 0
+        if val_split > 0:
+            validation_count = min(len(samples) - 1, math.ceil(len(samples) * val_split))
+        validation_samples = ordered_samples[:validation_count]
+        training_samples = ordered_samples[validation_count:]
 
-        for _, item_key, labels in split_records:
-            target_counts = val_label_counts if item_key in val_segments_set else train_label_counts
-            for label in set(labels):
-                target_counts[label] += 1
-        
-        print(f"Train segments: {len(train_segments_set)}, Val segments: {len(val_segments_set)}")
-        print(f"Train label distribution: {dict(train_label_counts)}")
-        print(f"Val label distribution: {dict(val_label_counts)}")
-        unsplit_labels = [
-            label
-            for label in sorted(label_counts.keys())
-            if train_label_counts[label] == 0 or val_label_counts[label] == 0
-        ]
-        if unsplit_labels:
-            print(
-                "Labels without both train and validation coverage "
-                f"after segment-level splitting: {unsplit_labels}"
+        training_records: dict[str, list[dict]] = defaultdict(list)
+        validation_records: dict[str, list[dict]] = defaultdict(list)
+        for session_id, _, records in training_samples:
+            training_records[session_id].extend(records)
+        for session_id, _, records in validation_samples:
+            validation_records[session_id].extend(records)
+
+        self.store.clear_cache(train_cache_key)
+        self.store.clear_cache(val_cache_key)
+        for session_id, records in training_records.items():
+            self.store.save_chunk(train_cache_key, session_id, records)
+        for session_id, records in validation_records.items():
+            self.store.save_chunk(val_cache_key, session_id, records)
+        print(
+            f"[INFO] Classifier sample split: train={len(training_samples)} "
+            f"validation={len(validation_samples)} requested_val_split={val_split:.1%}"
+        )
+
+    def _iter_sequences(self, cache_key: str):
+        for chunk in self.store.get_cached_data_chunks(cache_key):
+            yield from build_temporal_sequences(
+                chunk,
+                expected_features=self.feature_names,
+                label_ids=self.label_ids,
+                child_parent=self.child_parent,
             )
-        
-        # PASS 3: Write splits to storage
-        print("Pass 3: Writing splits to storage...")
-        train_buffer = []
-        val_buffer = []
-        train_idx = 1
-        val_idx = 1
-        
-        for chunk_data, chunk_idx in chunk_index:
-            for item_idx, item in enumerate(chunk_data):
-                if (chunk_idx, item_idx) in train_segments_set:
-                    train_buffer.append(item)
-                    if len(train_buffer) >= chunk_size:
-                        self.store.save_chunk(train_cache_key, train_idx, train_buffer)
-                        train_buffer = []
-                        train_idx += 1
-                        
-                elif (chunk_idx, item_idx) in val_segments_set:
-                    val_buffer.append(item)
-                    if len(val_buffer) >= chunk_size:
-                        self.store.save_chunk(val_cache_key, val_idx, val_buffer)
-                        val_buffer = []
-                        val_idx += 1
-        
-        # Flush remainders
-        if train_buffer:
-            self.store.save_chunk(train_cache_key, train_idx, train_buffer)
-        if val_buffer:
-            self.store.save_chunk(val_cache_key, val_idx, val_buffer)
-            
-        print(f"Data preparation complete. Train: {len(train_segments_set)} segments, Val: {len(val_segments_set)} segments")
 
-    async def fit_preprocessors(self, cache_key: str):
-        """
-        Scan data to fit preprocessors (Scaler, MLB) without loading everything.
-        """
-        print("Scanning data to fit preprocessors...")
-        chunks = self.store.get_cached_data_chunks(cache_key)
-        
-        all_labels = set()
-        self.label_counts = {}
-        self.head_specs = build_label_head_specs()
-        self.head_label_counts = {
-            spec.name: {label_id: 0 for label_id in spec.label_ids}
-            for spec in self.head_specs
-        }
-        self.head_active_counts = {spec.name: 0 for spec in self.head_specs}
-        total_segments = 0
-        self.scaler = StandardScaler()
-        max_seq_len = 0
-        
-        self.feature_names = self._current_feature_names()
-        
-        has_data = False
-        
-        for chunk in chunks:
-            chunk_data = []
-            if isinstance(chunk, list):
-                chunk_data = chunk
-            elif isinstance(chunk, dict) and "data" in chunk:
-                 chunk_data = chunk["data"]
-            elif isinstance(chunk, dict) and "payload" in chunk:
-                 chunk_data = [chunk["payload"]]
-            else:
-                 chunk_data = [chunk]
-            
-            for d in chunk_data:
-                if not isinstance(d, dict):
-                    continue
-                
-                try:
-                    ann = AnnotatedSegment.from_dict(d)
-                except Exception:
-                    continue
-                
-                # Collect labels
-                mapped_labels = normalize_label_ids(ann.labels)
-                all_labels.update(mapped_labels)
-                for l in mapped_labels:
-                    self.label_counts[l] = self.label_counts.get(l, 0) + 1
-                for spec in self.head_specs:
-                    if not head_is_active(mapped_labels, spec):
-                        continue
-                    self.head_active_counts[spec.name] += 1
-                    for label_id in labels_for_head(mapped_labels, spec):
-                        self.head_label_counts[spec.name][label_id] = (
-                            self.head_label_counts[spec.name].get(label_id, 0) + 1
-                        )
-                total_segments += 1
-                
-                if not ann.telemetry_data:
-                    continue
-                
-                df = pd.DataFrame(ann.telemetry_data)
-                
-                df = df.reindex(columns=self.feature_names, fill_value=0)
-                df = df.apply(pd.to_numeric, errors='coerce').fillna(0)
-                df = compute_derived_features(df)
+    async def fit_preprocessors(self, cache_key: str) -> None:
+        scaler = StandardScaler()
+        positives = np.zeros(len(self.label_ids), dtype=np.float64)
+        valid = np.zeros(len(self.label_ids), dtype=np.float64)
+        sequence_count = 0
 
-                if df.empty:
-                    continue
-                
-                vals = df.values
-                self.scaler.partial_fit(vals)
-                max_seq_len = max(max_seq_len, len(vals))
-                has_data = True
+        for sequence in self._iter_sequences(cache_key):
+            scaler.partial_fit(sequence.features)
+            positives += (sequence.targets * sequence.loss_mask).sum(axis=0)
+            valid += sequence.loss_mask.sum(axis=0)
+            sequence_count += 1
 
-        if not has_data:
-            raise ValueError("No valid training data found in cache.")
-            
-        self.head_mlbs = {}
-        self.head_pos_weights = {}
+        if sequence_count == 0:
+            raise ValueError("No contiguous annotated telemetry sequences found in cache.")
+        behavior_count = len(self.behavior_label_ids)
+        if positives[:behavior_count].sum() == 0:
+            raise ValueError("No behavior annotations found in classifier training data.")
+        if positives[behavior_count:].sum() == 0:
+            LOGGER.warning(
+                "No behavior sub-label annotations found in classifier training data; "
+                "training will continue with parent behavior labels only, and child-label "
+                "predictions from this model will not be reliable."
+            )
 
-        for spec in self.head_specs:
-            mlb = MultiLabelBinarizer()
-            mlb.fit([list(spec.label_ids)])
-            self.head_mlbs[spec.name] = mlb
+        negatives = np.maximum(valid - positives, 0)
+        weights = np.ones_like(positives)
+        present = positives > 0
+        weights[present] = negatives[present] / positives[present]
+        self.scaler = scaler
+        self.pos_weight = torch.tensor(weights, dtype=torch.float32, device=self.device)
 
-            active_count = self.head_active_counts.get(spec.name, total_segments)
-            pos_weights = []
-            for label in mlb.classes_:
-                pos = self.head_label_counts.get(spec.name, {}).get(label, 0)
-                neg = max(active_count - pos, 0)
-                if pos > 0:
-                    # Use sqrt dampening to prevent precision collapse on rare classes.
-                    weight = (neg / pos) ** 0.5
-                else:
-                    weight = 1.0
-                pos_weights.append(weight)
-            self.head_pos_weights[spec.name] = torch.FloatTensor(pos_weights).to(self.device)
+    def _dataset(self, cache_key: str) -> TemporalStreamingDataset:
+        return TemporalStreamingDataset(
+            self.store,
+            cache_key,
+            self.scaler,
+            self.feature_names,
+            self.label_ids,
+            self.child_parent,
+        )
 
-        self._refresh_flat_mlb_from_heads()
-        print("Calculated multi-head pos_weights (dampened).")
-        
-        if max_seq_len > self.max_length:
-            print(f"Updating max_length from {self.max_length} to {max_seq_len}")
-            self.max_length = max_seq_len
-            
-        print("Preprocessor fitting complete.")
+    @staticmethod
+    def _masked_loss(logits, targets, mask, pos_weight):
+        raw_loss = F.binary_cross_entropy_with_logits(
+            logits,
+            targets,
+            reduction="none",
+            pos_weight=pos_weight,
+        )
+        denominator = mask.sum()
+        if denominator.item() == 0:
+            return None
+        return (raw_loss * mask).sum() / denominator
+
+    @staticmethod
+    def _metric_counts(logits, targets, mask, threshold):
+        valid = mask.bool()
+        predictions = torch.sigmoid(logits) >= threshold
+        positives = targets.bool()
+        true_positives = (predictions & positives & valid).sum().item()
+        false_positives = (predictions & ~positives & valid).sum().item()
+        false_negatives = (~predictions & positives & valid).sum().item()
+        return (
+            int(true_positives),
+            int(false_positives),
+            int(false_negatives),
+            int(valid.sum().item()),
+        )
+
+    @staticmethod
+    def _validation_metrics(true_positives, false_positives, false_negatives):
+        precision_denominator = true_positives + false_positives
+        recall_denominator = true_positives + false_negatives
+        precision = true_positives / precision_denominator if precision_denominator else 0.0
+        recall = true_positives / recall_denominator if recall_denominator else 0.0
+        f1_denominator = precision + recall
+        f1 = 2 * precision * recall / f1_denominator if f1_denominator else 0.0
+        return precision, recall, f1
 
     async def train_model(
         self,
-        epochs=10,
-        batch_size=32,
-        learning_rate=0.001,
-        val_split=0.1,
+        epochs: int = 10,
+        batch_size: int = 32,
+        learning_rate: float = 0.001,
+        val_split: float = 0.1,
         annotation_cache_key: Optional[str] = None,
         session_ids: Optional[Collection[str]] = None,
-    ):
-        """Train the CNN classifier using streaming data with train/val split."""
+    ) -> None:
+        self._configure_training_backend()
+
         from app.pipelines.training.config import TrainingPipelineConfig
-        cache_key = annotation_cache_key or TrainingPipelineConfig().annotation_cache_key
-        print(f"Training source annotation dataset: {cache_key}")
-        
-        train_key = f"{cache_key}_train"
-        val_key = f"{cache_key}_val"
-        
+
+        source_key = annotation_cache_key or TrainingPipelineConfig().annotation_cache_key
+        train_key = f"{source_key}_train"
+        val_key = f"{source_key}_val"
         await self.prepare_training_data(
-            cache_key,
+            source_key,
             train_key,
             val_key,
             val_split,
             session_ids=session_ids,
         )
-        
         await self.fit_preprocessors(train_key)
-        
-        train_dataset = MultiHeadStreamingSegmentDataset(
-            self.store, 
-            train_key, 
-            self.head_mlbs,
-            self.head_specs,
-            self.scaler, 
-            self.max_length,
-            self._feature_names_for_model()
+
+        train_loader = DataLoader(
+            self._dataset(train_key),
+            batch_size=batch_size,
+            collate_fn=pad_temporal_batch,
+            num_workers=0,
+        )
+        val_loader = DataLoader(
+            self._dataset(val_key),
+            batch_size=batch_size,
+            collate_fn=pad_temporal_batch,
+            num_workers=0,
+        )
+        input_dim = int(self.scaler.mean_.shape[0])
+        self.model = TemporalDetectionModel(
+            input_dim=input_dim,
+            output_dim=len(self.label_ids),
+            hidden_dim=self.hidden_dim,
+            dilations=self.dilations,
+            dropout=self.dropout,
+        ).to(self.device)
+        optimizer = torch.optim.Adam(
+            self.model.parameters(),
+            lr=learning_rate,
+            weight_decay=1e-4,
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=0.5,
+            patience=2,
         )
 
-        val_dataset = MultiHeadStreamingSegmentDataset(
-            self.store, 
-            val_key, 
-            self.head_mlbs,
-            self.head_specs,
-            self.scaler, 
-            self.max_length,
-            self._feature_names_for_model()
-        )
-        
-        # num_workers=0 — avoids subprocess Lance reader complications.
-        train_loader = DataLoader(train_dataset, batch_size=batch_size)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size)
-        
-        input_dim = self.scaler.mean_.shape[0]
-        head_output_dims = {
-            head_name: len(mlb.classes_)
-            for head_name, mlb in self.head_mlbs.items()
-        }
-        # Increased network size to handle larger label set (~50+ labels)
-        hidden_dim = 256
-        num_layers = 3
-        
-        self.model = MultiHeadCNN1DModel(input_dim, hidden_dim, head_output_dims, num_layers=num_layers).to(self.device)
-        criteria = {
-            head_name: FocalLoss(reduction='none', pos_weight=pos_weight)
-            for head_name, pos_weight in self.head_pos_weights.items()
-        }
-        # Added weight_decay for regularization
-        optimizer = optim.Adam(self.model.parameters(), lr=learning_rate, weight_decay=1e-4)
-        # Scheduler to reduce LR when validation metric plateaus
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=2)
-                
-        best_val_loss = float('inf')
-        best_model_state = None
-        patience_limit = 3  # Early stopping patience
-        patience_counter = 0
-
+        best_loss = float("inf")
+        best_state = None
+        best_metrics = None
+        best_epoch = None
         for epoch in range(epochs):
             self.model.train()
-            total_loss = 0
-            batch_count = 0
-            for batch_X, batch_y, batch_mask in train_loader:
-                batch_X = batch_X.to(self.device)
-                batch_y = {name: target.to(self.device) for name, target in batch_y.items()}
-                batch_mask = {name: mask.to(self.device) for name, mask in batch_mask.items()}
-                
+            train_losses = []
+            for features, targets, mask in train_loader:
+                features = features.to(self.device)
+                targets = targets.to(self.device)
+                mask = mask.to(self.device)
                 optimizer.zero_grad()
-                outputs, _ = self.model(batch_X)
-                head_losses = []
-                for head_name, head_outputs in outputs.items():
-                    head_mask = batch_mask[head_name]
-                    if head_mask.sum().item() <= 0:
-                        continue
-                    raw_loss = criteria[head_name](head_outputs, batch_y[head_name])
-                    masked_loss = raw_loss * head_mask
-                    head_losses.append(
-                        masked_loss.sum() / (head_mask.sum() * head_outputs.shape[-1] + 1e-8)
-                    )
-
-                if not head_losses:
+                loss = self._masked_loss(
+                    self.model(features),
+                    targets,
+                    mask,
+                    self.pos_weight,
+                )
+                if loss is None:
                     continue
-                loss = torch.stack(head_losses).mean()
-                
                 loss.backward()
                 optimizer.step()
-                
-                total_loss += loss.item()
-                batch_count += 1
-            
-            avg_loss = total_loss / batch_count if batch_count > 0 else 0
-            
-            # Validation
+                train_losses.append(float(loss.item()))
+
             self.model.eval()
-            val_loss = 0
-            val_count = 0
+            val_losses = []
+            val_sequence_count = 0
+            val_label_count = 0
+            true_positives = 0
+            false_positives = 0
+            false_negatives = 0
             with torch.no_grad():
-                for val_X, val_y, val_mask in val_loader:
-                    val_X = val_X.to(self.device)
-                    val_y = {name: target.to(self.device) for name, target in val_y.items()}
-                    val_mask = {name: mask.to(self.device) for name, mask in val_mask.items()}
-                    outputs, _ = self.model(val_X)
-                    head_losses = []
-                    for head_name, head_outputs in outputs.items():
-                        head_mask = val_mask[head_name]
-                        if head_mask.sum().item() <= 0:
-                            continue
-                        raw_loss = criteria[head_name](head_outputs, val_y[head_name])
-                        masked_loss = raw_loss * head_mask
-                        head_losses.append(
-                            masked_loss.sum() / (head_mask.sum() * head_outputs.shape[-1] + 1e-8)
+                for features, targets, mask in val_loader:
+                    logits = self.model(features.to(self.device))
+                    device_targets = targets.to(self.device)
+                    device_mask = mask.to(self.device)
+                    loss = self._masked_loss(
+                        logits,
+                        device_targets,
+                        device_mask,
+                        self.pos_weight,
+                    )
+                    if loss is not None:
+                        val_losses.append(float(loss.item()))
+                        val_sequence_count += int(features.shape[0])
+                        counts = self._metric_counts(
+                            logits,
+                            device_targets,
+                            device_mask,
+                            self.threshold,
                         )
-                    if not head_losses:
-                        continue
-                    loss = torch.stack(head_losses).mean()
-                    
-                    val_loss += loss.item()
-                    val_count += 1
-            
-            avg_val_loss = val_loss / val_count if val_count > 0 else 0
-            
-            print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+                        true_positives += counts[0]
+                        false_positives += counts[1]
+                        false_negatives += counts[2]
+                        val_label_count += counts[3]
 
-            # Scheduler Step
-            scheduler.step(avg_val_loss)
+            if not train_losses:
+                raise ValueError("No valid temporal training samples were produced.")
+            if val_split > 0 and not val_losses:
+                raise ValueError("No valid temporal validation samples were produced by Val split.")
 
-            # Checkpointing and Early Stopping
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                best_model_state = copy.deepcopy(self.model.state_dict())
-                patience_counter = 0
-                print(f"  New best model found! (Val Loss: {best_val_loss:.4f})")
+            train_loss = float(np.mean(train_losses))
+            if val_losses:
+                monitored_loss = float(np.mean(val_losses))
+                metrics = self._validation_metrics(
+                    true_positives,
+                    false_positives,
+                    false_negatives,
+                )
+                print(
+                    f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, "
+                    f"Val Loss: {monitored_loss:.4f}, Val Samples: {val_sequence_count}, "
+                    f"Val Labels: {val_label_count}, Val Precision: {metrics[0]:.4f}, "
+                    f"Val Recall: {metrics[1]:.4f}, Val F1: {metrics[2]:.4f}"
+                )
             else:
-                patience_counter += 1
-                if patience_counter >= patience_limit:
-                    print(f"  Early stopping triggered after {patience_limit} epochs without improvement.")
-                    break
-        
-        # Restore best model
-        if best_model_state is not None:
-             print(f"Restoring best model state (Val Loss: {best_val_loss:.4f})...")
-             self.model.load_state_dict(best_model_state)
+                monitored_loss = train_loss
+                metrics = None
+                print(
+                    f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, "
+                    "Validation: disabled (Val split is 0)"
+                )
+            scheduler.step(monitored_loss)
+            if monitored_loss < best_loss:
+                best_loss = monitored_loss
+                best_state = copy.deepcopy(self.model.state_dict())
+                best_metrics = metrics
+                best_epoch = epoch + 1
 
-        # Final Evaluation Report
-        print("\nGenerating final evaluation report on validation set...")
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+        if best_metrics is not None:
+            print(
+                f"[INFO] Best validation result: epoch={best_epoch} loss={best_loss:.4f} "
+                f"precision={best_metrics[0]:.4f} recall={best_metrics[1]:.4f} "
+                f"f1={best_metrics[2]:.4f}"
+            )
         self.model.eval()
-        head_probs = defaultdict(list)
-        head_targets = defaultdict(list)
-        head_segment_probs = defaultdict(list)
-        head_segment_targets = defaultdict(list)
-        
-        with torch.no_grad():
-            for val_X, val_y, val_mask in val_loader:
-                val_X = val_X.to(self.device)
-                val_y = {name: target.to(self.device) for name, target in val_y.items()}
-                val_mask = {name: mask.to(self.device) for name, mask in val_mask.items()}
-                outputs, _ = self.model(val_X)
-                for head_name, head_outputs in outputs.items():
-                    probs = torch.sigmoid(head_outputs)
-                    mask_flat = val_mask[head_name].cpu().bool().numpy().flatten()
-                    probs_flat = probs.cpu().numpy().reshape(-1, head_outputs.shape[-1])
-                    targets_flat = val_y[head_name].cpu().numpy().reshape(-1, head_outputs.shape[-1])
-                    if len(mask_flat) > 0 and np.any(mask_flat):
-                        head_probs[head_name].append(probs_flat[mask_flat])
-                        head_targets[head_name].append(targets_flat[mask_flat])
+        self._save_artifacts()
 
-                    for i in range(val_X.size(0)):
-                        length = int(val_mask[head_name][i].sum().item())
-                        if length == 0:
-                            continue
-                        head_segment_probs[head_name].append(probs[i, :length].mean(dim=0).cpu().numpy())
-                        head_segment_targets[head_name].append(val_y[head_name][i, 0].cpu().numpy())
-
-        for spec in self.head_specs:
-            mlb = self.head_mlbs.get(spec.name)
-            if mlb is None:
-                continue
-            target_names = [
-                LABEL_MAPPING.get(normalize_label_id(l), normalize_label_id(l))
-                for l in mlb.classes_
-            ]
-            if head_segment_probs[spec.name]:
-                self._print_probability_summary(
-                    f"\n=== Segment-Level Probability Summary ({spec.name}) ===",
-                    np.array(head_segment_probs[spec.name]),
-                    np.array(head_segment_targets[spec.name]),
-                    target_names,
-                )
-            if head_probs[spec.name]:
-                self._print_probability_summary(
-                    f"Validation Probability Summary ({spec.name}, Per-Timestep):",
-                    np.concatenate(head_probs[spec.name]),
-                    np.concatenate(head_targets[spec.name]),
-                    target_names,
-                )
-
-        # Save model and artifacts
-        torch.save(self.model.state_dict(), self.model_path)
-        joblib.dump(self.mlb, self.mlb_path)
-        joblib.dump(self.head_mlbs, self.head_mlbs_path)
-        joblib.dump(self.scaler, self.scaler_path)
-        if self.head_pos_weights is not None:
-            torch.save(self.head_pos_weights, self.head_pos_weight_path)
-        
-        # Save config with model architecture
-        config = {
-            "format": "segment_classifier/v2",
-            "max_length": self.max_length,
-            "hidden_dim": hidden_dim,
-            "num_layers": num_layers,
-            "feature_names": self._feature_names_for_model(),
-            "head_specs": self._head_specs_to_config(),
-        }
-        with open(self.models_directory / "segment_config.json", "w") as f:
-            json.dump(config, f)
-        self.model_format = "segment_classifier/v2"
-
-        print(f"Model saved to {self.model_path}")
-
-        # Push to backend so other replicas / fresh containers can hydrate
-        # from /app/ml/segment_classifier/bootstrap.py on startup. Local
-        # training is the source of truth — log and continue on failure.
         try:
             from app.integrations.backend.client import backend_service
-            payload = self.serialize_artifacts()
+
             await backend_service.save_ai_model(
                 model_type="segment_classifier",
-                model_data=payload,
+                model_data=self.serialize_artifacts(),
                 metadata={
-                    "max_length": self.max_length,
-                    "hidden_dim": hidden_dim,
-                    "num_layers": num_layers,
-                    "num_heads": len(self.head_mlbs) if self.head_mlbs else 0,
-                    "head_label_counts": {
-                        head_name: len(mlb.classes_)
-                        for head_name, mlb in (self.head_mlbs or {}).items()
-                    },
-                    "num_labels": len(self.mlb.classes_) if self.mlb is not None else 0,
-                    "feature_count": self._scaler_feature_count() or 0,
+                    "format": MODEL_FORMAT,
+                    "num_labels": len(self.label_ids),
+                    "feature_count": input_dim,
                 },
                 is_active=True,
             )
-            print("[INFO] ✓ segment_classifier uploaded to backend")
-        except Exception as upload_exc:
-            print(f"[WARN] segment_classifier backend upload failed: {upload_exc}")
+        except Exception as exc:
+            LOGGER.warning("segment_classifier backend upload failed: %s", exc)
 
-    def load_model(self):
-        """Load the trained model."""
-        if not (self.model_path.exists() and self.scaler_path.exists()):
+    def _config(self) -> dict:
+        return {
+            "format": MODEL_FORMAT,
+            "feature_names": self.feature_names,
+            "label_ids": self.label_ids,
+            "hidden_dim": self.hidden_dim,
+            "dilations": list(self.dilations),
+            "dropout": self.dropout,
+            "threshold": self.threshold,
+        }
+
+    def _save_artifacts(self) -> None:
+        torch.save(self.model.state_dict(), self.model_path)
+        joblib.dump(self.scaler, self.scaler_path)
+        with self.config_path.open("w", encoding="utf-8") as handle:
+            json.dump(self._config(), handle)
+
+    def load_model(self) -> bool:
+        if not self.has_local_artifacts():
+            return False
+        with self.config_path.open("r", encoding="utf-8") as handle:
+            config = json.load(handle)
+        if config.get("format") != MODEL_FORMAT:
             return False
 
-        self.feature_names = None
+        self.feature_names = list(config["feature_names"])
+        self.label_ids = list(config["label_ids"])
+        self.behavior_label_ids = [
+            label_id for label_id in BEHAVIOR_LABELS if label_id in self.label_ids
+        ]
+        _, catalog_children = _behavior_and_child_labels()
+        self.child_parent = {
+            child_id: parent_id
+            for child_id, parent_id in catalog_children.items()
+            if child_id in self.label_ids and parent_id in self.label_ids
+        }
+        self.hidden_dim = int(config["hidden_dim"])
+        self.dilations = tuple(int(value) for value in config["dilations"])
+        self.dropout = float(config["dropout"])
+        self.threshold = float(config.get("threshold", DEFAULT_THRESHOLD))
         self.scaler = joblib.load(self.scaler_path)
+        self.model = TemporalDetectionModel(
+            input_dim=int(self.scaler.mean_.shape[0]),
+            output_dim=len(self.label_ids),
+            hidden_dim=self.hidden_dim,
+            dilations=self.dilations,
+            dropout=self.dropout,
+        ).to(self.device)
+        self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+        self.model.eval()
+        return True
 
-        hidden_dim = 256
-        num_layers = 3
-        config = {}
-        config_path = self.models_directory / "segment_config.json"
-        if config_path.exists():
-            with open(config_path, "r") as f:
-                config = json.load(f)
-                self.max_length = config.get("max_length", self.max_length)
-                hidden_dim = config.get("hidden_dim", hidden_dim)
-                num_layers = config.get("num_layers", num_layers)
-                feature_names = config.get("feature_names")
-                scaler_feature_count = self._scaler_feature_count()
-                if (
-                    isinstance(feature_names, list)
-                    and all(isinstance(f, str) for f in feature_names)
-                    and (
-                        scaler_feature_count is None
-                        or len(feature_names) * 2 == scaler_feature_count
-                    )
-                ):
-                    self.feature_names = feature_names
-
-        self._feature_names_for_model()
-        input_dim = self.scaler.mean_.shape[0]
-
-        is_v2 = (
-            config.get("format") == "segment_classifier/v2"
-            and self.head_mlbs_path.exists()
-        )
-        if is_v2:
-            self.model_format = "segment_classifier/v2"
-            self.head_specs = self._head_specs_from_config(config.get("head_specs"))
-            self.head_mlbs = joblib.load(self.head_mlbs_path)
-            if self.head_pos_weight_path.exists():
-                self.head_pos_weights = torch.load(
-                    self.head_pos_weight_path,
-                    map_location=self.device,
-                    weights_only=True,
-                )
-            self._refresh_flat_mlb_from_heads()
-
-            head_output_dims = {
-                head_name: len(mlb.classes_)
-                for head_name, mlb in self.head_mlbs.items()
-            }
-            self.model = MultiHeadCNN1DModel(
-                input_dim,
-                hidden_dim,
-                head_output_dims,
-                num_layers=num_layers,
-            ).to(self.device)
-            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
-            self.model.eval()
-            return True
-
-        if self.mlb_path.exists():
-            self.model_format = "segment_classifier/v1"
-            self.head_mlbs = None
-            self.head_pos_weights = None
-            self.mlb = joblib.load(self.mlb_path)
-            if self.pos_weight_path.exists():
-                self.pos_weight = torch.load(self.pos_weight_path, map_location=self.device, weights_only=True)
-            output_dim = len(self.mlb.classes_)
-            self.model = CNN1DModel(input_dim, hidden_dim, output_dim, num_layers=num_layers).to(self.device)
-            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
-            self.model.eval()
-            return True
-        return False
-
-    # Artifact filenames packed into / unpacked from the backend payload.
-    # weight files are optional to keep old classifier payloads loadable.
-    _ARTIFACT_FILES_REQUIRED_V1 = (
+    _ARTIFACT_FILES = (
         "segment_classifier.pth",
-        "segment_labels.joblib",
         "segment_scaler.joblib",
         "segment_config.json",
     )
-    _ARTIFACT_FILES_REQUIRED_V2 = (
-        "segment_classifier.pth",
-        "segment_head_labels.joblib",
-        "segment_scaler.joblib",
-        "segment_config.json",
-    )
-    _ARTIFACT_FILES_OPTIONAL_V1 = ("segment_pos_weight.pt",)
-    _ARTIFACT_FILES_OPTIONAL_V2 = ("segment_head_pos_weights.pt", "segment_labels.joblib")
-
-    def serialize_artifacts(self) -> Dict[str, Any]:
-        """Pack the on-disk model files into a JSON-safe dict for backend upload."""
-        config_format = None
-        config_path = self.models_directory / "segment_config.json"
-        if config_path.is_file():
-            try:
-                with open(config_path, "r") as f:
-                    config_format = json.load(f).get("format")
-            except Exception:
-                config_format = None
-
-        has_v2_files = all(
-            (self.models_directory / name).is_file()
-            for name in self._ARTIFACT_FILES_REQUIRED_V2
-        )
-        artifact_format = (
-            "segment_classifier/v2"
-            if config_format == "segment_classifier/v2" and has_v2_files
-            else "segment_classifier/v1"
-        )
-        required_files = (
-            self._ARTIFACT_FILES_REQUIRED_V2
-            if artifact_format == "segment_classifier/v2"
-            else self._ARTIFACT_FILES_REQUIRED_V1
-        )
-        optional_files = (
-            self._ARTIFACT_FILES_OPTIONAL_V2
-            if artifact_format == "segment_classifier/v2"
-            else self._ARTIFACT_FILES_OPTIONAL_V1
-        )
-
-        files: Dict[str, str] = {}
-        for name in required_files:
-            path = self.models_directory / name
-            if not path.is_file():
-                raise FileNotFoundError(f"Cannot serialize — missing required artifact: {path}")
-            files[name] = base64.b64encode(path.read_bytes()).decode("ascii")
-
-        for name in optional_files:
-            path = self.models_directory / name
-            if path.is_file():
-                files[name] = base64.b64encode(path.read_bytes()).decode("ascii")
-
-        return {"format": artifact_format, "files": files}
-
-    def deserialize_artifacts(self, payload: Dict[str, Any]) -> None:
-        """Write a backend-fetched payload back to ``self.models_directory``."""
-        if not isinstance(payload, dict):
-            raise ValueError(f"segment_classifier payload must be dict, got {type(payload)}")
-        files = payload.get("files")
-        if not isinstance(files, dict):
-            raise ValueError("segment_classifier payload missing 'files' dict")
-
-        artifact_format = payload.get("format")
-        required_files = (
-            self._ARTIFACT_FILES_REQUIRED_V2
-            if artifact_format == "segment_classifier/v2" or "segment_head_labels.joblib" in files
-            else self._ARTIFACT_FILES_REQUIRED_V1
-        )
-
-        for name in required_files:
-            if name not in files:
-                raise ValueError(f"segment_classifier payload missing required artifact: {name}")
-
-        self.models_directory.mkdir(parents=True, exist_ok=True)
-        for name, encoded in files.items():
-            (self.models_directory / name).write_bytes(base64.b64decode(encoded))
 
     def has_local_artifacts(self) -> bool:
-        """True when every required artifact already lives on disk."""
-        config_format = None
-        config_path = self.models_directory / "segment_config.json"
-        if config_path.is_file():
-            try:
-                with open(config_path, "r") as f:
-                    config_format = json.load(f).get("format")
-            except Exception:
-                config_format = None
+        if not all((self.models_directory / name).is_file() for name in self._ARTIFACT_FILES):
+            return False
+        try:
+            with self.config_path.open("r", encoding="utf-8") as handle:
+                return json.load(handle).get("format") == MODEL_FORMAT
+        except (OSError, ValueError, TypeError):
+            return False
 
-        has_v2 = (
-            config_format == "segment_classifier/v2"
-            and all((self.models_directory / name).is_file() for name in self._ARTIFACT_FILES_REQUIRED_V2)
-        )
-        has_v1 = all(
-            (self.models_directory / name).is_file()
-            for name in self._ARTIFACT_FILES_REQUIRED_V1
-        )
-        return has_v2 or has_v1
+    def serialize_artifacts(self) -> Dict[str, Any]:
+        if not self.has_local_artifacts():
+            raise FileNotFoundError("Temporal segment classifier artifacts are incomplete.")
+        return {
+            "format": MODEL_FORMAT,
+            "files": {
+                name: base64.b64encode((self.models_directory / name).read_bytes()).decode("ascii")
+                for name in self._ARTIFACT_FILES
+            },
+        }
 
-    def _scaled_tensor_from_numeric_df(self, numeric_df: pd.DataFrame) -> Tuple[torch.Tensor, int]:
-        X_scaled = self.scaler.transform(numeric_df.values)
-        original_len = len(X_scaled)
-        if original_len > self.max_length:
-             X_scaled = X_scaled[:self.max_length]
-             original_len = self.max_length
-        elif original_len < self.max_length:
-             pad_len = self.max_length - original_len
-             X_scaled = np.pad(X_scaled, ((0, pad_len), (0, 0)), 'constant')
+    def deserialize_artifacts(self, payload: Dict[str, Any]) -> None:
+        if not isinstance(payload, dict) or payload.get("format") != MODEL_FORMAT:
+            raise ValueError(f"segment_classifier payload must use {MODEL_FORMAT}")
+        files = payload.get("files")
+        if not isinstance(files, dict):
+            raise ValueError("segment_classifier payload missing files")
+        missing = [name for name in self._ARTIFACT_FILES if name not in files]
+        if missing:
+            raise ValueError(f"segment_classifier payload missing: {', '.join(missing)}")
+        for name in self._ARTIFACT_FILES:
+            (self.models_directory / name).write_bytes(base64.b64decode(files[name]))
 
-        return torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device), original_len
-
-    def _predict_multi_head_probabilities_from_numeric_df(self, numeric_df: pd.DataFrame) -> Dict[str, float]:
-        X_tensor, original_len = self._scaled_tensor_from_numeric_df(numeric_df)
-        
-        with torch.no_grad():
-            outputs, _ = self.model(X_tensor)
-            result = {}
-            for spec in self.head_specs:
-                head_outputs = outputs.get(spec.name)
-                mlb = self.head_mlbs.get(spec.name)
-                if head_outputs is None:
-                    continue
-                if mlb is None:
-                    continue
-                probs_tensor = torch.sigmoid(head_outputs)
-                valid_probs = probs_tensor[0, :original_len, :]
-                probs = valid_probs.mean(dim=0).cpu().numpy()
-                for i, p in enumerate(probs):
-                    label = normalize_label_id(mlb.classes_[i])
-                    result[label] = max(result.get(label, 0.0), float(p))
-        return result
-
-    def predict_segment(self, segment_df: pd.DataFrame) -> List[str]:
-        """Return labels ranked by raw model probability for a single segment."""
-        if self.model is None:
-            if not self.load_model():
-                raise ValueError("Model not trained or found.")
-
-        numeric_df = self._prepare_numeric_features(segment_df)
-
-        if numeric_df.empty:
-            return []
-
-        if self._is_multi_head_model():
-            probabilities = self._predict_multi_head_probabilities_from_numeric_df(numeric_df)
-            return [
-                label
-                for label, _ in sorted(probabilities.items(), key=lambda item: item[1], reverse=True)
-            ]
-
-        X_tensor, original_len = self._scaled_tensor_from_numeric_df(numeric_df)
-        
-        with torch.no_grad():
-            outputs, _ = self.model(X_tensor)
-            probs_tensor = torch.sigmoid(outputs)
-            valid_probs = probs_tensor[0, :original_len, :]
-            probs = valid_probs.mean(dim=0).cpu().numpy()
-            
-        return self._labels_ranked_by_probability(probs)
-
-    def predict_segment_probabilities(self, segment_df: pd.DataFrame) -> Dict[str, float]:
-        """Predict probabilities for all labels for a single segment DataFrame."""
-        if self.model is None:
-            if not self.load_model():
-                return {}
-
-        df = self._prepare_numeric_features(segment_df)
-
-        if df.empty:
-            return {}
-
-        if self._is_multi_head_model():
-            result = self._predict_multi_head_probabilities_from_numeric_df(df)
-            return dict(sorted(result.items(), key=lambda item: item[1], reverse=True))
-
-        X_tensor, original_len = self._scaled_tensor_from_numeric_df(df)
-        
-        with torch.no_grad():
-            outputs, _ = self.model(X_tensor)
-            probs_tensor = torch.sigmoid(outputs)
-            valid_probs = probs_tensor[0, :original_len, :]
-            probs = valid_probs.mean(dim=0).cpu().numpy()
-            
-        result = {}
-        for i, p in enumerate(probs):
-            label = normalize_label_id(self.mlb.classes_[i])
-            result[label] = max(result.get(label, 0.0), float(p))
-            
-        return dict(sorted(result.items(), key=lambda item: item[1], reverse=True))
-
-    def scan_telemetry_data(self, dataframe: pd.DataFrame) -> List[PredictedSegment]:
-        """
-        Scan a dataframe and return found segments with labels.
-        Uses full-window CNN inference with probability smoothing.
-        """
-        if self.model is None:
-            if not self.load_model():
-                raise ValueError("Segment classifier model not trained or found.")
-        
-        source_df = dataframe.reset_index(drop=True)
-        numeric_df = self._prepare_numeric_features(source_df)
-        if numeric_df.empty:
-            return []
-
-        # Scale
-        X_scaled = self.scaler.transform(numeric_df.values)
-        
-        # Inference on the full window lets the 1D-CNN use local row context
-        # across the window instead of treating rows independently.
-        # Note: For extremely long sequences (>10k steps), we might need overlapping windows,
-        # but for typical telemetry sessions, full sequence is better for context.
-        self.model.eval()
-        
-        X_tensor = torch.FloatTensor(X_scaled).unsqueeze(0).to(self.device)
-        
-        with torch.no_grad():
-            outputs, _ = self.model(X_tensor)
-            if self._is_multi_head_model():
-                probs_by_head = {
-                    head_name: pd.DataFrame(
-                        torch.sigmoid(head_outputs).squeeze(0).cpu().numpy(),
-                        columns=self.head_mlbs[head_name].classes_,
-                    ).rolling(window=5, center=True, min_periods=1).mean().values
-                    for head_name, head_outputs in outputs.items()
-                    if head_name in self.head_mlbs
-                }
-            else:
-                probs = torch.sigmoid(outputs).squeeze(0).cpu().numpy()
-                probs_df = pd.DataFrame(probs, columns=self.mlb.classes_)
-                probs_smoothed = probs_df.rolling(window=5, center=True, min_periods=1).mean().values
-            
-        found_segments = []
-        current_labels = []
-        current_boundary_labels = []
-        current_start = 0
-
-        def top_label(head_name: str, row_index: int) -> Optional[str]:
-            if not self._is_multi_head_model() or head_name not in probs_by_head:
-                return None
-            mlb = self.head_mlbs.get(head_name)
-            if mlb is None:
-                return None
-            top_idx = int(np.argmax(probs_by_head[head_name][row_index]))
-            return normalize_label_id(mlb.classes_[top_idx])
-        
-        # Iterate through to find contiguous segments with the same top label.
-        # This keeps scanning threshold-free without marking every sigmoid
-        # output as active everywhere.
-        for i in range(len(numeric_df)):
-            if self._is_multi_head_model():
-                behavior_label = top_label("behavior_main", i)
-                labels_at_i = [behavior_label] if behavior_label else []
-                boundary_labels_at_i = [behavior_label] if behavior_label else []
-
-                if behavior_label:
-                    sub_label = top_label(f"sub:{behavior_label}", i)
-                    if sub_label:
-                        labels_at_i.append(sub_label)
-
-                segment_type_label = top_label("segment_type", i)
-                if segment_type_label:
-                    labels_at_i.append(segment_type_label)
-            else:
-                top_idx = int(np.argmax(probs_smoothed[i]))
-                labels_at_i = [normalize_label_id(self.mlb.classes_[top_idx])]
-                boundary_labels_at_i = labels_at_i
-            
-            if i == 0:
-                current_labels = labels_at_i
-                current_boundary_labels = boundary_labels_at_i
-                current_start = 0
-            else:
-                if boundary_labels_at_i != current_boundary_labels:
-                    # Close previous segment if it had labels
-                    if current_labels:
-                        found_segments.append({
-                            "start_index": current_start,
-                            "end_index": i,
-                            "labels": current_labels
-                        })
-                    current_labels = labels_at_i
-                    current_boundary_labels = boundary_labels_at_i
-                    current_start = i
-        
-        # Close final segment
-        if current_labels:
-            found_segments.append({
-                "start_index": current_start,
-                "end_index": len(numeric_df),
-                "labels": current_labels
-            })
-        
-        results = []
-        for meta in found_segments:
-            start = meta['start_index']
-            end = meta['end_index']
-            
-            # Filter out very short segments (e.g. < 3 steps) as noise
-            if end - start < 3:
-                continue
-
-            segment_df = source_df.iloc[start:end]
-            
-            # Extract actual data and wrap with metadata
-            segment_data = segment_df.to_dict('records')
-            
-            predicted_segment = PredictedSegment(
-                labels=meta["labels"],
-                telemetry_data=segment_data,
-                start_index=start,
-                end_index=end
+    def _prepare_numeric_features(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        missing = [name for name in self.feature_names if name not in dataframe.columns]
+        if missing:
+            LOGGER.warning(
+                "segment_classifier input missing %d/%d features; filling with zero",
+                len(missing),
+                len(self.feature_names),
             )
-            results.append(predicted_segment)
-            
-        return results
+        frame = dataframe.reindex(columns=self.feature_names, fill_value=0)
+        frame = frame.apply(pd.to_numeric, errors="coerce").fillna(0)
+        return compute_derived_features(frame) if not frame.empty else frame
 
-    async def scan_session(self, dataframe: Optional[pd.DataFrame] = None, target_labels: Optional[List[int]] = None, **kwargs) -> None:
-        """
-        Scan a session and find segments matching labels using the CNN classifier.
-        Identifies intervals, extracts actual segments, and saves to cache.
-        """
-        # Reuse the logic from scan_telemetry_data to ensure consistency
-        found_segments = self.scan_telemetry_data(dataframe)
-        
-        # Extract and cache segments
-        chunk_segments = []
-        for segment in found_segments:
-            if target_labels:
-                if not any(label in segment.labels for label in target_labels):
-                    continue
+    def score_sequence(self, dataframe: pd.DataFrame) -> pd.DataFrame:
+        """Return per-timestep probabilities for the complete input sequence."""
+        if self.model is None and not self.load_model():
+            raise ValueError("Temporal segment classifier model not trained or found.")
+        numeric = self._prepare_numeric_features(dataframe.reset_index(drop=True))
+        if numeric.empty:
+            return pd.DataFrame(columns=self.label_ids, dtype=float)
+        scaled = self.scaler.transform(numeric.to_numpy())
+        inputs = torch.tensor(scaled, dtype=torch.float32, device=self.device).unsqueeze(0)
+        self.model.eval()
+        with torch.no_grad():
+            scores = torch.sigmoid(self.model(inputs))[0].cpu().numpy()
+        return pd.DataFrame(scores, columns=self.label_ids)
 
-            chunk_segments.append(segment.to_dict())
-            
-        # Cache segments
-        from app.pipelines.training.config import TrainingPipelineConfig
-        cache_key = TrainingPipelineConfig().segments_cache_key
-        
-        if chunk_segments:
-             async def segments_generator():
-                yield chunk_segments
-             
-             await self.store.cache_chunks_streaming(
-                cache_key=cache_key,
-                chunks_iterator=segments_generator()
-             )
+    @staticmethod
+    def _merge_score_runs(scores: Sequence[float], threshold: float):
+        start = None
+        values: list[float] = []
+        for index, raw_score in enumerate(scores):
+            score = float(raw_score)
+            if score >= threshold:
+                if start is None:
+                    start = index
+                values.append(score)
+            elif start is not None:
+                yield start, index, float(np.mean(values))
+                start = None
+                values = []
+        if start is not None:
+            yield start, len(scores), float(np.mean(values))
 
-# Singleton instance
+    def detect_segments(
+        self,
+        dataframe: pd.DataFrame,
+        threshold: Optional[float] = None,
+    ) -> list[PredictedSegment]:
+        """Detect behavior ranges, then rerun each crop for its sub-labels."""
+        source = dataframe.reset_index(drop=True)
+        if source.empty:
+            return []
+        active_threshold = self.threshold if threshold is None else float(threshold)
+        sequence_scores = self.score_sequence(source)
+        detections: list[PredictedSegment] = []
+
+        children_by_parent: dict[str, list[str]] = {
+            behavior_id: [] for behavior_id in self.behavior_label_ids
+        }
+        for child_id, parent_id in self.child_parent.items():
+            children_by_parent.setdefault(parent_id, []).append(child_id)
+
+        for behavior_id in self.behavior_label_ids:
+            if behavior_id not in sequence_scores:
+                continue
+            for start, end, score in self._merge_score_runs(
+                sequence_scores[behavior_id].to_numpy(),
+                active_threshold,
+            ):
+                crop = source.iloc[start:end].reset_index(drop=True)
+                child_detections: list[PredictedSegment] = []
+                child_ids = children_by_parent.get(behavior_id, [])
+                if child_ids:
+                    child_scores = self.score_sequence(crop)
+                    for child_id in child_ids:
+                        if child_id not in child_scores:
+                            continue
+                        for child_start, child_end, child_score in self._merge_score_runs(
+                            child_scores[child_id].to_numpy(),
+                            active_threshold,
+                        ):
+                            global_start = start + child_start
+                            global_end = start + child_end
+                            child_detections.append(PredictedSegment(
+                                label=child_id,
+                                score=child_score,
+                                start_index=global_start,
+                                end_index=global_end,
+                                telemetry_data=source.iloc[global_start:global_end].to_dict("records"),
+                            ))
+                    child_detections.sort(
+                        key=lambda item: (item.start_index, item.end_index, item.label)
+                    )
+
+                detections.append(PredictedSegment(
+                    label=behavior_id,
+                    score=score,
+                    start_index=start,
+                    end_index=end,
+                    telemetry_data=source.iloc[start:end].to_dict("records"),
+                    subsegments=child_detections,
+                ))
+
+        detections.sort(key=lambda item: (item.start_index, item.end_index, item.label))
+        return detections
+
+
 segment_classifier = SegmentClassifierService()
+
+
+__all__ = [
+    "DEFAULT_THRESHOLD",
+    "MODEL_FORMAT",
+    "SegmentClassifierService",
+    "segment_classifier",
+]

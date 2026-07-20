@@ -19,7 +19,7 @@ from app.pipelines.training.config import TrainingPipelineConfig
 async def main() -> int:
     cfg = TrainingPipelineConfig()
     parser = argparse.ArgumentParser(
-        description="Train the LSTM segment classifier.",
+        description="Train the temporal behavior segment detector.",
     )
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=32)

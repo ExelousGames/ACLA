@@ -12,7 +12,6 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from app.shared.segment import PredictedSegment
 from app.features.tire_grip import TireGripAnalysisService
 from app.integrations.backend.client import backend_service as default_backend_service
 from app.ml.imitation.model import NoExpertLapError
@@ -305,9 +304,11 @@ async def process_and_cache_segments(
 
         print(f"[INFO] Processing enriched chunk {processed_chunks}: {len(session_chunk_df)} records")
 
-        await segment_classifier.scan_telemetry_data(
-            dataframe=session_chunk_df,
-            window_size=max_segment_length,
+        detected = segment_classifier.detect_segments(session_chunk_df)
+        telemetry_store.save_chunk(
+            segments_cache_key,
+            chunk_id,
+            [segment.to_dict() for segment in detected],
         )
 
         if processed_chunks % 5 == 0:
@@ -336,8 +337,7 @@ async def process_and_cache_segments(
         if len(segments_to_visualize) < max_viz_segments:
             remaining = max_viz_segments - len(segments_to_visualize)
             for seg_dict in chunk_segments[:remaining]:
-                pred_seg = PredictedSegment(**seg_dict)
-                segments_to_visualize.append(pred_seg.telemetry_data)
+                segments_to_visualize.append(seg_dict.get("telemetry_data", []))
 
         chunk_positions = []
         for segment_item in chunk_segments:
