@@ -29,7 +29,11 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     )
 
     grouped = group_proposals_by_range(result)
-    parent_label_ids = list(getattr(parent, "labels", []))
+    main_label_ids = set(LABEL_CATEGORIES.get("Main Labels", []))
+    parent_main_label_ids = [
+        label for label in getattr(parent, "labels", [])
+        if label in main_label_ids
+    ]
 
     new_children = []
     for (gs, ge), anns in grouped:
@@ -43,7 +47,7 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
             df,
             start=int(gs),
             end=int(ge),
-            label_ids=with_parent_label_ids(label_ids, parent_label_ids),
+            label_ids=with_parent_label_ids(label_ids, parent_main_label_ids),
             notes=notes,
             parent_id=parent.id,
         ))
@@ -400,6 +404,7 @@ def render_batch_auto_annotation(df, selected_annotation_key):
                 end_index=p_end,
                 session_id=session_id,
                 parent_main_labels=parent_main_labels,
+                parent_selected_labels=list(parent.labels),
                 existing_children=children_by_parent.get(parent.id, []),
                 config=config,
             )

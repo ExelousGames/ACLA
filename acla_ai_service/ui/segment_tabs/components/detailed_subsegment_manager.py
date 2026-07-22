@@ -34,7 +34,7 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
     # Find existing sub-segments for this parent
     sub_segments = [seg for seg in st.session_state.current_annotations if getattr(seg, 'parent_id', None) == parent_id]
     
-    subsegment_options = ["Create New Sub-Segment"] + [f"{i}: {', '.join(get_display_labels(seg.labels))} ({seg.start_index}-{seg.end_index})" for i, seg in enumerate(sub_segments)]
+    subsegment_options = ["Create New Sub-Segment"] + [f"{i}: ({seg.start_index}-{seg.end_index}) {', '.join(get_display_labels(seg.labels))}" for i, seg in enumerate(sub_segments)]
     
     selected_subsegment_str = st.selectbox("Select Sub-Segment", options=subsegment_options, key="manage_subsegment_selector")
     
@@ -48,7 +48,6 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.markdown(f"**Parent Segment:** {', '.join(get_display_labels(parent_seg.labels))}")
         st.caption(f"Parent Range: {p_start} to {p_end}")
         
         default_start = p_start if is_new else (selected_sub_seg.start_index if getattr(selected_sub_seg, 'start_index', None) is not None else p_start)

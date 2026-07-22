@@ -16,7 +16,8 @@ Public annotation pipeline entry — the only function the UI calls.
         config=config,
         callbacks=callbacks,
         # flow-specific kwargs:
-        parent_main_labels=[...], existing_children=[...],   # detailed
+        parent_main_labels=[...], parent_selected_labels=[...],
+        existing_children=[...],                             # detailed
         # OR
         section_id=..., section_start=..., section_end=...,  # lap
         circuit_id=..., existing_section_annotations=[...],
@@ -154,6 +155,7 @@ def run_annotation(
     start_index: Optional[int] = None,
     end_index: Optional[int] = None,
     parent_main_labels: Optional[List[str]] = None,
+    parent_selected_labels: Optional[List[str]] = None,
     existing_children: Optional[List[dict]] = None,
     # lap-flow inputs
     lap_start: Optional[int] = None,
@@ -186,6 +188,7 @@ def run_annotation(
             parent_start=parent_start,
             parent_end=parent_end,
             parent_main_labels=list(parent_main_labels or []),
+            parent_selected_labels=list(parent_selected_labels or []),
             existing_children=list(existing_children or []),
             callbacks=callbacks,
             session_id=session_id,
@@ -218,6 +221,7 @@ def _run_detailed(
     parent_start: int,
     parent_end: int,
     parent_main_labels: List[str],
+    parent_selected_labels: List[str],
     existing_children: List[dict],
     callbacks: AgentCallbacks,
     session_id: str,
@@ -229,6 +233,7 @@ def _run_detailed(
         parent_start=parent_start,
         parent_end=parent_end,
         parent_main_labels=parent_main_labels,
+        parent_selected_labels=parent_selected_labels,
         existing_children=existing_children,
     )
 

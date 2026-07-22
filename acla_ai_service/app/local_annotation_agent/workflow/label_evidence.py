@@ -11,14 +11,17 @@ Range = Tuple[int, int]
 
 @dataclass(frozen=True)
 class LabelEvidence:
-    """Required evidence and the optional-support-expanded annotation range."""
+    """Required evidence and its resolved annotation range."""
 
     required_range: Range
     annotation_range: Range
-    supporting_reasons: Tuple[str, ...] = ()
 
     def required_covers(self, start: int, end: int) -> bool:
         return self.required_range == (int(start), int(end))
+
+    def required_contains(self, start: int, end: int) -> bool:
+        required_start, required_end = self.required_range
+        return required_start <= int(start) and int(end) <= required_end
 
 
 def _envelope(ranges: Sequence[Range]) -> Range:
@@ -28,34 +31,17 @@ def _envelope(ranges: Sequence[Range]) -> Range:
     )
 
 
-def _intersect_envelope(value: Range, allowed: Sequence[Range]) -> Optional[Range]:
-    intersections = [
-        (max(value[0], start), min(value[1], end))
-        for start, end in allowed
-        if max(value[0], start) <= min(value[1], end)
-    ]
-    return _envelope(intersections) if intersections else None
-
-
 def resolve_label_evidence(
     *,
     required_ranges: Sequence[Range],
     parent_range: Range,
-    allowed_phase_ranges: Optional[Sequence[Range]] = None,
-    supporting_ranges: Sequence[Range] = (),
-    supporting_reasons: Sequence[str] = (),
 ) -> Optional[LabelEvidence]:
     """Resolve evidence without deciding whether a workflow should accept it."""
     if not required_ranges:
         return None
 
     required_range = _envelope(required_ranges)
-    if allowed_phase_ranges is not None:
-        required_range = _intersect_envelope(required_range, allowed_phase_ranges)
-        if required_range is None:
-            return None
-
-    annotation_range = _envelope([required_range, *supporting_ranges])
+    annotation_range = required_range
     parent_start, parent_end = (int(value) for value in parent_range)
     if not (
         parent_start
@@ -68,5 +54,4 @@ def resolve_label_evidence(
     return LabelEvidence(
         required_range=required_range,
         annotation_range=annotation_range,
-        supporting_reasons=tuple(supporting_reasons),
     )

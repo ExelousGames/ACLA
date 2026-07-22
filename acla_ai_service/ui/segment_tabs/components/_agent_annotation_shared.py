@@ -578,7 +578,7 @@ def render_staged_review(
                 key=f"agent_staged_labels_{i}",
             )
 
-            default_notes = "; ".join(
+            default_notes = "\n\n".join(
                 a.get("reasoning", "") for a in anns if a.get("reasoning")
             )
             seg_notes = st.text_area(

@@ -75,6 +75,7 @@ class _AnnotationRunRequest(BaseModel):
     start_index: Optional[int] = None
     end_index: Optional[int] = None
     parent_main_labels: Optional[List[str]] = None
+    parent_selected_labels: Optional[List[str]] = None
     existing_children: Optional[List[Dict[str, Any]]] = None
 
     # lap-flow inputs
@@ -152,6 +153,7 @@ async def annotation_run(req: _AnnotationRunRequest) -> Dict[str, Any]:
             start_index=req.start_index,
             end_index=req.end_index,
             parent_main_labels=req.parent_main_labels,
+            parent_selected_labels=req.parent_selected_labels,
             existing_children=req.existing_children,
             # lap-flow inputs
             lap_start=req.lap_start,
@@ -278,6 +280,7 @@ async def annotation_run_stream(req: _AnnotationRunRequest) -> StreamingResponse
                 start_index=req.start_index,
                 end_index=req.end_index,
                 parent_main_labels=req.parent_main_labels,
+                parent_selected_labels=req.parent_selected_labels,
                 existing_children=req.existing_children,
                 lap_start=req.lap_start,
                 lap_end=req.lap_end,

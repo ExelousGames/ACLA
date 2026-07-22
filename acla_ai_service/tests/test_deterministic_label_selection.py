@@ -84,6 +84,56 @@ def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
 
 
+def test_sub_label_catalog_has_no_range_policies():
+    catalog_path = (
+        Path(__file__).parents[1]
+        / "app/internal_knowledge_base/sub_label_annotation.json"
+    )
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+
+    assert "range_policies" not in catalog
+
+
+def test_sub_label_and_segment_type_requirements_are_separate():
+    catalog_path = (
+        Path(__file__).parents[1]
+        / "app/internal_knowledge_base/sub_label_annotation.json"
+    )
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    sub_label_ids = {
+        label_id for label_id, doc in catalog["labels"].items()
+        if doc["type"] == "sub"
+    }
+    segment_type_ids = {
+        label_id for label_id, doc in catalog["labels"].items()
+        if doc["type"] == "segment_type"
+    }
+
+    assert "selection_requirements" not in catalog
+    assert set(catalog["sub_label_selection_requirements"]) == sub_label_ids
+    assert set(catalog["segment_type_selection_requirements"]) == segment_type_ids
+    assert sub_label_ids.isdisjoint(segment_type_ids)
+    assert deterministic.get_label("RM7")["selection_requirements"]
+    assert deterministic.get_label("ST2")["selection_requirements"]
+
+
+def test_evaluate_requirements_retains_every_matching_branch():
+    requirements = {
+        "enabled": True,
+        "any_of": [
+            {"all_of": [{"fact": "phase.entry", "operator": "eq", "value": True}]},
+            {"all_of": [{"fact": "phase.exit", "operator": "eq", "value": True}]},
+        ],
+    }
+
+    result = deterministic.evaluate_requirements(
+        requirements, {"phase.entry": True, "phase.exit": True},
+    )
+
+    assert result.matched and result.branch == 0
+    assert [branch.branch for branch in result.matched_branches] == [0, 1]
+
+
 def test_main_labels_are_owned_by_lap_annotation_catalog():
     main_labels = list(deterministic.skills.iter("lap_annotation.labels"))
     sub_labels = list(deterministic.skills.iter("sub_label_annotation.labels"))
@@ -136,7 +186,7 @@ def test_ea_accepts_either_complete_requirement_branch():
         },
     )
     assert first.matched and first.branch == 0
-    assert second.matched and second.branch == 1
+    assert second.matched and second.branch == 3
 
 
 def test_slope_facts_detect_positive_acceleration_after_fall(monkeypatch):
@@ -461,6 +511,7 @@ def test_behavior_requirements_use_middle_rise_for_msp():
         "expert_time_difference.middle_has_rise": True,
     }
     recovery_merge = {
+        "expert_time_difference.total_change_ms": 150,
         "expert_time_difference.starting_direction": "rising",
         "expert_time_difference.middle_has_rise": False,
         "expert_time_difference.ending_direction": "flattening",
@@ -637,6 +688,7 @@ def test_far_driver_in_overlapping_pit_prefers_ps_over_rm(monkeypatch):
 def test_lap_omits_sub_labels_that_cover_only_part_of_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
+            "expert_time_difference.total_change_ms": 150,
             "expert_time_difference.starting_direction": "rising",
             "expert_time_difference.middle_has_rise": False,
             "expert_time_difference.ending_direction": "flattening",
@@ -680,6 +732,7 @@ def test_lap_omits_sub_labels_that_cover_only_part_of_segment(monkeypatch):
 def test_lap_omits_sub_label_that_is_not_fully_inside_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
+            "expert_time_difference.total_change_ms": 150,
             "expert_time_difference.starting_direction": "rising",
             "expert_time_difference.middle_has_rise": False,
             "expert_time_difference.ending_direction": "flattening",
@@ -713,6 +766,7 @@ def test_lap_omits_sub_label_that_is_not_fully_inside_segment(monkeypatch):
 def test_lap_selects_sub_label_that_covers_entire_segment(monkeypatch):
     facts = deterministic.FactSet(
         {
+            "expert_time_difference.total_change_ms": 150,
             "expert_time_difference.starting_direction": "rising",
             "expert_time_difference.middle_has_rise": False,
             "expert_time_difference.ending_direction": "flattening",
@@ -742,7 +796,7 @@ def test_lap_selects_sub_label_that_covers_entire_segment(monkeypatch):
     assert "RM7 selected for iloc range [0, 10]" in result.reasoning
 
 
-def test_lap_supporting_evidence_cannot_expand_partial_required_match(monkeypatch):
+def test_lap_unrequired_evidence_cannot_expand_partial_required_match(monkeypatch):
     facts = deterministic.FactSet(
         {
             "expert_time_difference.total_change_ms": 150,
@@ -835,10 +889,13 @@ def test_exclusive_matches_are_suppressed(monkeypatch):
     assert result.conflicts == [("A", "B")]
 
 
-def test_detailed_discovery_preserves_multiple_ranges_and_deduplicates(monkeypatch):
+def test_segment_type_alone_does_not_create_detailed_subsegment(monkeypatch):
     def fake_facts(_df, start, end, **_kwargs):
         ranges = [(1, 4), (6, 9)] if (start, end) == (0, 10) else []
-        return {"segment.shape_key": "straight"}, ranges
+        return deterministic.FactSet(
+            {"segment.shape_key": "straight"},
+            evidence={"segment.shape_key": [(start, end)]},
+        ), ranges
 
     monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
     result = deterministic.calculate_detailed_annotation(
@@ -846,11 +903,9 @@ def test_detailed_discovery_preserves_multiple_ranges_and_deduplicates(monkeypat
         parent_start=0,
         parent_end=10,
         parent_main_labels=["EA"],
-        existing_children=[{"start_index": 1, "end_index": 4, "labels": ["ST2"]}],
     )
-    assert [(p["start_index"], p["end_index"], p["label_id"]) for p in result.label_annotations] == [
-        (6, 9, "ST2")
-    ]
+    assert result.label_annotations == []
+    assert "ST2" not in result.final_labels
 
 
 def test_rm_sub_labels_require_rm_parent_but_only_evaluate_own_facts(monkeypatch):
@@ -880,12 +935,35 @@ def test_rm_sub_labels_require_rm_parent_but_only_evaluate_own_facts(monkeypatch
     assert "RM7" in with_rm.final_labels
 
 
-def test_sub_label_range_uses_required_evidence_and_phase_boundary(monkeypatch):
+def test_public_detailed_annotation_does_not_repeat_sub_label_selected_on_parent(
+    monkeypatch,
+):
     def fake_facts(_df, start, end, **_kwargs):
-        if (start, end) == (0, 10):
-            return deterministic.FactSet(
-                {}, phases={"entry": [(1, 5)], "exit": [(5, 9)]},
-            ), [(1, 6)]
+        ranges = [(1, 4)] if (start, end) == (0, 5) else []
+        return deterministic.FactSet(
+            {"trajectory.converging": True},
+            evidence={"trajectory.converging": [(start, end)]},
+        ), ranges
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    result = workflow.run_annotation(
+        flow="detailed",
+        df=pd.DataFrame(index=range(6)),
+        start_index=0,
+        end_index=5,
+        parent_main_labels=["RM"],
+        parent_selected_labels=["RM7"],
+    )
+
+    assert "RM7" not in result.final_labels
+    assert result.label_annotations == []
+
+
+def test_sub_label_range_uses_every_required_fact_evidence(monkeypatch):
+    calls = []
+
+    def fake_facts(_df, start, end, **_kwargs):
+        calls.append((start, end))
         return deterministic.FactSet(
             {
                 "brake.application_onset_relation": "later",
@@ -893,10 +971,10 @@ def test_sub_label_range_uses_required_evidence_and_phase_boundary(monkeypatch):
             },
             evidence={
                 "brake.application_onset_relation": [(0, 3)],
-                "brake.application_end_relation": [(4, 6)],
+                "brake.application_end_relation": [(6, 8)],
             },
             phases={"entry": [(1, 5)]},
-        ), []
+        ), [(1, 5)]
 
     monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
     result = deterministic.calculate_detailed_annotation(
@@ -907,29 +985,434 @@ def test_sub_label_range_uses_required_evidence_and_phase_boundary(monkeypatch):
     )
 
     proposal = next(item for item in result.label_annotations if item["label_id"] == "MSP1")
-    assert (proposal["start_index"], proposal["end_index"]) == (1, 5)
-    assert "MSP1 selected for iloc range [1, 5]" in proposal["reasoning"]
+    assert (proposal["start_index"], proposal["end_index"]) == (0, 8)
+    assert "MSP1 selected for iloc range [0, 8]" in proposal["reasoning"]
+    assert (
+        "- brake.application_onset_relation: 'later' — range [0, 3]"
+    ) in proposal["reasoning"]
+    assert (
+        "- brake.application_end_relation: 'later' — range [6, 8]"
+    ) in proposal["reasoning"]
+    assert proposal["reasoning"].splitlines()[1] == "Evidence:"
+    assert calls == [(0, 10)]
 
 
-def test_optional_supporting_evidence_expands_and_is_cited(monkeypatch):
+def test_detailed_fact_reasoning_shows_point_indices_and_disjoint_ranges():
+    evaluation = deterministic.RequirementBranchEvaluation(
+        0,
+        ["fact.point: True", "fact.ranges: True"],
+        [],
+        ["fact.point", "fact.ranges"],
+    )
+    facts = deterministic.FactSet(
+        {"fact.point": True, "fact.ranges": True},
+        evidence={
+            "fact.point": [(4, 4)],
+            "fact.ranges": [(1, 2), (7, 9)],
+        },
+    )
+
+    assert deterministic._passed_with_fact_evidence(evaluation, facts) == [
+        "fact.point: True — index 4",
+        "fact.ranges: True — range [1, 2], range [7, 9]",
+    ]
+
+
+def test_detailed_sub_labels_use_parent_fact_evidence(monkeypatch):
+    cases = [
+        (
+            "MSP", "MSP5",
+            {"brake.application_onset_relation": "earlier"},
+            {"brake.application_onset_relation": [(2, 3)]},
+            (2, 3),
+        ),
+        (
+            "MSP", "MSP20",
+            {"throttle.application_onset_relation": "earlier"},
+            {"throttle.application_onset_relation": [(4, 5)]},
+            (4, 5),
+        ),
+        (
+            "MSP", "MSP3",
+            {"turn.apex_relation": "later"},
+            {"turn.apex_relation": [(6, 7)]},
+            (6, 7),
+        ),
+        (
+            "RM", "RM7",
+            {"trajectory.converging": True},
+            {"trajectory.converging": [(8, 9)]},
+            (8, 9),
+        ),
+        (
+            "MSP", "MSP35",
+            {"gear.upshift_relation": "earlier"},
+            {"gear.upshift_relation": [(10, 11)]},
+            (10, 11),
+        ),
+        (
+            "MSP", "MSP42",
+            {"phase.entry": True, "grip.over_limit": True},
+            {"phase.entry": [(12, 13)], "grip.over_limit": [(14, 15)]},
+            (12, 15),
+        ),
+        (
+            "O", "O4",
+            {"opponent.outcome": "pass_completed", "opponent.side_swap": True},
+            {
+                "opponent.outcome": [(16, 17)],
+                "opponent.side_swap": [(18, 19)],
+            },
+            (16, 19),
+        ),
+    ]
+
+    for parent_label, label_id, values, evidence, expected_range in cases:
+        facts = deterministic.FactSet(values, evidence=evidence)
+        monkeypatch.setattr(
+            deterministic,
+            "calculate_facts",
+            lambda *_args, _facts=facts, **_kwargs: (_facts, []),
+        )
+
+        result = deterministic.calculate_detailed_annotation(
+            pd.DataFrame(index=range(21)),
+            parent_start=0,
+            parent_end=20,
+            parent_main_labels=[parent_label],
+        )
+
+        proposal = next(
+            item for item in result.label_annotations
+            if item["label_id"] == label_id
+        )
+        assert (proposal["start_index"], proposal["end_index"]) == expected_range
+
+
+def test_altitude_segment_type_alone_does_not_create_detailed_subsegment(monkeypatch):
     def fake_facts(_df, start, end, **_kwargs):
-        if (start, end) == (0, 10):
-            return deterministic.FactSet(
-                {"expert_time_difference.direction": "rising"},
-                evidence={"expert_time_difference.direction": [(7, 8)]},
-                phases={"entry": [(1, 5)]},
-            ), [(1, 5)]
+        return deterministic.FactSet(
+            {"altitude.entry.trend": "uphill"},
+            evidence={"altitude.entry.trend": [(1, 7)]},
+            phases={"entry": [(2, 5)]},
+        ), [(1, 9)]
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(11)),
+        parent_start=0,
+        parent_end=10,
+        parent_main_labels=[],
+    )
+
+    assert result.label_annotations == []
+    assert "ST12" not in result.final_labels
+
+
+def test_segment_type_attaches_to_finalized_sub_label_range(monkeypatch):
+    def fake_facts(_df, start, end, **_kwargs):
         return deterministic.FactSet(
             {
+                "trajectory.converging": True,
+                "segment.shape_key": "straight",
+            },
+            evidence={
+                "trajectory.converging": [(2, 6)],
+                "segment.shape_key": [(0, 10)],
+            },
+        ), [(1, 9)]
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(11)),
+        parent_start=0,
+        parent_end=10,
+        parent_main_labels=["RM"],
+    )
+
+    assert [
+        (item["start_index"], item["end_index"], item["label_id"])
+        for item in result.label_annotations
+    ] == [(2, 6, "RM7"), (2, 6, "ST2")]
+
+
+def test_parent_segment_type_does_not_carry_to_finalized_sub_label_range(monkeypatch):
+    def fake_facts(_df, start, end, **_kwargs):
+        return deterministic.FactSet(
+            {"trajectory.converging": True},
+            evidence={"trajectory.converging": [(2, 6)]},
+        ), []
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(11)),
+        parent_start=0,
+        parent_end=10,
+        parent_main_labels=["RM"],
+        parent_selected_labels=["ST2"],
+    )
+
+    assert [
+        (item["start_index"], item["end_index"], item["label_id"])
+        for item in result.label_annotations
+    ] == [(2, 6, "RM7")]
+    assert "ST2" not in result.final_labels
+
+
+def test_segment_types_attach_where_evidence_exactly_contains_candidate(monkeypatch):
+    def fake_facts(_df, start, end, **_kwargs):
+        return deterministic.FactSet(
+            {
+                "trajectory.converging": True,
+                "brake.application_onset_relation": "earlier",
+                "altitude.entry.trend": "uphill",
+                "altitude.exit.trend": "level",
+            },
+            evidence={
+                "trajectory.converging": [(1, 3)],
+                "brake.application_onset_relation": [(6, 9)],
+                "altitude.entry.trend": [(1, 3)],
+                "altitude.exit.trend": [(6, 9)],
+            },
+        ), [(1, 3), (6, 9)]
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(11)),
+        parent_start=0,
+        parent_end=10,
+        parent_main_labels=["RM", "MSP"],
+    )
+
+    assert [
+        (item["start_index"], item["end_index"], item["label_id"])
+        for item in result.label_annotations
+    ] == [
+        (1, 3, "RM7"),
+        (1, 3, "ST12"),
+        (6, 9, "MSP5"),
+        (6, 9, "ST19"),
+    ]
+
+
+def test_segment_type_attaches_to_parent_evidence_envelope(monkeypatch):
+    def fake_facts(_df, start, end, **_kwargs):
+        return deterministic.FactSet(
+            {
+                "segment.shape_key": "straight",
+                "trajectory.converging": True,
+            },
+            evidence={
+                "segment.shape_key": [(0, 8)],
+                "trajectory.converging": [(1, 4), (3, 6)],
+            },
+        ), []
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(9)),
+        parent_start=0,
+        parent_end=8,
+        parent_main_labels=["RM"],
+    )
+
+    assert [
+        (item["start_index"], item["end_index"], item["label_id"])
+        for item in result.label_annotations
+    ] == [(1, 6, "RM7"), (1, 6, "ST2")]
+
+
+def test_label_evidence_containment_is_inclusive_and_requires_full_coverage():
+    cases = [
+        ((8, 25), True),
+        ((3, 29), True),
+        ((3, 20), False),
+        ((12, 29), False),
+        ((3, 8), False),
+        ((25, 29), False),
+    ]
+
+    for required_range, expected in cases:
+        evidence = deterministic.resolve_label_evidence(
+            required_ranges=[required_range],
+            parent_range=(0, 29),
+        )
+
+        assert evidence is not None
+        assert evidence.required_contains(8, 25) is expected
+
+
+def test_segment_type_conflict_does_not_remove_found_sub_label(monkeypatch):
+    def fake_facts(_df, start, end, **_kwargs):
+        ranges = [(1, 4)] if (start, end) == (0, 5) else []
+        return deterministic.FactSet(
+            {"trajectory.converging": True},
+            evidence={"trajectory.converging": [(start, end)]},
+        ), ranges
+
+    branch = deterministic.RequirementBranchEvaluation(
+        0,
+        ["trajectory.converging: True"],
+        [],
+        ["trajectory.converging"],
+    )
+    sub_label = deterministic.RequirementEvaluation(
+        True,
+        0,
+        branch.passed,
+        [],
+        branch.fact_ids,
+        [branch],
+    )
+
+    def fake_evaluate(label_ids, _facts):
+        if "RM7" in label_ids:
+            return deterministic.LabelEvaluation(["RM7"], {"RM7": sub_label})
+        return deterministic.LabelEvaluation([], {}, [("ST1", "ST2")])
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(6)),
+        parent_start=0,
+        parent_end=5,
+        parent_main_labels=["RM"],
+    )
+
+    assert result.final_labels == ["RM7"]
+    assert "Suppressed 1 exclusive conflict(s)" in result.final_reasoning
+
+
+def test_each_matching_branch_generates_its_own_evidence_range():
+    requirements = {
+        "enabled": True,
+        "any_of": [
+            {"all_of": [{"fact": "phase.entry", "operator": "eq", "value": True}]},
+            {"all_of": [{"fact": "phase.exit", "operator": "eq", "value": True}]},
+        ],
+    }
+    facts = deterministic.FactSet(
+        {"phase.entry": True, "phase.exit": True},
+        evidence={"phase.entry": [(1, 3)], "phase.exit": [(7, 9)]},
+    )
+    evaluation = deterministic.evaluate_requirements(requirements, facts)
+
+    resolved = deterministic._label_evidence(evaluation, facts, 0, 10)
+
+    assert [evidence.annotation_range for _, evidence in resolved] == [(1, 3), (7, 9)]
+
+
+def test_matching_branch_without_complete_provenance_is_omitted():
+    requirements = {
+        "enabled": True,
+        "any_of": [{"all_of": [
+            {"fact": "phase.entry", "operator": "eq", "value": True},
+            {"fact": "trajectory.converging", "operator": "eq", "value": True},
+        ]}],
+    }
+    facts = deterministic.FactSet(
+        {"phase.entry": True, "trajectory.converging": True},
+        evidence={"phase.entry": [(1, 3)]},
+    )
+    evaluation = deterministic.evaluate_requirements(requirements, facts)
+
+    assert deterministic._label_evidence(evaluation, facts, 0, 10) == []
+
+
+def test_same_label_overlaps_merge_transitively_but_other_labels_stay_separate():
+    merged = deterministic._merge_label_annotations([
+        {"label_id": "RM7", "start_index": 1, "end_index": 3, "passed": ["a"]},
+        {"label_id": "RM7", "start_index": 3, "end_index": 5, "passed": ["b"]},
+        {"label_id": "RM7", "start_index": 4, "end_index": 8, "passed": ["c"]},
+        {"label_id": "RM7", "start_index": 10, "end_index": 12, "passed": ["d"]},
+        {"label_id": "MSP1", "start_index": 2, "end_index": 6, "passed": ["e"]},
+    ])
+
+    assert [
+        (item["label_id"], item["start_index"], item["end_index"])
+        for item in merged
+    ] == [
+        ("RM7", 1, 8),
+        ("MSP1", 2, 6),
+        ("RM7", 10, 12),
+    ]
+    assert all(
+        set(item) == {"label_id", "start_index", "end_index", "reasoning"}
+        for item in merged
+    )
+    assert all(f"- {value}" in merged[0]["reasoning"] for value in ("a", "b", "c"))
+
+
+def test_saved_children_filter_exact_raw_ranges_before_overlap_merge(monkeypatch):
+    first_branch = deterministic.RequirementBranchEvaluation(
+        0, ["fact.first: True"], [], ["fact.first"],
+    )
+    second_branch = deterministic.RequirementBranchEvaluation(
+        1, ["fact.second: True"], [], ["fact.second"],
+    )
+    rm7_evaluation = deterministic.RequirementEvaluation(
+        True,
+        0,
+        first_branch.passed,
+        [],
+        first_branch.fact_ids,
+        [first_branch, second_branch],
+    )
+
+    def fake_facts(_df, start, end, **_kwargs):
+        return deterministic.FactSet(
+            {"fact.first": True, "fact.second": True},
+            evidence={
+                "fact.first": [(1, 4)],
+                "fact.second": [(3, 6)],
+            },
+        ), []
+
+    def fake_evaluate(label_ids, _facts):
+        if "RM7" in label_ids:
+            return deterministic.LabelEvaluation(
+                ["RM7"], {"RM7": rm7_evaluation},
+            )
+        return deterministic.LabelEvaluation([], {})
+
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
+    exact = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(9)),
+        parent_start=0,
+        parent_end=8,
+        parent_main_labels=["RM"],
+        existing_children=[{"start_index": 1, "end_index": 4, "labels": ["RM7"]}],
+    )
+    partial = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(9)),
+        parent_start=0,
+        parent_end=8,
+        parent_main_labels=["RM"],
+        existing_children=[{"start_index": 2, "end_index": 5, "labels": ["RM7"]}],
+    )
+
+    exact_rm7 = next(item for item in exact.label_annotations if item["label_id"] == "RM7")
+    partial_rm7 = next(item for item in partial.label_annotations if item["label_id"] == "RM7")
+    assert (exact_rm7["start_index"], exact_rm7["end_index"]) == (3, 6)
+    assert (partial_rm7["start_index"], partial_rm7["end_index"]) == (1, 6)
+
+
+def test_unrequired_parent_evidence_does_not_expand_sub_label_range(monkeypatch):
+    def fake_facts(_df, start, end, **_kwargs):
+        return deterministic.FactSet(
+            {
+                "expert_time_difference.direction": "rising",
                 "brake.application_onset_relation": "later",
                 "brake.application_end_relation": "later",
             },
             evidence={
+                "expert_time_difference.direction": [(7, 8)],
                 "brake.application_onset_relation": [(2, 3)],
                 "brake.application_end_relation": [(3, 4)],
             },
             phases={"entry": [(1, 5)]},
-        ), []
+        ), [(1, 5)]
 
     monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
     result = deterministic.calculate_detailed_annotation(
@@ -940,8 +1423,8 @@ def test_optional_supporting_evidence_expands_and_is_cited(monkeypatch):
     )
 
     proposal = next(item for item in result.label_annotations if item["label_id"] == "MSP1")
-    assert (proposal["start_index"], proposal["end_index"]) == (2, 8)
-    assert "Supporting — expert_time_difference.direction: 'rising'" in proposal["reasoning"]
+    assert (proposal["start_index"], proposal["end_index"]) == (2, 4)
+    assert "expert_time_difference.direction" not in proposal["reasoning"]
 
 
 def test_sub_label_without_required_provenance_is_omitted(monkeypatch):
@@ -1057,46 +1540,58 @@ def test_controls_do_not_fallback_to_phase_facts_without_expert_curvature(
         )
 
 
-def test_detailed_subrange_synchronizes_inherited_expert_phase_facts(monkeypatch):
+def test_detailed_discovery_uses_parent_facts_once_without_reclassifying_child(
+    monkeypatch,
+):
     parent_facts = deterministic.FactSet(
-        {"phase.entry": True},
-        evidence={"phase.entry": [(1, 5)]},
-        phases={"entry": [(1, 5)]},
+        {
+            "trajectory.peak_abs_offset_m": 2.0,
+            "trajectory.converging": True,
+            "segment.shape_key": "in_corner",
+            "segment.corner_shape_key": "decreasing_radius",
+            "altitude.entry.trend": "downhill",
+            "altitude.apex.trend": "downhill",
+            "altitude.exit.trend": "downhill",
+        },
+        evidence={
+            "trajectory.peak_abs_offset_m": [(8, 8)],
+            "trajectory.converging": [(8, 25)],
+            "segment.shape_key": [(0, 29)],
+            "segment.corner_shape_key": [(0, 29)],
+            "altitude.entry.trend": [(3, 8)],
+            "altitude.apex.trend": [(12, 16)],
+            "altitude.exit.trend": [(18, 25)],
+        },
     )
-    candidate_facts = deterministic.FactSet(
-        {"phase.exit": True},
-        evidence={"phase.exit": [(2, 4)]},
-        phases={"exit": [(2, 4)]},
-    )
-    calls = iter(((parent_facts, [(1, 5)]), (candidate_facts, [])))
-    evaluated_facts = []
+    calls = []
 
-    monkeypatch.setattr(
-        deterministic, "calculate_facts", lambda *_args, **_kwargs: next(calls),
-    )
-    monkeypatch.setattr(
-        deterministic, "_candidate_ranges", lambda *_args, **_kwargs: [(2, 4)],
-    )
+    def fake_facts(_df, start, end, **_kwargs):
+        calls.append((start, end))
+        return parent_facts, []
 
-    def capture_evaluation(_label_ids, facts):
-        evaluated_facts.append(facts)
-        return deterministic.LabelEvaluation([], {})
+    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
 
-    monkeypatch.setattr(deterministic, "evaluate_labels", capture_evaluation)
-
-    deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(6)),
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(30)),
         parent_start=0,
-        parent_end=5,
-        parent_main_labels=[],
+        parent_end=29,
+        parent_main_labels=["RM"],
     )
 
-    assert evaluated_facts[0]["phase.entry"] is True
-    assert evaluated_facts[0].phases["entry"] == [(2, 4)]
-    assert evaluated_facts[0].evidence["phase.entry"] == [(2, 4)]
-    assert "phase.exit" not in evaluated_facts[0]
-    assert "exit" not in evaluated_facts[0].phases
-    assert "phase.exit" not in evaluated_facts[0].evidence
+    assert calls == [(0, 29)]
+    assert [
+        (item["start_index"], item["end_index"], item["label_id"])
+        for item in result.label_annotations
+    ] == [
+        (8, 25, "RM1"),
+        (8, 25, "RM7"),
+        (8, 25, "ST1"),
+        (8, 25, "ST9"),
+    ]
+    assert "ST7" not in result.final_labels
+    assert "ST14" not in result.final_labels
+    assert "ST17" not in result.final_labels
+    assert "ST20" not in result.final_labels
 
 
 def test_interaction_section_uses_unique_splitter_context():

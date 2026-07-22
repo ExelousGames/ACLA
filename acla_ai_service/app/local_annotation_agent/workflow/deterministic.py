@@ -59,12 +59,21 @@ _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES = 5.0
 
 
 @dataclass
+class RequirementBranchEvaluation:
+    branch: int
+    passed: List[str] = field(default_factory=list)
+    failed: List[str] = field(default_factory=list)
+    fact_ids: List[str] = field(default_factory=list)
+
+
+@dataclass
 class RequirementEvaluation:
     matched: bool
     branch: Optional[int] = None
     passed: List[str] = field(default_factory=list)
     failed: List[str] = field(default_factory=list)
     fact_ids: List[str] = field(default_factory=list)
+    matched_branches: List[RequirementBranchEvaluation] = field(default_factory=list)
 
 
 @dataclass
@@ -807,7 +816,8 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
     branches = requirements.get("any_of")
     if not isinstance(branches, list) or not branches:
         return RequirementEvaluation(False, failed=["no valid requirement branches"])
-    closest_branch: Optional[RequirementEvaluation] = None
+    closest_branch: Optional[RequirementBranchEvaluation] = None
+    matched_branches: List[RequirementBranchEvaluation] = []
     for branch_index, branch in enumerate(branches):
         predicates = branch.get("all_of") if isinstance(branch, dict) else None
         if not isinstance(predicates, list) or not predicates:
@@ -827,16 +837,27 @@ def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, A
             value = "unavailable" if actual is _MISSING else repr(actual)
             text = f"{fact}: {value}"
             (passed if _compare(actual, operator, expected) else failed).append(text)
-        if not failed:
-            return RequirementEvaluation(True, branch_index, passed, [], fact_ids)
-        candidate = RequirementEvaluation(
-            False, branch_index, passed, failed, fact_ids,
+        candidate = RequirementBranchEvaluation(
+            branch_index, passed, failed, fact_ids,
         )
+        if not failed:
+            matched_branches.append(candidate)
+            continue
         if closest_branch is None or (len(failed), -len(passed)) < (
             len(closest_branch.failed), -len(closest_branch.passed)
         ):
             closest_branch = candidate
-    return closest_branch or RequirementEvaluation(False, failed=["facts unavailable"])
+    if matched_branches:
+        first = matched_branches[0]
+        return RequirementEvaluation(
+            True, first.branch, first.passed, [], first.fact_ids, matched_branches,
+        )
+    if closest_branch is not None:
+        return RequirementEvaluation(
+            False, closest_branch.branch, closest_branch.passed,
+            closest_branch.failed, closest_branch.fact_ids,
+        )
+    return RequirementEvaluation(False, failed=["facts unavailable"])
 
 
 def validate_catalog() -> List[str]:
@@ -850,45 +871,42 @@ def validate_catalog() -> List[str]:
     if duplicate_ids:
         errors.append(f"label IDs exist in both catalogs: {sorted(duplicate_ids)}")
     labels = {**main_labels, **non_main_labels}
+    sub_labels = {
+        label_id: doc for label_id, doc in non_main_labels.items()
+        if doc.get("type") == "sub"
+    }
+    segment_type_labels = {
+        label_id: doc for label_id, doc in non_main_labels.items()
+        if doc.get("type") == "segment_type"
+    }
     lap_requirements = skills.get("lap_annotation.selection_requirements", {})
-    sub_requirements = skills.get("sub_label_annotation.selection_requirements", {})
-    range_policies = skills.get("sub_label_annotation.range_policies", {})
+    sub_label_requirements = skills.get(
+        "sub_label_annotation.sub_label_selection_requirements", {},
+    )
+    segment_type_requirements = skills.get(
+        "sub_label_annotation.segment_type_selection_requirements", {},
+    )
     if any(doc.get("type") != "main" for doc in main_labels.values()):
         errors.append("lap label catalog contains non-main labels")
-    if any(doc.get("type") == "main" for doc in non_main_labels.values()):
-        errors.append("sub-label catalog contains main labels")
+    if set(non_main_labels) != set(sub_labels) | set(segment_type_labels):
+        errors.append("sub-label catalog contains unsupported label types")
     if (
         not isinstance(lap_requirements, dict)
         or set(lap_requirements) != set(main_labels)
     ):
         errors.append("lap requirement IDs do not exactly match main label IDs")
     if (
-        not isinstance(sub_requirements, dict)
-        or set(sub_requirements) != set(non_main_labels)
+        not isinstance(sub_label_requirements, dict)
+        or set(sub_label_requirements) != set(sub_labels)
     ):
-        errors.append("sub-label requirement IDs do not exactly match non-main label IDs")
-    active_sub_ids = {
-        label_id for label_id, doc in non_main_labels.items()
-        if doc.get("type") == "sub"
-        and isinstance(sub_requirements, dict)
-        and (sub_requirements.get(label_id) or {}).get("enabled") is not False
-    }
-    if not isinstance(range_policies, dict) or set(range_policies) != active_sub_ids:
-        errors.append("range policy IDs do not exactly match active sub-label IDs")
-    for label_id, policy in (range_policies.items() if isinstance(range_policies, dict) else []):
-        if not isinstance(policy, dict):
-            errors.append(f"{label_id}: invalid range policy")
-            continue
-        invalid_phases = set(policy.get("phases") or []) - _VALID_RANGE_PHASES
-        if invalid_phases:
-            errors.append(f"{label_id}: invalid range phases {sorted(invalid_phases)}")
-        for predicate in policy.get("supporting_evidence") or []:
-            fact = predicate.get("fact") if isinstance(predicate, dict) else None
-            operator = predicate.get("operator") if isinstance(predicate, dict) else None
-            if fact not in KNOWN_FACTS:
-                errors.append(f"{label_id}: unknown supporting fact {fact!r}")
-            if operator not in SUPPORTED_OPERATORS:
-                errors.append(f"{label_id}: unknown supporting operator {operator!r}")
+        errors.append("sub-label requirement IDs do not exactly match sub-label IDs")
+    if (
+        not isinstance(segment_type_requirements, dict)
+        or set(segment_type_requirements) != set(segment_type_labels)
+    ):
+        errors.append(
+            "segment-type requirement IDs do not exactly match segment-type label IDs"
+        )
     for label_id, doc in labels.items():
         requirements = _requirements_for(label_id, get_label(label_id) or doc)
         enabled = requirements.get("enabled") is not False
@@ -955,12 +973,48 @@ def evaluate_labels(label_ids: Iterable[str], facts: Mapping[str, Any]) -> Label
     return LabelEvaluation([label for label in matched if label not in suppressed], evaluations, conflicts)
 
 
-def _reason(label_id: str, evaluation: RequirementEvaluation, start: int, end: int) -> str:
+def _reason(
+    label_id: str,
+    evaluation: RequirementEvaluation | RequirementBranchEvaluation,
+    start: int,
+    end: int,
+) -> str:
+    return _reason_from_passed(label_id, evaluation.passed, start, end)
+
+
+def _reason_from_passed(
+    label_id: str, passed: Iterable[str], start: int, end: int,
+) -> str:
     details = [
         f"{label_id} selected for iloc range [{int(start)}, {int(end)}]",
-        *(f"Passed — {fact}" for fact in evaluation.passed),
+        *(f"Passed — {fact}" for fact in passed),
     ]
     return "; ".join(details)
+
+
+def _detailed_reason_from_passed(
+    label_id: str, passed: Iterable[str], start: int, end: int,
+) -> str:
+    lines = [
+        f"{label_id} selected for iloc range [{int(start)}, {int(end)}]",
+        "Evidence:",
+        *(f"- {fact}" for fact in passed),
+    ]
+    return "\n".join(lines)
+
+
+def _passed_with_fact_evidence(
+    evaluation: RequirementBranchEvaluation,
+    facts: FactSet,
+) -> List[str]:
+    annotated: List[str] = []
+    for fact_id, passed in zip(evaluation.fact_ids, evaluation.passed):
+        locations = [
+            f"index {start}" if start == end else f"range [{start}, {end}]"
+            for start, end in facts.evidence[fact_id]
+        ]
+        annotated.append(f"{passed} — {', '.join(locations)}")
+    return annotated
 
 
 def _resolve_circuit_sections(
@@ -1062,13 +1116,16 @@ def calculate_lap_annotation(
         if doc.get("type") == "sub" and doc.get("parent") in set(behavior)
     ]
     children = evaluate_labels(child_ids, facts)
-    resolved_children: List[Tuple[str, RequirementEvaluation, LabelEvidence]] = []
+    resolved_children: List[
+        Tuple[str, RequirementBranchEvaluation, LabelEvidence]
+    ] = []
     for label in children.labels:
-        evidence = _label_evidence(
-            label, children.evaluations[label], facts, section_start, section_end,
-        )
-        if evidence is not None and evidence.required_covers(section_start, section_end):
-            resolved_children.append((label, children.evaluations[label], evidence))
+        for branch, evidence in _label_evidence(
+            children.evaluations[label], facts, section_start, section_end,
+        ):
+            if evidence.required_covers(section_start, section_end):
+                resolved_children.append((label, branch, evidence))
+                break
     label_ids = [
         circuit_id, resolved_section_id, *behavior,
         *(label for label, _, _ in resolved_children),
@@ -1079,10 +1136,7 @@ def calculate_lap_annotation(
         for label in behavior
     ]
     notes.extend(
-        "; ".join([
-            _reason(label, evaluation, *evidence.annotation_range),
-            *evidence.supporting_reasons,
-        ])
+        _reason(label, evaluation, *evidence.annotation_range)
         for label, evaluation, evidence in resolved_children
     )
     rejected = [
@@ -1117,198 +1171,163 @@ def calculate_lap_annotation(
     )
 
 
-def _candidate_ranges(
-    df: pd.DataFrame, start: int, end: int, phase_ranges: Sequence[Tuple[int, int]],
-) -> List[Tuple[int, int]]:
-    ranges: List[Tuple[int, int]] = list(phase_ranges)
-    telemetry = _smoothed_telemetry(df)
-    segment = telemetry.loc[
-        (telemetry.index >= start) & (telemetry.index <= end)
-    ]
-    for names in (
-        ("Physics_brake",), ("Physics_gas",),
-        ("Physics_steer_angle",), ("Physics_gear",),
-    ):
-        values = _series(segment, *names)
-        if values is None or len(values) < 3:
-            continue
-        finite = np.where(np.isfinite(values), values, 0.0)
-        changes = np.abs(np.diff(finite))
-        if not np.any(changes > 0):
-            continue
-        threshold = max(float(np.nanpercentile(changes, 75)), 1e-6)
-        last_pos = -10
-        for pos in np.flatnonzero(changes >= threshold):
-            if int(pos) - last_pos < 4:
-                continue
-            last_pos = int(pos)
-            lo = max(start, int(segment.index[max(0, int(pos) - 2)]))
-            hi = min(end, int(segment.index[min(len(segment) - 1, int(pos) + 3)]))
-            ranges.append((lo, hi))
-    cleaned: List[Tuple[int, int]] = []
-    for lo, hi in ranges:
-        lo, hi = max(start, int(lo)), min(end, int(hi))
-        if lo >= hi or (lo == start and hi == end):
-            continue
-        if (lo, hi) not in cleaned:
-            cleaned.append((lo, hi))
-    return cleaned
-
-
-_RANGE_CONTEXT_FACTS = frozenset({
-    "opponent.confidence_level", "opponent.outcome",
-})
-_RANGE_CONTEXT_PREFIXES = ("phase.", "section.", "segment.")
-_VALID_RANGE_PHASES = frozenset({"entry", "apex", "exit"})
-
-
-def _range_policy(label_id: str) -> Mapping[str, Any]:
-    value = skills.get(f"sub_label_annotation.range_policies.{label_id}", {})
-    return value if isinstance(value, dict) else {}
-
-
 def _fact_ranges(facts: Mapping[str, Any], fact_ids: Iterable[str]) -> List[Tuple[int, int]]:
     if not isinstance(facts, FactSet):
         return []
     ranges: List[Tuple[int, int]] = []
     for fact_id in fact_ids:
-        if fact_id in _RANGE_CONTEXT_FACTS or fact_id.startswith(_RANGE_CONTEXT_PREFIXES):
-            continue
         ranges.extend(facts.evidence.get(fact_id) or [])
     return ranges
 
 
-def _supporting_facts(
-    policy: Mapping[str, Any], facts: Mapping[str, Any],
-) -> Tuple[List[str], List[str]]:
-    matched_ids: List[str] = []
-    reasons: List[str] = []
-    for predicate in policy.get("supporting_evidence") or []:
-        if not isinstance(predicate, dict):
-            continue
-        fact = str(predicate.get("fact") or "")
-        actual = facts.get(fact, _MISSING)
-        localized = isinstance(facts, FactSet) and bool(facts.evidence.get(fact))
-        if localized and _compare(
-            actual, str(predicate.get("operator") or ""), predicate.get("value"),
-        ):
-            matched_ids.append(fact)
-            reasons.append(f"Supporting — {fact}: {actual!r}")
-    return matched_ids, reasons
-
-
 def _label_evidence(
-    label_id: str, evaluation: RequirementEvaluation, facts: Mapping[str, Any],
-    parent_start: int, parent_end: int,
-    supporting_facts: Optional[Mapping[str, Any]] = None,
-) -> Optional[LabelEvidence]:
-    policy = _range_policy(label_id)
-    required_ids = [
-        fact_id for fact_id in evaluation.fact_ids
-        if fact_id not in _RANGE_CONTEXT_FACTS
-        and not fact_id.startswith(_RANGE_CONTEXT_PREFIXES)
-    ]
-    if not isinstance(facts, FactSet) or not required_ids or any(
-        not facts.evidence.get(fact_id) for fact_id in required_ids
+    evaluation: RequirementEvaluation,
+    facts: Mapping[str, Any],
+    parent_start: int,
+    parent_end: int,
+) -> List[Tuple[RequirementBranchEvaluation, LabelEvidence]]:
+    if not isinstance(facts, FactSet):
+        return []
+    resolved: List[Tuple[RequirementBranchEvaluation, LabelEvidence]] = []
+    for branch in evaluation.matched_branches:
+        if not branch.fact_ids or any(
+            not facts.evidence.get(fact_id) for fact_id in branch.fact_ids
+        ):
+            continue
+        evidence = resolve_label_evidence(
+            required_ranges=_fact_ranges(facts, branch.fact_ids),
+            parent_range=(int(parent_start), int(parent_end)),
+        )
+        if evidence is not None:
+            resolved.append((branch, evidence))
+    return resolved
+
+
+def _merge_label_annotations(annotations: Sequence[dict]) -> List[dict]:
+    by_label: Dict[str, List[dict]] = {}
+    for annotation in annotations:
+        by_label.setdefault(str(annotation["label_id"]), []).append(annotation)
+
+    merged: List[dict] = []
+    for label_id, proposals in by_label.items():
+        ordered = sorted(
+            proposals,
+            key=lambda item: (int(item["start_index"]), int(item["end_index"])),
+        )
+        current: Optional[dict] = None
+        for proposal in ordered:
+            if current is None or int(proposal["start_index"]) > int(current["end_index"]):
+                if current is not None:
+                    merged.append(current)
+                current = {
+                    "label_id": label_id,
+                    "start_index": int(proposal["start_index"]),
+                    "end_index": int(proposal["end_index"]),
+                    "passed": list(dict.fromkeys(proposal["passed"])),
+                }
+                continue
+            current["end_index"] = max(
+                int(current["end_index"]), int(proposal["end_index"]),
+            )
+            current["passed"] = list(dict.fromkeys([
+                *current["passed"], *proposal["passed"],
+            ]))
+        if current is not None:
+            merged.append(current)
+
+    result = []
+    for proposal in sorted(
+        merged,
+        key=lambda item: (
+            int(item["start_index"]), int(item["end_index"]), item["label_id"],
+        ),
     ):
-        return None
-    phase_names = policy.get("phases") or []
-    allowed_phase_ranges = (
-        [
-            value for phase_name in phase_names
-            for value in facts.phases.get(str(phase_name), [])
-        ]
-        if phase_names else None
-    )
-    support_source = supporting_facts or facts
-    support_ids, support_reasons = _supporting_facts(policy, support_source)
-    return resolve_label_evidence(
-        required_ranges=_fact_ranges(facts, required_ids),
-        parent_range=(int(parent_start), int(parent_end)),
-        allowed_phase_ranges=allowed_phase_ranges,
-        supporting_ranges=_fact_ranges(support_source, support_ids),
-        supporting_reasons=support_reasons,
-    )
+        result.append({
+            "label_id": proposal["label_id"],
+            "start_index": proposal["start_index"],
+            "end_index": proposal["end_index"],
+            "reasoning": _detailed_reason_from_passed(
+                proposal["label_id"], proposal["passed"],
+                proposal["start_index"], proposal["end_index"],
+            ),
+        })
+    return result
 
 
 def calculate_detailed_annotation(
     df: pd.DataFrame, *, parent_start: int, parent_end: int,
-    parent_main_labels: Sequence[str], existing_children: Sequence[dict] = (),
+    parent_main_labels: Sequence[str], parent_selected_labels: Sequence[str] = (),
+    existing_children: Sequence[dict] = (),
 ) -> AnnotationResult:
-    parent_facts, phase_ranges = calculate_facts(df, parent_start, parent_end)
-    candidates = _candidate_ranges(df, parent_start, parent_end, phase_ranges)
+    parent_facts, _ = calculate_facts(df, parent_start, parent_end)
     existing = {
         (int(child.get("start_index", -1)), int(child.get("end_index", -1)), label)
         for child in existing_children
         for label in child.get("labels", [])
     }
+    eligible_parents = set(parent_main_labels)
+    selected_on_parent = set(parent_selected_labels)
     parent_children = [
         doc["id"] for doc in skills.iter("sub_label_annotation.labels")
-        if doc.get("type") == "sub" and doc.get("parent") in set(parent_main_labels)
+        if doc.get("type") == "sub"
+        and doc.get("parent") in eligible_parents
+        and doc["id"] not in selected_on_parent
     ]
     segment_types = [f"ST{i}" for i in range(1, 21)]
-    annotations: List[dict] = []
+    raw_annotations: List[dict] = []
     conflicts: List[Tuple[str, str]] = []
-    for start, end in candidates:
-        facts, _ = calculate_facts(df, start, end)
-        if isinstance(facts, FactSet) and isinstance(parent_facts, FactSet):
-            for phase_name in ("entry", "apex", "exit"):
-                facts.pop(f"phase.{phase_name}", None)
-                facts.evidence.pop(f"phase.{phase_name}", None)
-                facts.phases.pop(phase_name, None)
-            for phase_name, ranges in parent_facts.phases.items():
-                inherited = [
-                    (max(start, phase_start), min(end, phase_end))
-                    for phase_start, phase_end in ranges
-                    if max(start, phase_start) <= min(end, phase_end)
-                ]
-                if inherited:
-                    facts.phases[phase_name] = inherited
-                    facts[f"phase.{phase_name}"] = True
-                    facts.evidence[f"phase.{phase_name}"] = list(inherited)
-        for key, value in parent_facts.items():
-            if key.startswith("opponent."):
-                if key in {
-                    "opponent.outcome", "opponent.confidence_level",
-                    "opponent.started_ahead", "opponent.driver_ended_ahead",
-                }:
-                    facts[key] = value
-                    if isinstance(facts, FactSet) and isinstance(parent_facts, FactSet):
-                        if parent_facts.evidence.get(key):
-                            facts.evidence[key] = list(parent_facts.evidence[key])
-                else:
-                    facts.setdefault(key, value)
-        evaluated = evaluate_labels([*parent_children, *segment_types], facts)
-        conflicts.extend(evaluated.conflicts)
-        for label_id in evaluated.labels:
-            label_doc = get_label(label_id) or {}
-            support_reasons: List[str] = []
-            if label_doc.get("type") == "sub":
-                evidence = _label_evidence(
-                    label_id, evaluated.evaluations[label_id], facts,
-                    parent_start, parent_end, parent_facts,
-                )
-                if evidence is None:
-                    continue
-                label_start, label_end = evidence.annotation_range
-                support_reasons = list(evidence.supporting_reasons)
-            else:
-                label_start, label_end = start, end
-            key = (label_start, label_end, label_id)
-            if key in existing or any(
-                (a["start_index"], a["end_index"], a["label_id"]) == key
-                for a in annotations
-            ):
+    evaluated = evaluate_labels(parent_children, parent_facts)
+    conflicts.extend(evaluated.conflicts)
+    for label_id in evaluated.labels:
+        for branch, evidence in _label_evidence(
+            evaluated.evaluations[label_id], parent_facts,
+            parent_start, parent_end,
+        ):
+            label_start, label_end = evidence.annotation_range
+            if (label_start, label_end, label_id) in existing:
                 continue
-            annotations.append({
+            raw_annotations.append({
                 "label_id": label_id,
                 "start_index": label_start,
                 "end_index": label_end,
-                "reasoning": "; ".join([
-                    _reason(label_id, evaluated.evaluations[label_id], label_start, label_end),
-                    *support_reasons,
-                ]),
+                "passed": _passed_with_fact_evidence(branch, parent_facts),
             })
+    annotations = _merge_label_annotations(raw_annotations)
+    found_ranges = sorted({
+        (int(annotation["start_index"]), int(annotation["end_index"]))
+        for annotation in annotations
+    })
+    if found_ranges:
+        evaluated_types = evaluate_labels(segment_types, parent_facts)
+        conflicts.extend(evaluated_types.conflicts)
+        for start, end in found_ranges:
+            for label_id in evaluated_types.labels:
+                evaluation = evaluated_types.evaluations[label_id]
+                fitting_branches = [
+                    branch
+                    for branch, evidence in _label_evidence(
+                        evaluation, parent_facts, parent_start, parent_end,
+                    )
+                    if evidence.required_contains(start, end)
+                ]
+                if not fitting_branches:
+                    continue
+                annotations.append({
+                    "label_id": label_id,
+                    "start_index": start,
+                    "end_index": end,
+                    "reasoning": _detailed_reason_from_passed(
+                        label_id,
+                        _passed_with_fact_evidence(
+                            fitting_branches[0], parent_facts,
+                        ),
+                        start,
+                        end,
+                    ),
+                })
+    annotations.sort(key=lambda item: (
+        int(item["start_index"]), int(item["end_index"]), item["label_id"],
+    ))
     labels = list(dict.fromkeys(a["label_id"] for a in annotations))
     summary = f"Deterministically selected {len(annotations)} label proposal(s)."
     if conflicts:

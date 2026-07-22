@@ -48,7 +48,16 @@ def _circuit_section_docs() -> List[Dict[str, Any]]:
 
 def _label_docs() -> List[Dict[str, Any]]:
     lap_requirements = skills.get("lap_annotation.selection_requirements", {})
-    sub_requirements = skills.get("sub_label_annotation.selection_requirements", {})
+    sub_label_requirements = skills.get(
+        "sub_label_annotation.sub_label_selection_requirements", {},
+    )
+    segment_type_requirements = skills.get(
+        "sub_label_annotation.segment_type_selection_requirements", {},
+    )
+    requirements_by_type = {
+        "sub": sub_label_requirements,
+        "segment_type": segment_type_requirements,
+    }
     docs: List[Dict[str, Any]] = []
 
     for doc in skills.iter("lap_annotation.labels"):
@@ -66,9 +75,10 @@ def _label_docs() -> List[Dict[str, Any]]:
     for doc in skills.iter("sub_label_annotation.labels"):
         next_doc = dict(doc)
         label_id = str(next_doc.get("id") or "")
+        requirement_map = requirements_by_type.get(next_doc.get("type"), {})
         requirements = (
-            sub_requirements.get(label_id)
-            if isinstance(sub_requirements, dict)
+            requirement_map.get(label_id)
+            if isinstance(requirement_map, dict)
             else None
         )
         if isinstance(requirements, dict):
