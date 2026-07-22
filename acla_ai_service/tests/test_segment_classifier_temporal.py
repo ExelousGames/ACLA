@@ -60,7 +60,7 @@ def test_temporal_targets_follow_parent_and_child_ranges():
     np.testing.assert_array_equal(sequence.targets[:, 0], [1, 1, 1, 1, 0, 0, 0, 0])
     np.testing.assert_array_equal(sequence.targets[:, 1], [0, 0, 0, 0, 1, 1, 1, 1])
     np.testing.assert_array_equal(sequence.targets[:, 2], [0, 1, 1, 0, 0, 0, 0, 0])
-    np.testing.assert_array_equal(sequence.loss_mask[:, 2], sequence.targets[:, 0])
+    np.testing.assert_array_equal(sequence.loss_mask, np.ones_like(sequence.targets))
 
 
 def test_temporal_sequence_builder_splits_uncovered_gaps():
@@ -135,7 +135,7 @@ def _preprocessor_service(targets):
     sequence = SimpleNamespace(
         features=np.array([[40.0, 0.0], [41.0, 1.0]], dtype=np.float32),
         targets=np.array(targets, dtype=np.float32),
-        loss_mask=np.array([[1.0, 1.0], [1.0, 0.0]], dtype=np.float32),
+        loss_mask=np.ones((2, 2), dtype=np.float32),
     )
     service._iter_sequences = lambda cache_key: iter([sequence])
     return service

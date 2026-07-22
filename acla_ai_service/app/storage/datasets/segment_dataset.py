@@ -101,8 +101,7 @@ def build_temporal_sequences(
             continue
 
         targets = np.zeros((len(frame), len(label_ids)), dtype=np.float32)
-        loss_mask = np.zeros_like(targets)
-        loss_mask[:, [label_index[label_id] for label_id in behavior_ids]] = 1.0
+        loss_mask = np.ones_like(targets)
 
         for annotation in parents:
             start = max(run_start, int(annotation.start_index))
@@ -114,11 +113,6 @@ def build_temporal_sequences(
             for label_id in normalize_label_ids(annotation.labels):
                 if label_id in behavior_ids:
                     targets[local_start:local_end, label_index[label_id]] = 1.0
-
-        for child_id, parent_id in child_parent.items():
-            child_column = label_index[child_id]
-            parent_column = label_index[parent_id]
-            loss_mask[:, child_column] = targets[:, parent_column]
 
         for annotation in annotations:
             if not annotation.parent_id:
