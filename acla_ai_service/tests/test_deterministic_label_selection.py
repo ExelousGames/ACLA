@@ -6,1317 +6,447 @@ import pandas as pd
 
 import app.local_annotation_agent.workflow as workflow
 from app.local_annotation_agent.workflow import deterministic
+from app.local_annotation_agent.workflow.deterministic_engine import (
+    FactDefinition,
+    FactRegistry,
+    InclusiveRange,
+    InputDefinition,
+    InputRegistry,
+    PredicateEvaluation,
+    RequirementBranchEvaluation,
+    RequirementEvaluation,
+    RequirementInterpreter,
+    ResolvedInput,
+    validate_requirements,
+)
+from app.local_annotation_agent.workflow.deterministic_facts import (
+    EvaluationContext,
+    smooth_telemetry,
+)
 
 
-def _expert_corner_dataframe() -> pd.DataFrame:
-    theta = np.linspace(0.0, np.pi / 2.0, 31)
-    return pd.DataFrame({
-        "expert_optimal_player_pos_x": 20.0 * np.cos(theta),
-        "expert_optimal_player_pos_y": 20.0 * np.sin(theta),
-        "Physics_brake": np.zeros(theta.size),
-        "expert_optimal_brake": np.zeros(theta.size),
-        "Physics_gas": np.zeros(theta.size),
-        "expert_optimal_throttle": np.zeros(theta.size),
-    })
+def _requirement(tags, fact, operator="eq", value=True):
+    return {
+        "enabled": True,
+        "any_of": [{"all_of": [{
+            "inputs": {"tags": list(tags)},
+            "condition": {"fact": fact, "operator": operator, "value": value},
+        }]}],
+    }
 
 
-def _expert_time_difference_dataframe(values, times=None) -> pd.DataFrame:
-    values = np.asarray(values, dtype=float)
-    if times is None:
-        times = np.arange(values.size, dtype=float) * 100.0
-    return pd.DataFrame({
-        "Graphics_current_time": np.asarray(times, dtype=float),
-        "expert_time_difference": values,
-    })
+def _evaluate(requirements, df, start=0, end=None, **context_kwargs):
+    if end is None:
+        end = len(df) - 1
+    context = EvaluationContext.from_dataframe(df, **context_kwargs)
+    return deterministic.evaluate_requirements(
+        requirements, context, InclusiveRange(start, end),
+    )
 
 
-def _isolate_phase_fact_sources(monkeypatch) -> None:
-    monkeypatch.setattr(deterministic, "_slope_facts", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(deterministic, "_opponent_facts", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(deterministic, "_trajectory_offset", lambda _segment: None)
+def _branch(index, start, end, text="fact: True"):
+    return RequirementBranchEvaluation(index, [
+        PredicateEvaluation(True, text, "fact", InclusiveRange(start, end)),
+    ])
+
+
+def _matched(*branches):
+    first = branches[0]
+    return RequirementEvaluation(
+        True, first.branch, first.passed, [], list(branches),
+    )
 
 
 def test_telemetry_is_smoothed_once_with_centered_three_sample_median():
     df = pd.DataFrame({"signal": [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]})
 
-    telemetry = deterministic._smoothed_telemetry(df)
-    values = deterministic._series(telemetry, "signal")
+    telemetry = smooth_telemetry(df)
 
-    assert values.tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    assert telemetry["signal"].tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
     assert df["signal"].tolist() == [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]
-
-
-def test_all_dataframe_fact_sources_receive_centrally_smoothed_telemetry(monkeypatch):
-    df = pd.DataFrame({
-        "expert_time_difference": [0.0, 0.0, 40.0, 0.0, 0.0],
-    })
-    received = {}
-
-    def capture(name, result):
-        def fake(telemetry, *_args, **_kwargs):
-            received[name] = telemetry["expert_time_difference"].tolist()
-            return result
-        return fake
-
-    monkeypatch.setattr(deterministic, "_slope_facts", capture("slope", {}))
-    monkeypatch.setattr(deterministic, "_shape_facts", capture("shape", ({}, [])))
-    monkeypatch.setattr(deterministic, "_opponent_facts", capture("opponent", {}))
-    monkeypatch.setattr(deterministic, "_trajectory_offset", capture("trajectory", None))
-
-    deterministic.calculate_facts(df, 0, 4)
-
-    assert received == {
-        name: [0.0, 0.0, 0.0, 0.0, 0.0]
-        for name in ("slope", "shape", "opponent", "trajectory")
-    }
-
-
-def test_closing_evidence_is_limited_to_decreasing_magnitude_runs():
-    ranges = deterministic._decreasing_magnitude_ranges(
-        np.array([5.0, 4.0, 3.0, 4.0, 2.0, 3.0]),
-        np.arange(8, 14),
-    )
-
-    assert ranges == [(8, 10), (11, 12)]
 
 
 def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
 
 
-def test_sub_label_catalog_has_no_range_policies():
-    catalog_path = (
-        Path(__file__).parents[1]
-        / "app/internal_knowledge_base/sub_label_annotation.json"
-    )
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+def test_every_catalog_predicate_uses_inputs_and_condition():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    catalogs = [
+        json.loads((root / "lap_annotation.json").read_text(encoding="utf-8")),
+        json.loads((root / "sub_label_annotation.json").read_text(encoding="utf-8")),
+    ]
+    requirements = [catalogs[0]["selection_requirements"]]
+    requirements.extend([
+        catalogs[1]["sub_label_selection_requirements"],
+        catalogs[1]["segment_type_selection_requirements"],
+    ])
 
-    assert "range_policies" not in catalog
+    predicates = [
+        predicate
+        for group in requirements
+        for requirement in group.values()
+        for branch in requirement.get("any_of", [])
+        for predicate in branch.get("all_of", [])
+    ]
+
+    assert predicates
+    assert all(set(predicate) == {"inputs", "condition"} for predicate in predicates)
+    assert all(predicate["inputs"]["tags"] for predicate in predicates)
 
 
-def test_sub_label_and_segment_type_requirements_are_separate():
-    catalog_path = (
-        Path(__file__).parents[1]
-        / "app/internal_knowledge_base/sub_label_annotation.json"
-    )
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    sub_label_ids = {
-        label_id for label_id, doc in catalog["labels"].items()
-        if doc["type"] == "sub"
+def test_registry_is_the_source_of_known_tags_and_facts():
+    assert "compare_ilocs" in deterministic.FACT_REGISTRY.names()
+    assert "player_brake_application_onset_iloc" in deterministic.INPUT_REGISTRY.names()
+    assert not hasattr(deterministic, "KNOWN_FACTS")
+    assert not hasattr(deterministic, "FactSet")
+
+
+def test_registry_rejects_duplicate_strategy_names():
+    definition = FactDefinition(("range",), lambda *_args: True)
+
+    try:
+        FactRegistry([("duplicate", definition), ("duplicate", definition)])
+    except ValueError as error:
+        assert "duplicate fact strategy" in str(error)
+    else:
+        raise AssertionError("duplicate fact registration was accepted")
+
+
+def test_interpreter_retains_every_matching_branch_and_its_range():
+    definitions = {
+        "first": InputDefinition(
+            "range", lambda _context, _scope: ResolvedInput(
+                "first", "range", InclusiveRange(1, 3), InclusiveRange(1, 3),
+            ),
+        ),
+        "second": InputDefinition(
+            "range", lambda _context, _scope: ResolvedInput(
+                "second", "range", InclusiveRange(7, 9), InclusiveRange(7, 9),
+            ),
+        ),
     }
-    segment_type_ids = {
-        label_id for label_id, doc in catalog["labels"].items()
-        if doc["type"] == "segment_type"
-    }
-
-    assert "selection_requirements" not in catalog
-    assert set(catalog["sub_label_selection_requirements"]) == sub_label_ids
-    assert set(catalog["segment_type_selection_requirements"]) == segment_type_ids
-    assert sub_label_ids.isdisjoint(segment_type_ids)
-    assert deterministic.get_label("RM7")["selection_requirements"]
-    assert deterministic.get_label("ST2")["selection_requirements"]
-
-
-def test_evaluate_requirements_retains_every_matching_branch():
+    interpreter = RequirementInterpreter(
+        InputRegistry(definitions),
+        FactRegistry({"present": FactDefinition(("range",), lambda *_args: True)}),
+    )
     requirements = {
         "enabled": True,
         "any_of": [
-            {"all_of": [{"fact": "phase.entry", "operator": "eq", "value": True}]},
-            {"all_of": [{"fact": "phase.exit", "operator": "eq", "value": True}]},
+            _requirement(["first"], "present")["any_of"][0],
+            _requirement(["second"], "present")["any_of"][0],
         ],
     }
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(11)))
 
-    result = deterministic.evaluate_requirements(
-        requirements, {"phase.entry": True, "phase.exit": True},
-    )
+    result = interpreter.evaluate(requirements, context, InclusiveRange(0, 10))
 
     assert result.matched and result.branch == 0
-    assert [branch.branch for branch in result.matched_branches] == [0, 1]
-
-
-def test_main_labels_are_owned_by_lap_annotation_catalog():
-    main_labels = list(deterministic.skills.iter("lap_annotation.labels"))
-    sub_labels = list(deterministic.skills.iter("sub_label_annotation.labels"))
-
-    assert {doc["id"] for doc in main_labels} == {
-        "EA", "MSP", "MSR", "RM", "PS", "O", "OD",
-    }
-    assert all(doc["type"] == "main" for doc in main_labels)
-    assert all(doc["type"] != "main" for doc in sub_labels)
-
-    msp = deterministic.get_label("MSP")
-    assert "characteristics" not in msp
-    assert "description" not in msp
-    assert msp["selection_requirements"]
-    assert msp["selection_requirements_ref"] == (
-        "lap_annotation.selection_requirements.MSP"
-    )
-    assert msp["exclusive_with"] == ["EA", "PS", "MSR"]
-    assert "annotation_guideline" not in msp
-
-    catalog_path = (
-        Path(__file__).parents[1]
-        / "app/internal_knowledge_base/sub_label_annotation.json"
-    )
-    catalog_text = catalog_path.read_text(encoding="utf-8")
-    sub_catalog = json.loads(catalog_text)
-    assert "annotation_guideline" not in catalog_text
-    assert all(
-        doc.get("type") != "main" for doc in sub_catalog["labels"].values()
-    )
-
-
-def test_ea_accepts_either_complete_requirement_branch():
-    requirements = deterministic._requirements_for(
-        "EA", deterministic.get_label("EA")
-    )
-    first = deterministic.evaluate_requirements(
-        requirements,
-        {
-            "expert_time_difference.total_change_ms": -20,
-            "expert_time_difference.ending_direction": "falling",
-        },
-    )
-    second = deterministic.evaluate_requirements(
-        requirements,
-        {
-            "expert_time_difference.total_change_ms": 50,
-            "brake.similarity": 1.0,
-            "throttle.similarity": 1.0,
-        },
-    )
-    assert first.matched and first.branch == 0
-    assert second.matched and second.branch == 3
-
-
-def test_slope_facts_detect_positive_acceleration_after_fall(monkeypatch):
-    def fake_query(_df, _name, _args):
-        return ({
-            "samples": [{"value": 0}, {"value": 100}, {"value": 200}],
-            "extra": {
-                "delta_value": 200,
-                "total_change_direction": "rising",
-                "total_change_is_label_significant": True,
-                "slope_shape": "slope_steady_over_section",
-            },
-        }, None)
-
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
-    )
-
-    df = _expert_time_difference_dataframe(
-        [0, 20, 40, 40, 30, 20, 10, 0, 10, 20, 30],
-    )
-    evidence = {}
-    facts = deterministic._slope_facts(df, 0, 10, evidence)
-
-    assert facts["expert_time_difference.starting_direction"] == "rising"
-    assert facts["expert_time_difference.ending_direction"] == "rising"
-    assert facts["expert_time_difference.rising_ranges"] == [[0, 2], [7, 10]]
-    assert facts["expert_time_difference.falling_ranges"] == [[3, 7]]
-    assert facts["expert_time_difference.flat_ranges"] == []
-    assert evidence["expert_time_difference.rising_ranges"] == [(0, 2), (7, 10)]
-    assert evidence["expert_time_difference.falling_ranges"] == [(3, 7)]
-    assert evidence["expert_time_difference.direction"] == [(0, 10)]
-    assert facts["expert_time_difference.middle_has_rise"] is True
-    assert evidence["expert_time_difference.middle_has_rise"] == [(7, 8)]
-    assert facts["expert_time_difference.overall_gap"] == 200
-    assert "expert_time_difference.significant" not in facts
-
-
-def test_slope_facts_carry_flattening_through_a_stable_tail():
-    step_slopes = [20.0] * 6 + [10.0] * 3 + [9.0, 9.0, 9.0]
-    df = _expert_time_difference_dataframe(np.cumsum([0.0, *step_slopes]))
-
-    facts = deterministic._slope_facts(df, 0, 12)
-
-    assert facts["expert_time_difference.middle_has_rise"] is False
-    assert facts["expert_time_difference.ending_direction"] == "flattening"
-
-
-def test_slope_facts_requires_same_sign_five_degree_drop_to_flatten():
-    cases = [
-        (10.0, 5.0, True),
-        (-10.0, -5.0, True),
-        (10.0, 5.01, False),
-        (-10.0, -5.01, False),
-        (10.0, 0.0, True),
-        (-10.0, 0.0, True),
-        (10.0, 15.0, False),
-        (-10.0, -15.0, False),
-        (10.0, -5.0, False),
-        (-10.0, 5.0, False),
-        (0.0, 0.0, False),
+    assert [branch.evidence_range for branch in result.matched_branches] == [
+        InclusiveRange(1, 3), InclusiveRange(7, 9),
     ]
-    for previous_angle, end_angle, expected in cases:
-        direction = deterministic._expert_time_difference_slope_direction(
-            previous_angle, end_angle, False,
+
+
+def test_branch_evidence_is_the_envelope_of_all_predicate_inputs():
+    ranges = {"first": InclusiveRange(2, 4), "second": InclusiveRange(8, 9)}
+    inputs = InputRegistry({
+        tag: InputDefinition(
+            "range",
+            lambda _context, _scope, tag=tag: ResolvedInput(
+                tag, "range", ranges[tag], ranges[tag],
+            ),
         )
-
-        assert (direction == "flattening") is expected
-
-
-def test_slope_facts_ignore_elapsed_time_values():
-    values = [0.0, 0.0, 10.0, 30.0, 25.0, 25.0, 50.0]
-    dataframes = [
-        pd.DataFrame({"expert_time_difference": values}),
-        _expert_time_difference_dataframe(values, np.zeros(len(values))),
-        _expert_time_difference_dataframe(values, [0.0, 10.0, 5.0, np.nan, 7.0, 7.0, 1.0]),
-    ]
-
-    comparable = []
-    for df in dataframes:
-        facts = deterministic._slope_facts(df, 0, 6)
-        comparable.append({
-            key: value for key, value in facts.items()
-            if key in {
-                "expert_time_difference.starting_direction",
-                "expert_time_difference.ending_direction",
-                "expert_time_difference.rising_ranges",
-                "expert_time_difference.falling_ranges",
-                "expert_time_difference.flat_ranges",
-                "expert_time_difference.middle_has_rise",
-            }
-        })
-
-    assert comparable[0] == comparable[1] == comparable[2]
-    assert comparable[0]["expert_time_difference.middle_has_rise"] is True
-
-
-def test_slope_facts_acceleration_uses_five_degree_boundary():
-    results = []
-    for angle_change in (4.99, 5.0, 5.01):
-        current_delta = np.tan(np.radians(angle_change)) / 5.0
-        df = pd.DataFrame({
-            "expert_time_difference": [0.0, 1.0, np.nan, 0.0, 0.0, current_delta],
-        })
-
-        facts = deterministic._slope_facts(df, 0, 5)
-        results.append(facts["expert_time_difference.middle_has_rise"])
-
-    assert results == [False, True, True]
-
-
-def test_slope_facts_keep_consecutive_five_degree_intervals_rising():
-    step_angles = np.array([5.0, 5.0])
-    time_deltas = np.full(step_angles.size, 100.0)
-    times = np.cumsum([0.0, *time_deltas])
-    gap_deltas = np.tan(np.radians(step_angles)) * time_deltas
-    df = _expert_time_difference_dataframe(np.cumsum([0.0, *gap_deltas]), times)
-
-    facts = deterministic._slope_facts(df, 0, 2)
-
-    assert facts["expert_time_difference.rising_ranges"] == [[0, 2]]
-    assert facts["expert_time_difference.flat_ranges"] == []
-    assert facts["expert_time_difference.starting_direction"] == "rising"
-    assert facts["expert_time_difference.ending_direction"] == "rising"
-
-
-def test_slope_facts_reset_acceleration_across_missing_data_and_index_gaps():
-    dataframes = [
-        pd.DataFrame({"expert_time_difference": [0.0, 1.0, np.nan, 0.0, 1.0]}),
-        pd.DataFrame(
-            {"expert_time_difference": [0.0, 1.0, 0.0, 1.0]},
-            index=[0, 1, 3, 4],
-        ),
-    ]
-
-    for df in dataframes:
-        facts = deterministic._slope_facts(df, 0, 4)
-
-        assert facts["expert_time_difference.middle_has_rise"] is False
-
-
-def test_slope_facts_classify_zero_baseline_and_sign_reversals():
-    df = _expert_time_difference_dataframe(
-        np.cumsum([0.0, 0.0, 10.0, -10.0, 10.0]),
-    )
-
-    facts = deterministic._slope_facts(df, 0, 4)
-
-    assert facts["expert_time_difference.starting_direction"] == "flat"
-    assert facts["expert_time_difference.ending_direction"] == "rising"
-    assert facts["expert_time_difference.rising_ranges"] == [[1, 2], [3, 4]]
-    assert facts["expert_time_difference.falling_ranges"] == [[2, 3]]
-
-
-def test_slope_facts_require_positive_current_slope_for_acceleration():
-    x_span = 7.0
-    step_angles = (-20.0, -10.0, -5.0, 1.0)
-    values = [0.5]
-    for angle in step_angles:
-        values.append(values[-1] + np.tan(np.radians(angle)) / x_span)
-    df = pd.DataFrame({
-        "expert_time_difference": [0.0, 1.0, np.nan, *values],
+        for tag in ranges
     })
-    evidence = {}
-
-    facts = deterministic._slope_facts(df, 0, 7, evidence)
-
-    assert facts["expert_time_difference.middle_has_rise"] is True
-    assert evidence["expert_time_difference.middle_has_rise"] == [(6, 7)]
-
-
-def test_slope_facts_preserve_insignificant_runs_without_selecting_mistake():
-    df = _expert_time_difference_dataframe([0, 0, 0, 5, 10, 15, 20, 20, 20, 20])
-
-    facts = deterministic._slope_facts(df, 0, 9)
-    msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
-
-    assert facts["expert_time_difference.rising_ranges"] == [[2, 6]]
-    assert facts["expert_time_difference.has_spike"] is False
-    assert not deterministic.evaluate_requirements(msp, facts).matched
-
-
-def test_slope_facts_do_not_select_local_rise_when_total_change_falls():
-    df = _expert_time_difference_dataframe(
-        [
-            4240, 4230, 4220, 4195, 4145, 4070, 4020, 4000, 4050,
-            4145, 4240, 4305, 4280, 4255, 4220, 4198, 4185,
-        ],
-    )
-    evidence = {}
-
-    facts = deterministic._slope_facts(df, 0, 16, evidence)
-    msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
-
-    assert facts["expert_time_difference.total_change_ms"] == -55
-    assert evidence["expert_time_difference.total_change_ms"] == [(0, 16)]
-    assert "expert_time_difference.total_change_abs_ms" not in facts
-    assert facts["expert_time_difference.direction"] == "falling"
-    assert not deterministic.evaluate_requirements(msp, facts).matched
-
-
-def test_slope_facts_accept_steady_rise():
-    for rate in (20, 200):
-        df = _expert_time_difference_dataframe(np.arange(9) * rate)
-
-        facts = deterministic._slope_facts(df, 0, 8)
-
-        assert facts["expert_time_difference.rising_ranges"] == [[0, 8]]
-        assert facts["expert_time_difference.flat_ranges"] == []
-        assert facts["expert_time_difference.middle_has_rise"] is False
-        assert facts["expert_time_difference.ending_direction"] == "rising"
-
-
-def test_slope_facts_identify_accelerating_interior_rise_then_flattening(monkeypatch):
-    def fake_query(_df, _name, _args):
-        return ({
-            "samples": [{"value": 0}, {"value": 100}, {"value": 200}],
-            "extra": {
-                "delta_value": 200,
-                "total_change_direction": "rising",
-                "total_change_is_label_significant": True,
-                "slope_shape": "slope_decreasing_over_section",
-            },
-        }, None)
-
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.run_pipeline_query", fake_query,
-    )
-
-    df = _expert_time_difference_dataframe(
-        [0, 0, 0, 10, 30, 70, 100, 110, 120, 125, 130],
-    )
-    evidence = {}
-    facts = deterministic._slope_facts(df, 0, 10, evidence)
-
-    assert facts["expert_time_difference.rising_ranges"] == [[2, 5]]
-    assert facts["expert_time_difference.flat_ranges"] == [[0, 2]]
-    assert facts["expert_time_difference.middle_has_rise"] is True
-    assert evidence["expert_time_difference.middle_has_rise"] == [(2, 3), (3, 4), (4, 5)]
-    assert facts["expert_time_difference.ending_direction"] == "flattening"
-
-    evaluation = deterministic.evaluate_requirements(
-        {"any_of": [{"all_of": [{
-            "fact": "expert_time_difference.total_change_ms",
-            "operator": "gte",
-            "value": 150,
-        }]}]},
-        facts,
-    )
-    assert evaluation.passed == [
-        "expert_time_difference.total_change_ms: 200",
-    ]
-
-
-def test_slope_facts_identify_single_rise():
-    df = _expert_time_difference_dataframe([0, 0, 0, 0, 200, 200, 200, 200, 200, 200])
-
-    facts = deterministic._slope_facts(df, 0, 9)
-
-    assert facts["expert_time_difference.total_change_ms"] == 200
-
-
-def test_slope_facts_detect_regression_expert_time_difference_accelerations():
-    values = [
-        12.49586190588792,
-        32.497635374792935,
-        44.72915398661007,
-        62.071942446043295,
-        70.53691275167785,
-        79.61250766401008,
-        88.0231749710315,
-        95.63715110683324,
-        113.97314758732045,
-        107.57011686143505,
-        76.4069438837314,
-        36.65047636839154,
-        36.52913067450936,
-        66.02738467193649,
-    ]
-    df = _expert_time_difference_dataframe(values)
-    df.index = np.arange(196, 210)
-    telemetry = deterministic._smoothed_telemetry(df)
-    evidence = {}
-
-    facts = deterministic._slope_facts(telemetry, 196, 209, evidence)
-    msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
-
-    assert facts["expert_time_difference.total_change_ms"] == 53.53
-    assert facts["expert_time_difference.middle_has_rise"] is True
-    assert evidence["expert_time_difference.middle_has_rise"] == [
-        (198, 199), (203, 204), (208, 209),
-    ]
-    assert deterministic.evaluate_requirements(msp, facts).matched
-
-
-def test_calculate_facts_smooths_single_sample_noise_before_slope_facts(monkeypatch):
-    df = _expert_time_difference_dataframe([0, 0, 0, 0, 40, 0, 0, 0, 0, 0])
-    monkeypatch.setattr(
-        deterministic, "_shape_facts", lambda *_args, **_kwargs: ({}, [])
-    )
-    monkeypatch.setattr(deterministic, "_opponent_facts", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(deterministic, "_trajectory_offset", lambda _segment: None)
-
-    facts, _ = deterministic.calculate_facts(df, 0, 9)
-
-    assert facts["expert_time_difference.rising_ranges"] == []
-    assert facts["expert_time_difference.total_change_ms"] == 0
-    assert facts["expert_time_difference.middle_has_rise"] is False
-
-
-def test_behavior_requirements_use_middle_rise_for_msp():
-    msp = deterministic._requirements_for("MSP", deterministic.get_label("MSP"))
-    rm = deterministic._requirements_for("RM", deterministic.get_label("RM"))
-
-    no_middle_rise = {
-        "expert_time_difference.total_change_ms": 150,
-        "expert_time_difference.middle_has_rise": False,
-    }
-    middle_rise = {
-        "expert_time_difference.direction": "rising",
-        "expert_time_difference.total_change_ms": 150,
-        "expert_time_difference.middle_has_rise": True,
-    }
-    recovery_merge = {
-        "expert_time_difference.total_change_ms": 150,
-        "expert_time_difference.starting_direction": "rising",
-        "expert_time_difference.middle_has_rise": False,
-        "expert_time_difference.ending_direction": "flattening",
-    }
-
-    assert not deterministic.evaluate_requirements(msp, no_middle_rise).matched
-    assert deterministic.evaluate_requirements(msp, middle_rise).matched
-    assert not deterministic.evaluate_requirements(msp, {
-        **middle_rise, "expert_time_difference.total_change_ms": 49,
-    }).matched
-    assert not deterministic.evaluate_requirements(msp, {
-        **middle_rise, "expert_time_difference.middle_has_rise": False,
-    }).matched
-    assert not deterministic.evaluate_requirements(rm, middle_rise).matched
-    assert deterministic.evaluate_requirements(rm, recovery_merge).matched
-    assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "expert_time_difference.starting_direction": "falling",
-    }).matched
-    assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "expert_time_difference.middle_has_rise": True,
-    }).matched
-    assert not deterministic.evaluate_requirements(rm, {
-        **recovery_merge, "expert_time_difference.ending_direction": "rising",
-    }).matched
-
-
-def test_missing_fact_fails_closed():
-    result = deterministic.evaluate_requirements(
-        {
-            "enabled": True,
-            "any_of": [{"all_of": [
-                {"fact": "expert_time_difference.direction", "operator": "eq", "value": "rising"}
-            ]}],
-        },
-        {},
-    )
-    assert not result.matched
-    assert result.passed == []
-    assert result.failed == ["expert_time_difference.direction: unavailable"]
-
-
-def test_failed_requirement_reports_facts_from_closest_branch_only():
-    result = deterministic.evaluate_requirements(
-        {
-            "enabled": True,
-            "any_of": [
-                {"all_of": [
-                    {"fact": "expert_time_difference.direction", "operator": "eq", "value": "rising"},
-                    {"fact": "expert_time_difference.overall_gap", "operator": "gt", "value": 50},
-                ]},
-                {"all_of": [
-                    {"fact": "expert_time_difference.direction", "operator": "eq", "value": "falling"},
-                    {"fact": "expert_time_difference.end_ms", "operator": "gt", "value": 0},
-                    {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "rising"},
-                ]},
-            ],
-        },
-        {"expert_time_difference.direction": "rising", "expert_time_difference.overall_gap": 50},
-    )
-
-    assert not result.matched
-    assert result.passed == ["expert_time_difference.direction: 'rising'"]
-    assert result.failed == ["expert_time_difference.overall_gap: 50"]
-
-
-def test_pit_stop_requires_pit_section_and_raw_telemetry():
-    df = pd.DataFrame({
-        "Graphics_player_pos_x": [0.0, 1.0, 2.0, 3.0],
-        "Graphics_player_pos_y": [4.0, 4.0, 4.0, 4.0],
-        "expert_optimal_player_pos_x": [0.0, 1.0, 2.0, 3.0],
-        "expert_optimal_player_pos_y": [0.0, 0.0, 0.0, 0.0],
-        "Physics_speed_kmh": [40.0, 40.0, 40.0, 40.0],
-        "expert_optimal_speed": [100.0, 100.0, 100.0, 100.0],
-        "speed_difference": [-999.0, -999.0, -999.0, -999.0],
-        "trajectory_offset": [0.0, 0.0, 0.0, 0.0],
+    facts = FactRegistry({
+        "present": FactDefinition(("range",), lambda *_args: True),
     })
-    requirements = deterministic._requirements_for(
-        "PS", deterministic.get_label("PS")
-    )
-    pit_facts, _ = deterministic.calculate_facts(
-        df, 0, 3, section_id="silverstone22"
-    )
-    straight_facts, _ = deterministic.calculate_facts(
-        df, 0, 3, section_id="silverstone13"
-    )
-
-    assert pit_facts["section.name"] == "Pit"
-    assert pit_facts["section.overlap_names"] == ["Pit"]
-    assert pit_facts["trajectory.peak_abs_offset_m"] == 4.0
-    assert pit_facts["speed.gap_peak_abs_kmh"] == 60.0
-    assert deterministic.evaluate_requirements(requirements, pit_facts).matched
-    assert not deterministic.evaluate_requirements(requirements, straight_facts).matched
-
-
-def test_pit_stop_checks_overlaps_when_splitter_selects_adjacent_straight(monkeypatch):
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.locate_circuit_section",
-        lambda *_args, **_kwargs: {
-            "best_match": None,
-            "top_matches": [
-                {"label_id": "brands_hatch1"},
-                {"label_id": "brands_hatch17"},
-            ],
-        },
-    )
-    monkeypatch.setattr(
-        deterministic,
-        "calculate_facts",
-        lambda *_args, **_kwargs: ({
-            "trajectory.peak_abs_offset_m": 4.0,
-            "speed.expert_faster": True,
-            "speed.gap_peak_abs_kmh": 60.0,
-        }, []),
-    )
-
-    result = deterministic.calculate_lap_annotation(
-        pd.DataFrame(index=range(4)),
-        lap_start=0,
-        lap_end=3,
-        section_id="brands_hatch1",
-        section_start=0,
-        section_end=3,
-        circuit_id="brands_hatch",
-    )
-
-    assert result.section_id == "brands_hatch17"
-    assert result.label_ids == ["brands_hatch", "brands_hatch17", "PS"]
-
-
-def test_pit_stop_accepts_ten_metre_separation_without_speed_evidence():
-    requirements = deterministic._requirements_for(
-        "PS", deterministic.get_label("PS")
-    )
-
-    assert deterministic.evaluate_requirements(requirements, {
-        "section.overlap_names": ["Pit"],
-        "trajectory.peak_abs_offset_m": 10.0,
-    }).matched
-    assert not deterministic.evaluate_requirements(requirements, {
-        "section.overlap_names": ["Pit"],
-        "trajectory.peak_abs_offset_m": 9.9,
-    }).matched
-    assert not deterministic.evaluate_requirements(requirements, {
-        "section.overlap_names": ["Straight"],
-        "trajectory.peak_abs_offset_m": 10.0,
-    }).matched
-
-
-def test_far_driver_in_overlapping_pit_prefers_ps_over_rm(monkeypatch):
-    monkeypatch.setattr(
-        deterministic,
-        "calculate_facts",
-        lambda *_args, **_kwargs: ({
-            "trajectory.peak_abs_offset_m": 10.0,
-            "expert_time_difference.direction": "falling",
-            "expert_time_difference.overall_gap": 100,
-        }, []),
-    )
-
-    result = deterministic.calculate_lap_annotation(
-        pd.DataFrame(index=range(4)),
-        lap_start=0,
-        lap_end=3,
-        section_id="silverstone22",
-        section_start=0,
-        section_end=3,
-        circuit_id="silverstone",
-    )
-
-    assert result.label_ids == ["silverstone", "silverstone22", "PS"]
-    assert all(item["value"] != "PS / RM" for item in result.rejected_proposals)
-
-
-def test_lap_omits_sub_labels_that_cover_only_part_of_segment(monkeypatch):
-    facts = deterministic.FactSet(
-        {
-            "expert_time_difference.total_change_ms": 150,
-            "expert_time_difference.starting_direction": "rising",
-            "expert_time_difference.middle_has_rise": False,
-            "expert_time_difference.ending_direction": "flattening",
-            "trajectory.peak_abs_offset_m": 2.0,
-            "trajectory.converging": True,
-            "speed.expert_faster": True,
-            "speed.gap_peak_abs_kmh": 30.0,
-            "speed.gap_closing": True,
-        },
-        evidence={
-            "trajectory.peak_abs_offset_m": [(12, 12)],
-            "trajectory.converging": [(10, 16)],
-            "speed.expert_faster": [(18, 20)],
-            "speed.gap_peak_abs_kmh": [(19, 19)],
-            "speed.gap_closing": [(18, 22)],
-        },
-    )
-    monkeypatch.setattr(
-        deterministic, "calculate_facts", lambda *_args, **_kwargs: (facts, []),
-    )
-    monkeypatch.setattr(
-        deterministic, "_resolve_circuit_sections",
-        lambda *_args, **_kwargs: ("silverstone1", ["silverstone1"]),
-    )
-
-    result = deterministic.calculate_lap_annotation(
-        pd.DataFrame(index=range(8, 30)),
-        lap_start=8,
-        lap_end=29,
-        section_id="silverstone1",
-        section_start=8,
-        section_end=29,
-        circuit_id="silverstone",
-    )
-
-    assert "RM selected for iloc range [8, 29]" in result.reasoning
-    assert all(label not in result.label_ids for label in ("RM1", "RM5", "RM7"))
-    assert result.reasoning.count("\n") == 0
-
-
-def test_lap_omits_sub_label_that_is_not_fully_inside_segment(monkeypatch):
-    facts = deterministic.FactSet(
-        {
-            "expert_time_difference.total_change_ms": 150,
-            "expert_time_difference.starting_direction": "rising",
-            "expert_time_difference.middle_has_rise": False,
-            "expert_time_difference.ending_direction": "flattening",
-            "trajectory.converging": True,
-        },
-        evidence={"trajectory.converging": [(6, 12)]},
-    )
-    monkeypatch.setattr(
-        deterministic, "calculate_facts", lambda *_args, **_kwargs: (facts, []),
-    )
-    monkeypatch.setattr(
-        deterministic, "_resolve_circuit_sections",
-        lambda *_args, **_kwargs: ("silverstone1", ["silverstone1"]),
-    )
-
-    result = deterministic.calculate_lap_annotation(
-        pd.DataFrame(index=range(11)),
-        lap_start=0,
-        lap_end=10,
-        section_id="silverstone1",
-        section_start=0,
-        section_end=10,
-        circuit_id="silverstone",
-    )
-
-    assert "RM" in result.label_ids
-    assert "RM7" not in result.label_ids
-    assert "RM7 selected" not in result.reasoning
-
-
-def test_lap_selects_sub_label_that_covers_entire_segment(monkeypatch):
-    facts = deterministic.FactSet(
-        {
-            "expert_time_difference.total_change_ms": 150,
-            "expert_time_difference.starting_direction": "rising",
-            "expert_time_difference.middle_has_rise": False,
-            "expert_time_difference.ending_direction": "flattening",
-            "trajectory.converging": True,
-        },
-        evidence={"trajectory.converging": [(0, 10)]},
-    )
-    monkeypatch.setattr(
-        deterministic, "calculate_facts", lambda *_args, **_kwargs: (facts, []),
-    )
-    monkeypatch.setattr(
-        deterministic, "_resolve_circuit_sections",
-        lambda *_args, **_kwargs: ("silverstone1", ["silverstone1"]),
-    )
-
-    result = deterministic.calculate_lap_annotation(
-        pd.DataFrame(index=range(11)),
-        lap_start=0,
-        lap_end=10,
-        section_id="silverstone1",
-        section_start=0,
-        section_end=10,
-        circuit_id="silverstone",
-    )
-
-    assert "RM7" in result.label_ids
-    assert "RM7 selected for iloc range [0, 10]" in result.reasoning
-
-
-def test_lap_unrequired_evidence_cannot_expand_partial_required_match(monkeypatch):
-    facts = deterministic.FactSet(
-        {
-            "expert_time_difference.total_change_ms": 150,
-            "expert_time_difference.middle_has_rise": True,
-            "grip.over_limit": True,
-            "speed.gap_peak_abs_kmh": 20.0,
-        },
-        evidence={
-            "grip.over_limit": [(3, 7)],
-            "speed.gap_peak_abs_kmh": [(0, 10)],
-        },
-        phases={"entry": [(0, 10)]},
-    )
-    monkeypatch.setattr(
-        deterministic, "calculate_facts", lambda *_args, **_kwargs: (facts, []),
-    )
-    monkeypatch.setattr(
-        deterministic, "_resolve_circuit_sections",
-        lambda *_args, **_kwargs: ("silverstone1", ["silverstone1"]),
-    )
-
-    result = deterministic.calculate_lap_annotation(
-        pd.DataFrame(index=range(11)),
-        lap_start=0,
-        lap_end=10,
-        section_id="silverstone1",
-        section_start=0,
-        section_end=10,
-        circuit_id="silverstone",
-    )
-
-    assert "MSP" in result.label_ids
-    assert "MSP42" not in result.label_ids
-    assert "MSP42 selected" not in result.reasoning
-
-
-def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():
-    df = pd.DataFrame({
-        "Physics_slip_angle_front_left": [0.01, 0.01],
-        "Physics_slip_angle_front_right": [0.01, 0.01],
-        "Physics_slip_angle_rear_left": [0.20, 0.20],
-        "Physics_slip_angle_rear_right": [0.20, 0.20],
-        "Physics_slip_ratio_front_left": [0.01, 0.01],
-        "Physics_slip_ratio_front_right": [0.01, 0.01],
-        "Physics_slip_ratio_rear_left": [0.20, 0.20],
-        "Physics_slip_ratio_rear_right": [0.20, 0.20],
-        "trajectory_balance": [-1.0, -1.0],
-        "driver_push_to_limit": [0.0, 0.0],
-    })
-    facts, _ = deterministic.calculate_facts(df, 0, 1)
-    assert facts["balance.oversteer"] is True
-    assert facts["balance.understeer"] is False
-    assert facts["grip.over_limit"] is True
-
-
-def test_section_name_comes_from_catalog_mapping():
-    facts, _ = deterministic.calculate_facts(
-        pd.DataFrame(index=range(3)), 0, 2, section_id="silverstone22"
-    )
-    assert facts["section.name"] == "Pit"
-
-
-def test_disabled_label_never_matches():
-    requirements = deterministic._requirements_for(
-        "MSP19", deterministic.get_label("MSP19")
-    )
-    assert not deterministic.evaluate_requirements(requirements, {}).matched
-
-
-def test_exclusive_matches_are_suppressed(monkeypatch):
-    docs = {
-        "A": {
-            "id": "A", "exclusive_with": ["B"],
-            "selection_requirements": {
-                "enabled": True,
-                "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": True}]}],
-            },
-        },
-        "B": {
-            "id": "B", "exclusive_with": ["A"],
-            "selection_requirements": {
-                "enabled": True,
-                "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": True}]}],
-            },
-        },
-    }
-    monkeypatch.setattr(deterministic, "get_label", docs.get)
-    result = deterministic.evaluate_labels(["A", "B"], {"phase.entry": True})
-    assert result.labels == []
-    assert result.conflicts == [("A", "B")]
-
-
-def test_segment_type_alone_does_not_create_detailed_subsegment(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        ranges = [(1, 4), (6, 9)] if (start, end) == (0, 10) else []
-        return deterministic.FactSet(
-            {"segment.shape_key": "straight"},
-            evidence={"segment.shape_key": [(start, end)]},
-        ), ranges
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(11)),
-        parent_start=0,
-        parent_end=10,
-        parent_main_labels=["EA"],
-    )
-    assert result.label_annotations == []
-    assert "ST2" not in result.final_labels
-
-
-def test_rm_sub_labels_require_rm_parent_but_only_evaluate_own_facts(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        ranges = [(1, 4)] if (start, end) == (0, 5) else []
-        facts = deterministic.FactSet(
-            {"trajectory.converging": True},
-            evidence={"trajectory.converging": [(start, end)]},
-        )
-        return facts, ranges
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    without_rm = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(6)),
-        parent_start=0,
-        parent_end=5,
-        parent_main_labels=["EA"],
-    )
-    with_rm = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(6)),
-        parent_start=0,
-        parent_end=5,
-        parent_main_labels=["RM"],
-    )
-
-    assert "RM7" not in without_rm.final_labels
-    assert "RM7" in with_rm.final_labels
-
-
-def test_public_detailed_annotation_does_not_repeat_sub_label_selected_on_parent(
-    monkeypatch,
-):
-    def fake_facts(_df, start, end, **_kwargs):
-        ranges = [(1, 4)] if (start, end) == (0, 5) else []
-        return deterministic.FactSet(
-            {"trajectory.converging": True},
-            evidence={"trajectory.converging": [(start, end)]},
-        ), ranges
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    result = workflow.run_annotation(
-        flow="detailed",
-        df=pd.DataFrame(index=range(6)),
-        start_index=0,
-        end_index=5,
-        parent_main_labels=["RM"],
-        parent_selected_labels=["RM7"],
-    )
-
-    assert "RM7" not in result.final_labels
-    assert result.label_annotations == []
-
-
-def test_sub_label_range_uses_every_required_fact_evidence(monkeypatch):
-    calls = []
-
-    def fake_facts(_df, start, end, **_kwargs):
-        calls.append((start, end))
-        return deterministic.FactSet(
-            {
-                "brake.application_onset_relation": "later",
-                "brake.application_end_relation": "later",
-            },
-            evidence={
-                "brake.application_onset_relation": [(0, 3)],
-                "brake.application_end_relation": [(6, 8)],
-            },
-            phases={"entry": [(1, 5)]},
-        ), [(1, 5)]
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(11)),
-        parent_start=0,
-        parent_end=10,
-        parent_main_labels=["MSP"],
-    )
-
-    proposal = next(item for item in result.label_annotations if item["label_id"] == "MSP1")
-    assert (proposal["start_index"], proposal["end_index"]) == (0, 8)
-    assert "MSP1 selected for iloc range [0, 8]" in proposal["reasoning"]
-    assert (
-        "- brake.application_onset_relation: 'later' — range [0, 3]"
-    ) in proposal["reasoning"]
-    assert (
-        "- brake.application_end_relation: 'later' — range [6, 8]"
-    ) in proposal["reasoning"]
-    assert proposal["reasoning"].splitlines()[1] == "Evidence:"
-    assert calls == [(0, 10)]
-
-
-def test_detailed_fact_reasoning_shows_point_indices_and_disjoint_ranges():
-    evaluation = deterministic.RequirementBranchEvaluation(
-        0,
-        ["fact.point: True", "fact.ranges: True"],
-        [],
-        ["fact.point", "fact.ranges"],
-    )
-    facts = deterministic.FactSet(
-        {"fact.point": True, "fact.ranges": True},
-        evidence={
-            "fact.point": [(4, 4)],
-            "fact.ranges": [(1, 2), (7, 9)],
-        },
-    )
-
-    assert deterministic._passed_with_fact_evidence(evaluation, facts) == [
-        "fact.point: True — index 4",
-        "fact.ranges: True — range [1, 2], range [7, 9]",
-    ]
-
-
-def test_detailed_sub_labels_use_parent_fact_evidence(monkeypatch):
-    cases = [
-        (
-            "MSP", "MSP5",
-            {"brake.application_onset_relation": "earlier"},
-            {"brake.application_onset_relation": [(2, 3)]},
-            (2, 3),
-        ),
-        (
-            "MSP", "MSP20",
-            {"throttle.application_onset_relation": "earlier"},
-            {"throttle.application_onset_relation": [(4, 5)]},
-            (4, 5),
-        ),
-        (
-            "MSP", "MSP3",
-            {"turn.apex_relation": "later"},
-            {"turn.apex_relation": [(6, 7)]},
-            (6, 7),
-        ),
-        (
-            "RM", "RM7",
-            {"trajectory.converging": True},
-            {"trajectory.converging": [(8, 9)]},
-            (8, 9),
-        ),
-        (
-            "MSP", "MSP35",
-            {"gear.upshift_relation": "earlier"},
-            {"gear.upshift_relation": [(10, 11)]},
-            (10, 11),
-        ),
-        (
-            "MSP", "MSP42",
-            {"phase.entry": True, "grip.over_limit": True},
-            {"phase.entry": [(12, 13)], "grip.over_limit": [(14, 15)]},
-            (12, 15),
-        ),
-        (
-            "O", "O4",
-            {"opponent.outcome": "pass_completed", "opponent.side_swap": True},
-            {
-                "opponent.outcome": [(16, 17)],
-                "opponent.side_swap": [(18, 19)],
-            },
-            (16, 19),
-        ),
-    ]
-
-    for parent_label, label_id, values, evidence, expected_range in cases:
-        facts = deterministic.FactSet(values, evidence=evidence)
-        monkeypatch.setattr(
-            deterministic,
-            "calculate_facts",
-            lambda *_args, _facts=facts, **_kwargs: (_facts, []),
-        )
-
-        result = deterministic.calculate_detailed_annotation(
-            pd.DataFrame(index=range(21)),
-            parent_start=0,
-            parent_end=20,
-            parent_main_labels=[parent_label],
-        )
-
-        proposal = next(
-            item for item in result.label_annotations
-            if item["label_id"] == label_id
-        )
-        assert (proposal["start_index"], proposal["end_index"]) == expected_range
-
-
-def test_altitude_segment_type_alone_does_not_create_detailed_subsegment(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        return deterministic.FactSet(
-            {"altitude.entry.trend": "uphill"},
-            evidence={"altitude.entry.trend": [(1, 7)]},
-            phases={"entry": [(2, 5)]},
-        ), [(1, 9)]
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(11)),
-        parent_start=0,
-        parent_end=10,
-        parent_main_labels=[],
-    )
-
-    assert result.label_annotations == []
-    assert "ST12" not in result.final_labels
-
-
-def test_segment_type_attaches_to_finalized_sub_label_range(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        return deterministic.FactSet(
-            {
-                "trajectory.converging": True,
-                "segment.shape_key": "straight",
-            },
-            evidence={
-                "trajectory.converging": [(2, 6)],
-                "segment.shape_key": [(0, 10)],
-            },
-        ), [(1, 9)]
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(11)),
-        parent_start=0,
-        parent_end=10,
-        parent_main_labels=["RM"],
-    )
-
-    assert [
-        (item["start_index"], item["end_index"], item["label_id"])
-        for item in result.label_annotations
-    ] == [(2, 6, "RM7"), (2, 6, "ST2")]
-
-
-def test_parent_segment_type_does_not_carry_to_finalized_sub_label_range(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        return deterministic.FactSet(
-            {"trajectory.converging": True},
-            evidence={"trajectory.converging": [(2, 6)]},
-        ), []
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(11)),
-        parent_start=0,
-        parent_end=10,
-        parent_main_labels=["RM"],
-        parent_selected_labels=["ST2"],
-    )
-
-    assert [
-        (item["start_index"], item["end_index"], item["label_id"])
-        for item in result.label_annotations
-    ] == [(2, 6, "RM7")]
-    assert "ST2" not in result.final_labels
-
-
-def test_segment_types_attach_where_evidence_exactly_contains_candidate(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        return deterministic.FactSet(
-            {
-                "trajectory.converging": True,
-                "brake.application_onset_relation": "earlier",
-                "altitude.entry.trend": "uphill",
-                "altitude.exit.trend": "level",
-            },
-            evidence={
-                "trajectory.converging": [(1, 3)],
-                "brake.application_onset_relation": [(6, 9)],
-                "altitude.entry.trend": [(1, 3)],
-                "altitude.exit.trend": [(6, 9)],
-            },
-        ), [(1, 3), (6, 9)]
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(11)),
-        parent_start=0,
-        parent_end=10,
-        parent_main_labels=["RM", "MSP"],
-    )
-
-    assert [
-        (item["start_index"], item["end_index"], item["label_id"])
-        for item in result.label_annotations
-    ] == [
-        (1, 3, "RM7"),
-        (1, 3, "ST12"),
-        (6, 9, "MSP5"),
-        (6, 9, "ST19"),
-    ]
-
-
-def test_segment_type_attaches_to_parent_evidence_envelope(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        return deterministic.FactSet(
-            {
-                "segment.shape_key": "straight",
-                "trajectory.converging": True,
-            },
-            evidence={
-                "segment.shape_key": [(0, 8)],
-                "trajectory.converging": [(1, 4), (3, 6)],
-            },
-        ), []
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(9)),
-        parent_start=0,
-        parent_end=8,
-        parent_main_labels=["RM"],
-    )
-
-    assert [
-        (item["start_index"], item["end_index"], item["label_id"])
-        for item in result.label_annotations
-    ] == [(1, 6, "RM7"), (1, 6, "ST2")]
-
-
-def test_label_evidence_containment_is_inclusive_and_requires_full_coverage():
-    cases = [
-        ((8, 25), True),
-        ((3, 29), True),
-        ((3, 20), False),
-        ((12, 29), False),
-        ((3, 8), False),
-        ((25, 29), False),
-    ]
-
-    for required_range, expected in cases:
-        evidence = deterministic.resolve_label_evidence(
-            required_ranges=[required_range],
-            parent_range=(0, 29),
-        )
-
-        assert evidence is not None
-        assert evidence.required_contains(8, 25) is expected
-
-
-def test_segment_type_conflict_does_not_remove_found_sub_label(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        ranges = [(1, 4)] if (start, end) == (0, 5) else []
-        return deterministic.FactSet(
-            {"trajectory.converging": True},
-            evidence={"trajectory.converging": [(start, end)]},
-        ), ranges
-
-    branch = deterministic.RequirementBranchEvaluation(
-        0,
-        ["trajectory.converging: True"],
-        [],
-        ["trajectory.converging"],
-    )
-    sub_label = deterministic.RequirementEvaluation(
-        True,
-        0,
-        branch.passed,
-        [],
-        branch.fact_ids,
-        [branch],
-    )
-
-    def fake_evaluate(label_ids, _facts):
-        if "RM7" in label_ids:
-            return deterministic.LabelEvaluation(["RM7"], {"RM7": sub_label})
-        return deterministic.LabelEvaluation([], {}, [("ST1", "ST2")])
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
-    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
-    result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(6)),
-        parent_start=0,
-        parent_end=5,
-        parent_main_labels=["RM"],
-    )
-
-    assert result.final_labels == ["RM7"]
-    assert "Suppressed 1 exclusive conflict(s)" in result.final_reasoning
-
-
-def test_each_matching_branch_generates_its_own_evidence_range():
-    requirements = {
-        "enabled": True,
-        "any_of": [
-            {"all_of": [{"fact": "phase.entry", "operator": "eq", "value": True}]},
-            {"all_of": [{"fact": "phase.exit", "operator": "eq", "value": True}]},
-        ],
-    }
-    facts = deterministic.FactSet(
-        {"phase.entry": True, "phase.exit": True},
-        evidence={"phase.entry": [(1, 3)], "phase.exit": [(7, 9)]},
-    )
-    evaluation = deterministic.evaluate_requirements(requirements, facts)
-
-    resolved = deterministic._label_evidence(evaluation, facts, 0, 10)
-
-    assert [evidence.annotation_range for _, evidence in resolved] == [(1, 3), (7, 9)]
-
-
-def test_matching_branch_without_complete_provenance_is_omitted():
     requirements = {
         "enabled": True,
         "any_of": [{"all_of": [
-            {"fact": "phase.entry", "operator": "eq", "value": True},
-            {"fact": "trajectory.converging", "operator": "eq", "value": True},
+            _requirement(["first"], "present")["any_of"][0]["all_of"][0],
+            _requirement(["second"], "present")["any_of"][0]["all_of"][0],
         ]}],
     }
-    facts = deterministic.FactSet(
-        {"phase.entry": True, "trajectory.converging": True},
-        evidence={"phase.entry": [(1, 3)]},
-    )
-    evaluation = deterministic.evaluate_requirements(requirements, facts)
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(11)))
 
-    assert deterministic._label_evidence(evaluation, facts, 0, 10) == []
+    result = RequirementInterpreter(inputs, facts).evaluate(
+        requirements, context, InclusiveRange(0, 10),
+    )
+
+    assert result.matched_branches[0].evidence_range == InclusiveRange(2, 9)
+
+
+def test_missing_input_fails_closed_with_rejected_reason():
+    result = _evaluate(
+        _requirement(
+            ["player_brake_release_end_iloc", "expert_brake_release_end_iloc"],
+            "compare_ilocs", value="later",
+        ),
+        pd.DataFrame({
+            "Physics_brake": [np.nan] * 5,
+            "expert_optimal_brake": [np.nan] * 5,
+        }),
+    )
+
+    assert not result.matched
+    assert "missing input" in result.failed[0]
+
+
+def test_input_and_fact_strategies_are_cached_per_scope():
+    calls = {"input": 0, "fact": 0}
+
+    def resolve(_context, scope):
+        calls["input"] += 1
+        return ResolvedInput("scope", "range", scope, scope)
+
+    def calculate(_context, _inputs):
+        calls["fact"] += 1
+        return True
+
+    interpreter = RequirementInterpreter(
+        InputRegistry({"scope": InputDefinition("range", resolve)}),
+        FactRegistry({"present": FactDefinition(("range",), calculate)}),
+    )
+    predicate = _requirement(["scope"], "present")["any_of"][0]
+    requirements = {"enabled": True, "any_of": [predicate, predicate]}
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(5)))
+
+    interpreter.evaluate(requirements, context, InclusiveRange(0, 4))
+
+    assert calls == {"input": 1, "fact": 1}
+
+
+def test_validator_rejects_fact_input_kind_mismatch():
+    requirements = _requirement(["point"], "range_fact")
+    errors = validate_requirements(
+        requirements,
+        InputRegistry({"point": InputDefinition("iloc", lambda *_args: None)}),
+        FactRegistry({"range_fact": FactDefinition(("range",), lambda *_args: True)}),
+    )
+
+    assert errors == [
+        "branch 0 predicate 0: 'range_fact' expects ('range',), got ('iloc',)"
+    ]
+
+
+def test_compare_ilocs_preserves_declaration_order_and_uses_point_envelope():
+    df = pd.DataFrame({
+        "Physics_brake": [0, 0, 0, 0, 1, 1, 0],
+        "expert_optimal_brake": [0, 1, 1, 0, 0, 0, 0],
+    })
+    result = _evaluate(
+        _requirement(
+            ["player_brake_application_onset_iloc", "expert_brake_application_onset_iloc"],
+            "compare_ilocs", value="later",
+        ),
+        df,
+    )
+
+    assert result.matched
+    assert result.matched_branches[0].evidence_range == InclusiveRange(1, 4)
+
+
+def test_range_fact_inspects_only_its_declared_range():
+    df = pd.DataFrame({
+        "Physics_speed_kmh": [0, 0, 100, 100, 0, 0],
+        "expert_optimal_speed": [100, 100, 90, 90, 100, 100],
+    })
+    context = EvaluationContext.from_dataframe(df)
+    requirements = _requirement(
+        ["speed_comparison_range"], "find_speed_expert_faster", value=False,
+    )
+
+    result = deterministic.evaluate_requirements(
+        requirements, context, InclusiveRange(2, 3),
+    )
+
+    assert result.matched
+    assert result.matched_branches[0].evidence_range == InclusiveRange(2, 3)
+
+
+def test_speed_strategies_share_the_declared_comparison_range():
+    df = pd.DataFrame({
+        "Physics_speed_kmh": [80, 90, 100, 105],
+        "expert_optimal_speed": [100, 105, 110, 110],
+    })
+    branch = {"all_of": [
+        _requirement(["speed_comparison_range"], "find_speed_expert_faster")["any_of"][0]["all_of"][0],
+        _requirement(["speed_comparison_range"], "find_speed_peak_gap", "eq", 20.0)["any_of"][0]["all_of"][0],
+        _requirement(["speed_comparison_range"], "find_speed_gap_closing")["any_of"][0]["all_of"][0],
+    ]}
+
+    result = _evaluate({"enabled": True, "any_of": [branch]}, df)
+
+    assert result.matched
+    assert result.matched_branches[0].evidence_range == InclusiveRange(0, 3)
+
+
+def test_trajectory_strategy_uses_declared_phase_range(monkeypatch):
+    received = []
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.calculate_trajectory_offset",
+        lambda segment: received.append(segment.index.tolist()) or np.array([2.0, 1.0, 0.5]),
+    )
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(8)))
+
+    result = deterministic.evaluate_requirements(
+        _requirement(["trajectory_comparison_range"], "find_trajectory_convergence"),
+        context,
+        InclusiveRange(3, 5),
+    )
+
+    assert result.matched
+    assert received == [[3, 4, 5]]
+
+
+def test_phase_resolver_uses_shape_landmarks(monkeypatch):
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.measure_segment_shape",
+        lambda *_args: {"phases": [{"entry": 2, "apex": 5, "exit": 9}]},
+    )
+    result = _evaluate(
+        _requirement(["corner_apex_range"], "find_phase_presence"),
+        pd.DataFrame(index=range(12)),
+        end=11,
+    )
+
+    assert result.matched
+    assert result.matched_branches[0].evidence_range == InclusiveRange(3, 7)
+
+
+def test_altitude_strategy_classifies_only_resolved_phase():
+    df = pd.DataFrame({
+        "expert_optimal_player_pos_x": [0.0, 1.0, 2.0, 3.0],
+        "expert_optimal_player_pos_y": [0.0, 0.0, 0.0, 0.0],
+        "expert_optimal_player_pos_z": [0.0, 0.1, 0.2, 1.0],
+    })
+
+    result = _evaluate(
+        _requirement(["segment_range"], "find_entry_altitude_trend", value="uphill"),
+        df,
+    )
+
+    assert result.matched
+
+
+def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():
+    size = 5
+    df = pd.DataFrame({
+        "Physics_slip_angle_front_left": [0.01] * size,
+        "Physics_slip_angle_front_right": [0.01] * size,
+        "Physics_slip_angle_rear_left": [0.2] * size,
+        "Physics_slip_angle_rear_right": [0.2] * size,
+        "Physics_slip_ratio_front_left": [2.0] * size,
+        "Physics_slip_ratio_front_right": [2.0] * size,
+        "Physics_slip_ratio_rear_left": [2.0] * size,
+        "Physics_slip_ratio_rear_right": [2.0] * size,
+    })
+    branch = {"all_of": [
+        _requirement(["control_range"], "find_oversteer")["any_of"][0]["all_of"][0],
+        _requirement(["control_range"], "find_grip_over_limit")["any_of"][0]["all_of"][0],
+    ]}
+
+    assert _evaluate({"enabled": True, "any_of": [branch]}, df).matched
+
+
+def test_opponent_strategies_share_one_cached_analysis(monkeypatch):
+    calls = {"count": 0}
+
+    def classify(*_args):
+        calls["count"] += 1
+        return {
+            "outcome": "pass_completed",
+            "confidence_level": "high",
+            "candidates": [{
+                "entry_signed_long_gap_m": 8.0,
+                "exit_signed_long_gap_m": 2.0,
+                "side_by_side_iloc_count": 2,
+            }],
+        }
+
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.classify_opponent_interaction", classify,
+    )
+    branch = {"all_of": [
+        _requirement(["opponent_interaction_range"], "find_opponent_outcome", value="pass_completed")["any_of"][0]["all_of"][0],
+        _requirement(["opponent_interaction_range"], "find_opponent_gap_shrank")["any_of"][0]["all_of"][0],
+    ]}
+
+    result = _evaluate(
+        {"enabled": True, "any_of": [branch]}, pd.DataFrame(index=range(5)),
+    )
+
+    assert result.matched
+    assert calls["count"] == 1
+
+
+def test_lap_catalog_is_interpreted_against_registered_time_strategies(monkeypatch):
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.run_pipeline_query",
+        lambda *_args: ({
+            "extra": {
+                "delta_value": -40.0,
+                "thresholds": {"label_significant_at_abs_delta": 50.0},
+            },
+        }, None),
+    )
+    requirements = deterministic._requirements_for(
+        "EA", deterministic.get_label("EA"),
+    )
+    result = _evaluate(
+        requirements,
+        pd.DataFrame({"expert_time_difference": [50, 40, 30, 20, 10, 0]}),
+    )
+
+    assert result.matched
+    assert result.branch == 0
+
+
+def test_actual_sub_label_catalog_drives_detailed_range(monkeypatch):
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.calculate_trajectory_offset",
+        lambda segment: np.linspace(2.0, 0.1, len(segment)),
+    )
+
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(8)),
+        parent_start=0,
+        parent_end=7,
+        parent_main_labels=["RM"],
+    )
+
+    assert "RM7" in result.final_labels
+    rm7 = next(
+        item for item in result.label_annotations if item["label_id"] == "RM7"
+    )
+    assert (rm7["start_index"], rm7["end_index"]) == (0, 7)
+
+
+def test_disabled_label_never_matches():
+    result = _evaluate(
+        {"enabled": False, "any_of": []}, pd.DataFrame(index=range(2)),
+    )
+
+    assert not result.matched
+    assert result.failed == ["label disabled"]
+
+
+def test_exclusive_matches_are_suppressed(monkeypatch):
+    requirements = _requirement(["section_range"], "find_phase_presence")
+    monkeypatch.setattr(deterministic, "get_label", lambda label_id: {
+        "id": label_id,
+        "selection_requirements": requirements,
+        "exclusive_with": ["B"] if label_id == "A" else ["A"],
+    })
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(2)))
+
+    result = deterministic.evaluate_labels(
+        ["A", "B"], context, InclusiveRange(0, 1),
+    )
+
+    assert result.labels == []
+    assert result.conflicts == [("A", "B")]
 
 
 def test_same_label_overlaps_merge_transitively_but_other_labels_stay_separate():
@@ -1324,115 +454,164 @@ def test_same_label_overlaps_merge_transitively_but_other_labels_stay_separate()
         {"label_id": "RM7", "start_index": 1, "end_index": 3, "passed": ["a"]},
         {"label_id": "RM7", "start_index": 3, "end_index": 5, "passed": ["b"]},
         {"label_id": "RM7", "start_index": 4, "end_index": 8, "passed": ["c"]},
-        {"label_id": "RM7", "start_index": 10, "end_index": 12, "passed": ["d"]},
-        {"label_id": "MSP1", "start_index": 2, "end_index": 6, "passed": ["e"]},
+        {"label_id": "MSP1", "start_index": 2, "end_index": 6, "passed": ["d"]},
     ])
 
     assert [
         (item["label_id"], item["start_index"], item["end_index"])
         for item in merged
-    ] == [
-        ("RM7", 1, 8),
-        ("MSP1", 2, 6),
-        ("RM7", 10, 12),
-    ]
-    assert all(
-        set(item) == {"label_id", "start_index", "end_index", "reasoning"}
-        for item in merged
-    )
-    assert all(f"- {value}" in merged[0]["reasoning"] for value in ("a", "b", "c"))
+    ] == [("RM7", 1, 8), ("MSP1", 2, 6)]
 
 
-def test_saved_children_filter_exact_raw_ranges_before_overlap_merge(monkeypatch):
-    first_branch = deterministic.RequirementBranchEvaluation(
-        0, ["fact.first: True"], [], ["fact.first"],
-    )
-    second_branch = deterministic.RequirementBranchEvaluation(
-        1, ["fact.second: True"], [], ["fact.second"],
-    )
-    rm7_evaluation = deterministic.RequirementEvaluation(
-        True,
-        0,
-        first_branch.passed,
-        [],
-        first_branch.fact_ids,
-        [first_branch, second_branch],
-    )
+def test_detailed_segment_types_are_evaluated_after_discovery_on_parent_scope(
+    monkeypatch,
+):
+    scopes = []
 
-    def fake_facts(_df, start, end, **_kwargs):
-        return deterministic.FactSet(
-            {"fact.first": True, "fact.second": True},
-            evidence={
-                "fact.first": [(1, 4)],
-                "fact.second": [(3, 6)],
-            },
-        ), []
-
-    def fake_evaluate(label_ids, _facts):
+    def fake_evaluate(label_ids, _context, scope):
+        scopes.append((tuple(label_ids), scope))
         if "RM7" in label_ids:
+            branch = _branch(0, 2, 6, "trajectory: True")
             return deterministic.LabelEvaluation(
-                ["RM7"], {"RM7": rm7_evaluation},
+                ["RM7"], {"RM7": _matched(branch)},
             )
-        return deterministic.LabelEvaluation([], {})
+        branch = _branch(0, scope.start, scope.end, "shape: straight")
+        return deterministic.LabelEvaluation(
+            ["ST2"], {"ST2": _matched(branch)},
+        )
 
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
     monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
-    exact = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(9)),
-        parent_start=0,
-        parent_end=8,
-        parent_main_labels=["RM"],
-        existing_children=[{"start_index": 1, "end_index": 4, "labels": ["RM7"]}],
-    )
-    partial = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(9)),
-        parent_start=0,
-        parent_end=8,
-        parent_main_labels=["RM"],
-        existing_children=[{"start_index": 2, "end_index": 5, "labels": ["RM7"]}],
-    )
-
-    exact_rm7 = next(item for item in exact.label_annotations if item["label_id"] == "RM7")
-    partial_rm7 = next(item for item in partial.label_annotations if item["label_id"] == "RM7")
-    assert (exact_rm7["start_index"], exact_rm7["end_index"]) == (3, 6)
-    assert (partial_rm7["start_index"], partial_rm7["end_index"]) == (1, 6)
-
-
-def test_unrequired_parent_evidence_does_not_expand_sub_label_range(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        return deterministic.FactSet(
-            {
-                "expert_time_difference.direction": "rising",
-                "brake.application_onset_relation": "later",
-                "brake.application_end_relation": "later",
-            },
-            evidence={
-                "expert_time_difference.direction": [(7, 8)],
-                "brake.application_onset_relation": [(2, 3)],
-                "brake.application_end_relation": [(3, 4)],
-            },
-            phases={"entry": [(1, 5)]},
-        ), [(1, 5)]
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
     result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(11)),
+        pd.DataFrame(index=range(10)),
         parent_start=0,
-        parent_end=10,
-        parent_main_labels=["MSP"],
+        parent_end=9,
+        parent_main_labels=["RM"],
     )
 
-    proposal = next(item for item in result.label_annotations if item["label_id"] == "MSP1")
-    assert (proposal["start_index"], proposal["end_index"]) == (2, 4)
-    assert "expert_time_difference.direction" not in proposal["reasoning"]
+    assert result.final_labels == ["RM7", "ST2"]
+    sub_call = next(index for index, (labels, _scope) in enumerate(scopes) if "RM7" in labels)
+    type_call = next(index for index, (labels, _scope) in enumerate(scopes) if "ST2" in labels)
+    assert sub_call < type_call
+    assert scopes[type_call][1] == InclusiveRange(0, 9)
+    assert {
+        (item["label_id"], item["start_index"], item["end_index"])
+        for item in result.label_annotations
+    } == {("RM7", 2, 6), ("ST2", 2, 6)}
 
 
-def test_sub_label_without_required_provenance_is_omitted(monkeypatch):
-    def fake_facts(_df, start, end, **_kwargs):
-        ranges = [(1, 4)] if (start, end) == (0, 5) else []
-        return {"trajectory.converging": True}, ranges
+def test_detailed_segment_type_range_must_contain_finalized_range(
+    monkeypatch,
+):
+    sub_labels = {
+        label_id: _matched(_branch(0, 8, 29, "sub-label evidence: True"))
+        for label_id in ("RM1", "RM5", "RM7")
+    }
+    segment_types = {
+        "ST1": _matched(_branch(0, 0, 39, "segment shape: in_corner")),
+        "ST9": _matched(_branch(0, 8, 29, "corner shape: decreasing_radius")),
+        "ST14": _matched(_branch(0, 16, 24, "entry altitude: downhill")),
+        "ST17": _matched(_branch(0, 4, 20, "apex altitude: downhill")),
+        "ST20": _matched(_branch(0, 29, 35, "exit altitude: downhill")),
+    }
 
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    def fake_evaluate(label_ids, _context, _scope):
+        evaluations = sub_labels if "RM1" in label_ids else segment_types
+        return deterministic.LabelEvaluation(list(evaluations), evaluations)
+
+    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(40)),
+        parent_start=0,
+        parent_end=39,
+        parent_main_labels=["RM"],
+    )
+
+    ranges = {
+        item["label_id"]: (item["start_index"], item["end_index"])
+        for item in result.label_annotations
+    }
+    assert ranges == {
+        "RM1": (8, 29),
+        "RM5": (8, 29),
+        "RM7": (8, 29),
+        "ST1": (8, 29),
+        "ST9": (8, 29),
+    }
+    assert not {"ST14", "ST17", "ST20"} & set(result.final_labels)
+
+
+def test_detailed_segment_type_emits_once_on_finalized_range(monkeypatch):
+    def fake_evaluate(label_ids, _context, _scope):
+        if "RM7" in label_ids:
+            branch = _branch(0, 0, 9, "trajectory: True")
+            return deterministic.LabelEvaluation(
+                ["RM7"], {"RM7": _matched(branch)},
+            )
+        branches = [_branch(0, 0, 9), _branch(1, 6, 8)]
+        return deterministic.LabelEvaluation(
+            ["ST2"], {"ST2": _matched(*branches)},
+        )
+
+    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(10)),
+        parent_start=0,
+        parent_end=9,
+        parent_main_labels=["RM"],
+    )
+
+    assert [
+        (item["start_index"], item["end_index"])
+        for item in result.label_annotations
+        if item["label_id"] == "ST2"
+    ] == [(0, 9)]
+
+
+def test_detailed_segment_type_conflicts_do_not_remove_sub_label(monkeypatch):
+    def fake_evaluate(label_ids, _context, _scope):
+        if "RM7" in label_ids:
+            branch = _branch(0, 2, 6, "trajectory: True")
+            return deterministic.LabelEvaluation(
+                ["RM7"], {"RM7": _matched(branch)},
+            )
+        segment_evaluations = {
+            "ST1": _matched(_branch(0, 1, 7, "shape: in_corner")),
+            "ST14": _matched(_branch(0, 0, 8, "entry altitude: downhill")),
+            "ST7": _matched(_branch(0, 2, 6, "radius: constant")),
+            "ST8": _matched(_branch(0, 2, 6, "radius: increasing")),
+        }
+        return deterministic.LabelEvaluation(
+            ["ST1", "ST14"],
+            segment_evaluations,
+            [("ST7", "ST8")],
+        )
+
+    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
+    result = deterministic.calculate_detailed_annotation(
+        pd.DataFrame(index=range(9)),
+        parent_start=0,
+        parent_end=8,
+        parent_main_labels=["RM"],
+    )
+
+    assert {
+        (item["label_id"], item["start_index"], item["end_index"])
+        for item in result.label_annotations
+    } == {
+        ("RM7", 2, 6),
+        ("ST1", 2, 6),
+        ("ST14", 2, 6),
+    }
+    assert "Suppressed 1 exclusive conflict(s)." in result.final_reasoning
+
+
+def test_segment_type_alone_does_not_create_detailed_subsegment(monkeypatch):
+    monkeypatch.setattr(
+        deterministic,
+        "evaluate_labels",
+        lambda *_args: deterministic.LabelEvaluation([], {}),
+    )
+
     result = deterministic.calculate_detailed_annotation(
         pd.DataFrame(index=range(6)),
         parent_start=0,
@@ -1440,227 +619,100 @@ def test_sub_label_without_required_provenance_is_omitted(monkeypatch):
         parent_main_labels=["RM"],
     )
 
-    assert "RM7" not in result.final_labels
+    assert result.final_labels == []
+    assert result.label_annotations == []
 
 
-def test_calculated_comparison_facts_keep_driver_and_expert_provenance(monkeypatch):
-    monkeypatch.setattr(deterministic, "_slope_facts", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(deterministic, "_shape_facts", lambda *_args, **_kwargs: ({}, []))
-    monkeypatch.setattr(deterministic, "_opponent_facts", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        deterministic, "_trajectory_offset",
-        lambda _segment: np.array([0.0, 0.2, 0.8, 1.2, 0.7, 0.3, 0.0]),
-    )
-    df = pd.DataFrame({
-        "Physics_brake": [0, 0, 0.2, 1, 1, 0.2, 0],
-        "expert_optimal_brake": [0, 0.2, 1, 1, 0.2, 0, 0],
-        "Physics_gas": [0, 0, 0, 0, 0.2, 1, 1],
-        "expert_optimal_throttle": [0, 0, 0, 0.2, 1, 1, 1],
-        "Physics_steer_angle": [0, 0, 0.1, 0.5, 1, 0.2, 0],
-        "expert_optimal_steering": [0, 0.1, 0.5, 1, 0.2, 0, 0],
-        "Physics_gear": [2, 2, 2, 2, 2, 3, 3],
-        "expert_optimal_gear": [2, 2, 2, 2, 3, 3, 3],
-        "Physics_speed_kmh": [80, 82, 84, 86, 88, 90, 92],
-        "expert_optimal_speed": [82, 84, 87, 90, 92, 94, 96],
-    })
+def test_saved_children_filter_exact_branch_range_before_merge(monkeypatch):
+    def fake_evaluate(label_ids, _context, _scope):
+        if "RM7" in label_ids:
+            branches = [_branch(0, 1, 4), _branch(1, 3, 7)]
+            return deterministic.LabelEvaluation(
+                ["RM7"], {"RM7": _matched(*branches)},
+            )
+        return deterministic.LabelEvaluation([], {})
 
-    facts, _ = deterministic.calculate_facts(df, 0, 6)
-
-    comparison_facts = (
-        "brake.application_onset_relation",
-        "throttle.application_onset_relation",
-        "turn.in_relation",
-        "gear.upshift_relation",
-    )
-    for fact_id in comparison_facts:
-        assert facts.evidence[fact_id][0][0] < facts.evidence[fact_id][0][1]
-    for fact_id in (
-        "speed.gap_peak_abs_kmh",
-        "trajectory.position",
-    ):
-        assert facts.evidence[fact_id]
-
-
-def test_phase_facts_come_from_expert_curvature_independently_of_controls(
-    monkeypatch,
-):
-    _isolate_phase_fact_sources(monkeypatch)
-    no_controls = _expert_corner_dataframe()
-    changed_controls = no_controls.copy()
-    changed_controls["Physics_brake"] = np.linspace(0.0, 1.0, len(changed_controls))
-    changed_controls["expert_optimal_brake"] = 0.25
-    changed_controls["Physics_gas"] = np.linspace(1.0, 0.0, len(changed_controls))
-    changed_controls["expert_optimal_throttle"] = 0.75
-
-    no_control_facts, _ = deterministic.calculate_facts(
-        no_controls, 0, len(no_controls),
-    )
-    changed_control_facts, _ = deterministic.calculate_facts(
-        changed_controls, 0, len(changed_controls),
-    )
-
-    assert no_control_facts.phases == changed_control_facts.phases
-    for phase_name in ("entry", "apex", "exit"):
-        fact_id = f"phase.{phase_name}"
-        assert no_control_facts[fact_id] is True
-        assert changed_control_facts[fact_id] is True
-        assert no_control_facts.evidence[fact_id] == no_control_facts.phases[phase_name]
-        assert changed_control_facts.evidence[fact_id] == changed_control_facts.phases[phase_name]
-    assert no_control_facts["brake.peak_relation"] == "aligned"
-    assert changed_control_facts["brake.peak_relation"] == "higher"
-
-
-def test_controls_do_not_fallback_to_phase_facts_without_expert_curvature(
-    monkeypatch,
-):
-    _isolate_phase_fact_sources(monkeypatch)
-    controls = {
-        "Physics_brake": np.ones(31),
-        "expert_optimal_brake": np.full(31, 0.5),
-        "Physics_gas": np.linspace(0.0, 1.0, 31),
-        "expert_optimal_throttle": np.full(31, 0.5),
-    }
-    missing_expert = pd.DataFrame(controls)
-    straight_expert = pd.DataFrame({
-        **controls,
-        "expert_optimal_player_pos_x": np.arange(31, dtype=float),
-        "expert_optimal_player_pos_y": np.zeros(31),
-    })
-
-    for telemetry in (missing_expert, straight_expert):
-        facts, phase_ranges = deterministic.calculate_facts(
-            telemetry, 0, len(telemetry),
-        )
-
-        assert phase_ranges == []
-        assert facts.phases == {}
-        assert all(
-            f"phase.{phase_name}" not in facts
-            for phase_name in ("entry", "apex", "exit")
-        )
-
-
-def test_detailed_discovery_uses_parent_facts_once_without_reclassifying_child(
-    monkeypatch,
-):
-    parent_facts = deterministic.FactSet(
-        {
-            "trajectory.peak_abs_offset_m": 2.0,
-            "trajectory.converging": True,
-            "segment.shape_key": "in_corner",
-            "segment.corner_shape_key": "decreasing_radius",
-            "altitude.entry.trend": "downhill",
-            "altitude.apex.trend": "downhill",
-            "altitude.exit.trend": "downhill",
-        },
-        evidence={
-            "trajectory.peak_abs_offset_m": [(8, 8)],
-            "trajectory.converging": [(8, 25)],
-            "segment.shape_key": [(0, 29)],
-            "segment.corner_shape_key": [(0, 29)],
-            "altitude.entry.trend": [(3, 8)],
-            "altitude.apex.trend": [(12, 16)],
-            "altitude.exit.trend": [(18, 25)],
-        },
-    )
-    calls = []
-
-    def fake_facts(_df, start, end, **_kwargs):
-        calls.append((start, end))
-        return parent_facts, []
-
-    monkeypatch.setattr(deterministic, "calculate_facts", fake_facts)
+    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
 
     result = deterministic.calculate_detailed_annotation(
-        pd.DataFrame(index=range(30)),
+        pd.DataFrame(index=range(9)),
         parent_start=0,
-        parent_end=29,
+        parent_end=8,
         parent_main_labels=["RM"],
+        existing_children=[{
+            "start_index": 1, "end_index": 4, "labels": ["RM7"],
+        }],
     )
 
-    assert calls == [(0, 29)]
     assert [
-        (item["start_index"], item["end_index"], item["label_id"])
+        (item["start_index"], item["end_index"])
         for item in result.label_annotations
-    ] == [
-        (8, 25, "RM1"),
-        (8, 25, "RM7"),
-        (8, 25, "ST1"),
-        (8, 25, "ST9"),
-    ]
-    assert "ST7" not in result.final_labels
-    assert "ST14" not in result.final_labels
-    assert "ST17" not in result.final_labels
-    assert "ST20" not in result.final_labels
+    ] == [(3, 7)]
 
 
-def test_interaction_section_uses_unique_splitter_context():
-    section = deterministic._resolve_circuit_section(
-        pd.DataFrame(),
-        "silverstone",
-        "interaction_window",
-        0,
-        10,
-        {"section_context": [{"circuit_section_id": "silverstone1"}]},
-    )
-    assert section == "silverstone1"
-
-
-def test_public_pipeline_bypasses_provider_and_returns_lap_contract(monkeypatch):
+def test_lap_contract_uses_branch_evidence_for_reasoning(monkeypatch):
     monkeypatch.setattr(
         deterministic,
-        "calculate_facts",
-        lambda *_args, **_kwargs: ({
-            "expert_time_difference.total_change_ms": -10,
-            "expert_time_difference.ending_direction": "falling",
-            "segment.shape_key": "straight",
-        }, []),
+        "_resolve_circuit_sections",
+        lambda *_args: ("silverstone1", ["silverstone1"]),
     )
+    monkeypatch.setattr(deterministic, "_is_far_from_expert_in_pit", lambda *_args: False)
+
+    evaluated_label_groups = []
+
+    def fake_evaluate(label_ids, _context, _scope):
+        evaluated_label_groups.append(tuple(label_ids))
+        if "EA" in label_ids:
+            branch = _branch(0, 2, 5, "time: falling")
+            return deterministic.LabelEvaluation(["EA"], {"EA": _matched(branch)})
+        return deterministic.LabelEvaluation([], {})
+
+    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
+    result = deterministic.calculate_lap_annotation(
+        pd.DataFrame(index=range(8)),
+        lap_start=0,
+        lap_end=7,
+        section_id="silverstone1",
+        section_start=0,
+        section_end=7,
+        circuit_id="silverstone",
+    )
+
+    assert result.label_ids == ["silverstone", "silverstone1", "EA"]
+    assert not any(
+        label.startswith("ST")
+        for label_ids in evaluated_label_groups
+        for label in label_ids
+    )
+    assert "iloc range [2, 5]" in result.reasoning
+
+
+def test_public_pipeline_returns_deterministic_lap_contract(monkeypatch):
+    expected = deterministic.LapAnnotationResult(
+        section_id="silverstone1",
+        start_index=0,
+        end_index=4,
+        label_ids=["EA"],
+        reasoning="ok",
+        submitted=True,
+        rejected_proposals=[],
+        transcript="deterministic label evaluation",
+        tool_calls=0,
+    )
+    monkeypatch.setattr(
+        workflow, "calculate_lap_annotation", lambda *_args, **_kwargs: expected,
+    )
+
     result = workflow.run_annotation(
         flow="lap",
-        df=pd.DataFrame(index=range(10)),
+        df=pd.DataFrame(index=range(5)),
+        config=workflow.AnnotationPipelineConfig(provider_id="deterministic"),
         lap_start=0,
-        lap_end=10,
+        lap_end=4,
         section_id="silverstone1",
         section_start=0,
-        section_end=9,
-        circuit_id="silverstone",
-    )
-    assert result.label_ids == ["silverstone", "silverstone1", "EA", "ST2"]
-    assert result.submitted
-
-
-def test_lap_result_explains_failed_behavior_requirements(monkeypatch):
-    monkeypatch.setattr(
-        deterministic,
-        "calculate_facts",
-        lambda *_args, **_kwargs: ({"expert_time_difference.has_spike": False}, []),
-    )
-
-    result = deterministic.calculate_lap_annotation(
-        pd.DataFrame(index=range(10)),
-        lap_start=0,
-        lap_end=9,
-        section_id="silverstone1",
-        section_start=0,
-        section_end=9,
+        section_end=4,
         circuit_id="silverstone",
     )
 
-    rejected = {item["value"]: item["reason"] for item in result.rejected_proposals}
-    assert set(rejected) == {"EA", "PS", "RM", "MSP"}
-    assert "expert_time_difference.total_change_ms" in rejected["EA"]
-    assert "Failed — expert_time_difference.total_change_ms: unavailable" in rejected["EA"]
-    assert "branch" not in rejected["EA"]
-    assert " operator " not in rejected["EA"]
-
-
-def test_annotation_flows_do_not_import_removed_retrieval_code():
-    root = Path(__file__).parents[1]
-    flow_text = "\n".join(
-        path.read_text()
-        for path in (root / "app/local_annotation_agent/workflow/flows").glob("*.py")
-    )
-    assert "preflight" not in flow_text
-    assert "label_search" not in flow_text
-    assert (root / "app/external_knowledge_base/_embedder.py").exists()
+    assert result is expected

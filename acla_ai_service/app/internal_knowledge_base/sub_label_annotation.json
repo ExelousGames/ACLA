@@ -15,112 +15,2745 @@
       "deterministic"
     ]
   },
-  "range_fit_rule": "For labels with `type: sub`, each matched `sub_label_selection_requirements.any_of[].all_of` branch defines a sub-segment range. Every predicate fact in that branch must have localized telemetry evidence; the tight filled envelope from the earliest evidence start to the latest evidence end is the branch range. Omit a branch when any required fact cannot be localized or when the envelope falls outside the parent range. Merge overlapping ranges only when they belong to the same sub-label. Labels with `type: segment_type` never create or resize a sub-segment; evaluate `segment_type_selection_requirements` after sub-label discovery and attach a matched branch only when its filled evidence envelope fully contains the finalized inclusive sub-segment range (`evidence_start <= segment_start` and `segment_end <= evidence_end`). Partial overlap and endpoint-only contact do not qualify.\n",
+  "range_fit_rule": "For labels with `type: sub`, every matched requirement branch is emitted over the tight inclusive envelope from the earliest resolved input start to the latest resolved input end. Omit a branch when an input cannot be resolved or when its envelope falls outside the parent range, and merge overlapping ranges only when they belong to the same sub-label. Labels with `type: segment_type` never create, split, resize, or seed a sub-segment. After sub-label ranges are finalized, evaluate `segment_type_selection_requirements` against the parent telemetry scope and attach a non-conflicting match to a found range only when the segment-type evidence envelope fully contains that inclusive range (`type_start <= segment_start` and `segment_end <= type_end`). Partial overlap, endpoint-only contact, and segment-type evidence contained inside the found range do not qualify.\n",
   "detailed_flow_rules": [
     "A sub-label is eligible only when its parent main label is already present on the parent segment. The parent main label owns its shared classification characteristics; each sub-label requirement checks only the sub-label's distinguishing telemetry characteristics.",
     "Audit the full parent range and return every calculated sub-label child proposal bounded to the localized telemetry evidence for one completely matched requirement branch.",
     "For labels describing an onset, release, peak, spike, dip, instability, or player/expert comparison, use the tight envelope of all predicate evidence ilocs in the matched branch. A later reversal or recovery is not disqualifying unless the label definition requires sustained behavior.",
     "Already discovered sub-segments only block exact duplicate proposals. They do not mark their ilocs as handled, and they do not suppress different labels that overlap or nest inside them.",
-    "After sub-label ranges are finalized, evaluate segment-type requirements independently for each found range and attach every non-conflicting matched branch whose filled evidence envelope fully contains that inclusive range. Segment-type evidence classifies the found range but never defines, extends, shrinks, or splits a range.",
+    "After sub-label ranges are finalized, evaluate segment-type requirements against the parent telemetry scope and attach each non-conflicting match only to found ranges fully contained by its evidence envelope. Segment-type evidence classifies the found range but never defines, extends, shrinks, or splits it.",
     "Segment-type, terrain, altitude, circuit-section, and technique labels describe different aspects of the same telemetry. One category does not suppress another when separate calculated facts satisfy both labels."
   ],
   "sub_label_selection_requirements": {
-    "RM1": {"enabled": true, "any_of": [{"all_of": [{"fact": "trajectory.peak_abs_offset_m", "operator": "gt", "value": 1.0}, {"fact": "trajectory.converging", "operator": "eq", "value": true}]}]},
-    "PS1": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "exists", "value": true}, {"fact": "trajectory.converging", "operator": "eq", "value": true}]}]},
-    "RM5": {"enabled": true, "any_of": [{"all_of": [{"fact": "speed.expert_faster", "operator": "eq", "value": true}, {"fact": "speed.gap_peak_abs_kmh", "operator": "gt", "value": 20}, {"fact": "speed.gap_closing", "operator": "eq", "value": true}]}]},
-    "RM6": {"enabled": true, "any_of": [{"all_of": [{"fact": "speed.expert_faster", "operator": "eq", "value": true}, {"fact": "speed.gap_peak_abs_kmh", "operator": "lte", "value": 20}, {"fact": "speed.gap_closing", "operator": "eq", "value": true}]}]},
-    "RM7": {"enabled": true, "any_of": [{"all_of": [{"fact": "trajectory.converging", "operator": "eq", "value": true}]}]},
-    "RM8": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "throttle.application_onset_relation", "operator": "eq", "value": "earlier"}]}]},
-    "RM9": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "throttle.application_onset_relation", "operator": "eq", "value": "later"}]}]},
-    "RM10": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "brake.application_onset_relation", "operator": "eq", "value": "earlier"}]}]},
-    "RM11": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "brake.application_onset_relation", "operator": "eq", "value": "later"}]}]},
-
-    "MSP1": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_onset_relation", "operator": "eq", "value": "later"}, {"fact": "brake.application_end_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP5": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_onset_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP13": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.peak_relation", "operator": "eq", "value": "lower"}]}]},
-    "MSP22": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.peak_relation", "operator": "eq", "value": "higher"}]}]},
-    "MSP14": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.application_end_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP24": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.application_end_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP17": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.release_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.peak_ratio", "operator": "between", "value": [0.9, 1.1]}, {"fact": "brake.release_end_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP18": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.release_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.release_end_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP27": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_end_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.release_onset_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP28": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.application_end_relation", "operator": "eq", "value": "aligned"}, {"fact": "brake.release_onset_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP31": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.hold_length_relation", "operator": "eq", "value": "shorter"}]}]},
-    "MSP32": {"enabled": true, "any_of": [{"all_of": [{"fact": "brake.hold_length_relation", "operator": "eq", "value": "longer"}]}]},
-    "MSP34": {"enabled": true, "any_of": [{"all_of": [{"fact": "controls.overlap_count", "operator": "gt", "value": 3}, {"fact": "controls.expert_overlap_count", "operator": "eq", "value": 0}]}]},
-    "MSP15": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "throttle.application_end_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP25": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "throttle.application_end_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP19": {"enabled": false, "any_of": []},
-    "MSP26": {"enabled": false, "any_of": []},
-    "MSP20": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP21": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.application_onset_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP23": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.release_onset_relation", "operator": "eq", "value": "aligned"}, {"fact": "throttle.release_end_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP29": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.release_onset_relation", "operator": "eq", "value": "later"}, {"fact": "brake.application_end_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP30": {"enabled": true, "any_of": [{"all_of": [{"fact": "throttle.release_onset_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP2": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.in_relation", "operator": "eq", "value": "later"}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
-    "MSP6": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.in_relation", "operator": "eq", "value": "earlier"}, {"fact": "trajectory.position", "operator": "eq", "value": "tighter"}]}]},
-    "MSP3": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.apex_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP7": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.apex_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP4": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.exit_relation", "operator": "eq", "value": "earlier"}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
-    "MSP8": {"enabled": true, "any_of": [{"all_of": [{"fact": "turn.exit_relation", "operator": "eq", "value": "later"}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
-    "MSP9": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "tighter"}]}]},
-    "MSP33": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
-    "MSP10": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.apex", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
-    "MSP11": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "tighter"}]}]},
-    "MSP16": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "trajectory.position", "operator": "eq", "value": "wider"}]}]},
-    "MSP41": {"enabled": true, "any_of": [{"all_of": [{"fact": "trajectory.peak_abs_offset_m", "operator": "gt", "value": 3.0}]}]},
-    "MSP50": {"enabled": false, "any_of": []},
-    "MSP51": {"enabled": false, "any_of": []},
-    "MSP52": {"enabled": false, "any_of": []},
-    "MSP42": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "grip.over_limit", "operator": "eq", "value": true}]}, {"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "grip.sustained_low", "operator": "eq", "value": true}]}]},
-    "MSP43": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "grip.over_limit", "operator": "eq", "value": true}]}, {"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "grip.sustained_low", "operator": "eq", "value": true}]}]},
-    "MSP44": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "balance.oversteer", "operator": "eq", "value": true}]}]},
-    "MSP45": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "balance.understeer", "operator": "eq", "value": true}]}]},
-    "MSP46": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "balance.oversteer", "operator": "eq", "value": true}]}]},
-    "MSP47": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "balance.understeer", "operator": "eq", "value": true}]}]},
-    "MSP35": {"enabled": true, "any_of": [{"all_of": [{"fact": "gear.upshift_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP36": {"enabled": true, "any_of": [{"all_of": [{"fact": "gear.upshift_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP37": {"enabled": true, "any_of": [{"all_of": [{"fact": "gear.downshift_relation", "operator": "eq", "value": "earlier"}]}]},
-    "MSP38": {"enabled": true, "any_of": [{"all_of": [{"fact": "gear.downshift_relation", "operator": "eq", "value": "later"}]}]},
-    "MSP48": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "gear.exit_relation", "operator": "eq", "value": "lower"}]}]},
-    "MSP49": {"enabled": true, "any_of": [{"all_of": [{"fact": "phase.exit", "operator": "eq", "value": true}, {"fact": "gear.exit_relation", "operator": "eq", "value": "higher"}]}]},
-
-    "MSR1": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": false}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": false}]}]},
-    "MSR2": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "broken_defense"}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": false}]}]},
-    "MSR3": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
-    "MSR4": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "segment.shape_key", "operator": "eq", "value": "in_corner"}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
-    "MSR5": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "opponent.side_swap", "operator": "eq", "value": true}]}]},
-    "MSR6": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "failed_attack"}, {"fact": "segment.shape_key", "operator": "eq", "value": "straight"}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": true}]}]},
-    "MSR7": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "broken_defense"}, {"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
-    "MSR8": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "broken_defense"}, {"fact": "segment.shape_key", "operator": "eq", "value": "straight"}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": true}]}]},
-    "O1": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"}, {"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
-    "O3": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"}, {"fact": "segment.shape_key", "operator": "eq", "value": "in_corner"}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
-    "O4": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"}, {"fact": "opponent.side_swap", "operator": "eq", "value": true}]}]},
-    "O5": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"}, {"fact": "segment.shape_key", "operator": "eq", "value": "straight"}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": true}]}]},
-    "OD1": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "held_defense"}, {"fact": "phase.entry", "operator": "eq", "value": true}, {"fact": "opponent.drew_alongside", "operator": "eq", "value": true}]}]},
-    "OD2": {"enabled": true, "any_of": [{"all_of": [{"fact": "opponent.outcome", "operator": "eq", "value": "held_defense"}, {"fact": "segment.shape_key", "operator": "eq", "value": "straight"}, {"fact": "opponent.gap_shrank", "operator": "eq", "value": true}]}]}
+    "RM1": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_peak_offset",
+                "operator": "gt",
+                "value": 1.0
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_convergence",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "PS1": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_onset_iloc",
+                  "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "exists",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_convergence",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "RM5": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "speed_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_expert_faster",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "speed_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_peak_gap",
+                "operator": "gt",
+                "value": 20
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "speed_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_gap_closing",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "RM6": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "speed_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_expert_faster",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "speed_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_peak_gap",
+                "operator": "lte",
+                "value": 20
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "speed_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_gap_closing",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "RM7": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_convergence",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "RM8": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_onset_iloc",
+                  "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "RM9": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_onset_iloc",
+                  "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "RM10": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "RM11": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP1": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP5": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP13": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "compare_brake_peaks",
+                "operator": "eq",
+                "value": "lower"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP22": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "compare_brake_peaks",
+                "operator": "eq",
+                "value": "higher"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP14": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP24": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP17": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_release_onset_iloc",
+                  "expert_brake_release_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_brake_peak_ratio",
+                "operator": "between",
+                "value": [
+                  0.9,
+                  1.1
+                ]
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_release_end_iloc",
+                  "expert_brake_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP18": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_release_onset_iloc",
+                  "expert_brake_release_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_release_end_iloc",
+                  "expert_brake_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP27": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_release_onset_iloc",
+                  "expert_brake_release_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP28": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_release_onset_iloc",
+                  "expert_brake_release_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP31": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "compare_brake_holds",
+                "operator": "eq",
+                "value": "shorter"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP32": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "compare_brake_holds",
+                "operator": "eq",
+                "value": "longer"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP34": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "count_control_overlap",
+                "operator": "gt",
+                "value": 3
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "count_expert_control_overlap",
+                "operator": "eq",
+                "value": 0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP15": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_onset_iloc",
+                  "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_end_iloc",
+                  "expert_throttle_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP25": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_onset_iloc",
+                  "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_end_iloc",
+                  "expert_throttle_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP19": {
+      "enabled": false,
+      "any_of": []
+    },
+    "MSP26": {
+      "enabled": false,
+      "any_of": []
+    },
+    "MSP20": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_onset_iloc",
+                  "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP21": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_onset_iloc",
+                  "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP23": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_release_onset_iloc",
+                  "expert_throttle_release_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_release_end_iloc",
+                  "expert_throttle_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP29": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_release_onset_iloc",
+                  "expert_throttle_release_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP30": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_release_onset_iloc",
+                  "expert_throttle_release_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP2": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_turn_in_iloc",
+                  "expert_turn_in_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "wider"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP6": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_turn_in_iloc",
+                  "expert_turn_in_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "tighter"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP3": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_apex_iloc",
+                  "expert_apex_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP7": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_apex_iloc",
+                  "expert_apex_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP4": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_turn_exit_iloc",
+                  "expert_turn_exit_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "wider"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP8": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_turn_exit_iloc",
+                  "expert_turn_exit_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "wider"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP9": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "tighter"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP33": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "wider"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP10": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_apex_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_apex_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "wider"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP11": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "tighter"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP16": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_position",
+                "operator": "eq",
+                "value": "wider"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP41": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_peak_offset",
+                "operator": "gt",
+                "value": 3.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP50": {
+      "enabled": false,
+      "any_of": []
+    },
+    "MSP51": {
+      "enabled": false,
+      "any_of": []
+    },
+    "MSP52": {
+      "enabled": false,
+      "any_of": []
+    },
+    "MSP42": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_grip_over_limit",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_sustained_low_grip",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP43": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_grip_over_limit",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_sustained_low_grip",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP44": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_oversteer",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP45": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_understeer",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP46": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_oversteer",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP47": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_understeer",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP35": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_upshift_iloc",
+                  "expert_upshift_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP36": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_upshift_iloc",
+                  "expert_upshift_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP37": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_downshift_iloc",
+                  "expert_downshift_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP38": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_downshift_iloc",
+                  "expert_downshift_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP48": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "compare_exit_gear",
+                "operator": "eq",
+                "value": "lower"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP49": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "compare_exit_gear",
+                "operator": "eq",
+                "value": "higher"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSR1": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "failed_attack"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_drew_alongside",
+                "operator": "eq",
+                "value": false
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_gap_shrank",
+                "operator": "eq",
+                "value": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSR2": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "broken_defense"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_drew_alongside",
+                "operator": "eq",
+                "value": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSR3": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "failed_attack"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_drew_alongside",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSR4": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "failed_attack"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "in_corner"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_drew_alongside",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSR5": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "failed_attack"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_side_swap",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSR6": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "failed_attack"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "straight"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_gap_shrank",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSR7": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "broken_defense"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_drew_alongside",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSR8": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "broken_defense"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "straight"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_gap_shrank",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "O1": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "pass_completed"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_drew_alongside",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "O3": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "pass_completed"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "in_corner"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_drew_alongside",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "O4": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "pass_completed"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_side_swap",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "O5": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "pass_completed"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "straight"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_gap_shrank",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "OD1": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "held_defense"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_phase_presence",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_drew_alongside",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "OD2": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "held_defense"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "straight"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_gap_shrank",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        }
+      ]
+    }
   },
   "segment_type_selection_requirements": {
-    "ST1": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "in_corner"}]}]},
-    "ST2": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "straight"}]}]},
-    "ST3": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "approach_to_corner"}]}]},
-    "ST4": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "exit_corner_to_straight"}]}]},
-    "ST5": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "between_consecutive_corners"}]}]},
-    "ST6": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.shape_key", "operator": "eq", "value": "consecutive_corners_no_straight"}]}]},
-    "ST7": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "constant_radius"}]}]},
-    "ST8": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "increasing_radius"}]}]},
-    "ST9": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "decreasing_radius"}]}]},
-    "ST10": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "hairpin"}]}]},
-    "ST11": {"enabled": true, "any_of": [{"all_of": [{"fact": "segment.corner_shape_key", "operator": "eq", "value": "chicane_or_esses"}]}]},
-    "ST12": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.entry.trend", "operator": "eq", "value": "uphill"}]}]},
-    "ST13": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.entry.trend", "operator": "eq", "value": "level"}]}]},
-    "ST14": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.entry.trend", "operator": "eq", "value": "downhill"}]}]},
-    "ST15": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.apex.trend", "operator": "eq", "value": "uphill"}]}]},
-    "ST16": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.apex.trend", "operator": "eq", "value": "level"}]}]},
-    "ST17": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.apex.trend", "operator": "eq", "value": "downhill"}]}]},
-    "ST18": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.exit.trend", "operator": "eq", "value": "uphill"}]}]},
-    "ST19": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.exit.trend", "operator": "eq", "value": "level"}]}]},
-    "ST20": {"enabled": true, "any_of": [{"all_of": [{"fact": "altitude.exit.trend", "operator": "eq", "value": "downhill"}]}]}
+    "ST1": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "in_corner"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST2": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "straight"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST3": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "approach_to_corner"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST4": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "exit_corner_to_straight"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST5": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "between_consecutive_corners"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST6": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_segment_shape",
+                "operator": "eq",
+                "value": "consecutive_corners_no_straight"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST7": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_corner_shape",
+                "operator": "eq",
+                "value": "constant_radius"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST8": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_corner_shape",
+                "operator": "eq",
+                "value": "increasing_radius"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST9": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_corner_shape",
+                "operator": "eq",
+                "value": "decreasing_radius"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST10": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_corner_shape",
+                "operator": "eq",
+                "value": "hairpin"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST11": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "segment_range"
+                ]
+              },
+              "condition": {
+                "fact": "classify_corner_shape",
+                "operator": "eq",
+                "value": "chicane_or_esses"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST12": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_entry_altitude_trend",
+                "operator": "eq",
+                "value": "uphill"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST13": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_entry_altitude_trend",
+                "operator": "eq",
+                "value": "level"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST14": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_entry_altitude_trend",
+                "operator": "eq",
+                "value": "downhill"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST15": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_apex_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_apex_altitude_trend",
+                "operator": "eq",
+                "value": "uphill"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST16": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_apex_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_apex_altitude_trend",
+                "operator": "eq",
+                "value": "level"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST17": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_apex_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_apex_altitude_trend",
+                "operator": "eq",
+                "value": "downhill"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST18": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_exit_altitude_trend",
+                "operator": "eq",
+                "value": "uphill"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST19": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_exit_altitude_trend",
+                "operator": "eq",
+                "value": "level"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "ST20": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_exit_altitude_trend",
+                "operator": "eq",
+                "value": "downhill"
+              }
+            }
+          ]
+        }
+      ]
+    }
   },
   "labels": {
     "RM1": {
@@ -785,7 +3418,6 @@
       "type": "segment_type",
       "segment_type_role": "base_segment_shape",
       "shape_key": "in_corner",
-      "lap_parent_allowed": true,
       "description": "Use when the whole range is dominated by a corner arc: the driver is in a sustained turn, with meaningful curvature across most of the segment. This includes single curves, continuous arcs, and corner ranges where the turn remains the main shape.",
       "parent": null,
       "exclusive_with": [
@@ -801,7 +3433,6 @@
       "type": "segment_type",
       "segment_type_role": "base_segment_shape",
       "shape_key": "straight",
-      "lap_parent_allowed": true,
       "description": "Use when the whole range is a straight: no detected corner arc, minimal curvature, and the segment is primarily straight-line driving rather than entry, apex, exit, or transition between corners.",
       "parent": null,
       "exclusive_with": [
@@ -817,7 +3448,6 @@
       "type": "segment_type",
       "segment_type_role": "base_segment_shape",
       "shape_key": "approach_to_corner",
-      "lap_parent_allowed": true,
       "description": "Use when the range is the approach or braking zone before a corner: it starts before the corner arc and ends before the apex, so the segment is leading into the turn rather than covering the full corner.",
       "parent": null,
       "exclusive_with": [
@@ -833,7 +3463,6 @@
       "type": "segment_type",
       "segment_type_role": "base_segment_shape",
       "shape_key": "exit_corner_to_straight",
-      "lap_parent_allowed": true,
       "description": "Use when the range is the exit phase of a corner leading toward a straight: it begins around or after the apex and remains focused on corner exit, with steering unwinding toward the end. Do not use for a completed corner followed by a substantial straight.",
       "parent": null,
       "exclusive_with": [
@@ -849,7 +3478,6 @@
       "type": "segment_type",
       "segment_type_role": "base_segment_shape",
       "shape_key": "between_consecutive_corners",
-      "lap_parent_allowed": true,
       "description": "Use when the range connects consecutive corners with a short gap between detected corner arcs. The segment is a brief transition between turns, not a full straight.",
       "parent": null,
       "exclusive_with": [
@@ -865,7 +3493,6 @@
       "type": "segment_type",
       "segment_type_role": "base_segment_shape",
       "shape_key": "consecutive_corners_no_straight",
-      "lap_parent_allowed": true,
       "description": "Use when the range contains multiple consecutive corner arcs with little or no straight between them, such as chicanes, esses, or tightly linked direction changes.",
       "parent": null,
       "exclusive_with": [
@@ -881,7 +3508,6 @@
       "type": "segment_type",
       "segment_type_role": "corner_shape_refinement",
       "shape_key": "constant_radius",
-      "lap_parent_allowed": true,
       "description": "Use when the corner keeps a broadly steady radius from entry to exit: curvature remains consistent through the turn without clearly opening or tightening.",
       "parent": null,
       "exclusive_with": [
@@ -896,7 +3522,6 @@
       "type": "segment_type",
       "segment_type_role": "corner_shape_refinement",
       "shape_key": "increasing_radius",
-      "lap_parent_allowed": true,
       "description": "Use when the corner opens up toward exit: curvature decreases through the turn, so the radius increases and the driver can progressively unwind steering.",
       "parent": null,
       "exclusive_with": [
@@ -911,7 +3536,6 @@
       "type": "segment_type",
       "segment_type_role": "corner_shape_refinement",
       "shape_key": "decreasing_radius",
-      "lap_parent_allowed": true,
       "description": "Use when the corner tightens toward apex or exit: curvature increases through the turn, so the radius decreases and the driver must keep adding or holding steering.",
       "parent": null,
       "exclusive_with": [
@@ -926,7 +3550,6 @@
       "type": "segment_type",
       "segment_type_role": "corner_shape_refinement",
       "shape_key": "hairpin",
-      "lap_parent_allowed": true,
       "description": "Use for a hairpin or near U-turn: the corner has a very large turn angle and wraps back on itself rather than behaving like a normal sweep.",
       "parent": null,
       "exclusive_with": [
@@ -941,7 +3564,6 @@
       "type": "segment_type",
       "segment_type_role": "corner_shape_refinement",
       "shape_key": "chicane_or_esses",
-      "lap_parent_allowed": true,
       "description": "Use for linked left-right or right-left corner sequences: chicanes, esses, S-bends, or multiple corner arcs with direction changes.",
       "parent": null,
       "exclusive_with": [
@@ -958,7 +3580,6 @@
       "corner_phase": "entry",
       "altitude_trend": "uphill",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the corner entry phase is uphill: altitude rises over the entry window with a positive slope angle.",
       "parent": null,
       "exclusive_with": [
@@ -973,7 +3594,6 @@
       "corner_phase": "entry",
       "altitude_trend": "level",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the corner entry phase is level: altitude stays nearly flat over the entry window with a near-zero slope angle.",
       "parent": null,
       "exclusive_with": [
@@ -988,7 +3608,6 @@
       "corner_phase": "entry",
       "altitude_trend": "downhill",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the corner entry phase is downhill: altitude falls over the entry window with a negative slope angle.",
       "parent": null,
       "exclusive_with": [
@@ -1003,7 +3622,6 @@
       "corner_phase": "apex",
       "altitude_trend": "uphill",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the apex phase is uphill: altitude rises through the apex window with a positive slope angle.",
       "parent": null,
       "exclusive_with": [
@@ -1018,7 +3636,6 @@
       "corner_phase": "apex",
       "altitude_trend": "level",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the apex phase is level: altitude stays nearly flat through the apex window with a near-zero slope angle.",
       "parent": null,
       "exclusive_with": [
@@ -1033,7 +3650,6 @@
       "corner_phase": "apex",
       "altitude_trend": "downhill",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the apex phase is downhill: altitude falls through the apex window with a negative slope angle.",
       "parent": null,
       "exclusive_with": [
@@ -1048,7 +3664,6 @@
       "corner_phase": "exit",
       "altitude_trend": "uphill",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the corner exit phase is uphill: altitude rises over the exit window with a positive slope angle.",
       "parent": null,
       "exclusive_with": [
@@ -1063,7 +3678,6 @@
       "corner_phase": "exit",
       "altitude_trend": "level",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the corner exit phase is level: altitude stays nearly flat over the exit window with a near-zero slope angle.",
       "parent": null,
       "exclusive_with": [
@@ -1078,7 +3692,6 @@
       "corner_phase": "exit",
       "altitude_trend": "downhill",
       "annotation_scope": "subsegment_only",
-      "lap_parent_allowed": false,
       "description": "Use when the corner exit phase is downhill: altitude falls over the exit window with a negative slope angle.",
       "parent": null,
       "exclusive_with": [

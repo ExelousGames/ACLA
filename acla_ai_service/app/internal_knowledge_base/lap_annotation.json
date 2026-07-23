@@ -3,10 +3,28 @@
     "name": "lap_annotation"
   },
   "behavior_parent_label_ids": {
-    "required": ["O", "OD", "PS", "RM", "MSP", "MSR","EA"],
+    "required": [
+      "O",
+      "OD",
+      "PS",
+      "RM",
+      "MSP",
+      "MSR",
+      "EA"
+    ],
     "eligible_by_session": {
-      "practice": ["EA","PS", "RM", "MSP", "Segment Type"],
-      "racing": ["O", "OD", "MSR", "PS", "Segment Type"]
+      "practice": [
+        "EA",
+        "PS",
+        "RM",
+        "MSP"
+      ],
+      "racing": [
+        "O",
+        "OD",
+        "MSR",
+        "PS"
+      ]
     }
   },
   "labels": {
@@ -15,133 +33,622 @@
       "type": "main",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.EA",
-      "exclusive_with": ["MSP", "MSR", "RM", "PS"]
+      "exclusive_with": [
+        "MSP",
+        "MSR",
+        "RM",
+        "PS"
+      ]
     },
     "MSP": {
       "name": "Mistake (Practice)",
       "type": "main",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.MSP",
-      "exclusive_with": ["EA", "PS", "MSR"]
+      "exclusive_with": [
+        "EA",
+        "PS",
+        "MSR"
+      ]
     },
     "MSR": {
       "name": "Mistake (Racing)",
       "type": "main",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.MSR",
-      "exclusive_with": ["EA", "PS", "MSP"]
+      "exclusive_with": [
+        "EA",
+        "PS",
+        "MSP"
+      ]
     },
     "RM": {
       "name": "Recovery & Merge",
       "type": "main",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.RM",
-      "exclusive_with": ["EA", "PS"]
+      "exclusive_with": [
+        "EA",
+        "PS"
+      ]
     },
     "PS": {
       "name": "Pit Stop",
       "type": "main",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.PS",
-      "exclusive_with": ["O"]
+      "exclusive_with": [
+        "O"
+      ]
     },
     "O": {
       "name": "Successful Overtake",
       "type": "main",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.O",
-      "exclusive_with": ["OD", "PS"]
+      "exclusive_with": [
+        "OD",
+        "PS"
+      ]
     },
     "OD": {
       "name": "Successful Defense",
       "type": "main",
       "parent": null,
       "selection_requirements_ref": "lap_annotation.selection_requirements.OD",
-      "exclusive_with": ["O", "PS"]
+      "exclusive_with": [
+        "O",
+        "PS"
+      ]
     }
   },
   "selection_requirements": {
     "EA": {
       "enabled": true,
       "any_of": [
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "falling"}
-        ]},
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flattening"}
-        ]},
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flat"}
-        ]},
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
-          {"fact": "brake.similarity", "operator": "eq", "value": 1.0},
-          {"fact": "throttle.similarity", "operator": "eq", "value": 1.0}
-        ]}
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "lt",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_ending_time_direction",
+                "operator": "eq",
+                "value": "falling"
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "lt",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_ending_time_direction",
+                "operator": "eq",
+                "value": "flattening"
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "lt",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_ending_time_direction",
+                "operator": "eq",
+                "value": "flat"
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "gte",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_brake_similarity",
+                "operator": "eq",
+                "value": 1.0
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "control_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_throttle_similarity",
+                "operator": "eq",
+                "value": 1.0
+              }
+            }
+          ]
+        }
       ]
     },
     "MSP": {
       "enabled": true,
       "any_of": [
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
-          {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": true}
-        ]},
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "lt", "value": 50},
-          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "rising"}
-        ]}
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "gte",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_middle_time_rise",
+                "operator": "eq",
+                "value": true
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "lt",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_ending_time_direction",
+                "operator": "eq",
+                "value": "rising"
+              }
+            }
+          ]
+        }
       ]
     },
-    "MSR": {"enabled": true, "any_of": [{"all_of": [
-      {"fact": "opponent.outcome", "operator": "in", "value": ["failed_attack", "broken_defense"]},
-      {"fact": "opponent.confidence_level", "operator": "in", "value": ["medium", "high"]}
-    ]}]},
+    "MSR": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "in",
+                "value": [
+                  "failed_attack",
+                  "broken_defense"
+                ]
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_confidence_level",
+                "operator": "in",
+                "value": [
+                  "medium",
+                  "high"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
     "RM": {
       "enabled": true,
       "any_of": [
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
-          {"fact": "expert_time_difference.starting_direction", "operator": "eq", "value": "rising"},
-          {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": false},
-          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flattening"}
-        ]},
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
-          {"fact": "expert_time_difference.starting_direction", "operator": "eq", "value": "rising"},
-          {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": false},
-          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "flat"}
-        ]},
-        {"all_of": [
-          {"fact": "expert_time_difference.total_change_ms", "operator": "gte", "value": 50},
-          {"fact": "expert_time_difference.starting_direction", "operator": "eq", "value": "rising"},
-          {"fact": "expert_time_difference.middle_has_rise", "operator": "eq", "value": false},
-          {"fact": "expert_time_difference.ending_direction", "operator": "eq", "value": "falling"}
-        ]}
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "gte",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_starting_time_direction",
+                "operator": "eq",
+                "value": "rising"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_middle_time_rise",
+                "operator": "eq",
+                "value": false
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_ending_time_direction",
+                "operator": "eq",
+                "value": "flattening"
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "gte",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_starting_time_direction",
+                "operator": "eq",
+                "value": "rising"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_middle_time_rise",
+                "operator": "eq",
+                "value": false
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_ending_time_direction",
+                "operator": "eq",
+                "value": "flat"
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_total_time_change",
+                "operator": "gte",
+                "value": 50
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_starting_time_direction",
+                "operator": "eq",
+                "value": "rising"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_middle_time_rise",
+                "operator": "eq",
+                "value": false
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_ending_time_direction",
+                "operator": "eq",
+                "value": "falling"
+              }
+            }
+          ]
+        }
       ]
     },
-    "PS": {"enabled": true, "any_of": [
-      {"all_of": [
-        {"fact": "section.overlap_names", "operator": "contains", "value": "Pit"},
-        {"fact": "trajectory.peak_abs_offset_m", "operator": "gt", "value": 3.0},
-        {"fact": "speed.expert_faster", "operator": "eq", "value": true},
-        {"fact": "speed.gap_peak_abs_kmh", "operator": "gt", "value": 50}
-      ]},
-      {"all_of": [
-        {"fact": "section.overlap_names", "operator": "contains", "value": "Pit"},
-        {"fact": "trajectory.peak_abs_offset_m", "operator": "gte", "value": 10.0}
-      ]}
-    ]},
-    "O": {"enabled": true, "any_of": [{"all_of": [
-      {"fact": "opponent.outcome", "operator": "eq", "value": "pass_completed"},
-      {"fact": "opponent.confidence_level", "operator": "in", "value": ["medium", "high"]}
-    ]}]},
-    "OD": {"enabled": true, "any_of": [{"all_of": [
-      {"fact": "opponent.outcome", "operator": "eq", "value": "held_defense"},
-      {"fact": "opponent.confidence_level", "operator": "in", "value": ["medium", "high"]}
-    ]}]}
+    "PS": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_section_overlap_names",
+                "operator": "contains",
+                "value": "Pit"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_peak_offset",
+                "operator": "gt",
+                "value": 3.0
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "speed_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_expert_faster",
+                "operator": "eq",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "speed_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_peak_gap",
+                "operator": "gt",
+                "value": 50
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "section_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_section_overlap_names",
+                "operator": "contains",
+                "value": "Pit"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "trajectory_comparison_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_trajectory_peak_offset",
+                "operator": "gte",
+                "value": 10.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "O": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "pass_completed"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_confidence_level",
+                "operator": "in",
+                "value": [
+                  "medium",
+                  "high"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "OD": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_outcome",
+                "operator": "eq",
+                "value": "held_defense"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "opponent_interaction_range"
+                ]
+              },
+              "condition": {
+                "fact": "find_opponent_confidence_level",
+                "operator": "in",
+                "value": [
+                  "medium",
+                  "high"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
   }
 }

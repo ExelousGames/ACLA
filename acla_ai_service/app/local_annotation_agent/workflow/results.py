@@ -44,9 +44,10 @@ class LapAnnotationResult:
     """Result for the lap-section excerpter flow.
 
     ``label_ids`` is the flat list of parent labels the agent picked
-    (circuit + circuit_section + segment_type + optional main). The UI
-    persists this as a single annotated segment over
-    ``[start_index, end_index]``.
+    (circuit + circuit_section + optional main/whole-range sub-label). The
+    UI persists this as a single annotated segment over ``[start_index,
+    end_index]``. Segment types are added only by detailed sub-segment
+    discovery.
     """
 
     section_id: str

@@ -1,867 +1,93 @@
-"""Deterministic telemetry-to-label evaluation.
+"""Deterministic telemetry-to-label workflow orchestration.
 
-The annotation catalog owns the selection policy.  This module only turns a
-telemetry range into stable, scalar facts and evaluates the catalog's
-``selection_requirements`` predicate tree.  Missing facts fail closed.
+The catalogs describe selection policy. Input and fact strategies resolve only
+the data declared by each predicate, and the generic interpreter carries that
+input provenance into annotation ranges.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-import numpy as np
 import pandas as pd
 
 from app.internal_knowledge_base import skills
 from app.internal_knowledge_base.label_lookup import get_label
-from app.local_annotation_agent.workflow.label_evidence import (
-    LabelEvidence,
-    resolve_label_evidence,
+from app.local_annotation_agent.workflow.deterministic_engine import (
+    InclusiveRange,
+    LabelEvaluation,
+    RequirementBranchEvaluation,
+    RequirementEvaluation,
+    RequirementInterpreter,
+    SUPPORTED_OPERATORS,
+    validate_requirements,
+)
+from app.local_annotation_agent.workflow.deterministic_facts import (
+    EvaluationContext,
+    FACT_REGISTRY,
+    INPUT_REGISTRY,
+    smooth_telemetry,
 )
 from app.local_annotation_agent.workflow.results import AnnotationResult, LapAnnotationResult
 from app.shared.labels import LABEL_MAPPING
 
 
-SUPPORTED_OPERATORS = frozenset({
-    "eq", "neq", "in", "not_in", "lt", "lte", "gt", "gte",
-    "between", "contains", "exists",
-})
-KNOWN_FACTS = frozenset({
-    "altitude.apex.trend", "altitude.entry.trend", "altitude.exit.trend",
-    "balance.oversteer", "balance.understeer",
-    "brake.application_end_relation", "brake.application_onset_relation",
-    "brake.hold_length_relation", "brake.peak_ratio", "brake.peak_relation",
-    "brake.release_end_relation", "brake.release_onset_relation", "brake.similarity",
-    "controls.expert_overlap_count", "controls.overlap_count",
-    "gear.downshift_relation", "gear.exit_relation", "gear.upshift_relation",
-    "grip.over_limit", "grip.sustained_low",
-    "opponent.confidence_level", "opponent.drew_alongside", "opponent.gap_shrank",
-    "opponent.outcome", "opponent.side_swap",
-    "phase.apex", "phase.entry", "phase.exit",
-    "section.name", "section.overlap_names",
-    "segment.corner_shape_key", "segment.shape_key",
-    "speed.expert_faster", "speed.gap_closing", "speed.gap_peak_abs_kmh",
-    "throttle.application_end_relation", "throttle.application_onset_relation",
-    "throttle.release_end_relation", "throttle.release_onset_relation",
-    "throttle.similarity", "expert_time_difference.direction", "expert_time_difference.end_ms",
-    "expert_time_difference.ending_direction", "expert_time_difference.has_spike",
-    "expert_time_difference.middle_has_rise",
-    "expert_time_difference.overall_gap", "expert_time_difference.slope_shape",
-    "expert_time_difference.starting_direction", "expert_time_difference.total_change_ms",
-    "trajectory.converging", "trajectory.peak_abs_offset_m", "trajectory.position",
-    "turn.apex_relation", "turn.exit_relation", "turn.in_relation",
-})
-_MISSING = object()
-_ALIGN_TOLERANCE = 2
-_TELEMETRY_SMOOTHING_WINDOW = 3
-_EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES = 5.0
+INTERPRETER = RequirementInterpreter(INPUT_REGISTRY, FACT_REGISTRY)
 
 
-@dataclass
-class RequirementBranchEvaluation:
-    branch: int
-    passed: List[str] = field(default_factory=list)
-    failed: List[str] = field(default_factory=list)
-    fact_ids: List[str] = field(default_factory=list)
+def _requirements_for(label_id: str, doc: Mapping[str, Any]) -> Dict[str, Any]:
+    requirements = doc.get("selection_requirements")
+    if isinstance(requirements, dict):
+        return dict(requirements)
+    reference = doc.get("selection_requirements_ref")
+    if isinstance(reference, str):
+        value = skills.get(reference, {})
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
 
 
-@dataclass
-class RequirementEvaluation:
-    matched: bool
-    branch: Optional[int] = None
-    passed: List[str] = field(default_factory=list)
-    failed: List[str] = field(default_factory=list)
-    fact_ids: List[str] = field(default_factory=list)
-    matched_branches: List[RequirementBranchEvaluation] = field(default_factory=list)
+def evaluate_requirements(
+    requirements: Mapping[str, Any], context: EvaluationContext,
+    scope: InclusiveRange,
+) -> RequirementEvaluation:
+    return INTERPRETER.evaluate(requirements, context, scope)
 
 
-@dataclass
-class LabelEvaluation:
-    labels: List[str]
-    evaluations: Dict[str, RequirementEvaluation]
-    conflicts: List[Tuple[str, str]] = field(default_factory=list)
-
-
-class FactSet(dict):
-    """Scalar facts plus the telemetry ranges that produced each fact."""
-
-    def __init__(
-        self,
-        values: Optional[Mapping[str, Any]] = None,
-        *,
-        evidence: Optional[Mapping[str, Sequence[Tuple[int, int]]]] = None,
-        phases: Optional[Mapping[str, Sequence[Tuple[int, int]]]] = None,
-    ) -> None:
-        super().__init__(values or {})
-        self.evidence = {
-            key: [(int(start), int(end)) for start, end in ranges]
-            for key, ranges in (evidence or {}).items()
-        }
-        self.phases = {
-            key: [(int(start), int(end)) for start, end in ranges]
-            for key, ranges in (phases or {}).items()
-        }
-
-
-def _point_range(*points: Optional[int]) -> List[Tuple[int, int]]:
-    finite = [int(point) for point in points if point is not None]
-    return [(min(finite), max(finite))] if finite else []
-
-
-def _mask_ranges(mask: np.ndarray, index: np.ndarray) -> List[Tuple[int, int]]:
-    positions = np.flatnonzero(mask)
-    if not len(positions):
-        return []
-    return [
-        (int(index[int(run[0])]), int(index[int(run[-1])]))
-        for run in np.split(positions, np.flatnonzero(np.diff(positions) > 1) + 1)
-        if len(run)
-    ]
-
-
-def _decreasing_magnitude_ranges(
-    values: np.ndarray, index: np.ndarray,
-) -> List[Tuple[int, int]]:
-    if len(values) < 2 or len(values) != len(index):
-        return []
-    transitions = (
-        np.isfinite(values[:-1])
-        & np.isfinite(values[1:])
-        & (np.abs(values[1:]) < np.abs(values[:-1]))
-    )
-    positions = np.flatnonzero(transitions)
-    return [
-        (int(index[int(run[0])]), int(index[int(run[-1]) + 1]))
-        for run in np.split(positions, np.flatnonzero(np.diff(positions) > 1) + 1)
-        if len(run)
-    ]
-
-
-def _smoothed_telemetry(df: pd.DataFrame) -> pd.DataFrame:
-    """Return telemetry with every numeric column smoothed exactly once."""
-    telemetry = df.copy()
-    edge = _TELEMETRY_SMOOTHING_WINDOW // 2
-    for name in telemetry.select_dtypes(include=[np.number]).columns:
-        values = telemetry[name].to_numpy(dtype=float)
-        if len(values) < 2:
+def evaluate_labels(
+    label_ids: Iterable[str], context: EvaluationContext, scope: InclusiveRange,
+) -> LabelEvaluation:
+    evaluations: Dict[str, RequirementEvaluation] = {}
+    matched: List[str] = []
+    docs: Dict[str, Dict[str, Any]] = {}
+    for label_id in label_ids:
+        doc = get_label(label_id)
+        if not doc:
             continue
-        padded = np.pad(values, edge, mode="edge")
-        telemetry[name] = (
-            pd.Series(padded)
-            .rolling(_TELEMETRY_SMOOTHING_WINDOW, center=True, min_periods=1)
-            .median()
-            .to_numpy(dtype=float)[edge:-edge]
-        )
-    return telemetry
+        docs[label_id] = doc
+        evaluation = evaluate_requirements(_requirements_for(label_id, doc), context, scope)
+        evaluations[label_id] = evaluation
+        if evaluation.matched:
+            matched.append(label_id)
 
-
-def _series(df: pd.DataFrame, *names: str) -> Optional[np.ndarray]:
-    for name in names:
-        if name in df.columns:
-            values = pd.to_numeric(df[name], errors="coerce").to_numpy(dtype=float)
-            if np.any(np.isfinite(values)):
-                return values
-    return None
-
-
-def _speed_delta(segment: pd.DataFrame) -> Optional[np.ndarray]:
-    player = _series(segment, "Physics_speed_kmh")
-    expert = _series(segment, "expert_optimal_speed")
-    if player is None or expert is None or len(player) != len(expert):
-        return None
-    return expert - player
-
-
-def _trajectory_offset(segment: pd.DataFrame) -> Optional[np.ndarray]:
-    from app.shared.annotation_agent_tools import calculate_trajectory_offset
-
-    return calculate_trajectory_offset(segment)
-
-
-def _slip_balance(segment: pd.DataFrame) -> Optional[np.ndarray]:
-    front_left = _series(segment, "Physics_slip_angle_front_left")
-    front_right = _series(segment, "Physics_slip_angle_front_right")
-    rear_left = _series(segment, "Physics_slip_angle_rear_left")
-    rear_right = _series(segment, "Physics_slip_angle_rear_right")
-    if any(value is None for value in (front_left, front_right, rear_left, rear_right)):
-        return None
-    return (np.abs(rear_left) + np.abs(rear_right)) / 2.0 - (
-        np.abs(front_left) + np.abs(front_right)
-    ) / 2.0
-
-
-def _push_to_limit(segment: pd.DataFrame) -> Optional[np.ndarray]:
-    from app.shared.tire_grip_features import SlipEnvelopeConfig
-
-    angle_names = (
-        "Physics_slip_angle_front_left", "Physics_slip_angle_front_right",
-        "Physics_slip_angle_rear_left", "Physics_slip_angle_rear_right",
-    )
-    ratio_names = (
-        "Physics_slip_ratio_front_left", "Physics_slip_ratio_front_right",
-        "Physics_slip_ratio_rear_left", "Physics_slip_ratio_rear_right",
-    )
-    angles = [_series(segment, name) for name in angle_names]
-    ratios = [_series(segment, name) for name in ratio_names]
-    if any(value is None for value in [*angles, *ratios]):
-        return None
-    config = SlipEnvelopeConfig()
-    lateral = np.maximum.reduce([np.abs(value) for value in angles])
-    longitudinal = np.maximum.reduce([np.abs(value) for value in ratios])
-    normalized_lateral = lateral / max(config.front_slip_limit, config.rear_slip_limit)
-    normalized_longitudinal = longitudinal / max(
-        config.front_longitudinal_slip_limit, config.rear_longitudinal_slip_limit,
-    )
-    return np.sqrt(
-        (config.slip_angle_weight * normalized_lateral) ** 2
-        + (config.slip_ratio_weight * normalized_longitudinal) ** 2
-    )
-
-
-def _first(mask: np.ndarray, index: np.ndarray) -> Optional[int]:
-    positions = np.flatnonzero(mask)
-    return int(index[int(positions[0])]) if len(positions) else None
-
-
-def _relation(player: Optional[int], expert: Optional[int]) -> Optional[str]:
-    if player is None or expert is None:
-        return None
-    delta = int(player) - int(expert)
-    if abs(delta) <= _ALIGN_TOLERANCE:
-        return "aligned"
-    return "earlier" if delta < 0 else "later"
-
-
-def _input_landmarks(values: Optional[np.ndarray], index: np.ndarray) -> Dict[str, Any]:
-    if values is None or len(values) != len(index):
-        return {}
-    finite = np.where(np.isfinite(values), values, 0.0)
-    peak_pos = int(np.argmax(finite))
-    peak = float(finite[peak_pos])
-    active = finite >= max(0.05, peak * 0.10)
-    high = finite >= max(0.10, peak * 0.90)
-    application_onset = _first(active, index)
-    application_end = _first(high, index)
-    release_onset = None
-    release_end = None
-    after_peak = np.arange(len(finite)) > peak_pos
-    candidates = np.flatnonzero(after_peak & (finite < max(0.10, peak * 0.90)))
-    if len(candidates):
-        release_onset = int(index[int(candidates[0])])
-    candidates = np.flatnonzero(after_peak & (finite <= 0.05))
-    if len(candidates):
-        release_end = int(index[int(candidates[0])])
-    hold_length = None
-    if application_end is not None and release_onset is not None:
-        hold_length = max(0, release_onset - application_end)
-    return {
-        "application_onset": application_onset,
-        "application_end": application_end,
-        "release_onset": release_onset,
-        "release_end": release_end,
-        "peak": peak,
-        "peak_iloc": int(index[peak_pos]),
-        "hold_length": hold_length,
-        "active_fraction": float(np.mean(active)),
-    }
-
-
-def _add_input_facts(
-    facts: Dict[str, Any], prefix: str, player: Dict[str, Any], expert: Dict[str, Any],
-) -> None:
-    for key in ("application_onset", "application_end", "release_onset", "release_end"):
-        facts[f"{prefix}.{key}_relation"] = _relation(player.get(key), expert.get(key))
-        facts[f"{prefix}.player_{key}_iloc"] = player.get(key)
-        facts[f"{prefix}.expert_{key}_iloc"] = expert.get(key)
-    p_peak, e_peak = player.get("peak"), expert.get("peak")
-    if p_peak is not None and e_peak is not None:
-        facts[f"{prefix}.peak_difference"] = float(p_peak) - float(e_peak)
-        facts[f"{prefix}.peak_ratio"] = (
-            float(p_peak) / float(e_peak) if abs(float(e_peak)) > 1e-9 else None
-        )
-        facts[f"{prefix}.peak_relation"] = (
-            "aligned" if abs(float(p_peak) - float(e_peak)) <= 0.10
-            else "higher" if float(p_peak) > float(e_peak) else "lower"
-        )
-    p_hold, e_hold = player.get("hold_length"), expert.get("hold_length")
-    if p_hold is not None and e_hold is not None:
-        facts[f"{prefix}.hold_length_difference"] = int(p_hold) - int(e_hold)
-        facts[f"{prefix}.hold_length_relation"] = (
-            "aligned" if abs(int(p_hold) - int(e_hold)) <= _ALIGN_TOLERANCE
-            else "longer" if int(p_hold) > int(e_hold) else "shorter"
-        )
-
-
-def _expert_time_difference_slope_direction(
-    previous_angle: float, current_angle: float, flattening: bool,
-) -> str:
-    angle_change = current_angle - previous_angle
-    moves_toward_zero = (
-        previous_angle * current_angle >= 0.0
-        and abs(current_angle) < abs(previous_angle)
-        and abs(angle_change) >= _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES
-    )
-    if moves_toward_zero:
-        return "flattening"
-    if flattening:
-        if angle_change >= _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES:
-            return "rising"
-        if angle_change <= -_EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES:
-            return "falling"
-        return "flattening"
-    if current_angle >= _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES:
-        return "rising"
-    if current_angle <= -_EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES:
-        return "falling"
-    return "flat"
-
-
-def _expert_time_difference_slope_analysis(
-    df: pd.DataFrame, start: int, end: int, significant_delta: float,
-) -> Tuple[List[Dict[str, Any]], List[Tuple[int, int]]]:
-    """Return normalized direction runs and positive acceleration steps."""
-    segment = df.loc[(df.index >= int(start)) & (df.index <= int(end))]
-    if "expert_time_difference" not in segment.columns:
-        return [], []
-
-    values = pd.to_numeric(
-        segment["expert_time_difference"], errors="coerce",
-    ).to_numpy(dtype=float)
-    ilocs = segment.index.to_numpy(dtype=float)
-    if len(values) < 2:
-        return [], []
-
-    iloc_deltas = np.diff(ilocs)
-    value_deltas = np.diff(values)
-    valid = (
-        np.isfinite(values[:-1])
-        & np.isfinite(values[1:])
-        & np.isfinite(iloc_deltas)
-        & (iloc_deltas == 1.0)
-        & np.isfinite(value_deltas)
-    )
-    if not np.any(valid):
-        return [], []
-
-    finite_values = values[np.isfinite(values)]
-    value_span = float(np.max(finite_values) - np.min(finite_values))
-    iloc_span = float(np.max(ilocs) - np.min(ilocs))
-    if value_span > 0.0 and iloc_span > 0.0:
-        normalized_slopes = (
-            value_deltas[valid] / iloc_deltas[valid]
-        ) * (iloc_span / value_span)
-    else:
-        normalized_slopes = np.zeros(int(np.sum(valid)), dtype=float)
-    angles = np.degrees(np.arctan(normalized_slopes))
-    step_starts = ilocs[:-1][valid]
-    step_ends = ilocs[1:][valid]
-    step_start_values = values[:-1][valid]
-    step_end_values = values[1:][valid]
-
-    runs: List[Dict[str, Any]] = []
-    accelerating_rises: List[Tuple[int, int]] = []
-    previous_angle: Optional[float] = None
-    previous_end_iloc: Optional[int] = None
-    flattening = False
-    for angle, start_iloc, end_iloc, start_value, end_value in zip(
-        angles, step_starts, step_ends, step_start_values, step_end_values,
-    ):
-        if previous_end_iloc is not None and int(start_iloc) != previous_end_iloc:
-            previous_angle = None
-            flattening = False
-        if (
-            previous_angle is not None
-            and float(angle) > 0.0
-            and float(angle) - previous_angle >= _EXPERT_TIME_DIFFERENCE_SLOPE_ANGLE_DEGREES
-        ):
-            accelerating_rises.append((int(start_iloc), int(end_iloc)))
-        direction = _expert_time_difference_slope_direction(
-            previous_angle if previous_angle is not None else 0.0,
-            float(angle), flattening,
-        )
-        flattening = direction == "flattening"
-        step = {
-            "start_iloc": int(start_iloc),
-            "end_iloc": int(end_iloc),
-            "start_value": float(start_value),
-            "end_value": float(end_value),
-            "direction": direction,
-        }
-        if (
-            runs
-            and runs[-1]["direction"] == direction
-            and runs[-1]["end_iloc"] == step["start_iloc"]
-        ):
-            runs[-1]["end_iloc"] = step["end_iloc"]
-            runs[-1]["end_value"] = step["end_value"]
-        else:
-            runs.append(step)
-        previous_angle = float(angle)
-        previous_end_iloc = int(end_iloc)
-
-    for run in runs:
-        run_delta = float(run["end_value"]) - float(run["start_value"])
-        run["is_label_significant"] = abs(run_delta) >= significant_delta
-    return runs, accelerating_rises
-
-
-def _slope_facts(
-    df: pd.DataFrame, start: int, end: int,
-    evidence: Optional[Dict[str, List[Tuple[int, int]]]] = None,
-) -> Dict[str, Any]:
-    from app.shared.annotation_agent_tools import run_pipeline_query
-
-    payload, error = run_pipeline_query(
-        df, "compute_slope",
-        {"range": [start, end], "column": "expert_time_difference"},
-    )
-    if error or not isinstance(payload.get("extra"), dict):
-        return {}
-    extra = payload["extra"]
-    samples = payload.get("samples") or []
-    values = [s.get("value") for s in samples if isinstance(s, dict)]
-    delta = extra.get("delta_value")
-    thresholds = extra.get("thresholds") or {}
-    try:
-        significant_delta = float(thresholds["label_significant_at_abs_delta"])
-    except (KeyError, TypeError, ValueError):
-        significant_delta = float("inf")
-    runs, accelerating_rises = _expert_time_difference_slope_analysis(
-        df, start, end, significant_delta,
-    )
-    ranges_by_direction = {
-        direction: [
-            [int(run["start_iloc"]), int(run["end_iloc"])]
-            for run in runs if run.get("direction") == direction
-        ]
-        for direction in ("rising", "falling", "flat")
-    }
-    total_change_direction = extra.get("total_change_direction")
-    if evidence is not None:
-        for direction, ranges in ranges_by_direction.items():
-            if ranges:
-                evidence[f"expert_time_difference.{direction}_ranges"] = [
-                    tuple(value) for value in ranges
-                ]
-        if total_change_direction is not None:
-            evidence["expert_time_difference.direction"] = [(int(start), int(end))]
-        evidence["expert_time_difference.total_change_ms"] = [(int(start), int(end))]
-        evidence["expert_time_difference.overall_gap"] = [(int(start), int(end))]
-    spike_runs = [
-        run for run in runs[:-1]
-        if run.get("direction") == "rising"
-        and run.get("is_label_significant") is True
-    ]
-    has_spike = bool(spike_runs)
-    middle_has_rise = bool(accelerating_rises)
-    if evidence is not None:
-        if accelerating_rises:
-            evidence["expert_time_difference.middle_has_rise"] = accelerating_rises
-        if spike_runs:
-            evidence["expert_time_difference.has_spike"] = [
-                (int(run["start_iloc"]), int(run["end_iloc"]))
-                for run in spike_runs
-            ]
-    start_direction = (
-        runs[0].get("direction") if runs and isinstance(runs[0], dict) else None
-    )
-    end_direction = (
-        runs[-1].get("direction") if runs and isinstance(runs[-1], dict) else None
-    )
-    return {
-        "expert_time_difference.total_change_ms": delta,
-        "expert_time_difference.direction": total_change_direction,
-        "expert_time_difference.overall_gap": abs(float(delta)) if delta is not None else None,
-        "expert_time_difference.slope_shape": extra.get("slope_shape"),
-        "expert_time_difference.starting_direction": start_direction,
-        "expert_time_difference.ending_direction": end_direction,
-        "expert_time_difference.rising_ranges": ranges_by_direction["rising"],
-        "expert_time_difference.falling_ranges": ranges_by_direction["falling"],
-        "expert_time_difference.flat_ranges": ranges_by_direction["flat"],
-        "expert_time_difference.middle_has_rise": middle_has_rise,
-        "expert_time_difference.has_spike": has_spike,
-        "expert_time_difference.start_ms": values[0] if values else None,
-        "expert_time_difference.end_ms": values[-1] if values else None,
-    }
-
-
-def _shape_facts(
-    df: pd.DataFrame, start: int, end: int,
-    evidence: Optional[Dict[str, List[Tuple[int, int]]]] = None,
-    phases: Optional[Dict[str, List[Tuple[int, int]]]] = None,
-) -> Tuple[Dict[str, Any], List[Tuple[int, int]]]:
-    from app.shared.annotation_agent_tools import measure_segment_shape
-
-    try:
-        content = measure_segment_shape(df, start, end)
-    except Exception:
-        return {}, []
-    facts: Dict[str, Any] = {}
-    base = content.get("base_segment_shape") or {}
-    refinement = content.get("corner_shape_refinement") or {}
-    facts["segment.shape_key"] = base.get("shape_key")
-    facts["segment.corner_shape_key"] = refinement.get("shape_key")
-    if evidence is not None:
-        evidence["segment.shape_key"] = [(int(start), int(end))]
-        evidence["segment.corner_shape_key"] = [(int(start), int(end))]
-    phase_ranges: List[Tuple[int, int]] = []
-    phase_ranges_by_name: Dict[str, List[Tuple[int, int]]] = {}
-    for phase in content.get("phases") or []:
-        if not isinstance(phase, dict):
-            continue
-        entry, apex, exit_ = phase.get("entry"), phase.get("apex"), phase.get("exit")
-        if all(isinstance(v, int) for v in (entry, apex, exit_)):
-            named_ranges = {
-                "entry": (entry, apex),
-                "apex": (max(entry, apex - 2), min(exit_, apex + 2)),
-                "exit": (apex, exit_),
-            }
-            phase_ranges.extend(named_ranges.values())
-            for name, value in named_ranges.items():
-                phase_ranges_by_name.setdefault(name, []).append(value)
-                if phases is not None:
-                    phases.setdefault(name, []).append(value)
-    altitude = content.get("altitude") or {}
-    for phase_name in ("entry", "apex", "exit"):
-        phase_evidence = list(phase_ranges_by_name.get(phase_name) or [])
-        if phase_evidence:
-            facts[f"phase.{phase_name}"] = True
-            if evidence is not None:
-                evidence[f"phase.{phase_name}"] = phase_evidence
-        summary = altitude.get(phase_name) or {}
-        facts[f"altitude.{phase_name}.trend"] = summary.get("trend")
-        facts[f"altitude.{phase_name}.slope_angle_degrees"] = summary.get("slope_angle_degrees")
-        if evidence is not None and phase_evidence:
-            evidence[f"altitude.{phase_name}.trend"] = phase_evidence
-    return facts, phase_ranges
-
-
-def _opponent_facts(
-    df: pd.DataFrame, start: int, end: int,
-    evidence: Optional[Dict[str, List[Tuple[int, int]]]] = None,
-) -> Dict[str, Any]:
-    from app.shared.annotation_agent_tools import (
-        classify_opponent_interaction,
-        query_opponent_trajectory,
-    )
-
-    try:
-        content = classify_opponent_interaction(df, start, end)
-    except Exception:
-        return {}
-    facts = {
-        "opponent.data_available": content.get("data_available"),
-        "opponent.outcome": content.get("outcome"),
-        "opponent.role": content.get("role"),
-        "opponent.confidence_level": content.get("confidence_level"),
-        "opponent.started_ahead": None,
-        "opponent.driver_ended_ahead": None,
-        "opponent.gap_shrank": None,
-        "opponent.drew_alongside": None,
-        "opponent.side_swap": None,
-    }
-    if evidence is not None and content.get("outcome") not in (None, "no_data"):
-        evidence["opponent.outcome"] = [(int(start), int(end))]
-    candidates = content.get("candidates") or []
-    primary = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
-    entry = primary.get("entry_signed_long_gap_m")
-    exit_ = primary.get("exit_signed_long_gap_m")
-    if entry is not None:
-        facts["opponent.started_ahead"] = float(entry) > 0
-    if exit_ is not None:
-        facts["opponent.driver_ended_ahead"] = float(exit_) < 0
-    if entry is not None and exit_ is not None:
-        facts["opponent.gap_shrank"] = abs(float(exit_)) < abs(float(entry))
-    facts["opponent.drew_alongside"] = int(primary.get("side_by_side_iloc_count") or 0) > 0
-    slot = content.get("targeted_car_slot")
-    if slot is not None:
-        try:
-            trajectory = query_opponent_trajectory(
-                df, start, end, int(slot), n_samples=7,
-            )
-        except Exception:
-            trajectory = {}
-        lateral = [
-            sample.get("lateral_offset_m")
-            for sample in trajectory.get("samples") or []
-            if isinstance(sample, dict) and sample.get("lateral_offset_m") is not None
-        ]
-        samples = [
-            sample for sample in trajectory.get("samples") or []
-            if isinstance(sample, dict) and sample.get("iloc") is not None
-        ]
-        if evidence is not None and samples:
-            sample_ilocs = [int(sample["iloc"]) for sample in samples]
-            evidence["opponent.gap_shrank"] = _point_range(
-                sample_ilocs[0], sample_ilocs[-1],
-            )
-            alongside = [
-                int(sample["iloc"])
-                for sample in samples
-                if sample.get("signed_long_gap_m") is not None
-                and sample.get("lateral_offset_m") is not None
-                and abs(float(sample["signed_long_gap_m"])) <= 6.0
-                and abs(float(sample["lateral_offset_m"])) >= 1.25
-            ]
-            if alongside:
-                evidence["opponent.drew_alongside"] = _point_range(*alongside)
-            if lateral and min(lateral) < 0 < max(lateral):
-                swap_ilocs = [
-                    int(sample["iloc"])
-                    for sample in samples
-                    if sample.get("lateral_offset_m") is not None
-                ]
-                evidence["opponent.side_swap"] = _point_range(*swap_ilocs)
-        if lateral:
-            facts["opponent.side_swap"] = min(lateral) < 0 < max(lateral)
-    return facts
-
-
-def calculate_facts(
-    df: pd.DataFrame, start: int, end: int, *, section_id: str = "",
-) -> Tuple[FactSet, List[Tuple[int, int]]]:
-    """Calculate normalized facts and reusable phase windows for one range."""
-    telemetry = _smoothed_telemetry(df)
-    segment = telemetry.loc[
-        (telemetry.index >= int(start)) & (telemetry.index <= int(end))
-    ]
-    evidence: Dict[str, List[Tuple[int, int]]] = {}
-    phases: Dict[str, List[Tuple[int, int]]] = {}
-    facts: Dict[str, Any] = {
-        "section.id": section_id,
-        "section.name": LABEL_MAPPING.get(section_id),
-        "section.overlap_names": [LABEL_MAPPING[section_id]] if section_id in LABEL_MAPPING else [],
-    }
-    facts.update(_slope_facts(telemetry, start, end, evidence))
-    shape, phase_ranges = _shape_facts(
-        telemetry, start, end, evidence, phases,
-    )
-    facts.update(shape)
-    facts.update(_opponent_facts(telemetry, start, end, evidence))
-
-    index = segment.index.to_numpy(dtype=int)
-    brake = _input_landmarks(_series(segment, "Physics_brake"), index)
-    expert_brake = _input_landmarks(_series(segment, "expert_optimal_brake"), index)
-    throttle = _input_landmarks(_series(segment, "Physics_gas"), index)
-    expert_throttle = _input_landmarks(_series(segment, "expert_optimal_throttle"), index)
-    _add_input_facts(facts, "brake", brake, expert_brake)
-    _add_input_facts(facts, "throttle", throttle, expert_throttle)
-    for prefix, player, expert in (
-        ("brake", brake, expert_brake), ("throttle", throttle, expert_throttle),
-    ):
-        for key in ("application_onset", "application_end", "release_onset", "release_end"):
-            fact = f"{prefix}.{key}_relation"
-            if fact in facts:
-                evidence[fact] = _point_range(player.get(key), expert.get(key))
-        for fact in (f"{prefix}.peak_relation", f"{prefix}.peak_ratio"):
-            if fact in facts:
-                evidence[fact] = _point_range(
-                    player.get("peak_iloc"), expert.get("peak_iloc"),
-                )
-        hold_points = (
-            player.get("application_end"), player.get("release_onset"),
-            expert.get("application_end"), expert.get("release_onset"),
-        )
-        if f"{prefix}.hold_length_relation" in facts:
-            evidence[f"{prefix}.hold_length_relation"] = _point_range(*hold_points)
-
-    player_brake = _series(segment, "Physics_brake")
-    player_throttle = _series(segment, "Physics_gas")
-    expert_b = _series(segment, "expert_optimal_brake")
-    expert_t = _series(segment, "expert_optimal_throttle")
-    if player_brake is not None and expert_b is not None:
-        facts["brake.similarity"] = float(np.mean(np.isclose(player_brake, expert_b, atol=0.02, equal_nan=False)))
-        evidence["brake.similarity"] = [(int(start), int(end))]
-    if player_throttle is not None and expert_t is not None:
-        facts["throttle.similarity"] = float(np.mean(np.isclose(player_throttle, expert_t, atol=0.02, equal_nan=False)))
-        evidence["throttle.similarity"] = [(int(start), int(end))]
-    if player_brake is not None and player_throttle is not None:
-        overlap = (player_brake > 0.05) & (player_throttle > 0.05)
-        facts["controls.overlap_count"] = int(np.sum(overlap))
-        facts["controls.overlap_fraction"] = float(np.mean(overlap))
-        if expert_b is not None and expert_t is not None:
-            expert_overlap = (expert_b > 0.05) & (expert_t > 0.05)
-            facts["controls.expert_overlap_count"] = int(np.sum(expert_overlap))
-            evidence["controls.expert_overlap_count"] = (
-                _mask_ranges(expert_overlap, index) or [(int(start), int(end))]
-            )
-        evidence["controls.overlap_count"] = _mask_ranges(overlap, index)
-
-    speed_delta = _speed_delta(segment)
-    if speed_delta is not None:
-        finite = speed_delta[np.isfinite(speed_delta)]
-        if len(finite):
-            facts["speed.gap_peak_abs_kmh"] = float(np.max(np.abs(finite)))
-            facts["speed.expert_faster"] = float(np.nanmedian(finite)) > 0
-            facts["speed.gap_closing"] = abs(float(finite[-1])) < abs(float(finite[0]))
-            finite_mask = np.isfinite(speed_delta)
-            peak_pos = int(np.nanargmax(np.abs(speed_delta)))
-            evidence["speed.gap_peak_abs_kmh"] = _point_range(index[peak_pos])
-            evidence["speed.expert_faster"] = _mask_ranges(
-                finite_mask & (speed_delta > 0), index,
-            )
-            evidence["speed.gap_closing"] = _decreasing_magnitude_ranges(
-                speed_delta, index,
-            )
-
-    trajectory = _trajectory_offset(segment)
-    if trajectory is not None:
-        finite = trajectory[np.isfinite(trajectory)]
-        if len(finite):
-            facts["trajectory.start_offset_m"] = float(finite[0])
-            facts["trajectory.end_offset_m"] = float(finite[-1])
-            facts["trajectory.peak_abs_offset_m"] = float(np.max(np.abs(finite)))
-            facts["trajectory.converging"] = abs(float(finite[-1])) < abs(float(finite[0]))
-            median = float(np.nanmedian(finite))
-            facts["trajectory.position"] = "aligned" if abs(median) <= 0.5 else "wider" if median > 0 else "tighter"
-            finite_mask = np.isfinite(trajectory)
-            peak_pos = int(np.nanargmax(np.abs(trajectory)))
-            evidence["trajectory.peak_abs_offset_m"] = _point_range(index[peak_pos])
-            evidence["trajectory.converging"] = _decreasing_magnitude_ranges(
-                trajectory, index,
-            )
-            position_mask = (
-                np.abs(trajectory) <= 0.5 if facts["trajectory.position"] == "aligned"
-                else trajectory > 0.5 if facts["trajectory.position"] == "wider"
-                else trajectory < -0.5
-            )
-            evidence["trajectory.position"] = _mask_ranges(
-                finite_mask & position_mask, index,
-            )
-
-    player_steer = _series(segment, "Physics_steer_angle")
-    expert_steer = _series(segment, "expert_optimal_steering")
-    if player_steer is not None and expert_steer is not None:
-        def _steer_marks(values: np.ndarray) -> Tuple[Optional[int], Optional[int], Optional[int]]:
-            absolute = np.abs(values)
-            peak_pos = int(np.nanargmax(absolute))
-            threshold = max(0.02, float(absolute[peak_pos]) * 0.10)
-            onset_positions = np.flatnonzero(absolute >= threshold)
-            exit_positions = np.flatnonzero((np.arange(len(values)) > peak_pos) & (absolute < threshold))
-            return (
-                int(index[int(onset_positions[0])]) if len(onset_positions) else None,
-                int(index[peak_pos]),
-                int(index[int(exit_positions[0])]) if len(exit_positions) else None,
-            )
-        p_turn, p_apex, p_exit = _steer_marks(player_steer)
-        e_turn, e_apex, e_exit = _steer_marks(expert_steer)
-        facts["turn.in_relation"] = _relation(p_turn, e_turn)
-        facts["turn.apex_relation"] = _relation(p_apex, e_apex)
-        facts["turn.exit_relation"] = _relation(p_exit, e_exit)
-        evidence["turn.in_relation"] = _point_range(p_turn, e_turn)
-        evidence["turn.apex_relation"] = _point_range(p_apex, e_apex)
-        evidence["turn.exit_relation"] = _point_range(p_exit, e_exit)
-
-    balance = _slip_balance(segment)
-    if balance is not None:
-        facts["balance.oversteer"] = bool(np.nanmax(balance) > 0.02)
-        facts["balance.understeer"] = bool(np.nanmin(balance) < -0.02)
-        evidence["balance.oversteer"] = _mask_ranges(balance > 0.02, index)
-        evidence["balance.understeer"] = _mask_ranges(balance < -0.02, index)
-    push = _push_to_limit(segment)
-    if push is not None:
-        facts["grip.max"] = float(np.nanmax(push))
-        facts["grip.min"] = float(np.nanmin(push))
-        facts["grip.over_limit"] = bool(np.nanmax(push) > 1.0)
-        facts["grip.sustained_low"] = bool(np.mean(push < 0.8) >= 0.5)
-        evidence["grip.over_limit"] = _mask_ranges(push > 1.0, index)
-        evidence["grip.sustained_low"] = _mask_ranges(push < 0.8, index)
-
-    player_gear = _series(segment, "Physics_gear")
-    expert_gear = _series(segment, "expert_optimal_gear")
-    if player_gear is not None and expert_gear is not None:
-        facts["gear.exit_relation"] = (
-            "lower" if player_gear[-1] < expert_gear[-1]
-            else "higher" if player_gear[-1] > expert_gear[-1] else "aligned"
-        )
-        evidence["gear.exit_relation"] = _point_range(index[-1])
-        p_changes = np.flatnonzero(np.diff(player_gear) != 0)
-        e_changes = np.flatnonzero(np.diff(expert_gear) != 0)
-        if len(p_changes) and len(e_changes):
-            p_i, e_i = int(index[p_changes[0] + 1]), int(index[e_changes[0] + 1])
-            direction = "up" if player_gear[p_changes[0] + 1] > player_gear[p_changes[0]] else "down"
-            facts[f"gear.{direction}shift_relation"] = _relation(p_i, e_i)
-            evidence[f"gear.{direction}shift_relation"] = _point_range(p_i, e_i)
-    filtered = {key: value for key, value in facts.items() if value is not None}
-    return FactSet(filtered, evidence=evidence, phases=phases), phase_ranges
-
-
-def _compare(actual: Any, operator: str, expected: Any = None) -> bool:
-    if operator not in SUPPORTED_OPERATORS:
-        return False
-    if operator == "exists":
-        return actual is not _MISSING and (bool(actual is not None) == bool(expected))
-    if actual is _MISSING or actual is None:
-        return False
-    try:
-        if operator == "eq": return actual == expected
-        if operator == "neq": return actual != expected
-        if operator == "in": return actual in expected
-        if operator == "not_in": return actual not in expected
-        if operator == "lt": return actual < expected
-        if operator == "lte": return actual <= expected
-        if operator == "gt": return actual > expected
-        if operator == "gte": return actual >= expected
-        if operator == "between": return expected[0] <= actual <= expected[1]
-        if operator == "contains": return expected in actual
-    except (TypeError, ValueError, IndexError):
-        return False
-    return False
-
-
-def evaluate_requirements(requirements: Mapping[str, Any], facts: Mapping[str, Any]) -> RequirementEvaluation:
-    if requirements.get("enabled") is False:
-        return RequirementEvaluation(False, failed=["label disabled"])
-    branches = requirements.get("any_of")
-    if not isinstance(branches, list) or not branches:
-        return RequirementEvaluation(False, failed=["no valid requirement branches"])
-    closest_branch: Optional[RequirementBranchEvaluation] = None
-    matched_branches: List[RequirementBranchEvaluation] = []
-    for branch_index, branch in enumerate(branches):
-        predicates = branch.get("all_of") if isinstance(branch, dict) else None
-        if not isinstance(predicates, list) or not predicates:
-            continue
-        passed: List[str] = []
-        failed: List[str] = []
-        fact_ids: List[str] = []
-        for predicate in predicates:
-            if not isinstance(predicate, dict):
-                failed.append("invalid predicate")
+    conflicts: List[Tuple[str, str]] = []
+    suppressed: set[str] = set()
+    matched_set = set(matched)
+    for label_id in matched:
+        for other in docs[label_id].get("exclusive_with") or []:
+            if other not in matched_set:
                 continue
-            fact = str(predicate.get("fact") or "")
-            fact_ids.append(fact)
-            operator = str(predicate.get("operator") or "")
-            expected = predicate.get("value")
-            actual = facts.get(fact, _MISSING)
-            value = "unavailable" if actual is _MISSING else repr(actual)
-            text = f"{fact}: {value}"
-            (passed if _compare(actual, operator, expected) else failed).append(text)
-        candidate = RequirementBranchEvaluation(
-            branch_index, passed, failed, fact_ids,
-        )
-        if not failed:
-            matched_branches.append(candidate)
-            continue
-        if closest_branch is None or (len(failed), -len(passed)) < (
-            len(closest_branch.failed), -len(closest_branch.passed)
-        ):
-            closest_branch = candidate
-    if matched_branches:
-        first = matched_branches[0]
-        return RequirementEvaluation(
-            True, first.branch, first.passed, [], first.fact_ids, matched_branches,
-        )
-    if closest_branch is not None:
-        return RequirementEvaluation(
-            False, closest_branch.branch, closest_branch.passed,
-            closest_branch.failed, closest_branch.fact_ids,
-        )
-    return RequirementEvaluation(False, failed=["facts unavailable"])
+            pair = tuple(sorted((label_id, other)))
+            if pair not in conflicts:
+                conflicts.append(pair)
+            suppressed.update(pair)
+    return LabelEvaluation(
+        [label for label in matched if label not in suppressed], evaluations, conflicts,
+    )
 
 
 def validate_catalog() -> List[str]:
-    """Return structural errors in deterministic label requirements."""
+    """Return structural and registry errors in deterministic requirements."""
     errors: List[str] = []
     main_labels = {doc["id"]: doc for doc in skills.iter("lap_annotation.labels")}
     non_main_labels = {
@@ -879,53 +105,33 @@ def validate_catalog() -> List[str]:
         label_id: doc for label_id, doc in non_main_labels.items()
         if doc.get("type") == "segment_type"
     }
-    lap_requirements = skills.get("lap_annotation.selection_requirements", {})
-    sub_label_requirements = skills.get(
-        "sub_label_annotation.sub_label_selection_requirements", {},
-    )
-    segment_type_requirements = skills.get(
-        "sub_label_annotation.segment_type_selection_requirements", {},
+    requirement_groups = (
+        ("lap", skills.get("lap_annotation.selection_requirements", {}), main_labels),
+        (
+            "sub-label",
+            skills.get("sub_label_annotation.sub_label_selection_requirements", {}),
+            sub_labels,
+        ),
+        (
+            "segment-type",
+            skills.get("sub_label_annotation.segment_type_selection_requirements", {}),
+            segment_type_labels,
+        ),
     )
     if any(doc.get("type") != "main" for doc in main_labels.values()):
         errors.append("lap label catalog contains non-main labels")
     if set(non_main_labels) != set(sub_labels) | set(segment_type_labels):
         errors.append("sub-label catalog contains unsupported label types")
-    if (
-        not isinstance(lap_requirements, dict)
-        or set(lap_requirements) != set(main_labels)
-    ):
-        errors.append("lap requirement IDs do not exactly match main label IDs")
-    if (
-        not isinstance(sub_label_requirements, dict)
-        or set(sub_label_requirements) != set(sub_labels)
-    ):
-        errors.append("sub-label requirement IDs do not exactly match sub-label IDs")
-    if (
-        not isinstance(segment_type_requirements, dict)
-        or set(segment_type_requirements) != set(segment_type_labels)
-    ):
-        errors.append(
-            "segment-type requirement IDs do not exactly match segment-type label IDs"
-        )
+    for group_name, requirements, expected in requirement_groups:
+        if not isinstance(requirements, dict) or set(requirements) != set(expected):
+            errors.append(f"{group_name} requirement IDs do not exactly match label IDs")
+
     for label_id, doc in labels.items():
         requirements = _requirements_for(label_id, get_label(label_id) or doc)
-        enabled = requirements.get("enabled") is not False
-        branches = requirements.get("any_of")
-        if enabled and (not isinstance(branches, list) or not branches):
-            errors.append(f"{label_id}: active label has no any_of branches")
-            continue
-        for branch_index, branch in enumerate(branches or []):
-            predicates = branch.get("all_of") if isinstance(branch, dict) else None
-            if enabled and (not isinstance(predicates, list) or not predicates):
-                errors.append(f"{label_id}: branch {branch_index} has no all_of predicates")
-                continue
-            for predicate in predicates or []:
-                fact = predicate.get("fact") if isinstance(predicate, dict) else None
-                operator = predicate.get("operator") if isinstance(predicate, dict) else None
-                if fact not in KNOWN_FACTS:
-                    errors.append(f"{label_id}: unknown fact {fact!r}")
-                if operator not in SUPPORTED_OPERATORS:
-                    errors.append(f"{label_id}: unknown operator {operator!r}")
+        errors.extend(
+            f"{label_id}: {error}"
+            for error in validate_requirements(requirements, INPUT_REGISTRY, FACT_REGISTRY)
+        )
         parent = doc.get("parent")
         if parent is not None and parent not in labels:
             errors.append(f"{label_id}: unknown parent {parent!r}")
@@ -935,85 +141,38 @@ def validate_catalog() -> List[str]:
     return errors
 
 
-def _requirements_for(label_id: str, doc: Mapping[str, Any]) -> Dict[str, Any]:
-    requirements = doc.get("selection_requirements")
-    if isinstance(requirements, dict):
-        return dict(requirements)
-    ref = doc.get("selection_requirements_ref")
-    if isinstance(ref, str):
-        value = skills.get(ref, {})
-        if isinstance(value, dict):
-            return dict(value)
-    return {}
-
-
-def evaluate_labels(label_ids: Iterable[str], facts: Mapping[str, Any]) -> LabelEvaluation:
-    evaluations: Dict[str, RequirementEvaluation] = {}
-    matched: List[str] = []
-    docs: Dict[str, Dict[str, Any]] = {}
-    for label_id in label_ids:
-        doc = get_label(label_id)
-        if not doc:
-            continue
-        docs[label_id] = doc
-        evaluation = evaluate_requirements(_requirements_for(label_id, doc), facts)
-        evaluations[label_id] = evaluation
-        if evaluation.matched:
-            matched.append(label_id)
-    conflicts: List[Tuple[str, str]] = []
-    suppressed: set[str] = set()
-    matched_set = set(matched)
-    for label_id in matched:
-        for other in docs[label_id].get("exclusive_with") or []:
-            if other in matched_set:
-                pair = tuple(sorted((label_id, other)))
-                if pair not in conflicts:
-                    conflicts.append(pair)
-                suppressed.update(pair)
-    return LabelEvaluation([label for label in matched if label not in suppressed], evaluations, conflicts)
-
-
-def _reason(
-    label_id: str,
-    evaluation: RequirementEvaluation | RequirementBranchEvaluation,
-    start: int,
-    end: int,
-) -> str:
-    return _reason_from_passed(label_id, evaluation.passed, start, end)
-
-
 def _reason_from_passed(
-    label_id: str, passed: Iterable[str], start: int, end: int,
+    label_id: str, passed: Iterable[str], range_: InclusiveRange,
 ) -> str:
-    details = [
-        f"{label_id} selected for iloc range [{int(start)}, {int(end)}]",
+    return "; ".join([
+        f"{label_id} selected for iloc range [{range_.start}, {range_.end}]",
         *(f"Passed — {fact}" for fact in passed),
-    ]
-    return "; ".join(details)
+    ])
 
 
 def _detailed_reason_from_passed(
-    label_id: str, passed: Iterable[str], start: int, end: int,
+    label_id: str, passed: Iterable[str], range_: InclusiveRange,
 ) -> str:
-    lines = [
-        f"{label_id} selected for iloc range [{int(start)}, {int(end)}]",
+    return "\n".join([
+        f"{label_id} selected for iloc range [{range_.start}, {range_.end}]",
         "Evidence:",
         *(f"- {fact}" for fact in passed),
-    ]
-    return "\n".join(lines)
+    ])
 
 
-def _passed_with_fact_evidence(
-    evaluation: RequirementBranchEvaluation,
-    facts: FactSet,
-) -> List[str]:
+def _passed_with_evidence(evaluation: RequirementBranchEvaluation) -> List[str]:
     annotated: List[str] = []
-    for fact_id, passed in zip(evaluation.fact_ids, evaluation.passed):
-        locations = [
-            f"index {start}" if start == end else f"range [{start}, {end}]"
-            for start, end in facts.evidence[fact_id]
-        ]
-        annotated.append(f"{passed} — {', '.join(locations)}")
+    for predicate in evaluation.predicates:
+        if not predicate.passed:
+            continue
+        range_ = predicate.evidence_range
+        location = (
+            f"index {range_.start}"
+            if range_ is not None and range_.start == range_.end
+            else f"range [{range_.start}, {range_.end}]" if range_ is not None
+            else "range unavailable"
+        )
+        annotated.append(f"{predicate.text} — {location}")
     return annotated
 
 
@@ -1029,21 +188,24 @@ def _resolve_circuit_sections(
     context_ids = []
     if isinstance(opponent_interaction, dict):
         for context in opponent_interaction.get("section_context") or []:
-            candidate = context.get("circuit_section_id") if isinstance(context, dict) else None
+            candidate = (
+                context.get("circuit_section_id") if isinstance(context, dict) else None
+            )
             if candidate in LABEL_MAPPING and candidate not in context_ids:
                 context_ids.append(candidate)
     try:
         from app.shared.annotation_agent_tools import locate_circuit_section
-        telemetry = _smoothed_telemetry(df)
-        content = locate_circuit_section(telemetry, circuit_id, start, end)
+
+        content = locate_circuit_section(
+            df, circuit_id, start, end,
+        )
     except Exception:
         content = {}
     best = content.get("best_match") or {}
     candidate = best.get("label_id") if isinstance(best, dict) else None
-    matches = content.get("top_matches") or []
     overlap_ids = [
         str(match["label_id"])
-        for match in matches
+        for match in content.get("top_matches") or []
         if isinstance(match, dict) and match.get("label_id") in LABEL_MAPPING
     ]
     candidate_ids = [*([primary_id] if primary_id else []), *context_ids, *overlap_ids]
@@ -1062,20 +224,36 @@ def _resolve_circuit_sections(
     return section_id, []
 
 
-def _resolve_circuit_section(
-    df: pd.DataFrame, circuit_id: str, section_id: str, start: int, end: int,
-    opponent_interaction: Optional[dict],
-) -> str:
-    resolved, _ = _resolve_circuit_sections(
-        df, circuit_id, section_id, start, end, opponent_interaction,
-    )
-    return resolved
+def _first_branch_range(
+    evaluation: RequirementEvaluation, fallback: InclusiveRange,
+) -> InclusiveRange:
+    if evaluation.matched_branches:
+        return evaluation.matched_branches[0].evidence_range or fallback
+    return fallback
 
 
-def _is_far_from_expert_in_pit(facts: Mapping[str, Any]) -> bool:
-    overlap_names = facts.get("section.overlap_names") or []
-    offset = facts.get("trajectory.peak_abs_offset_m")
-    return "Pit" in overlap_names and isinstance(offset, (int, float)) and offset >= 10.0
+def _is_far_from_expert_in_pit(
+    context: EvaluationContext, scope: InclusiveRange,
+) -> bool:
+    overlap_names = [
+        LABEL_MAPPING[value]
+        for value in context.overlap_section_ids
+        if value in LABEL_MAPPING
+    ]
+    if "Pit" not in overlap_names:
+        return False
+    requirements = {
+        "enabled": True,
+        "any_of": [{"all_of": [{
+            "inputs": {"tags": ["trajectory_comparison_range"]},
+            "condition": {
+                "fact": "find_trajectory_peak_offset",
+                "operator": "gte",
+                "value": 10.0,
+            },
+        }]}],
+    }
+    return evaluate_requirements(requirements, context, scope).matched
 
 
 def calculate_lap_annotation(
@@ -1084,24 +262,31 @@ def calculate_lap_annotation(
     section_split_basis: Optional[str] = None,
     opponent_interaction: Optional[dict] = None,
 ) -> LapAnnotationResult:
-    session = "racing" if opponent_interaction or "interaction" in str(section_split_basis or "") else "practice"
-    eligible = skills.get(f"lap_annotation.behavior_parent_label_ids.eligible_by_session.{session}", [])
-    eligible = [label for label in eligible if label in skills.get("lap_annotation.labels", {})]
-    resolved_section_id, overlap_section_ids = _resolve_circuit_sections(
-        df, circuit_id, section_id, section_start, section_end, opponent_interaction,
+    del lap_start, lap_end
+    session = (
+        "racing"
+        if opponent_interaction or "interaction" in str(section_split_basis or "")
+        else "practice"
     )
-    facts, _ = calculate_facts(
-        df, section_start, section_end, section_id=resolved_section_id,
+    eligible = skills.get(
+        f"lap_annotation.behavior_parent_label_ids.eligible_by_session.{session}", [],
     )
-    facts["section.overlap_names"] = [
-        LABEL_MAPPING[candidate]
-        for candidate in overlap_section_ids
-        if candidate in LABEL_MAPPING
+    eligible = [
+        label for label in eligible if label in skills.get("lap_annotation.labels", {})
     ]
-    if _is_far_from_expert_in_pit(facts):
+    telemetry = smooth_telemetry(df)
+    resolved_section_id, overlap_section_ids = _resolve_circuit_sections(
+        telemetry, circuit_id, section_id, section_start, section_end,
+        opponent_interaction,
+    )
+    scope = InclusiveRange(section_start, section_end)
+    context = EvaluationContext(
+        telemetry, section_id=resolved_section_id,
+        overlap_section_ids=tuple(overlap_section_ids),
+    )
+    if _is_far_from_expert_in_pit(context, scope):
         eligible = [label for label in eligible if label != "RM"]
-    evaluated = evaluate_labels(eligible, facts)
-    segment_types = evaluate_labels([f"ST{i}" for i in range(1, 12)], facts)
+    evaluated = evaluate_labels(eligible, context, scope)
     behavior = evaluated.labels
     if "PS" in behavior:
         resolved_section_id = next(
@@ -1115,29 +300,33 @@ def calculate_lap_annotation(
         doc["id"] for doc in skills.iter("sub_label_annotation.labels")
         if doc.get("type") == "sub" and doc.get("parent") in set(behavior)
     ]
-    children = evaluate_labels(child_ids, facts)
-    resolved_children: List[
-        Tuple[str, RequirementBranchEvaluation, LabelEvidence]
-    ] = []
+    children = evaluate_labels(child_ids, context, scope)
+    resolved_children: List[Tuple[str, RequirementBranchEvaluation, InclusiveRange]] = []
     for label in children.labels:
-        for branch, evidence in _label_evidence(
-            children.evaluations[label], facts, section_start, section_end,
-        ):
-            if evidence.required_covers(section_start, section_end):
-                resolved_children.append((label, branch, evidence))
+        for branch in children.evaluations[label].matched_branches:
+            range_ = branch.evidence_range
+            if range_ == scope:
+                resolved_children.append((label, branch, range_))
                 break
-    label_ids = [
-        circuit_id, resolved_section_id, *behavior,
-        *(label for label, _, _ in resolved_children),
-        *segment_types.labels,
-    ] if behavior else []
+
+    label_ids = (
+        [
+            circuit_id, resolved_section_id, *behavior,
+            *(label for label, _, _ in resolved_children),
+        ]
+        if behavior else []
+    )
     notes = [
-        _reason(label, evaluated.evaluations[label], section_start, section_end)
+        _reason_from_passed(
+            label,
+            evaluated.evaluations[label].passed,
+            _first_branch_range(evaluated.evaluations[label], scope),
+        )
         for label in behavior
     ]
     notes.extend(
-        _reason(label, evaluation, *evidence.annotation_range)
-        for label, evaluation, evidence in resolved_children
+        _reason_from_passed(label, branch.passed, range_)
+        for label, branch, range_ in resolved_children
     )
     rejected = [
         {
@@ -1148,7 +337,8 @@ def calculate_lap_annotation(
             ]),
         }
         for label_id, evaluation in evaluated.evaluations.items()
-        if not evaluation.matched or any(label_id in pair for pair in evaluated.conflicts)
+        if not evaluation.matched
+        or any(label_id in pair for pair in evaluated.conflicts)
     ]
     rejected.extend(
         {
@@ -1156,51 +346,23 @@ def calculate_lap_annotation(
             "label_ids": list(pair),
             "reason": "exclusive deterministic matches",
         }
-        for pair in [*children.conflicts, *segment_types.conflicts]
+        for pair in children.conflicts
     )
     return LapAnnotationResult(
         section_id=resolved_section_id,
-        start_index=int(section_start),
-        end_index=int(section_end),
-        label_ids=[label for i, label in enumerate(label_ids) if label and label not in label_ids[:i]],
-        reasoning="\n".join(notes) or "No behavior label satisfied a complete requirement branch.",
+        start_index=scope.start,
+        end_index=scope.end,
+        label_ids=[
+            label for index, label in enumerate(label_ids)
+            if label and label not in label_ids[:index]
+        ],
+        reasoning="\n".join(notes)
+        or "No behavior label satisfied a complete requirement branch.",
         submitted=True,
         rejected_proposals=rejected,
         transcript="deterministic label evaluation",
         tool_calls=0,
     )
-
-
-def _fact_ranges(facts: Mapping[str, Any], fact_ids: Iterable[str]) -> List[Tuple[int, int]]:
-    if not isinstance(facts, FactSet):
-        return []
-    ranges: List[Tuple[int, int]] = []
-    for fact_id in fact_ids:
-        ranges.extend(facts.evidence.get(fact_id) or [])
-    return ranges
-
-
-def _label_evidence(
-    evaluation: RequirementEvaluation,
-    facts: Mapping[str, Any],
-    parent_start: int,
-    parent_end: int,
-) -> List[Tuple[RequirementBranchEvaluation, LabelEvidence]]:
-    if not isinstance(facts, FactSet):
-        return []
-    resolved: List[Tuple[RequirementBranchEvaluation, LabelEvidence]] = []
-    for branch in evaluation.matched_branches:
-        if not branch.fact_ids or any(
-            not facts.evidence.get(fact_id) for fact_id in branch.fact_ids
-        ):
-            continue
-        evidence = resolve_label_evidence(
-            required_ranges=_fact_ranges(facts, branch.fact_ids),
-            parent_range=(int(parent_start), int(parent_end)),
-        )
-        if evidence is not None:
-            resolved.append((branch, evidence))
-    return resolved
 
 
 def _merge_label_annotations(annotations: Sequence[dict]) -> List[dict]:
@@ -1242,13 +404,13 @@ def _merge_label_annotations(annotations: Sequence[dict]) -> List[dict]:
             int(item["start_index"]), int(item["end_index"]), item["label_id"],
         ),
     ):
+        range_ = InclusiveRange(proposal["start_index"], proposal["end_index"])
         result.append({
             "label_id": proposal["label_id"],
-            "start_index": proposal["start_index"],
-            "end_index": proposal["end_index"],
+            "start_index": range_.start,
+            "end_index": range_.end,
             "reasoning": _detailed_reason_from_passed(
-                proposal["label_id"], proposal["passed"],
-                proposal["start_index"], proposal["end_index"],
+                proposal["label_id"], proposal["passed"], range_,
             ),
         })
     return result
@@ -1259,7 +421,8 @@ def calculate_detailed_annotation(
     parent_main_labels: Sequence[str], parent_selected_labels: Sequence[str] = (),
     existing_children: Sequence[dict] = (),
 ) -> AnnotationResult:
-    parent_facts, _ = calculate_facts(df, parent_start, parent_end)
+    parent_scope = InclusiveRange(parent_start, parent_end)
+    context = EvaluationContext.from_dataframe(df)
     existing = {
         (int(child.get("start_index", -1)), int(child.get("end_index", -1)), label)
         for child in existing_children
@@ -1273,62 +436,62 @@ def calculate_detailed_annotation(
         and doc.get("parent") in eligible_parents
         and doc["id"] not in selected_on_parent
     ]
-    segment_types = [f"ST{i}" for i in range(1, 21)]
+    segment_types = [
+        doc["id"] for doc in skills.iter("sub_label_annotation.labels")
+        if doc.get("type") == "segment_type"
+    ]
     raw_annotations: List[dict] = []
     conflicts: List[Tuple[str, str]] = []
-    evaluated = evaluate_labels(parent_children, parent_facts)
+    evaluated = evaluate_labels(parent_children, context, parent_scope)
     conflicts.extend(evaluated.conflicts)
     for label_id in evaluated.labels:
-        for branch, evidence in _label_evidence(
-            evaluated.evaluations[label_id], parent_facts,
-            parent_start, parent_end,
-        ):
-            label_start, label_end = evidence.annotation_range
-            if (label_start, label_end, label_id) in existing:
+        for branch in evaluated.evaluations[label_id].matched_branches:
+            range_ = branch.evidence_range
+            if range_ is None or not parent_scope.contains(range_):
+                continue
+            if (range_.start, range_.end, label_id) in existing:
                 continue
             raw_annotations.append({
                 "label_id": label_id,
-                "start_index": label_start,
-                "end_index": label_end,
-                "passed": _passed_with_fact_evidence(branch, parent_facts),
+                "start_index": range_.start,
+                "end_index": range_.end,
+                "passed": _passed_with_evidence(branch),
             })
     annotations = _merge_label_annotations(raw_annotations)
     found_ranges = sorted({
-        (int(annotation["start_index"]), int(annotation["end_index"]))
+        InclusiveRange(annotation["start_index"], annotation["end_index"])
         for annotation in annotations
     })
     if found_ranges:
-        evaluated_types = evaluate_labels(segment_types, parent_facts)
+        evaluated_types = evaluate_labels(segment_types, context, parent_scope)
         conflicts.extend(evaluated_types.conflicts)
-        for start, end in found_ranges:
-            for label_id in evaluated_types.labels:
-                evaluation = evaluated_types.evaluations[label_id]
-                fitting_branches = [
-                    branch
-                    for branch, evidence in _label_evidence(
-                        evaluation, parent_facts, parent_start, parent_end,
-                    )
-                    if evidence.required_contains(start, end)
-                ]
-                if not fitting_branches:
-                    continue
-                annotations.append({
-                    "label_id": label_id,
-                    "start_index": start,
-                    "end_index": end,
-                    "reasoning": _detailed_reason_from_passed(
-                        label_id,
-                        _passed_with_fact_evidence(
-                            fitting_branches[0], parent_facts,
-                        ),
-                        start,
-                        end,
-                    ),
-                })
+    for range_ in found_ranges:
+        for label_id in evaluated_types.labels:
+            evaluation = evaluated_types.evaluations[label_id]
+            fitting_branch = next(
+                (
+                    branch for branch in evaluation.matched_branches
+                    if branch.evidence_range is not None
+                    and branch.evidence_range.contains(range_)
+                ),
+                None,
+            )
+            if fitting_branch is None:
+                continue
+            annotations.append({
+                "label_id": label_id,
+                "start_index": range_.start,
+                "end_index": range_.end,
+                "reasoning": _detailed_reason_from_passed(
+                    label_id,
+                    _passed_with_evidence(fitting_branch),
+                    range_,
+                ),
+            })
     annotations.sort(key=lambda item: (
         int(item["start_index"]), int(item["end_index"]), item["label_id"],
     ))
-    labels = list(dict.fromkeys(a["label_id"] for a in annotations))
+    labels = list(dict.fromkeys(annotation["label_id"] for annotation in annotations))
     summary = f"Deterministically selected {len(annotations)} label proposal(s)."
     if conflicts:
         summary += f" Suppressed {len(set(conflicts))} exclusive conflict(s)."
@@ -1343,7 +506,7 @@ def calculate_detailed_annotation(
 
 
 __all__ = [
-    "KNOWN_FACTS", "SUPPORTED_OPERATORS", "calculate_facts", "calculate_lap_annotation",
-    "calculate_detailed_annotation", "evaluate_labels", "evaluate_requirements",
-    "validate_catalog",
+    "FACT_REGISTRY", "INPUT_REGISTRY", "SUPPORTED_OPERATORS",
+    "calculate_detailed_annotation", "calculate_lap_annotation", "evaluate_labels",
+    "evaluate_requirements", "validate_catalog",
 ]

@@ -5,6 +5,23 @@ from ..shared import (
     get_display_labels, LABEL_MAPPING,
 )
 
+_FULL_NAME_LABEL_CSS = """
+<style>
+.st-key-full_name_subsegment_labels span[data-baseweb="tag"] {
+    height: auto;
+    max-width: 100%;
+}
+
+.st-key-full_name_subsegment_labels span[data-baseweb="tag"] > span:first-child {
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+}
+</style>
+"""
+
+
 def render_subsegment_manager(df, session_id, selected_annotation_key):
     """
     Renders UI for managing sub-segments under an existing parent segment.
@@ -60,13 +77,15 @@ def render_subsegment_manager(df, session_id, selected_annotation_key):
         
     with col2:
         default_labels = [] if is_new else selected_sub_seg.labels
-        sub_labels = st.multiselect(
-            "Sub-Segment Labels",
-            options=list(LABEL_MAPPING.keys()),
-            default=default_labels,
-            format_func=lambda x: LABEL_MAPPING.get(str(x), str(x)),
-            key=f"sub_labels_{input_key_suffix}"
-        )
+        st.markdown(_FULL_NAME_LABEL_CSS, unsafe_allow_html=True)
+        with st.container(key="full_name_subsegment_labels"):
+            sub_labels = st.multiselect(
+                "Sub-Segment Labels",
+                options=list(LABEL_MAPPING.keys()),
+                default=default_labels,
+                format_func=lambda x: LABEL_MAPPING.get(str(x), str(x)),
+                key=f"sub_labels_{input_key_suffix}"
+            )
         
         default_notes = "" if is_new else getattr(selected_sub_seg, 'notes', "")
         sub_notes = st.text_area("Sub-Segment Notes (Optional)", value=default_notes, key=f"sub_notes_{input_key_suffix}")
