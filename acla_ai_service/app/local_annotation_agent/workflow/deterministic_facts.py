@@ -20,7 +20,6 @@ from app.local_annotation_agent.workflow.deterministic_engine import (
 from app.shared.labels import LABEL_MAPPING
 
 
-ALIGN_TOLERANCE = 2
 SMOOTHING_WINDOW = 3
 SLOPE_ANGLE_DEGREES = 5.0
 
@@ -228,6 +227,21 @@ def _control_iloc_resolver(
     return resolve
 
 
+def _brake_comparison_range_resolver(
+    tag: str,
+) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+        player = _control_landmarks(context, scope, "player", "brake")
+        expert = _control_landmarks(context, scope, "expert", "brake")
+        onsets = [player.get("application_onset"), expert.get("application_onset")]
+        ends = [player.get("release_end"), expert.get("release_end")]
+        if not all(isinstance(value, int) for value in (*onsets, *ends)):
+            return None
+        range_ = InclusiveRange(min(onsets), max(ends))
+        return _range_input(tag, range_)
+    return resolve
+
+
 def _steering_landmarks(
     context: EvaluationContext, scope: InclusiveRange, driver: str,
 ) -> Mapping[str, Optional[int]]:
@@ -262,21 +276,26 @@ def _steering_iloc_resolver(
     return resolve
 
 
-def _shift_iloc_resolver(
-    tag: str, driver: str, direction: str,
+def _expert_shift_range_resolver(
+    tag: str, direction: str,
 ) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
     def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
         segment = context.segment(scope)
-        names = ("Physics_gear",) if driver == "player" else ("expert_optimal_gear",)
-        gears = _series(segment, *names)
+        gears = _series(segment, "expert_optimal_gear")
         if gears is None:
             return None
         differences = np.diff(gears)
-        positions = np.flatnonzero(differences > 0 if direction == "up" else differences < 0)
+        matches = differences > 0 if direction == "up" else differences < 0
+        positions = np.flatnonzero(matches)
         if not len(positions):
             return None
+        start = int(positions[0])
+        end = start
+        while end + 1 < len(matches) and bool(matches[end + 1]):
+            end += 1
         index = segment.index.to_numpy(dtype=int)
-        return _iloc_input(tag, int(index[int(positions[0]) + 1]))
+        range_ = InclusiveRange(int(index[start]), int(index[end + 1]))
+        return _range_input(tag, range_)
     return resolve
 
 
@@ -293,6 +312,17 @@ def build_input_registry() -> InputRegistry:
         ),
         "trajectory_comparison_range": InputDefinition(
             "range", _scope_resolver("trajectory_comparison_range"),
+        ),
+        "brake_comparison_range": InputDefinition(
+            "range", _brake_comparison_range_resolver("brake_comparison_range"),
+        ),
+        "expert_upshift_range": InputDefinition(
+            "range",
+            _expert_shift_range_resolver("expert_upshift_range", "up"),
+        ),
+        "expert_downshift_range": InputDefinition(
+            "range",
+            _expert_shift_range_resolver("expert_downshift_range", "down"),
         ),
         "corner_entry_range": InputDefinition("range", _phase_resolver("corner_entry_range", "entry")),
         "corner_apex_range": InputDefinition("range", _phase_resolver("corner_apex_range", "apex")),
@@ -312,11 +342,6 @@ def build_input_registry() -> InputRegistry:
             definitions[tag] = InputDefinition(
                 "iloc", _steering_iloc_resolver(tag, driver, landmark),
             )
-        for direction in ("up", "down"):
-            tag = f"{driver}_{direction}shift_iloc"
-            definitions[tag] = InputDefinition(
-                "iloc", _shift_iloc_resolver(tag, driver, direction),
-            )
     return InputRegistry(definitions)
 
 
@@ -331,13 +356,48 @@ def _relation(player: Optional[int], expert: Optional[int]) -> Any:
     if player is None or expert is None:
         return MISSING
     delta = int(player) - int(expert)
-    if abs(delta) <= ALIGN_TOLERANCE:
+    if delta == 0:
         return "aligned"
     return "earlier" if delta < 0 else "later"
 
 
 def _compare_ilocs(_context: EvaluationContext, inputs: Sequence[ResolvedInput]) -> Any:
     return _relation(int(inputs[0].value), int(inputs[1].value))
+
+
+def _compare_shift_timing(
+    context: EvaluationContext, range_: InclusiveRange, direction: str,
+) -> Any:
+    segment = context.segment(range_)
+    player = _series(segment, "Physics_gear")
+    expert = _series(segment, "expert_optimal_gear")
+    if player is None or expert is None or len(player) < 2 or len(expert) < 2:
+        return MISSING
+    if not np.all(np.isfinite(player)) or not np.all(np.isfinite(expert)):
+        return MISSING
+
+    sign = 1.0 if direction == "up" else -1.0
+    expert_progress = sign * float(expert[-1] - expert[0])
+    player_progress = sign * float(player[-1] - player[0])
+    player_differences = sign * np.diff(player)
+    if (
+        expert_progress <= 0.0
+        or player_progress < 0.0
+        or np.any(player_differences < 0.0)
+    ):
+        return MISSING
+
+    start_gap = sign * float(player[0] - expert[0])
+    end_gap = sign * float(player[-1] - expert[-1])
+    starts_aligned = bool(np.isclose(start_gap, 0.0))
+    ends_aligned = bool(np.isclose(end_gap, 0.0))
+    if start_gap > 0.0 and ends_aligned:
+        return "earlier"
+    if starts_aligned and end_gap < 0.0:
+        return "later"
+    if starts_aligned and ends_aligned:
+        return "aligned"
+    return MISSING
 
 
 def _trajectory(context: EvaluationContext, range_: InclusiveRange) -> Optional[np.ndarray]:
@@ -371,26 +431,14 @@ def _trajectory_position(context: EvaluationContext, range_: InclusiveRange) -> 
 
 def _time_analysis(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str, Any]:
     def calculate() -> Mapping[str, Any]:
-        from app.shared.annotation_agent_tools import run_pipeline_query
-
-        payload, error = run_pipeline_query(
-            context.telemetry, "compute_slope",
-            {"range": [range_.start, range_.end], "column": "expert_time_difference"},
-        )
-        if error or not isinstance(payload.get("extra"), Mapping):
+        segment = context.segment(range_)
+        values = _series(segment, "expert_time_difference")
+        finite = _finite(values)
+        if len(finite) < 2:
             return {}
-        extra = payload["extra"]
-        try:
-            significant_delta = float(
-                (extra.get("thresholds") or {})["label_significant_at_abs_delta"]
-            )
-        except (KeyError, TypeError, ValueError):
-            significant_delta = float("inf")
-        runs, accelerating_rises = _time_slope_runs(
-            context.telemetry, range_, significant_delta,
-        )
+        runs, accelerating_rises = _time_slope_runs(context.telemetry, range_)
         return {
-            **dict(extra),
+            "delta_value": round(float(finite[-1] - finite[0]), 2),
             "starting_direction": runs[0].get("direction") if runs else None,
             "ending_direction": runs[-1].get("direction") if runs else None,
             "middle_has_rise": bool(accelerating_rises),
@@ -423,7 +471,7 @@ def _time_slope_direction(
 
 
 def _time_slope_runs(
-    df: pd.DataFrame, range_: InclusiveRange, significant_delta: float,
+    df: pd.DataFrame, range_: InclusiveRange,
 ) -> Tuple[list[Dict[str, Any]], list[Tuple[int, int]]]:
     segment = df.loc[
         (df.index >= range_.start) & (df.index <= range_.end)
@@ -500,9 +548,6 @@ def _time_slope_runs(
             runs.append(step)
         previous_angle = float(angle)
         previous_end_iloc = int(end_iloc)
-    for run in runs:
-        run_delta = float(run["end_value"]) - float(run["start_value"])
-        run["is_label_significant"] = abs(run_delta) >= significant_delta
     return runs, accelerating_rises
 
 
@@ -641,7 +686,7 @@ def _control_comparison(
         )
     if metric == "hold_length":
         return (
-            "aligned" if abs(int(first) - int(second)) <= ALIGN_TOLERANCE
+            "aligned" if int(first) == int(second)
             else "longer" if int(first) > int(second) else "shorter"
         )
     raise ValueError(metric)
@@ -664,6 +709,14 @@ def build_fact_registry() -> FactRegistry:
     iloc_pair = ("iloc", "iloc")
     definitions: Dict[str, FactDefinition] = {
         "compare_ilocs": FactDefinition(iloc_pair, _compare_ilocs),
+        "compare_upshift_timing": FactDefinition(
+            range_kind,
+            _fact_range(lambda c, r: _compare_shift_timing(c, r, "up")),
+        ),
+        "compare_downshift_timing": FactDefinition(
+            range_kind,
+            _fact_range(lambda c, r: _compare_shift_timing(c, r, "down")),
+        ),
         "find_phase_presence": FactDefinition(range_kind, lambda _context, _inputs: True),
         "find_section_overlap_names": FactDefinition(range_kind, lambda context, _inputs: [
             LABEL_MAPPING[value] for value in context.overlap_section_ids if value in LABEL_MAPPING
@@ -773,7 +826,7 @@ def _altitude(context: EvaluationContext, range_: InclusiveRange, phase: str) ->
     if horizontal <= 0.0:
         return MISSING
     angle = float(np.degrees(np.arctan2(float(z[last] - z[first]), horizontal)))
-    return "uphill" if angle > 1.0 else "downhill" if angle < -1.0 else "level"
+    return "uphill" if angle > 3.0 else "downhill" if angle < -3.0 else "level"
 
 
 INPUT_REGISTRY = build_input_registry()

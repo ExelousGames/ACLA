@@ -29,21 +29,34 @@ from app.local_annotation_agent.workflow.deterministic_facts import (
     smooth_telemetry,
 )
 from app.local_annotation_agent.workflow.results import AnnotationResult, LapAnnotationResult
-from app.shared.labels import LABEL_MAPPING
+from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES, LABEL_MAPPING
 
 
 INTERPRETER = RequirementInterpreter(INPUT_REGISTRY, FACT_REGISTRY)
 
 
-def _requirements_for(label_id: str, doc: Mapping[str, Any]) -> Dict[str, Any]:
-    requirements = doc.get("selection_requirements")
-    if isinstance(requirements, dict):
-        return dict(requirements)
-    reference = doc.get("selection_requirements_ref")
-    if isinstance(reference, str):
-        value = skills.get(reference, {})
-        if isinstance(value, dict):
-            return dict(value)
+def _requirements_for(
+    label_id: str, doc: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    if doc is not None:
+        requirements = doc.get("selection_requirements")
+        if isinstance(requirements, dict):
+            return dict(requirements)
+        reference = doc.get("selection_requirements_ref")
+        if isinstance(reference, str):
+            value = skills.get(reference, {})
+            if isinstance(value, dict):
+                return dict(value)
+    for path in (
+        "lap_annotation.selection_requirements",
+        "sub_label_annotation.sub_label_selection_requirements",
+        "sub_label_annotation.segment_type_selection_requirements",
+    ):
+        requirements = skills.get(path, {})
+        if isinstance(requirements, dict) and isinstance(
+            requirements.get(label_id), dict,
+        ):
+            return dict(requirements[label_id])
     return {}
 
 
@@ -62,9 +75,7 @@ def evaluate_labels(
     docs: Dict[str, Dict[str, Any]] = {}
     for label_id in label_ids:
         doc = get_label(label_id)
-        if not doc:
-            continue
-        docs[label_id] = doc
+        docs[label_id] = doc or {"id": label_id}
         evaluation = evaluate_requirements(_requirements_for(label_id, doc), context, scope)
         evaluations[label_id] = evaluation
         if evaluation.matched:
@@ -90,38 +101,55 @@ def validate_catalog() -> List[str]:
     """Return structural and registry errors in deterministic requirements."""
     errors: List[str] = []
     main_labels = {doc["id"]: doc for doc in skills.iter("lap_annotation.labels")}
-    non_main_labels = {
-        doc["id"]: doc for doc in skills.iter("sub_label_annotation.labels")
+    sub_requirements = skills.get(
+        "sub_label_annotation.sub_label_selection_requirements", {},
+    )
+    segment_type_requirements = skills.get(
+        "sub_label_annotation.segment_type_selection_requirements", {},
+    )
+    sub_requirements = sub_requirements if isinstance(sub_requirements, dict) else {}
+    segment_type_requirements = (
+        segment_type_requirements
+        if isinstance(segment_type_requirements, dict)
+        else {}
+    )
+    parent_by_child = {
+        child: parent
+        for parent in BEHAVIOR_LABELS
+        for child in LABEL_CATEGORIES.get(parent, [])
     }
+    sub_labels = {
+        label_id: {
+            "id": label_id,
+            "type": "sub",
+            "parent": parent_by_child.get(label_id),
+        }
+        for label_id in sub_requirements
+    }
+    segment_type_labels = {
+        label_id: {"id": label_id, "type": "segment_type", "parent": None}
+        for label_id in segment_type_requirements
+    }
+    non_main_labels = {**sub_labels, **segment_type_labels}
     duplicate_ids = set(main_labels) & set(non_main_labels)
     if duplicate_ids:
         errors.append(f"label IDs exist in both catalogs: {sorted(duplicate_ids)}")
     labels = {**main_labels, **non_main_labels}
-    sub_labels = {
-        label_id: doc for label_id, doc in non_main_labels.items()
-        if doc.get("type") == "sub"
-    }
-    segment_type_labels = {
-        label_id: doc for label_id, doc in non_main_labels.items()
-        if doc.get("type") == "segment_type"
-    }
     requirement_groups = (
         ("lap", skills.get("lap_annotation.selection_requirements", {}), main_labels),
-        (
-            "sub-label",
-            skills.get("sub_label_annotation.sub_label_selection_requirements", {}),
-            sub_labels,
-        ),
-        (
-            "segment-type",
-            skills.get("sub_label_annotation.segment_type_selection_requirements", {}),
-            segment_type_labels,
-        ),
+        ("sub-label", sub_requirements, sub_labels),
+        ("segment-type", segment_type_requirements, segment_type_labels),
     )
     if any(doc.get("type") != "main" for doc in main_labels.values()):
         errors.append("lap label catalog contains non-main labels")
-    if set(non_main_labels) != set(sub_labels) | set(segment_type_labels):
-        errors.append("sub-label catalog contains unsupported label types")
+    unknown_sub_labels = sorted(set(sub_labels) - set(parent_by_child))
+    if unknown_sub_labels:
+        errors.append(
+            f"sub-label requirement IDs have no shared parent: {unknown_sub_labels}"
+        )
+    unknown_labels = sorted(set(non_main_labels) - set(LABEL_MAPPING))
+    if unknown_labels:
+        errors.append(f"requirement IDs have no shared label name: {unknown_labels}")
     for group_name, requirements, expected in requirement_groups:
         if not isinstance(requirements, dict) or set(requirements) != set(expected):
             errors.append(f"{group_name} requirement IDs do not exactly match label IDs")
@@ -296,9 +324,14 @@ def calculate_lap_annotation(
             ),
             resolved_section_id,
         )
+    sub_requirements = skills.get(
+        "sub_label_annotation.sub_label_selection_requirements", {},
+    )
     child_ids = [
-        doc["id"] for doc in skills.iter("sub_label_annotation.labels")
-        if doc.get("type") == "sub" and doc.get("parent") in set(behavior)
+        label_id
+        for parent in behavior
+        for label_id in LABEL_CATEGORIES.get(parent, [])
+        if label_id in sub_requirements
     ]
     children = evaluate_labels(child_ids, context, scope)
     resolved_children: List[Tuple[str, RequirementBranchEvaluation, InclusiveRange]] = []
@@ -430,16 +463,19 @@ def calculate_detailed_annotation(
     }
     eligible_parents = set(parent_main_labels)
     selected_on_parent = set(parent_selected_labels)
+    sub_requirements = skills.get(
+        "sub_label_annotation.sub_label_selection_requirements", {},
+    )
     parent_children = [
-        doc["id"] for doc in skills.iter("sub_label_annotation.labels")
-        if doc.get("type") == "sub"
-        and doc.get("parent") in eligible_parents
-        and doc["id"] not in selected_on_parent
+        label_id
+        for parent in eligible_parents
+        for label_id in LABEL_CATEGORIES.get(parent, [])
+        if label_id in sub_requirements and label_id not in selected_on_parent
     ]
-    segment_types = [
-        doc["id"] for doc in skills.iter("sub_label_annotation.labels")
-        if doc.get("type") == "segment_type"
-    ]
+    segment_type_requirements = skills.get(
+        "sub_label_annotation.segment_type_selection_requirements", {},
+    )
+    segment_types = list(segment_type_requirements)
     raw_annotations: List[dict] = []
     conflicts: List[Tuple[str, str]] = []
     evaluated = evaluate_labels(parent_children, context, parent_scope)

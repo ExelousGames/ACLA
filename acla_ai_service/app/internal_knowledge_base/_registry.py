@@ -142,7 +142,7 @@ class SkillRegistry:
     # ------------------------------------------------------------------
 
     def get(self, path: str, default: Any = None) -> Any:
-        """Path lookup. ``skills.get("sub_label_annotation.labels.MS1.description")``."""
+        """Path lookup. ``skills.get("lap_annotation.labels.MSP.description")``."""
         return self._resolve(path, default)
 
     def find(self, collection_path: str, **filters: Any) -> List[Dict[str, Any]]:

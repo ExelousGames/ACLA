@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 
 import app.local_annotation_agent.workflow as workflow
+import app.local_annotation_agent.workflow.deterministic_facts as deterministic_facts
 from app.local_annotation_agent.workflow import deterministic
 from app.local_annotation_agent.workflow.deterministic_engine import (
     FactDefinition,
@@ -66,8 +67,51 @@ def test_telemetry_is_smoothed_once_with_centered_three_sample_median():
     assert df["signal"].tolist() == [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]
 
 
+def test_time_facts_use_the_single_initial_smoothing_pass(monkeypatch):
+    from app.shared import annotation_agent_tools
+
+    calls = []
+    original_smooth = deterministic_facts.smooth_telemetry
+
+    def track_smoothing(df):
+        calls.append(df)
+        return original_smooth(df)
+
+    def reject_pipeline_query(*_args, **_kwargs):
+        raise AssertionError("time facts must not run a second smoothing path")
+
+    monkeypatch.setattr(deterministic_facts, "smooth_telemetry", track_smoothing)
+    monkeypatch.setattr(
+        annotation_agent_tools, "run_pipeline_query", reject_pipeline_query,
+    )
+
+    result = _evaluate(
+        _requirement(
+            ["section_range"], "find_total_time_change",
+            operator="eq", value=100.0,
+        ),
+        pd.DataFrame({"expert_time_difference": [0.0, 100.0, 100.0]}),
+    )
+
+    assert result.matched
+    assert len(calls) == 1
+
+
 def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
+
+
+def test_sub_label_requirements_do_not_depend_on_labels_section():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    catalog = json.loads(
+        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
+    )
+
+    assert "labels" not in catalog
+    assert deterministic.get_label("RM7") is None
+    assert deterministic._requirements_for("RM7", None) == (
+        catalog["sub_label_selection_requirements"]["RM7"]
+    )
 
 
 def test_every_catalog_predicate_uses_inputs_and_condition():
@@ -97,7 +141,15 @@ def test_every_catalog_predicate_uses_inputs_and_condition():
 
 def test_registry_is_the_source_of_known_tags_and_facts():
     assert "compare_ilocs" in deterministic.FACT_REGISTRY.names()
+    assert "compare_upshift_timing" in deterministic.FACT_REGISTRY.names()
+    assert "compare_downshift_timing" in deterministic.FACT_REGISTRY.names()
     assert "player_brake_application_onset_iloc" in deterministic.INPUT_REGISTRY.names()
+    assert "brake_comparison_range" in deterministic.INPUT_REGISTRY.names()
+    assert "expert_upshift_range" in deterministic.INPUT_REGISTRY.names()
+    assert "expert_downshift_range" in deterministic.INPUT_REGISTRY.names()
+    assert "player_upshift_onset_iloc" not in deterministic.INPUT_REGISTRY.names()
+    assert "expert_upshift_end_iloc" not in deterministic.INPUT_REGISTRY.names()
+    assert "player_upshift_iloc" not in deterministic.INPUT_REGISTRY.names()
     assert not hasattr(deterministic, "KNOWN_FACTS")
     assert not hasattr(deterministic, "FactSet")
 
@@ -247,6 +299,392 @@ def test_compare_ilocs_preserves_declaration_order_and_uses_point_envelope():
     assert result.matched_branches[0].evidence_range == InclusiveRange(1, 4)
 
 
+def test_compare_ilocs_requires_exact_alignment():
+    compare_ilocs = deterministic.FACT_REGISTRY.get("compare_ilocs")
+    assert compare_ilocs is not None
+
+    for player, expert, expected in (
+        (5, 5, "aligned"),
+        (4, 5, "earlier"),
+        (6, 5, "later"),
+    ):
+        inputs = [
+            ResolvedInput(
+                "player", "iloc", player, InclusiveRange(player, player),
+            ),
+            ResolvedInput(
+                "expert", "iloc", expert, InclusiveRange(expert, expert),
+            ),
+        ]
+        assert compare_ilocs.calculate(None, inputs) == expected
+
+
+def test_steering_landmarks_use_exact_iloc_comparison(monkeypatch):
+    landmarks = {
+        "player": {"apex": 6},
+        "expert": {"apex": 5},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_steering_landmarks",
+        lambda _context, _scope, driver: landmarks[driver],
+    )
+    requirements = deterministic._requirements_for(
+        "MSP3", deterministic.get_label("MSP3"),
+    )
+
+    result = _evaluate(
+        requirements, pd.DataFrame(index=range(10)), end=9,
+    )
+
+    assert result.matched
+    assert result.matched_branches[0].evidence_range == InclusiveRange(5, 6)
+
+
+def test_expert_shift_ranges_bracket_first_contiguous_directional_change():
+    df = pd.DataFrame({
+        "expert_optimal_gear": [2, 2, 2, 3, 3, 3, 5, 5, 5, 4, 3, 2, 2, 2],
+    })
+    context = EvaluationContext.from_dataframe(df)
+    scope = InclusiveRange(0, 13)
+
+    for tag, expected in (
+        ("expert_upshift_range", InclusiveRange(2, 3)),
+        ("expert_downshift_range", InclusiveRange(8, 11)),
+    ):
+        resolved = context.resolve_input(tag, scope, deterministic.INPUT_REGISTRY)
+        assert resolved is not None
+        assert resolved.value == expected
+        assert resolved.evidence_range == expected
+
+
+def test_expert_shift_range_is_unavailable_without_requested_direction():
+    context = EvaluationContext.from_dataframe(pd.DataFrame({
+        "expert_optimal_gear": [4, 4, 4, 3, 3, 3],
+    }))
+
+    resolved = context.resolve_input(
+        "expert_upshift_range", InclusiveRange(0, 5),
+        deterministic.INPUT_REGISTRY,
+    )
+
+    assert resolved is None
+
+
+def test_shift_timing_compares_boundary_progress_inside_expert_range():
+    cases = [
+        ("MSP35", [3, 3, 3, 3, 3, 3], [2, 2, 2, 3, 3, 3]),
+        ("MSP36", [2, 2, 2, 2, 2, 2], [2, 2, 2, 3, 3, 3]),
+        ("MSP37", [2, 2, 2, 2, 2, 2], [3, 3, 3, 2, 2, 2]),
+        ("MSP38", [3, 3, 3, 3, 3, 3], [3, 3, 3, 2, 2, 2]),
+    ]
+
+    for label_id, player, expert in cases:
+        requirements = deterministic._requirements_for(
+            label_id, deterministic.get_label(label_id),
+        )
+        result = _evaluate(requirements, pd.DataFrame({
+            "Physics_gear": player,
+            "expert_optimal_gear": expert,
+        }))
+
+        assert result.matched, label_id
+        assert result.matched_branches[0].evidence_range == InclusiveRange(2, 3)
+
+
+def test_shift_timing_aligns_matching_changes_and_rejects_ambiguous_changes():
+    expert = [2, 2, 2, 3, 3, 3]
+    early_requirements = deterministic._requirements_for(
+        "MSP35", deterministic.get_label("MSP35"),
+    )
+    late_requirements = deterministic._requirements_for(
+        "MSP36", deterministic.get_label("MSP36"),
+    )
+    aligned_requirements = _requirement(
+        ["expert_upshift_range"], "compare_upshift_timing", value="aligned",
+    )
+
+    aligned = pd.DataFrame({
+        "Physics_gear": expert,
+        "expert_optimal_gear": expert,
+    })
+    assert not _evaluate(early_requirements, aligned).matched
+    assert not _evaluate(late_requirements, aligned).matched
+    assert _evaluate(aligned_requirements, aligned).matched
+
+    for player in (
+        [3, 3, 3, 2, 2, 2],
+        [1, 1, 1, 3, 3, 3],
+        [2, 2, 2, 4, 4, 4],
+    ):
+        ambiguous = pd.DataFrame({
+            "Physics_gear": player,
+            "expert_optimal_gear": expert,
+        })
+        assert not _evaluate(early_requirements, ambiguous).matched
+        assert not _evaluate(late_requirements, ambiguous).matched
+
+
+def test_shift_timing_uses_expert_event_range_for_reported_regression():
+    index = range(33, 51)
+    df = pd.DataFrame({
+        "Physics_gear": [4, 5, 5, 5, 5, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 1],
+        "expert_optimal_gear": [5, 5, 5, 4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3],
+    }, index=index)
+    context = EvaluationContext.from_dataframe(df)
+    evaluated = deterministic.evaluate_labels(
+        ["MSP35", "MSP36", "MSP37", "MSP38"],
+        context, InclusiveRange(33, 50),
+    )
+
+    assert evaluated.labels == ["MSP38"]
+    branch = evaluated.evaluations["MSP38"].matched_branches[0]
+    assert branch.evidence_range == InclusiveRange(35, 38)
+
+    result = deterministic.calculate_detailed_annotation(
+        df,
+        parent_start=33,
+        parent_end=50,
+        parent_main_labels=["MSP"],
+    )
+    annotation = next(
+        value for value in result.label_annotations
+        if value["label_id"] == "MSP38"
+    )
+    assert (annotation["start_index"], annotation["end_index"]) == (35, 38)
+    assert "MSP35" not in result.final_labels
+
+
+def test_brake_comparison_range_uses_both_complete_braking_periods(monkeypatch):
+    landmarks = {
+        "player": {"application_onset": 4, "release_end": 9},
+        "expert": {"application_onset": 2, "release_end": 7},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(12)))
+
+    resolved = context.resolve_input(
+        "brake_comparison_range",
+        InclusiveRange(0, 11),
+        deterministic.INPUT_REGISTRY,
+    )
+
+    assert resolved is not None
+    assert resolved.value == InclusiveRange(2, 9)
+    assert resolved.evidence_range == InclusiveRange(2, 9)
+
+
+def test_msp22_uses_localized_brake_range_and_requires_all_endpoints(monkeypatch):
+    landmarks = {
+        "player": {
+            "application_onset": 4,
+            "release_end": 9,
+            "peak": 0.9,
+        },
+        "expert": {
+            "application_onset": 2,
+            "release_end": 7,
+            "peak": 0.7,
+        },
+    }
+    scopes = []
+
+    def fake_landmarks(_context, scope, driver, control):
+        assert control == "brake"
+        scopes.append(scope)
+        return landmarks[driver]
+
+    monkeypatch.setattr(deterministic_facts, "_control_landmarks", fake_landmarks)
+    requirements = deterministic._requirements_for(
+        "MSP22", deterministic.get_label("MSP22"),
+    )
+
+    matched = _evaluate(requirements, pd.DataFrame(index=range(12)), end=11)
+
+    assert matched.matched
+    assert matched.matched_branches[0].evidence_range == InclusiveRange(2, 9)
+    assert InclusiveRange(2, 9) in scopes
+
+    landmarks["expert"]["release_end"] = None
+    missing_endpoint = _evaluate(
+        requirements, pd.DataFrame(index=range(12)), end=11,
+    )
+
+    assert not missing_endpoint.matched
+    assert "missing input" in missing_endpoint.failed[0]
+
+
+def test_early_application_label_requires_matching_onset_and_end(monkeypatch):
+    landmarks = {
+        "player": {"application_onset": 1, "application_end": 10},
+        "expert": {"application_onset": 5, "application_end": 8},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP5", deterministic.get_label("MSP5"),
+    )
+
+    conflicting_end = _evaluate(
+        requirements, pd.DataFrame(index=range(12)), end=11,
+    )
+    assert not conflicting_end.matched
+
+    landmarks["player"]["application_end"] = 4
+    matched = _evaluate(requirements, pd.DataFrame(index=range(12)), end=11)
+    assert matched.matched
+    assert matched.matched_branches[0].evidence_range == InclusiveRange(1, 8)
+
+    landmarks["player"]["application_end"] = None
+    missing_end = _evaluate(requirements, pd.DataFrame(index=range(12)), end=11)
+    assert not missing_end.matched
+    assert "missing input" in missing_end.failed[0]
+
+
+def test_release_initiation_labels_compare_matching_control_endpoints(monkeypatch):
+    landmarks = {
+        ("player", "brake"): {"release_onset": 8, "release_end": 12},
+        ("expert", "brake"): {"release_onset": 4, "release_end": 8},
+        ("player", "throttle"): {"release_onset": 9, "release_end": 13},
+        ("expert", "throttle"): {"release_onset": 5, "release_end": 9},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: landmarks[(driver, control)],
+    )
+
+    for label_id, expected_range in (
+        ("MSP27", InclusiveRange(4, 12)),
+        ("MSP29", InclusiveRange(5, 13)),
+    ):
+        requirements = deterministic._requirements_for(
+            label_id, deterministic.get_label(label_id),
+        )
+        result = _evaluate(
+            requirements, pd.DataFrame(index=range(15)), end=14,
+        )
+        assert result.matched
+        assert result.matched_branches[0].evidence_range == expected_range
+
+
+def test_msp23_rejects_release_onsets_one_iloc_apart(monkeypatch):
+    landmarks = {
+        "player": {"release_onset": 35, "release_end": 38},
+        "expert": {"release_onset": 36, "release_end": 41},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "throttle" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP23", deterministic.get_label("MSP23"),
+    )
+    df = pd.DataFrame(index=range(33, 52))
+
+    misaligned = _evaluate(requirements, df, start=33, end=51)
+
+    assert not misaligned.matched
+    assert "compare_ilocs: 'earlier'" in misaligned.failed
+
+    landmarks["expert"]["release_onset"] = 35
+    aligned = _evaluate(requirements, df, start=33, end=51)
+
+    assert aligned.matched
+    assert aligned.matched_branches[0].evidence_range == InclusiveRange(35, 41)
+
+
+def test_brake_hold_lengths_one_iloc_apart_are_not_aligned(monkeypatch):
+    landmarks = {
+        "player": {"hold_length": 5},
+        "expert": {"hold_length": 6},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP31", deterministic.get_label("MSP31"),
+    )
+
+    result = _evaluate(
+        requirements, pd.DataFrame(index=range(10)), end=9,
+    )
+
+    assert result.matched
+
+
+def test_every_control_onset_comparison_has_matching_end_comparison():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    requirements = json.loads(
+        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
+    )["sub_label_selection_requirements"]
+
+    for label_id, requirement in requirements.items():
+        if not requirement.get("enabled", True):
+            continue
+        for branch in requirement.get("any_of", []):
+            predicates = branch.get("all_of", [])
+            by_tags = {
+                tuple(predicate["inputs"]["tags"]): predicate["condition"]
+                for predicate in predicates
+            }
+            for control in ("brake", "throttle"):
+                for phase in ("application", "release"):
+                    onset_tags = (
+                        f"player_{control}_{phase}_onset_iloc",
+                        f"expert_{control}_{phase}_onset_iloc",
+                    )
+                    if onset_tags not in by_tags:
+                        continue
+                    end_tags = (
+                        f"player_{control}_{phase}_end_iloc",
+                        f"expert_{control}_{phase}_end_iloc",
+                    )
+                    assert end_tags in by_tags, f"{label_id} omits {phase}_end"
+                    onset = by_tags[onset_tags]
+                    if onset["operator"] == "exists" or onset["value"] in {
+                        "earlier", "later",
+                    }:
+                        assert by_tags[end_tags] == onset
+
+
+def test_every_shift_timing_requirement_uses_its_expert_range():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    requirements = json.loads(
+        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
+    )["sub_label_selection_requirements"]
+
+    for label_id, direction, relation in (
+        ("MSP35", "up", "earlier"),
+        ("MSP36", "up", "later"),
+        ("MSP37", "down", "earlier"),
+        ("MSP38", "down", "later"),
+    ):
+        assert requirements[label_id] == _requirement(
+            [f"expert_{direction}shift_range"],
+            f"compare_{direction}shift_timing",
+            value=relation,
+        )
+
+
 def test_range_fact_inspects_only_its_declared_range():
     df = pd.DataFrame({
         "Physics_speed_kmh": [0, 0, 100, 100, 0, 0],
@@ -328,6 +766,30 @@ def test_altitude_strategy_classifies_only_resolved_phase():
     )
 
     assert result.matched
+
+
+def test_altitude_strategy_uses_three_degree_threshold():
+    x = np.arange(4, dtype=float)
+    for angle, expected in (
+        (4.0, "uphill"),
+        (2.0, "level"),
+        (-2.0, "level"),
+        (-4.0, "downhill"),
+    ):
+        df = pd.DataFrame({
+            "expert_optimal_player_pos_x": x,
+            "expert_optimal_player_pos_y": np.zeros(4),
+            "expert_optimal_player_pos_z": x * np.tan(np.radians(angle)),
+        })
+
+        result = _evaluate(
+            _requirement(
+                ["segment_range"], "find_entry_altitude_trend", value=expected,
+            ),
+            df,
+        )
+
+        assert result.matched, angle
 
 
 def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():

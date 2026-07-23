@@ -9,14 +9,13 @@ Path syntax
 -----------
 Dotted paths into the document tree::
 
-    sub_label_annotation.labels.MSP1
-    sub_label_annotation.labels.MSP1.description
     lap_annotation.labels.MSP
+    lap_annotation.labels.MSP.description
     lap_annotation.selection_requirements.EA
 
 Path segments containing dots can be escaped with a backslash::
 
-    sub_label_annotation.category_guidelines.Main\\ Labels
+    some_skill.category_guidelines.Main\\ Labels
 
 (Or just use the bracket form in callers if it gets ugly: pass the path
 as a list to ``get_path``.)
@@ -29,21 +28,20 @@ to each document from its key, so ``find(..., id="MSP1")`` works.
 
 Plain values are exact-match (``$eq``)::
 
-    find("sub_label_annotation.labels", type="sub", parent="MSP")
+    find("lap_annotation.labels", type="main")
 
 Operator dicts get the full vocabulary::
 
-    find("sub_label_annotation.labels", id={"$in": ["MSP1", "MSP2"]})
-    find("sub_label_annotation.labels", description={"$regex": "trail brake"})
-    find("sub_label_annotation.labels", parent={"$ne": None})
-    find("lap_annotation.labels", type="main")
+    find("lap_annotation.labels", id={"$in": ["MSP", "RM"]})
+    find("lap_annotation.labels", description={"$regex": "mistake"})
+    find("lap_annotation.labels", parent={"$ne": None})
 
 Top-level logical combinators::
 
-    find("sub_label_annotation.labels", **{
-        "$or": [{"type": "sub"}, {"type": "segment_type"}],
+    find("lap_annotation.labels", **{
+        "$or": [{"type": "main"}, {"type": "segment_type"}],
     })
-    find("sub_label_annotation.labels", **{
+    find("lap_annotation.labels", **{
         "$not": {"type": "circuit_section"},
     })
 """

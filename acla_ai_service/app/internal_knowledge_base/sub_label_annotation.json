@@ -1,7 +1,7 @@
 {
   "_skill": {
     "name": "sub_label_annotation",
-    "description": "Deterministic label taxonomy for sub-label and segment-type labels. Machine-readable selection requirements are evaluated against normalized telemetry facts; hierarchy and mutual exclusions remain in the label records. Main labels live in lap_annotation.json, while circuit and circuit-section labels are supplied by deterministic circuit geometry.\n",
+    "description": "Deterministic selection requirements for sub-label and segment-type labels. Requirements are evaluated against normalized telemetry facts; label names and parent groupings live in app.shared.labels. Main labels live in lap_annotation.json, while circuit and circuit-section labels are supplied by deterministic circuit geometry.\n",
     "when_to_use": [
       "Drilling into a parent-labelled section to pick sub-labels (detailed flow).",
       "Deterministic label selection from calculated telemetry facts.",
@@ -68,6 +68,19 @@
                 "tags": [
                   "player_throttle_application_onset_iloc",
                   "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "exists",
+                "value": true
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_end_iloc",
+                  "expert_throttle_application_end_iloc"
                 ]
               },
               "condition": {
@@ -232,6 +245,19 @@
                 "operator": "eq",
                 "value": "earlier"
               }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_end_iloc",
+                  "expert_throttle_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
             }
           ]
         }
@@ -259,6 +285,19 @@
                 "tags": [
                   "player_throttle_application_onset_iloc",
                   "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_end_iloc",
+                  "expert_throttle_application_end_iloc"
                 ]
               },
               "condition": {
@@ -300,6 +339,19 @@
                 "operator": "eq",
                 "value": "earlier"
               }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
             }
           ]
         }
@@ -327,6 +379,19 @@
                 "tags": [
                   "player_brake_application_onset_iloc",
                   "expert_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
                 ]
               },
               "condition": {
@@ -391,6 +456,19 @@
                 "operator": "eq",
                 "value": "earlier"
               }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
             }
           ]
         }
@@ -425,7 +503,7 @@
             {
               "inputs": {
                 "tags": [
-                  "control_range"
+                  "brake_comparison_range"
                 ]
               },
               "condition": {
@@ -601,21 +679,21 @@
             {
               "inputs": {
                 "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
+                  "player_brake_release_onset_iloc",
+                  "expert_brake_release_onset_iloc"
                 ]
               },
               "condition": {
                 "fact": "compare_ilocs",
                 "operator": "eq",
-                "value": "aligned"
+                "value": "later"
               }
             },
             {
               "inputs": {
                 "tags": [
-                  "player_brake_release_onset_iloc",
-                  "expert_brake_release_onset_iloc"
+                  "player_brake_release_end_iloc",
+                  "expert_brake_release_end_iloc"
                 ]
               },
               "condition": {
@@ -636,21 +714,21 @@
             {
               "inputs": {
                 "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
+                  "player_brake_release_onset_iloc",
+                  "expert_brake_release_onset_iloc"
                 ]
               },
               "condition": {
                 "fact": "compare_ilocs",
                 "operator": "eq",
-                "value": "aligned"
+                "value": "earlier"
               }
             },
             {
               "inputs": {
                 "tags": [
-                  "player_brake_release_onset_iloc",
-                  "expert_brake_release_onset_iloc"
+                  "player_brake_release_end_iloc",
+                  "expert_brake_release_end_iloc"
                 ]
               },
               "condition": {
@@ -664,7 +742,7 @@
       ]
     },
     "MSP31": {
-      "enabled": true,
+      "enabled": false,
       "any_of": [
         {
           "all_of": [
@@ -685,7 +763,7 @@
       ]
     },
     "MSP32": {
-      "enabled": true,
+      "enabled": false,
       "any_of": [
         {
           "all_of": [
@@ -833,6 +911,19 @@
                 "operator": "eq",
                 "value": "earlier"
               }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_end_iloc",
+                  "expert_throttle_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
             }
           ]
         }
@@ -848,6 +939,19 @@
                 "tags": [
                   "player_throttle_application_onset_iloc",
                   "expert_throttle_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_application_end_iloc",
+                  "expert_throttle_application_end_iloc"
                 ]
               },
               "condition": {
@@ -916,8 +1020,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
+                  "player_throttle_release_end_iloc",
+                  "expert_throttle_release_end_iloc"
                 ]
               },
               "condition": {
@@ -940,6 +1044,19 @@
                 "tags": [
                   "player_throttle_release_onset_iloc",
                   "expert_throttle_release_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_throttle_release_end_iloc",
+                  "expert_throttle_release_end_iloc"
                 ]
               },
               "condition": {
@@ -1298,7 +1415,7 @@
       ]
     },
     "MSP41": {
-      "enabled": true,
+      "enabled": false,
       "any_of": [
         {
           "all_of": [
@@ -1331,7 +1448,7 @@
       "any_of": []
     },
     "MSP42": {
-      "enabled": true,
+      "enabled": false,
       "any_of": [
         {
           "all_of": [
@@ -1392,7 +1509,7 @@
       ]
     },
     "MSP43": {
-      "enabled": true,
+      "enabled": false,
       "any_of": [
         {
           "all_of": [
@@ -1592,12 +1709,11 @@
             {
               "inputs": {
                 "tags": [
-                  "player_upshift_iloc",
-                  "expert_upshift_iloc"
+                  "expert_upshift_range"
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
+                "fact": "compare_upshift_timing",
                 "operator": "eq",
                 "value": "earlier"
               }
@@ -1614,12 +1730,11 @@
             {
               "inputs": {
                 "tags": [
-                  "player_upshift_iloc",
-                  "expert_upshift_iloc"
+                  "expert_upshift_range"
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
+                "fact": "compare_upshift_timing",
                 "operator": "eq",
                 "value": "later"
               }
@@ -1636,12 +1751,11 @@
             {
               "inputs": {
                 "tags": [
-                  "player_downshift_iloc",
-                  "expert_downshift_iloc"
+                  "expert_downshift_range"
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
+                "fact": "compare_downshift_timing",
                 "operator": "eq",
                 "value": "earlier"
               }
@@ -1658,12 +1772,11 @@
             {
               "inputs": {
                 "tags": [
-                  "player_downshift_iloc",
-                  "expert_downshift_iloc"
+                  "expert_downshift_range"
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
+                "fact": "compare_downshift_timing",
                 "operator": "eq",
                 "value": "later"
               }
@@ -1673,7 +1786,7 @@
       ]
     },
     "MSP48": {
-      "enabled": true,
+      "enabled": false,
       "any_of": [
         {
           "all_of": [
@@ -1706,7 +1819,7 @@
       ]
     },
     "MSP49": {
-      "enabled": true,
+      "enabled": false,
       "any_of": [
         {
           "all_of": [
@@ -2752,951 +2865,6 @@
             }
           ]
         }
-      ]
-    }
-  },
-  "labels": {
-    "RM1": {
-      "name": "Recover from off-track",
-      "type": "sub",
-      "description": "Within an RM segment, the trajectory offset peaks far **wider than expert** after an off-track excursion, then converges back toward the expert line.\n",
-      "parent": "RM",
-      "exclusive_with": []
-    },
-    "PS1": {
-      "name": "Exit pit lane",
-      "type": "sub",
-      "description": "During pit exit, the driver re-joins from the Pit section and merges back toward the racing line. The segment position overlaps the circuit's known Pit section, and telemetry shows pit-exit acceleration plus merge / recovery back toward the racing line. A Pit-vs-adjacent-straight ambiguity can count as Pit-section position when sustained pit-lane-style trajectory offset and large player/expert speed separation or slow pit-exit acceleration support pit procedure. This is pit procedure, not recovery from a mistake. Do not infer PS1 from low speed plus wide trajectory alone when the position is a normal racing section away from Pit.\n",
-      "parent": "PS",
-      "exclusive_with": []
-    },
-    "RM5": {
-      "name": "Recover from speed gap over 20",
-      "type": "sub",
-      "description": "Within an RM segment, the speed delta shows the **expert faster than the player**, with a **large gap section** (|Δ| > 20 km/h) that closes toward zero.\n",
-      "parent": "RM",
-      "exclusive_with": [
-        "RM6"
-      ]
-    },
-    "RM6": {
-      "name": "Recover from small speed gap under 20",
-      "type": "sub",
-      "description": "Within an RM segment, the speed delta shows the **expert faster than the player**, the gap stays ≤ 20 km/h, and it closes toward zero.\n",
-      "parent": "RM",
-      "exclusive_with": [
-        "RM5"
-      ]
-    },
-    "RM7": {
-      "name": "Merge back to expert line",
-      "type": "sub",
-      "description": "Within an RM segment, the player trajectory converges toward the expert line, with trajectory offset trending back toward zero from either side.\n",
-      "parent": "RM",
-      "exclusive_with": []
-    },
-    "RM8": {
-      "name": "Accelerate earlier at exit",
-      "type": "sub",
-      "description": "Within the exit phase of an RM segment, the player's throttle **application onset is earlier than** the expert's.\n",
-      "parent": "RM",
-      "exclusive_with": [
-        "RM9"
-      ]
-    },
-    "RM9": {
-      "name": "Accelerate later at exit",
-      "type": "sub",
-      "description": "Within the exit phase of an RM segment, the player's throttle **application onset is later than** the expert's.\n",
-      "parent": "RM",
-      "exclusive_with": [
-        "RM8"
-      ]
-    },
-    "RM10": {
-      "name": "Brake earlier at entry",
-      "type": "sub",
-      "description": "Within the entry phase of an RM segment, the player's brake **application onset is earlier than** the expert's.\n",
-      "parent": "RM",
-      "exclusive_with": [
-        "RM11"
-      ]
-    },
-    "RM11": {
-      "name": "Brake later at entry",
-      "type": "sub",
-      "description": "Within the entry phase of an RM segment, the player's brake **application onset is later than** the expert's.\n",
-      "parent": "RM",
-      "exclusive_with": [
-        "RM10"
-      ]
-    },
-    "MSP1": {
-      "name": "Initiate brake too late",
-      "type": "sub",
-      "description": "During entry, the player's **brake initiation onset is later than** the expert's and **brake initiation end later than expert**. As the supporting signal, speed gap spike at entry and the time **gap grows** at the exit, and Player often **entry trajectory wider than expert**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP5"
-      ]
-    },
-    "MSP5": {
-      "name": "Initiate brake too early",
-      "type": "sub",
-      "description": "During entry, the player's **brake initiation onset is earlier than** the expert's, as the supporting signal, the time **gap grows** at the entry.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP1"
-      ]
-    },
-    "MSP13": {
-      "name": "Highest brake pressure too low",
-      "type": "sub",
-      "description": "During entry across the braking range, the player's **peak brake pressure is lower than** the expert. A wider entry trajectory can appear around that braking range as a supporting sign.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP22"
-      ]
-    },
-    "MSP22": {
-      "name": "Highest brake pressure too high",
-      "type": "sub",
-      "description": "During entry across the braking range, the player's **peak brake pressure is higher than** the expert's. Later **speed gap dip** or **trajectory wider than expert** can appear after the braking range as supporting signs.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP13"
-      ]
-    },
-    "MSP14": {
-      "name": "Brake applied too quickly",
-      "type": "sub",
-      "description": "During entry, the player's **brake initiation onset aligned with expert**, but **brake initiation end earlier than expert**. A **apex trajectory wider than expert** or **entry trajectory wider than expert** and later **time gap growing**, can appear as a supporting sign.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP24"
-      ]
-    },
-    "MSP24": {
-      "name": "Brake applied too slowly",
-      "type": "sub",
-      "description": "During entry, the player's **brake initiation onset aligned with expert**, but **brake initiation end later than expert**. A later **apex trajectory wider than expert** can appear as a supporting sign around the label range.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP14"
-      ]
-    },
-    "MSP17": {
-      "name": "Release brake too quickly",
-      "type": "sub",
-      "description": "During apex or exit, the player's **brake release onset aligned with expert** and **peak brake pressure** is held close to the expert's(no difference more than 10%), but **brake release end earlier than expert**. **Exit trajectory wider than expert** and **time gap grows** at exit can appear after the release range as supporting signs.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP18"
-      ]
-    },
-    "MSP18": {
-      "name": "Release brake too slowly",
-      "type": "sub",
-      "description": "During apex or exit, the player's **brake release onset aligned with expert**, but **brake release end later than expert**. **Time gap grows** at exit can appear after the release range as a supporting sign.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP17"
-      ]
-    },
-    "MSP27": {
-      "name": "Initiate brake release too late",
-      "type": "sub",
-      "description": "the player brake application onset end is aligned with expert, but the player's brake **release onset** is later than the expert. **Time gap grows** at exit can appear after that onset as a supporting sign.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP28"
-      ]
-    },
-    "MSP28": {
-      "name": "Initiate brake release too early",
-      "type": "sub",
-      "description": "the player brake application onset end is aligned with expert and, the player's brake **release onset** is earlier than the expert. **Apex trajectory wider than expert** and **speed gap spike** at exit can appear around or after that onset as supporting signs.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP27"
-      ]
-    },
-    "MSP31": {
-      "name": "Highest brake length too short",
-      "type": "sub",
-      "description": "During entry across the braking range, the player's interval between **brake initiation** end and **release onset** is shorter than the expert's — **peak brake pressure** is held for too brief a span.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP32"
-      ]
-    },
-    "MSP32": {
-      "name": "Highest brake length too long",
-      "type": "sub",
-      "description": "During entry or apex, the player's interval between **brake initiation** end and **release onset** is longer than the expert's — causing speed gap spike.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP31"
-      ]
-    },
-    "MSP34": {
-      "name": "Throttle and brake applied at the same time for too long",
-      "type": "sub",
-      "description": "Across the overlap range, the player **applies throttle and brake simultaneously** for too long while the expert shows no overlap.\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP15": {
-      "name": "Throttle applied too quickly",
-      "type": "sub",
-      "description": "The player's **throttle application onset aligned with expert**, but **throttle application end earlier than expert**, often co-occurring with **oversteer** or **understeer**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP25"
-      ]
-    },
-    "MSP25": {
-      "name": "Throttle applied too slowly",
-      "type": "sub",
-      "description": "During exit, the player's **throttle application onset aligned with expert**, but **throttle application end later than expert**, often co-occurring with **gap grows** in the time delta.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP15"
-      ]
-    },
-    "MSP19": {
-      "name": "Highest throttle pressure too low",
-      "type": "sub",
-      "description": "Deprecated; no active annotation range.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP26"
-      ]
-    },
-    "MSP26": {
-      "name": "Highest throttle pressure too high",
-      "type": "sub",
-      "description": "Deprecated; no active annotation range.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP19"
-      ]
-    },
-    "MSP20": {
-      "name": "Initiate throttle too early",
-      "type": "sub",
-      "description": "During apex or exit, the player's throttle **application onset** is earlier than the expert. Understeer, oversteer, **gas grows** at exit or apex, or trajectory wider than expert can appear around or after the throttle onset as supporting signs.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP21"
-      ]
-    },
-    "MSP21": {
-      "name": "Initiate throttle too late",
-      "type": "sub",
-      "description": "During apex or exit, the player's throttle **application onset** is later than the expert. When no understeer or oversteer is present, poor grip utilization and **time gap rising at exit** can appear around or after the throttle onset as supporting signs.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP20"
-      ]
-    },
-    "MSP23": {
-      "name": "Release throttle too quickly",
-      "type": "sub",
-      "description": "During entry or apex, the player's throttle **release onset** aligns with expert, but throttle **release end** is earlier than the expert. speed gap spike at entry as supporting signs.\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP29": {
-      "name": "Initiate throttle release too late",
-      "type": "sub",
-      "description": "During entry or apex, the player's throttle **release onset** is later than the expert, with the player's brake **initiation end** also later than the expert's. Time gap rising at entry can appear around the label range as a supporting sign.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP30"
-      ]
-    },
-    "MSP30": {
-      "name": "Initiate throttle release too early",
-      "type": "sub",
-      "description": "During entry or apex, the player's throttle **release onset** is earlier than the expert's while approaching the corner. Time gap rising at entry can appear around the label range as a supporting sign.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP29"
-      ]
-    },
-    "MSP2": {
-      "name": "Initiate the turn too late",
-      "type": "sub",
-      "description": "During entry or apex, the player's turn-in onset is later than the expert and the **entry trajectory wider than expert**. **Time gap rising at exit** can appear later as a supporting sign.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP6"
-      ]
-    },
-    "MSP6": {
-      "name": "Initiate the turn too early",
-      "type": "sub",
-      "description": "During entry or apex , the player's turn-in onset is earlier than the expert and the **entry trajectory tighter than expert**. **Apex trajectory tighter than expert**, **time gap rising at apex**, and **time gap rising at exit** can appear later as supporting signs.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP2"
-      ]
-    },
-    "MSP3": {
-      "name": "Too late compared to expert Apex",
-      "type": "sub",
-      "description": "During apex, the player **reaches apex later than** the expert.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP7"
-      ]
-    },
-    "MSP7": {
-      "name": "Too early compared to expert Apex",
-      "type": "sub",
-      "description": "During apex, the player **reaches apex earlier than** the expert.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP3"
-      ]
-    },
-    "MSP4": {
-      "name": "Time to exit too early",
-      "type": "sub",
-      "description": "During exit, the player times exit earlier than the expert: **apex trajectory aligned with expert**, but **exit trajectory wider than expert**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP8"
-      ]
-    },
-    "MSP8": {
-      "name": "Time to exit too late",
-      "type": "sub",
-      "description": "During exit, the player times exit later than the expert: **apex trajectory aligned with expert**, but **exit trajectory wider than expert**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP4"
-      ]
-    },
-    "MSP9": {
-      "name": "Entry trajectory too tight",
-      "type": "sub",
-      "description": "During entry, the player's **entry trajectory tighter than expert**, usually with **brake initiation onset earlier than expert**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP33"
-      ]
-    },
-    "MSP33": {
-      "name": "Entry trajectory too wide",
-      "type": "sub",
-      "description": "During entry, the player's **entry trajectory wider than expert**, usually with **brake initiation onset later than expert**. Understeer at entry can appear around that range as a supporting sign.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP9"
-      ]
-    },
-    "MSP10": {
-      "name": "Apex too wide",
-      "type": "sub",
-      "description": "During apex, the player's apex is **closer to outside** than the expert's, with offset **wider than expert**.\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP11": {
-      "name": "Exit trajectory too narrow",
-      "type": "sub",
-      "description": "During exit, the player's **exit trajectory tighter than expert**, and **speed gap grow** at exit.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP16"
-      ]
-    },
-    "MSP16": {
-      "name": "Exit trajectory too wide",
-      "type": "sub",
-      "description": "During exit, the player's **exit trajectory wider than expert**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP11"
-      ]
-    },
-    "MSP41": {
-      "name": "Cutting the line",
-      "type": "sub",
-      "description": "Player cuts the line\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP50": {
-      "name": "Off track at entry",
-      "type": "sub",
-      "description": "Deprecated; no active annotation range.\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP51": {
-      "name": "Off track at exit",
-      "type": "sub",
-      "description": "Deprecated; no active annotation range.\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP52": {
-      "name": "Off track in the straight",
-      "type": "sub",
-      "description": "Deprecated; no active annotation range.\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP42": {
-      "name": "Inefficient grip utilization at entry",
-      "type": "sub",
-      "description": "During entry across the braking range, grip utilisation deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears while braking is active and speed gap spike at apex or entry.\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP43": {
-      "name": "Inefficient grip utilization at exit",
-      "type": "sub",
-      "description": "During exit across the throttle application range, grip utilisation deviates from the expert's pattern — an **over-limit spike**, **sustained over-limit** (**tire is sustained over its peak grip**), or **sustained low** appears while throttle is being applied and speed gap spike at exit.\n",
-      "parent": "MSP",
-      "exclusive_with": []
-    },
-    "MSP44": {
-      "name": "Oversteering at entry",
-      "type": "sub",
-      "description": "During entry, the player shows **oversteer**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP45"
-      ]
-    },
-    "MSP45": {
-      "name": "Understeering at entry",
-      "type": "sub",
-      "description": "During entry, the player shows **understeer**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP44"
-      ]
-    },
-    "MSP46": {
-      "name": "Oversteering at exit",
-      "type": "sub",
-      "description": "During exit, the player shows **oversteer**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP47"
-      ]
-    },
-    "MSP47": {
-      "name": "Understeering at exit",
-      "type": "sub",
-      "description": "During exit, the player shows **understeer**.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP46"
-      ]
-    },
-    "MSP35": {
-      "name": "Shift up too early",
-      "type": "sub",
-      "description": "During exit or straight, the player's **upshift** onset occurs earlier than the expert's matching upshift.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP36"
-      ]
-    },
-    "MSP36": {
-      "name": "Shift up too late",
-      "type": "sub",
-      "description": "During exit or straight, the player's **upshift** onset occurs later than the expert's matching upshift.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP35"
-      ]
-    },
-    "MSP37": {
-      "name": "Shift down too early",
-      "type": "sub",
-      "description": "During entry, the player's **downshift** onset occurs earlier than the expert's matching downshift.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP38"
-      ]
-    },
-    "MSP38": {
-      "name": "Shift down too late",
-      "type": "sub",
-      "description": "During entry, the player's **downshift** onset occurs later than the expert's matching downshift.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP37"
-      ]
-    },
-    "MSP48": {
-      "name": "Gear too low when accelerating",
-      "type": "sub",
-      "description": "During exit while accelerating, the player is in a lower gear than the expert. The low/high verdict comes from comparing the player's exit gear with the expert's exit gear; use this for the exit gear mismatch, not for the shift instant itself. If the main evidence is an upshift that happened late, prefer MSP36.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP49"
-      ]
-    },
-    "MSP49": {
-      "name": "Gear too high when accelerating",
-      "type": "sub",
-      "description": "During exit while accelerating, the player is in a higher gear than the expert. The low/high verdict comes from comparing the player's exit gear with the expert's exit gear; use this for the exit gear mismatch, especially exit bogging, not for the shift instant itself. If the main evidence is a downshift that happened late, prefer MSP38.\n",
-      "parent": "MSP",
-      "exclusive_with": [
-        "MSP48"
-      ]
-    },
-    "MSR1": {
-      "name": "Failed overtake attempt (type unclear)",
-      "type": "sub",
-      "description": "Across the failed attack range, the overtake onset is clear but the attempt-type signature cannot be read from the player's trace. Required interaction evidence: `outcome: failed_attack` with medium/high confidence. Prefer a specific subtype (MSR3 / MSR4 / MSR5 / MSR6) when the trace lets you identify which O-style attempt was tried; use MSR1 only when none of those match. Distinguished from O by the missing pass-completed outcome, and from MSP by the close opponent being the cause.\n",
-      "parent": "MSR",
-      "exclusive_with": [
-        "MSR2",
-        "MSR3",
-        "MSR4",
-        "MSR5",
-        "MSR6",
-        "MSR7",
-        "MSR8"
-      ]
-    },
-    "MSR2": {
-      "name": "Defense broken (type unclear)",
-      "type": "sub",
-      "description": "Across the broken defense range, the opponent move onset is clear but the defense-type signature cannot be read from the player's trace. Required interaction evidence: `outcome: broken_defense` with medium/high confidence. Prefer a specific subtype (MSR7 / MSR8) when the trace lets you identify which OD-style defense was tried; use MSR2 only when neither matches. Distinguished from OD by the broken-defense outcome instead of held defense.\n",
-      "parent": "MSR",
-      "exclusive_with": [
-        "MSR1",
-        "MSR3",
-        "MSR4",
-        "MSR5",
-        "MSR6",
-        "MSR7",
-        "MSR8"
-      ]
-    },
-    "MSR3": {
-      "name": "Failed late-brake attack at entry",
-      "type": "sub",
-      "description": "During entry, the failed attack onset is a late-brake move: driver drew alongside the opponent under braking, often with the opponent on the driver's left/right side near corner entry, but the driver did not end ahead of the opponent. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O1 by the missing pass-completed outcome; distinguished from MSR1 by the identifiable under-braking alongside attempt.\n",
-      "parent": "MSR",
-      "exclusive_with": [
-        "MSR1",
-        "MSR2",
-        "MSR5",
-        "MSR7",
-        "MSR8"
-      ]
-    },
-    "MSR4": {
-      "name": "Failed outside-line sweep",
-      "type": "sub",
-      "description": "Across the corner range, the driver remains outside the opponent but fails to complete the pass. Opponent was on the driver's inside side through the corner while the driver stayed outside, but the driver did not end ahead of the opponent. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O3 by the missing pass-completed outcome; from MSR1 by the identifiable outside-line opponent position; from MSP33 by the close opponent being the cause.\n",
-      "parent": "MSR",
-      "exclusive_with": [
-        "MSR1",
-        "MSR2",
-        "MSR5",
-        "MSR7",
-        "MSR8"
-      ]
-    },
-    "MSR5": {
-      "name": "Failed switchback",
-      "type": "sub",
-      "description": "Across the corner range, the side-swap onset occurs but the switchback fails. Opponent and driver swapped sides through the corner, or the side swap started, but the gap did not flip from opponent ahead to driver ahead by section end. Required interaction outcome: `failed_attack` with medium/high confidence. Distinguished from O4 by the missing pass-completed outcome; from MSR1 by the identifiable side-swap / cross-line signature.\n",
-      "parent": "MSR",
-      "exclusive_with": [
-        "MSR1",
-        "MSR2",
-        "MSR3",
-        "MSR4",
-        "MSR7",
-        "MSR8"
-      ]
-    },
-    "MSR6": {
-      "name": "Failed slipstream gain on straight",
-      "type": "sub",
-      "description": "During straight, the failed slipstream attack onset does not become a completed pass. Gap to the opponent shrank and the driver gained relative speed, but the gap did not flip from opponent ahead to driver ahead. Required interaction outcome: `failed_attack` with medium/high confidence. Typically the straight ran out, the driver pulled out too late, or drew alongside the opponent too late for the pass to stick. Distinguished from O5 by the missing pass-completed outcome; from MSR1 by the identifiable straight-line closing signature.\n",
-      "parent": "MSR",
-      "exclusive_with": [
-        "MSR1",
-        "MSR2",
-        "MSR7",
-        "MSR8"
-      ]
-    },
-    "MSR7": {
-      "name": "Inside cover broken (early-brake defense)",
-      "type": "sub",
-      "description": "During entry, the opponent move onset breaks the inside-cover defense. Opponent drew alongside the driver near the corner and the gap flipped from driver ahead to opponent ahead. The opponent was often on the driver's left/right side while the driver tried to hold the inside. Required interaction outcome: `broken_defense` with medium/high confidence. Distinguished from OD1 by the broken-defense outcome; from MSR2 by the identifiable corner-defense position change.\n",
-      "parent": "MSR",
-      "exclusive_with": [
-        "MSR1",
-        "MSR2",
-        "MSR3",
-        "MSR4",
-        "MSR5",
-        "MSR6"
-      ]
-    },
-    "MSR8": {
-      "name": "Defensive lift broken on straight",
-      "type": "sub",
-      "description": "During straight, the opponent move onset breaks the defensive lift. Gap to the opponent shrank while the driver tried to hold position, and the gap flipped from driver ahead to opponent ahead. The driver may have slowed more than the opponent or accelerated worse after the lift. Required interaction outcome: `broken_defense` with medium/high confidence. Distinguished from OD2 by the broken-defense outcome; from MSR2 by the identifiable straight-line defense failure; from MSP25 by the close opponent being the cause.\n",
-      "parent": "MSR",
-      "exclusive_with": [
-        "MSR1",
-        "MSR2",
-        "MSR3",
-        "MSR4",
-        "MSR5",
-        "MSR6"
-      ]
-    },
-    "O1": {
-      "name": "Late-brake attack at entry",
-      "type": "sub",
-      "description": "During entry, the overtake onset is a late-brake attack: driver drew alongside the opponent under braking near corner entry and the gap flipped from opponent ahead to driver ahead. Use this when the opponent started ahead of the driver, the driver drew alongside the opponent before or during the braking phase, and the driver ended ahead of the opponent.\n",
-      "parent": "O",
-      "exclusive_with": [
-        "O4"
-      ]
-    },
-    "O3": {
-      "name": "Outside-line sweep",
-      "type": "sub",
-      "description": "Across the corner range, the driver stays outside the opponent and completes the pass. Opponent was on the driver's inside side through the corner while the driver stayed outside, and the driver ended ahead of the opponent. Use this when the outside position against the opponent is the reason the pass works, not when the driver merely runs wide without a close opponent.\n",
-      "parent": "O",
-      "exclusive_with": [
-        "O4"
-      ]
-    },
-    "O4": {
-      "name": "Switchback",
-      "type": "sub",
-      "description": "Across the corner range, the side-swap onset becomes a completed switchback. Opponent and driver swapped sides through the corner, then the gap flipped from opponent ahead to driver ahead on exit. Use this when the driver gives up one side early, crosses back to the other side, and exits ahead of the opponent.\n",
-      "parent": "O",
-      "exclusive_with": [
-        "O1",
-        "O3"
-      ]
-    },
-    "O5": {
-      "name": "Slipstream gain on straight",
-      "type": "sub",
-      "description": "During straight, the slipstream attack onset becomes a completed pass. Opponent started ahead of the driver, gap to the opponent shrank, driver gained relative speed, and the gap flipped from opponent ahead to driver ahead. Use this for straight-line draft / tow passes where the position change comes from opponent-relative speed.\n",
-      "parent": "O",
-      "exclusive_with": []
-    },
-    "OD1": {
-      "name": "Inside cover (early-brake defense)",
-      "type": "sub",
-      "description": "During entry, the opponent move onset is held by inside-cover defense. Opponent drew alongside the driver near the corner, but the driver ended ahead of the opponent. Use this when the driver's position denied the opponent's corner attack; the label is decided from opponent/player position facts.\n",
-      "parent": "OD",
-      "exclusive_with": []
-    },
-    "OD2": {
-      "name": "Defensive lift on straight",
-      "type": "sub",
-      "description": "During straight, the opponent move onset is held by defensive lift. Gap to the opponent shrank while the opponent attacked from behind, but the driver still ended ahead of the opponent. Use this when the driver holds position despite the opponent gaining relative speed or drawing alongside.\n",
-      "parent": "OD",
-      "exclusive_with": []
-    },
-    "ST1": {
-      "name": "In the corner",
-      "type": "segment_type",
-      "segment_type_role": "base_segment_shape",
-      "shape_key": "in_corner",
-      "description": "Use when the whole range is dominated by a corner arc: the driver is in a sustained turn, with meaningful curvature across most of the segment. This includes single curves, continuous arcs, and corner ranges where the turn remains the main shape.",
-      "parent": null,
-      "exclusive_with": [
-        "ST2",
-        "ST3",
-        "ST4",
-        "ST5",
-        "ST6"
-      ]
-    },
-    "ST2": {
-      "name": "On the straight",
-      "type": "segment_type",
-      "segment_type_role": "base_segment_shape",
-      "shape_key": "straight",
-      "description": "Use when the whole range is a straight: no detected corner arc, minimal curvature, and the segment is primarily straight-line driving rather than entry, apex, exit, or transition between corners.",
-      "parent": null,
-      "exclusive_with": [
-        "ST1",
-        "ST3",
-        "ST4",
-        "ST5",
-        "ST6"
-      ]
-    },
-    "ST3": {
-      "name": "Approach to corner",
-      "type": "segment_type",
-      "segment_type_role": "base_segment_shape",
-      "shape_key": "approach_to_corner",
-      "description": "Use when the range is the approach or braking zone before a corner: it starts before the corner arc and ends before the apex, so the segment is leading into the turn rather than covering the full corner.",
-      "parent": null,
-      "exclusive_with": [
-        "ST1",
-        "ST2",
-        "ST4",
-        "ST5",
-        "ST6"
-      ]
-    },
-    "ST4": {
-      "name": "Exit corner leading to straight",
-      "type": "segment_type",
-      "segment_type_role": "base_segment_shape",
-      "shape_key": "exit_corner_to_straight",
-      "description": "Use when the range is the exit phase of a corner leading toward a straight: it begins around or after the apex and remains focused on corner exit, with steering unwinding toward the end. Do not use for a completed corner followed by a substantial straight.",
-      "parent": null,
-      "exclusive_with": [
-        "ST1",
-        "ST2",
-        "ST3",
-        "ST5",
-        "ST6"
-      ]
-    },
-    "ST5": {
-      "name": "Between consecutive corners",
-      "type": "segment_type",
-      "segment_type_role": "base_segment_shape",
-      "shape_key": "between_consecutive_corners",
-      "description": "Use when the range connects consecutive corners with a short gap between detected corner arcs. The segment is a brief transition between turns, not a full straight.",
-      "parent": null,
-      "exclusive_with": [
-        "ST1",
-        "ST2",
-        "ST3",
-        "ST4",
-        "ST6"
-      ]
-    },
-    "ST6": {
-      "name": "Consecutive corners with no straight in between",
-      "type": "segment_type",
-      "segment_type_role": "base_segment_shape",
-      "shape_key": "consecutive_corners_no_straight",
-      "description": "Use when the range contains multiple consecutive corner arcs with little or no straight between them, such as chicanes, esses, or tightly linked direction changes.",
-      "parent": null,
-      "exclusive_with": [
-        "ST1",
-        "ST2",
-        "ST3",
-        "ST4",
-        "ST5"
-      ]
-    },
-    "ST7": {
-      "name": "Constant-radius corner",
-      "type": "segment_type",
-      "segment_type_role": "corner_shape_refinement",
-      "shape_key": "constant_radius",
-      "description": "Use when the corner keeps a broadly steady radius from entry to exit: curvature remains consistent through the turn without clearly opening or tightening.",
-      "parent": null,
-      "exclusive_with": [
-        "ST8",
-        "ST9",
-        "ST10",
-        "ST11"
-      ]
-    },
-    "ST8": {
-      "name": "Increasing-radius corner",
-      "type": "segment_type",
-      "segment_type_role": "corner_shape_refinement",
-      "shape_key": "increasing_radius",
-      "description": "Use when the corner opens up toward exit: curvature decreases through the turn, so the radius increases and the driver can progressively unwind steering.",
-      "parent": null,
-      "exclusive_with": [
-        "ST7",
-        "ST9",
-        "ST10",
-        "ST11"
-      ]
-    },
-    "ST9": {
-      "name": "Decreasing-radius corner",
-      "type": "segment_type",
-      "segment_type_role": "corner_shape_refinement",
-      "shape_key": "decreasing_radius",
-      "description": "Use when the corner tightens toward apex or exit: curvature increases through the turn, so the radius decreases and the driver must keep adding or holding steering.",
-      "parent": null,
-      "exclusive_with": [
-        "ST7",
-        "ST8",
-        "ST10",
-        "ST11"
-      ]
-    },
-    "ST10": {
-      "name": "Hairpin corner",
-      "type": "segment_type",
-      "segment_type_role": "corner_shape_refinement",
-      "shape_key": "hairpin",
-      "description": "Use for a hairpin or near U-turn: the corner has a very large turn angle and wraps back on itself rather than behaving like a normal sweep.",
-      "parent": null,
-      "exclusive_with": [
-        "ST7",
-        "ST8",
-        "ST9",
-        "ST11"
-      ]
-    },
-    "ST11": {
-      "name": "Chicane or esses",
-      "type": "segment_type",
-      "segment_type_role": "corner_shape_refinement",
-      "shape_key": "chicane_or_esses",
-      "description": "Use for linked left-right or right-left corner sequences: chicanes, esses, S-bends, or multiple corner arcs with direction changes.",
-      "parent": null,
-      "exclusive_with": [
-        "ST7",
-        "ST8",
-        "ST9",
-        "ST10"
-      ]
-    },
-    "ST12": {
-      "name": "Entry altitude uphill",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "entry",
-      "altitude_trend": "uphill",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the corner entry phase is uphill: altitude rises over the entry window with a positive slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST13",
-        "ST14"
-      ]
-    },
-    "ST13": {
-      "name": "Entry altitude level",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "entry",
-      "altitude_trend": "level",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the corner entry phase is level: altitude stays nearly flat over the entry window with a near-zero slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST12",
-        "ST14"
-      ]
-    },
-    "ST14": {
-      "name": "Entry altitude downhill",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "entry",
-      "altitude_trend": "downhill",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the corner entry phase is downhill: altitude falls over the entry window with a negative slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST12",
-        "ST13"
-      ]
-    },
-    "ST15": {
-      "name": "Apex altitude uphill",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "apex",
-      "altitude_trend": "uphill",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the apex phase is uphill: altitude rises through the apex window with a positive slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST16",
-        "ST17"
-      ]
-    },
-    "ST16": {
-      "name": "Apex altitude level",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "apex",
-      "altitude_trend": "level",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the apex phase is level: altitude stays nearly flat through the apex window with a near-zero slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST15",
-        "ST17"
-      ]
-    },
-    "ST17": {
-      "name": "Apex altitude downhill",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "apex",
-      "altitude_trend": "downhill",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the apex phase is downhill: altitude falls through the apex window with a negative slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST15",
-        "ST16"
-      ]
-    },
-    "ST18": {
-      "name": "Exit altitude uphill",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "exit",
-      "altitude_trend": "uphill",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the corner exit phase is uphill: altitude rises over the exit window with a positive slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST19",
-        "ST20"
-      ]
-    },
-    "ST19": {
-      "name": "Exit altitude level",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "exit",
-      "altitude_trend": "level",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the corner exit phase is level: altitude stays nearly flat over the exit window with a near-zero slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST18",
-        "ST20"
-      ]
-    },
-    "ST20": {
-      "name": "Exit altitude downhill",
-      "type": "segment_type",
-      "segment_type_role": "corner_altitude",
-      "corner_phase": "exit",
-      "altitude_trend": "downhill",
-      "annotation_scope": "subsegment_only",
-      "description": "Use when the corner exit phase is downhill: altitude falls over the exit window with a negative slope angle.",
-      "parent": null,
-      "exclusive_with": [
-        "ST18",
-        "ST19"
       ]
     }
   }

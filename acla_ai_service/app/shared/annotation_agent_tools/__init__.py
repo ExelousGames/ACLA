@@ -378,24 +378,6 @@ def _detect_expert_phases(
     return phases, window
 
 
-def _segment_type_label(**filters: Any) -> Dict[str, Any]:
-    from app.internal_knowledge_base.label_lookup import find_labels
-
-    matches = find_labels(type="segment_type", **filters)
-    if len(matches) != 1:
-        raise RuntimeError(
-            "segment_type knowledge lookup expected exactly one label for "
-            f"{filters!r}, found {len(matches)}"
-        )
-    doc = matches[0]
-    if not doc.get("id") or not doc.get("name"):
-        raise RuntimeError(
-            "segment_type knowledge lookup returned a label without id/name "
-            f"for {filters!r}"
-        )
-    return doc
-
-
 def _segment_shape_result(
     *,
     segment_type_role: str,
