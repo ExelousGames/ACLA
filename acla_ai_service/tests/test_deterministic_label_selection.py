@@ -58,12 +58,15 @@ def _matched(*branches):
     )
 
 
-def test_telemetry_is_smoothed_once_with_centered_three_sample_median():
+def test_telemetry_is_smoothed_once_with_centered_three_sample_mean():
     df = pd.DataFrame({"signal": [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]})
 
     telemetry = smooth_telemetry(df)
 
-    assert telemetry["signal"].tolist() == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    np.testing.assert_allclose(
+        telemetry["signal"],
+        [0.0, 10.0 / 3.0, 10.0 / 3.0, 11.0 / 3.0, 2.0 / 3.0, 1.0],
+    )
     assert df["signal"].tolist() == [0.0, 0.0, 10.0, 0.0, 1.0, 1.0]
 
 
@@ -90,7 +93,7 @@ def test_time_facts_use_the_single_initial_smoothing_pass(monkeypatch):
             ["section_range"], "find_total_time_change",
             operator="eq", value=100.0,
         ),
-        pd.DataFrame({"expert_time_difference": [0.0, 100.0, 100.0]}),
+        pd.DataFrame({"expert_time_difference": [0.0, 100.0, 200.0]}),
     )
 
     assert result.matched
@@ -296,7 +299,7 @@ def test_compare_ilocs_preserves_declaration_order_and_uses_point_envelope():
     )
 
     assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(1, 4)
+    assert result.matched_branches[0].evidence_range == InclusiveRange(0, 3)
 
 
 def test_compare_ilocs_requires_exact_alignment():
@@ -349,8 +352,8 @@ def test_expert_shift_ranges_bracket_first_contiguous_directional_change():
     scope = InclusiveRange(0, 13)
 
     for tag, expected in (
-        ("expert_upshift_range", InclusiveRange(2, 3)),
-        ("expert_downshift_range", InclusiveRange(8, 11)),
+        ("expert_upshift_range", InclusiveRange(1, 7)),
+        ("expert_downshift_range", InclusiveRange(7, 12)),
     ):
         resolved = context.resolve_input(tag, scope, deterministic.INPUT_REGISTRY)
         assert resolved is not None
@@ -389,7 +392,7 @@ def test_shift_timing_compares_boundary_progress_inside_expert_range():
         }))
 
         assert result.matched, label_id
-        assert result.matched_branches[0].evidence_range == InclusiveRange(2, 3)
+        assert result.matched_branches[0].evidence_range == InclusiveRange(1, 4)
 
 
 def test_shift_timing_aligns_matching_changes_and_rejects_ambiguous_changes():
@@ -428,8 +431,8 @@ def test_shift_timing_aligns_matching_changes_and_rejects_ambiguous_changes():
 def test_shift_timing_uses_expert_event_range_for_reported_regression():
     index = range(33, 51)
     df = pd.DataFrame({
-        "Physics_gear": [4, 5, 5, 5, 5, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 1],
-        "expert_optimal_gear": [5, 5, 5, 4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3],
+        "Physics_gear": [5, 5, 5, 5, 5, 5, 4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
+        "expert_optimal_gear": [5, 5, 5, 4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2],
     }, index=index)
     context = EvaluationContext.from_dataframe(df)
     evaluated = deterministic.evaluate_labels(
@@ -439,7 +442,7 @@ def test_shift_timing_uses_expert_event_range_for_reported_regression():
 
     assert evaluated.labels == ["MSP38"]
     branch = evaluated.evaluations["MSP38"].matched_branches[0]
-    assert branch.evidence_range == InclusiveRange(35, 38)
+    assert branch.evidence_range == InclusiveRange(34, 39)
 
     result = deterministic.calculate_detailed_annotation(
         df,
@@ -451,7 +454,7 @@ def test_shift_timing_uses_expert_event_range_for_reported_regression():
         value for value in result.label_annotations
         if value["label_id"] == "MSP38"
     )
-    assert (annotation["start_index"], annotation["end_index"]) == (35, 38)
+    assert (annotation["start_index"], annotation["end_index"]) == (34, 39)
     assert "MSP35" not in result.final_labels
 
 
@@ -518,6 +521,26 @@ def test_msp22_uses_localized_brake_range_and_requires_all_endpoints(monkeypatch
 
     assert not missing_endpoint.matched
     assert "missing input" in missing_endpoint.failed[0]
+
+
+def test_msp22_matches_mean_smoothed_player_brake_peak_regression():
+    df = pd.DataFrame({
+        "Physics_brake": [
+            0.0, 0.0, 0.28, 0.98, 0.55, 0.0, 0.0, 0.46, 0.0, 0.0, 0.0,
+        ],
+        "expert_optimal_brake": [
+            0.0, 0.0, 0.15, 0.64, 0.46, 0.27, 0.01, 0.0, 0.0, 0.0, 0.0,
+        ],
+    }, index=range(53, 64))
+    context = EvaluationContext.from_dataframe(df)
+
+    evaluated = deterministic.evaluate_labels(
+        ["MSP13", "MSP22"], context, InclusiveRange(53, 63),
+    )
+
+    assert evaluated.labels == ["MSP22"]
+    branch = evaluated.evaluations["MSP22"].matched_branches[0]
+    assert branch.evidence_range == InclusiveRange(54, 62)
 
 
 def test_early_application_label_requires_matching_onset_and_end(monkeypatch):
@@ -687,8 +710,8 @@ def test_every_shift_timing_requirement_uses_its_expert_range():
 
 def test_range_fact_inspects_only_its_declared_range():
     df = pd.DataFrame({
-        "Physics_speed_kmh": [0, 0, 100, 100, 0, 0],
-        "expert_optimal_speed": [100, 100, 90, 90, 100, 100],
+        "Physics_speed_kmh": [0, 100, 100, 100, 100, 0],
+        "expert_optimal_speed": [100, 90, 90, 90, 90, 100],
     })
     context = EvaluationContext.from_dataframe(df)
     requirements = _requirement(
@@ -710,7 +733,7 @@ def test_speed_strategies_share_the_declared_comparison_range():
     })
     branch = {"all_of": [
         _requirement(["speed_comparison_range"], "find_speed_expert_faster")["any_of"][0]["all_of"][0],
-        _requirement(["speed_comparison_range"], "find_speed_peak_gap", "eq", 20.0)["any_of"][0]["all_of"][0],
+        _requirement(["speed_comparison_range"], "find_speed_peak_gap", "eq", 17.5)["any_of"][0]["all_of"][0],
         _requirement(["speed_comparison_range"], "find_speed_gap_closing")["any_of"][0]["all_of"][0],
     ]}
 
@@ -881,7 +904,7 @@ def test_lap_catalog_is_interpreted_against_registered_time_strategies(monkeypat
     )
 
     assert result.matched
-    assert result.branch == 0
+    assert result.branch == 1
 
 
 def test_actual_sub_label_catalog_drives_detailed_range(monkeypatch):

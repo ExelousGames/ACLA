@@ -26,17 +26,15 @@ SLOPE_ANGLE_DEGREES = 5.0
 
 def smooth_telemetry(df: pd.DataFrame) -> pd.DataFrame:
     telemetry = df.copy()
-    edge = SMOOTHING_WINDOW // 2
     for name in telemetry.select_dtypes(include=[np.number]).columns:
         values = telemetry[name].to_numpy(dtype=float)
         if len(values) < 2:
             continue
-        padded = np.pad(values, edge, mode="edge")
         telemetry[name] = (
-            pd.Series(padded)
+            pd.Series(values)
             .rolling(SMOOTHING_WINDOW, center=True, min_periods=1)
-            .median()
-            .to_numpy(dtype=float)[edge:-edge]
+            .mean()
+            .to_numpy(dtype=float)
         )
     return telemetry
 

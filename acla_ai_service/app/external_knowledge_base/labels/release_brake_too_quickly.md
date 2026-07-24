@@ -8,6 +8,6 @@ to turn cleanly before it has finished rotating.
 
 - Consciously lengthen the release: imagine bleeding pressure over the
   same distance you spent building it.
-- Lower the peak so there's less pressure to dump (see highest brake pressure too high).
+- Lower the peak so there's less pressure to dump (see High brake too long).
 - Practice on a slow corner first; trail-braking habit transfers up to
   fast corners.

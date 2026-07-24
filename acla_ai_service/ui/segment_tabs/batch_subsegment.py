@@ -62,19 +62,23 @@ def _persist_children_for_parent(parent, result, session_id, selected_annotation
     return len(new_children)
 
 
-def _delete_session_subsegments(session_id, selected_annotation_key) -> int:
-    """Remove all child sub-segments from the loaded session."""
+def _delete_selected_parent_subsegments(
+    session_id,
+    selected_annotation_key,
+    selected_parent_ids: set[str],
+) -> int:
+    """Remove child sub-segments belonging to the selected parents."""
     annotations = list(st.session_state.get("current_annotations", []))
-    parent_only_annotations = [
+    remaining_annotations = [
         ann for ann in annotations
-        if not getattr(ann, "parent_id", None)
+        if getattr(ann, "parent_id", None) not in selected_parent_ids
     ]
-    deleted = len(annotations) - len(parent_only_annotations)
+    deleted = len(annotations) - len(remaining_annotations)
     if deleted:
-        st.session_state["current_annotations"] = parent_only_annotations
+        st.session_state["current_annotations"] = remaining_annotations
         save_annotations(
             session_id,
-            parent_only_annotations,
+            remaining_annotations,
             selected_annotation_key,
             silent=True,
         )
@@ -261,6 +265,12 @@ def render_batch_auto_annotation(df, selected_annotation_key):
         batch_range = (0, 0)
         st.write("1 parent segment available.")
     process_indices = list(range(batch_range[0], batch_range[1] + 1))
+    selected_parent_ids = {
+        parent_annotations[idx].id
+        for idx in process_indices
+        if 0 <= idx < len(parent_annotations)
+        and getattr(parent_annotations[idx], "id", None)
+    }
     st.write(f"Selected {len(process_indices)} parent segment(s) for analysis.")
     selected_parent_spans = _selected_parent_spans(parent_annotations, process_indices, len(df))
     coverage_slot = st.empty()
@@ -279,12 +289,13 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
     st.markdown("---")
     delete_existing_subsegments = st.checkbox(
-        "Delete all existing sub-segments in this session before running",
+        "Delete all existing sub-segments in the selected parent range before running",
         value=False,
         key="batch_agent_delete_session_subsegments",
         help=(
-            "Removes every saved child sub-segment in the selected session before "
-            "batch discovery starts. Parent segments are kept."
+            "Removes saved child sub-segments belonging to parents in the selected "
+            "range before batch discovery starts. Parent segments and children "
+            "outside the range are kept."
         ),
     )
 
@@ -351,8 +362,12 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
     log(f"Starting deterministic sub-segment discovery: {total} parent(s)")
     if delete_existing_subsegments:
-        deleted = _delete_session_subsegments(session_id, selected_annotation_key)
-        log(f"Deleted {deleted} existing sub-segment(s) from this session.")
+        deleted = _delete_selected_parent_subsegments(
+            session_id,
+            selected_annotation_key,
+            selected_parent_ids,
+        )
+        log(f"Deleted {deleted} existing sub-segment(s) from the selected parent range.")
         _render_subsegment_coverage_bar(
             coverage_slot,
             selected_parent_spans,

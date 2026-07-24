@@ -9,4 +9,4 @@ the pedal almost as soon as the peak is reached.
 - Aim to hold peak for the same distance the expert does (varies
   by corner - short for fast corners, longer for slow ones).
 - If the brake feels overwhelming at peak, the peak is too high
-  (highest brake pressure too high) - lower the peak so you can sustain it.
+  (High brake too long) - lower the peak so you can sustain it.
