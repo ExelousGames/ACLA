@@ -34,6 +34,7 @@ from PIL import Image
 
 LOGGER = logging.getLogger(__name__)
 
+TRAJECTORY_ALIGNMENT_TOLERANCE_METERS = 1.0
 _HAIRPIN_NEAR_U_TURN_MIN_DEGREES = 130.0
 
 
@@ -3294,7 +3295,7 @@ _COLUMN_SEMANTICS: Dict[str, Dict[str, Any]] = {
         "flat_delta_abs": 0.10,
         "label_significant_delta_abs": 0.50,
         "strong_delta_abs": 1.00,
-        "near_zero_abs": 0.50,
+        "near_zero_abs": TRAJECTORY_ALIGNMENT_TOLERANCE_METERS,
         "positive_label": "moving_wider",
         "negative_label": "moving_tighter",
     },

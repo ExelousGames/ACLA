@@ -738,6 +738,25 @@ def test_trajectory_strategy_uses_declared_phase_range(monkeypatch):
     assert received == [[3, 4, 5]]
 
 
+def test_trajectory_position_uses_one_meter_alignment_tolerance(monkeypatch):
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(3)))
+    range_ = InclusiveRange(0, 2)
+
+    for offsets, expected in (
+        ([-1.0, -1.0, -1.0], "aligned"),
+        ([1.0, 1.0, 1.0], "aligned"),
+        ([-1.01, -1.01, -1.01], "tighter"),
+        ([1.01, 1.01, 1.01], "wider"),
+    ):
+        monkeypatch.setattr(
+            deterministic_facts,
+            "_trajectory",
+            lambda _context, _range, offsets=offsets: np.array(offsets),
+        )
+
+        assert deterministic_facts._trajectory_position(context, range_) == expected
+
+
 def test_phase_resolver_uses_shape_landmarks(monkeypatch):
     monkeypatch.setattr(
         "app.shared.annotation_agent_tools.measure_segment_shape",

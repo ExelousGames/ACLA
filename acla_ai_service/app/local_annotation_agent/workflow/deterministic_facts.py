@@ -422,11 +422,17 @@ def _finite(values: Optional[np.ndarray]) -> np.ndarray:
 
 
 def _trajectory_position(context: EvaluationContext, range_: InclusiveRange) -> Any:
+    from app.shared.annotation_agent_tools import (
+        TRAJECTORY_ALIGNMENT_TOLERANCE_METERS,
+    )
+
     values = _finite(_trajectory(context, range_))
     if not len(values):
         return MISSING
     median = float(np.nanmedian(values))
-    return "aligned" if abs(median) <= 0.5 else "wider" if median > 0 else "tighter"
+    if abs(median) <= TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
+        return "aligned"
+    return "wider" if median > 0 else "tighter"
 
 
 def _time_analysis(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str, Any]:
