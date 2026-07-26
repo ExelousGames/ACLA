@@ -1,6 +1,9 @@
 from types import SimpleNamespace
 
-from ui.segment_tabs.detailed import _resolve_loaded_annotation_selection
+from ui.segment_tabs.detailed import (
+    _resolve_loaded_annotation_selection,
+    _segments_to_positioned_dataframe,
+)
 from ui.segment_tabs.components import detailed_annotation_manager
 
 
@@ -45,6 +48,22 @@ def test_resolve_loaded_annotation_selection_uses_first_root_without_prior_selec
     annotations = [_segment("parent-1"), _segment("parent-2")]
 
     assert _resolve_loaded_annotation_selection(annotations, None) == 0
+
+
+def test_positioned_dataframe_ends_at_last_telemetry_index():
+    segment = _segment("parent-1")
+    segment.start_index = 8
+    segment.end_index = 29
+    segment.telemetry_data = [
+        {"speed": index}
+        for index in range(8, 29)
+    ]
+
+    dataframe = _segments_to_positioned_dataframe([segment])
+
+    assert dataframe.index[-1] == 28
+    assert dataframe.loc[28, "speed"] == 28
+    assert 29 not in dataframe.index
 
 
 def test_clear_annotation_manager_state_removes_session_specific_fields(monkeypatch):

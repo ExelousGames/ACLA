@@ -71,14 +71,11 @@ def _segments_to_positioned_dataframe(
     segments: Iterable[AnnotatedSegment],
 ) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    max_position = 0
+    max_position = -1
 
     for segment in segments:
         rows = getattr(segment, "telemetry_data", None) or []
         start = getattr(segment, "start_index", None)
-        end = getattr(segment, "end_index", None)
-        if end is not None:
-            max_position = max(max_position, int(end))
         if not rows or start is None:
             continue
 
@@ -87,7 +84,7 @@ def _segments_to_positioned_dataframe(
             continue
         frame.index = range(int(start), int(start) + len(frame))
         frames.append(frame)
-        max_position = max(max_position, int(start) + len(frame))
+        max_position = max(max_position, int(frame.index[-1]))
 
     if not frames:
         return pd.DataFrame()
