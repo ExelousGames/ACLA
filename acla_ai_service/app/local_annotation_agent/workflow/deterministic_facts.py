@@ -151,6 +151,32 @@ def _phase_resolver(
     return resolve
 
 
+def _phase_end_iloc_resolver(
+    tag: str, phase_name: str,
+) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
+    resolve_range = _phase_resolver(tag, phase_name)
+
+    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+        resolved = resolve_range(context, scope)
+        if resolved is None or not isinstance(resolved.value, InclusiveRange):
+            return None
+        return _iloc_input(tag, resolved.value.end)
+    return resolve
+
+
+def _phase_start_iloc_resolver(
+    tag: str, phase_name: str,
+) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
+    resolve_range = _phase_resolver(tag, phase_name)
+
+    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+        resolved = resolve_range(context, scope)
+        if resolved is None or not isinstance(resolved.value, InclusiveRange):
+            return None
+        return _iloc_input(tag, resolved.value.start)
+    return resolve
+
+
 def _first(mask: np.ndarray, index: np.ndarray) -> Optional[int]:
     positions = np.flatnonzero(mask)
     return int(index[int(positions[0])]) if len(positions) else None
@@ -194,6 +220,59 @@ def _landmarks(values: Optional[np.ndarray], index: np.ndarray) -> Dict[str, Any
     }
 
 
+def _throttle_landmarks(
+    values: Optional[np.ndarray], index: np.ndarray,
+) -> Dict[str, Any]:
+    landmarks = _landmarks(values, index)
+    if not landmarks or values is None:
+        return landmarks
+
+    landmarks.pop("application_onset", None)
+    landmarks.pop("application_end", None)
+    finite = np.where(np.isfinite(values), values, 0.0)
+    positive_steps = np.diff(finite) > 0.0
+    runs: list[Tuple[int, int]] = []
+    run_start: Optional[int] = None
+    for position, positive in enumerate(positive_steps):
+        if positive and run_start is None:
+            run_start = position
+        if run_start is not None and (
+            not positive or position == len(positive_steps) - 1
+        ):
+            run_end = position + 1 if positive else position
+            runs.append((run_start, run_end))
+            run_start = None
+
+    candidates = []
+    for start, end in runs:
+        peak = float(finite[end])
+        active_threshold = max(0.05, peak * 0.10)
+        high_threshold = max(0.10, peak * 0.90)
+        active_positions = np.flatnonzero(
+            finite[start:end + 1] >= active_threshold
+        )
+        high_positions = np.flatnonzero(
+            finite[start:end + 1] >= high_threshold
+        )
+        if not len(active_positions) or not len(high_positions):
+            continue
+        onset = start + int(active_positions[0])
+        reapplication_end = start + int(high_positions[0])
+        if reapplication_end < onset:
+            continue
+        candidates.append((
+            float(finite[end] - finite[start]),
+            onset,
+            reapplication_end,
+        ))
+
+    if candidates:
+        _, onset, reapplication_end = max(candidates, key=lambda item: item[0])
+        landmarks["reapplication_onset"] = int(index[onset])
+        landmarks["reapplication_end"] = int(index[reapplication_end])
+    return landmarks
+
+
 CONTROL_COLUMNS = {
     ("player", "brake"): ("Physics_brake",),
     ("expert", "brake"): ("expert_optimal_brake",),
@@ -207,9 +286,12 @@ def _control_landmarks(
 ) -> Mapping[str, Any]:
     def calculate() -> Mapping[str, Any]:
         segment = context.segment(scope)
-        return _landmarks(
-            _series(segment, *CONTROL_COLUMNS[(driver, control)]),
-            segment.index.to_numpy(dtype=int),
+        values = _series(segment, *CONTROL_COLUMNS[(driver, control)])
+        index = segment.index.to_numpy(dtype=int)
+        return (
+            _throttle_landmarks(values, index)
+            if control == "throttle"
+            else _landmarks(values, index)
         )
     return context.memo(
         ("landmarks", scope.start, scope.end, driver, control), calculate,
@@ -325,12 +407,25 @@ def build_input_registry() -> InputRegistry:
         "corner_entry_range": InputDefinition("range", _phase_resolver("corner_entry_range", "entry")),
         "corner_apex_range": InputDefinition("range", _phase_resolver("corner_apex_range", "apex")),
         "corner_exit_range": InputDefinition("range", _phase_resolver("corner_exit_range", "exit")),
+        "corner_entry_start_iloc": InputDefinition(
+            "iloc", _phase_start_iloc_resolver("corner_entry_start_iloc", "entry"),
+        ),
+        "corner_exit_end_iloc": InputDefinition(
+            "iloc", _phase_end_iloc_resolver("corner_exit_end_iloc", "exit"),
+        ),
     })
     for driver in ("player", "expert"):
-        for control in ("brake", "throttle"):
-            for landmark in (
-                "application_onset", "application_end", "release_onset", "release_end",
-            ):
+        for control, landmarks in (
+            ("brake", (
+                "application_onset", "application_end",
+                "release_onset", "release_end",
+            )),
+            ("throttle", (
+                "reapplication_onset", "reapplication_end",
+                "release_onset", "release_end",
+            )),
+        ):
+            for landmark in landmarks:
                 tag = f"{driver}_{control}_{landmark}_iloc"
                 definitions[tag] = InputDefinition(
                     "iloc", _control_iloc_resolver(tag, driver, control, landmark),
@@ -387,14 +482,10 @@ def _compare_shift_timing(
 
     start_gap = sign * float(player[0] - expert[0])
     end_gap = sign * float(player[-1] - expert[-1])
-    starts_aligned = bool(np.isclose(start_gap, 0.0))
-    ends_aligned = bool(np.isclose(end_gap, 0.0))
-    if start_gap > 0.0 and ends_aligned:
-        return "earlier"
-    if starts_aligned and end_gap < 0.0:
-        return "later"
-    if starts_aligned and ends_aligned:
-        return "aligned"
+    if start_gap >= 0.0 and end_gap >= 0.0:
+        return max(start_gap, end_gap)
+    if start_gap <= 0.0 and end_gap <= 0.0:
+        return min(start_gap, end_gap)
     return MISSING
 
 
@@ -406,6 +497,16 @@ def _trajectory(context: EvaluationContext, range_: InclusiveRange) -> Optional[
     return context.memo(("trajectory", range_.start, range_.end), calculate)
 
 
+def _corresponding_trajectory(context: EvaluationContext) -> Optional[np.ndarray]:
+    def calculate() -> Optional[np.ndarray]:
+        from app.shared.annotation_agent_tools import (
+            calculate_corresponding_trajectory_offset,
+        )
+
+        return calculate_corresponding_trajectory_offset(context.telemetry)
+    return context.memo(("corresponding_trajectory",), calculate)
+
+
 def _speed_delta(context: EvaluationContext, range_: InclusiveRange) -> Optional[np.ndarray]:
     def calculate() -> Optional[np.ndarray]:
         segment = context.segment(range_)
@@ -415,22 +516,96 @@ def _speed_delta(context: EvaluationContext, range_: InclusiveRange) -> Optional
     return context.memo(("speed_delta", range_.start, range_.end), calculate)
 
 
+def _speed_difference_at_iloc(
+    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+) -> Any:
+    iloc = int(inputs[0].value)
+    positions = np.flatnonzero(context.telemetry.index.to_numpy() == iloc)
+    if len(positions) != 1:
+        return MISSING
+    row = context.telemetry.iloc[[int(positions[0])]]
+    player = _series(row, "Physics_speed_kmh")
+    expert = _series(row, "expert_optimal_speed")
+    if player is None or expert is None:
+        return MISSING
+    difference = float(expert[0] - player[0])
+    return difference if np.isfinite(difference) else MISSING
+
+
+def _range_between_ilocs(
+    inputs: Sequence[ResolvedInput],
+) -> Optional[InclusiveRange]:
+    start = int(inputs[0].value)
+    end = int(inputs[1].value)
+    return InclusiveRange(start, end) if start <= end else None
+
+
+def _speed_gap_slope_between_ilocs(
+    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+) -> Any:
+    range_ = _range_between_ilocs(inputs)
+    if range_ is None:
+        return MISSING
+    values = _speed_delta(context, range_)
+    if values is None:
+        return MISSING
+    finite = np.isfinite(values)
+    if int(np.count_nonzero(finite)) < 2:
+        return MISSING
+    positions = np.arange(len(values), dtype=float)[finite]
+    centered_positions = positions - float(np.mean(positions))
+    centered_values = values[finite] - float(np.mean(values[finite]))
+    denominator = float(np.dot(centered_positions, centered_positions))
+    if denominator == 0.0:
+        return MISSING
+    slope = float(np.dot(centered_positions, centered_values) / denominator)
+    return slope if np.isfinite(slope) else MISSING
+
+
+def _player_brake_peak_between_ilocs(
+    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+) -> Any:
+    range_ = _range_between_ilocs(inputs)
+    if range_ is None:
+        return MISSING
+    values = _finite(_series(context.segment(range_), "Physics_brake"))
+    return float(np.max(values)) if len(values) else MISSING
+
+
 def _finite(values: Optional[np.ndarray]) -> np.ndarray:
     return values[np.isfinite(values)] if values is not None else np.array([])
 
 
-def _trajectory_position(context: EvaluationContext, range_: InclusiveRange) -> Any:
+def _classify_trajectory_offset(offset: float) -> Any:
     from app.shared.annotation_agent_tools import (
         TRAJECTORY_ALIGNMENT_TOLERANCE_METERS,
     )
 
+    if not np.isfinite(offset):
+        return MISSING
+    if abs(float(offset)) <= TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
+        return "aligned"
+    return "wider" if float(offset) > 0 else "tighter"
+
+
+def _trajectory_position(context: EvaluationContext, range_: InclusiveRange) -> Any:
     values = _finite(_trajectory(context, range_))
     if not len(values):
         return MISSING
-    median = float(np.nanmedian(values))
-    if abs(median) <= TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
-        return "aligned"
-    return "wider" if median > 0 else "tighter"
+    return _classify_trajectory_offset(float(np.nanmedian(values)))
+
+
+def _trajectory_position_at_iloc(
+    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+) -> Any:
+    iloc = int(inputs[0].value)
+    values = _corresponding_trajectory(context)
+    if values is None or len(values) != len(context.telemetry):
+        return MISSING
+    positions = np.flatnonzero(context.telemetry.index.to_numpy() == iloc)
+    if len(positions) != 1:
+        return MISSING
+    return _classify_trajectory_offset(float(values[int(positions[0])]))
 
 
 def _time_analysis(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str, Any]:
@@ -710,6 +885,7 @@ def _mapping_fact(
 
 def build_fact_registry() -> FactRegistry:
     range_kind = ("range",)
+    iloc_kind = ("iloc",)
     iloc_pair = ("iloc", "iloc")
     definitions: Dict[str, FactDefinition] = {
         "compare_ilocs": FactDefinition(iloc_pair, _compare_ilocs),
@@ -751,6 +927,15 @@ def build_fact_registry() -> FactRegistry:
             abs(float(_finite(_speed_delta(c, r))[-1])) < abs(float(_finite(_speed_delta(c, r))[0]))
             if len(_finite(_speed_delta(c, r))) else MISSING
         ))),
+        "find_speed_difference_at_iloc": FactDefinition(
+            iloc_kind, _speed_difference_at_iloc,
+        ),
+        "find_speed_gap_slope": FactDefinition(
+            iloc_pair, _speed_gap_slope_between_ilocs,
+        ),
+        "find_player_brake_peak": FactDefinition(
+            iloc_pair, _player_brake_peak_between_ilocs,
+        ),
         "find_trajectory_peak_offset": FactDefinition(range_kind, _fact_range(lambda c, r: (
             float(np.max(np.abs(_finite(_trajectory(c, r)))))
             if len(_finite(_trajectory(c, r))) else MISSING
@@ -761,6 +946,9 @@ def build_fact_registry() -> FactRegistry:
         ))),
         "find_trajectory_position": FactDefinition(
             range_kind, _fact_range(_trajectory_position),
+        ),
+        "find_trajectory_position_at_iloc": FactDefinition(
+            iloc_kind, _trajectory_position_at_iloc,
         ),
         "find_oversteer": FactDefinition(range_kind, _fact_range(lambda c, r: (
             bool(np.nanmax(_slip_balance(c, r)) > 0.02) if _slip_balance(c, r) is not None else MISSING

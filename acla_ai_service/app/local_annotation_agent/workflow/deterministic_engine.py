@@ -104,6 +104,7 @@ class PredicateSpec:
     fact: str
     operator: str
     expected: Any
+    evidence_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -203,8 +204,8 @@ def parse_requirements(requirements: Mapping[str, Any]) -> RequirementSpec:
         for raw in branch.get("all_of") or []:
             if not isinstance(raw, Mapping):
                 continue
-            inputs = raw.get("inputs") or {}
-            condition = raw.get("condition") or {}
+            inputs = raw.get("inputs")
+            condition = raw.get("condition")
             if not isinstance(inputs, Mapping) or not isinstance(condition, Mapping):
                 predicates.append(PredicateSpec((), "", "", None))
                 continue
@@ -213,6 +214,7 @@ def parse_requirements(requirements: Mapping[str, Any]) -> RequirementSpec:
                 fact=str(condition.get("fact") or ""),
                 operator=str(condition.get("operator") or ""),
                 expected=condition.get("value"),
+                evidence_only=not condition,
             ))
         branches.append(BranchSpec(tuple(predicates)))
     return RequirementSpec(requirements.get("enabled") is not False, tuple(branches))
@@ -261,18 +263,27 @@ class RequirementInterpreter:
     def _evaluate_predicate(
         self, predicate: PredicateSpec, context: Any, scope: InclusiveRange,
     ) -> PredicateEvaluation:
-        definition = self.facts.get(predicate.fact)
-        if definition is None:
+        definition = None if predicate.evidence_only else self.facts.get(predicate.fact)
+        if not predicate.evidence_only and definition is None:
             return PredicateEvaluation(False, f"{predicate.fact}: unknown fact", predicate.fact)
         resolved: List[ResolvedInput] = []
         for tag in predicate.tags:
             value = context.resolve_input(tag, scope, self.inputs)
             if value is None:
+                name = "evidence" if predicate.evidence_only else predicate.fact
                 return PredicateEvaluation(
-                    False, f"{predicate.fact}: unavailable (missing input {tag})", predicate.fact,
+                    False, f"{name}: unavailable (missing input {tag})", predicate.fact,
                 )
             resolved.append(value)
+        evidence_range = InclusiveRange.envelope(
+            value.evidence_range for value in resolved
+        )
+        if predicate.evidence_only:
+            return PredicateEvaluation(
+                True, "evidence: inputs resolved", "", evidence_range,
+            )
         kinds = tuple(value.kind for value in resolved)
+        assert definition is not None
         if kinds != definition.input_kinds:
             return PredicateEvaluation(
                 False,
@@ -286,7 +297,7 @@ class RequirementInterpreter:
             passed,
             f"{predicate.fact}: {value_text}",
             predicate.fact,
-            InclusiveRange.envelope(value.evidence_range for value in resolved),
+            evidence_range,
         )
 
 
@@ -313,17 +324,17 @@ def validate_requirements(
             if not isinstance(raw_inputs, Mapping) or set(raw_inputs) != {"tags"}:
                 errors.append(f"{prefix}: inputs must contain only tags")
                 continue
-            if not isinstance(condition, Mapping) or set(condition) != {"fact", "operator", "value"}:
-                errors.append(f"{prefix}: condition must contain fact, operator, and value")
+            if not isinstance(condition, Mapping) or set(condition) not in (
+                set(), {"fact", "operator", "value"},
+            ):
+                errors.append(
+                    f"{prefix}: condition must be empty or contain fact, operator, and value"
+                )
                 continue
             tags = raw_inputs.get("tags")
             if not isinstance(tags, list) or not tags or not all(isinstance(tag, str) for tag in tags):
                 errors.append(f"{prefix}: tags must be a non-empty string list")
                 continue
-            fact_name = condition.get("fact")
-            fact = facts.get(fact_name) if isinstance(fact_name, str) else None
-            if fact is None:
-                errors.append(f"{prefix}: unknown fact {fact_name!r}")
             kinds: List[InputKind] = []
             for tag in tags:
                 input_definition = inputs.get(tag)
@@ -331,6 +342,12 @@ def validate_requirements(
                     errors.append(f"{prefix}: unknown input tag {tag!r}")
                 else:
                     kinds.append(input_definition.kind)
+            if not condition:
+                continue
+            fact_name = condition.get("fact")
+            fact = facts.get(fact_name) if isinstance(fact_name, str) else None
+            if fact is None:
+                errors.append(f"{prefix}: unknown fact {fact_name!r}")
             if fact is not None and tuple(kinds) != fact.input_kinds:
                 errors.append(
                     f"{prefix}: {fact_name!r} expects {fact.input_kinds}, got {tuple(kinds)}"

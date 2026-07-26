@@ -15,7 +15,6 @@
       "deterministic"
     ]
   },
-  "range_fit_rule": "For labels with `type: sub`, every matched requirement branch is emitted over the tight inclusive envelope from the earliest resolved input start to the latest resolved input end. Omit a branch when an input cannot be resolved or when its envelope falls outside the parent range, and merge overlapping ranges only when they belong to the same sub-label. Labels with `type: segment_type` never create, split, resize, or seed a sub-segment. After sub-label ranges are finalized, evaluate `segment_type_selection_requirements` against the parent telemetry scope and attach a non-conflicting match to a found range only when the segment-type evidence envelope fully contains that inclusive range (`type_start <= segment_start` and `segment_end <= type_end`). Partial overlap, endpoint-only contact, and segment-type evidence contained inside the found range do not qualify.\n",
   "detailed_flow_rules": [
     "A sub-label is eligible only when its parent main label is already present on the parent segment. The parent main label owns its shared classification characteristics; each sub-label requirement checks only the sub-label's distinguishing telemetry characteristics.",
     "Audit the full parent range and return every calculated sub-label child proposal bounded to the localized telemetry evidence for one completely matched requirement branch.",
@@ -66,8 +65,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_onset_iloc",
-                  "expert_throttle_application_onset_iloc"
+                  "player_throttle_reapplication_onset_iloc",
+                  "expert_throttle_reapplication_onset_iloc"
                 ]
               },
               "condition": {
@@ -79,8 +78,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_end_iloc",
-                  "expert_throttle_application_end_iloc"
+                  "player_throttle_reapplication_end_iloc",
+                  "expert_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
@@ -236,8 +235,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_onset_iloc",
-                  "expert_throttle_application_onset_iloc"
+                  "player_throttle_reapplication_onset_iloc",
+                  "expert_throttle_reapplication_onset_iloc"
                 ]
               },
               "condition": {
@@ -249,8 +248,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_end_iloc",
-                  "expert_throttle_application_end_iloc"
+                  "player_throttle_reapplication_end_iloc",
+                  "expert_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
@@ -283,8 +282,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_onset_iloc",
-                  "expert_throttle_application_onset_iloc"
+                  "player_throttle_reapplication_onset_iloc",
+                  "expert_throttle_reapplication_onset_iloc"
                 ]
               },
               "condition": {
@@ -296,8 +295,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_end_iloc",
-                  "expert_throttle_application_end_iloc"
+                  "player_throttle_reapplication_end_iloc",
+                  "expert_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
@@ -425,14 +424,22 @@
             {
               "inputs": {
                 "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
+                  "player_brake_release_end_iloc",
+                  "expert_brake_release_end_iloc"
+                ]
+              },
+              "condition": {}
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "expert_brake_application_onset_iloc"
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "later"
+                "fact": "find_speed_difference_at_iloc",
+                "operator": "lt",
+                "value": 10
               }
             }
           ]
@@ -465,9 +472,6 @@
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "earlier"
               }
             }
           ]
@@ -490,6 +494,18 @@
                 "operator": "eq",
                 "value": "lower"
               }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "corner_entry_start_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_difference_at_iloc",
+                "operator": "lte",
+                "value": 5
+              }
             }
           ]
         }
@@ -503,13 +519,39 @@
             {
               "inputs": {
                 "tags": [
-                  "brake_comparison_range"
+                  "player_brake_application_onset_iloc"
                 ]
               },
               "condition": {
-                "fact": "compare_brake_peaks",
-                "operator": "eq",
-                "value": "higher"
+                "fact": "find_speed_difference_at_iloc",
+                "operator": "gt",
+                "value": 5
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "player_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_gap_slope",
+                "operator": "gt",
+                "value": 0
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "player_brake_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_player_brake_peak",
+                "operator": "gt",
+                "value": 0.1
               }
             }
           ]
@@ -607,21 +649,6 @@
             {
               "inputs": {
                 "tags": [
-                  "control_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_brake_peak_ratio",
-                "operator": "between",
-                "value": [
-                  0.9,
-                  1.1
-                ]
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
                   "player_brake_release_end_iloc",
                   "expert_brake_release_end_iloc"
                 ]
@@ -679,6 +706,19 @@
             {
               "inputs": {
                 "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
                   "player_brake_release_onset_iloc",
                   "expert_brake_release_onset_iloc"
                 ]
@@ -714,21 +754,21 @@
             {
               "inputs": {
                 "tags": [
-                  "player_brake_release_onset_iloc",
-                  "expert_brake_release_onset_iloc"
+                  "player_brake_application_end_iloc",
+                  "expert_brake_application_end_iloc"
                 ]
               },
               "condition": {
                 "fact": "compare_ilocs",
                 "operator": "eq",
-                "value": "earlier"
+                "value": "aligned"
               }
             },
             {
               "inputs": {
                 "tags": [
-                  "player_brake_release_end_iloc",
-                  "expert_brake_release_end_iloc"
+                  "player_brake_release_onset_iloc",
+                  "expert_brake_release_onset_iloc"
                 ]
               },
               "condition": {
@@ -824,8 +864,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_onset_iloc",
-                  "expert_throttle_application_onset_iloc"
+                  "player_throttle_reapplication_onset_iloc",
+                  "expert_throttle_reapplication_onset_iloc"
                 ]
               },
               "condition": {
@@ -837,8 +877,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_end_iloc",
-                  "expert_throttle_application_end_iloc"
+                  "player_throttle_reapplication_end_iloc",
+                  "expert_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
@@ -859,8 +899,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_onset_iloc",
-                  "expert_throttle_application_onset_iloc"
+                  "player_throttle_reapplication_onset_iloc",
+                  "expert_throttle_reapplication_onset_iloc"
                 ]
               },
               "condition": {
@@ -872,8 +912,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_end_iloc",
-                  "expert_throttle_application_end_iloc"
+                  "player_throttle_reapplication_end_iloc",
+                  "expert_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
@@ -902,8 +942,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_onset_iloc",
-                  "expert_throttle_application_onset_iloc"
+                  "player_throttle_reapplication_onset_iloc",
+                  "expert_throttle_reapplication_onset_iloc"
                 ]
               },
               "condition": {
@@ -915,8 +955,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_end_iloc",
-                  "expert_throttle_application_end_iloc"
+                  "player_throttle_reapplication_end_iloc",
+                  "expert_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
@@ -937,8 +977,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_onset_iloc",
-                  "expert_throttle_application_onset_iloc"
+                  "player_throttle_reapplication_onset_iloc",
+                  "expert_throttle_reapplication_onset_iloc"
                 ]
               },
               "condition": {
@@ -950,8 +990,8 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_application_end_iloc",
-                  "expert_throttle_application_end_iloc"
+                  "player_throttle_reapplication_end_iloc",
+                  "expert_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
@@ -1389,23 +1429,11 @@
             {
               "inputs": {
                 "tags": [
-                  "corner_exit_range"
+                  "corner_exit_end_iloc"
                 ]
               },
               "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "corner_exit_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_trajectory_position",
+                "fact": "find_trajectory_position_at_iloc",
                 "operator": "eq",
                 "value": "wider"
               }
@@ -1714,8 +1742,8 @@
               },
               "condition": {
                 "fact": "compare_upshift_timing",
-                "operator": "eq",
-                "value": "earlier"
+                "operator": "gt",
+                "value": 1
               }
             }
           ]
@@ -1735,8 +1763,8 @@
               },
               "condition": {
                 "fact": "compare_upshift_timing",
-                "operator": "eq",
-                "value": "later"
+                "operator": "lt",
+                "value": -1
               }
             }
           ]
@@ -1756,8 +1784,8 @@
               },
               "condition": {
                 "fact": "compare_downshift_timing",
-                "operator": "eq",
-                "value": "earlier"
+                "operator": "gt",
+                "value": 1
               }
             }
           ]
@@ -1777,8 +1805,8 @@
               },
               "condition": {
                 "fact": "compare_downshift_timing",
-                "operator": "eq",
-                "value": "later"
+                "operator": "lt",
+                "value": -1
               }
             }
           ]

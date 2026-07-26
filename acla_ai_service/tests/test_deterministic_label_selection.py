@@ -146,8 +146,17 @@ def test_registry_is_the_source_of_known_tags_and_facts():
     assert "compare_ilocs" in deterministic.FACT_REGISTRY.names()
     assert "compare_upshift_timing" in deterministic.FACT_REGISTRY.names()
     assert "compare_downshift_timing" in deterministic.FACT_REGISTRY.names()
+    assert "find_speed_difference_at_iloc" in deterministic.FACT_REGISTRY.names()
+    assert "find_speed_gap_slope" in deterministic.FACT_REGISTRY.names()
+    assert "find_player_brake_peak" in deterministic.FACT_REGISTRY.names()
+    assert "find_trajectory_position_at_iloc" in deterministic.FACT_REGISTRY.names()
     assert "player_brake_application_onset_iloc" in deterministic.INPUT_REGISTRY.names()
+    assert "player_throttle_reapplication_onset_iloc" in deterministic.INPUT_REGISTRY.names()
+    assert "player_throttle_reapplication_end_iloc" in deterministic.INPUT_REGISTRY.names()
+    assert "player_throttle_application_onset_iloc" not in deterministic.INPUT_REGISTRY.names()
     assert "brake_comparison_range" in deterministic.INPUT_REGISTRY.names()
+    assert "corner_entry_start_iloc" in deterministic.INPUT_REGISTRY.names()
+    assert "corner_exit_end_iloc" in deterministic.INPUT_REGISTRY.names()
     assert "expert_upshift_range" in deterministic.INPUT_REGISTRY.names()
     assert "expert_downshift_range" in deterministic.INPUT_REGISTRY.names()
     assert "player_upshift_onset_iloc" not in deterministic.INPUT_REGISTRY.names()
@@ -155,6 +164,64 @@ def test_registry_is_the_source_of_known_tags_and_facts():
     assert "player_upshift_iloc" not in deterministic.INPUT_REGISTRY.names()
     assert not hasattr(deterministic, "KNOWN_FACTS")
     assert not hasattr(deterministic, "FactSet")
+
+
+def test_throttle_reapplication_uses_the_positive_trend_after_release():
+    df = pd.DataFrame({
+        "Physics_gas": [
+            1.0, 0.702451, 0.125792, 0.0, 0.0,
+            0.0, 0.084559, 0.839216, 1.0,
+        ],
+        "expert_optimal_throttle": [
+            1.0, 0.516871, 0.071691, 0.0, 0.096923,
+            0.242775, 0.456995, 0.820557, 0.950046,
+        ],
+    }, index=range(311, 320))
+    context = EvaluationContext.from_dataframe(df)
+    scope = InclusiveRange(311, 320)
+
+    player_onset = context.resolve_input(
+        "player_throttle_reapplication_onset_iloc", scope,
+        deterministic.INPUT_REGISTRY,
+    )
+    player_end = context.resolve_input(
+        "player_throttle_reapplication_end_iloc", scope,
+        deterministic.INPUT_REGISTRY,
+    )
+    expert_onset = context.resolve_input(
+        "expert_throttle_reapplication_onset_iloc", scope,
+        deterministic.INPUT_REGISTRY,
+    )
+    expert_end = context.resolve_input(
+        "expert_throttle_reapplication_end_iloc", scope,
+        deterministic.INPUT_REGISTRY,
+    )
+
+    assert player_onset is not None and player_onset.value == 317
+    assert player_end is not None and player_end.value == 319
+    assert expert_onset is not None and expert_onset.value == 315
+    assert expert_end is not None and expert_end.value == 319
+
+    requirements = deterministic._requirements_for(
+        "MSP15", deterministic.get_label("MSP15"),
+    )
+    result = deterministic.evaluate_requirements(requirements, context, scope)
+
+    assert not result.matched
+
+
+def test_throttle_reapplication_is_missing_without_a_positive_trend():
+    df = pd.DataFrame({
+        "Physics_gas": [1.0, 0.8, 0.6, 0.4],
+        "expert_optimal_throttle": [1.0, 0.8, 0.6, 0.4],
+    })
+    context = EvaluationContext.from_dataframe(df)
+
+    assert context.resolve_input(
+        "player_throttle_reapplication_onset_iloc",
+        InclusiveRange(0, 3),
+        deterministic.INPUT_REGISTRY,
+    ) is None
 
 
 def test_registry_rejects_duplicate_strategy_names():
@@ -232,6 +299,64 @@ def test_branch_evidence_is_the_envelope_of_all_predicate_inputs():
     assert result.matched_branches[0].evidence_range == InclusiveRange(2, 9)
 
 
+def test_evidence_only_predicate_contributes_range_without_a_fact():
+    ranges = {
+        "first": InclusiveRange(2, 2),
+        "second": InclusiveRange(9, 9),
+    }
+    inputs = InputRegistry({
+        tag: InputDefinition(
+            "iloc",
+            lambda _context, _scope, tag=tag: ResolvedInput(
+                tag, "iloc", ranges[tag].start, ranges[tag],
+            ),
+        )
+        for tag in ranges
+    })
+    requirements = {
+        "enabled": True,
+        "any_of": [{"all_of": [{
+            "inputs": {"tags": ["first", "second"]},
+            "condition": {},
+        }]}],
+    }
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(11)))
+
+    result = RequirementInterpreter(inputs, FactRegistry({})).evaluate(
+        requirements, context, InclusiveRange(0, 10),
+    )
+
+    assert result.matched
+    assert result.matched_branches[0].evidence_range == InclusiveRange(2, 9)
+    assert result.passed == ["evidence: inputs resolved"]
+
+
+def test_evidence_only_predicate_fails_closed_when_an_input_is_missing():
+    inputs = InputRegistry({
+        "present": InputDefinition(
+            "iloc", lambda _context, _scope: ResolvedInput(
+                "present", "iloc", 2, InclusiveRange(2, 2),
+            ),
+        ),
+        "missing": InputDefinition("iloc", lambda *_args: None),
+    })
+    requirements = {
+        "enabled": True,
+        "any_of": [{"all_of": [{
+            "inputs": {"tags": ["present", "missing"]},
+            "condition": {},
+        }]}],
+    }
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(5)))
+
+    result = RequirementInterpreter(inputs, FactRegistry({})).evaluate(
+        requirements, context, InclusiveRange(0, 4),
+    )
+
+    assert not result.matched
+    assert result.failed == ["evidence: unavailable (missing input missing)"]
+
+
 def test_missing_input_fails_closed_with_rejected_reason():
     result = _evaluate(
         _requirement(
@@ -282,6 +407,34 @@ def test_validator_rejects_fact_input_kind_mismatch():
 
     assert errors == [
         "branch 0 predicate 0: 'range_fact' expects ('range',), got ('iloc',)"
+    ]
+
+
+def test_validator_accepts_empty_condition_and_rejects_partial_condition():
+    inputs = InputRegistry({
+        "point": InputDefinition("iloc", lambda *_args: None),
+    })
+    facts = FactRegistry({
+        "present": FactDefinition(("iloc",), lambda *_args: True),
+    })
+    evidence_only = {
+        "enabled": True,
+        "any_of": [{"all_of": [{
+            "inputs": {"tags": ["point"]},
+            "condition": {},
+        }]}],
+    }
+    partial = {
+        "enabled": True,
+        "any_of": [{"all_of": [{
+            "inputs": {"tags": ["point"]},
+            "condition": {"fact": "present"},
+        }]}],
+    }
+
+    assert validate_requirements(evidence_only, inputs, facts) == []
+    assert validate_requirements(partial, inputs, facts) == [
+        "branch 0 predicate 0: condition must be empty or contain fact, operator, and value"
     ]
 
 
@@ -376,10 +529,10 @@ def test_expert_shift_range_is_unavailable_without_requested_direction():
 
 def test_shift_timing_compares_boundary_progress_inside_expert_range():
     cases = [
-        ("MSP35", [3, 3, 3, 3, 3, 3], [2, 2, 2, 3, 3, 3]),
-        ("MSP36", [2, 2, 2, 2, 2, 2], [2, 2, 2, 3, 3, 3]),
-        ("MSP37", [2, 2, 2, 2, 2, 2], [3, 3, 3, 2, 2, 2]),
-        ("MSP38", [3, 3, 3, 3, 3, 3], [3, 3, 3, 2, 2, 2]),
+        ("MSP35", [4, 4, 4, 4, 4, 4], [2, 2, 2, 3, 3, 3]),
+        ("MSP36", [1, 1, 1, 1, 1, 1], [2, 2, 2, 3, 3, 3]),
+        ("MSP37", [1, 1, 1, 1, 1, 1], [3, 3, 3, 2, 2, 2]),
+        ("MSP38", [4, 4, 4, 4, 4, 4], [3, 3, 3, 2, 2, 2]),
     ]
 
     for label_id, player, expert in cases:
@@ -395,6 +548,26 @@ def test_shift_timing_compares_boundary_progress_inside_expert_range():
         assert result.matched_branches[0].evidence_range == InclusiveRange(1, 4)
 
 
+def test_shift_timing_tolerates_one_gear_early_or_late():
+    cases = [
+        ("MSP35", [3, 3, 3, 3, 3, 3], [2, 2, 2, 3, 3, 3]),
+        ("MSP36", [2, 2, 2, 2, 2, 2], [2, 2, 2, 3, 3, 3]),
+        ("MSP37", [2, 2, 2, 2, 2, 2], [3, 3, 3, 2, 2, 2]),
+        ("MSP38", [3, 3, 3, 3, 3, 3], [3, 3, 3, 2, 2, 2]),
+    ]
+
+    for label_id, player, expert in cases:
+        requirements = deterministic._requirements_for(
+            label_id, deterministic.get_label(label_id),
+        )
+        result = _evaluate(requirements, pd.DataFrame({
+            "Physics_gear": player,
+            "expert_optimal_gear": expert,
+        }))
+
+        assert not result.matched, label_id
+
+
 def test_shift_timing_aligns_matching_changes_and_rejects_ambiguous_changes():
     expert = [2, 2, 2, 3, 3, 3]
     early_requirements = deterministic._requirements_for(
@@ -404,7 +577,8 @@ def test_shift_timing_aligns_matching_changes_and_rejects_ambiguous_changes():
         "MSP36", deterministic.get_label("MSP36"),
     )
     aligned_requirements = _requirement(
-        ["expert_upshift_range"], "compare_upshift_timing", value="aligned",
+        ["expert_upshift_range"], "compare_upshift_timing",
+        operator="between", value=[-1, 1],
     )
 
     aligned = pd.DataFrame({
@@ -483,41 +657,48 @@ def test_brake_comparison_range_uses_both_complete_braking_periods(monkeypatch):
     assert resolved.evidence_range == InclusiveRange(2, 9)
 
 
-def test_msp22_uses_localized_brake_range_and_requires_all_endpoints(monkeypatch):
+def test_msp22_checks_speed_difference_at_brake_application_end(monkeypatch):
     landmarks = {
         "player": {
-            "application_onset": 4,
-            "release_end": 9,
-            "peak": 0.9,
+            "application_onset": 2,
+            "application_end": 6,
+            "release_end": 7,
+            "peak": 0.5,
         },
         "expert": {
             "application_onset": 2,
-            "release_end": 7,
-            "peak": 0.7,
+            "application_end": 5,
+            "peak": 0.8,
         },
     }
-    scopes = []
 
-    def fake_landmarks(_context, scope, driver, control):
+    def fake_landmarks(_context, _scope, driver, control):
         assert control == "brake"
-        scopes.append(scope)
         return landmarks[driver]
 
     monkeypatch.setattr(deterministic_facts, "_control_landmarks", fake_landmarks)
     requirements = deterministic._requirements_for(
         "MSP22", deterministic.get_label("MSP22"),
     )
+    speed_gap = [4.0, 4.0, 4.0, 6.0, 8.0, 10.0, 12.0, 12.0, 12.0]
+    df = pd.DataFrame({
+        "Physics_brake": [0.0, 0.0, 0.2, 0.4, 0.5, 0.3, 0.2, 0.0, 0.0],
+        "expert_optimal_brake": [0.8] * 9,
+        "Physics_speed_kmh": [100.0 - gap for gap in speed_gap],
+        "expert_optimal_speed": [100.0] * 9,
+    })
 
-    matched = _evaluate(requirements, pd.DataFrame(index=range(12)), end=11)
+    matched = _evaluate(requirements, df)
 
     assert matched.matched
-    assert matched.matched_branches[0].evidence_range == InclusiveRange(2, 9)
-    assert InclusiveRange(2, 9) in scopes
+    assert matched.matched_branches[0].evidence_range == InclusiveRange(2, 7)
+    predicates = matched.matched_branches[0].predicates
+    assert predicates[0].evidence_range == InclusiveRange(6, 6)
+    assert predicates[1].evidence_range == InclusiveRange(2, 6)
+    assert predicates[2].evidence_range == InclusiveRange(2, 7)
 
-    landmarks["expert"]["release_end"] = None
-    missing_endpoint = _evaluate(
-        requirements, pd.DataFrame(index=range(12)), end=11,
-    )
+    landmarks["player"]["application_end"] = None
+    missing_endpoint = _evaluate(requirements, df)
 
     assert not missing_endpoint.matched
     assert "missing input" in missing_endpoint.failed[0]
@@ -531,6 +712,10 @@ def test_msp22_matches_mean_smoothed_player_brake_peak_regression():
         "expert_optimal_brake": [
             0.0, 0.0, 0.15, 0.64, 0.46, 0.27, 0.01, 0.0, 0.0, 0.0, 0.0,
         ],
+        "Physics_speed_kmh": [
+            100.0, 100.0, 97.0, 94.0, 91.0, 88.0, 85.0, 82.0, 79.0, 76.0, 73.0,
+        ],
+        "expert_optimal_speed": [100.0] * 11,
     }, index=range(53, 64))
     context = EvaluationContext.from_dataframe(df)
 
@@ -541,6 +726,271 @@ def test_msp22_matches_mean_smoothed_player_brake_peak_regression():
     assert evaluated.labels == ["MSP22"]
     branch = evaluated.evaluations["MSP22"].matched_branches[0]
     assert branch.evidence_range == InclusiveRange(54, 62)
+
+
+def test_msp22_brake_window_matches_growing_speed_gap(monkeypatch):
+    landmarks = {
+        "player": {
+            "application_onset": 2,
+            "application_end": 6,
+            "release_end": 7,
+            "peak": 0.5,
+        },
+        "expert": {
+            "application_onset": 2,
+            "application_end": 5,
+            "release_end": 7,
+            "peak": 0.8,
+        },
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP22", deterministic.get_label("MSP22"),
+    )
+    active_brake = [0.0, 0.0, 0.2, 0.4, 0.5, 0.3, 0.2, 0.0, 0.0]
+
+    for speed_gap in (
+        [6.0, 6.0, 6.0, 7.0, 8.0, 9.0, 10.0, 10.0, 10.0],
+        [6.0, 6.0, 6.0, 10.0, 8.0, 11.0, 12.0, 12.0, 12.0],
+        [4.0, 4.0, 4.0, 6.0, 8.0, 10.0, 12.0, 12.0, 12.0],
+        [100.0, 6.0, 6.0, 7.0, 8.0, 9.0, 10.0, 10.0, 10.0],
+    ):
+        result = _evaluate(requirements, pd.DataFrame({
+            "Physics_brake": active_brake,
+            "expert_optimal_brake": [0.8] * 9,
+            "Physics_speed_kmh": [100.0 - gap for gap in speed_gap],
+            "expert_optimal_speed": [100.0] * 9,
+        }))
+
+        assert result.matched
+        assert result.matched_branches[0].branch == 0
+        assert result.matched_branches[0].evidence_range == InclusiveRange(2, 7)
+
+
+def test_msp22_brake_window_requires_each_condition(monkeypatch):
+    landmarks = {
+        "player": {
+            "application_onset": 2,
+            "application_end": 6,
+            "release_end": 7,
+            "peak": 0.5,
+        },
+        "expert": {
+            "application_onset": 2,
+            "application_end": 5,
+            "release_end": 7,
+            "peak": 0.8,
+        },
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP22", deterministic.get_label("MSP22"),
+    )
+    active_brake = [0.0, 0.0, 0.2, 0.4, 0.5, 0.3, 0.2, 0.0, 0.0]
+    growing_gap = [6.0, 6.0, 6.0, 7.0, 8.0, 9.0, 10.0, 10.0, 10.0]
+    cases = (
+        ([6.0] * 9, active_brake),
+        ([10.0, 10.0, 10.0, 9.0, 8.0, 7.0, 6.0, 6.0, 6.0], active_brake),
+        (growing_gap, [0.9, 0.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.0]),
+    )
+
+    for speed_gap, player_brake in cases:
+        result = _evaluate(requirements, pd.DataFrame({
+            "Physics_brake": player_brake,
+            "expert_optimal_brake": [0.8] * 9,
+            "Physics_speed_kmh": [100.0 - gap for gap in speed_gap],
+            "expert_optimal_speed": [100.0] * 9,
+        }))
+
+        assert not result.matched
+
+
+def test_msp22_brake_window_fails_closed_for_missing_or_invalid_inputs(monkeypatch):
+    landmarks = {
+        "player": {
+            "application_onset": 2,
+            "application_end": 6,
+            "release_end": 7,
+            "peak": 0.5,
+        },
+        "expert": {
+            "application_onset": 2,
+            "application_end": 5,
+            "release_end": 7,
+            "peak": 0.8,
+        },
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP22", deterministic.get_label("MSP22"),
+    )
+    complete = {
+        "Physics_brake": [0.0, 0.0, 0.2, 0.4, 0.5, 0.3, 0.2, 0.0, 0.0],
+        "expert_optimal_brake": [0.8] * 9,
+        "Physics_speed_kmh": [94.0, 94.0, 94.0, 93.0, 92.0, 91.0, 90.0, 90.0, 90.0],
+        "expert_optimal_speed": [100.0] * 9,
+    }
+
+    for missing_column in ("Physics_brake", "Physics_speed_kmh"):
+        incomplete = {
+            name: values for name, values in complete.items()
+            if name != missing_column
+        }
+        assert not _evaluate(requirements, pd.DataFrame(incomplete)).matched
+
+    landmarks["player"]["application_end"] = None
+    assert not _evaluate(requirements, pd.DataFrame(complete)).matched
+
+    landmarks["player"]["release_end"] = 2
+    assert not _evaluate(requirements, pd.DataFrame(complete)).matched
+
+    landmarks["player"]["release_end"] = 1
+    assert not _evaluate(requirements, pd.DataFrame(complete)).matched
+
+
+def test_msp13_requires_similar_or_higher_speed_at_corner_entry_start(monkeypatch):
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.measure_segment_shape",
+        lambda *_args: {"phases": [{"entry": 2, "apex": 5, "exit": 7}]},
+    )
+    requirements = deterministic._requirements_for(
+        "MSP13", deterministic.get_label("MSP13"),
+    )
+
+    for player_speed, expected in (
+        (105.0, True),
+        (100.0, True),
+        (95.0, True),
+        (94.9, False),
+    ):
+        result = _evaluate(requirements, pd.DataFrame({
+            "Physics_brake": [0.4] * 8,
+            "expert_optimal_brake": [0.8] * 8,
+            "Physics_speed_kmh": [player_speed] * 8,
+            "expert_optimal_speed": [100.0] * 8,
+        }), end=7)
+
+        assert result.matched is expected
+
+
+def test_msp13_speed_check_uses_entry_start_not_later_entry_speed(monkeypatch):
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.measure_segment_shape",
+        lambda *_args: {"phases": [{"entry": 2, "apex": 5, "exit": 7}]},
+    )
+    requirements = deterministic._requirements_for(
+        "MSP13", deterministic.get_label("MSP13"),
+    )
+    result = _evaluate(requirements, pd.DataFrame({
+        "Physics_brake": [0.4] * 8,
+        "expert_optimal_brake": [0.8] * 8,
+        "Physics_speed_kmh": [80.0, 100.0, 100.0, 100.0, 80.0, 80.0, 80.0, 80.0],
+        "expert_optimal_speed": [100.0] * 8,
+    }), end=7)
+
+    assert result.matched
+
+
+def test_msp13_fails_closed_without_entry_geometry_or_speed(monkeypatch):
+    requirements = deterministic._requirements_for(
+        "MSP13", deterministic.get_label("MSP13"),
+    )
+    low_brake_only = pd.DataFrame({
+        "Physics_brake": [0.4] * 8,
+        "expert_optimal_brake": [0.8] * 8,
+    })
+
+    assert not _evaluate(requirements, low_brake_only, end=7).matched
+
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.measure_segment_shape",
+        lambda *_args: {"phases": [{"entry": 2, "apex": 5, "exit": 7}]},
+    )
+
+    assert not _evaluate(requirements, low_brake_only, end=7).matched
+
+
+def test_msp1_requires_player_speed_gap_below_ten_at_expert_brake_onset(
+    monkeypatch,
+):
+    landmarks = {
+        "player": {"application_onset": 4, "application_end": 8},
+        "expert": {"application_onset": 2, "application_end": 6},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP1", deterministic.get_label("MSP1"),
+    )
+
+    for speed_gap, expected in ((9.9, True), (10.0, False), (10.1, False)):
+        result = _evaluate(requirements, pd.DataFrame({
+            "Physics_speed_kmh": [100.0 - speed_gap] * 12,
+            "expert_optimal_speed": [100.0] * 12,
+        }), end=11)
+
+        assert result.matched is expected
+        if expected:
+            assert result.matched_branches[0].evidence_range == InclusiveRange(2, 8)
+
+
+def test_msp1_application_ends_only_supply_range_and_remain_required(monkeypatch):
+    landmarks = {
+        "player": {"application_onset": 7, "application_end": 8},
+        "expert": {"application_onset": 2, "application_end": 10},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP1", deterministic.get_label("MSP1"),
+    )
+    df = pd.DataFrame({
+        "Physics_speed_kmh": [95.0] * 5 + [80.0] * 7,
+        "expert_optimal_speed": [100.0] * 12,
+    })
+
+    expert_end_later = _evaluate(requirements, df, end=11)
+    assert expert_end_later.matched
+    assert expert_end_later.matched_branches[0].evidence_range == InclusiveRange(2, 10)
+
+    landmarks["player"]["application_end"] = 10
+    landmarks["expert"]["application_end"] = 8
+    player_end_later = _evaluate(requirements, df, end=11)
+    assert player_end_later.matched
+    assert player_end_later.matched_branches[0].evidence_range == InclusiveRange(2, 10)
+
+    landmarks["player"]["application_end"] = None
+    missing_end = _evaluate(requirements, df, end=11)
+    assert not missing_end.matched
+    assert "evidence: unavailable (missing input" in missing_end.failed[0]
 
 
 def test_early_application_label_requires_matching_onset_and_end(monkeypatch):
@@ -577,8 +1027,16 @@ def test_early_application_label_requires_matching_onset_and_end(monkeypatch):
 
 def test_release_initiation_labels_compare_matching_control_endpoints(monkeypatch):
     landmarks = {
-        ("player", "brake"): {"release_onset": 8, "release_end": 12},
-        ("expert", "brake"): {"release_onset": 4, "release_end": 8},
+        ("player", "brake"): {
+            "application_onset": 4,
+            "release_onset": 8,
+            "release_end": 12,
+        },
+        ("expert", "brake"): {
+            "application_onset": 4,
+            "release_onset": 4,
+            "release_end": 8,
+        },
         ("player", "throttle"): {"release_onset": 9, "release_end": 13},
         ("expert", "throttle"): {"release_onset": 5, "release_end": 9},
     }
@@ -600,6 +1058,15 @@ def test_release_initiation_labels_compare_matching_control_endpoints(monkeypatc
         )
         assert result.matched
         assert result.matched_branches[0].evidence_range == expected_range
+
+    landmarks[("player", "brake")]["application_onset"] = 8
+    requirements = deterministic._requirements_for(
+        "MSP27", deterministic.get_label("MSP27"),
+    )
+    mismatched_onset = _evaluate(
+        requirements, pd.DataFrame(index=range(15)), end=14,
+    )
+    assert not mismatched_onset.matched
 
 
 def test_msp23_rejects_release_onsets_one_iloc_apart(monkeypatch):
@@ -654,7 +1121,7 @@ def test_brake_hold_lengths_one_iloc_apart_are_not_aligned(monkeypatch):
     assert result.matched
 
 
-def test_every_control_onset_comparison_has_matching_end_comparison():
+def test_every_control_onset_comparison_has_matching_end_evidence():
     root = Path(__file__).parents[1] / "app/internal_knowledge_base"
     requirements = json.loads(
         (root / "sub_label_annotation.json").read_text(encoding="utf-8")
@@ -669,8 +1136,11 @@ def test_every_control_onset_comparison_has_matching_end_comparison():
                 tuple(predicate["inputs"]["tags"]): predicate["condition"]
                 for predicate in predicates
             }
-            for control in ("brake", "throttle"):
-                for phase in ("application", "release"):
+            for control, phases in (
+                ("brake", ("application", "release")),
+                ("throttle", ("reapplication", "release")),
+            ):
+                for phase in phases:
                     onset_tags = (
                         f"player_{control}_{phase}_onset_iloc",
                         f"expert_{control}_{phase}_onset_iloc",
@@ -686,7 +1156,10 @@ def test_every_control_onset_comparison_has_matching_end_comparison():
                     if onset["operator"] == "exists" or onset["value"] in {
                         "earlier", "later",
                     }:
-                        assert by_tags[end_tags] == onset
+                        if label_id == "MSP1":
+                            assert by_tags[end_tags] == {}
+                        else:
+                            assert by_tags[end_tags] == onset
 
 
 def test_every_shift_timing_requirement_uses_its_expert_range():
@@ -695,16 +1168,17 @@ def test_every_shift_timing_requirement_uses_its_expert_range():
         (root / "sub_label_annotation.json").read_text(encoding="utf-8")
     )["sub_label_selection_requirements"]
 
-    for label_id, direction, relation in (
-        ("MSP35", "up", "earlier"),
-        ("MSP36", "up", "later"),
-        ("MSP37", "down", "earlier"),
-        ("MSP38", "down", "later"),
+    for label_id, direction, operator, value in (
+        ("MSP35", "up", "gt", 1),
+        ("MSP36", "up", "lt", -1),
+        ("MSP37", "down", "gt", 1),
+        ("MSP38", "down", "lt", -1),
     ):
         assert requirements[label_id] == _requirement(
             [f"expert_{direction}shift_range"],
             f"compare_{direction}shift_timing",
-            value=relation,
+            operator=operator,
+            value=value,
         )
 
 
@@ -793,6 +1267,64 @@ def test_phase_resolver_uses_shape_landmarks(monkeypatch):
 
     assert result.matched
     assert result.matched_branches[0].evidence_range == InclusiveRange(3, 7)
+
+
+def test_corresponding_trajectory_offset_uses_same_iloc_for_both_corner_directions():
+    from app.shared.annotation_agent_tools import (
+        calculate_corresponding_trajectory_offset,
+    )
+
+    for direction in (1.0, -1.0):
+        angles = np.linspace(0.0, direction * np.pi / 2.0, 9)
+        expert_x = 10.0 * np.cos(angles)
+        expert_y = 10.0 * np.sin(angles)
+        for radius_scale, expected_sign in ((1.2, 1.0), (0.8, -1.0)):
+            player_x = expert_x.copy()
+            player_y = expert_y.copy()
+            player_x[-1] *= radius_scale
+            player_y[-1] *= radius_scale
+            offsets = calculate_corresponding_trajectory_offset(pd.DataFrame({
+                "Graphics_player_pos_x": player_x,
+                "Graphics_player_pos_y": player_y,
+                "expert_optimal_player_pos_x": expert_x,
+                "expert_optimal_player_pos_y": expert_y,
+            }))
+
+            assert offsets is not None
+            assert float(offsets[-1]) * expected_sign > 1.0
+
+
+def test_msp16_uses_only_the_final_exit_iloc(monkeypatch):
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.measure_segment_shape",
+        lambda *_args: {"phases": [{"entry": 0, "apex": 2, "exit": 5}]},
+    )
+    requirements = deterministic._requirements_for(
+        "MSP16", deterministic.get_label("MSP16"),
+    )
+
+    assert requirements == _requirement(
+        ["corner_exit_end_iloc"],
+        "find_trajectory_position_at_iloc",
+        value="wider",
+    )
+
+    cases = (
+        ([-2.0, -2.0, -2.0, -2.0, -2.0, 1.01], True),
+        ([2.0, 2.0, 2.0, 2.0, 2.0, 1.0], False),
+        ([2.0, 2.0, 2.0, 2.0, 2.0, -1.01], False),
+        ([2.0, 2.0, 2.0, 2.0, 2.0, np.nan], False),
+    )
+    for offsets, expected in cases:
+        monkeypatch.setattr(
+            "app.shared.annotation_agent_tools.calculate_corresponding_trajectory_offset",
+            lambda _df, offsets=offsets: np.array(offsets),
+        )
+        result = _evaluate(requirements, pd.DataFrame(index=range(6)), end=5)
+
+        assert result.matched is expected
+        if expected:
+            assert result.matched_branches[0].evidence_range == InclusiveRange(5, 5)
 
 
 def test_altitude_strategy_classifies_only_resolved_phase():
