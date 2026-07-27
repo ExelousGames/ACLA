@@ -104,6 +104,114 @@ def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
 
 
+def test_msp20_uses_aligned_release_and_player_reapplication_stability():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    requirements = json.loads(
+        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
+    )["sub_label_selection_requirements"]
+    predicates = [
+        _requirement(
+            ["player_throttle_release_end_iloc", "expert_throttle_release_end_iloc"],
+            "compare_ilocs",
+            value="aligned",
+        )["any_of"][0]["all_of"][0],
+        _requirement(
+            [
+                "player_throttle_reapplication_onset_iloc",
+                "expert_throttle_reapplication_onset_iloc",
+            ],
+            "compare_ilocs",
+            value="earlier",
+        )["any_of"][0]["all_of"][0],
+        _requirement(
+            [
+                "player_throttle_reapplication_onset_iloc",
+                "player_throttle_reapplication_end_iloc",
+            ],
+            "find_oversteer_or_understeer_between_ilocs",
+        )["any_of"][0]["all_of"][0],
+    ]
+
+    assert requirements["MSP20"] == {
+        "enabled": True,
+        "any_of": [{"all_of": predicates}],
+    }
+
+
+def test_msp21_uses_aligned_onset_later_end_and_close_speed():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    requirements = json.loads(
+        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
+    )["sub_label_selection_requirements"]
+    predicates = [
+        _requirement(
+            [
+                "player_throttle_reapplication_onset_iloc",
+                "expert_throttle_reapplication_onset_iloc",
+            ],
+            "compare_ilocs",
+            value="aligned",
+        )["any_of"][0]["all_of"][0],
+        _requirement(
+            [
+                "player_throttle_reapplication_end_iloc",
+                "expert_throttle_reapplication_end_iloc",
+            ],
+            "compare_ilocs",
+            value="later",
+        )["any_of"][0]["all_of"][0],
+        _requirement(
+            ["expert_throttle_reapplication_onset_iloc"],
+            "find_speed_difference_at_iloc",
+            operator="between",
+            value=[-5, 5],
+        )["any_of"][0]["all_of"][0],
+    ]
+
+    assert requirements["MSP21"] == {
+        "enabled": True,
+        "any_of": [{"all_of": predicates}],
+    }
+
+
+def test_msp21_speed_tolerance_is_inclusive_at_expert_onset():
+    tag = "expert_throttle_reapplication_onset_iloc"
+    inputs = InputRegistry({
+        tag: InputDefinition(
+            "iloc",
+            lambda _context, _scope: ResolvedInput(
+                tag, "iloc", 1, InclusiveRange(1, 1),
+            ),
+        ),
+    })
+    interpreter = RequirementInterpreter(inputs, deterministic.FACT_REGISTRY)
+    requirements = _requirement(
+        [tag],
+        "find_speed_difference_at_iloc",
+        operator="between",
+        value=[-5, 5],
+    )
+
+    for speed_difference, expected in (
+        (-5.0, True),
+        (5.0, True),
+        (-5.1, False),
+        (5.1, False),
+    ):
+        context = EvaluationContext.from_dataframe(pd.DataFrame({
+            "Physics_speed_kmh": [100.0] * 3,
+            "expert_optimal_speed": [100.0 + speed_difference] * 3,
+        }))
+
+        result = interpreter.evaluate(
+            requirements,
+            context,
+            InclusiveRange(0, 2),
+        )
+
+        assert result.matched is expected
+
+
 def test_sub_label_requirements_do_not_depend_on_labels_section():
     root = Path(__file__).parents[1] / "app/internal_knowledge_base"
     catalog = json.loads(
@@ -150,6 +258,10 @@ def test_registry_is_the_source_of_known_tags_and_facts():
     assert "find_speed_gap_slope" in deterministic.FACT_REGISTRY.names()
     assert "find_player_brake_peak" in deterministic.FACT_REGISTRY.names()
     assert "find_trajectory_position_at_iloc" in deterministic.FACT_REGISTRY.names()
+    assert (
+        "find_oversteer_or_understeer_between_ilocs"
+        in deterministic.FACT_REGISTRY.names()
+    )
     assert "player_brake_application_onset_iloc" in deterministic.INPUT_REGISTRY.names()
     assert "player_throttle_reapplication_onset_iloc" in deterministic.INPUT_REGISTRY.names()
     assert "player_throttle_reapplication_end_iloc" in deterministic.INPUT_REGISTRY.names()
@@ -1151,6 +1263,21 @@ def test_every_control_onset_comparison_has_matching_end_evidence():
                         f"player_{control}_{phase}_end_iloc",
                         f"expert_{control}_{phase}_end_iloc",
                     )
+                    if (
+                        label_id == "MSP20"
+                        and control == "throttle"
+                        and phase == "reapplication"
+                    ):
+                        player_interval_tags = (
+                            "player_throttle_reapplication_onset_iloc",
+                            "player_throttle_reapplication_end_iloc",
+                        )
+                        assert by_tags[player_interval_tags] == {
+                            "fact": "find_oversteer_or_understeer_between_ilocs",
+                            "operator": "eq",
+                            "value": True,
+                        }
+                        continue
                     assert end_tags in by_tags, f"{label_id} omits {phase}_end"
                     onset = by_tags[onset_tags]
                     if onset["operator"] == "exists" or onset["value"] in {
@@ -1384,6 +1511,84 @@ def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():
     ]}
 
     assert _evaluate({"enabled": True, "any_of": [branch]}, df).matched
+
+
+def test_oversteer_or_understeer_between_ilocs_matches_either_balance_direction():
+    def evaluate(front, rear):
+        size = 5
+        df = pd.DataFrame({
+            "Physics_slip_angle_front_left": [front] * size,
+            "Physics_slip_angle_front_right": [front] * size,
+            "Physics_slip_angle_rear_left": [rear] * size,
+            "Physics_slip_angle_rear_right": [rear] * size,
+        })
+        values = {
+            "player_throttle_reapplication_onset_iloc": 1,
+            "player_throttle_reapplication_end_iloc": 3,
+        }
+        inputs = InputRegistry({
+            tag: InputDefinition(
+                "iloc",
+                lambda _context, _scope, tag=tag, value=value: ResolvedInput(
+                    tag, "iloc", value, InclusiveRange(value, value),
+                ),
+            )
+            for tag, value in values.items()
+        })
+        interpreter = RequirementInterpreter(inputs, deterministic.FACT_REGISTRY)
+        requirements = _requirement(
+            list(values),
+            "find_oversteer_or_understeer_between_ilocs",
+        )
+        return interpreter.evaluate(
+            requirements,
+            EvaluationContext.from_dataframe(df),
+            InclusiveRange(0, size - 1),
+        )
+
+    oversteer = evaluate(0.01, 0.2)
+    understeer = evaluate(0.2, 0.01)
+
+    assert oversteer.matched
+    assert understeer.matched
+    assert oversteer.matched_branches[0].evidence_range == InclusiveRange(1, 3)
+    assert understeer.matched_branches[0].evidence_range == InclusiveRange(1, 3)
+
+
+def test_oversteer_or_understeer_between_ilocs_rejects_invalid_or_stable_intervals():
+    size = 5
+    complete = pd.DataFrame({
+        "Physics_slip_angle_front_left": [0.1] * size,
+        "Physics_slip_angle_front_right": [0.1] * size,
+        "Physics_slip_angle_rear_left": [0.1] * size,
+        "Physics_slip_angle_rear_right": [0.1] * size,
+    })
+    missing = complete.drop(columns=["Physics_slip_angle_rear_right"])
+    requirements = _requirement(
+        ["onset", "end"],
+        "find_oversteer_or_understeer_between_ilocs",
+    )
+
+    def evaluate(df, onset, end):
+        values = {"onset": onset, "end": end}
+        inputs = InputRegistry({
+            tag: InputDefinition(
+                "iloc",
+                lambda _context, _scope, tag=tag, value=value: ResolvedInput(
+                    tag, "iloc", value, InclusiveRange(value, value),
+                ),
+            )
+            for tag, value in values.items()
+        })
+        return RequirementInterpreter(inputs, deterministic.FACT_REGISTRY).evaluate(
+            requirements,
+            EvaluationContext.from_dataframe(df),
+            InclusiveRange(0, size - 1),
+        )
+
+    assert not evaluate(complete, 1, 3).matched
+    assert not evaluate(missing, 1, 3).matched
+    assert not evaluate(complete, 3, 1).matched
 
 
 def test_opponent_strategies_share_one_cached_analysis(monkeypatch):

@@ -540,6 +540,18 @@ def _range_between_ilocs(
     return InclusiveRange(start, end) if start <= end else None
 
 
+def _oversteer_or_understeer_between_ilocs(
+    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+) -> Any:
+    range_ = _range_between_ilocs(inputs)
+    if range_ is None:
+        return MISSING
+    values = _finite(_slip_balance(context, range_))
+    if not len(values):
+        return MISSING
+    return bool(np.max(values) > 0.02 or np.min(values) < -0.02)
+
+
 def _speed_gap_slope_between_ilocs(
     context: EvaluationContext, inputs: Sequence[ResolvedInput],
 ) -> Any:
@@ -949,6 +961,9 @@ def build_fact_registry() -> FactRegistry:
         ),
         "find_trajectory_position_at_iloc": FactDefinition(
             iloc_kind, _trajectory_position_at_iloc,
+        ),
+        "find_oversteer_or_understeer_between_ilocs": FactDefinition(
+            iloc_pair, _oversteer_or_understeer_between_ilocs,
         ),
         "find_oversteer": FactDefinition(range_kind, _fact_range(lambda c, r: (
             bool(np.nanmax(_slip_balance(c, r)) > 0.02) if _slip_balance(c, r) is not None else MISSING

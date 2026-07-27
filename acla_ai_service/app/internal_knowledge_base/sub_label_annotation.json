@@ -525,7 +525,7 @@
               "condition": {
                 "fact": "find_speed_difference_at_iloc",
                 "operator": "gt",
-                "value": 5
+                "value": 0
               }
             },
             {
@@ -533,6 +533,60 @@
                 "tags": [
                   "player_brake_application_onset_iloc",
                   "player_brake_application_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_gap_slope",
+                "operator": "gt",
+                "value": 0
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "player_brake_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_player_brake_peak",
+                "operator": "gt",
+                "value": 0.1
+              }
+            }
+          ]
+        },
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_difference_at_iloc",
+                "operator": "lt",
+                "value": -5
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_difference_at_iloc",
+                "operator": "gt",
+                "value": 5
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "player_brake_release_end_iloc"
                 ]
               },
               "condition": {
@@ -942,6 +996,19 @@
             {
               "inputs": {
                 "tags": [
+                  "player_throttle_release_end_iloc",
+                  "expert_throttle_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "aligned"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
                   "player_throttle_reapplication_onset_iloc",
                   "expert_throttle_reapplication_onset_iloc"
                 ]
@@ -955,14 +1022,14 @@
             {
               "inputs": {
                 "tags": [
-                  "player_throttle_reapplication_end_iloc",
-                  "expert_throttle_reapplication_end_iloc"
+                  "player_throttle_reapplication_onset_iloc",
+                  "player_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
+                "fact": "find_oversteer_or_understeer_between_ilocs",
                 "operator": "eq",
-                "value": "earlier"
+                "value": true
               }
             }
           ]
@@ -984,7 +1051,7 @@
               "condition": {
                 "fact": "compare_ilocs",
                 "operator": "eq",
-                "value": "later"
+                "value": "aligned"
               }
             },
             {
@@ -998,6 +1065,21 @@
                 "fact": "compare_ilocs",
                 "operator": "eq",
                 "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "expert_throttle_reapplication_onset_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_difference_at_iloc",
+                "operator": "between",
+                "value": [
+                  -5,
+                  5
+                ]
               }
             }
           ]
@@ -1051,11 +1133,7 @@
                   "expert_throttle_release_onset_iloc"
                 ]
               },
-              "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "later"
-              }
+              "condition": {}
             },
             {
               "inputs": {
@@ -1087,9 +1165,6 @@
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "earlier"
               }
             },
             {
