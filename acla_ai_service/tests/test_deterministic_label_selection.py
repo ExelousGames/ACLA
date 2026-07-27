@@ -109,7 +109,7 @@ def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
 
 
-def test_msp15_uses_all_reapplication_boundaries_for_handling_balance():
+def test_msp15_uses_player_reapplication_boundaries_for_handling_balance():
     root = Path(__file__).parents[1] / "app/internal_knowledge_base"
     requirements = json.loads(
         (root / "sub_label_annotation.json").read_text(encoding="utf-8")
@@ -119,8 +119,6 @@ def test_msp15_uses_all_reapplication_boundaries_for_handling_balance():
         [
             "player_throttle_reapplication_onset_iloc",
             "player_throttle_reapplication_end_iloc",
-            "expert_throttle_reapplication_onset_iloc",
-            "expert_throttle_reapplication_end_iloc",
         ],
         "find_oversteer_or_understeer_between_ilocs",
     )
@@ -144,32 +142,35 @@ def test_msp15_checks_player_balance_across_the_combined_reapplication_range(
         "MSP15", deterministic.get_label("MSP15"),
     )
 
-    def evaluate(front, rear):
+    def evaluate(balances):
         size = 12
-        return _evaluate(
-            requirements,
-            pd.DataFrame({
-                "Physics_slip_angle_front_left": [front] * size,
-                "Physics_slip_angle_front_right": [front] * size,
-                "Physics_slip_angle_rear_left": [rear] * size,
-                "Physics_slip_angle_rear_right": [rear] * size,
-            }),
+        values = np.asarray(balances, dtype=float)
+        front = np.maximum(-values, 0.0)
+        rear = np.maximum(values, 0.0)
+        context = EvaluationContext(pd.DataFrame({
+            "Physics_slip_angle_front_left": front,
+            "Physics_slip_angle_front_right": front,
+            "Physics_slip_angle_rear_left": rear,
+            "Physics_slip_angle_rear_right": rear,
+        }))
+        return deterministic.evaluate_requirements(
+            requirements, context, InclusiveRange(0, size - 1),
         )
 
-    oversteer = evaluate(0.01, 0.2)
-    understeer = evaluate(0.2, 0.01)
+    oversteer = evaluate([0.0] * 5 + [0.03] * 7)
+    understeer = evaluate([0.0] * 5 + [-0.03] * 7)
 
     assert oversteer.matched
     assert understeer.matched
-    assert oversteer.matched_branches[0].evidence_range == InclusiveRange(2, 9)
-    assert understeer.matched_branches[0].evidence_range == InclusiveRange(2, 9)
-    assert not evaluate(0.1, 0.1).matched
+    assert oversteer.matched_branches[0].evidence_range == InclusiveRange(4, 7)
+    assert understeer.matched_branches[0].evidence_range == InclusiveRange(4, 7)
+    assert not evaluate([0.0] * 12).matched
 
-    landmarks["expert"]["reapplication_end"] = None
-    missing_boundary = evaluate(0.01, 0.2)
+    landmarks["player"]["reapplication_end"] = None
+    missing_boundary = evaluate([0.0] * 5 + [0.03] * 7)
 
     assert not missing_boundary.matched
-    assert "missing input expert_throttle_reapplication_end_iloc" in (
+    assert "missing input player_throttle_reapplication_end_iloc" in (
         missing_boundary.failed[0]
     )
 
@@ -1726,87 +1727,138 @@ def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():
     assert _evaluate({"enabled": True, "any_of": [branch]}, df).matched
 
 
-def test_oversteer_or_understeer_between_ilocs_matches_either_balance_direction():
-    def evaluate(front, rear, onset=1, end=3):
-        size = 5
-        df = pd.DataFrame({
-            "Physics_slip_angle_front_left": [front] * size,
-            "Physics_slip_angle_front_right": [front] * size,
-            "Physics_slip_angle_rear_left": [rear] * size,
-            "Physics_slip_angle_rear_right": [rear] * size,
-        })
-        values = {
-            "player_throttle_reapplication_onset_iloc": onset,
-            "player_throttle_reapplication_end_iloc": end,
-        }
-        inputs = InputRegistry({
-            tag: InputDefinition(
-                "iloc",
-                lambda _context, _scope, tag=tag, value=value: ResolvedInput(
-                    tag, "iloc", value, InclusiveRange(value, value),
-                ),
-            )
-            for tag, value in values.items()
-        })
-        interpreter = RequirementInterpreter(inputs, deterministic.FACT_REGISTRY)
-        requirements = _requirement(
-            list(values),
-            "find_oversteer_or_understeer_between_ilocs",
-        )
-        return interpreter.evaluate(
-            requirements,
-            EvaluationContext.from_dataframe(df),
-            InclusiveRange(0, size - 1),
-        )
-
-    oversteer = evaluate(0.01, 0.2)
-    understeer = evaluate(0.2, 0.01)
-    reversed_points = evaluate(0.01, 0.2, onset=3, end=1)
-
-    assert oversteer.matched
-    assert understeer.matched
-    assert reversed_points.matched
-    assert oversteer.matched_branches[0].evidence_range == InclusiveRange(1, 3)
-    assert understeer.matched_branches[0].evidence_range == InclusiveRange(1, 3)
-    assert (
-        reversed_points.matched_branches[0].evidence_range
-        == InclusiveRange(1, 3)
-    )
+def _handling_balance_frame(balances, *, index=None):
+    values = np.asarray(balances, dtype=float)
+    front = np.maximum(-values, 0.0)
+    rear = np.maximum(values, 0.0)
+    return pd.DataFrame({
+        "Physics_slip_angle_front_left": front,
+        "Physics_slip_angle_front_right": front,
+        "Physics_slip_angle_rear_left": rear,
+        "Physics_slip_angle_rear_right": rear,
+    }, index=index)
 
 
-def test_oversteer_or_understeer_between_ilocs_rejects_missing_or_stable_intervals():
-    size = 5
-    complete = pd.DataFrame({
-        "Physics_slip_angle_front_left": [0.1] * size,
-        "Physics_slip_angle_front_right": [0.1] * size,
-        "Physics_slip_angle_rear_left": [0.1] * size,
-        "Physics_slip_angle_rear_right": [0.1] * size,
-    })
-    missing = complete.drop(columns=["Physics_slip_angle_rear_right"])
+def _evaluate_handling_balance(df, onset, end):
     requirements = _requirement(
         ["onset", "end"],
         "find_oversteer_or_understeer_between_ilocs",
     )
+    values = {"onset": onset, "end": end}
+    inputs = InputRegistry({
+        tag: InputDefinition(
+            "iloc",
+            lambda _context, _scope, tag=tag, value=value: ResolvedInput(
+                tag, "iloc", value, InclusiveRange(value, value),
+            ),
+        )
+        for tag, value in values.items()
+    })
+    scope = InclusiveRange(int(df.index.min()), int(df.index.max()))
+    return RequirementInterpreter(inputs, deterministic.FACT_REGISTRY).evaluate(
+        requirements,
+        EvaluationContext(df),
+        scope,
+    )
 
-    def evaluate(df, onset, end):
-        values = {"onset": onset, "end": end}
-        inputs = InputRegistry({
-            tag: InputDefinition(
-                "iloc",
-                lambda _context, _scope, tag=tag, value=value: ResolvedInput(
-                    tag, "iloc", value, InclusiveRange(value, value),
-                ),
-            )
-            for tag, value in values.items()
-        })
-        return RequirementInterpreter(inputs, deterministic.FACT_REGISTRY).evaluate(
-            requirements,
-            EvaluationContext.from_dataframe(df),
-            InclusiveRange(0, size - 1),
+
+def test_oversteer_or_understeer_between_ilocs_detects_new_threshold_entries():
+    cases = (
+        ([0.0, 0.03], 0, 1),
+        ([0.0, -0.03], 0, 1),
+        ([0.02, 0.03], 0, 1),
+        ([-0.02, -0.03], 0, 1),
+        ([0.0, 0.03, 0.0], 0, 2),
+        ([0.0, -0.03, 0.0], 0, 2),
+        ([0.03, 0.0, 0.03], 1, 2),
+        ([-0.03, 0.0, -0.03], 1, 2),
+    )
+
+    for balances, onset, end in cases:
+        result = _evaluate_handling_balance(
+            _handling_balance_frame(balances), onset, end,
         )
 
-    assert not evaluate(complete, 1, 3).matched
-    assert not evaluate(missing, 1, 3).matched
+        assert result.matched, (balances, onset, end)
+        assert result.matched_branches[0].evidence_range == InclusiveRange(
+            min(onset, end), max(onset, end),
+        )
+
+
+def test_oversteer_or_understeer_between_ilocs_uses_positional_predecessor():
+    df = _handling_balance_frame([0.0, 0.03], index=[10, 20])
+
+    result = _evaluate_handling_balance(df, 20, 20)
+
+    assert result.matched
+    assert result.matched_branches[0].evidence_range == InclusiveRange(20, 20)
+
+
+def test_oversteer_or_understeer_between_ilocs_accepts_reversed_endpoints():
+    df = _handling_balance_frame([0.0, 0.03, 0.0], index=[10, 20, 30])
+
+    result = _evaluate_handling_balance(df, 30, 20)
+
+    assert result.matched
+    assert result.matched_branches[0].evidence_range == InclusiveRange(20, 30)
+
+
+def test_oversteer_or_understeer_between_ilocs_rejects_carried_in_problems():
+    cases = (
+        [0.03, 0.03, 0.03, 0.03],
+        [0.05, 0.04, 0.03, 0.025],
+        [0.03, 0.04, 0.05, 0.06],
+        [-0.03, -0.03, -0.03, -0.03],
+        [-0.05, -0.04, -0.03, -0.025],
+        [-0.03, -0.04, -0.05, -0.06],
+    )
+
+    for balances in cases:
+        result = _evaluate_handling_balance(
+            _handling_balance_frame(balances), 1, 3,
+        )
+
+        assert not result.matched, balances
+
+
+def test_oversteer_or_understeer_between_ilocs_honors_boundaries_and_adjacency():
+    rejected = (
+        [0.0, 0.02],
+        [0.0, -0.02],
+        [0.0, np.nan, 0.03],
+        [0.0, np.nan, -0.03],
+        [0.03, 0.0],
+        [-0.03, 0.0],
+    )
+    matched = (
+        [0.0, np.nan, 0.0, 0.03],
+        [0.0, np.nan, 0.0, -0.03],
+    )
+
+    for balances in rejected:
+        result = _evaluate_handling_balance(
+            _handling_balance_frame(balances), 0, len(balances) - 1,
+        )
+        assert not result.matched, balances
+    for balances in matched:
+        result = _evaluate_handling_balance(
+            _handling_balance_frame(balances), 0, len(balances) - 1,
+        )
+        assert result.matched, balances
+
+
+def test_oversteer_or_understeer_between_ilocs_rejects_missing_or_insufficient_data():
+    complete = _handling_balance_frame([0.0, 0.0])
+    missing = complete.drop(columns=["Physics_slip_angle_rear_right"])
+    empty_range = _handling_balance_frame([0.0, 0.03], index=[0, 10])
+    no_predecessor = _handling_balance_frame([0.03], index=[10])
+    no_comparable_pair = _handling_balance_frame([np.nan, 0.0])
+
+    assert not _evaluate_handling_balance(complete, 0, 1).matched
+    assert not _evaluate_handling_balance(missing, 0, 1).matched
+    assert not _evaluate_handling_balance(empty_range, 3, 5).matched
+    assert not _evaluate_handling_balance(no_predecessor, 10, 10).matched
+    assert not _evaluate_handling_balance(no_comparable_pair, 0, 1).matched
 
 
 def test_opponent_strategies_share_one_cached_analysis(monkeypatch):

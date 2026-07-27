@@ -535,10 +535,41 @@ def _speed_difference_at_iloc(
 def _oversteer_or_understeer(
     context: EvaluationContext, range_: InclusiveRange,
 ) -> Any:
-    values = _finite(_slip_balance(context, range_))
-    if not len(values):
+    required_channels = (
+        "Physics_slip_angle_front_left",
+        "Physics_slip_angle_front_right",
+        "Physics_slip_angle_rear_left",
+        "Physics_slip_angle_rear_right",
+    )
+    if any(name not in context.telemetry.columns for name in required_channels):
         return MISSING
-    return bool(np.max(values) > 0.02 or np.min(values) < -0.02)
+
+    index = context.telemetry.index.to_numpy()
+    positions = np.flatnonzero(
+        (index >= range_.start) & (index <= range_.end)
+    )
+    if not len(positions):
+        return False
+
+    analysis_range = range_
+    first_position = int(positions[0])
+    if first_position > 0:
+        analysis_range = InclusiveRange(
+            int(index[first_position - 1]), range_.end,
+        )
+
+    values = _slip_balance(context, analysis_range)
+    if values is None:
+        return False
+    for previous, current in zip(values[:-1], values[1:]):
+        if not (np.isfinite(previous) and np.isfinite(current)):
+            continue
+        if (
+            previous <= 0.02 < current
+            or previous >= -0.02 > current
+        ):
+            return True
+    return False
 
 
 def _speed_gap_slope(
