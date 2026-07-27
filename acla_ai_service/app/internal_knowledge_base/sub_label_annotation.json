@@ -64,10 +64,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_onset_iloc",
-                  "expert_throttle_reapplication_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_onset_iloc",
+                  "expert": "expert_throttle_reapplication_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -77,10 +77,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_end_iloc",
-                  "expert_throttle_reapplication_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_end_iloc",
+                  "expert": "expert_throttle_reapplication_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -234,10 +234,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_onset_iloc",
-                  "expert_throttle_reapplication_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_onset_iloc",
+                  "expert": "expert_throttle_reapplication_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -247,10 +247,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_end_iloc",
-                  "expert_throttle_reapplication_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_end_iloc",
+                  "expert": "expert_throttle_reapplication_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -281,10 +281,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_onset_iloc",
-                  "expert_throttle_reapplication_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_onset_iloc",
+                  "expert": "expert_throttle_reapplication_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -294,10 +294,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_end_iloc",
-                  "expert_throttle_reapplication_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_end_iloc",
+                  "expert": "expert_throttle_reapplication_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -328,10 +328,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_onset_iloc",
-                  "expert_brake_application_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_onset_iloc",
+                  "expert": "expert_brake_application_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -341,10 +341,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_end_iloc",
+                  "expert": "expert_brake_application_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -375,10 +375,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_onset_iloc",
-                  "expert_brake_application_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_onset_iloc",
+                  "expert": "expert_brake_application_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -388,10 +388,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_end_iloc",
+                  "expert": "expert_brake_application_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -410,10 +410,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_onset_iloc",
-                  "expert_brake_application_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_onset_iloc",
+                  "expert": "expert_brake_application_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -453,10 +453,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_onset_iloc",
-                  "expert_brake_application_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_onset_iloc",
+                  "expert": "expert_brake_application_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -619,10 +619,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_onset_iloc",
-                  "expert_brake_application_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_onset_iloc",
+                  "expert": "expert_brake_application_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -632,10 +632,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_end_iloc",
+                  "expert": "expert_brake_application_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -654,10 +654,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_onset_iloc",
-                  "expert_brake_application_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_onset_iloc",
+                  "expert": "expert_brake_application_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -667,10 +667,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_end_iloc",
+                  "expert": "expert_brake_application_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -689,10 +689,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_brake_release_onset_iloc",
-                  "expert_brake_release_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_release_onset_iloc",
+                  "expert": "expert_brake_release_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -702,10 +702,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_release_end_iloc",
-                  "expert_brake_release_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_release_end_iloc",
+                  "expert": "expert_brake_release_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -724,10 +724,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_brake_release_onset_iloc",
-                  "expert_brake_release_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_release_onset_iloc",
+                  "expert": "expert_brake_release_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -737,10 +737,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_release_end_iloc",
-                  "expert_brake_release_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_release_end_iloc",
+                  "expert": "expert_brake_release_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -759,10 +759,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_onset_iloc",
-                  "expert_brake_application_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_onset_iloc",
+                  "expert": "expert_brake_application_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -772,10 +772,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_release_onset_iloc",
-                  "expert_brake_release_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_release_onset_iloc",
+                  "expert": "expert_brake_release_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -785,10 +785,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_release_end_iloc",
-                  "expert_brake_release_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_release_end_iloc",
+                  "expert": "expert_brake_release_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -807,10 +807,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_brake_application_end_iloc",
-                  "expert_brake_application_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_application_end_iloc",
+                  "expert": "expert_brake_application_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -820,10 +820,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_brake_release_onset_iloc",
-                  "expert_brake_release_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_brake_release_onset_iloc",
+                  "expert": "expert_brake_release_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -919,26 +919,13 @@
               "inputs": {
                 "tags": [
                   "player_throttle_reapplication_onset_iloc",
-                  "expert_throttle_reapplication_onset_iloc"
+                  "player_throttle_reapplication_end_iloc"
                 ]
               },
               "condition": {
-                "fact": "compare_ilocs",
+                "fact": "find_oversteer_or_understeer_between_ilocs",
                 "operator": "eq",
-                "value": "aligned"
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_end_iloc",
-                  "expert_throttle_reapplication_end_iloc"
-                ]
-              },
-              "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "earlier"
+                "value": true
               }
             }
           ]
@@ -952,10 +939,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_onset_iloc",
-                  "expert_throttle_reapplication_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_onset_iloc",
+                  "expert": "expert_throttle_reapplication_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -965,10 +952,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_end_iloc",
-                  "expert_throttle_reapplication_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_end_iloc",
+                  "expert": "expert_throttle_reapplication_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -995,10 +982,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_release_end_iloc",
-                  "expert_throttle_release_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_release_end_iloc",
+                  "expert": "expert_throttle_release_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1008,10 +995,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_onset_iloc",
-                  "expert_throttle_reapplication_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_onset_iloc",
+                  "expert": "expert_throttle_reapplication_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1043,10 +1030,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_onset_iloc",
-                  "expert_throttle_reapplication_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_onset_iloc",
+                  "expert": "expert_throttle_reapplication_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1056,10 +1043,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_reapplication_end_iloc",
-                  "expert_throttle_reapplication_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_reapplication_end_iloc",
+                  "expert": "expert_throttle_reapplication_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1093,10 +1080,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_release_onset_iloc",
-                  "expert_throttle_release_onset_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_release_onset_iloc",
+                  "expert": "expert_throttle_release_onset_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1106,10 +1093,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_release_end_iloc",
-                  "expert_throttle_release_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_release_end_iloc",
+                  "expert": "expert_throttle_release_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1137,10 +1124,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_release_end_iloc",
-                  "expert_throttle_release_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_release_end_iloc",
+                  "expert": "expert_throttle_release_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1169,10 +1156,10 @@
             },
             {
               "inputs": {
-                "tags": [
-                  "player_throttle_release_end_iloc",
-                  "expert_throttle_release_end_iloc"
-                ]
+                "tags": {
+                  "player": "player_throttle_release_end_iloc",
+                  "expert": "expert_throttle_release_end_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1191,10 +1178,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_turn_in_iloc",
-                  "expert_turn_in_iloc"
-                ]
+                "tags": {
+                  "player": "player_turn_in_iloc",
+                  "expert": "expert_turn_in_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1225,10 +1212,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_turn_in_iloc",
-                  "expert_turn_in_iloc"
-                ]
+                "tags": {
+                  "player": "player_turn_in_iloc",
+                  "expert": "expert_turn_in_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1259,10 +1246,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_apex_iloc",
-                  "expert_apex_iloc"
-                ]
+                "tags": {
+                  "player": "player_apex_iloc",
+                  "expert": "expert_apex_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1281,10 +1268,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_apex_iloc",
-                  "expert_apex_iloc"
-                ]
+                "tags": {
+                  "player": "player_apex_iloc",
+                  "expert": "expert_apex_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1303,10 +1290,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_turn_exit_iloc",
-                  "expert_turn_exit_iloc"
-                ]
+                "tags": {
+                  "player": "player_turn_exit_iloc",
+                  "expert": "expert_turn_exit_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",
@@ -1337,10 +1324,10 @@
           "all_of": [
             {
               "inputs": {
-                "tags": [
-                  "player_turn_exit_iloc",
-                  "expert_turn_exit_iloc"
-                ]
+                "tags": {
+                  "player": "player_turn_exit_iloc",
+                  "expert": "expert_turn_exit_iloc"
+                }
               },
               "condition": {
                 "fact": "compare_ilocs",

@@ -110,7 +110,8 @@ def render_annotation_manager(
             
         # Manual Annotation Logic
         input_min = start_limit
-        input_max = end_limit
+        start_input_max = max(start_limit, end_limit - 1)
+        end_input_max = end_limit
     
         # Existing Annotation Selected - Edit Mode
         ann = st.session_state.current_annotations[selected_option]
@@ -133,7 +134,7 @@ def render_annotation_manager(
             form_start = st.number_input(
                 "Start Index", 
                 min_value=input_min, 
-                max_value=input_max, 
+                max_value=start_input_max,
                 value=default_start,
                 key=f"detailed_form_start_{selected_option}",
                 disabled=False
@@ -142,7 +143,7 @@ def render_annotation_manager(
             form_end = st.number_input(
                 "End Index", 
                 min_value=input_min, 
-                max_value=input_max, 
+                max_value=end_input_max,
                 value=default_end,
                 key=f"detailed_form_end_{selected_option}",
                 disabled=False

@@ -27,13 +27,18 @@ from app.local_annotation_agent.workflow.deterministic_facts import (
 
 
 def _requirement(tags, fact, operator="eq", value=True):
+    normalized_tags = dict(tags) if isinstance(tags, dict) else list(tags)
     return {
         "enabled": True,
         "any_of": [{"all_of": [{
-            "inputs": {"tags": list(tags)},
+            "inputs": {"tags": normalized_tags},
             "condition": {"fact": fact, "operator": operator, "value": value},
         }]}],
     }
+
+
+def _comparison_tags(player, expert):
+    return {"player": player, "expert": expert}
 
 
 def _evaluate(requirements, df, start=0, end=None, **context_kwargs):
@@ -104,6 +109,71 @@ def test_catalog_requirements_are_valid():
     assert deterministic.validate_catalog() == []
 
 
+def test_msp15_uses_all_reapplication_boundaries_for_handling_balance():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    requirements = json.loads(
+        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
+    )["sub_label_selection_requirements"]
+
+    assert requirements["MSP15"] == _requirement(
+        [
+            "player_throttle_reapplication_onset_iloc",
+            "player_throttle_reapplication_end_iloc",
+            "expert_throttle_reapplication_onset_iloc",
+            "expert_throttle_reapplication_end_iloc",
+        ],
+        "find_oversteer_or_understeer_between_ilocs",
+    )
+
+
+def test_msp15_checks_player_balance_across_the_combined_reapplication_range(
+    monkeypatch,
+):
+    landmarks = {
+        "player": {"reapplication_onset": 4, "reapplication_end": 7},
+        "expert": {"reapplication_onset": 2, "reapplication_end": 9},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "throttle" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP15", deterministic.get_label("MSP15"),
+    )
+
+    def evaluate(front, rear):
+        size = 12
+        return _evaluate(
+            requirements,
+            pd.DataFrame({
+                "Physics_slip_angle_front_left": [front] * size,
+                "Physics_slip_angle_front_right": [front] * size,
+                "Physics_slip_angle_rear_left": [rear] * size,
+                "Physics_slip_angle_rear_right": [rear] * size,
+            }),
+        )
+
+    oversteer = evaluate(0.01, 0.2)
+    understeer = evaluate(0.2, 0.01)
+
+    assert oversteer.matched
+    assert understeer.matched
+    assert oversteer.matched_branches[0].evidence_range == InclusiveRange(2, 9)
+    assert understeer.matched_branches[0].evidence_range == InclusiveRange(2, 9)
+    assert not evaluate(0.1, 0.1).matched
+
+    landmarks["expert"]["reapplication_end"] = None
+    missing_boundary = evaluate(0.01, 0.2)
+
+    assert not missing_boundary.matched
+    assert "missing input expert_throttle_reapplication_end_iloc" in (
+        missing_boundary.failed[0]
+    )
+
+
 def test_msp20_uses_aligned_release_and_player_reapplication_stability():
     root = Path(__file__).parents[1] / "app/internal_knowledge_base"
     requirements = json.loads(
@@ -111,15 +181,18 @@ def test_msp20_uses_aligned_release_and_player_reapplication_stability():
     )["sub_label_selection_requirements"]
     predicates = [
         _requirement(
-            ["player_throttle_release_end_iloc", "expert_throttle_release_end_iloc"],
+            _comparison_tags(
+                "player_throttle_release_end_iloc",
+                "expert_throttle_release_end_iloc",
+            ),
             "compare_ilocs",
             value="aligned",
         )["any_of"][0]["all_of"][0],
         _requirement(
-            [
+            _comparison_tags(
                 "player_throttle_reapplication_onset_iloc",
                 "expert_throttle_reapplication_onset_iloc",
-            ],
+            ),
             "compare_ilocs",
             value="earlier",
         )["any_of"][0]["all_of"][0],
@@ -145,18 +218,18 @@ def test_msp21_uses_aligned_onset_later_end_and_close_speed():
     )["sub_label_selection_requirements"]
     predicates = [
         _requirement(
-            [
+            _comparison_tags(
                 "player_throttle_reapplication_onset_iloc",
                 "expert_throttle_reapplication_onset_iloc",
-            ],
+            ),
             "compare_ilocs",
             value="aligned",
         )["any_of"][0]["all_of"][0],
         _requirement(
-            [
+            _comparison_tags(
                 "player_throttle_reapplication_end_iloc",
                 "expert_throttle_reapplication_end_iloc",
-            ],
+            ),
             "compare_ilocs",
             value="later",
         )["any_of"][0]["all_of"][0],
@@ -411,6 +484,64 @@ def test_branch_evidence_is_the_envelope_of_all_predicate_inputs():
     assert result.matched_branches[0].evidence_range == InclusiveRange(2, 9)
 
 
+def test_array_tags_form_one_condition_input_from_their_envelope():
+    resolved = {
+        "first": ResolvedInput(
+            "first", "iloc", 8, InclusiveRange(8, 8),
+        ),
+        "middle_range": ResolvedInput(
+            "middle_range", "range",
+            InclusiveRange(2, 4), InclusiveRange(2, 4),
+        ),
+        "last": ResolvedInput(
+            "last", "iloc", 10, InclusiveRange(10, 10),
+        ),
+    }
+    inputs = InputRegistry({
+        tag: InputDefinition(
+            value.kind,
+            lambda _context, _scope, value=value: value,
+        )
+        for tag, value in resolved.items()
+    })
+    received = []
+
+    def calculate(_context, values):
+        received.append(values)
+        return True
+
+    facts = FactRegistry({
+        "point_fact": FactDefinition(("iloc",), calculate),
+        "range_fact": FactDefinition(("range",), calculate),
+    })
+    interpreter = RequirementInterpreter(inputs, facts)
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(12)))
+
+    cases = (
+        (["first"], "point_fact", InclusiveRange(8, 8), "iloc"),
+        (["middle_range"], "range_fact", InclusiveRange(2, 4), "range"),
+        (["first", "last"], "range_fact", InclusiveRange(8, 10), "range"),
+        (
+            ["first", "middle_range", "last"],
+            "range_fact",
+            InclusiveRange(2, 10),
+            "range",
+        ),
+    )
+    for tags, fact, expected_range, expected_kind in cases:
+        result = interpreter.evaluate(
+            _requirement(tags, fact),
+            context,
+            InclusiveRange(0, 11),
+        )
+
+        assert result.matched
+        assert result.matched_branches[0].evidence_range == expected_range
+        assert len(received[-1]) == 1
+        assert received[-1][0].kind == expected_kind
+        assert received[-1][0].evidence_range == expected_range
+
+
 def test_evidence_only_predicate_contributes_range_without_a_fact():
     ranges = {
         "first": InclusiveRange(2, 2),
@@ -472,7 +603,10 @@ def test_evidence_only_predicate_fails_closed_when_an_input_is_missing():
 def test_missing_input_fails_closed_with_rejected_reason():
     result = _evaluate(
         _requirement(
-            ["player_brake_release_end_iloc", "expert_brake_release_end_iloc"],
+            _comparison_tags(
+                "player_brake_release_end_iloc",
+                "expert_brake_release_end_iloc",
+            ),
             "compare_ilocs", value="later",
         ),
         pd.DataFrame({
@@ -522,6 +656,78 @@ def test_validator_rejects_fact_input_kind_mismatch():
     ]
 
 
+def test_validator_derives_range_kind_and_accepts_point_comparison_object():
+    inputs = InputRegistry({
+        "player_point": InputDefinition("iloc", lambda *_args: None),
+        "expert_point": InputDefinition("iloc", lambda *_args: None),
+    })
+    facts = FactRegistry({
+        "range_fact": FactDefinition(("range",), lambda *_args: True),
+        "point_comparison": FactDefinition(
+            ("iloc", "iloc"), lambda *_args: True,
+        ),
+    })
+
+    assert validate_requirements(
+        _requirement(["player_point", "expert_point"], "range_fact"),
+        inputs,
+        facts,
+    ) == []
+    assert validate_requirements(
+        _requirement(
+            _comparison_tags("player_point", "expert_point"),
+            "point_comparison",
+        ),
+        inputs,
+        facts,
+    ) == []
+
+
+def test_validator_rejects_malformed_or_unknown_point_objects():
+    inputs = InputRegistry({
+        "player_point": InputDefinition("iloc", lambda *_args: None),
+        "expert_point": InputDefinition("iloc", lambda *_args: None),
+    })
+    facts = FactRegistry({
+        "point_comparison": FactDefinition(
+            ("iloc", "iloc"), lambda *_args: True,
+        ),
+    })
+
+    for tags in (
+        {},
+        {"player": "player_point"},
+        {"player": "player_point", "expert": 1},
+        {"player": "player_point", "expert": "expert_point", "extra": "point"},
+    ):
+        requirements = {
+            "enabled": True,
+            "any_of": [{"all_of": [{
+                "inputs": {"tags": tags},
+                "condition": {
+                    "fact": "point_comparison",
+                    "operator": "eq",
+                    "value": True,
+                },
+            }]}],
+        }
+
+        assert validate_requirements(requirements, inputs, facts) == [
+            "branch 0 predicate 0: tags must be a non-empty string list "
+            "or a player/expert string object"
+        ]
+
+    unknown = _requirement(
+        _comparison_tags("player_point", "missing"),
+        "point_comparison",
+    )
+    assert validate_requirements(unknown, inputs, facts) == [
+        "branch 0 predicate 0: unknown input tag 'missing'",
+        "branch 0 predicate 0: 'point_comparison' expects ('iloc', 'iloc'), "
+        "got ('iloc',)",
+    ]
+
+
 def test_validator_accepts_empty_condition_and_rejects_partial_condition():
     inputs = InputRegistry({
         "point": InputDefinition("iloc", lambda *_args: None),
@@ -550,14 +756,17 @@ def test_validator_accepts_empty_condition_and_rejects_partial_condition():
     ]
 
 
-def test_compare_ilocs_preserves_declaration_order_and_uses_point_envelope():
+def test_compare_ilocs_uses_explicit_roles_and_their_point_envelope():
     df = pd.DataFrame({
         "Physics_brake": [0, 0, 0, 0, 1, 1, 0],
         "expert_optimal_brake": [0, 1, 1, 0, 0, 0, 0],
     })
     result = _evaluate(
         _requirement(
-            ["player_brake_application_onset_iloc", "expert_brake_application_onset_iloc"],
+            {
+                "expert": "expert_brake_application_onset_iloc",
+                "player": "player_brake_application_onset_iloc",
+            },
             "compare_ilocs", value="later",
         ),
         df,
@@ -1245,7 +1454,11 @@ def test_every_control_onset_comparison_has_matching_end_evidence():
         for branch in requirement.get("any_of", []):
             predicates = branch.get("all_of", [])
             by_tags = {
-                tuple(predicate["inputs"]["tags"]): predicate["condition"]
+                tuple(
+                    predicate["inputs"]["tags"].values()
+                    if isinstance(predicate["inputs"]["tags"], dict)
+                    else predicate["inputs"]["tags"]
+                ): predicate["condition"]
                 for predicate in predicates
             }
             for control, phases in (
@@ -1514,7 +1727,7 @@ def test_balance_and_grip_are_calculated_from_raw_tire_telemetry():
 
 
 def test_oversteer_or_understeer_between_ilocs_matches_either_balance_direction():
-    def evaluate(front, rear):
+    def evaluate(front, rear, onset=1, end=3):
         size = 5
         df = pd.DataFrame({
             "Physics_slip_angle_front_left": [front] * size,
@@ -1523,8 +1736,8 @@ def test_oversteer_or_understeer_between_ilocs_matches_either_balance_direction(
             "Physics_slip_angle_rear_right": [rear] * size,
         })
         values = {
-            "player_throttle_reapplication_onset_iloc": 1,
-            "player_throttle_reapplication_end_iloc": 3,
+            "player_throttle_reapplication_onset_iloc": onset,
+            "player_throttle_reapplication_end_iloc": end,
         }
         inputs = InputRegistry({
             tag: InputDefinition(
@@ -1548,14 +1761,20 @@ def test_oversteer_or_understeer_between_ilocs_matches_either_balance_direction(
 
     oversteer = evaluate(0.01, 0.2)
     understeer = evaluate(0.2, 0.01)
+    reversed_points = evaluate(0.01, 0.2, onset=3, end=1)
 
     assert oversteer.matched
     assert understeer.matched
+    assert reversed_points.matched
     assert oversteer.matched_branches[0].evidence_range == InclusiveRange(1, 3)
     assert understeer.matched_branches[0].evidence_range == InclusiveRange(1, 3)
+    assert (
+        reversed_points.matched_branches[0].evidence_range
+        == InclusiveRange(1, 3)
+    )
 
 
-def test_oversteer_or_understeer_between_ilocs_rejects_invalid_or_stable_intervals():
+def test_oversteer_or_understeer_between_ilocs_rejects_missing_or_stable_intervals():
     size = 5
     complete = pd.DataFrame({
         "Physics_slip_angle_front_left": [0.1] * size,
@@ -1588,7 +1807,6 @@ def test_oversteer_or_understeer_between_ilocs_rejects_invalid_or_stable_interva
 
     assert not evaluate(complete, 1, 3).matched
     assert not evaluate(missing, 1, 3).matched
-    assert not evaluate(complete, 3, 1).matched
 
 
 def test_opponent_strategies_share_one_cached_analysis(monkeypatch):

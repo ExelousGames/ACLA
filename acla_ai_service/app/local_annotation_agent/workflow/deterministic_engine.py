@@ -101,6 +101,7 @@ class FactRegistry:
 @dataclass(frozen=True)
 class PredicateSpec:
     tags: Tuple[str, ...]
+    combine_tags: bool
     fact: str
     operator: str
     expected: Any
@@ -207,10 +208,23 @@ def parse_requirements(requirements: Mapping[str, Any]) -> RequirementSpec:
             inputs = raw.get("inputs")
             condition = raw.get("condition")
             if not isinstance(inputs, Mapping) or not isinstance(condition, Mapping):
-                predicates.append(PredicateSpec((), "", "", None))
+                predicates.append(PredicateSpec((), False, "", "", None))
                 continue
+            raw_tags = inputs.get("tags")
+            if isinstance(raw_tags, list):
+                tags = tuple(str(tag) for tag in raw_tags)
+                combine_tags = True
+            elif isinstance(raw_tags, Mapping):
+                tags = tuple(
+                    str(raw_tags.get(role) or "") for role in ("player", "expert")
+                )
+                combine_tags = False
+            else:
+                tags = ()
+                combine_tags = False
             predicates.append(PredicateSpec(
-                tags=tuple(str(tag) for tag in inputs.get("tags") or []),
+                tags=tags,
+                combine_tags=combine_tags,
                 fact=str(condition.get("fact") or ""),
                 operator=str(condition.get("operator") or ""),
                 expected=condition.get("value"),
@@ -282,7 +296,13 @@ class RequirementInterpreter:
             return PredicateEvaluation(
                 True, "evidence: inputs resolved", "", evidence_range,
             )
-        kinds = tuple(value.kind for value in resolved)
+        condition_inputs = resolved
+        if predicate.combine_tags and len(resolved) > 1:
+            assert evidence_range is not None
+            condition_inputs = [ResolvedInput(
+                "combined_range", "range", evidence_range, evidence_range,
+            )]
+        kinds = tuple(value.kind for value in condition_inputs)
         assert definition is not None
         if kinds != definition.input_kinds:
             return PredicateEvaluation(
@@ -290,7 +310,9 @@ class RequirementInterpreter:
                 f"{predicate.fact}: unavailable (expected {definition.input_kinds}, got {kinds})",
                 predicate.fact,
             )
-        actual = context.calculate_fact(predicate.fact, definition, resolved)
+        actual = context.calculate_fact(
+            predicate.fact, definition, condition_inputs,
+        )
         value_text = "unavailable" if actual is MISSING else repr(actual)
         passed = compare(actual, predicate.operator, predicate.expected)
         return PredicateEvaluation(
@@ -331,12 +353,38 @@ def validate_requirements(
                     f"{prefix}: condition must be empty or contain fact, operator, and value"
                 )
                 continue
-            tags = raw_inputs.get("tags")
-            if not isinstance(tags, list) or not tags or not all(isinstance(tag, str) for tag in tags):
-                errors.append(f"{prefix}: tags must be a non-empty string list")
+            raw_tags = raw_inputs.get("tags")
+            combine_tags = isinstance(raw_tags, list)
+            if combine_tags:
+                tags = raw_tags
+                valid_tags = (
+                    bool(tags)
+                    and all(isinstance(tag, str) and tag for tag in tags)
+                )
+            elif isinstance(raw_tags, Mapping):
+                valid_tags = (
+                    set(raw_tags) == {"player", "expert"}
+                    and all(
+                        isinstance(raw_tags.get(role), str) and raw_tags.get(role)
+                        for role in ("player", "expert")
+                    )
+                )
+                tags = [
+                    raw_tags.get("player"),
+                    raw_tags.get("expert"),
+                ]
+            else:
+                tags = []
+                valid_tags = False
+            if not valid_tags:
+                errors.append(
+                    f"{prefix}: tags must be a non-empty string list "
+                    "or a player/expert string object"
+                )
                 continue
             kinds: List[InputKind] = []
             for tag in tags:
+                assert isinstance(tag, str)
                 input_definition = inputs.get(tag)
                 if input_definition is None:
                     errors.append(f"{prefix}: unknown input tag {tag!r}")
@@ -348,9 +396,13 @@ def validate_requirements(
             fact = facts.get(fact_name) if isinstance(fact_name, str) else None
             if fact is None:
                 errors.append(f"{prefix}: unknown fact {fact_name!r}")
-            if fact is not None and tuple(kinds) != fact.input_kinds:
+            condition_kinds = (
+                ("range",) if combine_tags and len(tags) > 1 else tuple(kinds)
+            )
+            if fact is not None and condition_kinds != fact.input_kinds:
                 errors.append(
-                    f"{prefix}: {fact_name!r} expects {fact.input_kinds}, got {tuple(kinds)}"
+                    f"{prefix}: {fact_name!r} expects {fact.input_kinds}, "
+                    f"got {condition_kinds}"
                 )
             operator = condition.get("operator")
             if operator not in SUPPORTED_OPERATORS:

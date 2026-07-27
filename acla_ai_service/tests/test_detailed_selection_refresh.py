@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from ui.segment_tabs.detailed import (
+    _annotation_index_limits,
     _resolve_loaded_annotation_selection,
     _segments_to_positioned_dataframe,
 )
@@ -64,6 +65,10 @@ def test_positioned_dataframe_ends_at_last_telemetry_index():
     assert dataframe.index[-1] == 28
     assert dataframe.loc[28, "speed"] == 28
     assert 29 not in dataframe.index
+
+
+def test_annotation_end_limit_allows_the_exclusive_dataframe_boundary():
+    assert _annotation_index_limits(1251) == (0, 1251)
 
 
 def test_clear_annotation_manager_state_removes_session_specific_fields(monkeypatch):

@@ -94,6 +94,11 @@ def _segments_to_positioned_dataframe(
     return df.reindex(range(max_position + 1))
 
 
+def _annotation_index_limits(row_count: int) -> tuple[int, int]:
+    """Return the start and exclusive-end limits for annotation ranges."""
+    return 0, max(0, row_count)
+
+
 def _safe_load_annotations(
     session_id: str,
     selected_annotation_key: str,
@@ -169,8 +174,7 @@ def render_detailed_labeling(
         st.warning("Selected chunk has no telemetry rows to display.")
         st.stop()
 
-    start_limit = 0
-    end_limit = max(0, len(df) - 1)
+    start_limit, end_limit = _annotation_index_limits(len(df))
 
     with top_cols[1]:
         st.metric("Input segments", segment_counts.get(session_id, 0))

@@ -532,32 +532,18 @@ def _speed_difference_at_iloc(
     return difference if np.isfinite(difference) else MISSING
 
 
-def _range_between_ilocs(
-    inputs: Sequence[ResolvedInput],
-) -> Optional[InclusiveRange]:
-    start = int(inputs[0].value)
-    end = int(inputs[1].value)
-    return InclusiveRange(start, end) if start <= end else None
-
-
-def _oversteer_or_understeer_between_ilocs(
-    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+def _oversteer_or_understeer(
+    context: EvaluationContext, range_: InclusiveRange,
 ) -> Any:
-    range_ = _range_between_ilocs(inputs)
-    if range_ is None:
-        return MISSING
     values = _finite(_slip_balance(context, range_))
     if not len(values):
         return MISSING
     return bool(np.max(values) > 0.02 or np.min(values) < -0.02)
 
 
-def _speed_gap_slope_between_ilocs(
-    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+def _speed_gap_slope(
+    context: EvaluationContext, range_: InclusiveRange,
 ) -> Any:
-    range_ = _range_between_ilocs(inputs)
-    if range_ is None:
-        return MISSING
     values = _speed_delta(context, range_)
     if values is None:
         return MISSING
@@ -574,12 +560,9 @@ def _speed_gap_slope_between_ilocs(
     return slope if np.isfinite(slope) else MISSING
 
 
-def _player_brake_peak_between_ilocs(
-    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+def _player_brake_peak(
+    context: EvaluationContext, range_: InclusiveRange,
 ) -> Any:
-    range_ = _range_between_ilocs(inputs)
-    if range_ is None:
-        return MISSING
     values = _finite(_series(context.segment(range_), "Physics_brake"))
     return float(np.max(values)) if len(values) else MISSING
 
@@ -943,10 +926,10 @@ def build_fact_registry() -> FactRegistry:
             iloc_kind, _speed_difference_at_iloc,
         ),
         "find_speed_gap_slope": FactDefinition(
-            iloc_pair, _speed_gap_slope_between_ilocs,
+            range_kind, _fact_range(_speed_gap_slope),
         ),
         "find_player_brake_peak": FactDefinition(
-            iloc_pair, _player_brake_peak_between_ilocs,
+            range_kind, _fact_range(_player_brake_peak),
         ),
         "find_trajectory_peak_offset": FactDefinition(range_kind, _fact_range(lambda c, r: (
             float(np.max(np.abs(_finite(_trajectory(c, r)))))
@@ -963,7 +946,7 @@ def build_fact_registry() -> FactRegistry:
             iloc_kind, _trajectory_position_at_iloc,
         ),
         "find_oversteer_or_understeer_between_ilocs": FactDefinition(
-            iloc_pair, _oversteer_or_understeer_between_ilocs,
+            range_kind, _fact_range(_oversteer_or_understeer),
         ),
         "find_oversteer": FactDefinition(range_kind, _fact_range(lambda c, r: (
             bool(np.nanmax(_slip_balance(c, r)) > 0.02) if _slip_balance(c, r) is not None else MISSING
