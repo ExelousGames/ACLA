@@ -532,7 +532,7 @@
               "inputs": {
                 "tags": [
                   "player_brake_application_onset_iloc",
-                  "player_brake_application_end_iloc"
+                  "player_brake_release_end_iloc"
                 ]
               },
               "condition": {
@@ -730,9 +730,6 @@
                 }
               },
               "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "aligned"
               }
             },
             {
@@ -746,6 +743,19 @@
                 "fact": "compare_ilocs",
                 "operator": "eq",
                 "value": "later"
+              }
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_release_onset_iloc",
+                  "player_brake_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "find_speed_gap_slope",
+                "operator": "gt",
+                "value": 0
               }
             }
           ]
@@ -1152,6 +1162,9 @@
                 ]
               },
               "condition": {
+                "fact": "compare_ilocs",
+                "operator": "eq",
+                "value": "earlier"
               }
             },
             {
@@ -1162,9 +1175,7 @@
                 }
               },
               "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "earlier"
+                
               }
             }
           ]
@@ -1933,6 +1944,54 @@
               },
               "condition": {
                 "fact": "compare_exit_gear",
+                "operator": "eq",
+                "value": "higher"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP54": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc",
+                  "player_brake_release_end_iloc",
+                  "expert_brake_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_gear_range",
+                "operator": "eq",
+                "value": "lower"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "MSP55": {
+      "enabled": true,
+      "any_of": [
+        {
+          "all_of": [
+            {
+              "inputs": {
+                "tags": [
+                  "player_brake_application_onset_iloc",
+                  "expert_brake_application_onset_iloc",
+                  "player_brake_release_end_iloc",
+                  "expert_brake_release_end_iloc"
+                ]
+              },
+              "condition": {
+                "fact": "compare_gear_range",
                 "operator": "eq",
                 "value": "higher"
               }

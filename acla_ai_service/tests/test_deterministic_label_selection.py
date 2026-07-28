@@ -13,6 +13,7 @@ from app.local_annotation_agent.workflow.deterministic_engine import (
     InclusiveRange,
     InputDefinition,
     InputRegistry,
+    MISSING,
     PredicateEvaluation,
     RequirementBranchEvaluation,
     RequirementEvaluation,
@@ -173,6 +174,84 @@ def test_msp15_checks_player_balance_across_the_combined_reapplication_range(
     assert "missing input player_throttle_reapplication_end_iloc" in (
         missing_boundary.failed[0]
     )
+
+
+def test_msp18_requires_increasing_speed_difference_during_player_release():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    requirements = json.loads(
+        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
+    )["sub_label_selection_requirements"]
+    predicates = [
+        {
+            "inputs": {
+                "tags": _comparison_tags(
+                    "player_brake_release_onset_iloc",
+                    "expert_brake_release_onset_iloc",
+                ),
+            },
+            "condition": {},
+        },
+        _requirement(
+            _comparison_tags(
+                "player_brake_release_end_iloc",
+                "expert_brake_release_end_iloc",
+            ),
+            "compare_ilocs",
+            value="later",
+        )["any_of"][0]["all_of"][0],
+        _requirement(
+            [
+                "player_brake_release_onset_iloc",
+                "player_brake_release_end_iloc",
+            ],
+            "find_speed_gap_slope",
+            operator="gt",
+            value=0,
+        )["any_of"][0]["all_of"][0],
+    ]
+
+    assert requirements["MSP18"] == {
+        "enabled": True,
+        "any_of": [{"all_of": predicates}],
+    }
+
+
+def test_msp18_matches_only_when_speed_difference_increases_during_release(
+    monkeypatch,
+):
+    landmarks = {
+        "player": {"release_onset": 2, "release_end": 6},
+        "expert": {"release_onset": 2, "release_end": 5},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    requirements = deterministic._requirements_for(
+        "MSP18", deterministic.get_label("MSP18"),
+    )
+
+    def evaluate(speed_differences):
+        player_speed = np.full(len(speed_differences), 100.0)
+        context = EvaluationContext.from_dataframe(pd.DataFrame({
+            "Physics_speed_kmh": player_speed,
+            "expert_optimal_speed": player_speed + speed_differences,
+        }))
+        return deterministic.evaluate_requirements(
+            requirements, context, InclusiveRange(0, len(speed_differences) - 1),
+        )
+
+    increasing = evaluate(np.array([0, 0, 0, 1, 2, 3, 4, 4, 4], dtype=float))
+    flat = evaluate(np.zeros(9, dtype=float))
+    decreasing = evaluate(np.array([4, 4, 4, 3, 2, 1, 0, 0, 0], dtype=float))
+
+    assert increasing.matched
+    assert increasing.matched_branches[0].evidence_range == InclusiveRange(2, 6)
+    assert not flat.matched
+    assert not decreasing.matched
 
 
 def test_msp20_uses_aligned_release_and_player_reapplication_stability():
@@ -977,6 +1056,88 @@ def test_brake_comparison_range_uses_both_complete_braking_periods(monkeypatch):
     assert resolved is not None
     assert resolved.value == InclusiveRange(2, 9)
     assert resolved.evidence_range == InclusiveRange(2, 9)
+
+
+def test_msp54_and_msp55_use_the_exact_four_brake_landmark_tags():
+    root = Path(__file__).parents[1] / "app/internal_knowledge_base"
+    requirements = json.loads(
+        (root / "sub_label_annotation.json").read_text(encoding="utf-8")
+    )["sub_label_selection_requirements"]
+    tags = [
+        "player_brake_application_onset_iloc",
+        "expert_brake_application_onset_iloc",
+        "player_brake_release_end_iloc",
+        "expert_brake_release_end_iloc",
+    ]
+
+    assert requirements["MSP54"] == _requirement(
+        tags, "compare_gear_range", value="lower",
+    )
+    assert requirements["MSP55"] == _requirement(
+        tags, "compare_gear_range", value="higher",
+    )
+
+
+def test_compare_gear_range_classifies_comparable_samples():
+    fact = deterministic.FACT_REGISTRY.get("compare_gear_range")
+    assert fact is not None
+    range_ = InclusiveRange(0, 2)
+    inputs = [ResolvedInput("combined_range", "range", range_, range_)]
+
+    for player, expert, expected in (
+        ([2, 2, 3], [3, 3, 4], "lower"),
+        ([4, 4, 3], [3, 3, 2], "higher"),
+        ([3, 2, 4], [3, 2, 4], "aligned"),
+        ([2, 4, 3], [3, 3, 3], "mixed"),
+        ([2, np.nan, np.nan], [np.nan, 3, 3], MISSING),
+    ):
+        context = EvaluationContext(pd.DataFrame({
+            "Physics_gear": player,
+            "expert_optimal_gear": expert,
+        }))
+        actual = fact.calculate(context, inputs)
+
+        if expected is MISSING:
+            assert actual is MISSING
+        else:
+            assert actual == expected
+
+
+def test_msp54_and_msp55_select_by_four_landmark_gear_envelope(monkeypatch):
+    landmarks = {
+        "player": {"application_onset": 4, "release_end": 9},
+        "expert": {"application_onset": 2, "release_end": 7},
+    }
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_control_landmarks",
+        lambda _context, _scope, driver, control: (
+            landmarks[driver] if control == "brake" else {}
+        ),
+    )
+    expert = [3] * 12
+
+    def evaluate(player):
+        context = EvaluationContext(pd.DataFrame({
+            "Physics_gear": player,
+            "expert_optimal_gear": expert,
+        }))
+        return deterministic.evaluate_labels(
+            ["MSP54", "MSP55"], context, InclusiveRange(0, 11),
+        )
+
+    lower = evaluate([2] * 12)
+    higher = evaluate([4] * 12)
+    aligned = evaluate([3] * 12)
+    mixed = evaluate([2] * 6 + [4] * 6)
+
+    assert lower.labels == ["MSP54"]
+    assert higher.labels == ["MSP55"]
+    assert aligned.labels == []
+    assert mixed.labels == []
+    assert lower.evaluations["MSP54"].matched_branches[
+        0
+    ].evidence_range == InclusiveRange(2, 9)
 
 
 def test_msp22_checks_speed_difference_at_brake_application_end(monkeypatch):

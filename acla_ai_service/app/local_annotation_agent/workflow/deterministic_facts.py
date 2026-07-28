@@ -991,6 +991,9 @@ def build_fact_registry() -> FactRegistry:
         "find_sustained_low_grip": FactDefinition(range_kind, _fact_range(lambda c, r: (
             bool(np.mean(_push_to_limit(c, r) < 0.8) >= 0.5) if _push_to_limit(c, r) is not None else MISSING
         ))),
+        "compare_gear_range": FactDefinition(
+            range_kind, _fact_range(_compare_gear_range),
+        ),
         "compare_exit_gear": FactDefinition(range_kind, _fact_range(lambda c, r: _compare_exit_gear(c, r))),
         "find_entry_altitude_trend": FactDefinition(range_kind, _fact_range(lambda c, r: _altitude(c, r, "entry"))),
         "find_apex_altitude_trend": FactDefinition(range_kind, _fact_range(lambda c, r: _altitude(c, r, "apex"))),
@@ -1007,6 +1010,27 @@ def build_fact_registry() -> FactRegistry:
         range_kind, _fact_range(lambda c, r: (_shape_analysis(c, r).get("corner_shape_refinement") or {}).get("shape_key", MISSING)),
     )
     return FactRegistry(definitions)
+
+
+def _compare_gear_range(
+    context: EvaluationContext, range_: InclusiveRange,
+) -> Any:
+    segment = context.segment(range_)
+    player = _series(segment, "Physics_gear")
+    expert = _series(segment, "expert_optimal_gear")
+    if player is None or expert is None:
+        return MISSING
+    comparable = np.isfinite(player) & np.isfinite(expert)
+    if not np.any(comparable):
+        return MISSING
+    differences = player[comparable] - expert[comparable]
+    if np.all(differences < 0):
+        return "lower"
+    if np.all(differences > 0):
+        return "higher"
+    if np.all(differences == 0):
+        return "aligned"
+    return "mixed"
 
 
 def _compare_exit_gear(context: EvaluationContext, range_: InclusiveRange) -> Any:
