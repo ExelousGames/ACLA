@@ -280,9 +280,7 @@ def build_segment(
     can recover the underlying telemetry without re-resolving the
     parent's input.
 
-    ``end`` is exclusive (matches ``df.iloc`` semantics). The classifier
-    paths use inclusive-end indexing and slice manually instead of going
-    through this helper.
+    ``end`` is exclusive (matches ``df.iloc`` semantics).
     """
     s = max(0, int(start))
     e = min(len(df), int(end)) if df is not None else int(end)

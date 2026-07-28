@@ -402,13 +402,13 @@ def render_batch_auto_annotation(df, selected_annotation_key):
 
         parent_main_labels = [l for l in parent.labels if l in main_label_set]
         p_start = int(parent.start_index) if parent.start_index is not None else 0
-        p_end = int(parent.end_index) if parent.end_index is not None else len(df) - 1
+        p_end = int(parent.end_index) if parent.end_index is not None else len(df)
 
         status_text.markdown(
-            f"**Parent #{idx}** _({i + 1}/{total})_ — [{p_start}, {p_end}], "
+            f"**Parent #{idx}** _({i + 1}/{total})_ — [{p_start}, {p_end}), "
             "calculating labels..."
         )
-        log(f"Parent #{idx}: running [{p_start}, {p_end}] "
+        log(f"Parent #{idx}: running [{p_start}, {p_end}) "
             f"main_labels={parent_main_labels or '∅'}")
 
         try:

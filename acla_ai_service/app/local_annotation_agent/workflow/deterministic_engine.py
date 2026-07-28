@@ -16,18 +16,18 @@ _TAG_OBJECT_KEY_ORDERS = (
 
 
 @dataclass(frozen=True, order=True)
-class InclusiveRange:
+class HalfOpenRange:
     start: int
     end: int
 
     def __post_init__(self) -> None:
-        if int(self.start) > int(self.end):
-            raise ValueError("range start must not exceed range end")
+        if int(self.start) >= int(self.end):
+            raise ValueError("range start must be less than range end")
         object.__setattr__(self, "start", int(self.start))
         object.__setattr__(self, "end", int(self.end))
 
     @classmethod
-    def envelope(cls, ranges: Iterable["InclusiveRange"]) -> Optional["InclusiveRange"]:
+    def envelope(cls, ranges: Iterable["HalfOpenRange"]) -> Optional["HalfOpenRange"]:
         values = list(ranges)
         if not values:
             return None
@@ -36,7 +36,7 @@ class InclusiveRange:
     def as_tuple(self) -> RangeTuple:
         return self.start, self.end
 
-    def contains(self, other: "InclusiveRange") -> bool:
+    def contains(self, other: "HalfOpenRange") -> bool:
         return self.start <= other.start and other.end <= self.end
 
 
@@ -44,11 +44,11 @@ class InclusiveRange:
 class ResolvedInput:
     tag: str
     kind: InputKind
-    value: int | InclusiveRange
-    evidence_range: InclusiveRange
+    value: int | HalfOpenRange
+    evidence_range: HalfOpenRange
 
 
-InputResolver = Callable[[Any, InclusiveRange], Optional[ResolvedInput]]
+InputResolver = Callable[[Any, HalfOpenRange], Optional[ResolvedInput]]
 FactCalculator = Callable[[Any, Sequence[ResolvedInput]], Any]
 
 
@@ -128,7 +128,7 @@ class PredicateEvaluation:
     passed: bool
     text: str
     fact: str
-    evidence_range: Optional[InclusiveRange] = None
+    evidence_range: Optional[HalfOpenRange] = None
 
 
 @dataclass
@@ -145,8 +145,8 @@ class RequirementBranchEvaluation:
         return [value.text for value in self.predicates if not value.passed]
 
     @property
-    def evidence_range(self) -> Optional[InclusiveRange]:
-        return InclusiveRange.envelope(
+    def evidence_range(self) -> Optional[HalfOpenRange]:
+        return HalfOpenRange.envelope(
             value.evidence_range
             for value in self.predicates
             if value.passed and value.evidence_range is not None
@@ -251,7 +251,7 @@ class RequirementInterpreter:
         self.facts = facts
 
     def evaluate(
-        self, requirements: Mapping[str, Any], context: Any, scope: InclusiveRange,
+        self, requirements: Mapping[str, Any], context: Any, scope: HalfOpenRange,
     ) -> RequirementEvaluation:
         spec = parse_requirements(requirements)
         if not spec.enabled:
@@ -286,7 +286,7 @@ class RequirementInterpreter:
         return RequirementEvaluation(False, failed=["facts unavailable"])
 
     def _evaluate_predicate(
-        self, predicate: PredicateSpec, context: Any, scope: InclusiveRange,
+        self, predicate: PredicateSpec, context: Any, scope: HalfOpenRange,
     ) -> PredicateEvaluation:
         definition = None if predicate.evidence_only else self.facts.get(predicate.fact)
         if not predicate.evidence_only and definition is None:
@@ -300,7 +300,7 @@ class RequirementInterpreter:
                     False, f"{name}: unavailable (missing input {tag})", predicate.fact,
                 )
             resolved.append(value)
-        evidence_range = InclusiveRange.envelope(
+        evidence_range = HalfOpenRange.envelope(
             value.evidence_range for value in resolved
         )
         if predicate.evidence_only:
@@ -428,7 +428,7 @@ def validate_requirements(
 
 
 __all__ = [
-    "BranchSpec", "FactDefinition", "FactRegistry", "InclusiveRange",
+    "BranchSpec", "FactDefinition", "FactRegistry", "HalfOpenRange",
     "InputDefinition", "InputRegistry", "LabelEvaluation", "MISSING",
     "PredicateEvaluation", "PredicateSpec", "RequirementBranchEvaluation",
     "RequirementEvaluation", "RequirementInterpreter", "RequirementSpec",

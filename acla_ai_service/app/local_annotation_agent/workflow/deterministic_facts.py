@@ -11,7 +11,7 @@ import pandas as pd
 from app.local_annotation_agent.workflow.deterministic_engine import (
     FactDefinition,
     FactRegistry,
-    InclusiveRange,
+    HalfOpenRange,
     InputDefinition,
     InputRegistry,
     MISSING,
@@ -67,10 +67,10 @@ class EvaluationContext:
             tuple(str(value) for value in overlap_section_ids),
         )
 
-    def segment(self, range_: InclusiveRange) -> pd.DataFrame:
+    def segment(self, range_: HalfOpenRange) -> pd.DataFrame:
         return self.telemetry.loc[
             (self.telemetry.index >= range_.start)
-            & (self.telemetry.index <= range_.end)
+            & (self.telemetry.index < range_.end)
         ]
 
     def memo(self, key: Tuple[Any, ...], calculate: Callable[[], Any]) -> Any:
@@ -79,7 +79,7 @@ class EvaluationContext:
         return self._analysis_cache[key]
 
     def resolve_input(
-        self, tag: str, scope: InclusiveRange, registry: InputRegistry,
+        self, tag: str, scope: HalfOpenRange, registry: InputRegistry,
     ) -> Optional[ResolvedInput]:
         key = (scope.start, scope.end, tag)
         if key not in self._input_cache:
@@ -105,32 +105,32 @@ class EvaluationContext:
         return self._fact_cache[key]
 
 
-def _range_input(tag: str, range_: InclusiveRange) -> ResolvedInput:
+def _range_input(tag: str, range_: HalfOpenRange) -> ResolvedInput:
     return ResolvedInput(tag, "range", range_, range_)
 
 
 def _iloc_input(tag: str, value: int) -> ResolvedInput:
-    point = InclusiveRange(value, value)
+    point = HalfOpenRange(value, value + 1)
     return ResolvedInput(tag, "iloc", int(value), point)
 
 
-def _scope_resolver(tag: str) -> Callable[[EvaluationContext, InclusiveRange], ResolvedInput]:
+def _scope_resolver(tag: str) -> Callable[[EvaluationContext, HalfOpenRange], ResolvedInput]:
     return lambda _context, scope: _range_input(tag, scope)
 
 
 def _scope_start_iloc_resolver(
     tag: str,
-) -> Callable[[EvaluationContext, InclusiveRange], ResolvedInput]:
+) -> Callable[[EvaluationContext, HalfOpenRange], ResolvedInput]:
     return lambda _context, scope: _iloc_input(tag, scope.start)
 
 
 def _scope_end_iloc_resolver(
     tag: str,
-) -> Callable[[EvaluationContext, InclusiveRange], ResolvedInput]:
-    return lambda _context, scope: _iloc_input(tag, scope.end)
+) -> Callable[[EvaluationContext, HalfOpenRange], ResolvedInput]:
+    return lambda _context, scope: _iloc_input(tag, scope.end - 1)
 
 
-def _shape_analysis(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str, Any]:
+def _shape_analysis(context: EvaluationContext, range_: HalfOpenRange) -> Mapping[str, Any]:
     def calculate() -> Mapping[str, Any]:
         from app.shared.annotation_agent_tools import measure_segment_shape
 
@@ -143,8 +143,8 @@ def _shape_analysis(context: EvaluationContext, range_: InclusiveRange) -> Mappi
 
 def _phase_resolver(
     tag: str, phase_name: str,
-) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
-    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
         ranges = []
         for phase in _shape_analysis(context, scope).get("phases") or []:
             if not isinstance(phase, Mapping):
@@ -153,20 +153,23 @@ def _phase_resolver(
             if not all(isinstance(value, int) for value in (entry, apex, exit_)):
                 continue
             named = {
-                "entry": InclusiveRange(entry, apex),
-                "apex": InclusiveRange(max(entry, apex - 2), min(exit_, apex + 2)),
-                "exit": InclusiveRange(apex, exit_),
+                "entry": HalfOpenRange(entry, apex + 1),
+                "apex": HalfOpenRange(
+                    max(entry, apex - 2),
+                    min(exit_, apex + 2) + 1,
+                ),
+                "exit": HalfOpenRange(apex, exit_ + 1),
             }
             ranges.append(named[phase_name])
-        envelope = InclusiveRange.envelope(ranges)
+        envelope = HalfOpenRange.envelope(ranges)
         return _range_input(tag, envelope) if envelope is not None else None
     return resolve
 
 
 def _segment_apex_iloc_resolver(
     tag: str,
-) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
-    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
         phases = _shape_analysis(context, scope).get("phases")
         if not isinstance(phases, list) or not phases:
             return None
@@ -177,7 +180,7 @@ def _segment_apex_iloc_resolver(
         if (
             isinstance(apex, bool)
             or not isinstance(apex, (int, np.integer))
-            or not scope.start < int(apex) <= scope.end
+            or not scope.start < int(apex) < scope.end
         ):
             return None
         return _iloc_input(tag, int(apex))
@@ -186,25 +189,25 @@ def _segment_apex_iloc_resolver(
 
 def _phase_end_iloc_resolver(
     tag: str, phase_name: str,
-) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
     resolve_range = _phase_resolver(tag, phase_name)
 
-    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
         resolved = resolve_range(context, scope)
-        if resolved is None or not isinstance(resolved.value, InclusiveRange):
+        if resolved is None or not isinstance(resolved.value, HalfOpenRange):
             return None
-        return _iloc_input(tag, resolved.value.end)
+        return _iloc_input(tag, resolved.value.end - 1)
     return resolve
 
 
 def _phase_start_iloc_resolver(
     tag: str, phase_name: str,
-) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
     resolve_range = _phase_resolver(tag, phase_name)
 
-    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
         resolved = resolve_range(context, scope)
-        if resolved is None or not isinstance(resolved.value, InclusiveRange):
+        if resolved is None or not isinstance(resolved.value, HalfOpenRange):
             return None
         return _iloc_input(tag, resolved.value.start)
     return resolve
@@ -315,7 +318,7 @@ CONTROL_COLUMNS = {
 
 
 def _control_landmarks(
-    context: EvaluationContext, scope: InclusiveRange, driver: str, control: str,
+    context: EvaluationContext, scope: HalfOpenRange, driver: str, control: str,
 ) -> Mapping[str, Any]:
     def calculate() -> Mapping[str, Any]:
         segment = context.segment(scope)
@@ -333,8 +336,8 @@ def _control_landmarks(
 
 def _control_iloc_resolver(
     tag: str, driver: str, control: str, landmark: str,
-) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
-    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
         value = _control_landmarks(context, scope, driver, control).get(landmark)
         return _iloc_input(tag, value) if value is not None else None
     return resolve
@@ -342,21 +345,21 @@ def _control_iloc_resolver(
 
 def _brake_comparison_range_resolver(
     tag: str,
-) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
-    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
         player = _control_landmarks(context, scope, "player", "brake")
         expert = _control_landmarks(context, scope, "expert", "brake")
         onsets = [player.get("application_onset"), expert.get("application_onset")]
         ends = [player.get("release_end"), expert.get("release_end")]
         if not all(isinstance(value, int) for value in (*onsets, *ends)):
             return None
-        range_ = InclusiveRange(min(onsets), max(ends))
+        range_ = HalfOpenRange(min(onsets), max(ends) + 1)
         return _range_input(tag, range_)
     return resolve
 
 
 def _steering_landmarks(
-    context: EvaluationContext, scope: InclusiveRange, driver: str,
+    context: EvaluationContext, scope: HalfOpenRange, driver: str,
 ) -> Mapping[str, Optional[int]]:
     def calculate() -> Mapping[str, Optional[int]]:
         segment = context.segment(scope)
@@ -382,8 +385,8 @@ def _steering_landmarks(
 
 def _steering_iloc_resolver(
     tag: str, driver: str, landmark: str,
-) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
-    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
         value = _steering_landmarks(context, scope, driver).get(landmark)
         return _iloc_input(tag, value) if value is not None else None
     return resolve
@@ -391,8 +394,8 @@ def _steering_iloc_resolver(
 
 def _expert_shift_range_resolver(
     tag: str, direction: str,
-) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
-    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+) -> Callable[[EvaluationContext, HalfOpenRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: HalfOpenRange) -> Optional[ResolvedInput]:
         segment = context.segment(scope)
         gears = _series(segment, "expert_optimal_gear")
         if gears is None:
@@ -407,7 +410,7 @@ def _expert_shift_range_resolver(
         while end + 1 < len(matches) and bool(matches[end + 1]):
             end += 1
         index = segment.index.to_numpy(dtype=int)
-        range_ = InclusiveRange(int(index[start]), int(index[end + 1]))
+        range_ = HalfOpenRange(int(index[start]), int(index[end + 1]) + 1)
         return _range_input(tag, range_)
     return resolve
 
@@ -483,9 +486,9 @@ def build_input_registry() -> InputRegistry:
     return InputRegistry(definitions)
 
 
-def _range(inputs: Sequence[ResolvedInput]) -> InclusiveRange:
+def _range(inputs: Sequence[ResolvedInput]) -> HalfOpenRange:
     value = inputs[0].value
-    if not isinstance(value, InclusiveRange):
+    if not isinstance(value, HalfOpenRange):
         raise TypeError("range input required")
     return value
 
@@ -504,7 +507,7 @@ def _compare_ilocs(_context: EvaluationContext, inputs: Sequence[ResolvedInput])
 
 
 def _compare_shift_timing(
-    context: EvaluationContext, range_: InclusiveRange, direction: str,
+    context: EvaluationContext, range_: HalfOpenRange, direction: str,
 ) -> Any:
     segment = context.segment(range_)
     player = _series(segment, "Physics_gear")
@@ -534,7 +537,7 @@ def _compare_shift_timing(
     return MISSING
 
 
-def _trajectory(context: EvaluationContext, range_: InclusiveRange) -> Optional[np.ndarray]:
+def _trajectory(context: EvaluationContext, range_: HalfOpenRange) -> Optional[np.ndarray]:
     def calculate() -> Optional[np.ndarray]:
         from app.shared.annotation_agent_tools import calculate_trajectory_offset
 
@@ -552,7 +555,7 @@ def _corresponding_trajectory(context: EvaluationContext) -> Optional[np.ndarray
     return context.memo(("corresponding_trajectory",), calculate)
 
 
-def _speed_delta(context: EvaluationContext, range_: InclusiveRange) -> Optional[np.ndarray]:
+def _speed_delta(context: EvaluationContext, range_: HalfOpenRange) -> Optional[np.ndarray]:
     def calculate() -> Optional[np.ndarray]:
         segment = context.segment(range_)
         player = _series(segment, "Physics_speed_kmh")
@@ -578,7 +581,7 @@ def _speed_difference_at_iloc(
 
 
 def _oversteer_or_understeer(
-    context: EvaluationContext, range_: InclusiveRange,
+    context: EvaluationContext, range_: HalfOpenRange,
 ) -> Any:
     required_channels = (
         "Physics_slip_angle_front_left",
@@ -591,7 +594,7 @@ def _oversteer_or_understeer(
 
     index = context.telemetry.index.to_numpy()
     positions = np.flatnonzero(
-        (index >= range_.start) & (index <= range_.end)
+        (index >= range_.start) & (index < range_.end)
     )
     if not len(positions):
         return False
@@ -599,7 +602,7 @@ def _oversteer_or_understeer(
     analysis_range = range_
     first_position = int(positions[0])
     if first_position > 0:
-        analysis_range = InclusiveRange(
+        analysis_range = HalfOpenRange(
             int(index[first_position - 1]), range_.end,
         )
 
@@ -618,7 +621,7 @@ def _oversteer_or_understeer(
 
 
 def _speed_gap_slope(
-    context: EvaluationContext, range_: InclusiveRange,
+    context: EvaluationContext, range_: HalfOpenRange,
 ) -> Any:
     values = _speed_delta(context, range_)
     if values is None:
@@ -637,7 +640,7 @@ def _speed_gap_slope(
 
 
 def _player_brake_peak(
-    context: EvaluationContext, range_: InclusiveRange,
+    context: EvaluationContext, range_: HalfOpenRange,
 ) -> Any:
     values = _finite(_series(context.segment(range_), "Physics_brake"))
     return float(np.max(values)) if len(values) else MISSING
@@ -659,7 +662,7 @@ def _classify_trajectory_offset(offset: float) -> Any:
     return "wider" if float(offset) > 0 else "tighter"
 
 
-def _trajectory_position(context: EvaluationContext, range_: InclusiveRange) -> Any:
+def _trajectory_position(context: EvaluationContext, range_: HalfOpenRange) -> Any:
     values = _finite(_trajectory(context, range_))
     if not len(values):
         return MISSING
@@ -716,7 +719,7 @@ def _trajectory_split(
     return MISSING
 
 
-def _time_analysis(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str, Any]:
+def _time_analysis(context: EvaluationContext, range_: HalfOpenRange) -> Mapping[str, Any]:
     def calculate() -> Mapping[str, Any]:
         segment = context.segment(range_)
         values = _series(segment, "expert_time_difference")
@@ -758,10 +761,10 @@ def _time_slope_direction(
 
 
 def _time_slope_runs(
-    df: pd.DataFrame, range_: InclusiveRange,
+    df: pd.DataFrame, range_: HalfOpenRange,
 ) -> Tuple[list[Dict[str, Any]], list[Tuple[int, int]]]:
     segment = df.loc[
-        (df.index >= range_.start) & (df.index <= range_.end)
+        (df.index >= range_.start) & (df.index < range_.end)
     ]
     if "expert_time_difference" not in segment.columns:
         return [], []
@@ -838,7 +841,7 @@ def _time_slope_runs(
     return runs, accelerating_rises
 
 
-def _opponent(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str, Any]:
+def _opponent(context: EvaluationContext, range_: HalfOpenRange) -> Mapping[str, Any]:
     def calculate() -> Mapping[str, Any]:
         from app.shared.annotation_agent_tools import (
             classify_opponent_interaction,
@@ -884,7 +887,7 @@ def _opponent(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str
     return context.memo(("opponent", range_.start, range_.end), calculate)
 
 
-def _slip_balance(context: EvaluationContext, range_: InclusiveRange) -> Optional[np.ndarray]:
+def _slip_balance(context: EvaluationContext, range_: HalfOpenRange) -> Optional[np.ndarray]:
     def calculate() -> Optional[np.ndarray]:
         segment = context.segment(range_)
         values = [
@@ -902,7 +905,7 @@ def _slip_balance(context: EvaluationContext, range_: InclusiveRange) -> Optiona
     return context.memo(("slip_balance", range_.start, range_.end), calculate)
 
 
-def _push_to_limit(context: EvaluationContext, range_: InclusiveRange) -> Optional[np.ndarray]:
+def _push_to_limit(context: EvaluationContext, range_: HalfOpenRange) -> Optional[np.ndarray]:
     def calculate() -> Optional[np.ndarray]:
         from app.shared.tire_grip_features import SlipEnvelopeConfig
 
@@ -937,7 +940,7 @@ def _push_to_limit(context: EvaluationContext, range_: InclusiveRange) -> Option
 
 
 def _control_similarity(
-    context: EvaluationContext, range_: InclusiveRange, control: str,
+    context: EvaluationContext, range_: HalfOpenRange, control: str,
 ) -> Any:
     segment = context.segment(range_)
     player = _series(segment, *CONTROL_COLUMNS[("player", control)])
@@ -948,7 +951,7 @@ def _control_similarity(
 
 
 def _control_overlap(
-    context: EvaluationContext, range_: InclusiveRange, driver: str,
+    context: EvaluationContext, range_: HalfOpenRange, driver: str,
 ) -> Any:
     segment = context.segment(range_)
     brake = _series(segment, *CONTROL_COLUMNS[(driver, "brake")])
@@ -959,7 +962,7 @@ def _control_overlap(
 
 
 def _control_comparison(
-    context: EvaluationContext, range_: InclusiveRange, control: str, metric: str,
+    context: EvaluationContext, range_: HalfOpenRange, control: str, metric: str,
 ) -> Any:
     player = _control_landmarks(context, range_, "player", control)
     expert = _control_landmarks(context, range_, "expert", control)
@@ -980,13 +983,13 @@ def _control_comparison(
 
 
 def _fact_range(
-    calculate: Callable[[EvaluationContext, InclusiveRange], Any],
+    calculate: Callable[[EvaluationContext, HalfOpenRange], Any],
 ) -> Callable[[EvaluationContext, Sequence[ResolvedInput]], Any]:
     return lambda context, inputs: calculate(context, _range(inputs))
 
 
 def _mapping_fact(
-    analysis: Callable[[EvaluationContext, InclusiveRange], Mapping[str, Any]], key: str,
+    analysis: Callable[[EvaluationContext, HalfOpenRange], Mapping[str, Any]], key: str,
 ) -> Callable[[EvaluationContext, Sequence[ResolvedInput]], Any]:
     return _fact_range(lambda context, range_: analysis(context, range_).get(key, MISSING))
 
@@ -1098,7 +1101,7 @@ def build_fact_registry() -> FactRegistry:
 
 
 def _compare_gear_range(
-    context: EvaluationContext, range_: InclusiveRange,
+    context: EvaluationContext, range_: HalfOpenRange,
 ) -> Any:
     segment = context.segment(range_)
     player = _series(segment, "Physics_gear")
@@ -1118,7 +1121,7 @@ def _compare_gear_range(
     return "mixed"
 
 
-def _compare_exit_gear(context: EvaluationContext, range_: InclusiveRange) -> Any:
+def _compare_exit_gear(context: EvaluationContext, range_: HalfOpenRange) -> Any:
     segment = context.segment(range_)
     player = _series(segment, "Physics_gear")
     expert = _series(segment, "expert_optimal_gear")
@@ -1127,7 +1130,7 @@ def _compare_exit_gear(context: EvaluationContext, range_: InclusiveRange) -> An
     return "lower" if player[-1] < expert[-1] else "higher" if player[-1] > expert[-1] else "aligned"
 
 
-def _altitude(context: EvaluationContext, range_: InclusiveRange, phase: str) -> Any:
+def _altitude(context: EvaluationContext, range_: HalfOpenRange, phase: str) -> Any:
     del phase
     segment = context.segment(range_)
     if "expert_optimal_player_pos_z" in segment.columns:

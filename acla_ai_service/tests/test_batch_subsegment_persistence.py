@@ -2,7 +2,15 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from app.local_annotation_agent.workflow import deterministic
+from app.local_annotation_agent.workflow.deterministic_engine import (
+    HalfOpenRange,
+    PredicateEvaluation,
+    RequirementBranchEvaluation,
+    RequirementEvaluation,
+)
 from ui.segment_tabs import batch_subsegment
+from ui.segment_tabs.shared import build_segment
 
 
 def test_batch_children_inherit_main_labels_but_not_parent_segment_type(monkeypatch):
@@ -47,6 +55,53 @@ def test_batch_children_inherit_main_labels_but_not_parent_segment_type(monkeypa
 
     assert count == 1
     assert saved_children[0].labels == ["RM", "RM7", "ST14"]
+
+
+def test_deterministic_end_row_is_embedded_with_exclusive_persistence_bound(
+    monkeypatch,
+):
+    final_row = 4
+    branch = RequirementBranchEvaluation(0, [
+        PredicateEvaluation(
+            True,
+            "trajectory: True",
+            "fact",
+            HalfOpenRange(2, final_row + 1),
+        ),
+    ])
+    matched = RequirementEvaluation(
+        True, branch.branch, branch.passed, [], [branch],
+    )
+
+    def fake_evaluate(label_ids, _context, _scope):
+        if "RM7" in label_ids:
+            return deterministic.LabelEvaluation(["RM7"], {"RM7": matched})
+        return deterministic.LabelEvaluation([], {})
+
+    monkeypatch.setattr(deterministic, "evaluate_labels", fake_evaluate)
+    df = pd.DataFrame({"row": range(6)})
+    result = deterministic.calculate_detailed_annotation(
+        df,
+        parent_start=0,
+        parent_end=len(df),
+        parent_main_labels=["RM"],
+    )
+    proposal = next(
+        item for item in result.label_annotations if item["label_id"] == "RM7"
+    )
+
+    segment = build_segment(
+        df,
+        start=proposal["start_index"],
+        end=proposal["end_index"],
+        label_ids=[proposal["label_id"]],
+    )
+
+    assert segment.telemetry_data[-1]["row"] == final_row
+    assert segment.end_index == final_row + 1
+    assert segment.segment_length == len(segment.telemetry_data) == (
+        segment.end_index - segment.start_index
+    )
 
 
 def test_delete_selected_parent_subsegments_preserves_annotations_outside_range(monkeypatch):

@@ -10,7 +10,7 @@ from app.local_annotation_agent.workflow import deterministic
 from app.local_annotation_agent.workflow.deterministic_engine import (
     FactDefinition,
     FactRegistry,
-    InclusiveRange,
+    HalfOpenRange,
     InputDefinition,
     InputRegistry,
     MISSING,
@@ -44,16 +44,16 @@ def _comparison_tags(player, expert):
 
 def _evaluate(requirements, df, start=0, end=None, **context_kwargs):
     if end is None:
-        end = len(df) - 1
+        end = len(df)
     context = EvaluationContext.from_dataframe(df, **context_kwargs)
     return deterministic.evaluate_requirements(
-        requirements, context, InclusiveRange(start, end),
+        requirements, context, HalfOpenRange(start, end),
     )
 
 
 def _branch(index, start, end, text="fact: True"):
     return RequirementBranchEvaluation(index, [
-        PredicateEvaluation(True, text, "fact", InclusiveRange(start, end)),
+        PredicateEvaluation(True, text, "fact", HalfOpenRange(start, end)),
     ])
 
 
@@ -155,7 +155,7 @@ def test_msp15_checks_player_balance_across_the_combined_reapplication_range(
             "Physics_slip_angle_rear_right": rear,
         }))
         return deterministic.evaluate_requirements(
-            requirements, context, InclusiveRange(0, size - 1),
+            requirements, context, HalfOpenRange(0, size),
         )
 
     oversteer = evaluate([0.0] * 5 + [0.03] * 7)
@@ -163,8 +163,8 @@ def test_msp15_checks_player_balance_across_the_combined_reapplication_range(
 
     assert oversteer.matched
     assert understeer.matched
-    assert oversteer.matched_branches[0].evidence_range == InclusiveRange(4, 7)
-    assert understeer.matched_branches[0].evidence_range == InclusiveRange(4, 7)
+    assert oversteer.matched_branches[0].evidence_range == HalfOpenRange(4, 8)
+    assert understeer.matched_branches[0].evidence_range == HalfOpenRange(4, 8)
     assert not evaluate([0.0] * 12).matched
 
     landmarks["player"]["reapplication_end"] = None
@@ -241,7 +241,7 @@ def test_msp18_matches_only_when_speed_difference_increases_during_release(
             "expert_optimal_speed": player_speed + speed_differences,
         }))
         return deterministic.evaluate_requirements(
-            requirements, context, InclusiveRange(0, len(speed_differences) - 1),
+            requirements, context, HalfOpenRange(0, len(speed_differences)),
         )
 
     increasing = evaluate(np.array([0, 0, 0, 1, 2, 3, 4, 4, 4], dtype=float))
@@ -249,7 +249,7 @@ def test_msp18_matches_only_when_speed_difference_increases_during_release(
     decreasing = evaluate(np.array([4, 4, 4, 3, 2, 1, 0, 0, 0], dtype=float))
 
     assert increasing.matched
-    assert increasing.matched_branches[0].evidence_range == InclusiveRange(2, 6)
+    assert increasing.matched_branches[0].evidence_range == HalfOpenRange(2, 7)
     assert not flat.matched
     assert not decreasing.matched
 
@@ -333,7 +333,7 @@ def test_msp21_speed_tolerance_is_inclusive_at_expert_onset():
         tag: InputDefinition(
             "iloc",
             lambda _context, _scope: ResolvedInput(
-                tag, "iloc", 1, InclusiveRange(1, 1),
+                tag, "iloc", 1, HalfOpenRange(1, 2),
             ),
         ),
     })
@@ -359,7 +359,7 @@ def test_msp21_speed_tolerance_is_inclusive_at_expert_onset():
         result = interpreter.evaluate(
             requirements,
             context,
-            InclusiveRange(0, 2),
+            HalfOpenRange(0, 3),
         )
 
         assert result.matched is expected
@@ -449,7 +449,7 @@ def test_throttle_reapplication_uses_the_positive_trend_after_release():
         ],
     }, index=range(311, 320))
     context = EvaluationContext.from_dataframe(df)
-    scope = InclusiveRange(311, 320)
+    scope = HalfOpenRange(311, 320)
 
     player_onset = context.resolve_input(
         "player_throttle_reapplication_onset_iloc", scope,
@@ -490,7 +490,7 @@ def test_throttle_reapplication_is_missing_without_a_positive_trend():
 
     assert context.resolve_input(
         "player_throttle_reapplication_onset_iloc",
-        InclusiveRange(0, 3),
+        HalfOpenRange(0, 4),
         deterministic.INPUT_REGISTRY,
     ) is None
 
@@ -506,16 +506,26 @@ def test_registry_rejects_duplicate_strategy_names():
         raise AssertionError("duplicate fact registration was accepted")
 
 
+def test_half_open_range_rejects_empty_and_reversed_bounds():
+    for start, end in ((2, 2), (3, 2)):
+        try:
+            HalfOpenRange(start, end)
+        except ValueError as error:
+            assert "start must be less than range end" in str(error)
+        else:
+            raise AssertionError(f"invalid half-open range [{start}, {end}) was accepted")
+
+
 def test_interpreter_retains_every_matching_branch_and_its_range():
     definitions = {
         "first": InputDefinition(
             "range", lambda _context, _scope: ResolvedInput(
-                "first", "range", InclusiveRange(1, 3), InclusiveRange(1, 3),
+                "first", "range", HalfOpenRange(1, 4), HalfOpenRange(1, 4),
             ),
         ),
         "second": InputDefinition(
             "range", lambda _context, _scope: ResolvedInput(
-                "second", "range", InclusiveRange(7, 9), InclusiveRange(7, 9),
+                "second", "range", HalfOpenRange(7, 10), HalfOpenRange(7, 10),
             ),
         ),
     }
@@ -532,16 +542,16 @@ def test_interpreter_retains_every_matching_branch_and_its_range():
     }
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(11)))
 
-    result = interpreter.evaluate(requirements, context, InclusiveRange(0, 10))
+    result = interpreter.evaluate(requirements, context, HalfOpenRange(0, 11))
 
     assert result.matched and result.branch == 0
     assert [branch.evidence_range for branch in result.matched_branches] == [
-        InclusiveRange(1, 3), InclusiveRange(7, 9),
+        HalfOpenRange(1, 4), HalfOpenRange(7, 10),
     ]
 
 
 def test_branch_evidence_is_the_envelope_of_all_predicate_inputs():
-    ranges = {"first": InclusiveRange(2, 4), "second": InclusiveRange(8, 9)}
+    ranges = {"first": HalfOpenRange(2, 5), "second": HalfOpenRange(8, 10)}
     inputs = InputRegistry({
         tag: InputDefinition(
             "range",
@@ -564,23 +574,23 @@ def test_branch_evidence_is_the_envelope_of_all_predicate_inputs():
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(11)))
 
     result = RequirementInterpreter(inputs, facts).evaluate(
-        requirements, context, InclusiveRange(0, 10),
+        requirements, context, HalfOpenRange(0, 11),
     )
 
-    assert result.matched_branches[0].evidence_range == InclusiveRange(2, 9)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(2, 10)
 
 
 def test_array_tags_form_one_condition_input_from_their_envelope():
     resolved = {
         "first": ResolvedInput(
-            "first", "iloc", 8, InclusiveRange(8, 8),
+            "first", "iloc", 8, HalfOpenRange(8, 9),
         ),
         "middle_range": ResolvedInput(
             "middle_range", "range",
-            InclusiveRange(2, 4), InclusiveRange(2, 4),
+            HalfOpenRange(2, 5), HalfOpenRange(2, 5),
         ),
         "last": ResolvedInput(
-            "last", "iloc", 10, InclusiveRange(10, 10),
+            "last", "iloc", 10, HalfOpenRange(10, 11),
         ),
     }
     inputs = InputRegistry({
@@ -604,13 +614,13 @@ def test_array_tags_form_one_condition_input_from_their_envelope():
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(12)))
 
     cases = (
-        (["first"], "point_fact", InclusiveRange(8, 8), "iloc"),
-        (["middle_range"], "range_fact", InclusiveRange(2, 4), "range"),
-        (["first", "last"], "range_fact", InclusiveRange(8, 10), "range"),
+        (["first"], "point_fact", HalfOpenRange(8, 9), "iloc"),
+        (["middle_range"], "range_fact", HalfOpenRange(2, 5), "range"),
+        (["first", "last"], "range_fact", HalfOpenRange(8, 11), "range"),
         (
             ["first", "middle_range", "last"],
             "range_fact",
-            InclusiveRange(2, 10),
+            HalfOpenRange(2, 11),
             "range",
         ),
     )
@@ -618,7 +628,7 @@ def test_array_tags_form_one_condition_input_from_their_envelope():
         result = interpreter.evaluate(
             _requirement(tags, fact),
             context,
-            InclusiveRange(0, 11),
+            HalfOpenRange(0, 12),
         )
 
         assert result.matched
@@ -630,8 +640,8 @@ def test_array_tags_form_one_condition_input_from_their_envelope():
 
 def test_evidence_only_predicate_contributes_range_without_a_fact():
     ranges = {
-        "first": InclusiveRange(2, 2),
-        "second": InclusiveRange(9, 9),
+        "first": HalfOpenRange(2, 3),
+        "second": HalfOpenRange(9, 10),
     }
     inputs = InputRegistry({
         tag: InputDefinition(
@@ -652,11 +662,11 @@ def test_evidence_only_predicate_contributes_range_without_a_fact():
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(11)))
 
     result = RequirementInterpreter(inputs, FactRegistry({})).evaluate(
-        requirements, context, InclusiveRange(0, 10),
+        requirements, context, HalfOpenRange(0, 11),
     )
 
     assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(2, 9)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(2, 10)
     assert result.passed == ["evidence: inputs resolved"]
 
 
@@ -664,7 +674,7 @@ def test_evidence_only_predicate_fails_closed_when_an_input_is_missing():
     inputs = InputRegistry({
         "present": InputDefinition(
             "iloc", lambda _context, _scope: ResolvedInput(
-                "present", "iloc", 2, InclusiveRange(2, 2),
+                "present", "iloc", 2, HalfOpenRange(2, 3),
             ),
         ),
         "missing": InputDefinition("iloc", lambda *_args: None),
@@ -679,7 +689,7 @@ def test_evidence_only_predicate_fails_closed_when_an_input_is_missing():
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(5)))
 
     result = RequirementInterpreter(inputs, FactRegistry({})).evaluate(
-        requirements, context, InclusiveRange(0, 4),
+        requirements, context, HalfOpenRange(0, 5),
     )
 
     assert not result.matched
@@ -724,7 +734,7 @@ def test_input_and_fact_strategies_are_cached_per_scope():
     requirements = {"enabled": True, "any_of": [predicate, predicate]}
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(5)))
 
-    interpreter.evaluate(requirements, context, InclusiveRange(0, 4))
+    interpreter.evaluate(requirements, context, HalfOpenRange(0, 5))
 
     assert calls == {"input": 1, "fact": 1}
 
@@ -784,12 +794,12 @@ def test_start_end_object_passes_points_in_semantic_order_and_envelopes_evidence
     inputs = InputRegistry({
         "start_point": InputDefinition(
             "iloc", lambda _context, _scope: ResolvedInput(
-                "start_point", "iloc", 2, InclusiveRange(2, 2),
+                "start_point", "iloc", 2, HalfOpenRange(2, 3),
             ),
         ),
         "end_point": InputDefinition(
             "iloc", lambda _context, _scope: ResolvedInput(
-                "end_point", "iloc", 7, InclusiveRange(7, 7),
+                "end_point", "iloc", 7, HalfOpenRange(7, 8),
             ),
         ),
     })
@@ -807,12 +817,12 @@ def test_start_end_object_passes_points_in_semantic_order_and_envelopes_evidence
     result = RequirementInterpreter(inputs, facts).evaluate(
         requirements,
         EvaluationContext.from_dataframe(pd.DataFrame(index=range(9))),
-        InclusiveRange(0, 8),
+        HalfOpenRange(0, 9),
     )
 
     assert result.matched
     assert [value.tag for value in received] == ["start_point", "end_point"]
-    assert result.matched_branches[0].evidence_range == InclusiveRange(2, 7)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(2, 8)
 
 
 def test_validator_rejects_malformed_or_unknown_point_objects():
@@ -910,7 +920,7 @@ def test_compare_ilocs_uses_explicit_roles_and_their_point_envelope():
     )
 
     assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(0, 3)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(0, 4)
 
 
 def test_compare_ilocs_requires_exact_alignment():
@@ -924,10 +934,10 @@ def test_compare_ilocs_requires_exact_alignment():
     ):
         inputs = [
             ResolvedInput(
-                "player", "iloc", player, InclusiveRange(player, player),
+                "player", "iloc", player, HalfOpenRange(player, player + 1),
             ),
             ResolvedInput(
-                "expert", "iloc", expert, InclusiveRange(expert, expert),
+                "expert", "iloc", expert, HalfOpenRange(expert, expert + 1),
             ),
         ]
         assert compare_ilocs.calculate(None, inputs) == expected
@@ -948,11 +958,11 @@ def test_steering_landmarks_use_exact_iloc_comparison(monkeypatch):
     )
 
     result = _evaluate(
-        requirements, pd.DataFrame(index=range(10)), end=9,
+        requirements, pd.DataFrame(index=range(10)), end=10,
     )
 
     assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(5, 6)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(5, 7)
 
 
 def test_expert_shift_ranges_bracket_first_contiguous_directional_change():
@@ -960,11 +970,11 @@ def test_expert_shift_ranges_bracket_first_contiguous_directional_change():
         "expert_optimal_gear": [2, 2, 2, 3, 3, 3, 5, 5, 5, 4, 3, 2, 2, 2],
     })
     context = EvaluationContext.from_dataframe(df)
-    scope = InclusiveRange(0, 13)
+    scope = HalfOpenRange(0, 14)
 
     for tag, expected in (
-        ("expert_upshift_range", InclusiveRange(1, 7)),
-        ("expert_downshift_range", InclusiveRange(7, 12)),
+        ("expert_upshift_range", HalfOpenRange(1, 8)),
+        ("expert_downshift_range", HalfOpenRange(7, 13)),
     ):
         resolved = context.resolve_input(tag, scope, deterministic.INPUT_REGISTRY)
         assert resolved is not None
@@ -978,7 +988,7 @@ def test_expert_shift_range_is_unavailable_without_requested_direction():
     }))
 
     resolved = context.resolve_input(
-        "expert_upshift_range", InclusiveRange(0, 5),
+        "expert_upshift_range", HalfOpenRange(0, 6),
         deterministic.INPUT_REGISTRY,
     )
 
@@ -1003,7 +1013,7 @@ def test_shift_timing_compares_boundary_progress_inside_expert_range():
         }))
 
         assert result.matched, label_id
-        assert result.matched_branches[0].evidence_range == InclusiveRange(1, 4)
+        assert result.matched_branches[0].evidence_range == HalfOpenRange(1, 5)
 
 
 def test_shift_timing_tolerates_one_gear_early_or_late():
@@ -1069,24 +1079,24 @@ def test_shift_timing_uses_expert_event_range_for_reported_regression():
     context = EvaluationContext.from_dataframe(df)
     evaluated = deterministic.evaluate_labels(
         ["MSP35", "MSP36", "MSP37", "MSP38"],
-        context, InclusiveRange(33, 50),
+        context, HalfOpenRange(33, 51),
     )
 
     assert evaluated.labels == ["MSP38"]
     branch = evaluated.evaluations["MSP38"].matched_branches[0]
-    assert branch.evidence_range == InclusiveRange(34, 39)
+    assert branch.evidence_range == HalfOpenRange(34, 40)
 
     result = deterministic.calculate_detailed_annotation(
         df,
         parent_start=33,
-        parent_end=50,
+        parent_end=51,
         parent_main_labels=["MSP"],
     )
     annotation = next(
         value for value in result.label_annotations
         if value["label_id"] == "MSP38"
     )
-    assert (annotation["start_index"], annotation["end_index"]) == (34, 39)
+    assert (annotation["start_index"], annotation["end_index"]) == (34, 40)
     assert "MSP35" not in result.final_labels
 
 
@@ -1106,13 +1116,13 @@ def test_brake_comparison_range_uses_both_complete_braking_periods(monkeypatch):
 
     resolved = context.resolve_input(
         "brake_comparison_range",
-        InclusiveRange(0, 11),
+        HalfOpenRange(0, 12),
         deterministic.INPUT_REGISTRY,
     )
 
     assert resolved is not None
-    assert resolved.value == InclusiveRange(2, 9)
-    assert resolved.evidence_range == InclusiveRange(2, 9)
+    assert resolved.value == HalfOpenRange(2, 10)
+    assert resolved.evidence_range == HalfOpenRange(2, 10)
 
 
 def test_msp54_and_msp55_use_the_exact_four_brake_landmark_tags():
@@ -1138,7 +1148,7 @@ def test_msp54_and_msp55_use_the_exact_four_brake_landmark_tags():
 def test_compare_gear_range_classifies_comparable_samples():
     fact = deterministic.FACT_REGISTRY.get("compare_gear_range")
     assert fact is not None
-    range_ = InclusiveRange(0, 2)
+    range_ = HalfOpenRange(0, 3)
     inputs = [ResolvedInput("combined_range", "range", range_, range_)]
 
     for player, expert, expected in (
@@ -1180,7 +1190,7 @@ def test_msp54_and_msp55_select_by_four_landmark_gear_envelope(monkeypatch):
             "expert_optimal_gear": expert,
         }))
         return deterministic.evaluate_labels(
-            ["MSP54", "MSP55"], context, InclusiveRange(0, 11),
+            ["MSP54", "MSP55"], context, HalfOpenRange(0, 12),
         )
 
     lower = evaluate([2] * 12)
@@ -1194,7 +1204,7 @@ def test_msp54_and_msp55_select_by_four_landmark_gear_envelope(monkeypatch):
     assert mixed.labels == []
     assert lower.evaluations["MSP54"].matched_branches[
         0
-    ].evidence_range == InclusiveRange(2, 9)
+    ].evidence_range == HalfOpenRange(2, 10)
 
 
 def test_msp22_checks_speed_difference_at_brake_application_end(monkeypatch):
@@ -1231,11 +1241,11 @@ def test_msp22_checks_speed_difference_at_brake_application_end(monkeypatch):
     matched = _evaluate(requirements, df)
 
     assert matched.matched
-    assert matched.matched_branches[0].evidence_range == InclusiveRange(2, 7)
+    assert matched.matched_branches[0].evidence_range == HalfOpenRange(2, 8)
     predicates = matched.matched_branches[0].predicates
-    assert predicates[0].evidence_range == InclusiveRange(6, 6)
-    assert predicates[1].evidence_range == InclusiveRange(2, 6)
-    assert predicates[2].evidence_range == InclusiveRange(2, 7)
+    assert predicates[0].evidence_range == HalfOpenRange(6, 7)
+    assert predicates[1].evidence_range == HalfOpenRange(2, 7)
+    assert predicates[2].evidence_range == HalfOpenRange(2, 8)
 
     landmarks["player"]["application_end"] = None
     missing_endpoint = _evaluate(requirements, df)
@@ -1260,12 +1270,12 @@ def test_msp22_matches_mean_smoothed_player_brake_peak_regression():
     context = EvaluationContext.from_dataframe(df)
 
     evaluated = deterministic.evaluate_labels(
-        ["MSP13", "MSP22"], context, InclusiveRange(53, 63),
+        ["MSP13", "MSP22"], context, HalfOpenRange(53, 64),
     )
 
     assert evaluated.labels == ["MSP22"]
     branch = evaluated.evaluations["MSP22"].matched_branches[0]
-    assert branch.evidence_range == InclusiveRange(54, 62)
+    assert branch.evidence_range == HalfOpenRange(54, 63)
 
 
 def test_msp22_brake_window_matches_growing_speed_gap(monkeypatch):
@@ -1310,7 +1320,7 @@ def test_msp22_brake_window_matches_growing_speed_gap(monkeypatch):
 
         assert result.matched
         assert result.matched_branches[0].branch == 0
-        assert result.matched_branches[0].evidence_range == InclusiveRange(2, 7)
+        assert result.matched_branches[0].evidence_range == HalfOpenRange(2, 8)
 
 
 def test_msp22_brake_window_requires_each_condition(monkeypatch):
@@ -1426,7 +1436,7 @@ def test_msp13_requires_similar_or_higher_speed_at_corner_entry_start(monkeypatc
             "expert_optimal_brake": [0.8] * 8,
             "Physics_speed_kmh": [player_speed] * 8,
             "expert_optimal_speed": [100.0] * 8,
-        }), end=7)
+        }), end=8)
 
         assert result.matched is expected
 
@@ -1444,7 +1454,7 @@ def test_msp13_speed_check_uses_entry_start_not_later_entry_speed(monkeypatch):
         "expert_optimal_brake": [0.8] * 8,
         "Physics_speed_kmh": [80.0, 100.0, 100.0, 100.0, 80.0, 80.0, 80.0, 80.0],
         "expert_optimal_speed": [100.0] * 8,
-    }), end=7)
+    }), end=8)
 
     assert result.matched
 
@@ -1458,14 +1468,14 @@ def test_msp13_fails_closed_without_entry_geometry_or_speed(monkeypatch):
         "expert_optimal_brake": [0.8] * 8,
     })
 
-    assert not _evaluate(requirements, low_brake_only, end=7).matched
+    assert not _evaluate(requirements, low_brake_only, end=8).matched
 
     monkeypatch.setattr(
         "app.shared.annotation_agent_tools.measure_segment_shape",
         lambda *_args: {"phases": [{"entry": 2, "apex": 5, "exit": 7}]},
     )
 
-    assert not _evaluate(requirements, low_brake_only, end=7).matched
+    assert not _evaluate(requirements, low_brake_only, end=8).matched
 
 
 def test_msp1_requires_player_speed_gap_below_ten_at_expert_brake_onset(
@@ -1490,11 +1500,11 @@ def test_msp1_requires_player_speed_gap_below_ten_at_expert_brake_onset(
         result = _evaluate(requirements, pd.DataFrame({
             "Physics_speed_kmh": [100.0 - speed_gap] * 12,
             "expert_optimal_speed": [100.0] * 12,
-        }), end=11)
+        }), end=12)
 
         assert result.matched is expected
         if expected:
-            assert result.matched_branches[0].evidence_range == InclusiveRange(2, 8)
+            assert result.matched_branches[0].evidence_range == HalfOpenRange(2, 9)
 
 
 def test_msp1_application_ends_only_supply_range_and_remain_required(monkeypatch):
@@ -1517,18 +1527,18 @@ def test_msp1_application_ends_only_supply_range_and_remain_required(monkeypatch
         "expert_optimal_speed": [100.0] * 12,
     })
 
-    expert_end_later = _evaluate(requirements, df, end=11)
+    expert_end_later = _evaluate(requirements, df, end=12)
     assert expert_end_later.matched
-    assert expert_end_later.matched_branches[0].evidence_range == InclusiveRange(2, 10)
+    assert expert_end_later.matched_branches[0].evidence_range == HalfOpenRange(2, 11)
 
     landmarks["player"]["application_end"] = 10
     landmarks["expert"]["application_end"] = 8
-    player_end_later = _evaluate(requirements, df, end=11)
+    player_end_later = _evaluate(requirements, df, end=12)
     assert player_end_later.matched
-    assert player_end_later.matched_branches[0].evidence_range == InclusiveRange(2, 10)
+    assert player_end_later.matched_branches[0].evidence_range == HalfOpenRange(2, 11)
 
     landmarks["player"]["application_end"] = None
-    missing_end = _evaluate(requirements, df, end=11)
+    missing_end = _evaluate(requirements, df, end=12)
     assert not missing_end.matched
     assert "evidence: unavailable (missing input" in missing_end.failed[0]
 
@@ -1550,17 +1560,17 @@ def test_early_application_label_requires_matching_onset_and_end(monkeypatch):
     )
 
     conflicting_end = _evaluate(
-        requirements, pd.DataFrame(index=range(12)), end=11,
+        requirements, pd.DataFrame(index=range(12)), end=12,
     )
     assert not conflicting_end.matched
 
     landmarks["player"]["application_end"] = 4
-    matched = _evaluate(requirements, pd.DataFrame(index=range(12)), end=11)
+    matched = _evaluate(requirements, pd.DataFrame(index=range(12)), end=12)
     assert matched.matched
-    assert matched.matched_branches[0].evidence_range == InclusiveRange(1, 8)
+    assert matched.matched_branches[0].evidence_range == HalfOpenRange(1, 9)
 
     landmarks["player"]["application_end"] = None
-    missing_end = _evaluate(requirements, pd.DataFrame(index=range(12)), end=11)
+    missing_end = _evaluate(requirements, pd.DataFrame(index=range(12)), end=12)
     assert not missing_end.matched
     assert "missing input" in missing_end.failed[0]
 
@@ -1587,14 +1597,14 @@ def test_release_initiation_labels_compare_matching_control_endpoints(monkeypatc
     )
 
     for label_id, expected_range in (
-        ("MSP27", InclusiveRange(4, 12)),
-        ("MSP29", InclusiveRange(5, 13)),
+        ("MSP27", HalfOpenRange(4, 13)),
+        ("MSP29", HalfOpenRange(5, 14)),
     ):
         requirements = deterministic._requirements_for(
             label_id, deterministic.get_label(label_id),
         )
         result = _evaluate(
-            requirements, pd.DataFrame(index=range(15)), end=14,
+            requirements, pd.DataFrame(index=range(15)), end=15,
         )
         assert result.matched
         assert result.matched_branches[0].evidence_range == expected_range
@@ -1604,7 +1614,7 @@ def test_release_initiation_labels_compare_matching_control_endpoints(monkeypatc
         "MSP27", deterministic.get_label("MSP27"),
     )
     mismatched_onset = _evaluate(
-        requirements, pd.DataFrame(index=range(15)), end=14,
+        requirements, pd.DataFrame(index=range(15)), end=15,
     )
     assert not mismatched_onset.matched
 
@@ -1626,16 +1636,16 @@ def test_msp23_rejects_release_onsets_one_iloc_apart(monkeypatch):
     )
     df = pd.DataFrame(index=range(33, 52))
 
-    misaligned = _evaluate(requirements, df, start=33, end=51)
+    misaligned = _evaluate(requirements, df, start=33, end=52)
 
     assert not misaligned.matched
     assert "compare_ilocs: 'earlier'" in misaligned.failed
 
     landmarks["expert"]["release_onset"] = 35
-    aligned = _evaluate(requirements, df, start=33, end=51)
+    aligned = _evaluate(requirements, df, start=33, end=52)
 
     assert aligned.matched
-    assert aligned.matched_branches[0].evidence_range == InclusiveRange(35, 41)
+    assert aligned.matched_branches[0].evidence_range == HalfOpenRange(35, 42)
 
 
 def test_brake_hold_lengths_one_iloc_apart_are_not_aligned(monkeypatch):
@@ -1655,7 +1665,7 @@ def test_brake_hold_lengths_one_iloc_apart_are_not_aligned(monkeypatch):
     )
 
     result = _evaluate(
-        requirements, pd.DataFrame(index=range(10)), end=9,
+        requirements, pd.DataFrame(index=range(10)), end=10,
     )
 
     assert result.matched
@@ -1752,11 +1762,11 @@ def test_range_fact_inspects_only_its_declared_range():
     )
 
     result = deterministic.evaluate_requirements(
-        requirements, context, InclusiveRange(2, 3),
+        requirements, context, HalfOpenRange(2, 4),
     )
 
     assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(2, 3)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(2, 4)
 
 
 def test_speed_strategies_share_the_declared_comparison_range():
@@ -1773,7 +1783,7 @@ def test_speed_strategies_share_the_declared_comparison_range():
     result = _evaluate({"enabled": True, "any_of": [branch]}, df)
 
     assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(0, 3)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(0, 4)
 
 
 def test_trajectory_strategy_uses_declared_phase_range(monkeypatch):
@@ -1787,7 +1797,7 @@ def test_trajectory_strategy_uses_declared_phase_range(monkeypatch):
     result = deterministic.evaluate_requirements(
         _requirement(["trajectory_comparison_range"], "find_trajectory_convergence"),
         context,
-        InclusiveRange(3, 5),
+        HalfOpenRange(3, 6),
     )
 
     assert result.matched
@@ -1796,7 +1806,7 @@ def test_trajectory_strategy_uses_declared_phase_range(monkeypatch):
 
 def test_trajectory_position_uses_one_meter_alignment_tolerance(monkeypatch):
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(3)))
-    range_ = InclusiveRange(0, 2)
+    range_ = HalfOpenRange(0, 3)
 
     for offsets, expected in (
         ([-1.0, -1.0, -1.0], "aligned"),
@@ -1878,7 +1888,7 @@ def test_segment_landmark_inputs_resolve_to_parent_bounds_and_first_geometric_ap
         },
     )
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(12)))
-    scope = InclusiveRange(2, 11)
+    scope = HalfOpenRange(2, 12)
 
     segment_start = context.resolve_input(
         "segment_start_iloc", scope, deterministic.INPUT_REGISTRY,
@@ -1891,13 +1901,13 @@ def test_segment_landmark_inputs_resolve_to_parent_bounds_and_first_geometric_ap
     )
 
     assert segment_start == ResolvedInput(
-        "segment_start_iloc", "iloc", 2, InclusiveRange(2, 2),
+        "segment_start_iloc", "iloc", 2, HalfOpenRange(2, 3),
     )
     assert segment_end == ResolvedInput(
-        "segment_end_iloc", "iloc", 11, InclusiveRange(11, 11),
+        "segment_end_iloc", "iloc", 11, HalfOpenRange(11, 12),
     )
     assert segment_apex == ResolvedInput(
-        "segment_apex_iloc", "iloc", 6, InclusiveRange(6, 6),
+        "segment_apex_iloc", "iloc", 6, HalfOpenRange(6, 7),
     )
 
 
@@ -1906,8 +1916,8 @@ def test_trajectory_split_classifies_aligned_start_to_wider_or_narrower_end(
 ):
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(6)))
     inputs = [
-        ResolvedInput("start", "iloc", 1, InclusiveRange(1, 1)),
-        ResolvedInput("end", "iloc", 4, InclusiveRange(4, 4)),
+        ResolvedInput("start", "iloc", 1, HalfOpenRange(1, 2)),
+        ResolvedInput("end", "iloc", 4, HalfOpenRange(4, 5)),
     ]
 
     for offsets, expected in (
@@ -1928,8 +1938,8 @@ def test_trajectory_split_fails_closed_when_either_endpoint_does_not_split(
 ):
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(6)))
     inputs = [
-        ResolvedInput("start", "iloc", 1, InclusiveRange(1, 1)),
-        ResolvedInput("end", "iloc", 4, InclusiveRange(4, 4)),
+        ResolvedInput("start", "iloc", 1, HalfOpenRange(1, 2)),
+        ResolvedInput("end", "iloc", 4, HalfOpenRange(4, 5)),
     ]
 
     for offsets in (
@@ -1964,16 +1974,16 @@ def test_trajectory_split_requires_ordered_unique_resolvable_ilocs(monkeypatch):
     ):
         context = EvaluationContext.from_dataframe(pd.DataFrame(index=index))
         inputs = [
-            ResolvedInput("start", "iloc", start, InclusiveRange(start, start)),
-            ResolvedInput("end", "iloc", end, InclusiveRange(end, end)),
+            ResolvedInput("start", "iloc", start, HalfOpenRange(start, start + 1)),
+            ResolvedInput("end", "iloc", end, HalfOpenRange(end, end + 1)),
         ]
 
         assert deterministic_facts._trajectory_split(context, inputs) is MISSING
 
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(6)))
     valid_inputs = [
-        ResolvedInput("start", "iloc", 1, InclusiveRange(1, 1)),
-        ResolvedInput("end", "iloc", 4, InclusiveRange(4, 4)),
+        ResolvedInput("start", "iloc", 1, HalfOpenRange(1, 2)),
+        ResolvedInput("end", "iloc", 4, HalfOpenRange(4, 5)),
     ]
     for offsets in (None, np.array([0.0, 1.0])):
         monkeypatch.setattr(
@@ -2003,13 +2013,13 @@ def test_msp2_matches_aligned_start_to_wider_apex_without_intermediate_samples(
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(8)))
 
     result = deterministic.evaluate_labels(
-        ["MSP2", "MSP33"], context, InclusiveRange(1, 7),
+        ["MSP2", "MSP33"], context, HalfOpenRange(1, 8),
     )
 
     assert result.labels == ["MSP2"]
     assert (
         result.evaluations["MSP2"].matched_branches[0].evidence_range
-        == InclusiveRange(1, 5)
+        == HalfOpenRange(1, 6)
     )
     assert not result.evaluations["MSP33"].matched
 
@@ -2027,10 +2037,10 @@ def test_trajectory_start_rules_ignore_later_divergence_or_recovery(monkeypatch)
     )
 
     for label, point, point_offset, later_offset, expected_range in (
-        ("MSP9", 1, -1.01, 2.0, InclusiveRange(1, 5)),
-        ("MSP33", 1, 1.01, -2.0, InclusiveRange(1, 5)),
-        ("MSP11", 5, -1.01, 2.0, InclusiveRange(5, 8)),
-        ("MSP16", 5, 1.01, -2.0, InclusiveRange(5, 8)),
+        ("MSP9", 1, -1.01, 2.0, HalfOpenRange(1, 6)),
+        ("MSP33", 1, 1.01, -2.0, HalfOpenRange(1, 6)),
+        ("MSP11", 5, -1.01, 2.0, HalfOpenRange(5, 9)),
+        ("MSP16", 5, 1.01, -2.0, HalfOpenRange(5, 9)),
     ):
         requirements = deterministic._requirements_for(
             label, deterministic.get_label(label),
@@ -2041,7 +2051,7 @@ def test_trajectory_start_rules_ignore_later_divergence_or_recovery(monkeypatch)
             trajectory["offsets"] = offsets
 
             result = _evaluate(
-                requirements, pd.DataFrame(index=range(10)), start=1, end=9,
+                requirements, pd.DataFrame(index=range(10)), start=1, end=10,
             )
 
             assert result.matched, (label, subsequent_offset)
@@ -2080,13 +2090,13 @@ def test_trajectory_start_rules_fail_closed_for_invalid_landmark_offsets(
             trajectory["offsets"] = offsets
 
             assert not _evaluate(
-                requirements, pd.DataFrame(index=range(10)), start=1, end=9,
+                requirements, pd.DataFrame(index=range(10)), start=1, end=10,
             ).matched, (label, point_offset)
 
         for offsets in (None, np.full(9, matching_offset)):
             trajectory["offsets"] = offsets
             assert not _evaluate(
-                requirements, pd.DataFrame(index=range(10)), start=1, end=9,
+                requirements, pd.DataFrame(index=range(10)), start=1, end=10,
             ).matched, label
 
         unresolved_index = [iloc for iloc in range(10) if iloc != point]
@@ -2095,7 +2105,7 @@ def test_trajectory_start_rules_fail_closed_for_invalid_landmark_offsets(
             requirements,
             pd.DataFrame(index=unresolved_index),
             start=1,
-            end=9,
+            end=10,
         ).matched, label
 
 
@@ -2126,7 +2136,7 @@ def test_trajectory_start_rules_require_range_evidence(monkeypatch):
         )
 
         result = _evaluate(
-            requirements, pd.DataFrame(index=range(10)), start=1, end=9,
+            requirements, pd.DataFrame(index=range(10)), start=1, end=10,
         )
 
         assert not result.matched, label
@@ -2162,7 +2172,7 @@ def test_msp2_fails_closed_for_non_wider_or_unavailable_splits(
             lambda _df, offsets=offsets: offsets,
         )
         assert not _evaluate(
-            requirements, pd.DataFrame(index=range(8)), start=1, end=7,
+            requirements, pd.DataFrame(index=range(8)), start=1, end=8,
         ).matched
 
 
@@ -2186,7 +2196,7 @@ def test_msp2_fails_closed_without_a_valid_geometric_apex(monkeypatch):
             lambda *_args, phases=phases: {"phases": phases},
         )
         assert not _evaluate(
-            requirements, pd.DataFrame(index=range(8)), start=1, end=7,
+            requirements, pd.DataFrame(index=range(8)), start=1, end=8,
         ).matched
 
 
@@ -2205,7 +2215,7 @@ def test_msp4_matches_only_for_aligned_apex_to_wider_parent_end(monkeypatch):
     def evaluate():
         context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(8)))
         return deterministic.evaluate_labels(
-            ["MSP4"], context, InclusiveRange(1, 7),
+            ["MSP4"], context, HalfOpenRange(1, 8),
         )
 
     matched = evaluate()
@@ -2213,7 +2223,7 @@ def test_msp4_matches_only_for_aligned_apex_to_wider_parent_end(monkeypatch):
     assert matched.labels == ["MSP4"]
     assert (
         matched.evaluations["MSP4"].matched_branches[0].evidence_range
-        == InclusiveRange(5, 7)
+        == HalfOpenRange(5, 8)
     )
 
     for apex_offset, end_offset in (
@@ -2238,14 +2248,28 @@ def test_phase_resolver_uses_shape_landmarks(monkeypatch):
         "app.shared.annotation_agent_tools.measure_segment_shape",
         lambda *_args: {"phases": [{"entry": 2, "apex": 5, "exit": 9}]},
     )
-    result = _evaluate(
-        _requirement(["corner_apex_range"], "find_phase_presence"),
-        pd.DataFrame(index=range(12)),
-        end=11,
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(12)))
+    scope = HalfOpenRange(0, 12)
+
+    entry = context.resolve_input(
+        "corner_entry_range", scope, deterministic.INPUT_REGISTRY,
+    )
+    apex = context.resolve_input(
+        "corner_apex_range", scope, deterministic.INPUT_REGISTRY,
+    )
+    exit_ = context.resolve_input(
+        "corner_exit_range", scope, deterministic.INPUT_REGISTRY,
+    )
+    exit_end = context.resolve_input(
+        "corner_exit_end_iloc", scope, deterministic.INPUT_REGISTRY,
     )
 
-    assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(3, 7)
+    assert entry is not None and entry.value == HalfOpenRange(2, 6)
+    assert apex is not None and apex.value == HalfOpenRange(3, 8)
+    assert exit_ is not None and exit_.value == HalfOpenRange(5, 10)
+    assert exit_end == ResolvedInput(
+        "corner_exit_end_iloc", "iloc", 9, HalfOpenRange(9, 10),
+    )
 
 
 def test_corresponding_trajectory_offset_uses_same_iloc_for_both_corner_directions():
@@ -2354,12 +2378,12 @@ def _evaluate_handling_balance(df, onset, end):
         tag: InputDefinition(
             "iloc",
             lambda _context, _scope, tag=tag, value=value: ResolvedInput(
-                tag, "iloc", value, InclusiveRange(value, value),
+                tag, "iloc", value, HalfOpenRange(value, value + 1),
             ),
         )
         for tag, value in values.items()
     })
-    scope = InclusiveRange(int(df.index.min()), int(df.index.max()))
+    scope = HalfOpenRange(int(df.index.min()), int(df.index.max()) + 1)
     return RequirementInterpreter(inputs, deterministic.FACT_REGISTRY).evaluate(
         requirements,
         EvaluationContext(df),
@@ -2385,8 +2409,8 @@ def test_oversteer_or_understeer_between_ilocs_detects_new_threshold_entries():
         )
 
         assert result.matched, (balances, onset, end)
-        assert result.matched_branches[0].evidence_range == InclusiveRange(
-            min(onset, end), max(onset, end),
+        assert result.matched_branches[0].evidence_range == HalfOpenRange(
+            min(onset, end), max(onset, end) + 1,
         )
 
 
@@ -2396,7 +2420,7 @@ def test_oversteer_or_understeer_between_ilocs_uses_positional_predecessor():
     result = _evaluate_handling_balance(df, 20, 20)
 
     assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(20, 20)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(20, 21)
 
 
 def test_oversteer_or_understeer_between_ilocs_accepts_reversed_endpoints():
@@ -2405,7 +2429,7 @@ def test_oversteer_or_understeer_between_ilocs_accepts_reversed_endpoints():
     result = _evaluate_handling_balance(df, 30, 20)
 
     assert result.matched
-    assert result.matched_branches[0].evidence_range == InclusiveRange(20, 30)
+    assert result.matched_branches[0].evidence_range == HalfOpenRange(20, 31)
 
 
 def test_oversteer_or_understeer_between_ilocs_rejects_carried_in_problems():
@@ -2528,7 +2552,7 @@ def test_actual_sub_label_catalog_drives_detailed_range(monkeypatch):
     result = deterministic.calculate_detailed_annotation(
         pd.DataFrame(index=range(8)),
         parent_start=0,
-        parent_end=7,
+        parent_end=8,
         parent_main_labels=["RM"],
     )
 
@@ -2536,7 +2560,7 @@ def test_actual_sub_label_catalog_drives_detailed_range(monkeypatch):
     rm7 = next(
         item for item in result.label_annotations if item["label_id"] == "RM7"
     )
-    assert (rm7["start_index"], rm7["end_index"]) == (0, 7)
+    assert (rm7["start_index"], rm7["end_index"]) == (0, 8)
 
 
 def test_disabled_label_never_matches():
@@ -2558,14 +2582,14 @@ def test_exclusive_matches_are_suppressed(monkeypatch):
     context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(2)))
 
     result = deterministic.evaluate_labels(
-        ["A", "B"], context, InclusiveRange(0, 1),
+        ["A", "B"], context, HalfOpenRange(0, 2),
     )
 
     assert result.labels == []
     assert result.conflicts == [("A", "B")]
 
 
-def test_same_label_overlaps_merge_transitively_but_other_labels_stay_separate():
+def test_same_label_overlaps_merge_but_adjacent_ranges_stay_separate():
     merged = deterministic._merge_label_annotations([
         {"label_id": "RM7", "start_index": 1, "end_index": 3, "passed": ["a"]},
         {"label_id": "RM7", "start_index": 3, "end_index": 5, "passed": ["b"]},
@@ -2576,7 +2600,7 @@ def test_same_label_overlaps_merge_transitively_but_other_labels_stay_separate()
     assert [
         (item["label_id"], item["start_index"], item["end_index"])
         for item in merged
-    ] == [("RM7", 1, 8), ("MSP1", 2, 6)]
+    ] == [("RM7", 1, 3), ("MSP1", 2, 6), ("RM7", 3, 8)]
 
 
 def test_detailed_segment_types_are_evaluated_after_discovery_on_parent_scope(
@@ -2587,7 +2611,7 @@ def test_detailed_segment_types_are_evaluated_after_discovery_on_parent_scope(
     def fake_evaluate(label_ids, _context, scope):
         scopes.append((tuple(label_ids), scope))
         if "RM7" in label_ids:
-            branch = _branch(0, 2, 6, "trajectory: True")
+            branch = _branch(0, 2, 7, "trajectory: True")
             return deterministic.LabelEvaluation(
                 ["RM7"], {"RM7": _matched(branch)},
             )
@@ -2600,7 +2624,7 @@ def test_detailed_segment_types_are_evaluated_after_discovery_on_parent_scope(
     result = deterministic.calculate_detailed_annotation(
         pd.DataFrame(index=range(10)),
         parent_start=0,
-        parent_end=9,
+        parent_end=10,
         parent_main_labels=["RM"],
     )
 
@@ -2608,26 +2632,26 @@ def test_detailed_segment_types_are_evaluated_after_discovery_on_parent_scope(
     sub_call = next(index for index, (labels, _scope) in enumerate(scopes) if "RM7" in labels)
     type_call = next(index for index, (labels, _scope) in enumerate(scopes) if "ST2" in labels)
     assert sub_call < type_call
-    assert scopes[type_call][1] == InclusiveRange(0, 9)
+    assert scopes[type_call][1] == HalfOpenRange(0, 10)
     assert {
         (item["label_id"], item["start_index"], item["end_index"])
         for item in result.label_annotations
-    } == {("RM7", 2, 6), ("ST2", 2, 6)}
+    } == {("RM7", 2, 7), ("ST2", 2, 7)}
 
 
 def test_detailed_segment_type_range_must_contain_finalized_range(
     monkeypatch,
 ):
     sub_labels = {
-        label_id: _matched(_branch(0, 8, 29, "sub-label evidence: True"))
+        label_id: _matched(_branch(0, 8, 30, "sub-label evidence: True"))
         for label_id in ("RM1", "RM5", "RM7")
     }
     segment_types = {
-        "ST1": _matched(_branch(0, 0, 39, "segment shape: in_corner")),
-        "ST9": _matched(_branch(0, 8, 29, "corner shape: decreasing_radius")),
-        "ST14": _matched(_branch(0, 16, 24, "entry altitude: downhill")),
-        "ST17": _matched(_branch(0, 4, 20, "apex altitude: downhill")),
-        "ST20": _matched(_branch(0, 29, 35, "exit altitude: downhill")),
+        "ST1": _matched(_branch(0, 0, 40, "segment shape: in_corner")),
+        "ST9": _matched(_branch(0, 8, 30, "corner shape: decreasing_radius")),
+        "ST14": _matched(_branch(0, 16, 25, "entry altitude: downhill")),
+        "ST17": _matched(_branch(0, 4, 21, "apex altitude: downhill")),
+        "ST20": _matched(_branch(0, 29, 36, "exit altitude: downhill")),
     }
 
     def fake_evaluate(label_ids, _context, _scope):
@@ -2638,7 +2662,7 @@ def test_detailed_segment_type_range_must_contain_finalized_range(
     result = deterministic.calculate_detailed_annotation(
         pd.DataFrame(index=range(40)),
         parent_start=0,
-        parent_end=39,
+        parent_end=40,
         parent_main_labels=["RM"],
     )
 
@@ -2647,11 +2671,11 @@ def test_detailed_segment_type_range_must_contain_finalized_range(
         for item in result.label_annotations
     }
     assert ranges == {
-        "RM1": (8, 29),
-        "RM5": (8, 29),
-        "RM7": (8, 29),
-        "ST1": (8, 29),
-        "ST9": (8, 29),
+        "RM1": (8, 30),
+        "RM5": (8, 30),
+        "RM7": (8, 30),
+        "ST1": (8, 30),
+        "ST9": (8, 30),
     }
     assert not {"ST14", "ST17", "ST20"} & set(result.final_labels)
 
@@ -2659,11 +2683,11 @@ def test_detailed_segment_type_range_must_contain_finalized_range(
 def test_detailed_segment_type_emits_once_on_finalized_range(monkeypatch):
     def fake_evaluate(label_ids, _context, _scope):
         if "RM7" in label_ids:
-            branch = _branch(0, 0, 9, "trajectory: True")
+            branch = _branch(0, 0, 10, "trajectory: True")
             return deterministic.LabelEvaluation(
                 ["RM7"], {"RM7": _matched(branch)},
             )
-        branches = [_branch(0, 0, 9), _branch(1, 6, 8)]
+        branches = [_branch(0, 0, 10), _branch(1, 6, 9)]
         return deterministic.LabelEvaluation(
             ["ST2"], {"ST2": _matched(*branches)},
         )
@@ -2672,7 +2696,7 @@ def test_detailed_segment_type_emits_once_on_finalized_range(monkeypatch):
     result = deterministic.calculate_detailed_annotation(
         pd.DataFrame(index=range(10)),
         parent_start=0,
-        parent_end=9,
+        parent_end=10,
         parent_main_labels=["RM"],
     )
 
@@ -2680,21 +2704,21 @@ def test_detailed_segment_type_emits_once_on_finalized_range(monkeypatch):
         (item["start_index"], item["end_index"])
         for item in result.label_annotations
         if item["label_id"] == "ST2"
-    ] == [(0, 9)]
+    ] == [(0, 10)]
 
 
 def test_detailed_segment_type_conflicts_do_not_remove_sub_label(monkeypatch):
     def fake_evaluate(label_ids, _context, _scope):
         if "RM7" in label_ids:
-            branch = _branch(0, 2, 6, "trajectory: True")
+            branch = _branch(0, 2, 7, "trajectory: True")
             return deterministic.LabelEvaluation(
                 ["RM7"], {"RM7": _matched(branch)},
             )
         segment_evaluations = {
-            "ST1": _matched(_branch(0, 1, 7, "shape: in_corner")),
-            "ST14": _matched(_branch(0, 0, 8, "entry altitude: downhill")),
-            "ST7": _matched(_branch(0, 2, 6, "radius: constant")),
-            "ST8": _matched(_branch(0, 2, 6, "radius: increasing")),
+            "ST1": _matched(_branch(0, 1, 8, "shape: in_corner")),
+            "ST14": _matched(_branch(0, 0, 9, "entry altitude: downhill")),
+            "ST7": _matched(_branch(0, 2, 7, "radius: constant")),
+            "ST8": _matched(_branch(0, 2, 7, "radius: increasing")),
         }
         return deterministic.LabelEvaluation(
             ["ST1", "ST14"],
@@ -2706,7 +2730,7 @@ def test_detailed_segment_type_conflicts_do_not_remove_sub_label(monkeypatch):
     result = deterministic.calculate_detailed_annotation(
         pd.DataFrame(index=range(9)),
         parent_start=0,
-        parent_end=8,
+        parent_end=9,
         parent_main_labels=["RM"],
     )
 
@@ -2714,9 +2738,9 @@ def test_detailed_segment_type_conflicts_do_not_remove_sub_label(monkeypatch):
         (item["label_id"], item["start_index"], item["end_index"])
         for item in result.label_annotations
     } == {
-        ("RM7", 2, 6),
-        ("ST1", 2, 6),
-        ("ST14", 2, 6),
+        ("RM7", 2, 7),
+        ("ST1", 2, 7),
+        ("ST14", 2, 7),
     }
     assert "Suppressed 1 exclusive conflict(s)." in result.final_reasoning
 
@@ -2731,7 +2755,7 @@ def test_segment_type_alone_does_not_create_detailed_subsegment(monkeypatch):
     result = deterministic.calculate_detailed_annotation(
         pd.DataFrame(index=range(6)),
         parent_start=0,
-        parent_end=5,
+        parent_end=6,
         parent_main_labels=["RM"],
     )
 
@@ -2742,7 +2766,7 @@ def test_segment_type_alone_does_not_create_detailed_subsegment(monkeypatch):
 def test_saved_children_filter_exact_branch_range_before_merge(monkeypatch):
     def fake_evaluate(label_ids, _context, _scope):
         if "RM7" in label_ids:
-            branches = [_branch(0, 1, 4), _branch(1, 3, 7)]
+            branches = [_branch(0, 1, 5), _branch(1, 3, 8)]
             return deterministic.LabelEvaluation(
                 ["RM7"], {"RM7": _matched(*branches)},
             )
@@ -2753,17 +2777,17 @@ def test_saved_children_filter_exact_branch_range_before_merge(monkeypatch):
     result = deterministic.calculate_detailed_annotation(
         pd.DataFrame(index=range(9)),
         parent_start=0,
-        parent_end=8,
+        parent_end=9,
         parent_main_labels=["RM"],
         existing_children=[{
-            "start_index": 1, "end_index": 4, "labels": ["RM7"],
+            "start_index": 1, "end_index": 5, "labels": ["RM7"],
         }],
     )
 
     assert [
         (item["start_index"], item["end_index"])
         for item in result.label_annotations
-    ] == [(3, 7)]
+    ] == [(3, 8)]
 
 
 def test_lap_contract_uses_branch_evidence_for_reasoning(monkeypatch):
@@ -2779,7 +2803,7 @@ def test_lap_contract_uses_branch_evidence_for_reasoning(monkeypatch):
     def fake_evaluate(label_ids, _context, _scope):
         evaluated_label_groups.append(tuple(label_ids))
         if "EA" in label_ids:
-            branch = _branch(0, 2, 5, "time: falling")
+            branch = _branch(0, 2, 6, "time: falling")
             return deterministic.LabelEvaluation(["EA"], {"EA": _matched(branch)})
         return deterministic.LabelEvaluation([], {})
 
@@ -2787,27 +2811,28 @@ def test_lap_contract_uses_branch_evidence_for_reasoning(monkeypatch):
     result = deterministic.calculate_lap_annotation(
         pd.DataFrame(index=range(8)),
         lap_start=0,
-        lap_end=7,
+        lap_end=8,
         section_id="silverstone1",
         section_start=0,
-        section_end=7,
+        section_end=8,
         circuit_id="silverstone",
     )
 
     assert result.label_ids == ["silverstone", "silverstone1", "EA"]
+    assert (result.start_index, result.end_index) == (0, 8)
     assert not any(
         label.startswith("ST")
         for label_ids in evaluated_label_groups
         for label in label_ids
     )
-    assert "iloc range [2, 5]" in result.reasoning
+    assert "iloc range [2, 6)" in result.reasoning
 
 
 def test_public_pipeline_returns_deterministic_lap_contract(monkeypatch):
     expected = deterministic.LapAnnotationResult(
         section_id="silverstone1",
         start_index=0,
-        end_index=4,
+        end_index=5,
         label_ids=["EA"],
         reasoning="ok",
         submitted=True,
@@ -2824,10 +2849,10 @@ def test_public_pipeline_returns_deterministic_lap_contract(monkeypatch):
         df=pd.DataFrame(index=range(5)),
         config=workflow.AnnotationPipelineConfig(provider_id="deterministic"),
         lap_start=0,
-        lap_end=4,
+        lap_end=5,
         section_id="silverstone1",
         section_start=0,
-        section_end=4,
+        section_end=5,
         circuit_id="silverstone",
     )
 

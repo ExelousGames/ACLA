@@ -14,7 +14,7 @@ import pandas as pd
 from app.internal_knowledge_base import skills
 from app.internal_knowledge_base.label_lookup import get_label
 from app.local_annotation_agent.workflow.deterministic_engine import (
-    InclusiveRange,
+    HalfOpenRange,
     LabelEvaluation,
     RequirementBranchEvaluation,
     RequirementEvaluation,
@@ -62,13 +62,13 @@ def _requirements_for(
 
 def evaluate_requirements(
     requirements: Mapping[str, Any], context: EvaluationContext,
-    scope: InclusiveRange,
+    scope: HalfOpenRange,
 ) -> RequirementEvaluation:
     return INTERPRETER.evaluate(requirements, context, scope)
 
 
 def evaluate_labels(
-    label_ids: Iterable[str], context: EvaluationContext, scope: InclusiveRange,
+    label_ids: Iterable[str], context: EvaluationContext, scope: HalfOpenRange,
 ) -> LabelEvaluation:
     evaluations: Dict[str, RequirementEvaluation] = {}
     matched: List[str] = []
@@ -170,19 +170,19 @@ def validate_catalog() -> List[str]:
 
 
 def _reason_from_passed(
-    label_id: str, passed: Iterable[str], range_: InclusiveRange,
+    label_id: str, passed: Iterable[str], range_: HalfOpenRange,
 ) -> str:
     return "; ".join([
-        f"{label_id} selected for iloc range [{range_.start}, {range_.end}]",
+        f"{label_id} selected for iloc range [{range_.start}, {range_.end})",
         *(f"Passed — {fact}" for fact in passed),
     ])
 
 
 def _detailed_reason_from_passed(
-    label_id: str, passed: Iterable[str], range_: InclusiveRange,
+    label_id: str, passed: Iterable[str], range_: HalfOpenRange,
 ) -> str:
     return "\n".join([
-        f"{label_id} selected for iloc range [{range_.start}, {range_.end}]",
+        f"{label_id} selected for iloc range [{range_.start}, {range_.end})",
         "Evidence:",
         *(f"- {fact}" for fact in passed),
     ])
@@ -195,9 +195,7 @@ def _passed_with_evidence(evaluation: RequirementBranchEvaluation) -> List[str]:
             continue
         range_ = predicate.evidence_range
         location = (
-            f"index {range_.start}"
-            if range_ is not None and range_.start == range_.end
-            else f"range [{range_.start}, {range_.end}]" if range_ is not None
+            f"range [{range_.start}, {range_.end})" if range_ is not None
             else "range unavailable"
         )
         annotated.append(f"{predicate.text} — {location}")
@@ -253,15 +251,15 @@ def _resolve_circuit_sections(
 
 
 def _first_branch_range(
-    evaluation: RequirementEvaluation, fallback: InclusiveRange,
-) -> InclusiveRange:
+    evaluation: RequirementEvaluation, fallback: HalfOpenRange,
+) -> HalfOpenRange:
     if evaluation.matched_branches:
         return evaluation.matched_branches[0].evidence_range or fallback
     return fallback
 
 
 def _is_far_from_expert_in_pit(
-    context: EvaluationContext, scope: InclusiveRange,
+    context: EvaluationContext, scope: HalfOpenRange,
 ) -> bool:
     overlap_names = [
         LABEL_MAPPING[value]
@@ -307,7 +305,7 @@ def calculate_lap_annotation(
         telemetry, circuit_id, section_id, section_start, section_end,
         opponent_interaction,
     )
-    scope = InclusiveRange(section_start, section_end)
+    scope = HalfOpenRange(section_start, section_end)
     context = EvaluationContext(
         telemetry, section_id=resolved_section_id,
         overlap_section_ids=tuple(overlap_section_ids),
@@ -334,7 +332,7 @@ def calculate_lap_annotation(
         if label_id in sub_requirements
     ]
     children = evaluate_labels(child_ids, context, scope)
-    resolved_children: List[Tuple[str, RequirementBranchEvaluation, InclusiveRange]] = []
+    resolved_children: List[Tuple[str, RequirementBranchEvaluation, HalfOpenRange]] = []
     for label in children.labels:
         for branch in children.evaluations[label].matched_branches:
             range_ = branch.evidence_range
@@ -411,7 +409,7 @@ def _merge_label_annotations(annotations: Sequence[dict]) -> List[dict]:
         )
         current: Optional[dict] = None
         for proposal in ordered:
-            if current is None or int(proposal["start_index"]) > int(current["end_index"]):
+            if current is None or int(proposal["start_index"]) >= int(current["end_index"]):
                 if current is not None:
                     merged.append(current)
                 current = {
@@ -437,7 +435,7 @@ def _merge_label_annotations(annotations: Sequence[dict]) -> List[dict]:
             int(item["start_index"]), int(item["end_index"]), item["label_id"],
         ),
     ):
-        range_ = InclusiveRange(proposal["start_index"], proposal["end_index"])
+        range_ = HalfOpenRange(proposal["start_index"], proposal["end_index"])
         result.append({
             "label_id": proposal["label_id"],
             "start_index": range_.start,
@@ -454,7 +452,7 @@ def calculate_detailed_annotation(
     parent_main_labels: Sequence[str], parent_selected_labels: Sequence[str] = (),
     existing_children: Sequence[dict] = (),
 ) -> AnnotationResult:
-    parent_scope = InclusiveRange(parent_start, parent_end)
+    parent_scope = HalfOpenRange(parent_start, parent_end)
     context = EvaluationContext.from_dataframe(df)
     existing = {
         (int(child.get("start_index", -1)), int(child.get("end_index", -1)), label)
@@ -495,7 +493,7 @@ def calculate_detailed_annotation(
             })
     annotations = _merge_label_annotations(raw_annotations)
     found_ranges = sorted({
-        InclusiveRange(annotation["start_index"], annotation["end_index"])
+        HalfOpenRange(annotation["start_index"], annotation["end_index"])
         for annotation in annotations
     })
     if found_ranges:
