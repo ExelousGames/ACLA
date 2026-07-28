@@ -118,6 +118,18 @@ def _scope_resolver(tag: str) -> Callable[[EvaluationContext, InclusiveRange], R
     return lambda _context, scope: _range_input(tag, scope)
 
 
+def _scope_start_iloc_resolver(
+    tag: str,
+) -> Callable[[EvaluationContext, InclusiveRange], ResolvedInput]:
+    return lambda _context, scope: _iloc_input(tag, scope.start)
+
+
+def _scope_end_iloc_resolver(
+    tag: str,
+) -> Callable[[EvaluationContext, InclusiveRange], ResolvedInput]:
+    return lambda _context, scope: _iloc_input(tag, scope.end)
+
+
 def _shape_analysis(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str, Any]:
     def calculate() -> Mapping[str, Any]:
         from app.shared.annotation_agent_tools import measure_segment_shape
@@ -148,6 +160,27 @@ def _phase_resolver(
             ranges.append(named[phase_name])
         envelope = InclusiveRange.envelope(ranges)
         return _range_input(tag, envelope) if envelope is not None else None
+    return resolve
+
+
+def _segment_apex_iloc_resolver(
+    tag: str,
+) -> Callable[[EvaluationContext, InclusiveRange], Optional[ResolvedInput]]:
+    def resolve(context: EvaluationContext, scope: InclusiveRange) -> Optional[ResolvedInput]:
+        phases = _shape_analysis(context, scope).get("phases")
+        if not isinstance(phases, list) or not phases:
+            return None
+        first_phase = phases[0]
+        if not isinstance(first_phase, Mapping):
+            return None
+        apex = first_phase.get("apex")
+        if (
+            isinstance(apex, bool)
+            or not isinstance(apex, (int, np.integer))
+            or not scope.start < int(apex) <= scope.end
+        ):
+            return None
+        return _iloc_input(tag, int(apex))
     return resolve
 
 
@@ -413,6 +446,18 @@ def build_input_registry() -> InputRegistry:
         "corner_exit_end_iloc": InputDefinition(
             "iloc", _phase_end_iloc_resolver("corner_exit_end_iloc", "exit"),
         ),
+        "segment_start_iloc": InputDefinition(
+            "iloc", _scope_start_iloc_resolver("segment_start_iloc"),
+        ),
+        "segment_end_iloc": InputDefinition(
+            "iloc", _scope_end_iloc_resolver("segment_end_iloc"),
+        ),
+        "segment_apex_iloc": InputDefinition(
+            "iloc",
+            _segment_apex_iloc_resolver(
+                "segment_apex_iloc",
+            ),
+        ),
     })
     for driver in ("player", "expert"):
         for control, landmarks in (
@@ -632,6 +677,43 @@ def _trajectory_position_at_iloc(
     if len(positions) != 1:
         return MISSING
     return _classify_trajectory_offset(float(values[int(positions[0])]))
+
+
+def _trajectory_split(
+    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+) -> Any:
+    from app.shared.annotation_agent_tools import (
+        TRAJECTORY_ALIGNMENT_TOLERANCE_METERS,
+    )
+
+    start_iloc = int(inputs[0].value)
+    end_iloc = int(inputs[1].value)
+    if start_iloc >= end_iloc:
+        return MISSING
+
+    offsets = _corresponding_trajectory(context)
+    if offsets is None or len(offsets) != len(context.telemetry):
+        return MISSING
+
+    telemetry_ilocs = context.telemetry.index.to_numpy()
+    start_positions = np.flatnonzero(telemetry_ilocs == start_iloc)
+    end_positions = np.flatnonzero(telemetry_ilocs == end_iloc)
+    if len(start_positions) != 1 or len(end_positions) != 1:
+        return MISSING
+
+    values = np.asarray(offsets, dtype=float)
+    start_offset = float(values[int(start_positions[0])])
+    end_offset = float(values[int(end_positions[0])])
+    if not np.isfinite(start_offset) or not np.isfinite(end_offset):
+        return MISSING
+
+    if abs(start_offset) > TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
+        return MISSING
+    if end_offset > TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
+        return "wider"
+    if end_offset < -TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
+        return "narrower"
+    return MISSING
 
 
 def _time_analysis(context: EvaluationContext, range_: InclusiveRange) -> Mapping[str, Any]:
@@ -975,6 +1057,9 @@ def build_fact_registry() -> FactRegistry:
         ),
         "find_trajectory_position_at_iloc": FactDefinition(
             iloc_kind, _trajectory_position_at_iloc,
+        ),
+        "find_trajectory_split": FactDefinition(
+            iloc_pair, _trajectory_split,
         ),
         "find_oversteer_or_understeer_between_ilocs": FactDefinition(
             range_kind, _fact_range(_oversteer_or_understeer),

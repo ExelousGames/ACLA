@@ -149,8 +149,6 @@ async def test_parent_only_training_warns_and_fits_preprocessors(caplog):
         await service.fit_preprocessors("train")
 
     assert service.scaler is not None
-    assert service.pos_weight is not None
-    assert service.pos_weight.shape == (2,)
     assert "training will continue with parent behavior labels only" in caplog.text
     assert "child-label predictions from this model will not be reliable" in caplog.text
 
@@ -166,7 +164,7 @@ async def test_child_annotated_training_does_not_warn(caplog):
 
 
 @pytest.mark.asyncio
-async def test_training_runs_all_epochs_and_restores_best_state(monkeypatch):
+async def test_training_runs_all_epochs_and_restores_best_state(monkeypatch, capsys):
     class CountingModel(torch.nn.Module):
         def __init__(self, *args, **kwargs):
             super().__init__()
@@ -212,8 +210,7 @@ async def test_training_runs_all_epochs_and_restores_best_state(monkeypatch):
     service.hidden_dim = 1
     service.dilations = (1,)
     service.dropout = 0.0
-    service.pos_weight = None
-    service.threshold = 0.5
+    service.threshold = None
     service.model = None
     service._configure_training_backend = lambda: None
     service.prepare_training_data = AsyncMock()
@@ -222,7 +219,7 @@ async def test_training_runs_all_epochs_and_restores_best_state(monkeypatch):
     service._save_artifacts = lambda: None
     service.serialize_artifacts = lambda: {}
 
-    def controlled_loss(logits, targets, mask, pos_weight):
+    def controlled_loss(logits, targets, mask):
         if service.model.training:
             return logits.mean() * 0 + 1.0
         return torch.tensor(validation_losses.pop(0))
@@ -242,18 +239,12 @@ async def test_training_runs_all_epochs_and_restores_best_state(monkeypatch):
     assert optimizers[0].step_count == 5
     assert validation_losses == []
     assert service.model.weight.item() == 1.0
-
-
-def test_validation_metrics_only_count_unmasked_labels():
-    logits = torch.tensor([[[10.0, 10.0], [-10.0, 10.0]]])
-    targets = torch.tensor([[[1.0, 0.0], [1.0, 1.0]]])
-    mask = torch.tensor([[[1.0, 0.0], [1.0, 1.0]]])
-
-    counts = SegmentClassifierService._metric_counts(logits, targets, mask, 0.5)
-    metrics = SegmentClassifierService._validation_metrics(*counts[:3])
-
-    assert counts == (2, 0, 1, 3)
-    assert metrics == (1.0, 2 / 3, 0.8)
+    report = capsys.readouterr().out
+    assert "Val Loss:" in report
+    assert "precision=" not in report
+    assert "recall=" not in report
+    assert "F1=" not in report
+    assert "segment_overlap=" not in report
 
 
 def test_threshold_merge_uses_exact_adjacent_rows():

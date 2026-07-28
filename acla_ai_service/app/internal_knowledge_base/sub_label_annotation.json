@@ -1190,24 +1190,12 @@
             {
               "inputs": {
                 "tags": {
-                  "player": "player_turn_in_iloc",
-                  "expert": "expert_turn_in_iloc"
+                  "start": "segment_start_iloc",
+                  "end": "segment_apex_iloc"
                 }
               },
               "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "later"
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "trajectory_comparison_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_trajectory_position",
+                "fact": "find_trajectory_split",
                 "operator": "eq",
                 "value": "wider"
               }
@@ -1224,26 +1212,14 @@
             {
               "inputs": {
                 "tags": {
-                  "player": "player_turn_in_iloc",
-                  "expert": "expert_turn_in_iloc"
+                  "start": "segment_start_iloc",
+                  "end": "segment_apex_iloc"
                 }
               },
               "condition": {
-                "fact": "compare_ilocs",
+                "fact": "find_trajectory_split",
                 "operator": "eq",
-                "value": "earlier"
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "trajectory_comparison_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_trajectory_position",
-                "operator": "eq",
-                "value": "tighter"
+                "value": "narrower"
               }
             }
           ]
@@ -1302,24 +1278,12 @@
             {
               "inputs": {
                 "tags": {
-                  "player": "player_turn_exit_iloc",
-                  "expert": "expert_turn_exit_iloc"
+                  "start": "segment_apex_iloc",
+                  "end": "segment_end_iloc"
                 }
               },
               "condition": {
-                "fact": "compare_ilocs",
-                "operator": "eq",
-                "value": "earlier"
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "trajectory_comparison_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_trajectory_position",
+                "fact": "find_trajectory_split",
                 "operator": "eq",
                 "value": "wider"
               }
@@ -1336,26 +1300,14 @@
             {
               "inputs": {
                 "tags": {
-                  "player": "player_turn_exit_iloc",
-                  "expert": "expert_turn_exit_iloc"
+                  "start": "segment_apex_iloc",
+                  "end": "segment_end_iloc"
                 }
               },
               "condition": {
-                "fact": "compare_ilocs",
+                "fact": "find_trajectory_split",
                 "operator": "eq",
-                "value": "later"
-              }
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "trajectory_comparison_range"
-                ]
-              },
-              "condition": {
-                "fact": "find_trajectory_position",
-                "operator": "eq",
-                "value": "wider"
+                "value": "narrower"
               }
             }
           ]
@@ -1373,20 +1325,16 @@
                   "corner_entry_range"
                 ]
               },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
+              "condition": {}
             },
             {
               "inputs": {
                 "tags": [
-                  "corner_entry_range"
+                  "segment_start_iloc"
                 ]
               },
               "condition": {
-                "fact": "find_trajectory_position",
+                "fact": "find_trajectory_position_at_iloc",
                 "operator": "eq",
                 "value": "tighter"
               }
@@ -1406,20 +1354,16 @@
                   "corner_entry_range"
                 ]
               },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
+              "condition": {}
             },
             {
               "inputs": {
                 "tags": [
-                  "corner_entry_range"
+                  "segment_start_iloc"
                 ]
               },
               "condition": {
-                "fact": "find_trajectory_position",
+                "fact": "find_trajectory_position_at_iloc",
                 "operator": "eq",
                 "value": "wider"
               }
@@ -1472,20 +1416,16 @@
                   "corner_exit_range"
                 ]
               },
-              "condition": {
-                "fact": "find_phase_presence",
-                "operator": "eq",
-                "value": true
-              }
+              "condition": {}
             },
             {
               "inputs": {
                 "tags": [
-                  "corner_exit_range"
+                  "segment_apex_iloc"
                 ]
               },
               "condition": {
-                "fact": "find_trajectory_position",
+                "fact": "find_trajectory_position_at_iloc",
                 "operator": "eq",
                 "value": "tighter"
               }
@@ -1502,7 +1442,15 @@
             {
               "inputs": {
                 "tags": [
-                  "corner_exit_end_iloc"
+                  "corner_exit_range"
+                ]
+              },
+              "condition": {}
+            },
+            {
+              "inputs": {
+                "tags": [
+                  "segment_apex_iloc"
                 ]
               },
               "condition": {

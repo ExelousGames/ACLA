@@ -99,7 +99,6 @@ class SegmentClassifierService:
         self.feature_names = list(SEGMENT_CLASSIFIER_FEATURES)
         self.behavior_label_ids, self.child_parent = _behavior_and_child_labels()
         self.label_ids = [*self.behavior_label_ids, *self.child_parent]
-        self.pos_weight: Optional[torch.Tensor] = None
         self.threshold = DEFAULT_THRESHOLD
         self.hidden_dim = DEFAULT_HIDDEN_DIM
         self.dilations = DEFAULT_DILATIONS
@@ -198,13 +197,11 @@ class SegmentClassifierService:
     async def fit_preprocessors(self, cache_key: str) -> None:
         scaler = StandardScaler()
         positives = np.zeros(len(self.label_ids), dtype=np.float64)
-        valid = np.zeros(len(self.label_ids), dtype=np.float64)
         sequence_count = 0
 
         for sequence in self._iter_sequences(cache_key):
             scaler.partial_fit(sequence.features)
             positives += (sequence.targets * sequence.loss_mask).sum(axis=0)
-            valid += sequence.loss_mask.sum(axis=0)
             sequence_count += 1
 
         if sequence_count == 0:
@@ -219,12 +216,7 @@ class SegmentClassifierService:
                 "predictions from this model will not be reliable."
             )
 
-        negatives = np.maximum(valid - positives, 0)
-        weights = np.ones_like(positives)
-        present = positives > 0
-        weights[present] = negatives[present] / positives[present]
         self.scaler = scaler
-        self.pos_weight = torch.tensor(weights, dtype=torch.float32, device=self.device)
 
     def _dataset(self, cache_key: str) -> TemporalStreamingDataset:
         return TemporalStreamingDataset(
@@ -237,42 +229,16 @@ class SegmentClassifierService:
         )
 
     @staticmethod
-    def _masked_loss(logits, targets, mask, pos_weight):
+    def _masked_loss(logits, targets, mask):
         raw_loss = F.binary_cross_entropy_with_logits(
             logits,
             targets,
             reduction="none",
-            pos_weight=pos_weight,
         )
         denominator = mask.sum()
         if denominator.item() == 0:
             return None
         return (raw_loss * mask).sum() / denominator
-
-    @staticmethod
-    def _metric_counts(logits, targets, mask, threshold):
-        valid = mask.bool()
-        predictions = torch.sigmoid(logits) >= threshold
-        positives = targets.bool()
-        true_positives = (predictions & positives & valid).sum().item()
-        false_positives = (predictions & ~positives & valid).sum().item()
-        false_negatives = (~predictions & positives & valid).sum().item()
-        return (
-            int(true_positives),
-            int(false_positives),
-            int(false_negatives),
-            int(valid.sum().item()),
-        )
-
-    @staticmethod
-    def _validation_metrics(true_positives, false_positives, false_negatives):
-        precision_denominator = true_positives + false_positives
-        recall_denominator = true_positives + false_negatives
-        precision = true_positives / precision_denominator if precision_denominator else 0.0
-        recall = true_positives / recall_denominator if recall_denominator else 0.0
-        f1_denominator = precision + recall
-        f1 = 2 * precision * recall / f1_denominator if f1_denominator else 0.0
-        return precision, recall, f1
 
     async def train_model(
         self,
@@ -333,7 +299,6 @@ class SegmentClassifierService:
 
         best_loss = float("inf")
         best_state = None
-        best_metrics = None
         best_epoch = None
         for epoch in range(epochs):
             self.model.train()
@@ -347,7 +312,6 @@ class SegmentClassifierService:
                     self.model(features),
                     targets,
                     mask,
-                    self.pos_weight,
                 )
                 if loss is None:
                     continue
@@ -358,10 +322,6 @@ class SegmentClassifierService:
             self.model.eval()
             val_losses = []
             val_sequence_count = 0
-            val_label_count = 0
-            true_positives = 0
-            false_positives = 0
-            false_negatives = 0
             with torch.no_grad():
                 for features, targets, mask in val_loader:
                     logits = self.model(features.to(self.device))
@@ -371,21 +331,10 @@ class SegmentClassifierService:
                         logits,
                         device_targets,
                         device_mask,
-                        self.pos_weight,
                     )
                     if loss is not None:
                         val_losses.append(float(loss.item()))
                         val_sequence_count += int(features.shape[0])
-                        counts = self._metric_counts(
-                            logits,
-                            device_targets,
-                            device_mask,
-                            self.threshold,
-                        )
-                        true_positives += counts[0]
-                        false_positives += counts[1]
-                        false_negatives += counts[2]
-                        val_label_count += counts[3]
 
             if not train_losses:
                 raise ValueError("No valid temporal training samples were produced.")
@@ -395,20 +344,12 @@ class SegmentClassifierService:
             train_loss = float(np.mean(train_losses))
             if val_losses:
                 monitored_loss = float(np.mean(val_losses))
-                metrics = self._validation_metrics(
-                    true_positives,
-                    false_positives,
-                    false_negatives,
-                )
                 print(
                     f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, "
-                    f"Val Loss: {monitored_loss:.4f}, Val Samples: {val_sequence_count}, "
-                    f"Val Labels: {val_label_count}, Val Precision: {metrics[0]:.4f}, "
-                    f"Val Recall: {metrics[1]:.4f}, Val F1: {metrics[2]:.4f}"
+                    f"Val Loss: {monitored_loss:.4f}, Val Samples: {val_sequence_count}"
                 )
             else:
                 monitored_loss = train_loss
-                metrics = None
                 print(
                     f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, "
                     "Validation: disabled (Val split is 0)"
@@ -417,16 +358,13 @@ class SegmentClassifierService:
             if monitored_loss < best_loss:
                 best_loss = monitored_loss
                 best_state = copy.deepcopy(self.model.state_dict())
-                best_metrics = metrics
                 best_epoch = epoch + 1
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
-        if best_metrics is not None:
+        if best_epoch is not None and val_split > 0:
             print(
-                f"[INFO] Best validation result: epoch={best_epoch} loss={best_loss:.4f} "
-                f"precision={best_metrics[0]:.4f} recall={best_metrics[1]:.4f} "
-                f"f1={best_metrics[2]:.4f}"
+                f"[INFO] Best validation result: epoch={best_epoch} loss={best_loss:.4f}"
             )
         self.model.eval()
         self._save_artifacts()

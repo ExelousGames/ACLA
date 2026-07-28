@@ -9,6 +9,10 @@ from typing import Any, Callable, Dict, Iterable, List, Literal, Mapping, Option
 InputKind = Literal["iloc", "range"]
 RangeTuple = Tuple[int, int]
 MISSING = object()
+_TAG_OBJECT_KEY_ORDERS = (
+    ("player", "expert"),
+    ("start", "end"),
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -215,8 +219,15 @@ def parse_requirements(requirements: Mapping[str, Any]) -> RequirementSpec:
                 tags = tuple(str(tag) for tag in raw_tags)
                 combine_tags = True
             elif isinstance(raw_tags, Mapping):
+                key_order = next(
+                    (
+                        keys for keys in _TAG_OBJECT_KEY_ORDERS
+                        if set(raw_tags) == set(keys)
+                    ),
+                    (),
+                )
                 tags = tuple(
-                    str(raw_tags.get(role) or "") for role in ("player", "expert")
+                    str(raw_tags.get(role) or "") for role in key_order
                 )
                 combine_tags = False
             else:
@@ -362,16 +373,22 @@ def validate_requirements(
                     and all(isinstance(tag, str) and tag for tag in tags)
                 )
             elif isinstance(raw_tags, Mapping):
+                key_order = next(
+                    (
+                        keys for keys in _TAG_OBJECT_KEY_ORDERS
+                        if set(raw_tags) == set(keys)
+                    ),
+                    (),
+                )
                 valid_tags = (
-                    set(raw_tags) == {"player", "expert"}
+                    bool(key_order)
                     and all(
                         isinstance(raw_tags.get(role), str) and raw_tags.get(role)
-                        for role in ("player", "expert")
+                        for role in key_order
                     )
                 )
                 tags = [
-                    raw_tags.get("player"),
-                    raw_tags.get("expert"),
+                    raw_tags.get(role) for role in key_order
                 ]
             else:
                 tags = []
@@ -379,7 +396,7 @@ def validate_requirements(
             if not valid_tags:
                 errors.append(
                     f"{prefix}: tags must be a non-empty string list "
-                    "or a player/expert string object"
+                    "or a player/expert or start/end string object"
                 )
                 continue
             kinds: List[InputKind] = []
