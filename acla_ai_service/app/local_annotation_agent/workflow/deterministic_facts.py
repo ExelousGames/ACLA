@@ -371,12 +371,10 @@ def _steering_landmarks(
         absolute = np.abs(values)
         peak_position = int(np.nanargmax(absolute))
         threshold = max(0.02, float(absolute[peak_position]) * 0.10)
-        onset = np.flatnonzero(absolute >= threshold)
         exit_ = np.flatnonzero(
             (np.arange(len(values)) > peak_position) & (absolute < threshold)
         )
         return {
-            "turn_in": int(index[int(onset[0])]) if len(onset) else None,
             "apex": int(index[peak_position]),
             "turn_exit": int(index[int(exit_[0])]) if len(exit_) else None,
         }
@@ -478,7 +476,7 @@ def build_input_registry() -> InputRegistry:
                 definitions[tag] = InputDefinition(
                     "iloc", _control_iloc_resolver(tag, driver, control, landmark),
                 )
-        for landmark in ("turn_in", "apex", "turn_exit"):
+        for landmark in ("apex", "turn_exit"):
             tag = f"{driver}_{landmark}_iloc"
             definitions[tag] = InputDefinition(
                 "iloc", _steering_iloc_resolver(tag, driver, landmark),
@@ -669,17 +667,13 @@ def _trajectory_position(context: EvaluationContext, range_: HalfOpenRange) -> A
     return _classify_trajectory_offset(float(np.nanmedian(values)))
 
 
-def _trajectory_position_at_iloc(
-    context: EvaluationContext, inputs: Sequence[ResolvedInput],
+def _trajectory_position_at_range_start(
+    context: EvaluationContext, range_: HalfOpenRange,
 ) -> Any:
-    iloc = int(inputs[0].value)
-    values = _corresponding_trajectory(context)
-    if values is None or len(values) != len(context.telemetry):
+    values = _trajectory(context, range_)
+    if values is None or not len(values):
         return MISSING
-    positions = np.flatnonzero(context.telemetry.index.to_numpy() == iloc)
-    if len(positions) != 1:
-        return MISSING
-    return _classify_trajectory_offset(float(values[int(positions[0])]))
+    return _classify_trajectory_offset(float(values[0]))
 
 
 def _trajectory_split(
@@ -705,17 +699,49 @@ def _trajectory_split(
         return MISSING
 
     values = np.asarray(offsets, dtype=float)
-    start_offset = float(values[int(start_positions[0])])
-    end_offset = float(values[int(end_positions[0])])
-    if not np.isfinite(start_offset) or not np.isfinite(end_offset):
+    if values.ndim != 1:
         return MISSING
 
+    start_position = int(start_positions[0])
+    end_position = int(end_positions[0])
+    if start_position >= end_position:
+        return MISSING
+
+    split_offsets = values[start_position:end_position + 1]
+    if len(split_offsets) < 3:
+        return MISSING
+
+    start_offset = float(split_offsets[0])
+    if not np.isfinite(start_offset):
+        return MISSING
     if abs(start_offset) > TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
         return MISSING
-    if end_offset > TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
-        return "wider"
-    if end_offset < -TRAJECTORY_ALIGNMENT_TOLERANCE_METERS:
-        return "narrower"
+
+    for candidate_position in range(2, len(split_offsets)):
+        candidate_offsets = split_offsets[:candidate_position + 1]
+        if not np.all(np.isfinite(candidate_offsets)):
+            return MISSING
+
+        evidence = candidate_offsets[-3:]
+        median_offset = float(np.median(evidence))
+        positions = np.arange(len(candidate_offsets), dtype=float)
+        centered_positions = positions - float(np.mean(positions))
+        centered_offsets = candidate_offsets - float(np.mean(candidate_offsets))
+        denominator = float(np.dot(centered_positions, centered_positions))
+        slope = float(
+            np.dot(centered_positions, centered_offsets) / denominator
+        )
+
+        if (
+            median_offset > TRAJECTORY_ALIGNMENT_TOLERANCE_METERS
+            and slope > 0.0
+        ):
+            return "wider"
+        if (
+            median_offset < -TRAJECTORY_ALIGNMENT_TOLERANCE_METERS
+            and slope < 0.0
+        ):
+            return "narrower"
     return MISSING
 
 
@@ -1058,8 +1084,8 @@ def build_fact_registry() -> FactRegistry:
         "find_trajectory_position": FactDefinition(
             range_kind, _fact_range(_trajectory_position),
         ),
-        "find_trajectory_position_at_iloc": FactDefinition(
-            iloc_kind, _trajectory_position_at_iloc,
+        "find_trajectory_position_at_range_start": FactDefinition(
+            range_kind, _fact_range(_trajectory_position_at_range_start),
         ),
         "find_trajectory_split": FactDefinition(
             iloc_pair, _trajectory_split,

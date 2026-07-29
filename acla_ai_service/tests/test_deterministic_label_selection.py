@@ -410,7 +410,13 @@ def test_registry_is_the_source_of_known_tags_and_facts():
     assert "find_speed_difference_at_iloc" in deterministic.FACT_REGISTRY.names()
     assert "find_speed_gap_slope" in deterministic.FACT_REGISTRY.names()
     assert "find_player_brake_peak" in deterministic.FACT_REGISTRY.names()
-    assert "find_trajectory_position_at_iloc" in deterministic.FACT_REGISTRY.names()
+    assert (
+        deterministic.FACT_REGISTRY.get(
+            "find_trajectory_position_at_range_start",
+        ).input_kinds
+        == ("range",)
+    )
+    assert "find_trajectory_position_at_iloc" not in deterministic.FACT_REGISTRY.names()
     assert "find_trajectory_split" in deterministic.FACT_REGISTRY.names()
     assert "find_trajectory_splitting_wider" not in deterministic.FACT_REGISTRY.names()
     assert (
@@ -421,6 +427,8 @@ def test_registry_is_the_source_of_known_tags_and_facts():
     assert "player_throttle_reapplication_onset_iloc" in deterministic.INPUT_REGISTRY.names()
     assert "player_throttle_reapplication_end_iloc" in deterministic.INPUT_REGISTRY.names()
     assert "player_throttle_application_onset_iloc" not in deterministic.INPUT_REGISTRY.names()
+    assert "player_turn_in_iloc" not in deterministic.INPUT_REGISTRY.names()
+    assert "expert_turn_in_iloc" not in deterministic.INPUT_REGISTRY.names()
     assert "brake_comparison_range" in deterministic.INPUT_REGISTRY.names()
     assert "corner_entry_start_iloc" in deterministic.INPUT_REGISTRY.names()
     assert "corner_exit_end_iloc" in deterministic.INPUT_REGISTRY.names()
@@ -1823,7 +1831,39 @@ def test_trajectory_position_uses_one_meter_alignment_tolerance(monkeypatch):
         assert deterministic_facts._trajectory_position(context, range_) == expected
 
 
-def test_msp2_msp4_and_msp6_use_parent_segment_trajectory_requirements():
+def test_trajectory_position_at_range_start_uses_literal_first_offset(
+    monkeypatch,
+):
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(3)))
+    range_ = HalfOpenRange(0, 3)
+
+    for offsets, expected in (
+        ([-1.01, 4.0, 4.0], "tighter"),
+        ([1.01, -4.0, -4.0], "wider"),
+        ([-1.0, 4.0, 4.0], "aligned"),
+        ([1.0, -4.0, -4.0], "aligned"),
+        ([np.nan, -4.0, -4.0], MISSING),
+        ([], MISSING),
+        (None, MISSING),
+    ):
+        monkeypatch.setattr(
+            deterministic_facts,
+            "_trajectory",
+            lambda _context, _range, offsets=offsets: (
+                None if offsets is None else np.array(offsets)
+            ),
+        )
+
+        actual = deterministic_facts._trajectory_position_at_range_start(
+            context, range_,
+        )
+        if expected is MISSING:
+            assert actual is MISSING
+        else:
+            assert actual == expected
+
+
+def test_msp2_msp6_msp4_and_msp8_use_parent_segment_trajectory_requirements():
     root = Path(__file__).parents[1] / "app/internal_knowledge_base"
     requirements = json.loads(
         (root / "sub_label_annotation.json").read_text(encoding="utf-8")
@@ -1844,34 +1884,30 @@ def test_msp2_msp4_and_msp6_use_parent_segment_trajectory_requirements():
         "find_trajectory_split",
         value="narrower",
     )
+    assert requirements["MSP8"] == _requirement(
+        {"start": "segment_apex_iloc", "end": "segment_end_iloc"},
+        "find_trajectory_split",
+        value="narrower",
+    )
 
 
-def test_trajectory_start_rules_preserve_range_evidence_and_classify_at_landmark():
+def test_trajectory_start_rules_classify_at_phase_range_start():
     root = Path(__file__).parents[1] / "app/internal_knowledge_base"
     requirements = json.loads(
         (root / "sub_label_annotation.json").read_text(encoding="utf-8")
     )["sub_label_selection_requirements"]
 
-    for label, range_tag, iloc_tag, position in (
-        ("MSP9", "corner_entry_range", "segment_start_iloc", "tighter"),
-        ("MSP33", "corner_entry_range", "segment_start_iloc", "wider"),
-        ("MSP11", "corner_exit_range", "segment_apex_iloc", "tighter"),
-        ("MSP16", "corner_exit_range", "segment_apex_iloc", "wider"),
+    for label, range_tag, position in (
+        ("MSP9", "corner_entry_range", "tighter"),
+        ("MSP33", "corner_entry_range", "wider"),
+        ("MSP11", "corner_exit_range", "tighter"),
+        ("MSP16", "corner_exit_range", "wider"),
     ):
-        evidence = {
-            "inputs": {"tags": [range_tag]},
-            "condition": {},
-        }
-        classification = _requirement(
-            [iloc_tag],
-            "find_trajectory_position_at_iloc",
+        assert requirements[label] == _requirement(
+            [range_tag],
+            "find_trajectory_position_at_range_start",
             value=position,
-        )["any_of"][0]["all_of"][0]
-
-        assert requirements[label] == {
-            "enabled": True,
-            "any_of": [{"all_of": [evidence, classification]}],
-        }
+        )
 
 
 def test_segment_landmark_inputs_resolve_to_parent_bounds_and_first_geometric_apex(
@@ -1911,18 +1947,24 @@ def test_segment_landmark_inputs_resolve_to_parent_bounds_and_first_geometric_ap
     )
 
 
-def test_trajectory_split_classifies_aligned_start_to_wider_or_narrower_end(
+def test_trajectory_split_detects_first_supported_trend_before_reversal(
     monkeypatch,
 ):
-    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(6)))
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(7)))
     inputs = [
-        ResolvedInput("start", "iloc", 1, HalfOpenRange(1, 2)),
-        ResolvedInput("end", "iloc", 4, HalfOpenRange(4, 5)),
+        ResolvedInput("start", "iloc", 0, HalfOpenRange(0, 1)),
+        ResolvedInput("end", "iloc", 6, HalfOpenRange(6, 7)),
     ]
 
     for offsets, expected in (
-        ([np.nan, 1.0, np.nan, np.nan, 1.01, np.nan], "wider"),
-        ([np.nan, -1.0, np.nan, np.nan, -1.01, np.nan], "narrower"),
+        ([0.0, 0.4, 0.8, 1.2, 1.5, 1.7, 1.8], "wider"),
+        ([0.0, -0.4, -0.8, -1.2, -1.5, -1.7, -1.8], "narrower"),
+        ([1.0, 1.2, 1.4, 1.5, 1.6, 1.7, 1.8], "wider"),
+        ([-1.0, -1.2, -1.4, -1.5, -1.6, -1.7, -1.8], "narrower"),
+        ([0.0, 0.7, 0.5, 1.1, 1.3, 1.2, 1.4], "wider"),
+        ([0.0, -0.7, -0.5, -1.1, -1.3, -1.2, -1.4], "narrower"),
+        ([0.0, 0.6, 1.2, 1.4, 0.5, 0.0, -1.4], "wider"),
+        ([0.0, -0.6, -1.2, -1.4, -0.5, 0.0, 1.4], "narrower"),
     ):
         monkeypatch.setattr(
             deterministic_facts,
@@ -1933,22 +1975,26 @@ def test_trajectory_split_classifies_aligned_start_to_wider_or_narrower_end(
         assert deterministic_facts._trajectory_split(context, inputs) == expected
 
 
-def test_trajectory_split_fails_closed_when_either_endpoint_does_not_split(
+def test_trajectory_split_rejects_unsupported_or_invalid_trends(
     monkeypatch,
 ):
-    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(6)))
+    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(7)))
     inputs = [
-        ResolvedInput("start", "iloc", 1, HalfOpenRange(1, 2)),
-        ResolvedInput("end", "iloc", 4, HalfOpenRange(4, 5)),
+        ResolvedInput("start", "iloc", 0, HalfOpenRange(0, 1)),
+        ResolvedInput("end", "iloc", 6, HalfOpenRange(6, 7)),
     ]
 
     for offsets in (
-        [0.0, 1.01, 0.0, 0.0, 2.0, 0.0],
-        [0.0, -1.01, 0.0, 0.0, -2.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, -1.0, 0.0],
-        [0.0, np.nan, 0.0, 0.0, 2.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, np.nan, 0.0],
+        [0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0],
+        [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        [1.0, 0.8, 0.6, 0.4, 0.2, 0.0, 0.0],
+        [0.0, 100.0, 0.5, 1.2, 0.5, 0.5, 0.5],
+        [0.0, -100.0, -0.5, -1.2, -0.5, -0.5, -0.5],
+        [1.01, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6],
+        [-1.01, -1.1, -1.2, -1.3, -1.4, -1.5, -1.6],
+        [np.nan, 0.6, 1.0, 1.2, 1.4, 1.6, 1.8],
+        [0.0, 0.6, np.nan, 1.2, 1.4, 1.6, 1.8],
     ):
         monkeypatch.setattr(
             deterministic_facts,
@@ -1971,6 +2017,7 @@ def test_trajectory_split_requires_ordered_unique_resolvable_ilocs(monkeypatch):
         (range(6), 1, 1),
         ([0, 1, 3, 4, 5], 1, 2),
         ([0, 1, 1, 2, 3], 1, 3),
+        ([0, 3, 2, 4, 5], 2, 3),
     ):
         context = EvaluationContext.from_dataframe(pd.DataFrame(index=index))
         inputs = [
@@ -1996,32 +2043,66 @@ def test_trajectory_split_requires_ordered_unique_resolvable_ilocs(monkeypatch):
             is MISSING
         )
 
+    insufficient_inputs = [
+        ResolvedInput("start", "iloc", 1, HalfOpenRange(1, 2)),
+        ResolvedInput("end", "iloc", 2, HalfOpenRange(2, 3)),
+    ]
+    monkeypatch.setattr(
+        deterministic_facts,
+        "_corresponding_trajectory",
+        lambda _context: np.array([0.0, 0.0, 1.2, 0.0, 0.0, 0.0]),
+    )
+    assert (
+        deterministic_facts._trajectory_split(context, insufficient_inputs)
+        is MISSING
+    )
 
-def test_msp2_matches_aligned_start_to_wider_apex_without_intermediate_samples(
+
+def test_all_trajectory_split_consumers_match_supported_trends(
     monkeypatch,
 ):
+    phases = [{"entry": 2, "apex": 4, "exit": 7}]
     monkeypatch.setattr(
         "app.shared.annotation_agent_tools.measure_segment_shape",
-        lambda *_args: {"phases": [{"entry": 2, "apex": 5, "exit": 7}]},
-    )
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.calculate_corresponding_trajectory_offset",
-        lambda _df: np.array([
-            0.0, 1.0, np.nan, np.nan, np.nan, 1.4, 1.5, 1.5,
-        ]),
-    )
-    context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(8)))
-
-    result = deterministic.evaluate_labels(
-        ["MSP2", "MSP33"], context, HalfOpenRange(1, 8),
+        lambda *_args: {"phases": phases},
     )
 
-    assert result.labels == ["MSP2"]
-    assert (
-        result.evaluations["MSP2"].matched_branches[0].evidence_range
-        == HalfOpenRange(1, 6)
-    )
-    assert not result.evaluations["MSP33"].matched
+    for label, offsets, expected_range in (
+        (
+            "MSP2",
+            [0.0, 0.0, 0.6, 1.2, 1.5, 1.5, 1.5, 1.5, 1.5],
+            HalfOpenRange(1, 5),
+        ),
+        (
+            "MSP6",
+            [0.0, 0.0, -0.6, -1.2, -1.5, -1.5, -1.5, -1.5, -1.5],
+            HalfOpenRange(1, 5),
+        ),
+        (
+            "MSP4",
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.6, 1.2, 1.5, 1.7],
+            HalfOpenRange(4, 9),
+        ),
+        (
+            "MSP8",
+            [0.0, 0.0, 0.0, 0.0, 0.0, -0.6, -1.2, -1.5, -1.7],
+            HalfOpenRange(4, 9),
+        ),
+    ):
+        monkeypatch.setattr(
+            "app.shared.annotation_agent_tools.calculate_corresponding_trajectory_offset",
+            lambda _df, offsets=offsets: np.array(offsets),
+        )
+        context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(9)))
+        result = deterministic.evaluate_labels(
+            [label], context, HalfOpenRange(1, 9),
+        )
+
+        assert result.labels == [label]
+        assert (
+            result.evaluations[label].matched_branches[0].evidence_range
+            == expected_range
+        )
 
 
 def test_trajectory_start_rules_ignore_later_divergence_or_recovery(monkeypatch):
@@ -2032,13 +2113,17 @@ def test_trajectory_start_rules_ignore_later_divergence_or_recovery(monkeypatch)
         lambda *_args: {"phases": phases},
     )
     monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.calculate_corresponding_trajectory_offset",
-        lambda _df: trajectory["offsets"],
+        "app.shared.annotation_agent_tools.calculate_trajectory_offset",
+        lambda df: (
+            None
+            if trajectory["offsets"] is None
+            else trajectory["offsets"][df.index.to_numpy(dtype=int)]
+        ),
     )
 
     for label, point, point_offset, later_offset, expected_range in (
-        ("MSP9", 1, -1.01, 2.0, HalfOpenRange(1, 6)),
-        ("MSP33", 1, 1.01, -2.0, HalfOpenRange(1, 6)),
+        ("MSP9", 2, -1.01, 2.0, HalfOpenRange(2, 6)),
+        ("MSP33", 2, 1.01, -2.0, HalfOpenRange(2, 6)),
         ("MSP11", 5, -1.01, 2.0, HalfOpenRange(5, 9)),
         ("MSP16", 5, 1.01, -2.0, HalfOpenRange(5, 9)),
     ):
@@ -2071,13 +2156,17 @@ def test_trajectory_start_rules_fail_closed_for_invalid_landmark_offsets(
     )
     trajectory = {"offsets": None}
     monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.calculate_corresponding_trajectory_offset",
-        lambda _df: trajectory["offsets"],
+        "app.shared.annotation_agent_tools.calculate_trajectory_offset",
+        lambda df: (
+            None
+            if trajectory["offsets"] is None
+            else trajectory["offsets"][df.index.to_numpy(dtype=int)]
+        ),
     )
 
     for label, point, matching_offset in (
-        ("MSP9", 1, -1.01),
-        ("MSP33", 1, 1.01),
+        ("MSP9", 2, -1.01),
+        ("MSP33", 2, 1.01),
         ("MSP11", 5, -1.01),
         ("MSP16", 5, 1.01),
     ):
@@ -2093,17 +2182,10 @@ def test_trajectory_start_rules_fail_closed_for_invalid_landmark_offsets(
                 requirements, pd.DataFrame(index=range(10)), start=1, end=10,
             ).matched, (label, point_offset)
 
-        for offsets in (None, np.full(9, matching_offset)):
-            trajectory["offsets"] = offsets
-            assert not _evaluate(
-                requirements, pd.DataFrame(index=range(10)), start=1, end=10,
-            ).matched, label
-
-        unresolved_index = [iloc for iloc in range(10) if iloc != point]
-        trajectory["offsets"] = np.full(len(unresolved_index), matching_offset)
+        trajectory["offsets"] = None
         assert not _evaluate(
             requirements,
-            pd.DataFrame(index=unresolved_index),
+            pd.DataFrame(index=range(10)),
             start=1,
             end=10,
         ).matched, label
@@ -2116,21 +2198,13 @@ def test_trajectory_start_rules_require_range_evidence(monkeypatch):
             "phases": [{"entry": None, "apex": 5, "exit": None}],
         },
     )
-    trajectory = {"offsets": None}
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.calculate_corresponding_trajectory_offset",
-        lambda _df: trajectory["offsets"],
-    )
 
-    for label, range_tag, point, matching_offset in (
-        ("MSP9", "corner_entry_range", 1, -1.01),
-        ("MSP33", "corner_entry_range", 1, 1.01),
-        ("MSP11", "corner_exit_range", 5, -1.01),
-        ("MSP16", "corner_exit_range", 5, 1.01),
+    for label, range_tag in (
+        ("MSP9", "corner_entry_range"),
+        ("MSP33", "corner_entry_range"),
+        ("MSP11", "corner_exit_range"),
+        ("MSP16", "corner_exit_range"),
     ):
-        offsets = np.zeros(10)
-        offsets[point] = matching_offset
-        trajectory["offsets"] = offsets
         requirements = deterministic._requirements_for(
             label, deterministic.get_label(label),
         )
@@ -2141,7 +2215,8 @@ def test_trajectory_start_rules_require_range_evidence(monkeypatch):
 
         assert not result.matched, label
         assert result.failed == [
-            f"evidence: unavailable (missing input {range_tag})",
+            "find_trajectory_position_at_range_start: unavailable "
+            f"(missing input {range_tag})",
         ]
 
 
@@ -2200,49 +2275,6 @@ def test_msp2_fails_closed_without_a_valid_geometric_apex(monkeypatch):
         ).matched
 
 
-def test_msp4_matches_only_for_aligned_apex_to_wider_parent_end(monkeypatch):
-    phases = [{"entry": 2, "apex": 5, "exit": 7}]
-    offsets = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.01])
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.measure_segment_shape",
-        lambda *_args: {"phases": phases},
-    )
-    monkeypatch.setattr(
-        "app.shared.annotation_agent_tools.calculate_corresponding_trajectory_offset",
-        lambda _df: offsets,
-    )
-
-    def evaluate():
-        context = EvaluationContext.from_dataframe(pd.DataFrame(index=range(8)))
-        return deterministic.evaluate_labels(
-            ["MSP4"], context, HalfOpenRange(1, 8),
-        )
-
-    matched = evaluate()
-
-    assert matched.labels == ["MSP4"]
-    assert (
-        matched.evaluations["MSP4"].matched_branches[0].evidence_range
-        == HalfOpenRange(5, 8)
-    )
-
-    for apex_offset, end_offset in (
-        (1.01, 1.4),
-        (0.0, 1.0),
-        (0.0, -1.01),
-        (np.nan, 1.4),
-        (0.0, np.nan),
-    ):
-        offsets[5] = apex_offset
-        offsets[7] = end_offset
-        assert not evaluate().evaluations["MSP4"].matched
-
-    offsets[5] = 0.0
-    offsets[7] = 1.4
-    phases.clear()
-    assert not evaluate().evaluations["MSP4"].matched
-
-
 def test_phase_resolver_uses_shape_landmarks(monkeypatch):
     monkeypatch.setattr(
         "app.shared.annotation_agent_tools.measure_segment_shape",
@@ -2272,29 +2304,142 @@ def test_phase_resolver_uses_shape_landmarks(monkeypatch):
     )
 
 
-def test_corresponding_trajectory_offset_uses_same_iloc_for_both_corner_directions():
+def _arc_trajectory_dataframe(
+    *, direction=1.0, radius_scale=1.0, progress_shift=0,
+):
+    angles = np.linspace(0.0, direction * np.pi / 2.0, 81)
+    expert_x = 20.0 * np.cos(angles)
+    expert_y = 20.0 * np.sin(angles)
+    player_x = radius_scale * expert_x
+    player_y = radius_scale * expert_y
+    if progress_shift:
+        player_x = np.full_like(expert_x, np.nan)
+        player_y = np.full_like(expert_y, np.nan)
+        player_x[:-progress_shift] = expert_x[progress_shift:]
+        player_y[:-progress_shift] = expert_y[progress_shift:]
+    return pd.DataFrame({
+        "Graphics_player_pos_x": player_x,
+        "Graphics_player_pos_y": player_y,
+        "expert_optimal_player_pos_x": expert_x,
+        "expert_optimal_player_pos_y": expert_y,
+    })
+
+
+def test_corresponding_trajectory_offset_projects_progress_shift_onto_expert_curve():
     from app.shared.annotation_agent_tools import (
         calculate_corresponding_trajectory_offset,
     )
 
     for direction in (1.0, -1.0):
-        angles = np.linspace(0.0, direction * np.pi / 2.0, 9)
-        expert_x = 10.0 * np.cos(angles)
-        expert_y = 10.0 * np.sin(angles)
-        for radius_scale, expected_sign in ((1.2, 1.0), (0.8, -1.0)):
-            player_x = expert_x.copy()
-            player_y = expert_y.copy()
-            player_x[-1] *= radius_scale
-            player_y[-1] *= radius_scale
-            offsets = calculate_corresponding_trajectory_offset(pd.DataFrame({
-                "Graphics_player_pos_x": player_x,
-                "Graphics_player_pos_y": player_y,
-                "expert_optimal_player_pos_x": expert_x,
-                "expert_optimal_player_pos_y": expert_y,
-            }))
+        offsets = calculate_corresponding_trajectory_offset(
+            _arc_trajectory_dataframe(
+                direction=direction, progress_shift=20,
+            ),
+        )
+
+        assert offsets is not None
+        assert abs(float(offsets[20])) < 1e-9
+
+
+def test_corresponding_trajectory_offset_signs_inside_and_outside_from_curvature():
+    from app.shared.annotation_agent_tools import (
+        calculate_corresponding_trajectory_offset,
+    )
+
+    for direction in (1.0, -1.0):
+        for radius_scale, expected_sign in ((1.1, 1.0), (0.9, -1.0)):
+            offsets = calculate_corresponding_trajectory_offset(
+                _arc_trajectory_dataframe(
+                    direction=direction, radius_scale=radius_scale,
+                ),
+            )
 
             assert offsets is not None
-            assert float(offsets[-1]) * expected_sign > 1.0
+            assert float(offsets[40]) * expected_sign > 1.0
+
+
+def test_trajectory_split_follows_curvature_relative_sign_for_both_curve_directions():
+    inputs = [
+        ResolvedInput("start", "iloc", 20, HalfOpenRange(20, 21)),
+        ResolvedInput("end", "iloc", 60, HalfOpenRange(60, 61)),
+    ]
+
+    for direction in (1.0, -1.0):
+        for end_scale, expected in ((1.1, "wider"), (0.9, "narrower")):
+            radius_scale = np.ones(81)
+            radius_scale[20:61] = np.linspace(1.0, end_scale, 41)
+            radius_scale[61:] = end_scale
+            context = EvaluationContext.from_dataframe(
+                _arc_trajectory_dataframe(
+                    direction=direction,
+                    radius_scale=radius_scale,
+                ),
+            )
+
+            assert (
+                deterministic_facts._trajectory_split(context, inputs)
+                == expected
+            )
+
+
+def test_entry_start_labels_ignore_progress_shift_on_same_expert_curve(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.measure_segment_shape",
+        lambda *_args: {
+            "phases": [{"entry": 20, "apex": 40, "exit": 60}],
+        },
+    )
+    context = EvaluationContext.from_dataframe(
+        _arc_trajectory_dataframe(progress_shift=20),
+    )
+
+    result = deterministic.evaluate_labels(
+        ["MSP9", "MSP33"], context, HalfOpenRange(20, 61),
+    )
+
+    assert result.labels == []
+
+
+def test_trajectory_start_labels_classify_both_curve_directions_with_full_evidence(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "app.shared.annotation_agent_tools.measure_segment_shape",
+        lambda *_args: {
+            "phases": [{"entry": 20, "apex": 40, "exit": 60}],
+        },
+    )
+
+    labels = ["MSP9", "MSP33", "MSP11", "MSP16"]
+    for direction in (1.0, -1.0):
+        for radius_scale, expected_labels in (
+            (0.9, ("MSP9", "MSP11")),
+            (1.1, ("MSP33", "MSP16")),
+        ):
+            context = EvaluationContext.from_dataframe(
+                _arc_trajectory_dataframe(
+                    direction=direction, radius_scale=radius_scale,
+                ),
+            )
+            result = deterministic.evaluate_labels(
+                labels, context, HalfOpenRange(20, 61),
+            )
+
+            assert result.labels == list(expected_labels)
+            for label in expected_labels:
+                expected_range = (
+                    HalfOpenRange(20, 41)
+                    if label in ("MSP9", "MSP33")
+                    else HalfOpenRange(40, 61)
+                )
+                assert (
+                    result.evaluations[label]
+                    .matched_branches[0]
+                    .evidence_range
+                    == expected_range
+                )
 
 
 def test_altitude_strategy_classifies_only_resolved_phase():

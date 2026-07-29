@@ -5187,46 +5187,8 @@ def calculate_trajectory_offset(df: pd.DataFrame) -> Optional[np.ndarray]:
 def calculate_corresponding_trajectory_offset(
     df: pd.DataFrame,
 ) -> Optional[np.ndarray]:
-    """Calculate signed lateral offset from player/expert positions at each iloc."""
-    track = _resolve_track_config(df)
-    if not all(track.get(k) for k in ("player_x", "player_y", "expert_x", "expert_y")):
-        return None
-    px_col, py_col = track["player_x"], track["player_y"]
-    ex_col, ey_col = track["expert_x"], track["expert_y"]
-    if any(c not in df.columns for c in (px_col, py_col, ex_col, ey_col)):
-        return None
-
-    kin = _expert_kinematics(df)
-    if kin is None:
-        return None
-    _x_ref, _y_ref, dx, dy, kappa, _w = kin
-    if not len(kappa):
-        return None
-
-    px = df[px_col].to_numpy(dtype=float)
-    py = df[py_col].to_numpy(dtype=float)
-    ex = df[ex_col].to_numpy(dtype=float)
-    ey = df[ey_col].to_numpy(dtype=float)
-    tangent_length = np.hypot(dx, dy)
-    valid = (
-        np.isfinite(px)
-        & np.isfinite(py)
-        & np.isfinite(ex)
-        & np.isfinite(ey)
-        & np.isfinite(dx)
-        & np.isfinite(dy)
-        & np.isfinite(kappa)
-        & (tangent_length > 1e-9)
-        & (kappa != 0.0)
-    )
-    lateral_offset = np.full(len(df), np.nan, dtype=float)
-    np.divide(
-        dx * (py - ey) - dy * (px - ex),
-        tangent_length,
-        out=lateral_offset,
-        where=valid,
-    )
-    return (lateral_offset * -np.sign(kappa)).astype(float)
+    """Calculate one curvature-relative expert-curve offset per player iloc."""
+    return calculate_trajectory_offset(df)
 
 
 def _build_trajectory_offset(df: pd.DataFrame) -> Optional[pd.DataFrame]:

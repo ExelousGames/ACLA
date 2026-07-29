@@ -1325,16 +1325,8 @@
                   "corner_entry_range"
                 ]
               },
-              "condition": {}
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "segment_start_iloc"
-                ]
-              },
               "condition": {
-                "fact": "find_trajectory_position_at_iloc",
+                "fact": "find_trajectory_position_at_range_start",
                 "operator": "eq",
                 "value": "tighter"
               }
@@ -1354,16 +1346,8 @@
                   "corner_entry_range"
                 ]
               },
-              "condition": {}
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "segment_start_iloc"
-                ]
-              },
               "condition": {
-                "fact": "find_trajectory_position_at_iloc",
+                "fact": "find_trajectory_position_at_range_start",
                 "operator": "eq",
                 "value": "wider"
               }
@@ -1416,16 +1400,8 @@
                   "corner_exit_range"
                 ]
               },
-              "condition": {}
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "segment_apex_iloc"
-                ]
-              },
               "condition": {
-                "fact": "find_trajectory_position_at_iloc",
+                "fact": "find_trajectory_position_at_range_start",
                 "operator": "eq",
                 "value": "tighter"
               }
@@ -1445,16 +1421,8 @@
                   "corner_exit_range"
                 ]
               },
-              "condition": {}
-            },
-            {
-              "inputs": {
-                "tags": [
-                  "segment_apex_iloc"
-                ]
-              },
               "condition": {
-                "fact": "find_trajectory_position_at_iloc",
+                "fact": "find_trajectory_position_at_range_start",
                 "operator": "eq",
                 "value": "wider"
               }
