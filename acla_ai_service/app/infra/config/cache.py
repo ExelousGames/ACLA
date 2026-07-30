@@ -21,7 +21,7 @@ CACHE_CONFIG = {
     
     # Model-specific TTL settings
     "model_specific_ttl": {
-        "imitation_learning": 7200,    # 2 hours for large models
+        "top_lap_reference": 7200,    # 2 hours for top-lap reference data
         "transformer_expert_action": 7200,  # 2 hours for large models
         "corner_identification": 7200,  # 2 hours 
         "tire_grip_analysis": 7200,    # 2 hours
@@ -32,7 +32,7 @@ CACHE_CONFIG = {
     
     # Memory limits for different model types (in MB)
     "model_memory_limits": {
-        "imitation_learning": 1000,    # 1GB per imitation model (large models)
+        "top_lap_reference": 1000,    # 1GB per top-lap reference model
         "transformer_expert_action": 1000,  # 1GB per transformer model
         "corner_identification": 200,  # 200MB per corner model
         "tire_grip_analysis": 200,     # 200MB per tire model
@@ -42,7 +42,7 @@ CACHE_CONFIG = {
     
     # Enable/disable caching for different operations
     "cache_enabled": {
-        "imitation_learning": True,
+        "top_lap_reference": True,
         "sklearn_models": True,
         "backend_responses": True,
         "predictions": False  # Typically don't cache predictions themselves
@@ -116,7 +116,7 @@ ENVIRONMENT_OVERRIDES = {
         "default_ttl_seconds": 300,   # 5 minutes for tests
         "cleanup_interval_seconds": 10,
         "cache_enabled": {
-            "imitation_learning": True,
+            "top_lap_reference": True,
             "sklearn_models": False,
             "backend_responses": False,
             "predictions": False
@@ -207,17 +207,17 @@ if __name__ == "__main__":
         print(f"  Max Cache Size: {config['max_cache_size']}")
         print(f"  Max Memory: {config['max_memory_mb']} MB") 
         print(f"  Default TTL: {config['default_ttl_seconds']}s")
-        print(f"  Imitation Learning TTL: {get_model_ttl('imitation_learning', env)}s")
+        print(f"  Top-Lap Reference TTL: {get_model_ttl('top_lap_reference', env)}s")
         print(f"  Preload on Startup: {config['preload_config']['preload_on_startup']}")
     
     print("\nModel Type TTL Examples:")
     print("-" * 25)
-    for model_type in ["imitation_learning", "sklearn", "unknown_type"]:
+    for model_type in ["top_lap_reference", "sklearn", "unknown_type"]:
         ttl = get_model_ttl(model_type, "production")
         print(f"  {model_type}: {ttl}s")
     
     print("\nCaching Enabled Check:")
     print("-" * 22)
-    for operation in ["imitation_learning", "sklearn_models", "predictions"]:
+    for operation in ["top_lap_reference", "sklearn_models", "predictions"]:
         enabled = is_caching_enabled(operation, "production")
         print(f"  {operation}: {enabled}")

@@ -1,9 +1,9 @@
 """
 Enrichment stage of the training pipeline.
 
-Trains the imitation-learning and tire-grip enrichment models on the cleaned
-top laps, then streams the cached session chunks through both models to produce
-the enriched dataset used by segmentation and transformer training.
+Builds the top-lap reference and tire-grip enrichment models, then streams the
+cached session chunks through both models to produce the enriched dataset used
+by segmentation and transformer training.
 """
 
 import logging
@@ -14,8 +14,6 @@ import pandas as pd
 
 from app.features.tire_grip import TireGripAnalysisService
 from app.integrations.backend.client import backend_service as default_backend_service
-from app.ml.imitation.model import NoExpertLapError
-from app.ml.imitation.service import ExpertImitateLearningService
 from app.ml.segment_classifier.service import segment_classifier
 from app.pipelines.inference.visualizer import (
     visualize_optimal_segments,
@@ -23,44 +21,45 @@ from app.pipelines.inference.visualizer import (
 )
 from app.pipelines.training.pipeline.cleaning import print_section_divider
 from app.pipelines.manifest.protection import is_protected_chunk_id
+from app.top_laps.model import NoTopLapReferenceError
+from app.top_laps.service import TopLapReferenceModelService
 
 
 async def enrich_sessions_with_context(
     chunk_data: List[Dict[str, Any]],
-    imitation_learning: ExpertImitateLearningService,
+    top_lap_reference_model: TopLapReferenceModelService,
     tire_service: TireGripAnalysisService,
 ) -> List[Dict[str, Any]]:
     """Enrich a single chunk with all contextual features."""
     if not chunk_data:
         return []
 
-    chunk_imitation_features = []
+    chunk_reference_features = []
     try:
-        chunk_imitation_features = imitation_learning.extract_expert_state_for_telemetry(chunk_data)
-    except NoExpertLapError as e:
+        chunk_reference_features = (
+            top_lap_reference_model.extract_reference_features(chunk_data)
+        )
+    except NoTopLapReferenceError as e:
         print(
-            f"[WARN] No expert lap for ({e.track}, {e.car}); "
+            f"[WARN] No top-lap reference for ({e.track}, {e.car}); "
             f"skipping session ({len(chunk_data)} records)"
         )
         return []
     except Exception as e:
-        raise RuntimeError(f"Failed to extract imitation features: {str(e)}")
-
-    chunk_grip_features = await tire_service.extract_tire_grip_features(chunk_data)
+        raise RuntimeError(
+            f"Failed to extract top-lap reference features: {str(e)}"
+        )
 
     enriched_chunk = []
     for i, telemetry_record in enumerate(chunk_data):
         enriched_record = telemetry_record.copy()
 
-        if i < len(chunk_imitation_features):
-            enriched_record.update(chunk_imitation_features[i])
-
-        if i < len(chunk_grip_features):
-            enriched_record.update(chunk_grip_features[i])
+        if i < len(chunk_reference_features):
+            enriched_record.update(chunk_reference_features[i])
 
         enriched_chunk.append(enriched_record)
 
-    return enriched_chunk
+    return await tire_service.enrich(enriched_chunk)
 
 
 async def cache_segment_batch(
@@ -150,7 +149,7 @@ async def enriched_contextual_data(
     """
     Streamlined contextual data enrichment using chunk iterator approach.
 
-    1. Train all enrichment models using expert data
+    1. Build all enrichment models from reference and session data
     2. Use chunk_iterator to process cached session data
     3. Enrich each chunk with contextual features
     4. Cache enriched data
@@ -158,24 +157,31 @@ async def enriched_contextual_data(
     backend = backend_service or default_backend_service
     log = logger or logging.getLogger(__name__)
 
-    print_section_divider("TRAINING ENRICHMENT MODELS WITH EXPERT DATA")
+    print_section_divider("BUILDING ENRICHMENT MODELS")
 
-    imitation_learning = ExpertImitateLearningService(logger=log, debug=True)
+    top_lap_reference_model = TopLapReferenceModelService(
+        logger=log,
+        debug=True,
+    )
 
     top_laps_cache_key = cache_config.top_laps_cache_key
-    imitation_result = await imitation_learning.train_ai_model(top_laps_cache_key)
+    reference_result = (
+        await top_lap_reference_model.build_from_cached_top_laps(
+            top_laps_cache_key
+        )
+    )
 
-    serialized_data = imitation_learning.serialize_learning_model()
+    serialized_data = top_lap_reference_model.serialize_reference_model()
     if not serialized_data:
-        raise Exception("No serialized model data available from imitation learning")
+        raise RuntimeError("No serialized top-lap reference model data available")
 
     await backend.save_ai_model(
-        model_type="imitation_learning",
+        model_type="top_lap_reference",
         model_data=serialized_data,
-        metadata=imitation_result.get("learning_summary", {}),
+        metadata=reference_result.get("reference_summary", {}),
         is_active=True,
     )
-    print("[INFO] ✓ Imitation learning model trained and saved")
+    print("[INFO] ✓ Top-lap reference model built and saved")
 
     print(f"[INFO] Retrieving top laps for corner identification from {top_laps_cache_key}")
     top_laps_list = await get_cached_all_top_laps_in_one_list(
@@ -248,11 +254,14 @@ async def enriched_contextual_data(
         print(f"[INFO] Processing chunk {processed_chunks}: {len(chunk_data)} records")
 
         enriched_chunk_data = await enrich_sessions_with_context(
-            chunk_data, imitation_learning, tire_service
+            chunk_data, top_lap_reference_model, tire_service
         )
 
         if not enriched_chunk_data:
-            print(f"[INFO] Chunk {processed_chunks} skipped (no expert reference); not cached")
+            print(
+                f"[INFO] Chunk {processed_chunks} skipped "
+                "(no top-lap reference); not cached"
+            )
             del chunk_data
             continue
 
@@ -274,7 +283,7 @@ async def enriched_contextual_data(
     print(f"  - Skipped {protected_chunks_skipped} protected chunk(s)")
     print(f"  - Enriched data cached to: {enriched_sessions_cache_key}")
 
-    return enriched_sessions_cache_key, imitation_learning
+    return enriched_sessions_cache_key, top_lap_reference_model
 
 
 async def process_and_cache_segments(

@@ -647,8 +647,8 @@ class TelemetryFeatures:
         ]
         
     @classmethod
-    def get_features_for_learning_expert(cls) -> List[str]:
-        """Get features specific to imitate expert learning - includes all features used in imitate_expert_learning_service, corner_identification_unsupervised_service, and tire_grip_analysis_service"""
+    def get_features_for_top_lap_reference(cls) -> List[str]:
+        """Get telemetry used by the top-lap reference and context enrichers."""
         return [
             "Graphics_normalized_car_position",
             "Graphics_player_pos_x",

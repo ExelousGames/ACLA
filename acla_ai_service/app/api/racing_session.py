@@ -8,13 +8,20 @@ from httpx import request
 from pydantic import BaseModel
 import asyncio
 import pandas as pd
+from app.pipelines.inference.preprocessing import (
+    preprocess_inference_telemetry,
+)
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
-from app.racing_engineer.expert_actions import predict_expert_actions
+from app.racing_engineer.top_lap_reference_guidance import (
+    generate_top_lap_reference_guidance,
+)
 from app.ml.model_hub import (
-    get_expert_imitation_learning,
     get_opportunity_forecaster,
     get_segment_classifier,
+    get_tire_grip_analysis,
+    get_top_lap_reference_model,
 )
+from app.top_laps.runtime import TopLapReferenceModelError
 from app.services.user_session_analysis import analyze_user_sessions
 from app.shared.label_hierarchy import build_track_area_segments
 from app.shared.labels import (
@@ -61,7 +68,7 @@ class PredictionRequest(BaseModel):
     use_river: bool = True  # Whether to use River ML or legacy scikit-learn
     user_id: Optional[str] = None
 
-class ImitationPredictRequest(BaseModel):
+class TopLapReferenceGuidanceRequest(BaseModel):
     current_telemetry: Dict[str, Any]
     human_request: Optional[str] = None
     delay_seconds: Optional[float] = 0.0
@@ -137,17 +144,6 @@ def _classify_telemetry_segments(
     )
 
 
-def _extract_expert_rows(telemetry_data: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], bool]:
-    try:
-        expert_rows = get_expert_imitation_learning().extract_expert_state_for_telemetry(telemetry_data)
-        return expert_rows, any(
-            EXPERT_TIME_DIFFERENCE_FIELD in row
-            for row in expert_rows
-        )
-    except Exception:
-        return [], False
-
-
 def _build_time_gap(
     expert_rows: List[Dict[str, Any]],
     start_index: Any,
@@ -201,6 +197,37 @@ def _annotate_segments_with_time_gaps(
     return annotated_segments
 
 
+def _translate_segment_ranges_to_raw_indices(
+    segments: List[Dict[str, Any]],
+    raw_indices: List[int],
+) -> List[Dict[str, Any]]:
+    translated_segments: List[Dict[str, Any]] = []
+
+    for segment in segments:
+        translated_segment = dict(segment)
+        try:
+            start = int(segment["start_index"])
+            end_exclusive = int(segment["end_index"])
+        except (KeyError, TypeError, ValueError):
+            translated_segments.append(translated_segment)
+            continue
+
+        if (
+            start < 0
+            or end_exclusive <= start
+            or start >= len(raw_indices)
+        ):
+            translated_segments.append(translated_segment)
+            continue
+
+        end_exclusive = min(end_exclusive, len(raw_indices))
+        translated_segment["start_index"] = raw_indices[start]
+        translated_segment["end_index"] = raw_indices[end_exclusive - 1] + 1
+        translated_segments.append(translated_segment)
+
+    return translated_segments
+
+
 @router.get("/labels")
 async def get_labels() -> Dict[str, Any]:
     return {
@@ -211,28 +238,35 @@ async def get_labels() -> Dict[str, Any]:
     }
 
 
-@router.post("/imitation-learning-guidance")
-async def get_imitation_learning_expert_guidance(request: ImitationPredictRequest) -> Dict[str, Any]:
+@router.post("/top-lap-reference-guidance")
+async def get_top_lap_reference_guidance(
+    request: TopLapReferenceGuidanceRequest,
+) -> Dict[str, Any]:
     """
-    Get expert driving guidance using imitation learning model
-    Provides recommendations based on expert driving behavior analysis
+    Get driving guidance using the top-lap reference model.
     """
     try:
-        # Validate guidance_type parameter
         try:
-            # Call the telemetryMLService to get expert guidance
-            result = await predict_expert_actions(
+            result = await generate_top_lap_reference_guidance(
                 telemetryMLService,
                 telemetry_dict=request.current_telemetry,
                 user_request=request.human_request,
+                track_name=request.track_name,
+                car_name=request.car_name,
             )
 
         except Exception as e:
-            print(f"[ERROR] Exception in expert guidance service: \n {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Error in expert guidance service: {str(e)}")
+            print(
+                f"[ERROR] Exception in top-lap reference guidance service: "
+                f"\n {str(e)}"
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error in top-lap reference guidance service: {str(e)}",
+            )
         
         return {
-            "message": "Expert guidance generated successfully",
+            "message": "Top-lap reference guidance generated successfully",
             "guidance_result": result,
             "timestamp": result.get("timestamp"),
         }
@@ -240,7 +274,10 @@ async def get_imitation_learning_expert_guidance(request: ImitationPredictReques
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Expert guidance failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Top-lap reference guidance failed: {str(e)}",
+        )
 
 
 @router.post("/opportunity-forecast")
@@ -312,7 +349,21 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
         if not request.telemetry_data:
             raise HTTPException(status_code=400, detail="telemetry_data is required")
 
-        segments = _classify_telemetry_segments(request.telemetry_data, request.track_name)
+        preprocessed = preprocess_inference_telemetry(request.telemetry_data)
+        enriched_rows = get_top_lap_reference_model().enrich(
+            preprocessed.records,
+            track=request.track_name,
+            car=request.car_name,
+        )
+        enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
+        segments = _classify_telemetry_segments(
+            enriched_rows,
+            request.track_name,
+        )
+        segments = _translate_segment_ranges_to_raw_indices(
+            segments,
+            preprocessed.raw_indices,
+        )
 
         return {
             "status": "success",
@@ -323,6 +374,8 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
         }
     except HTTPException:
         raise
+    except TopLapReferenceModelError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -335,14 +388,23 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
         if not request.records:
             raise HTTPException(status_code=400, detail="records is required")
 
+        preprocessed = preprocess_inference_telemetry(request.records)
+        enriched_rows = get_top_lap_reference_model().enrich(
+            preprocessed.records,
+            track=request.track,
+            car=request.car,
+        )
+        enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
         segments = _classify_telemetry_segments(
-            request.records,
+            enriched_rows,
             request.track,
             include_empty_track_sections=True,
         )
-        expert_rows, expert_time_available = _extract_expert_rows(request.records)
-        if expert_time_available:
-            segments = _annotate_segments_with_time_gaps(segments, expert_rows)
+        segments = _annotate_segments_with_time_gaps(segments, enriched_rows)
+        segments = _translate_segment_ranges_to_raw_indices(
+            segments,
+            preprocessed.raw_indices,
+        )
 
         return {
             "status": "success",
@@ -352,10 +414,12 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             "samples_analyzed": len(request.records),
             "parent_segment_count": len(segments),
             "segments": segments,
-            "expert_time_available": expert_time_available,
+            "expert_time_available": True,
         }
     except HTTPException:
         raise
+    except TopLapReferenceModelError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -375,5 +439,7 @@ async def analyze_all_user_sessions(request: AnalyzeUserSessionsRequest) -> Dict
         }
     except HTTPException:
         raise
+    except TopLapReferenceModelError as e:
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"User session analysis failed: {str(e)}")

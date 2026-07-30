@@ -68,15 +68,15 @@ async def lifespan(app: FastAPI):
         print("   - AI_SERVICE_USERNAME")
         print("   - AI_SERVICE_PASSWORD")
 
-    # Hydrate chatbot-facing models from the backend active model store.
-    # Skipped when backend is down; each model reports degraded readiness.
-    if backend_ok:
-        model_status = await hydrate_chatbot_models()
-        for model_name, is_ready in model_status.items():
-            if is_ready:
-                print(f"{model_name}: ready")
-            else:
-                print(f"{model_name}: NOT ready (backend active model payload unavailable or invalid)")
+    # Hydrate chatbot-facing models from the backend active model store. This
+    # runs even after the connection probe fails so runtime readiness is reset
+    # and no previous local top-lap artifact can become an implicit fallback.
+    model_status = await hydrate_chatbot_models()
+    for model_name, is_ready in model_status.items():
+        if is_ready:
+            print(f"{model_name}: ready")
+        else:
+            print(f"{model_name}: NOT ready (backend active model payload unavailable or invalid)")
 
     yield
 

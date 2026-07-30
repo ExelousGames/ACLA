@@ -1,9 +1,9 @@
-"""Expert action prediction for the racing engineer.
+"""Top-lap reference guidance for the racing engineer.
 
 Generates segment-purpose guidance using the LLM, classifying telemetry into
 segment labels and asking the LLM to verbalize. The function operates on a
-``Full_dataset_TelemetryMLService`` instance because the cache, backend client,
-imitation/tire-grip services, and LLM orchestrator all live there.
+``Full_dataset_TelemetryMLService`` instance because the telemetry features and
+LLM orchestrator live there; runtime enrichment comes from the model hub.
 """
 
 import time
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from app.shared.telemetry import FeatureProcessor
 from app.local_llm.local_llm import GenerationRequest
 from app.ml.model_hub import (
-    get_expert_imitation_learning,
+    get_top_lap_reference_model,
     get_tire_grip_analysis,
 )
 from app.ml.prompts import generate_llm_prompt_from_labels
@@ -23,12 +23,14 @@ if TYPE_CHECKING:
     from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 
 
-async def predict_expert_actions(
+async def generate_top_lap_reference_guidance(
     service: "Full_dataset_TelemetryMLService",
     telemetry_dict: Dict[str, Any],
     *,
     sequence_length: int = 40,
     user_request: Optional[str] = None,
+    track_name: Optional[str] = None,
+    car_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Generate segment-purpose guidance using the LLM without requiring the transformer."""
     start_time = time.time()
@@ -41,29 +43,31 @@ async def predict_expert_actions(
         processed_df = processor.general_cleaning_for_analysis()
 
         processor.flip_y_z_features()
-        features = service._imitate_expert_feature_names or service.telemetry_features.get_features_for_learning_expert()
+        features = (
+            service._top_lap_reference_feature_names
+            or service.telemetry_features.get_features_for_top_lap_reference()
+        )
 
         filtered_df = processor.filter_features_by_list(processed_df, features)
         processed_telemetry_dict = (
             filtered_df.iloc[0].to_dict() if not filtered_df.empty else telemetry_dict
         )
 
-        chunk_imitation_features = []
         try:
-            expert_service = get_expert_imitation_learning()
-            chunk_imitation_features = expert_service.extract_expert_state_for_telemetry(
-                [processed_telemetry_dict]
-            )
+            processed_telemetry_dict = get_top_lap_reference_model().enrich(
+                [processed_telemetry_dict],
+                track=track_name,
+                car=car_name,
+            )[0]
         except Exception as e:
-            raise RuntimeError(f"Failed to extract imitation features: {str(e)}")
+            raise RuntimeError(
+                f"Failed to extract top-lap reference features: {str(e)}"
+            )
 
         tire_grip_service = get_tire_grip_analysis()
         chunk_grip_features = await tire_grip_service.extract_tire_grip_features(
             [processed_telemetry_dict]
         )
-
-        if len(chunk_imitation_features) > 0:
-            processed_telemetry_dict.update(chunk_imitation_features[0])
 
         if len(chunk_grip_features) > 0:
             processed_telemetry_dict.update(chunk_grip_features[0])
@@ -110,7 +114,7 @@ async def predict_expert_actions(
         }
 
     except Exception as error:
-        error_msg = f"Failed to generate expert guidance: {error}"
+        error_msg = f"Failed to generate top-lap reference guidance: {error}"
         print(f"[ERROR] {error_msg}")
 
         end_time = time.time()

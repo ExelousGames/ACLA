@@ -96,6 +96,11 @@ Compose files:
 - `docker-compose.prod.yaml`: Production-oriented stack: `frontend`, `backend_proxy`, `backend`, `ai_service`, and `mongodb`.
 - `docker-compose.cpu.yaml`, `docker-compose.nvidia.yaml`, `docker-compose.amd.yaml`: AI service hardware/runtime variants.
 
+AI service container roles:
+- Development: the `ai_service` container is a dual-purpose environment for AI model/data training and related tooling, and for developing and testing the live FastAPI inference server.
+- Production deployment: the `ai_service` container's operational role is the live server. Training code may remain available in the image, but deployed instances are serving-focused rather than developer training environments.
+- These are environment-specific roles of the same AI service codebase, not separate training and serving services.
+
 Important dev ports:
 - Frontend: `${REACT_WEBSITE_PORT}:3000`.
 - Backend proxy: `${BACKEND_PROXY_PORT}:80`.

@@ -35,7 +35,9 @@ async def main() -> int:
             telemetry_store=service.telemetry_store,
             config=service.pipeline_config,
             backend_service=service.backend_service,
-            imitate_expert_feature_names=service._imitate_expert_feature_names,
+            top_lap_reference_feature_names=(
+                service._top_lap_reference_feature_names
+            ),
         )
     except Exception as exc:
         logger.exception("Data preparation failed")

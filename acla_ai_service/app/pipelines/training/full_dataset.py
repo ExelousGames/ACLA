@@ -9,7 +9,7 @@ import json
 import base64
 import logging
 from dataclasses import dataclass
-from app.ml.model_hub import get_expert_imitation_learning, get_tire_grip_analysis
+from app.ml.model_hub import get_tire_grip_analysis
 import numpy as np
 import joblib
 import warnings
@@ -96,9 +96,11 @@ class Full_dataset_TelemetryMLService:
         self.label_encoders = {}
         # Cache frequently used feature lists to avoid recreating TelemetryFeatures each prediction
         try:
-            self._imitate_expert_feature_names = self.telemetry_features.get_features_for_learning_expert()
+            self._top_lap_reference_feature_names = (
+                self.telemetry_features.get_features_for_top_lap_reference()
+            )
         except Exception:
-            self._imitate_expert_feature_names = []
+            self._top_lap_reference_feature_names = []
         
         # Backend service integration
         self.backend_service = backend_service
@@ -131,7 +133,6 @@ class Full_dataset_TelemetryMLService:
         self.cache_config = self.pipeline_config
 
         # Reusable runtime services are provided by the central chatbot model hub.
-        self._expert_service = get_expert_imitation_learning()
         self._tire_grip_service = get_tire_grip_analysis()
 
         # Clear entire cache to ensure we start fresh with model instances only
@@ -148,4 +149,4 @@ class Full_dataset_TelemetryMLService:
 
 if __name__ == "__main__":
     # Example usage
-    print("TelemetryMLService with Imitation Learning initialized. Ready for training!")
+    print("TelemetryMLService with top-lap references initialized. Ready for training!")

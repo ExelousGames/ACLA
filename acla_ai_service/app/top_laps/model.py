@@ -1,7 +1,7 @@
-"""Fastest-lap registry for expert imitation.
+"""Top-lap registry for reference telemetry.
 
-Replaces the previous interpolation-based expert model. We store the single
-fastest lap per ``(track, car, avg_grip_int)`` combination and answer
+Stores the selected top lap per ``(track, car, avg_grip_int)`` combination and
+answers
 position-based queries by 1-D interpolating that one lap's telemetry against
 ``normalized_position``.
 
@@ -37,15 +37,15 @@ _EXPERT_TARGET_FROM_TELEMETRY: Dict[str, str] = {
 }
 
 
-class NoExpertLapError(KeyError):
-    """No fastest lap stored for a (track, car) at any grip bucket."""
+class NoTopLapReferenceError(KeyError):
+    """No top-lap reference stored for a (track, car) at any grip bucket."""
 
     def __init__(self, track: str, car: str, avg_grip_int: int):
         self.track = track
         self.car = car
         self.avg_grip_int = int(avg_grip_int)
         super().__init__(
-            f"No fastest lap stored for {(track, car, int(avg_grip_int))}"
+            f"No top-lap reference stored for {(track, car, int(avg_grip_int))}"
         )
 
 
@@ -67,8 +67,8 @@ def _compute_avg_grip_int(values: np.ndarray) -> int:
     return max(0, min(6, int(round(mean))))
 
 
-class FastestLapEntry:
-    """One stored fastest lap with sorted/deduped x and y for np.interp lookup."""
+class TopLapEntry:
+    """One stored top lap with sorted/deduped x and y for np.interp lookup."""
 
     def __init__(
         self,
@@ -95,11 +95,11 @@ class FastestLapEntry:
         track: str,
         car: str,
         avg_grip_int: int,
-    ) -> "FastestLapEntry":
+    ) -> "TopLapEntry":
         lap_df = pd.DataFrame(records)
         if "Graphics_normalized_car_position" not in lap_df.columns:
             raise ValueError(
-                "Graphics_normalized_car_position required to build FastestLapEntry"
+                "Graphics_normalized_car_position required to build TopLapEntry"
             )
 
         available_targets = [
@@ -164,7 +164,7 @@ class FastestLapEntry:
         }
 
     @classmethod
-    def from_components(cls, components: Dict[str, Any]) -> "FastestLapEntry":
+    def from_components(cls, components: Dict[str, Any]) -> "TopLapEntry":
         return cls(
             track=components["track"],
             car=components["car"],
@@ -175,8 +175,8 @@ class FastestLapEntry:
         )
 
 
-class FastestLapStore:
-    """Registry of fastest laps keyed by (track, car, avg_grip_int)."""
+class TopLapStore:
+    """Registry of top laps keyed by (track, car, avg_grip_int)."""
 
     def __init__(
         self,
@@ -185,10 +185,10 @@ class FastestLapStore:
         debug_logger: Optional[Callable[..., None]] = None,
         logger: Optional[logging.Logger] = None,
     ):
-        self.entries: Dict[Tuple[str, str, int], FastestLapEntry] = {}
+        self.entries: Dict[Tuple[str, str, int], TopLapEntry] = {}
         self.debug_enabled = debug
         self._debug_logger = debug_logger
-        self.logger = logger or logging.getLogger(f"{__name__}.FastestLapStore")
+        self.logger = logger or logging.getLogger(f"{__name__}.TopLapStore")
 
     def _debug(self, message: str, **debug_data: Any) -> None:
         if not self.debug_enabled:
@@ -201,7 +201,7 @@ class FastestLapStore:
     def record_lap(self, records: List[Dict[str, Any]]) -> Optional[Tuple[str, str, int]]:
         """Store one lap; key derived from its records.
 
-        Caller is expected to pass laps already selected as fastest per bucket
+        Caller is expected to pass laps already selected as top per bucket
         (cleaning.py guarantees this); we overwrite any existing entry.
         """
         if not records:
@@ -216,13 +216,13 @@ class FastestLapStore:
         ]
         avg_grip_int = _compute_avg_grip_int(np.asarray(grip_values, dtype=float))
 
-        entry = FastestLapEntry.from_lap_records(
+        entry = TopLapEntry.from_lap_records(
             records, track=track, car=car, avg_grip_int=avg_grip_int
         )
         key = (track, car, avg_grip_int)
         self.entries[key] = entry
         self._debug(
-            "stored fastest lap",
+            "stored top lap",
             track=track,
             car=car,
             avg_grip_int=avg_grip_int,
@@ -252,14 +252,14 @@ class FastestLapStore:
         entry = self.entries.get(key)
         if entry is None:
             # Session chunks are arbitrary row slices, so their averaged grip
-            # rarely matches a stored fastest lap's grip exactly. Fall back to
+            # rarely matches a stored top lap's grip exactly. Fall back to
             # the closest available grip bucket for the same (track, car).
             candidates = [
                 (k, e) for k, e in self.entries.items()
                 if k[0] == track and k[1] == car
             ]
             if not candidates:
-                raise NoExpertLapError(track, car, avg_grip_int)
+                raise NoTopLapReferenceError(track, car, avg_grip_int)
             fallback_key, entry = min(
                 candidates, key=lambda ke: abs(ke[0][2] - int(avg_grip_int))
             )
@@ -272,9 +272,9 @@ class FastestLapStore:
 
 
 __all__ = [
-    "FastestLapEntry",
-    "FastestLapStore",
-    "NoExpertLapError",
+    "NoTopLapReferenceError",
+    "TopLapEntry",
+    "TopLapStore",
     "_compute_avg_grip_int",
     "_format_debug_message",
 ]

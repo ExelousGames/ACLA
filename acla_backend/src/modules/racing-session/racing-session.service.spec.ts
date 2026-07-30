@@ -163,4 +163,24 @@ describe('RacingSessionService', () => {
     });
     expect(racingSessionModel.findById).toHaveBeenCalledWith(sessionId);
   });
+
+  it('rejects segment classification telemetry owned by another user', async () => {
+    const sessionId = '507f1f77bcf86cd799439011';
+
+    racingSessionModel.findById.mockReturnValue({
+      select: jest.fn().mockReturnValue({
+        exec: jest.fn().mockResolvedValue({
+          map: 'Brands Hatch',
+          car_name: 'BMW',
+          user_id: 'user-2',
+          dataChunkFileIds: ['507f1f77bcf86cd799439012'],
+        }),
+      }),
+    });
+
+    await expect(
+      service.getSessionTelemetryForClassification('user-1', sessionId),
+    ).rejects.toThrow('Session not found or access denied');
+    expect(gridfsService.downloadJSON).not.toHaveBeenCalled();
+  });
 });

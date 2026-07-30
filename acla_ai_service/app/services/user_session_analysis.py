@@ -9,7 +9,15 @@ import pandas as pd
 from app.shared.circuit_sections import CIRCUIT_SECTION_RANGES
 from app.shared.labels import LABEL_CATEGORIES, LABEL_MAPPING, LABEL_NAME_TO_ID
 from app.integrations.backend.client import backend_service
-from app.ml.model_hub import get_segment_classifier
+from app.ml.model_hub import (
+    get_segment_classifier,
+    get_tire_grip_analysis,
+    get_top_lap_reference_model,
+)
+from app.pipelines.inference.preprocessing import (
+    preprocess_inference_telemetry,
+)
+from app.top_laps.runtime import TopLapReferenceModelError
 
 
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
@@ -229,7 +237,7 @@ def _increment_label(section_summary: Dict[str, Any], label: str) -> None:
         section_summary["racingMistakes"] += 1
 
 
-def _scan_window(
+async def _scan_window(
     summary: Dict[str, Any],
     session_meta: Dict[str, Any],
     rows: List[Dict[str, Any]],
@@ -242,7 +250,13 @@ def _scan_window(
 
     track_id = _track_id(session_meta.get("map"))
     track_summary = _ensure_track(summary, track_id, str(session_meta.get("map") or track_id))
-    df = pd.DataFrame(rows)
+    enriched_rows = get_top_lap_reference_model().enrich(
+        rows,
+        track=session_meta.get("map"),
+        car=session_meta.get("car_name"),
+    )
+    enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
+    df = pd.DataFrame(enriched_rows)
     predicted_segments = get_segment_classifier().detect_segments(df)
     session_id = str(session_meta.get("sessionId") or "")
 
@@ -279,6 +293,9 @@ def _scan_window(
 
 
 async def analyze_user_sessions(user_id: str, session_limit: int = 10) -> Dict[str, Any]:
+    if not get_top_lap_reference_model().is_ready():
+        raise TopLapReferenceModelError("Top-lap reference model is unavailable")
+
     summary: Dict[str, Any] = {
         "version": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
@@ -310,26 +327,45 @@ async def analyze_user_sessions(user_id: str, session_limit: int = 10) -> Dict[s
         car_name = str(session_meta.get("car_name") or "unknown")
         track_summary["cars"][car_name] = track_summary["cars"].get(car_name, 0) + 1
 
-        buffer: List[Dict[str, Any]] = []
-        buffer_start = 0
-        seen = set()
+        session_rows: List[Dict[str, Any]] = []
 
         try:
             async for chunk_rows in backend_service.iter_user_analysis_chunks(user_id, session_meta):
                 summary["totalTelemetryRows"] += len(chunk_rows)
                 track_summary["totalTelemetryRows"] += len(chunk_rows)
-                buffer.extend(chunk_rows)
+                session_rows.extend(chunk_rows)
 
-                advance = max(1, WINDOW_ROWS - WINDOW_OVERLAP_ROWS)
-                while len(buffer) >= WINDOW_ROWS:
-                    window = buffer[:WINDOW_ROWS]
-                    emit_end = buffer_start + advance
-                    _scan_window(summary, session_meta, window, buffer_start, emit_end, seen)
-                    buffer = buffer[advance:]
-                    buffer_start += advance
+            preprocessed = preprocess_inference_telemetry(session_rows)
+            buffer = preprocessed.records
+            buffer_start = 0
+            seen = set()
+            advance = max(1, WINDOW_ROWS - WINDOW_OVERLAP_ROWS)
+
+            while len(buffer) >= WINDOW_ROWS:
+                window = buffer[:WINDOW_ROWS]
+                emit_end = buffer_start + advance
+                await _scan_window(
+                    summary,
+                    session_meta,
+                    window,
+                    buffer_start,
+                    emit_end,
+                    seen,
+                )
+                buffer = buffer[advance:]
+                buffer_start += advance
 
             if buffer:
-                _scan_window(summary, session_meta, buffer, buffer_start, None, seen)
+                await _scan_window(
+                    summary,
+                    session_meta,
+                    buffer,
+                    buffer_start,
+                    None,
+                    seen,
+                )
+        except TopLapReferenceModelError:
+            raise
         except Exception as exc:
             session_id = str(session_meta.get("sessionId") or "")
             message = str(exc)

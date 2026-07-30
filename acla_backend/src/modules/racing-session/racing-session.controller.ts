@@ -616,14 +616,28 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('segment-classification')
     async classifySessionSegments(
+        @Request() req,
         @Body() body: SegmentClassificationRequestDto & Record<string, any>
     ): Promise<SegmentClassificationResponseDto> {
         try {
-            if (!Array.isArray(body.telemetry_data) || body.telemetry_data.length === 0) {
-                throw new BadRequestException('telemetry_data is required');
+            if (!req.user?.userId) {
+                throw new BadRequestException('Authenticated user id is required');
+            }
+            if (!body.session_id) {
+                throw new BadRequestException('session_id is required');
             }
 
-            return await this.aiServiceClient.classifySegments(body as any);
+            const session = await this.racingSessionService.getSessionTelemetryForClassification(
+                req.user.userId,
+                body.session_id,
+            );
+
+            return await this.aiServiceClient.classifySegments({
+                session_id: session.sessionId,
+                telemetry_data: session.telemetryData,
+                track_name: session.trackName,
+                car_name: session.carName,
+            });
         } catch (error) {
             if (error instanceof BadRequestException || error instanceof ForbiddenException || error instanceof HttpException) {
                 throw error;

@@ -42,6 +42,20 @@ class TireGripAnalysisService:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    async def enrich(
+        self,
+        telemetry_data: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return copied telemetry rows merged with tire-grip context."""
+        if not telemetry_data:
+            return []
+
+        grip_features = await self.extract_tire_grip_features(telemetry_data)
+        enriched_rows = [dict(record) for record in telemetry_data]
+        for row, features in zip(enriched_rows, grip_features):
+            row.update(features)
+        return enriched_rows
+
     async def extract_tire_grip_features(self, telemetry_data: List[Dict[str, Any]]) -> List[Dict[str, float]]:
         df = self._prepare_dataframe(telemetry_data)
         if df.empty:
