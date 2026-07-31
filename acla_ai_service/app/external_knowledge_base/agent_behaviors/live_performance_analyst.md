@@ -16,9 +16,6 @@ Live Performance Analyst startup behavior:
   The result classifies lap sections with labels such as mistake,
   expert-adherence behavior, recovery, pit-lane event, or racing action.
 - If there is no mistake, then there is no improvement needed. user is already at the best performance.
-- Convert the actionable mistake sections from `analyze_live_recorded_analysis`
-  into the initial `set_live_range_tracker` ranges. Do not track every minor
-  observation if it would distract from the driver's main improvement targets.
 - Do not create a visible procedure plan in this mode. Use the live range
   tracker to watch the mistake sections and check them again as the driver
   reaches those ranges on later laps.

@@ -110,6 +110,16 @@ class LiveBaselineAnalysisRequest(BaseModel):
 telemetryMLService = Full_dataset_TelemetryMLService()
 
 EXPERT_TIME_DIFFERENCE_FIELD = "expert_time_difference"
+EXPERT_REFERENCE_FIELDS = (
+    EXPERT_TIME_DIFFERENCE_FIELD,
+    "expert_optimal_player_pos_x",
+    "expert_optimal_player_pos_y",
+    "expert_optimal_player_pos_z",
+    "Graphics_normalized_car_position",
+    "expert_optimal_throttle",
+    "expert_optimal_brake",
+    "expert_optimal_gear",
+)
 
 
 def _classify_telemetry_segments(
@@ -142,6 +152,19 @@ def _classify_telemetry_segments(
         track_name,
         include_empty_sections=include_empty_track_sections,
     )
+
+
+def _project_expert_reference_data(
+    enriched_rows: List[Dict[str, Any]],
+    raw_indices: List[int],
+) -> List[Dict[str, Any]]:
+    return [
+        {
+            "raw_index": raw_index,
+            **{field: row[field] for field in EXPERT_REFERENCE_FIELDS},
+        }
+        for row, raw_index in zip(enriched_rows, raw_indices)
+    ]
 
 
 def _build_time_gap(
@@ -356,6 +379,10 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             car=request.car_name,
         )
         enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
+        expert_reference_data = _project_expert_reference_data(
+            enriched_rows,
+            preprocessed.raw_indices,
+        )
         segments = _classify_telemetry_segments(
             enriched_rows,
             request.track_name,
@@ -371,6 +398,7 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             "samples_analyzed": len(request.telemetry_data),
             "parent_segment_count": len(segments),
             "segments": segments,
+            "expert_reference_data": expert_reference_data,
         }
     except HTTPException:
         raise
@@ -395,6 +423,10 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             car=request.car,
         )
         enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
+        expert_reference_data = _project_expert_reference_data(
+            enriched_rows,
+            preprocessed.raw_indices,
+        )
         segments = _classify_telemetry_segments(
             enriched_rows,
             request.track,
@@ -415,6 +447,7 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             "parent_segment_count": len(segments),
             "segments": segments,
             "expert_time_available": True,
+            "expert_reference_data": expert_reference_data,
         }
     except HTTPException:
         raise

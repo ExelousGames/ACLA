@@ -159,12 +159,25 @@ export class SegmentClassificationSegmentDto {
     time_gap?: LiveBaselineTimeGapDto;
 }
 
+export class ExpertReferenceRowDto {
+    raw_index: number;
+    expert_time_difference: number;
+    expert_optimal_player_pos_x: number;
+    expert_optimal_player_pos_y: number;
+    expert_optimal_player_pos_z: number;
+    Graphics_normalized_car_position: number;
+    expert_optimal_throttle: number;
+    expert_optimal_brake: number;
+    expert_optimal_gear: number;
+}
+
 export class SegmentClassificationResponseDto {
     status: string;
     session_id: string;
     samples_analyzed: number;
     parent_segment_count: number;
     segments: SegmentClassificationSegmentDto[];
+    expert_reference_data: ExpertReferenceRowDto[];
 }
 
 export class LiveBaselineAnalysisRequestDto {

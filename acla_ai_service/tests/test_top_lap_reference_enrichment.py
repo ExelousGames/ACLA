@@ -32,6 +32,12 @@ class EnrichingRuntime:
                 if index < len(self.time_differences)
                 else 0.0
             )
+            row["expert_optimal_player_pos_x"] = 100.0 + index
+            row["expert_optimal_player_pos_y"] = 200.0 + index
+            row["expert_optimal_player_pos_z"] = 300.0 + index
+            row["expert_optimal_throttle"] = round(0.8 - index * 0.1, 1)
+            row["expert_optimal_brake"] = round(0.1 + index * 0.1, 1)
+            row["expert_optimal_gear"] = 4.0 + index
             if "Static_track" not in row and track:
                 row["Static_track"] = track
             if "Static_car_model" not in row and car:
@@ -182,6 +188,10 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
     ]
     cleaned = [{"Graphics_normalized_car_position": 0.6}]
     classified = []
+    projected = []
+    project_expert_reference_data = (
+        racing_session._project_expert_reference_data
+    )
     monkeypatch.setattr(
         racing_session,
         "preprocess_inference_telemetry",
@@ -210,6 +220,14 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
             }]
         ),
     )
+    monkeypatch.setattr(
+        racing_session,
+        "_project_expert_reference_data",
+        lambda rows, raw_indices: (
+            projected.append(rows)
+            or project_expert_reference_data(rows, raw_indices)
+        ),
+    )
 
     result = await racing_session.classify_session_segments(
         racing_session.SegmentClassificationRequest(
@@ -229,8 +247,21 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
     assert result["samples_analyzed"] == 3
     assert result["segments"][0]["start_index"] == 2
     assert result["segments"][0]["end_index"] == 3
+    assert result["expert_reference_data"] == [{
+        "raw_index": 2,
+        "expert_time_difference": 0.0,
+        "expert_optimal_player_pos_x": 100.0,
+        "expert_optimal_player_pos_y": 200.0,
+        "expert_optimal_player_pos_z": 300.0,
+        "Graphics_normalized_car_position": 0.6,
+        "expert_optimal_throttle": 0.8,
+        "expert_optimal_brake": 0.1,
+        "expert_optimal_gear": 4.0,
+    }]
     assert tire_service.calls[0][0] is runtime.calls[0][3]
     assert classified[0] is tire_service.calls[0][1]
+    assert projected[0] is classified[0]
+    assert len(runtime.calls) == 1
     assert source == [
         {"Graphics_normalized_car_position": 0.4, "source": "raw"},
         {"Graphics_normalized_car_position": 0.5, "source": "raw"},
@@ -253,6 +284,10 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
         {"Graphics_normalized_car_position": 0.3},
     ]
     classified = []
+    projected = []
+    project_expert_reference_data = (
+        racing_session._project_expert_reference_data
+    )
     monkeypatch.setattr(
         racing_session,
         "preprocess_inference_telemetry",
@@ -281,6 +316,14 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
             }]
         ),
     )
+    monkeypatch.setattr(
+        racing_session,
+        "_project_expert_reference_data",
+        lambda rows, raw_indices: (
+            projected.append(rows)
+            or project_expert_reference_data(rows, raw_indices)
+        ),
+    )
 
     result = await racing_session.analyze_live_baseline(
         racing_session.LiveBaselineAnalysisRequest(
@@ -300,10 +343,35 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
     assert result["segments"][0]["start_index"] == 1
     assert result["segments"][0]["end_index"] == 4
     assert result["samples_analyzed"] == 4
+    assert result["expert_reference_data"] == [
+        {
+            "raw_index": 1,
+            "expert_time_difference": 10.0,
+            "expert_optimal_player_pos_x": 100.0,
+            "expert_optimal_player_pos_y": 200.0,
+            "expert_optimal_player_pos_z": 300.0,
+            "Graphics_normalized_car_position": 0.1,
+            "expert_optimal_throttle": 0.8,
+            "expert_optimal_brake": 0.1,
+            "expert_optimal_gear": 4.0,
+        },
+        {
+            "raw_index": 3,
+            "expert_time_difference": 25.0,
+            "expert_optimal_player_pos_x": 101.0,
+            "expert_optimal_player_pos_y": 201.0,
+            "expert_optimal_player_pos_z": 301.0,
+            "Graphics_normalized_car_position": 0.3,
+            "expert_optimal_throttle": 0.7,
+            "expert_optimal_brake": 0.2,
+            "expert_optimal_gear": 5.0,
+        },
+    ]
     assert runtime.calls[0][0] == cleaned
     assert classified[0][0]["driver_push_to_limit"] == 0.75
     assert tire_service.calls[0][0] is runtime.calls[0][3]
     assert classified[0] is tire_service.calls[0][1]
+    assert projected[0] is classified[0]
     assert len(runtime.calls) == 1
     assert source == [
         {"Graphics_normalized_car_position": 0.0},
@@ -311,6 +379,64 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
         {"Graphics_normalized_car_position": 0.2},
         {"Graphics_normalized_car_position": 0.3},
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["recorded", "live"])
+async def test_empty_preprocessed_output_returns_empty_expert_references(
+    endpoint,
+    monkeypatch,
+):
+    runtime = EnrichingRuntime()
+    tire_service = EnrichingTireService()
+    source = [{"Graphics_normalized_car_position": 0.5}]
+    classified = []
+
+    monkeypatch.setattr(
+        racing_session,
+        "preprocess_inference_telemetry",
+        lambda records: _preprocessed([], []),
+    )
+    monkeypatch.setattr(
+        racing_session,
+        "get_top_lap_reference_model",
+        lambda: runtime,
+    )
+    monkeypatch.setattr(
+        racing_session,
+        "get_tire_grip_analysis",
+        lambda: tire_service,
+    )
+    monkeypatch.setattr(
+        racing_session,
+        "_classify_telemetry_segments",
+        lambda rows, track_name, include_empty_track_sections=False: (
+            classified.append(rows) or []
+        ),
+    )
+
+    if endpoint == "recorded":
+        result = await racing_session.classify_session_segments(
+            racing_session.SegmentClassificationRequest(
+                session_id="session-1",
+                telemetry_data=source,
+                track_name="spa",
+                car_name="car-a",
+            )
+        )
+    else:
+        result = await racing_session.analyze_live_baseline(
+            racing_session.LiveBaselineAnalysisRequest(
+                track="spa",
+                car="car-a",
+                records=source,
+            )
+        )
+
+    assert result["expert_reference_data"] == []
+    assert classified == [[]]
+    assert len(runtime.calls) == 1
+    assert source == [{"Graphics_normalized_car_position": 0.5}]
 
 
 @pytest.mark.asyncio

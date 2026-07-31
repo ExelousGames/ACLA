@@ -5,6 +5,7 @@ jest.mock('views/lap-analysis/visualization/VisualizationRegistry', () => ({
         closeVisualization: jest.fn(),
         invokeVisualizationControl: jest.fn(),
         getCurrentInstances: jest.fn(() => []),
+        executeCommand: jest.fn(),
     },
 }));
 
@@ -27,6 +28,7 @@ import { buildBaselineCollectionTag, type BaselineLapRecord } from '../BaselineC
 import apiService from 'services/api.service';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import { getToolEnvelopeUiOutput, type ToolOutputEnvelope } from '../ai-tool-base';
+import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 
 const labelNames: Record<string, string> = {
     brands_hatch: 'Brands Hatch',
@@ -597,6 +599,7 @@ describe('ai command registry recorded session tools', () => {
             session_id: 'session-1',
             samples_analyzed: 120,
             parent_segment_count: 1,
+            expert_reference_data: [],
             segments: [
                 {
                     id: 'segment-1',
@@ -852,6 +855,7 @@ describe('ai command registry live performance analyst tools', () => {
                 session_id: 'session-1',
                 samples_analyzed: 120,
                 parent_segment_count: 1,
+                expert_reference_data: [],
                 segments: [
                     {
                         id: 'brands_hatch2:10-30',
@@ -1517,6 +1521,11 @@ describe('ai command registry live performance analyst tools', () => {
     });
 
     it('returns immediately until a recorded baseline lap is cached, then runs live recorded analysis', async () => {
+        (visualizationController.openVisualization as jest.Mock).mockReturnValue({
+            success: true,
+            chartId: 'analysis-results-chart',
+            chartType: 'analysis-results',
+        });
         (apiService.post as jest.Mock).mockResolvedValueOnce({
             data: {
                 status: 'success',
@@ -1590,26 +1599,26 @@ describe('ai command registry live performance analyst tools', () => {
             { sendToolStatus: jest.fn() },
         );
 
-        expect(readyResult).toMatchObject({
-            status: 'ready',
-            ui_output: {
-                source: 'baseline_lap_record',
-                baseline: {
-                    id: cachedRecord.id,
-                    lap: 0,
-                    sample_count: 2,
-                },
-                analysis: {
-                    samples_analyzed: 2,
-                    segments: [
-                        expect.objectContaining({
-                            track_section: 'Druids',
-                            labels: ['Mistake (Practice)'],
-                            start_position: 0.01,
-                            end_position: 0.99,
-                        }),
-                    ],
-                },
+        expect(readyResult).toMatchObject({ status: 'ready' });
+        expect(getUiOutput(readyResult as ToolOutputEnvelope)).toMatchObject({
+            chartId: 'analysis-results-chart',
+            totalResultCount: 1,
+            source: 'baseline_lap_record',
+            baseline: {
+                id: cachedRecord.id,
+                lap: 0,
+                sample_count: 2,
+            },
+            analysis: {
+                samples_analyzed: 2,
+                segments: [
+                    expect.objectContaining({
+                        track_section: 'Druids',
+                        labels: ['Mistake (Practice)'],
+                        start_position: 0.01,
+                        end_position: 0.99,
+                    }),
+                ],
             },
         });
         expect(apiService.post).toHaveBeenCalledWith('/racing-session/analyze-live-recorded-analysis', {
@@ -1618,6 +1627,67 @@ describe('ai command registry live performance analyst tools', () => {
             baseline_lap: cachedRecord.lap,
             records: cachedRecord.records,
         }, { timeout: 120000 });
+        expect(visualizationController.openVisualization).toHaveBeenCalledWith(
+            'analysis-results',
+            {
+                elements: [expect.objectContaining({
+                    id: 'live-segment-1',
+                    labels: ['Mistake (Practice)'],
+                    section: 'Druids',
+                })],
+            },
+        );
+    });
+
+    it('replaces an open analysis-results chart with every classifier segment and arbitrary label', async () => {
+        (visualizationController.getCurrentInstances as jest.Mock).mockReturnValueOnce([{
+            id: 'existing-results',
+            type: 'analysis-results',
+            data: { elements: [{ id: 'old', labels: ['Old'] }] },
+        }]);
+        (apiService.post as jest.Mock).mockResolvedValueOnce({
+            data: {
+                status: 'success',
+                session_id: 'live-baseline',
+                samples_analyzed: 3,
+                segments: [
+                    { id: 'mistake', start_index: 0, end_index: 1, labels: ['MSP'] },
+                    { id: 'adherence', start_index: 0, end_index: 1, labels: ['EXPERT_ADHERENCE'] },
+                    { id: 'recovery', start_index: 1, end_index: 2, labels: ['RECOVERY'] },
+                    { id: 'future', start_index: 1, end_index: 2, labels: ['FUTURE_LABEL'] },
+                ],
+            },
+        });
+        const { registry } = createLiveAnalystRegistry();
+
+        const result = await registry.analyze_live_recorded_analysis(
+            { limit: 1 },
+            { sendToolStatus: jest.fn() },
+        );
+        const uiOutput = getUiOutput(result as ToolOutputEnvelope);
+
+        expect(uiOutput).toMatchObject({
+            chartId: 'existing-results',
+            totalResultCount: 4,
+            analysis: { segments: [expect.objectContaining({ id: 'mistake' })] },
+        });
+        expect(visualizationController.openVisualization).not.toHaveBeenCalled();
+        expect(visualizationController.executeCommand).toHaveBeenCalledWith({
+            action: 'update',
+            id: 'existing-results',
+            data: {
+                elements: [
+                    expect.objectContaining({ id: 'mistake', labels: ['Mistake (Practice)'] }),
+                    expect.objectContaining({ id: 'adherence', labels: ['EXPERT_ADHERENCE'] }),
+                    expect.objectContaining({ id: 'recovery', labels: ['RECOVERY'] }),
+                    expect.objectContaining({ id: 'future', labels: ['FUTURE_LABEL'] }),
+                ],
+            },
+        });
+        expect((result.output as any)).toMatchObject({
+            chart_id: 'existing-results',
+            total_result_count: 4,
+        });
     });
 
     it('does not execute an unregistered next request while advancing the current step', async () => {

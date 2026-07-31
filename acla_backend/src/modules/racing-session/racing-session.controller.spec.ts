@@ -79,6 +79,17 @@ describe('RacingSessionController', () => {
         start_index: 0,
         end_index: 1,
       }],
+      expert_reference_data: [{
+        raw_index: 4,
+        expert_time_difference: 12,
+        expert_optimal_player_pos_x: 100,
+        expert_optimal_player_pos_y: 200,
+        expert_optimal_player_pos_z: 300,
+        Graphics_normalized_car_position: 0.4,
+        expert_optimal_throttle: 0.8,
+        expert_optimal_brake: 0.1,
+        expert_optimal_gear: 4,
+      }],
     });
 
     await expect(
@@ -97,6 +108,17 @@ describe('RacingSessionController', () => {
         track_section: 'brands_hatch2',
         start_index: 0,
         end_index: 1,
+      }],
+      expert_reference_data: [{
+        raw_index: 4,
+        expert_time_difference: 12,
+        expert_optimal_player_pos_x: 100,
+        expert_optimal_player_pos_y: 200,
+        expert_optimal_player_pos_z: 300,
+        Graphics_normalized_car_position: 0.4,
+        expert_optimal_throttle: 0.8,
+        expert_optimal_brake: 0.1,
+        expert_optimal_gear: 4,
       }],
     });
 
@@ -117,6 +139,17 @@ describe('RacingSessionController', () => {
       parent_segment_count: 0,
       segments: [],
       expert_time_available: false,
+      expert_reference_data: [{
+        raw_index: 1,
+        expert_time_difference: 8,
+        expert_optimal_player_pos_x: 110,
+        expert_optimal_player_pos_y: 210,
+        expert_optimal_player_pos_z: 310,
+        Graphics_normalized_car_position: 0.5,
+        expert_optimal_throttle: 0.9,
+        expert_optimal_brake: 0,
+        expert_optimal_gear: 5,
+      }],
     });
 
     await expect(
@@ -136,6 +169,17 @@ describe('RacingSessionController', () => {
       parent_segment_count: 0,
       segments: [],
       expert_time_available: false,
+      expert_reference_data: [{
+        raw_index: 1,
+        expert_time_difference: 8,
+        expert_optimal_player_pos_x: 110,
+        expert_optimal_player_pos_y: 210,
+        expert_optimal_player_pos_z: 310,
+        Graphics_normalized_car_position: 0.5,
+        expert_optimal_throttle: 0.9,
+        expert_optimal_brake: 0,
+        expert_optimal_gear: 5,
+      }],
     });
 
     expect(aiServiceClient.analyzeLiveRecordedAnalysis).toHaveBeenCalledWith({

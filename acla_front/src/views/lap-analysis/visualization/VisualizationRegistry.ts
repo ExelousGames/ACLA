@@ -2,8 +2,14 @@ import { ComponentType } from 'react';
 import TelemetryOverview from './charts/TelemetryOverview';
 import MapVisualization from './charts/MapVisualization';
 import ImitationGuidanceChart from './charts/ImitationGuidanceChart';
-import ExpertActionsChart from './charts/ExpertActionsChart';
 import EventLogChart from './charts/EventLogChart';
+import AnalysisResultsChart from './charts/AnalysisResultsChart';
+import {
+    appendAnalysisResultElement,
+    normalizeAnalysisResultsData,
+    removeAnalysisResultElement,
+    updateAnalysisResultElement,
+} from './charts/analysisResultsModel';
 
 export interface VisualizationProps {
     id: string;
@@ -20,11 +26,24 @@ export interface VisualizationAssistantControl {
     params?: Record<string, string>;
 }
 
+export interface VisualizationControlFactoryContext {
+    getData: () => any;
+    replaceData: (data: any) => boolean;
+}
+
+export type VisualizationControlHandler = (
+    args?: Record<string, any>,
+) => unknown | Promise<unknown>;
+
 export interface VisualizationComponent {
     component: ComponentType<VisualizationProps>;
     name: string;
     description: string;
     assistantControls?: VisualizationAssistantControl[];
+    createAssistantControlHandlers?: (
+        context: VisualizationControlFactoryContext,
+    ) => Record<string, VisualizationControlHandler>;
+    normalizeData?: (data: unknown) => any;
     defaultConfig?: any;
     minWidth?: number;
     minHeight?: number;
@@ -98,16 +117,6 @@ export const initializeVisualizations = () => {
         preferredAspectRatio: 3 / 4
     });
 
-    visualizationRegistry.register('expert-actions-chart', {
-        component: ExpertActionsChart,
-        name: 'Expert Actions Chart',
-        description: 'Shows predicted expert actions across the lap using imitation learning models',
-        defaultConfig: {},
-        minWidth: 380,
-        minHeight: 420,
-        preferredAspectRatio: 4 / 5
-    });
-
     visualizationRegistry.register('event-log', {
         component: EventLogChart,
         name: 'Event Log',
@@ -116,6 +125,54 @@ export const initializeVisualizations = () => {
         minWidth: 360,
         minHeight: 260,
         preferredAspectRatio: 4 / 3
+    });
+
+    visualizationRegistry.register('analysis-results', {
+        component: AnalysisResultsChart,
+        name: 'Analysis Results',
+        description: 'Scrollable list of generic labeled analysis elements and their contextual fields',
+        assistantControls: [
+            {
+                name: 'append_element',
+                description: 'Normalize and append one labeled element, generating its ID when omitted.',
+                requiresOpenChart: true,
+                params: { element: 'Generic labeled element object.' },
+            },
+            {
+                name: 'update_element',
+                description: 'Update labels or contextual fields on an element without changing its ID.',
+                requiresOpenChart: true,
+                params: { id: 'Existing element ID.', changes: 'Fields to update.' },
+            },
+            {
+                name: 'remove_element',
+                description: 'Remove an element by ID.',
+                requiresOpenChart: true,
+                params: { id: 'Existing element ID.' },
+            },
+        ],
+        createAssistantControlHandlers: ({ getData, replaceData }) => ({
+            append_element: (args = {}) => {
+                const mutation = appendAnalysisResultElement(getData(), args.element);
+                if (mutation.result.success) replaceData(mutation.data);
+                return mutation.result;
+            },
+            update_element: (args = {}) => {
+                const mutation = updateAnalysisResultElement(getData(), args.id, args.changes);
+                if (mutation.result.success) replaceData(mutation.data);
+                return mutation.result;
+            },
+            remove_element: (args = {}) => {
+                const mutation = removeAnalysisResultElement(getData(), args.id);
+                if (mutation.result.success) replaceData(mutation.data);
+                return mutation.result;
+            },
+        }),
+        normalizeData: normalizeAnalysisResultsData,
+        defaultConfig: {},
+        minWidth: 320,
+        minHeight: 260,
+        preferredAspectRatio: 4 / 3,
     });
 };
 

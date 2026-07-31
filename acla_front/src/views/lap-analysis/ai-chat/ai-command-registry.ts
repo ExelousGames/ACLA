@@ -14,6 +14,7 @@ import {
     getSegmentLabelIds,
     SegmentClassificationSegment,
 } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
+import type { AnalysisResultElement } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
 import {
     DEFAULT_ANALYST_COOLDOWN_MS,
     DEFAULT_ANALYST_MIN_DISTANCE,
@@ -468,7 +469,7 @@ const getAiLabelText = (
     context: AiCommandRegistryContext,
 ): string | null => {
     if (!labelId) return null;
-    return context.getLabelName?.(labelId) || null;
+    return context.getLabelName?.(labelId) || labelId;
 };
 
 const summarizeRecordedSegment = (
@@ -519,6 +520,50 @@ const summarizeLiveRecordedSegment = (
         .filter((label): label is string => Boolean(label)),
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
 });
+
+const buildLiveAnalysisResultElements = (
+    result: SegmentClassificationResult,
+    baselineRecord: BaselineLapRecord,
+    context: AiCommandRegistryContext,
+): AnalysisResultElement[] => {
+    const usedIds = new Set<string>();
+    return (Array.isArray(result.segments) ? result.segments : []).map((segment, index) => {
+        const requestedId = typeof segment.id === 'string' && segment.id.trim()
+            ? segment.id.trim()
+            : `${result.session_id || baselineRecord.id}:segment:${index}`;
+        const id = usedIds.has(requestedId) ? `${requestedId}:${index}` : requestedId;
+        usedIds.add(id);
+
+        const start = getBaselineRecordPosition(baselineRecord.records, segment.start_index);
+        const end = getBaselineRecordPosition(baselineRecord.records, segment.end_index);
+        const section = getAiLabelText(segment.track_section, context);
+        const labels = getSegmentLabelIds(segment).map((labelId) => (
+            getAiLabelText(labelId, context) || labelId
+        ));
+        const timeGap = segment.time_gap
+            ? {
+                startMs: segment.time_gap.start_ms,
+                endMs: segment.time_gap.end_ms,
+                deltaMs: segment.time_gap.delta_ms,
+            }
+            : undefined;
+
+        return {
+            id,
+            labels,
+            ...(section ? { section } : {}),
+            ...(start !== null && end !== null
+                ? { normalizedPositionRange: { start, end } }
+                : {}),
+            ...(timeGap ? { timeGap } : {}),
+            metadata: {
+                source: 'live_classifier',
+                start_index: segment.start_index,
+                end_index: segment.end_index,
+            },
+        };
+    });
+};
 
 const buildRecordedAnalysisToolResult = (
     state: RecordedAiAnalysisState | null | undefined,
@@ -648,7 +693,12 @@ const runRecordedAnalysisForLiveRequest = async (
     args: Record<string, any> = {},
     baselineRecordOverride?: BaselineLapRecord | null,
 ): Promise<
-    | { status: 'ready'; analysis: ReturnType<typeof buildLiveRecordedAnalysisToolResult> }
+    | {
+        status: 'ready';
+        analysis: ReturnType<typeof buildLiveRecordedAnalysisToolResult>;
+        result: SegmentClassificationResult;
+        baselineRecord: BaselineLapRecord;
+    }
     | { status: 'error'; error: LiveAnalystRecordedAnalysisError; message: string }
 > => {
     const baselineRecord = baselineRecordOverride ?? context.getBaselineLapRecord?.() ?? null;
@@ -671,6 +721,8 @@ const runRecordedAnalysisForLiveRequest = async (
         return {
             status: 'ready',
             analysis: buildLiveRecordedAnalysisToolResult(result, baselineRecord, context, { limit: 8, ...args }),
+            result,
+            baselineRecord,
         };
     } catch (error: any) {
         return {
@@ -1410,7 +1462,33 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
 
         const agent = getLiveAnalystState(context);
         agent.analysisSessionId = analysisStatus.analysis.baseline.id;
-        return analysisStatus.analysis;
+        const elements = buildLiveAnalysisResultElements(
+            analysisStatus.result,
+            analysisStatus.baselineRecord,
+            context,
+        );
+        const existingChart = (visualizationController.getCurrentInstances?.() ?? [])
+            .find((instance) => instance.type === 'analysis-results');
+        let chartId = existingChart?.id;
+        if (existingChart) {
+            visualizationController.executeCommand({
+                action: 'update',
+                id: existingChart.id,
+                data: { elements },
+            });
+        } else {
+            const opened = visualizationController.openVisualization(
+                'analysis-results',
+                { elements },
+            );
+            chartId = opened?.chartId;
+        }
+
+        return {
+            ...analysisStatus.analysis,
+            chartId: chartId ?? null,
+            totalResultCount: elements.length,
+        };
     },
 
     async set_procedure_plan(args) {
@@ -1859,6 +1937,8 @@ const buildToolAiOutput = (
             output.samples_analyzed = uiOutput.analysis?.samples_analyzed ?? 0;
             output.expert_time_available = uiOutput.analysis?.expert_time_available ?? null;
             output.segments = summarizeLiveRecordedSegmentsForAi(uiOutput.analysis?.segments);
+            output.chart_id = uiOutput.chartId ?? null;
+            output.total_result_count = uiOutput.totalResultCount ?? 0;
             break;
         case '_get_live_section_telemetry':
             output.section = uiOutput.section

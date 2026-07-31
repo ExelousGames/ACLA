@@ -1,4 +1,8 @@
-import { visualizationRegistry, VisualizationInstance } from './VisualizationRegistry';
+import {
+    visualizationRegistry,
+    VisualizationInstance,
+    VisualizationControlHandler,
+} from './VisualizationRegistry';
 
 export interface VisualizationCommand {
     action: 'add' | 'remove' | 'update' | 'clear';
@@ -23,8 +27,6 @@ export interface VisualizationControlResult {
     chartType?: string;
     control?: string;
 }
-
-type VisualizationControlHandler = (args?: Record<string, any>) => unknown | Promise<unknown>;
 
 interface RegisteredInstanceControls {
     type: string;
@@ -53,11 +55,37 @@ export class VisualizationController {
 
     setCurrentInstances(instances: VisualizationInstance[]) {
         this.currentInstances = [...instances];
+        const activeIds = new Set(instances.map(instance => instance.id));
+        Array.from(this.instanceControls.keys()).forEach((instanceId) => {
+            if (!activeIds.has(instanceId)) this.instanceControls.delete(instanceId);
+        });
+        instances.forEach(instance => this.ensureInstanceControls(instance));
     }
 
     private notifyUpdate(instances: VisualizationInstance[]) {
         this.currentInstances = instances;
+        instances.forEach(instance => this.ensureInstanceControls(instance));
         this.updateCallback?.(instances);
+    }
+
+    private ensureInstanceControls(instance: VisualizationInstance): RegisteredInstanceControls | undefined {
+        const existing = this.instanceControls.get(instance.id);
+        if (existing) return existing;
+
+        const component = visualizationRegistry.getComponent(instance.type);
+        if (!component?.createAssistantControlHandlers) return undefined;
+
+        const handlers = component.createAssistantControlHandlers({
+            getData: () => this.currentInstances.find(item => item.id === instance.id)?.data,
+            replaceData: (data) => this.updateVisualization(instance.id, data),
+        });
+        const registration: RegisteredInstanceControls = {
+            type: instance.type,
+            controls: component.assistantControls ?? [],
+            handlers: new Map(Object.entries(handlers)),
+        };
+        this.instanceControls.set(instance.id, registration);
+        return registration;
     }
 
     private createVisualizationId(type: string): string {
@@ -107,7 +135,7 @@ export class VisualizationController {
         const newVisualization: VisualizationInstance = {
             id: this.createVisualizationId(type),
             type,
-            data,
+            data: component.normalizeData ? component.normalizeData(data) : data,
             config: { ...component.defaultConfig, ...config },
             position: { x: 0, y: 0, width: '100%', height: 300 }
         };
@@ -127,15 +155,19 @@ export class VisualizationController {
         }
 
         this.notifyUpdate(updatedInstances);
+        this.unregisterInstanceControls(id);
         return true;
     }
 
     private updateVisualization(id: string, data?: any, config?: any): boolean {
         const updatedInstances = this.currentInstances.map(v => {
             if (v.id === id) {
+                const component = visualizationRegistry.getComponent(v.type);
                 return {
                     ...v,
-                    data: data !== undefined ? data : v.data,
+                    data: data !== undefined
+                        ? component?.normalizeData?.(data) ?? data
+                        : v.data,
                     config: config !== undefined ? { ...v.config, ...config } : v.config
                 };
             }
@@ -266,7 +298,8 @@ export class VisualizationController {
             };
         }
 
-        const registration = this.instanceControls.get(targetInstance.id);
+        const registration = this.instanceControls.get(targetInstance.id)
+            ?? this.ensureInstanceControls(targetInstance);
         const handler = registration?.handlers.get(control);
         if (!handler) {
             return {
@@ -282,6 +315,25 @@ export class VisualizationController {
         }
 
         const result = await handler(args);
+        if (result && typeof result === 'object' && 'success' in result) {
+            const controlResult = result as {
+                success: boolean;
+                message?: string;
+                data?: any;
+            };
+            return {
+                success: controlResult.success,
+                message: controlResult.message || (
+                    controlResult.success
+                        ? `Executed '${control}' on chart '${targetInstance.id}'.`
+                        : `Unable to execute '${control}' on chart '${targetInstance.id}'.`
+                ),
+                chartId: targetInstance.id,
+                chartType: targetInstance.type,
+                control,
+                data: controlResult.data,
+            };
+        }
         return {
             success: true,
             message: `Executed '${control}' on chart '${targetInstance.id}'.`,
@@ -325,10 +377,6 @@ export class VisualizationController {
     // Utility methods for external use
     addTelemetryOverview(data?: any) {
         return this.executeCommand({ action: 'add', type: 'telemetry-overview', data });
-    }
-
-    addExpertActionsChart(data?: any) {
-        return this.executeCommand({ action: 'add', type: 'expert-actions-chart', data });
     }
 
     getAvailableTypes(): string[] {
