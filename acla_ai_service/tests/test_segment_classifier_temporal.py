@@ -247,13 +247,40 @@ async def test_training_runs_all_epochs_and_restores_best_state(monkeypatch, cap
     assert "segment_overlap=" not in report
 
 
-def test_threshold_merge_uses_exact_adjacent_rows():
+def test_threshold_merge_expands_boundaries_and_merges_only_overlapping_runs():
     runs = list(SegmentClassifierService._merge_score_runs(
-        [0.2, 0.5, 0.8, 0.49, 0.7],
+        [0.2, 0.5, 0.8, 0.49, 0.7, 0.2, 0.1, 0.6, 0.8, 0.2],
         0.5,
     ))
 
-    assert runs == [(1, 3, 0.65), (4, 5, 0.7)]
+    assert [(start, end) for start, end, _ in runs] == [(0, 6), (6, 10)]
+    assert [score for _, _, score in runs] == pytest.approx([
+        (0.5 + 0.8 + 0.7) / 3,
+        0.7,
+    ])
+
+
+def test_threshold_merge_bounds_expansion_at_sequence_ends():
+    runs = list(SegmentClassifierService._merge_score_runs(
+        [0.7, 0.2, 0.1, 0.8],
+        0.5,
+    ))
+
+    assert [(start, end) for start, end, _ in runs] == [(0, 2), (2, 4)]
+    assert [score for _, _, score in runs] == pytest.approx([0.7, 0.8])
+
+
+def test_threshold_merge_uses_the_active_custom_threshold_and_requires_a_core():
+    runs = list(SegmentClassifierService._merge_score_runs(
+        [0.7, 0.8, 0.79],
+        0.8,
+    ))
+    assert [(start, end) for start, end, _ in runs] == [(0, 3)]
+    assert [score for _, _, score in runs] == pytest.approx([0.8])
+    assert list(SegmentClassifierService._merge_score_runs(
+        [0.49, 0.1, 0.2],
+        0.5,
+    )) == []
 
 
 def test_detection_allows_overlap_and_reruns_behavior_crop_for_children():
@@ -274,19 +301,29 @@ def test_detection_allows_overlap_and_reruns_behavior_crop_for_children():
         return pd.DataFrame({
             "MSP": [0.9] * len(dataframe),
             "EA": [0.1] * len(dataframe),
-            "MSP1": [0.1, 0.7, 0.8, 0.1],
+            "MSP1": [0.1, 0.1, 0.7, 0.8, 0.1, 0.1],
         })
 
     service.score_sequence = score_sequence
     detections = service.detect_segments(pd.DataFrame(_rows(0, 8)))
 
-    assert call_lengths == [8, 4]
+    assert call_lengths == [8, 6]
     assert [(item.label, item.start_index, item.end_index) for item in detections] == [
-        ("MSP", 1, 5),
-        ("EA", 3, 7),
+        ("MSP", 0, 6),
+        ("EA", 2, 8),
     ]
+    assert detections[0].score == pytest.approx(0.825)
+    assert detections[0].telemetry_data == _rows(0, 6)
+    assert detections[1].score == pytest.approx(0.8)
+    assert detections[1].telemetry_data == _rows(2, 8)
+    assert detections[1].subsegments == []
+
     child = detections[0].subsegments[0]
-    assert (child.label, child.start_index, child.end_index) == ("MSP1", 2, 4)
+    assert (child.label, child.start_index, child.end_index) == ("MSP1", 1, 5)
+    assert child.score == pytest.approx(0.75)
+    assert child.telemetry_data == _rows(1, 5)
+    assert detections[0].start_index <= child.start_index
+    assert child.end_index <= detections[0].end_index
     assert detections[0].to_dict()["subsegments"][0]["label"] == "MSP1"
 
 

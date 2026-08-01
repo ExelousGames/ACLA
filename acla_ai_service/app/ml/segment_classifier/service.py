@@ -503,20 +503,40 @@ class SegmentClassifierService:
 
     @staticmethod
     def _merge_score_runs(scores: Sequence[float], threshold: float):
-        start = None
-        values: list[float] = []
-        for index, raw_score in enumerate(scores):
-            score = float(raw_score)
-            if score >= threshold:
-                if start is None:
-                    start = index
-                values.append(score)
-            elif start is not None:
-                yield start, index, float(np.mean(values))
-                start = None
-                values = []
-        if start is not None:
-            yield start, len(scores), float(np.mean(values))
+        sequence_length = len(scores)
+        core_start = None
+        core_values: list[float] = []
+        merged_start = None
+        merged_end = None
+        merged_values: list[float] = []
+
+        for index in range(sequence_length + 1):
+            score = float(scores[index]) if index < sequence_length else None
+            if score is not None and score >= threshold:
+                if core_start is None:
+                    core_start = index
+                core_values.append(score)
+                continue
+            if core_start is None:
+                continue
+
+            expanded_start = max(0, core_start - 1)
+            expanded_end = min(sequence_length, index + 1)
+            if merged_start is not None and expanded_start < merged_end:
+                merged_end = max(merged_end, expanded_end)
+                merged_values.extend(core_values)
+            else:
+                if merged_start is not None:
+                    yield merged_start, merged_end, float(np.mean(merged_values))
+                merged_start = expanded_start
+                merged_end = expanded_end
+                merged_values = list(core_values)
+
+            core_start = None
+            core_values = []
+
+        if merged_start is not None:
+            yield merged_start, merged_end, float(np.mean(merged_values))
 
     def detect_segments(
         self,
