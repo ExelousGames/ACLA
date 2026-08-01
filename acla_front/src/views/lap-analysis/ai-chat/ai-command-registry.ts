@@ -521,13 +521,40 @@ const summarizeLiveRecordedSegment = (
     ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
 });
 
+const MISTAKE_PARENT_LABEL_IDS = ['MSP', 'MSR'] as const;
+
+const shouldDisplayLiveAnalysisSegment = (
+    segment: SegmentClassificationSegment,
+    context: AiCommandRegistryContext,
+): boolean => {
+    const labelIds = getSegmentLabelIds(segment);
+    const mistakeParentIds = MISTAKE_PARENT_LABEL_IDS.filter((parentId) => (
+        labelIds.includes(parentId)
+    ));
+
+    return mistakeParentIds.every((parentId) => {
+        const taxonomyChildren = context.getCategoryLabels?.(parentId) ?? [];
+        if (taxonomyChildren.length > 0) {
+            const childIds = new Set(taxonomyChildren);
+            return labelIds.some((labelId) => childIds.has(labelId));
+        }
+
+        const parentIndex = labelIds.indexOf(parentId);
+        return parentIndex >= 0 && parentIndex < labelIds.length - 1;
+    });
+};
+
 const buildLiveAnalysisResultElements = (
     result: SegmentClassificationResult,
     baselineRecord: BaselineLapRecord,
     context: AiCommandRegistryContext,
 ): AnalysisResultElement[] => {
     const usedIds = new Set<string>();
-    return (Array.isArray(result.segments) ? result.segments : []).map((segment, index) => {
+    const visibleSegments = (Array.isArray(result.segments) ? result.segments : [])
+        .map((segment, index) => ({ segment, index }))
+        .filter(({ segment }) => shouldDisplayLiveAnalysisSegment(segment, context));
+
+    return visibleSegments.map(({ segment, index }) => {
         const requestedId = typeof segment.id === 'string' && segment.id.trim()
             ? segment.id.trim()
             : `${result.session_id || baselineRecord.id}:segment:${index}`;

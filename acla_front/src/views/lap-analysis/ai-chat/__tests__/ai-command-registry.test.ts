@@ -36,6 +36,8 @@ const labelNames: Record<string, string> = {
     brands_hatch2: 'Druids',
     MSP: 'Mistake (Practice)',
     MSP1: 'Initiate brake too late',
+    MSR: 'Mistake (Racing)',
+    MSR1: 'Failed overtake attempt',
     monza: 'Monza',
     monza1: 'Rettifilo',
 };
@@ -45,6 +47,8 @@ const getUiOutput = (result: ToolOutputEnvelope) => getToolEnvelopeUiOutput(resu
 const categories: Record<string, string[]> = {
     brands_hatch: ['brands_hatch1', 'brands_hatch2'],
     monza: ['monza1'],
+    MSP: ['MSP1'],
+    MSR: ['MSR1'],
 };
 
 beforeEach(() => {
@@ -1520,7 +1524,7 @@ describe('ai command registry live performance analyst tools', () => {
         });
     });
 
-    it('returns immediately until a recorded baseline lap is cached, then runs live recorded analysis', async () => {
+    it('waits for a baseline, then opens filtered analysis results with fallback label order', async () => {
         (visualizationController.openVisualization as jest.Mock).mockReturnValue({
             success: true,
             chartId: 'analysis-results-chart',
@@ -1531,13 +1535,27 @@ describe('ai command registry live performance analyst tools', () => {
                 status: 'success',
                 session_id: 'live-baseline',
                 samples_analyzed: 2,
-                parent_segment_count: 1,
+                parent_segment_count: 3,
                 segments: [
+                    {
+                        id: 'parent-only-practice',
+                        start_index: 0,
+                        end_index: 1,
+                        labels: ['MSP'],
+                        track_section: 'brands_hatch2',
+                    },
+                    {
+                        id: 'parent-only-racing',
+                        start_index: 0,
+                        end_index: 1,
+                        labels: ['MSR'],
+                        track_section: 'brands_hatch2',
+                    },
                     {
                         id: 'live-segment-1',
                         start_index: 0,
                         end_index: 1,
-                        labels: ['MSP'],
+                        labels: ['MSP', 'FALLBACK_CHILD'],
                         track_section: 'brands_hatch2',
                     },
                 ],
@@ -1563,6 +1581,7 @@ describe('ai command registry live performance analyst tools', () => {
         const { registry } = createLiveAnalystRegistry({
             getBaselineCollectionTag: () => currentTag,
             getBaselineLapRecord: () => cachedRecord,
+            getCategoryLabels: undefined,
         });
 
         const missingResult = await registry.analyze_live_recorded_analysis(
@@ -1613,8 +1632,17 @@ describe('ai command registry live performance analyst tools', () => {
                 samples_analyzed: 2,
                 segments: [
                     expect.objectContaining({
-                        track_section: 'Druids',
+                        id: 'parent-only-practice',
                         labels: ['Mistake (Practice)'],
+                    }),
+                    expect.objectContaining({
+                        id: 'parent-only-racing',
+                        labels: ['Mistake (Racing)'],
+                    }),
+                    expect.objectContaining({
+                        id: 'live-segment-1',
+                        track_section: 'Druids',
+                        labels: ['Mistake (Practice)', 'FALLBACK_CHILD'],
                         start_position: 0.01,
                         end_position: 0.99,
                     }),
@@ -1632,14 +1660,14 @@ describe('ai command registry live performance analyst tools', () => {
             {
                 elements: [expect.objectContaining({
                     id: 'live-segment-1',
-                    labels: ['Mistake (Practice)'],
+                    labels: ['Mistake (Practice)', 'FALLBACK_CHILD'],
                     section: 'Druids',
                 })],
             },
         );
     });
 
-    it('replaces an open analysis-results chart with every classifier segment and arbitrary label', async () => {
+    it('filters parent-only mistakes with taxonomy when updating analysis results', async () => {
         (visualizationController.getCurrentInstances as jest.Mock).mockReturnValueOnce([{
             id: 'existing-results',
             type: 'analysis-results',
@@ -1651,7 +1679,11 @@ describe('ai command registry live performance analyst tools', () => {
                 session_id: 'live-baseline',
                 samples_analyzed: 3,
                 segments: [
-                    { id: 'mistake', start_index: 0, end_index: 1, labels: ['MSP'] },
+                    { id: 'parent-only-practice', start_index: 0, end_index: 1, labels: ['MSP'] },
+                    { id: 'parent-only-racing', start_index: 0, end_index: 1, labels: ['MSR'] },
+                    { id: 'practice', start_index: 0, end_index: 1, labels: ['MSP', 'MSP1'] },
+                    { id: 'racing', start_index: 0, end_index: 1, labels: ['MSR', 'MSR1'] },
+                    { id: 'wrong-child', start_index: 0, end_index: 1, labels: ['MSP', 'MSR1'] },
                     { id: 'adherence', start_index: 0, end_index: 1, labels: ['EXPERT_ADHERENCE'] },
                     { id: 'recovery', start_index: 1, end_index: 2, labels: ['RECOVERY'] },
                     { id: 'future', start_index: 1, end_index: 2, labels: ['FUTURE_LABEL'] },
@@ -1668,8 +1700,8 @@ describe('ai command registry live performance analyst tools', () => {
 
         expect(uiOutput).toMatchObject({
             chartId: 'existing-results',
-            totalResultCount: 4,
-            analysis: { segments: [expect.objectContaining({ id: 'mistake' })] },
+            totalResultCount: 5,
+            analysis: { segments: [expect.objectContaining({ id: 'parent-only-practice' })] },
         });
         expect(visualizationController.openVisualization).not.toHaveBeenCalled();
         expect(visualizationController.executeCommand).toHaveBeenCalledWith({
@@ -1677,7 +1709,14 @@ describe('ai command registry live performance analyst tools', () => {
             id: 'existing-results',
             data: {
                 elements: [
-                    expect.objectContaining({ id: 'mistake', labels: ['Mistake (Practice)'] }),
+                    expect.objectContaining({
+                        id: 'practice',
+                        labels: ['Mistake (Practice)', 'Initiate brake too late'],
+                    }),
+                    expect.objectContaining({
+                        id: 'racing',
+                        labels: ['Mistake (Racing)', 'Failed overtake attempt'],
+                    }),
                     expect.objectContaining({ id: 'adherence', labels: ['EXPERT_ADHERENCE'] }),
                     expect.objectContaining({ id: 'recovery', labels: ['RECOVERY'] }),
                     expect.objectContaining({ id: 'future', labels: ['FUTURE_LABEL'] }),
@@ -1686,7 +1725,7 @@ describe('ai command registry live performance analyst tools', () => {
         });
         expect((result.output as any)).toMatchObject({
             chart_id: 'existing-results',
-            total_result_count: 4,
+            total_result_count: 5,
         });
     });
 

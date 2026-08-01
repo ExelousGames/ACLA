@@ -13,9 +13,54 @@
     flex-shrink: 0;
 }
 
+.summaryText {
+    flex: 1 1 140px;
+    min-width: 0;
+}
+
 .count {
     color: var(--lp-green);
     font-family: var(--lp-mono);
+    white-space: nowrap;
+}
+
+.sortControl {
+    min-width: 0;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.sortSelect {
+    width: clamp(132px, 16vw, 166px);
+    min-width: 0;
+    max-width: 100%;
+    padding: 4px 24px 4px 8px;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius-pill);
+    background: rgba(22, 22, 40, 0.6);
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.sortSelect:hover,
+.sortSelect:focus-visible {
+    border-color: var(--lp-green);
+    outline: none;
+}
+
+.sortSelect option {
+    background: var(--lp-bg-panel);
+    color: var(--lp-white);
+}
+
+.sortSelect option {
+    background: var(--lp-bg-panel);
+    color: var(--lp-white);
 }
 
 .list {
