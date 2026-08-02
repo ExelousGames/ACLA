@@ -132,19 +132,16 @@ def _classify_telemetry_segments(
     raw_segments = []
 
     for segment in predicted_segments:
+        labels = list(dict.fromkeys([
+            segment.label,
+            *(child.label for child in segment.subsegments),
+        ]))
         raw_segments.append({
             "id": segment.id,
-            "labels": [segment.label],
+            "labels": labels,
             "start_index": segment.start_index,
             "end_index": segment.end_index,
         })
-        for child in segment.subsegments:
-            raw_segments.append({
-                "id": child.id,
-                "labels": [segment.label, child.label],
-                "start_index": child.start_index,
-                "end_index": child.end_index,
-            })
 
     return build_track_area_segments(
         raw_segments,
