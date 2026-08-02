@@ -52,7 +52,7 @@ const selectSortMode = (value: string): void => {
 };
 
 const selectMainLabel = (value: string): void => {
-    fireEvent.change(screen.getByRole('combobox', { name: 'Main label' }), { target: { value } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Showing' }), { target: { value } });
 };
 
 describe('AnalysisResultsChart', () => {
@@ -108,7 +108,7 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        const mainLabelSelect = screen.getByRole('combobox', { name: 'Main label' });
+        const mainLabelSelect = screen.getByRole('combobox', { name: 'Showing' });
         expect(mainLabelSelect).toHaveValue('MSP');
         expect(within(mainLabelSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
             'Training Mistake',
@@ -162,9 +162,40 @@ describe('AnalysisResultsChart', () => {
                 value: (option as HTMLOptionElement).value,
             }))).toEqual([
             { label: 'Original order', value: 'original' },
-            { label: 'Most frequent sub labels', value: 'most-frequent-sub-label' },
+            { label: 'Most common training mistake', value: 'most-frequent-sub-label' },
             { label: 'Most time lost', value: 'most-time-lost' },
         ]);
+    });
+
+    it('uses category-specific sort wording without changing the selected sort value', () => {
+        render(
+            <AnalysisResultsChart
+                id="dynamic-sort-name"
+                data={{
+                    elements: [
+                        { id: 'practice', labels: ['MSP', 'MSP1'] },
+                        { id: 'racing', labels: ['MSR', 'MSR1'] },
+                    ],
+                }}
+            />,
+        );
+
+        const sortSelect = screen.getByRole('combobox', { name: 'Sort by' });
+        selectSortMode('most-frequent-sub-label');
+
+        expect(sortSelect).toHaveValue('most-frequent-sub-label');
+        expect(within(sortSelect).getByRole('option', { selected: true })).toHaveTextContent(
+            'Most common training mistake',
+        );
+
+        selectMainLabel('MSR');
+
+        expect(sortSelect).toHaveValue('most-frequent-sub-label');
+        expect(within(sortSelect).getByRole('option', { selected: true })).toHaveTextContent(
+            'Most common racing mistake',
+        );
+        expect(within(sortSelect).getAllByRole('option').map((option) => option.textContent))
+            .not.toEqual(expect.arrayContaining([expect.stringMatching(/label/i)]));
     });
 
     it('numbers visible results in display order when IDs are hidden', () => {
@@ -324,7 +355,7 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(screen.getByRole('combobox', { name: 'Main label' })).toHaveValue('MSR');
+        expect(screen.getByRole('combobox', { name: 'Showing' })).toHaveValue('MSR');
         expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveValue('most-frequent-sub-label');
         expect(renderedResultIds()).toEqual(['two', 'three', 'one']);
         expect(screen.getByText('3 of 4 total')).toBeInTheDocument();

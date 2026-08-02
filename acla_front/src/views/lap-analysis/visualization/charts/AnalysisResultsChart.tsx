@@ -19,11 +19,22 @@ interface MainLabelFilterOption {
     value: AnalysisResultsMainLabelFilter;
     label: string;
     resolvedLabel: string;
+    sortDisplayName: string;
 }
 
 const MAIN_LABEL_FILTER_OPTIONS: readonly MainLabelFilterOption[] = [
-    { value: 'MSP', label: 'Training Mistake', resolvedLabel: 'Mistake (Practice)' },
-    { value: 'MSR', label: 'Racing Mistake', resolvedLabel: 'Mistake (Racing)' },
+    {
+        value: 'MSP',
+        label: 'Training Mistake',
+        resolvedLabel: 'Mistake (Practice)',
+        sortDisplayName: 'Most common training mistake',
+    },
+    {
+        value: 'MSR',
+        label: 'Racing Mistake',
+        resolvedLabel: 'Mistake (Racing)',
+        sortDisplayName: 'Most common racing mistake',
+    },
 ];
 
 interface AnalysisResultsChartProps extends VisualizationProps {
@@ -258,7 +269,7 @@ const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
                 </Flex>
                 <Flex className={styles.controls} align="center" gap="2" wrap="wrap">
                     <label className={styles.filterControl}>
-                        <Text size="1" color="gray" as="span">Main label</Text>
+                        <Text size="1" color="gray" as="span">Showing</Text>
                         <select
                             className={styles.filterSelect}
                             value={mainLabelFilter}
@@ -279,7 +290,7 @@ const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
                             onChange={(event) => setSortMode(event.target.value as AnalysisResultsSortMode)}
                         >
                             <option value="original">Original order</option>
-                            <option value="most-frequent-sub-label">Most frequent sub labels</option>
+                            <option value="most-frequent-sub-label">{selectedFilter.sortDisplayName}</option>
                             <option value="most-time-lost">Most time lost</option>
                         </select>
                     </label>

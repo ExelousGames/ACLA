@@ -112,6 +112,22 @@ describe('LiveTelemetryWorkspace analysis results', () => {
         expect(screen.getAllByRole('button', { name: 'Remove Analysis Results' })).toHaveLength(1);
     });
 
+    it('filters controller instances that are unsupported in the live workspace', () => {
+        render(<LiveTelemetryWorkspace />);
+        let controllerResult: ReturnType<typeof visualizationController.openVisualization> | undefined;
+
+        act(() => {
+            controllerResult = visualizationController.openVisualization(
+                'imitation-guidance-chart',
+                { label: 'recorded only' },
+            );
+        });
+
+        expect(controllerResult).toEqual(expect.objectContaining({ success: true, chartId: expect.any(String) }));
+        expect(screen.queryByText('AI Driving Guidance')).not.toBeInTheDocument();
+        expect(visualizationController.getCurrentInstances()).toEqual([]);
+    });
+
     it('keeps existing live panel duplicate prevention, ordering, resizing, and removal behavior', async () => {
         class MockPointerEvent extends MouseEvent {
             pointerId: number;
