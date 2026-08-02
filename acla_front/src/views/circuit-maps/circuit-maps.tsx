@@ -5,7 +5,7 @@ import apiService from 'services/api.service';
 import { fetchCircuitMapById, fetchCircuitMapList, normalizeCircuitMap } from 'services/circuitMapService';
 import { ACC_STATUS, ACCMemoeryTracks } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
-import { AnalysisContext } from 'views/lap-analysis/analysis-context';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import {
     CIRCUIT_MAP_CAPTURE_MODES,
     CIRCUIT_MAP_GAMES,
@@ -68,7 +68,7 @@ const getSamplesForMode = (samplesByMode: CircuitMapSamplesByMode, mode: Circuit
 );
 
 const CircuitMaps = () => {
-    const analysisContext = useContext(AnalysisContext);
+    const liveSession = useContext(LiveSessionContext);
     const { refreshCircuitMaps, upsertCachedCircuitMap } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const canvasWrapRef = useRef<HTMLDivElement | null>(null);
@@ -95,14 +95,14 @@ const CircuitMaps = () => {
     const [isSaving, setIsSaving] = useState(false);
 
     const isAcc = game === 'acc';
-    const isAccLive = isAcc && analysisContext.TelemetryDataLiveStatus === ACC_STATUS.ACC_LIVE;
+    const isAccLive = isAcc && liveSession.telemetryStatus === ACC_STATUS.ACC_LIVE;
     const sampleCount = countCircuitMapSamples(samplesByMode);
-    const currentAccTrackKey = getAccTrackKey(analysisContext.liveData, analysisContext.recordedSessioStaticsData);
+    const currentAccTrackKey = getAccTrackKey(liveSession.currentTelemetry, liveSession.staticData);
     const liveCapture = useMemo(() => (
-        isAccLive && analysisContext.liveData && typeof analysisContext.liveData === 'object'
-            ? extractAccCaptureSample(analysisContext.liveData as Record<string, any>, liveSequenceRef.current)
+        isAccLive && liveSession.currentTelemetry && typeof liveSession.currentTelemetry === 'object'
+            ? extractAccCaptureSample(liveSession.currentTelemetry, liveSequenceRef.current)
             : null
-    ), [analysisContext.liveData, isAccLive]);
+    ), [isAccLive, liveSession.currentTelemetry]);
 
     const loadMapList = useCallback(async (nextGame: CircuitMapGame = game) => {
         setListState('loading');

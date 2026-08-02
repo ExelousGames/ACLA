@@ -38,9 +38,9 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
 
-    const liveData = analysisContext.liveData as Record<string, any> | null;
-    const trackName = analysisContext.recordedSessioStaticsData?.track || 'Unknown Track';
-    const carName = analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car';
+    const liveData = (props.data?.telemetry ?? props.data ?? null) as Record<string, any> | null;
+    const trackName = props.config?.trackName || props.data?.trackName || 'Unknown Track';
+    const carName = props.config?.carName || props.data?.carName || 'Unknown Car';
 
     const liveDataRef = useRef(liveData);
     const trackNameRef = useRef(trackName);

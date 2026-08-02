@@ -5,6 +5,11 @@ export type SessionAnalysisAssistantMode = 'front_desk' | 'live' | 'recorded' | 
 export const buildAssistantConversationKey = (sessionMode: string, sessionId?: string | null): string =>
     `${sessionMode}:${sessionId || 'none'}`;
 
+export const resolveAssistantRecordedSessionId = (
+    sessionMode: SessionAnalysisAssistantMode,
+    sessionId?: string | null,
+): string | undefined => sessionMode === 'recorded' && sessionId ? sessionId : undefined;
+
 export const resolveAssistantSessionMode = ({
     assistantModeOverride,
     sessionId,

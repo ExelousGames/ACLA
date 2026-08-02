@@ -107,10 +107,6 @@
     overflow: hidden;
 }
 
-.main-dashboard-content.has-recording-bar .main-dashboard-assistant {
-    padding-bottom: 96px;
-}
-
 .main-dashboard-assistant .ai-chat {
     border-radius: var(--lp-radius-sm);
 }

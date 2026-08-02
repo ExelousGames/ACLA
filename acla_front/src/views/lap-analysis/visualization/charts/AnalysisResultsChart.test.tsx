@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 
 jest.mock('@radix-ui/themes', () => {
     const ReactModule = require('react');
@@ -20,7 +20,7 @@ jest.mock('contexts/AiLabelsContext', () => ({
     useAiLabels: () => ({
         getCategoryLabels: (category: string) => ({
             MSP: ['MSP1', 'MSP2'],
-            MSR: ['MSR1'],
+            MSR: ['MSR1', 'MSR2'],
         }[category] ?? []),
         getLabelName: (labelId: string) => ({
             MSP: 'Mistake (Practice)',
@@ -28,6 +28,7 @@ jest.mock('contexts/AiLabelsContext', () => ({
             MSP2: 'Wheel lock',
             MSR: 'Mistake (Racing)',
             MSR1: 'Failed overtake attempt',
+            MSR2: 'Contact',
         }[labelId]),
     }),
 }));
@@ -41,13 +42,17 @@ import {
 } from './analysisResultsModel';
 
 const renderedResultIds = (): string[] => (
-    screen.getAllByTestId(/^analysis-result-/).map((element) => (
+    screen.queryAllByTestId(/^analysis-result-/).map((element) => (
         element.getAttribute('data-testid')?.replace('analysis-result-', '') ?? ''
     ))
 );
 
 const selectSortMode = (value: string): void => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Sort by' }), { target: { value } });
+};
+
+const selectMainLabel = (value: string): void => {
+    fireEvent.change(screen.getByRole('combobox', { name: 'Main label' }), { target: { value } });
 };
 
 describe('AnalysisResultsChart', () => {
@@ -58,7 +63,7 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [{
                         id: 'future-1',
-                        labels: ['Future category', 'Recovery'],
+                        labels: ['Mistake (Practice)', 'Future category', 'Recovery'],
                         title: 'Generated form result',
                         section: 'Turn 4',
                         normalizedPositionRange: { start: 0.2, end: 0.35 },
@@ -75,7 +80,7 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(screen.getByText('1 total')).toBeInTheDocument();
+        expect(screen.getByText('1 of 1 total')).toBeInTheDocument();
         expect(screen.getByText('Future category')).toBeInTheDocument();
         expect(screen.getByText('Recovery')).toBeInTheDocument();
         expect(screen.getByText('Position: 20.0% – 35.0%')).toBeInTheDocument();
@@ -86,55 +91,133 @@ describe('AnalysisResultsChart', () => {
         expect(screen.queryByText(/end_index|67890/)).not.toBeInTheDocument();
     });
 
-    it('renders an empty state', () => {
-        render(<AnalysisResultsChart id="empty" data={{ elements: [] }} />);
-        expect(screen.getByTestId('analysis-results-empty-state')).toHaveTextContent('No analysis results yet.');
-        expect(screen.getByText('0 total')).toBeInTheDocument();
+    it('defaults to Training Mistake, recognizes parent IDs and names, and has no All option', () => {
+        render(
+            <AnalysisResultsChart
+                id="default-filter"
+                data={{
+                    elements: [
+                        { id: 'practice-id', labels: ['MSP'] },
+                        { id: 'practice-name', labels: ['Mistake (Practice)'] },
+                        { id: 'racing-id', labels: ['MSR'] },
+                        { id: 'racing-name', labels: ['Mistake (Racing)'] },
+                        { id: 'unrelated', labels: ['Telemetry'] },
+                        { id: 'unlabeled', labels: [] },
+                    ],
+                }}
+            />,
+        );
+
+        const mainLabelSelect = screen.getByRole('combobox', { name: 'Main label' });
+        expect(mainLabelSelect).toHaveValue('MSP');
+        expect(within(mainLabelSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
+            'Training Mistake',
+            'Racing Mistake',
+        ]);
+        expect(renderedResultIds()).toEqual(['practice-id', 'practice-name']);
+        expect(screen.getByText('2 of 6 total')).toBeInTheDocument();
+
+        selectMainLabel('MSR');
+
+        expect(renderedResultIds()).toEqual(['racing-id', 'racing-name']);
+        expect(screen.getByText('2 of 6 total')).toBeInTheDocument();
     });
 
-    it('keeps source order by default and exposes all sort modes', () => {
+    it('shows a category-specific empty state when the selected label has no matches', () => {
+        render(
+            <AnalysisResultsChart
+                id="empty"
+                data={{ elements: [{ id: 'practice', labels: ['MSP'] }] }}
+            />,
+        );
+
+        selectMainLabel('MSR');
+
+        expect(renderedResultIds()).toEqual([]);
+        expect(screen.getByTestId('analysis-results-empty-state')).toHaveTextContent(
+            'No Racing Mistake results yet.',
+        );
+        expect(screen.getByText('0 of 1 total')).toBeInTheDocument();
+    });
+
+    it('keeps filtered source order by default and exposes all sort modes', () => {
         render(
             <AnalysisResultsChart
                 id="source-order"
                 data={{
                     elements: [
-                        { id: 'third-fastest', labels: ['Braking', 'Lockup'], timeGap: { deltaMs: 20 } },
-                        { id: 'most-time', labels: ['Line', 'Wide exit'], timeGap: { deltaMs: 80 } },
-                        { id: 'least-time', labels: ['Braking', 'Lockup'], timeGap: { deltaMs: 5 } },
+                        { id: 'third-fastest', labels: ['MSP', 'Lockup'], timeGap: { deltaMs: 20 } },
+                        { id: 'racing', labels: ['MSR', 'Wide exit'], timeGap: { deltaMs: 80 } },
+                        { id: 'least-time', labels: ['Mistake (Practice)', 'Lockup'], timeGap: { deltaMs: 5 } },
                     ],
                 }}
             />,
         );
 
-        expect(renderedResultIds()).toEqual(['third-fastest', 'most-time', 'least-time']);
+        expect(renderedResultIds()).toEqual(['third-fastest', 'least-time']);
         expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveValue('original');
-        expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
-            'Original order',
-            'Most frequent mistake',
-            'Most time lost',
+        expect(within(screen.getByRole('combobox', { name: 'Sort by' }))
+            .getAllByRole('option').map((option) => ({
+                label: option.textContent,
+                value: (option as HTMLOptionElement).value,
+            }))).toEqual([
+            { label: 'Original order', value: 'original' },
+            { label: 'Most frequent sub labels', value: 'most-frequent-sub-label' },
+            { label: 'Most time lost', value: 'most-time-lost' },
         ]);
     });
 
-    it('sorts only recognized MSP and MSR children by per-card frequency with deterministic ties', () => {
+    it('numbers visible results in display order when IDs are hidden', () => {
+        render(
+            <AnalysisResultsChart
+                id="numbered-results"
+                showElementId={false}
+                data={{
+                    elements: [
+                        { id: 'first', labels: ['MSP'], title: 'First result', timeGap: { deltaMs: 5 } },
+                        { id: 'racing', labels: ['MSR'], title: 'Filtered result', timeGap: { deltaMs: 50 } },
+                        { id: 'third', labels: ['MSP'], title: 'Third result', timeGap: { deltaMs: 25 } },
+                    ],
+                }}
+            />,
+        );
+
+        expect(within(screen.getByTestId('analysis-result-first'))
+            .getByLabelText('Analysis result 1')).toHaveTextContent('1');
+        expect(within(screen.getByTestId('analysis-result-third'))
+            .getByLabelText('Analysis result 2')).toHaveTextContent('2');
+        expect(screen.queryByText('first')).not.toBeInTheDocument();
+
+        selectSortMode('most-time-lost');
+
+        expect(renderedResultIds()).toEqual(['third', 'first']);
+        expect(within(screen.getByTestId('analysis-result-third'))
+            .getByLabelText('Analysis result 1')).toHaveTextContent('1');
+        expect(within(screen.getByTestId('analysis-result-first'))
+            .getByLabelText('Analysis result 2')).toHaveTextContent('2');
+    });
+
+    it('sorts only recognized training sub-labels with aliases, deduplication, and deterministic ties', () => {
         render(
             <AnalysisResultsChart
                 id="frequency-order"
                 data={{
                     elements: [
-                        { id: 'ignored', labels: ['MSP', 'Mistake (Racing)', 'Telemetry', 'Telemetry'] },
+                        { id: 'unknown-first', labels: ['MSP', 'Telemetry', 'Telemetry'] },
                         { id: 'wheel-duplicate', labels: ['Mistake (Practice)', 'MSP2', 'Wheel lock', 'MSP2'] },
                         { id: 'wheel-name', labels: ['MSP', 'Wheel lock', 'Telemetry'] },
                         { id: 'late-id', labels: ['MSP', 'MSP1'] },
                         { id: 'late-name', labels: ['Mistake (Practice)', 'Late turn-in'] },
-                        { id: 'multi', labels: ['Telemetry', 'MSP2', 'Late turn-in'] },
+                        { id: 'multi', labels: ['MSP', 'Telemetry', 'MSP2', 'Late turn-in'] },
+                        { id: 'racing-sub-label-only', labels: ['MSP', 'MSR1', 'Failed overtake attempt'] },
                         { id: 'racing-id', labels: ['MSR', 'MSR1'] },
-                        { id: 'racing-name', labels: ['Mistake (Racing)', 'Failed overtake attempt'] },
+                        { id: 'unrelated', labels: ['Telemetry', 'Late turn-in'] },
                     ],
                 }}
             />,
         );
 
-        selectSortMode('most-frequent');
+        selectSortMode('most-frequent-sub-label');
 
         expect(renderedResultIds()).toEqual([
             'late-id',
@@ -142,9 +225,41 @@ describe('AnalysisResultsChart', () => {
             'multi',
             'wheel-duplicate',
             'wheel-name',
-            'racing-id',
-            'racing-name',
-            'ignored',
+            'unknown-first',
+            'racing-sub-label-only',
+        ]);
+        expect(screen.getByText('7 of 9 total')).toBeInTheDocument();
+    });
+
+    it('sorts only recognized racing sub-labels and leaves unranked results in source order', () => {
+        render(
+            <AnalysisResultsChart
+                id="racing-frequency-order"
+                data={{
+                    elements: [
+                        { id: 'unknown-first', labels: ['Mistake (Racing)', 'Unknown racing label'] },
+                        { id: 'failed-id', labels: ['MSR', 'MSR1'] },
+                        { id: 'practice-sub-label-only', labels: ['MSR', 'MSP1', 'Late turn-in'] },
+                        { id: 'failed-name', labels: ['Mistake (Racing)', 'Failed overtake attempt'] },
+                        { id: 'contact-duplicate', labels: ['MSR', 'MSR2', 'Contact', 'MSR2'] },
+                        { id: 'multi', labels: ['MSR', 'MSR2', 'Failed overtake attempt'] },
+                        { id: 'unknown-second', labels: ['MSR', 'Telemetry'] },
+                    ],
+                }}
+            />,
+        );
+
+        selectMainLabel('MSR');
+        selectSortMode('most-frequent-sub-label');
+
+        expect(renderedResultIds()).toEqual([
+            'failed-id',
+            'failed-name',
+            'multi',
+            'contact-duplicate',
+            'unknown-first',
+            'practice-sub-label-only',
+            'unknown-second',
         ]);
     });
 
@@ -154,12 +269,13 @@ describe('AnalysisResultsChart', () => {
                 id="time-order"
                 data={{
                     elements: [
-                        { id: 'missing', labels: ['Missing'] },
-                        { id: 'equal-first', labels: ['Equal first'], timeGap: { deltaMs: 10 } },
-                        { id: 'highest', labels: ['Highest'], timeGap: { deltaMs: 25 } },
-                        { id: 'invalid', labels: ['Invalid'], timeGap: { deltaMs: 'not-a-number' } },
-                        { id: 'equal-second', labels: ['Equal second'], timeGap: { deltaMs: 10 } },
-                        { id: 'negative', labels: ['Negative'], timeGap: { deltaMs: -5 } },
+                        { id: 'missing', labels: ['MSP'] },
+                        { id: 'equal-first', labels: ['MSP'], timeGap: { deltaMs: 10 } },
+                        { id: 'highest', labels: ['Mistake (Practice)'], timeGap: { deltaMs: 25 } },
+                        { id: 'invalid', labels: ['MSP'], timeGap: { deltaMs: 'not-a-number' } },
+                        { id: 'equal-second', labels: ['MSP'], timeGap: { deltaMs: 10 } },
+                        { id: 'negative', labels: ['MSP'], timeGap: { deltaMs: -5 } },
+                        { id: 'racing-highest', labels: ['MSR'], timeGap: { deltaMs: 1000 } },
                     ],
                 }}
             />,
@@ -177,37 +293,41 @@ describe('AnalysisResultsChart', () => {
         ]);
     });
 
-    it('recalculates the selected ranking when visualization data changes', () => {
+    it('retains the selected filter and recalculates sorting when live data changes', () => {
         const { rerender } = render(
             <AnalysisResultsChart
                 id="live-ranking"
                 data={{
                     elements: [
-                        { id: 'one', labels: ['MSP2'] },
-                        { id: 'two', labels: ['MSP1'] },
-                        { id: 'three', labels: ['Late turn-in'] },
+                        { id: 'one', labels: ['MSR', 'Unknown racing mistake'] },
+                        { id: 'two', labels: ['Mistake (Racing)', 'MSR1'] },
+                        { id: 'practice', labels: ['MSP', 'MSP1'] },
                     ],
                 }}
             />,
         );
-        selectSortMode('most-frequent');
-        expect(renderedResultIds()).toEqual(['two', 'three', 'one']);
+        selectMainLabel('MSR');
+        selectSortMode('most-frequent-sub-label');
+        expect(renderedResultIds()).toEqual(['two', 'one']);
 
         rerender(
             <AnalysisResultsChart
                 id="live-ranking"
                 data={{
                     elements: [
-                        { id: 'one', labels: ['MSP2'] },
-                        { id: 'two', labels: ['MSP1'] },
-                        { id: 'three', labels: ['Wheel lock'] },
+                        { id: 'one', labels: ['MSR', 'Unknown racing mistake'] },
+                        { id: 'two', labels: ['Mistake (Racing)', 'MSR1'] },
+                        { id: 'three', labels: ['MSR', 'Failed overtake attempt'] },
+                        { id: 'practice', labels: ['MSP', 'MSP1'] },
                     ],
                 }}
             />,
         );
 
-        expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveValue('most-frequent');
-        expect(renderedResultIds()).toEqual(['one', 'three', 'two']);
+        expect(screen.getByRole('combobox', { name: 'Main label' })).toHaveValue('MSR');
+        expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveValue('most-frequent-sub-label');
+        expect(renderedResultIds()).toEqual(['two', 'three', 'one']);
+        expect(screen.getByText('3 of 4 total')).toBeInTheDocument();
     });
 });
 

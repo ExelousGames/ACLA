@@ -3,8 +3,11 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CircuitMaps from '../circuit-maps';
 import apiService from 'services/api.service';
-import { AnalysisContext, AnalysisContextType } from 'views/lap-analysis/analysis-context';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import { LiveSessionRuntime } from 'views/live-session/live-session-types';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import { RecordingState } from 'views/lap-analysis/recording-state';
+import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 
 const mockRefreshCircuitMaps = jest.fn();
 const mockUpsertCachedCircuitMap = jest.fn();
@@ -62,37 +65,30 @@ jest.mock('contexts/CircuitMapsContext', () => ({
 
 const mockedApi = apiService as jest.Mocked<typeof apiService>;
 
-const baseContext: AnalysisContextType = {
-    activeTab: 'mapLists',
-    mapSelected: null,
-    sessionSelected: null,
-    liveData: {},
-    TelemetryDataLiveStatus: null,
-    recordedSessionDataFilePath: null,
-    recordedTelemetryDataCount: 0,
-    recordedSessioStaticsData: {},
-    activeVisualizations: [],
-    latestGuidanceMessage: null,
-    sessionIntelligence: null,
-    setMap: jest.fn(),
-    setSession: jest.fn(),
-    setLiveSessionData: jest.fn(),
-    setRecordedSessionStaticsData: jest.fn(),
-    setRecordedSessionDataFilePath: jest.fn(),
-    setActiveTab: jest.fn(),
-    writeRecordedLiveSessionData: jest.fn(),
-    readRecordedSessionData: jest.fn(),
+const baseContext: LiveSessionRuntime = {
+    currentTelemetry: {},
+    telemetryStatus: null,
+    staticData: {},
+    recordingState: RecordingState.CHECKING,
+    recordingMetadata: null,
+    recordingFileKey: null,
+    recordedSampleCount: 0,
+    sessionIntelligence: new SessionIntelligence(),
+    setCurrentTelemetry: jest.fn(),
+    setStaticData: jest.fn(),
+    setRecordingMetadata: jest.fn(),
+    transitionRecordingState: jest.fn(),
+    appendTelemetrySample: jest.fn(),
+    readRecordedTelemetry: jest.fn(),
     finalizeRecordingWrites: jest.fn(),
     clearRecordingSession: jest.fn(),
-    setActiveVisualizations: jest.fn(),
-    sendGuidanceToChat: jest.fn(),
 };
 
-const renderCircuitMaps = (context: Partial<AnalysisContextType> = {}) => (
+const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (
     render(
-        <AnalysisContext.Provider value={{ ...baseContext, ...context }}>
+        <LiveSessionContext.Provider value={{ ...baseContext, ...context }}>
             <CircuitMaps />
-        </AnalysisContext.Provider>
+        </LiveSessionContext.Provider>
     )
 );
 
@@ -135,8 +131,8 @@ describe('CircuitMaps', () => {
 
     it('saves a new global map payload without user ownership', async () => {
         renderCircuitMaps({
-            TelemetryDataLiveStatus: ACC_STATUS.ACC_LIVE,
-            liveData: {
+            telemetryStatus: ACC_STATUS.ACC_LIVE,
+            currentTelemetry: {
                 Graphics_status: ACC_STATUS.ACC_LIVE,
                 Graphics_normalized_car_position: 0.1,
                 Graphics_car_coordinates: JSON.stringify([{ x: 1, y: 0, z: 2 }]),
@@ -195,10 +191,12 @@ describe('CircuitMaps', () => {
 
     it('switches Other games into manual edit mode', async () => {
         renderCircuitMaps();
+        await screen.findByText('No global maps found.');
 
         await userEvent.selectOptions(screen.getAllByRole('combobox')[0], 'other');
 
         expect(await screen.findByText('Manual Edit')).toBeInTheDocument();
+        await waitFor(() => expect(screen.queryByText('Loading maps')).not.toBeInTheDocument());
         expect(screen.queryByText('ACC Offline')).not.toBeInTheDocument();
     });
 });

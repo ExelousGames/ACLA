@@ -2,7 +2,6 @@ import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } 
 import { Badge, Box, Button, Card, Flex, Select, Slider, Text } from '@radix-ui/themes';
 import { PauseIcon, PlayIcon, ReloadIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
-import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from '../../analysis-context';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
@@ -57,7 +56,6 @@ type AxisName = typeof AXES[number];
 type AxisFlipState = Record<AxisName, boolean>;
 type CameraMode = 'driver' | 'fit';
 
-const LIVE_TRAIL_LIMIT = 900;
 const RECORDED_RENDER_FRAME_LIMIT = 900;
 const RECORDED_TELEMETRY_TIMEOUT_MS = 120000;
 const MAX_PLAYBACK_DELTA_SECONDS = 0.25;
@@ -170,7 +168,6 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     });
 
     const [canvasSize, setCanvasSize] = useState({ width: 800, height: 520 });
-    const [liveFrames, setLiveFrames] = useState<TelemetryFrame[]>([]);
     const [recordedFrames, setRecordedFrames] = useState<TelemetryFrame[]>([]);
     const [loadState, setLoadState] = useState<LoadState>({ status: 'idle' });
     const [playbackIndex, setPlaybackIndex] = useState(0);
@@ -182,18 +179,11 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     const [circuitMap, setCircuitMap] = useState<CircuitMapDto | null>(null);
 
     const selectedSessionId = analysisContext.sessionSelected?.SessionId || '';
-    const isRecordedMode = Boolean(selectedSessionId);
-    const isLiveMode = !isRecordedMode;
     const circuitSourceTrackKey = useMemo(() => getAccTelemetryTrackKey(
-        analysisContext.liveData?.Static_track,
-        analysisContext.liveData?.Static?.track,
-        analysisContext.recordedSessioStaticsData?.track,
         analysisContext.sessionSelected?.map,
         analysisContext.mapSelected
     ), [
-        analysisContext.liveData,
         analysisContext.mapSelected,
-        analysisContext.recordedSessioStaticsData,
         analysisContext.sessionSelected?.map
     ]);
     const circuitTrackLayout = useMemo(() => (
@@ -201,17 +191,16 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             ? buildCircuitTrackLayout(circuitMap)
             : buildSessionPointsTrackLayout(analysisContext.sessionSelected?.points)
     ), [analysisContext.sessionSelected?.points, circuitMap]);
-    const frames = isRecordedMode ? recordedFrames : liveFrames;
-    const currentFrame = isRecordedMode ? recordedFrames[playbackIndex] : liveFrames[liveFrames.length - 1];
+    const frames = recordedFrames;
+    const currentFrame = recordedFrames[playbackIndex];
     const recordedAiAnalysis = analysisContext.recordedAiAnalysis;
-    const isCurrentRecordedAnalysis = isRecordedMode
-        && Boolean(selectedSessionId)
+    const isCurrentRecordedAnalysis = Boolean(selectedSessionId)
         && recordedAiAnalysis.sessionId === selectedSessionId;
     const segmentClassification: SegmentClassificationResult | null = isCurrentRecordedAnalysis
         ? recordedAiAnalysis.result
         : null;
     const segmentLoadState = useMemo<LoadState>(() => {
-        if (!isRecordedMode || !selectedSessionId) {
+        if (!selectedSessionId) {
             return { status: 'idle' };
         }
         if (!isCurrentRecordedAnalysis) {
@@ -232,17 +221,14 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
         return { status: 'idle' };
     }, [
         isCurrentRecordedAnalysis,
-        isRecordedMode,
         recordedAiAnalysis.message,
         recordedAiAnalysis.status,
         selectedSessionId
     ]);
-    const renderStartIndex = isRecordedMode
-        ? Math.max(0, playbackIndex - RECORDED_RENDER_FRAME_LIMIT + 1)
-        : 0;
+    const renderStartIndex = Math.max(0, playbackIndex - RECORDED_RENDER_FRAME_LIMIT + 1);
     const visibleFrames = useMemo(() => (
-        isRecordedMode ? recordedFrames.slice(renderStartIndex, playbackIndex + 1) : liveFrames
-    ), [isRecordedMode, liveFrames, playbackIndex, recordedFrames, renderStartIndex]);
+        recordedFrames.slice(renderStartIndex, playbackIndex + 1)
+    ), [playbackIndex, recordedFrames, renderStartIndex]);
     const bounds = useMemo(() => (
         getBounds(frames, circuitTrackLayout)
     ), [circuitTrackLayout, frames]);
@@ -257,7 +243,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
         currentFrame?.cars.find((car) => car.key === currentPlayerKey)?.position || null
     ), [currentFrame, currentPlayerKey]);
     const segmentOverlayRuns = useMemo<SegmentOverlayRun[]>(() => {
-        if (!isRecordedMode || !segmentClassification?.segments?.length) {
+        if (!segmentClassification?.segments?.length) {
             return [];
         }
 
@@ -284,7 +270,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                 };
             })
             .filter((run) => run.points.length > 1);
-    }, [isRecordedMode, segmentClassification, visibleFrames]);
+    }, [segmentClassification, visibleFrames]);
     const activeSegmentSummary = useMemo<RecordedActiveSegmentSummary | null>(() => {
         if (!currentFrame || !segmentClassification?.segments?.length || currentFrame.sourceIndex === undefined) {
             return null;
@@ -355,25 +341,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     }, []);
 
     useEffect(() => {
-        if (!isLiveMode || !analysisContext.liveData || typeof analysisContext.liveData !== 'object') {
-            return;
-        }
-
-        if (analysisContext.TelemetryDataLiveStatus !== ACC_STATUS.ACC_LIVE) {
-            return;
-        }
-
-        setLiveFrames((previous) => {
-            const parsed = parseTelemetryFrame(analysisContext.liveData as Record<string, any>, previous.length);
-            if (!parsed) return previous;
-
-            const next = [...previous, parsed];
-            return next.length > LIVE_TRAIL_LIMIT ? next.slice(next.length - LIVE_TRAIL_LIMIT) : next;
-        });
-    }, [analysisContext.TelemetryDataLiveStatus, analysisContext.liveData, isLiveMode]);
-
-    useEffect(() => {
-        if (!isRecordedMode) {
+        if (!selectedSessionId) {
             setRecordedFrames([]);
             setPlaybackIndex(0);
             setIsPlaying(false);
@@ -462,31 +430,29 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
         return () => {
             cancelled = true;
         };
-    }, [analysisContext.mapSelected, analysisContext.sessionSelected?.car, isRecordedMode, selectedSessionId]);
+    }, [analysisContext.mapSelected, analysisContext.sessionSelected?.car, selectedSessionId]);
 
     const handleRunSegmentClassification = useCallback(async () => {
-        if (!isRecordedMode || !selectedSessionId || segmentLoadState.status === 'loading') {
+        if (!selectedSessionId || segmentLoadState.status === 'loading') {
             return;
         }
 
         await runRecordedAiAnalysis();
-    }, [isRecordedMode, runRecordedAiAnalysis, selectedSessionId, segmentLoadState.status]);
+    }, [runRecordedAiAnalysis, selectedSessionId, segmentLoadState.status]);
 
     useEffect(() => {
         setRecordedPlaybackSummary({
-            sessionId: isRecordedMode ? selectedSessionId : null,
-            sampleCount: isRecordedMode ? recordedFrames.length : liveFrames.length,
-            durationSeconds: isRecordedMode ? duration : 0,
-            playbackIndex: isRecordedMode ? playbackIndex : Math.max(0, liveFrames.length - 1),
-            playbackTimeSeconds: isRecordedMode ? currentPlaybackTime : 0,
-            activeSegment: isRecordedMode ? activeSegmentSummary : null
+            sessionId: selectedSessionId || null,
+            sampleCount: recordedFrames.length,
+            durationSeconds: duration,
+            playbackIndex,
+            playbackTimeSeconds: currentPlaybackTime,
+            activeSegment: activeSegmentSummary
         });
     }, [
         activeSegmentSummary,
         currentPlaybackTime,
         duration,
-        isRecordedMode,
-        liveFrames.length,
         playbackIndex,
         recordedFrames.length,
         selectedSessionId,
@@ -501,7 +467,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             playbackState.animationId = null;
         }
 
-        if (!isRecordedMode || !isPlaying || recordedFrames.length < 2) {
+        if (!isPlaying || recordedFrames.length < 2) {
             playbackState.lastTick = null;
             playbackState.elapsed = currentPlaybackTimeRef.current;
             return;
@@ -542,7 +508,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                 playbackState.animationId = null;
             }
         };
-    }, [isPlaying, isRecordedMode, playbackSpeed, recordedFrames]);
+    }, [isPlaying, playbackSpeed, recordedFrames]);
 
     const projectPoint = useCallback((point: Vec3, size = canvasSize): ProjectedPoint => {
         const center = cameraMode === 'driver' && driverCameraTarget ? driverCameraTarget : bounds.center;
@@ -812,29 +778,25 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
 
                 <div className="map-visualization__hud map-visualization__hud--top">
                     <Flex align="center" gap="2" wrap="wrap">
-                        <Badge color={isRecordedMode ? 'blue' : 'green'} variant="soft">
-                            {isRecordedMode ? 'Recorded Telemetry' : 'Live Telemetry'}
-                        </Badge>
+                        <Badge color="blue" variant="soft">Recorded Telemetry</Badge>
                         <Text size="1" className="map-visualization__metric">
                             {frames.length.toLocaleString()} samples
                         </Text>
                         <Text size="1" className="map-visualization__metric">
                             {Math.max(0, (currentFrame?.cars.length || 1) - 1)} opponents
                         </Text>
-                        {isRecordedMode && (
-                            <Button
-                                size="1"
-                                variant="soft"
-                                onClick={handleRunSegmentClassification}
-                                disabled={!selectedSessionId || segmentLoadState.status === 'loading'}
-                            >
-                                {segmentLoadState.status === 'loading' ? 'Analyzing...' : 'Run AI Analysis'}
-                            </Button>
-                        )}
+                        <Button
+                            size="1"
+                            variant="soft"
+                            onClick={handleRunSegmentClassification}
+                            disabled={!selectedSessionId || segmentLoadState.status === 'loading'}
+                        >
+                            {segmentLoadState.status === 'loading' ? 'Analyzing...' : 'Run AI Analysis'}
+                        </Button>
                     </Flex>
                 </div>
 
-                {isRecordedMode && segmentLoadState.status !== 'idle' && (
+                {segmentLoadState.status !== 'idle' && (
                     <div className="map-visualization__hud map-visualization__hud--segments">
                         <Flex direction="column" gap="2">
                             <Flex align="center" gap="2" wrap="wrap">
@@ -925,8 +887,7 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                     </Flex>
                 </div>
 
-                {isRecordedMode && (
-                    <div className="map-visualization__player">
+                <div className="map-visualization__player">
                         <Flex align="center" gap="2" className="map-visualization__player-row">
                             <Button size="2" variant="soft" onClick={togglePlayback} disabled={recordedFrames.length < 2}>
                                 {isPlaying ? <PauseIcon /> : <PlayIcon />}
@@ -954,10 +915,9 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                             disabled={recordedFrames.length < 2}
                             onValueChange={handleScrub}
                         />
-                    </div>
-                )}
+                </div>
 
-                {isRecordedMode && loadState.status !== 'ready' && (
+                {loadState.status !== 'ready' && (
                     <div className="map-visualization__state">
                         <Text size="2" weight="bold">
                             {loadState.status === 'loading' ? 'Loading telemetry' : loadState.status === 'error' ? 'Telemetry unavailable' : 'No telemetry'}
@@ -966,12 +926,6 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
                     </div>
                 )}
 
-                {isLiveMode && liveFrames.length === 0 && (
-                    <div className="map-visualization__state">
-                        <Text size="2" weight="bold">Waiting for live telemetry</Text>
-                        <Text size="1">Start recording a live ACC session to draw driver and opponent trajectories.</Text>
-                    </div>
-                )}
             </Box>
         </Card>
     );

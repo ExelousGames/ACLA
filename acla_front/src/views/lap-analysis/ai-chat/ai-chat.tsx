@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useContext, useMemo, useCallback } from 'react';
 import './ai-chat.css';
 import { AnalysisContext } from 'views/lap-analysis/analysis-context';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
@@ -51,6 +52,7 @@ import {
     type ToolOutputEnvelope,
 } from './ai-tool-base';
 import { RecordingState } from 'views/lap-analysis/recording-state';
+import { resolveAssistantRecordedSessionId } from 'views/lap-analysis/assistant-session-mode';
 
 type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
@@ -305,7 +307,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const messagesScrollRef = useRef<HTMLDivElement>(null);
     const shouldAutoScrollMessagesRef = useRef(true);
-    const analysisContext = useContext(AnalysisContext);
+    const recordedAnalysisContext = useContext(AnalysisContext);
+    const liveSession = useContext(LiveSessionContext);
+    const analysisContext = useMemo(() => ({
+        ...recordedAnalysisContext,
+        mapSelected: sessionMode === 'recorded' ? recordedAnalysisContext.mapSelected : null,
+        sessionSelected: sessionMode === 'recorded' ? recordedAnalysisContext.sessionSelected : null,
+        liveData: liveSession.currentTelemetry,
+        TelemetryDataLiveStatus: liveSession.telemetryStatus,
+        recordingState: liveSession.recordingState,
+        recordingMetadata: liveSession.recordingMetadata,
+        recordedSessionDataFilePath: liveSession.recordingFileKey,
+        recordedTelemetryDataCount: liveSession.recordedSampleCount,
+        recordedSessioStaticsData: liveSession.staticData,
+        sessionIntelligence: liveSession.sessionIntelligence,
+    }), [liveSession, recordedAnalysisContext, sessionMode]);
     const {
         userSummary,
         userSummaryLoading,
@@ -749,7 +765,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setTrackGuideEnabled(true);
     }, []);
 
-    const resolvedSessionId = sessionId || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId;
+    const resolvedSessionId = resolveAssistantRecordedSessionId(
+        sessionMode,
+        sessionId || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId,
+    );
 
     const aiSessionContext = useMemo(() => {
         const selectedSession = analysisContext?.sessionSelected as Record<string, any> | null;
@@ -757,9 +776,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         const liveDataKeys = liveData ? Object.keys(liveData).length : 0;
         const summaryTrackCount = countSummaryTracks(userSummary || {});
         const summaryLoaded = !userSummaryLoading && !userSummaryError && summaryTrackCount > 0;
-        const recordedAiAnalysis = analysisContext?.recordedAiAnalysis;
+        const recordedAiAnalysis = sessionMode === 'recorded' ? analysisContext?.recordedAiAnalysis : undefined;
         const recordedAnalysisResult = recordedAiAnalysis?.result;
-        const recordedPlaybackSummary = analysisContext?.recordedPlaybackSummary;
+        const recordedPlaybackSummary = sessionMode === 'recorded' ? analysisContext?.recordedPlaybackSummary : undefined;
+        const recordingMetadata = analysisContext?.recordingMetadata;
         const liveRecordingActive = analysisContext?.recordingState === RecordingState.RECORDING;
         const liveSnapshot = liveRecordingActive
             ? analysisContext?.sessionIntelligence?.getLiveSessionSnapshot?.()
@@ -801,8 +821,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 }
                 : null,
             live_session_type: liveSnapshot?.live_session_type ?? 'unknown',
-            track: liveSnapshot?.track || liveData?.Static_track || null,
-            car: liveSnapshot?.car || liveData?.Static_car_model || null,
+            track: liveSnapshot?.track || liveData?.Static_track || recordingMetadata?.mapName || null,
+            car: liveSnapshot?.car || liveData?.Static_car_model || recordingMetadata?.carName || null,
             current_lap: liveSnapshot?.current_lap ?? null,
             normalized_position: liveSnapshot?.normalized_position ?? getNormalizedCarPos(liveData),
             completed_laps: liveSnapshot?.completed_laps ?? null,
@@ -872,6 +892,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         analysisContext?.recordedPlaybackSummary,
         analysisContext?.recordedSessionDataFilePath,
         analysisContext?.recordedTelemetryDataCount,
+        analysisContext?.recordingMetadata,
         analysisContext?.recordingState,
         analysisContext?.sessionIntelligence,
         analysisContext?.sessionSelected,

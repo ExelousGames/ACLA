@@ -293,7 +293,7 @@ const DynamicVisualizationManager: React.FC<DynamicVisualizationManagerProps> = 
     };
 
     const availableTypes = useMemo(() => (
-        visualizationRegistry.getAllTypes().filter(type =>
+        visualizationRegistry.getRecordedWorkspaceTypes().filter(type =>
             type !== STATIC_MAP_TYPE &&
             !visualizations.some(visualization => visualization.type === type)
         )

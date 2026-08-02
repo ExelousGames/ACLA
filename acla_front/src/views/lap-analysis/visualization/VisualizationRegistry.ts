@@ -39,6 +39,7 @@ export interface VisualizationComponent {
     component: ComponentType<VisualizationProps>;
     name: string;
     description: string;
+    availableInRecordedWorkspace?: boolean;
     assistantControls?: VisualizationAssistantControl[];
     createAssistantControlHandlers?: (
         context: VisualizationControlFactoryContext,
@@ -81,6 +82,12 @@ class VisualizationRegistry {
     getAllComponents(): VisualizationComponent[] {
         return Array.from(this.components.values());
     }
+
+    getRecordedWorkspaceTypes(): string[] {
+        return Array.from(this.components.entries())
+            .filter(([, component]) => component.availableInRecordedWorkspace !== false)
+            .map(([type]) => type);
+    }
 }
 
 export const visualizationRegistry = new VisualizationRegistry();
@@ -90,7 +97,7 @@ export const initializeVisualizations = () => {
     visualizationRegistry.register('telemetry-overview', {
         component: TelemetryOverview,
         name: 'Telemetry Overview',
-        description: 'Shows basic telemetry statistics',
+        description: 'Shows telemetry supplied to the recorded analysis workspace',
         defaultConfig: {},
         minWidth: 250,
         minHeight: 150,
@@ -110,7 +117,7 @@ export const initializeVisualizations = () => {
     visualizationRegistry.register('imitation-guidance-chart', {
         component: ImitationGuidanceChart,
         name: 'AI Driving Guidance',
-        description: 'Real-time AI guidance based on imitation learning',
+        description: 'Guidance for telemetry supplied to the recorded analysis workspace',
         defaultConfig: {},
         minWidth: 380,
         minHeight: 500,
@@ -120,7 +127,7 @@ export const initializeVisualizations = () => {
     visualizationRegistry.register('event-log', {
         component: EventLogChart,
         name: 'Event Log',
-        description: 'Live list of all session events (corners, straights, crashes, overtakes) detected by the sensors',
+        description: 'Shows event data supplied to the recorded analysis workspace',
         defaultConfig: {},
         minWidth: 360,
         minHeight: 260,
@@ -131,6 +138,7 @@ export const initializeVisualizations = () => {
         component: AnalysisResultsChart,
         name: 'Analysis Results',
         description: 'Scrollable list of generic labeled analysis elements and their contextual fields',
+        availableInRecordedWorkspace: false,
         assistantControls: [
             {
                 name: 'append_element',

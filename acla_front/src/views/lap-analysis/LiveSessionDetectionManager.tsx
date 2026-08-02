@@ -1,8 +1,8 @@
 import { useCallback, useContext, useEffect, useRef } from 'react';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
-import { AnalysisContext } from './analysis-context';
 import { RecordingState } from './recording-state';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 
 const toAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -31,18 +31,18 @@ const getStaticPayload = (data: Record<string, any>): Record<string, unknown> | 
 };
 
 export default function LiveSessionDetectionManager() {
-    const analysisContext = useContext(AnalysisContext);
-    const analysisContextRef = useRef(analysisContext);
+    const liveSession = useContext(LiveSessionContext);
+    const liveSessionRef = useRef(liveSession);
     const sessionCheckingStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
     const sessionCheckingStreamCleanupRef = useRef<(() => void) | null>(null);
     const sessionCheckingStreamStartingRef = useRef(false);
 
     useEffect(() => {
-        analysisContextRef.current = analysisContext;
-    }, [analysisContext]);
+        liveSessionRef.current = liveSession;
+    }, [liveSession]);
 
     const processCheckingSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
-        const ctx = analysisContextRef.current;
+        const ctx = liveSessionRef.current;
         if (!ctx || !event) {
             return;
         }
@@ -53,14 +53,14 @@ export default function LiveSessionDetectionManager() {
             const status = toAccStatus(graphics.status ?? data.Graphics_status);
 
             if (data && typeof data === 'object') {
-                ctx.setLiveSessionData(data);
+                ctx.setCurrentTelemetry(data);
             }
 
             if (status !== null) {
                 if (status === ACC_STATUS.ACC_LIVE) {
                     const staticPayload = getStaticPayload(data);
                     if (staticPayload) {
-                        ctx.setRecordedSessionStaticsData(staticPayload);
+                        ctx.setStaticData(staticPayload);
                     }
                     ctx.transitionRecordingState({ type: 'sessionAvailable' });
                 } else if (status === ACC_STATUS.ACC_OFF) {
@@ -73,7 +73,7 @@ export default function LiveSessionDetectionManager() {
                 ctx.transitionRecordingState({ type: 'sessionUnavailable' });
             }
         } else if (event.status === 'ready') {
-            if (ctx.TelemetryDataLiveStatus == null) {
+            if (ctx.telemetryStatus == null) {
                 ctx.transitionRecordingState({ type: 'sessionUnavailable' });
             }
         } else if (event.status === 'error') {
@@ -135,9 +135,9 @@ export default function LiveSessionDetectionManager() {
     }, [processCheckingSessionStreamUpdate, stopSessionCheckingStream]);
 
     const shouldMaintainSessionCheckingStream =
-        analysisContext.recordingState === RecordingState.CHECKING
-        || analysisContext.recordingState === RecordingState.HOLDING
-        || analysisContext.recordingState === RecordingState.RESUME_READY;
+        liveSession.recordingState === RecordingState.CHECKING
+        || liveSession.recordingState === RecordingState.HOLDING
+        || liveSession.recordingState === RecordingState.RESUME_READY;
 
     useEffect(() => {
         let cancelled = false;

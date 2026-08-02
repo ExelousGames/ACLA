@@ -1,16 +1,14 @@
-import React, { useContext, useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Card, Text, Box, Grid, TextField, Button } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
-import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 
 const TelemetryOverview: React.FC<VisualizationProps> = ({ id, data, config, width = '100%', height = 200 }) => {
-    const analysisContext = useContext(AnalysisContext);
     const [searchTerm, setSearchTerm] = useState('');
     const [history, setHistory] = useState<any[]>([]);
     const [historyIndex, setHistoryIndex] = useState(0);
 
-    const telemetryData = data || analysisContext.liveData;
+    const telemetryData = data;
 
     useEffect(() => {
         if (telemetryData) {

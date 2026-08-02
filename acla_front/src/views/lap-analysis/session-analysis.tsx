@@ -1,25 +1,17 @@
 import './session-analysis.css';
 
-import {
-    Box,
-    Tabs
-} from "@radix-ui/themes";
+import { Box, Tabs } from '@radix-ui/themes';
 import { ChatBubbleIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/react-icons';
-
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
+import apiService from 'services/api.service';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
-import React, { useContext, useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
-import { useEnvironment } from 'contexts/EnvironmentContext';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
-import { PythonShellOptions } from 'services/pythonService';
-import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
-import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { AnalysisContext } from './analysis-context';
-import { SessionIntelligence } from './session-intelligence/SessionIntelligence';
 import AiChat from './ai-chat/ai-chat';
-import apiService from 'services/api.service';
 import {
     RecordedAiAnalysisState,
     createEmptyRecordedPlaybackSummary,
@@ -27,288 +19,24 @@ import {
     getRecordedAnalysisStateForResult,
     normalizeSegmentClassificationResult,
 } from './recorded-session-analysis';
-import { getNextRecordingState, RecordingEvent, RecordingState } from './recording-state';
 import {
     buildAssistantConversationKey,
+    resolveAssistantRecordedSessionId,
     resolveAssistantSessionMode,
     type SessionAnalysisAssistantMode,
 } from './assistant-session-mode';
 
-const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
-    const numeric = typeof value === 'string' ? Number(value) : value;
-    if (typeof numeric !== 'number' || Number.isNaN(numeric)) {
-        return null;
-    }
-
-    return ACC_STATUS[numeric as ACC_STATUS] !== undefined ? numeric as ACC_STATUS : null;
-};
-
-const TELEMETRY_WRITE_TIMEOUT_MS = 6000;
 const RECORDED_AI_ANALYSIS_TIMEOUT_MS = 120000;
-const LIVE_TELEMETRY_UI_UPDATE_MS = 100;
-const RECORDED_TELEMETRY_COUNT_UI_UPDATE_MS = 250;
-
-type TelemetryWriterEvent = {
-    status?: string;
-    request_id?: string;
-    message?: string;
-    written?: number;
-    [key: string]: unknown;
-};
-
-type PendingTelemetryWrite = {
-    resolve: () => void;
-    reject: (error: Error) => void;
-    timeoutId: number;
-};
 
 export const SessionAnalysisProvider = ({ children }: { children: React.ReactNode }) => {
-
-    //must give state some init value otherwise createContext and useContext don't like it
     const [mapSelected, setMap] = useState<string | null>(null);
     const [sessionSelected, setSession] = useState<RacingSessionDetailedInfoDto | null>(null);
     const [activeTab, setActiveTab] = useState('mapLists');
-    const [liveData, setLiveData] = useState({});
-    const [TelemetryDataLiveStatus, setTelemetryDataLiveStatus] = useState<ACC_STATUS | null>(null);
-    const [recordingState, setRecordingState] = useState<RecordingState>(RecordingState.CHECKING);
-    const [recordedSessioStaticsData, setRecordedSessionStaticsData] = useState({});
-    const [recordedSessionDataFilePath, setRecordedSessionDataFilePath] = useState<string | null>(null);
-    const [recordedTelemetryDataCount, setRecordedTelemetryDataCount] = useState<number>(0);
     const [activeVisualizations, setActiveVisualizations] = useState<VisualizationInstance[]>([]);
     const [latestGuidanceMessage, setLatestGuidanceMessage] = useState<string | null>(null);
     const [recordedAiAnalysis, setRecordedAiAnalysis] = useState<RecordedAiAnalysisState>(createIdleRecordedAiAnalysis());
     const [recordedPlaybackSummary, setRecordedPlaybackSummary] = useState(createEmptyRecordedPlaybackSummary());
-    const sessionIntelligenceRef = useRef<SessionIntelligence>(new SessionIntelligence());
     const recordedAiAnalysisCacheRef = useRef<Map<string, RecordedAiAnalysisState>>(new Map());
-    const liveDataRef = useRef<any>({});
-    const committedLiveDataRef = useRef<any>({});
-    const liveDataFlushTimeoutRef = useRef<number | null>(null);
-
-    const flushLiveData = useCallback(() => {
-        if (liveDataFlushTimeoutRef.current !== null) {
-            window.clearTimeout(liveDataFlushTimeoutRef.current);
-            liveDataFlushTimeoutRef.current = null;
-        }
-
-        const nextLiveData = liveDataRef.current && typeof liveDataRef.current === 'object'
-            ? liveDataRef.current
-            : {};
-
-        if (committedLiveDataRef.current === nextLiveData) {
-            return;
-        }
-
-        if (Object.keys(nextLiveData).length === 0 && Object.keys(committedLiveDataRef.current).length === 0) {
-            return;
-        }
-
-        committedLiveDataRef.current = nextLiveData;
-        setLiveData(nextLiveData);
-    }, []);
-
-    const scheduleLiveDataFlush = useCallback(() => {
-        if (liveDataFlushTimeoutRef.current !== null) {
-            return;
-        }
-
-        liveDataFlushTimeoutRef.current = window.setTimeout(flushLiveData, LIVE_TELEMETRY_UI_UPDATE_MS);
-    }, [flushLiveData]);
-
-    const setLiveSessionData = useCallback((data: {}) => {
-        const nextLiveData = data && typeof data === 'object' ? data : {};
-        const hasLiveData = Object.keys(nextLiveData).length > 0;
-
-        liveDataRef.current = nextLiveData;
-        scheduleLiveDataFlush();
-
-        if (hasLiveData) {
-            sessionIntelligenceRef.current.tick(nextLiveData as any);
-        }
-    }, [scheduleLiveDataFlush]);
-
-    const transitionRecordingState = useCallback((event: RecordingEvent) => {
-        setRecordingState((previous) => getNextRecordingState(previous, event));
-    }, []);
-
-    // Use ref to persist file path during recording to prevent state reset issues
-    const recordingFilePathRef = useRef<string | null>(null);
-    const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
-    const telemetryWriterSessionRef = useRef<PythonStreamSession<TelemetryWriterEvent> | null>(null);
-    const telemetryWriterCleanupRef = useRef<(() => void) | null>(null);
-    const telemetryWriterFilePathRef = useRef<string | null>(null);
-    const telemetryWriterPendingRef = useRef<Map<string, PendingTelemetryWrite>>(new Map());
-    const telemetryWriterSequenceRef = useRef(0);
-    const recordedTelemetryDataCountRef = useRef(0);
-    const committedRecordedTelemetryDataCountRef = useRef(0);
-    const telemetryCountFlushTimeoutRef = useRef<number | null>(null);
-
-    const setRecordingSessionDataFilePath = useCallback((filePath: string | null) => {
-        recordingFilePathRef.current = filePath;
-        setRecordedSessionDataFilePath(filePath);
-    }, []);
-
-    const flushRecordedTelemetryDataCount = useCallback(() => {
-        if (telemetryCountFlushTimeoutRef.current !== null) {
-            window.clearTimeout(telemetryCountFlushTimeoutRef.current);
-            telemetryCountFlushTimeoutRef.current = null;
-        }
-
-        const nextCount = recordedTelemetryDataCountRef.current;
-        if (committedRecordedTelemetryDataCountRef.current === nextCount) {
-            return;
-        }
-
-        committedRecordedTelemetryDataCountRef.current = nextCount;
-        setRecordedTelemetryDataCount(nextCount);
-    }, []);
-
-    const scheduleRecordedTelemetryDataCountFlush = useCallback(() => {
-        if (telemetryCountFlushTimeoutRef.current !== null) {
-            return;
-        }
-
-        telemetryCountFlushTimeoutRef.current = window.setTimeout(
-            flushRecordedTelemetryDataCount,
-            RECORDED_TELEMETRY_COUNT_UI_UPDATE_MS
-        );
-    }, [flushRecordedTelemetryDataCount]);
-
-    const incrementRecordedTelemetryDataCount = useCallback(() => {
-        recordedTelemetryDataCountRef.current += 1;
-        scheduleRecordedTelemetryDataCountFlush();
-    }, [scheduleRecordedTelemetryDataCountFlush]);
-
-    const resetRecordedTelemetryDataCount = useCallback(() => {
-        if (telemetryCountFlushTimeoutRef.current !== null) {
-            window.clearTimeout(telemetryCountFlushTimeoutRef.current);
-            telemetryCountFlushTimeoutRef.current = null;
-        }
-
-        recordedTelemetryDataCountRef.current = 0;
-        if (committedRecordedTelemetryDataCountRef.current !== 0) {
-            committedRecordedTelemetryDataCountRef.current = 0;
-            setRecordedTelemetryDataCount(0);
-        }
-    }, []);
-
-    const disposeTelemetryWriter = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
-        const cleanup = telemetryWriterCleanupRef.current;
-        if (cleanup) {
-            cleanup();
-            telemetryWriterCleanupRef.current = null;
-        }
-
-        const session = telemetryWriterSessionRef.current;
-        telemetryWriterSessionRef.current = null;
-        telemetryWriterFilePathRef.current = null;
-
-        for (const [requestId, pending] of Array.from(telemetryWriterPendingRef.current.entries())) {
-            telemetryWriterPendingRef.current.delete(requestId);
-            pending.reject(new Error('Telemetry writer disposed'));
-        }
-
-        if (session) {
-            try {
-                await session.dispose({ force });
-            } catch (error) {
-                console.warn('Failed to dispose telemetry writer session', error);
-            }
-        }
-    }, []);
-
-    const handleTelemetryWriterEvent = useCallback((event: PythonStreamEvent<TelemetryWriterEvent>) => {
-        if (!event) {
-            return;
-        }
-
-        const status = typeof event.status === 'string' ? event.status : '';
-        const requestId = typeof event.request_id === 'string' ? event.request_id : undefined;
-
-        if (status === 'ok' && requestId) {
-            const pending = telemetryWriterPendingRef.current.get(requestId);
-            if (pending) {
-                telemetryWriterPendingRef.current.delete(requestId);
-                pending.resolve();
-            }
-            return;
-        }
-
-        if (status === 'error') {
-            const error = new Error(typeof event.message === 'string' ? event.message : 'Telemetry writer error');
-            if (requestId) {
-                const pending = telemetryWriterPendingRef.current.get(requestId);
-                if (pending) {
-                    telemetryWriterPendingRef.current.delete(requestId);
-                    pending.reject(error);
-                }
-            } else {
-                console.error('Telemetry writer emitted error without request id', event);
-                for (const [pendingId, pending] of Array.from(telemetryWriterPendingRef.current.entries())) {
-                    telemetryWriterPendingRef.current.delete(pendingId);
-                    pending.reject(error);
-                }
-            }
-            return;
-        }
-
-        if (status === 'shutdown') {
-            if (requestId) {
-                const pending = telemetryWriterPendingRef.current.get(requestId);
-                if (pending) {
-                    telemetryWriterPendingRef.current.delete(requestId);
-                    pending.resolve();
-                }
-            }
-            void disposeTelemetryWriter({ force: true });
-            return;
-        }
-    }, [disposeTelemetryWriter]);
-
-    const ensureTelemetryWriter = useCallback(async (filePath: string) => {
-        if (telemetryWriterSessionRef.current && telemetryWriterFilePathRef.current === filePath) {
-            const existingSession = telemetryWriterSessionRef.current;
-            await existingSession.waitUntilReady();
-            return existingSession;
-        }
-
-        await disposeTelemetryWriter({ force: true });
-
-        try {
-            const session = await createPythonStreamSession<TelemetryWriterEvent>({
-                scriptName: 'append_telemetry_data.py',
-                pythonOptions: {
-                    mode: 'text',
-                    pythonOptions: ['-u'],
-                    scriptPath: 'src/py-scripts',
-                    args: [filePath]
-                },
-                readyTimeoutMs: 8000
-            });
-
-            telemetryWriterSessionRef.current = session;
-            telemetryWriterFilePathRef.current = filePath;
-            telemetryWriterCleanupRef.current = session.onMessage(handleTelemetryWriterEvent);
-
-            await session.waitUntilReady();
-            return session;
-        } catch (error) {
-            await disposeTelemetryWriter({ force: true });
-            throw error;
-        }
-    }, [disposeTelemetryWriter, handleTelemetryWriterEvent]);
-
-    const finalizeRecordingWrites = useCallback(async () => {
-        try {
-            await writeQueueRef.current;
-        } catch (error) {
-            console.warn('Telemetry write queue rejected during finalization', error);
-        } finally {
-            writeQueueRef.current = Promise.resolve();
-        }
-
-        flushRecordedTelemetryDataCount();
-        await disposeTelemetryWriter({ force: false });
-    }, [disposeTelemetryWriter, flushRecordedTelemetryDataCount]);
 
     const runRecordedAiAnalysis = useCallback(async ({ force = false }: { force?: boolean } = {}): Promise<RecordedAiAnalysisState> => {
         const sessionId = sessionSelected?.SessionId;
@@ -328,26 +56,23 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             return cached;
         }
 
-        const loadingState: RecordedAiAnalysisState = {
+        setRecordedAiAnalysis({
             sessionId,
             status: 'loading',
             message: 'Running AI segment analysis...',
             result: cached?.result ?? null,
-        };
-        setRecordedAiAnalysis(loadingState);
+        });
 
         try {
             const response = await apiService.post('/racing-session/segment-classification', {
                 session_id: sessionId,
             }, { timeout: RECORDED_AI_ANALYSIS_TIMEOUT_MS });
             const result = normalizeSegmentClassificationResult(response.data as any, sessionId);
-            const resultState = getRecordedAnalysisStateForResult(result);
             const nextState: RecordedAiAnalysisState = {
                 sessionId,
                 result,
-                ...resultState,
+                ...getRecordedAnalysisStateForResult(result),
             };
-
             recordedAiAnalysisCacheRef.current.set(sessionId, nextState);
             setRecordedAiAnalysis(nextState);
             return nextState;
@@ -363,240 +88,23 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
         }
     }, [sessionSelected?.SessionId]);
 
-    // File-based telemetry data functions
-    const writeRecordedLiveSessionData = useCallback(async (data: any): Promise<void> => {
-        const enqueueWrite = async () => {
-            let currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
-
-            if (!currentFilePath) {
-                const timestamp = new Date().getTime();
-                const sessionId = sessionSelected?.SessionId || 'unknown';
-                currentFilePath = `../session_recording/temp/telemetry_${sessionId}_${timestamp}.jsonl`;
-                setRecordingSessionDataFilePath(currentFilePath);
-                resetRecordedTelemetryDataCount();
-            }
-
-            const session = await ensureTelemetryWriter(currentFilePath);
-            telemetryWriterSequenceRef.current += 1;
-            const requestId = `telemetry-append-${Date.now()}-${telemetryWriterSequenceRef.current}`;
-
-            let resolveAck!: () => void;
-            let rejectAck!: (error: Error) => void;
-            const ackPromise = new Promise<void>((resolve, reject) => {
-                resolveAck = resolve;
-                rejectAck = reject;
-            });
-
-            const timeoutId = window.setTimeout(() => {
-                const pending = telemetryWriterPendingRef.current.get(requestId);
-                if (pending) {
-                    telemetryWriterPendingRef.current.delete(requestId);
-                    pending.reject(new Error('Telemetry writer append timed out'));
-                }
-            }, TELEMETRY_WRITE_TIMEOUT_MS);
-
-            telemetryWriterPendingRef.current.set(requestId, {
-                resolve: () => {
-                    window.clearTimeout(timeoutId);
-                    resolveAck();
-                },
-                reject: (error: Error) => {
-                    window.clearTimeout(timeoutId);
-                    rejectAck(error);
-                },
-                timeoutId
-            });
-
-            try {
-                await session.send('append', { data }, requestId);
-            } catch (error) {
-                const pending = telemetryWriterPendingRef.current.get(requestId);
-                if (pending) {
-                    telemetryWriterPendingRef.current.delete(requestId);
-                    pending.reject(error instanceof Error ? error : new Error(String(error)));
-                }
-                throw error;
-            }
-
-            await ackPromise;
-            incrementRecordedTelemetryDataCount();
-        };
-
-        const nextWrite = writeQueueRef.current.then(enqueueWrite);
-
-        writeQueueRef.current = nextWrite
-            .catch((error) => {
-                if (error instanceof Error && error.message === 'Telemetry writer disposed') {
-                    return;
-                }
-                console.error('Telemetry write failed', error);
-            })
-            .then(() => undefined);
-
-        return nextWrite.catch((error) => {
-            if (error instanceof Error && error.message === 'Telemetry writer disposed') {
-                return;
-            }
-            throw error;
-        });
-    }, [
-        ensureTelemetryWriter,
-        incrementRecordedTelemetryDataCount,
-        recordedSessionDataFilePath,
-        resetRecordedTelemetryDataCount,
-        sessionSelected?.SessionId,
-        setRecordingSessionDataFilePath
-    ]);
-
-    const readRecordedSessionData = useCallback(async (onProgress?: (read: number, total: number | null, bytesRead?: number, totalBytes?: number) => void): Promise<any[]> => {
-        const currentFilePath = recordingFilePathRef.current || recordedSessionDataFilePath;
-        console.log('readRecordedSessionData called with file path:', currentFilePath);
-
-        if (!currentFilePath) {
-            console.log('No file path available for reading telemetry data');
-            return [];
-        }
-        try {
-            const options = {
-                mode: 'text',
-                pythonOptions: ['-u'],
-                scriptPath: 'src/py-scripts',
-                args: [currentFilePath]
-            } as PythonShellOptions;
-
-            const { shellId } = await window.electronAPI.runPythonScript('read_telemetry_data.py', options);
-
-            return new Promise((resolve) => {
-                let completeReceived = false;
-                const allData: any[] = [];
-                let removeMessageListener: (() => void) | null = null;
-                let removeEndListener: (() => void) | null = null;
-
-                const cleanup = () => {
-                    if (removeMessageListener) {
-                        removeMessageListener();
-                        removeMessageListener = null;
-                    }
-                    if (removeEndListener) {
-                        removeEndListener();
-                        removeEndListener = null;
-                    }
-                };
-
-                removeMessageListener = window.electronAPI.onPythonMessage((returnedShellId: number, message: string) => {
-                    if (returnedShellId !== shellId) return;
-                    try {
-                        const obj = JSON.parse(message);
-                        if (obj.type === 'progress') {
-                            if (onProgress) onProgress(obj.read, obj.total ?? null, obj.bytesRead, obj.totalBytes);
-                        } else if (obj.type === 'chunk') {
-                            if (Array.isArray(obj.data)) {
-                                allData.push(...obj.data);
-                            }
-                        } else if (obj.type === 'complete') {
-                            completeReceived = true;
-                            if (Array.isArray(obj.data)) {
-                                allData.push(...obj.data);
-                            }
-                            console.log('Telemetry data complete. Points:', allData.length);
-                            resolve(allData);
-                            cleanup();
-                        } else if (obj.type === 'error') {
-                            console.error('Error from telemetry reader:', obj.message);
-                        }
-                    } catch (e) {
-                        // Non JSON lines ignored
-                    }
-                });
-
-                removeEndListener = window.electronAPI.onPythonEnd('session-analysis', (returnedShellId: number) => {
-                    if (returnedShellId !== shellId) return;
-                    if (!completeReceived) {
-                        console.warn('Python process ended before complete event; returning collected data');
-                        resolve(allData);
-                        cleanup();
-                    }
-                });
-            });
-        } catch (error) {
-            console.error('Error reading telemetry data from file:', error);
-            return [];
-        }
-    }, [recordedSessionDataFilePath]);
-
-    // Clear recording session (reset file paths and counters)
-    const clearRecordingSession = useCallback((): void => {
-        console.log('Clearing recording session');
-        setRecordingSessionDataFilePath(null);
-        resetRecordedTelemetryDataCount();
-        writeQueueRef.current = Promise.resolve();
-        sessionIntelligenceRef.current.reset();
-        void disposeTelemetryWriter({ force: true });
-    }, [disposeTelemetryWriter, resetRecordedTelemetryDataCount, setRecordingSessionDataFilePath]);
-
-    // Function to send guidance messages to chat
     const sendGuidanceToChat = useCallback((message: string) => {
         setLatestGuidanceMessage((previous) => previous === message ? previous : message);
     }, []);
 
     useEffect(() => {
-        if (!liveData || typeof liveData !== 'object') {
-            return;
-        }
-
-        if (Object.keys(liveData).length === 0) {
-            if (TelemetryDataLiveStatus !== null) {
-                setTelemetryDataLiveStatus(null);
-            }
-            return;
-        }
-
-        const nextStatus = normalizeAccStatus((liveData as any)?.Graphics_status ?? (liveData as any)?.Graphics?.status);
-        if (nextStatus !== null && nextStatus !== TelemetryDataLiveStatus) {
-            setTelemetryDataLiveStatus(nextStatus);
-        }
-    }, [liveData, TelemetryDataLiveStatus]);
-    //switch tab when a map or a session is selected
-    useEffect(() => {
-        if (mapSelected != null) {
-            setActiveTab("sessionLists");
-        }
-
-        if (sessionSelected != null) {
-            setActiveTab("session");
-        }
+        if (mapSelected !== null) setActiveTab('sessionLists');
+        if (sessionSelected !== null) setActiveTab('session');
     }, [mapSelected, sessionSelected]);
 
-
-    //clean other tabs in situations
     useEffect(() => {
-
-        //if current selected tab is Map tab
-        if (activeTab === "mapLists") {
+        if (activeTab === 'mapLists') {
             setMap(null);
             setSession(null);
-            return;
-        }
-
-        //if current tab is session list
-        if (activeTab === "sessionLists") {
+        } else if (activeTab === 'sessionLists') {
             setSession(null);
         }
     }, [activeTab]);
-
-    useEffect(() => {
-        return () => {
-            if (liveDataFlushTimeoutRef.current !== null) {
-                window.clearTimeout(liveDataFlushTimeoutRef.current);
-                liveDataFlushTimeoutRef.current = null;
-            }
-            if (telemetryCountFlushTimeoutRef.current !== null) {
-                window.clearTimeout(telemetryCountFlushTimeoutRef.current);
-                telemetryCountFlushTimeoutRef.current = null;
-            }
-            void disposeTelemetryWriter({ force: true });
-        };
-    }, [disposeTelemetryWriter]);
 
     useEffect(() => {
         const sessionId = sessionSelected?.SessionId || null;
@@ -605,66 +113,35 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
             ? recordedAiAnalysisCacheRef.current.get(sessionId) || createIdleRecordedAiAnalysis(sessionId)
             : createIdleRecordedAiAnalysis());
     }, [sessionSelected?.SessionId]);
+
     const contextValue = useMemo(() => ({
         activeTab,
         mapSelected,
         sessionSelected,
-        liveData,
-        recordingState,
-        recordedSessionDataFilePath,
-        recordedTelemetryDataCount,
-        recordedSessioStaticsData,
         activeVisualizations,
         latestGuidanceMessage,
-        sessionIntelligence: sessionIntelligenceRef.current,
         recordedAiAnalysis,
         recordedPlaybackSummary,
         setMap,
         setSession,
-        setLiveSessionData,
-        transitionRecordingState,
-        setRecordedSessionStaticsData,
-        setRecordedSessionDataFilePath: setRecordingSessionDataFilePath,
         setRecordedPlaybackSummary,
         runRecordedAiAnalysis,
         setActiveTab,
-        writeRecordedLiveSessionData,
-        readRecordedSessionData,
-        finalizeRecordingWrites,
-        clearRecordingSession,
         setActiveVisualizations,
         sendGuidanceToChat,
-        TelemetryDataLiveStatus
     }), [
         activeTab,
         activeVisualizations,
-        clearRecordingSession,
-        finalizeRecordingWrites,
         latestGuidanceMessage,
-        liveData,
         mapSelected,
-        readRecordedSessionData,
         recordedAiAnalysis,
         recordedPlaybackSummary,
-        recordedSessionDataFilePath,
-        recordedSessioStaticsData,
-        recordedTelemetryDataCount,
-        recordingState,
         runRecordedAiAnalysis,
         sendGuidanceToChat,
         sessionSelected,
-        setLiveSessionData,
-        setRecordingSessionDataFilePath,
-        transitionRecordingState,
-        TelemetryDataLiveStatus,
-        writeRecordedLiveSessionData
     ]);
 
-    return (
-        <AnalysisContext.Provider value={contextValue}>
-            {children}
-        </AnalysisContext.Provider>
-    )
+    return <AnalysisContext.Provider value={contextValue}>{children}</AnalysisContext.Provider>;
 };
 
 type SessionAnalysisAssistantProps = {
@@ -673,21 +150,25 @@ type SessionAnalysisAssistantProps = {
 
 export const SessionAnalysisAssistant = ({ assistantModeOverride }: SessionAnalysisAssistantProps = {}) => {
     const analysisContext = useContext(AnalysisContext);
+    const liveSession = useContext(LiveSessionContext);
     const [isOpen, setIsOpen] = useState(false);
     const assistantSessionId = analysisContext.sessionSelected?.SessionId;
     const assistantSessionMode = resolveAssistantSessionMode({
         assistantModeOverride,
         sessionId: assistantSessionId,
-        recordingState: analysisContext.recordingState,
+        recordingState: liveSession.recordingState,
     });
     const assistantSessionLabel = assistantSessionMode === 'user_summary'
         ? 'User Summary'
         : assistantSessionMode === 'front_desk'
             ? 'Front Desk'
-            : analysisContext.sessionSelected?.session_name || 'Live Telemetry';
-    const effectiveAssistantSessionId = assistantSessionMode === 'user_summary' || assistantSessionMode === 'front_desk'
-        ? undefined
-        : assistantSessionId;
+            : assistantSessionMode === 'recorded'
+                ? analysisContext.sessionSelected?.session_name || 'Recorded Session'
+                : liveSession.recordingMetadata?.sessionName || 'Live Telemetry';
+    const effectiveAssistantSessionId = resolveAssistantRecordedSessionId(
+        assistantSessionMode,
+        assistantSessionId,
+    );
     const assistantConversationKey = buildAssistantConversationKey(assistantSessionMode, effectiveAssistantSessionId);
     const assistantClassName = `main-dashboard-assistant${isOpen ? ' main-dashboard-assistant--open' : ' main-dashboard-assistant--folded'}`;
     const assistantTitleMode = assistantSessionMode === 'user_summary'
@@ -721,7 +202,7 @@ export const SessionAnalysisAssistant = ({ assistantModeOverride }: SessionAnaly
                         ? 'AI Assistant - User Summary'
                         : assistantSessionMode === 'front_desk'
                             ? 'AI Assistant - Front Desk'
-                        : `AI Assistant - ${assistantTitleMode} - ${assistantSessionLabel}`}
+                            : `AI Assistant - ${assistantTitleMode} - ${assistantSessionLabel}`}
                 />
             </div>
         </aside>
@@ -729,39 +210,21 @@ export const SessionAnalysisAssistant = ({ assistantModeOverride }: SessionAnaly
 };
 
 const SessionAnalysis = () => {
-    const analysisContext = useContext(AnalysisContext);
-    const environment = useEnvironment();
-    const {
-        activeTab,
-        mapSelected,
-        sessionSelected,
-        setActiveTab
-    } = analysisContext;
+    const { activeTab, mapSelected, sessionSelected, setActiveTab } = useContext(AnalysisContext);
 
     return (
-        <>
-            <Tabs.Root className={`LiveAnalysisTabsRoot ${environment === 'electron' ? 'has-recording-bar' : ''}`} defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
-                <Tabs.List className="live-analysis-tablists" justify="start">
-                    <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
-                    {mapSelected == null ? "" : <Tabs.Trigger value="sessionLists">{mapSelected}</Tabs.Trigger>}
-                    {sessionSelected == null ? "" : <Tabs.Trigger value="session">Session {sessionSelected.session_name}</Tabs.Trigger>}
-                </Tabs.List>
-
-                <Box className="live-analysis-container" >
-                    <Tabs.Content className="TabContent" value="mapLists">
-                        <MapList ></MapList>
-                    </Tabs.Content>
-
-                    <Tabs.Content className="TabContent" value="sessionLists">
-                        <SessionList></SessionList>
-                    </Tabs.Content>
-
-                    <Tabs.Content className="TabContent" value="session">
-                        <SessionAnalysisSplit></SessionAnalysisSplit>
-                    </Tabs.Content>
-                </Box >
-            </Tabs.Root>
-        </>
+        <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>
+            <Tabs.List className="live-analysis-tablists" justify="start">
+                <Tabs.Trigger value="mapLists">Maps</Tabs.Trigger>
+                {mapSelected === null ? null : <Tabs.Trigger value="sessionLists">{mapSelected}</Tabs.Trigger>}
+                {sessionSelected === null ? null : <Tabs.Trigger value="session">Session {sessionSelected.session_name}</Tabs.Trigger>}
+            </Tabs.List>
+            <Box className="live-analysis-container">
+                <Tabs.Content className="TabContent" value="mapLists"><MapList /></Tabs.Content>
+                <Tabs.Content className="TabContent" value="sessionLists"><SessionList /></Tabs.Content>
+                <Tabs.Content className="TabContent" value="session"><SessionAnalysisSplit /></Tabs.Content>
+            </Box>
+        </Tabs.Root>
     );
 };
 

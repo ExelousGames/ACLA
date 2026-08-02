@@ -1,5 +1,6 @@
 import {
     buildAssistantConversationKey,
+    resolveAssistantRecordedSessionId,
     resolveAssistantSessionMode,
 } from '../assistant-session-mode';
 import { getNextRecordingState, RecordingState } from '../recording-state';
@@ -30,6 +31,30 @@ describe('assistant session mode resolution', () => {
             sessionId: 'session-1',
             recordingState: RecordingState.RECORDING,
         })).toBe('user_summary');
+    });
+
+    it('keeps a live tab override authoritative while checking with a recorded session selected', () => {
+        expect(resolveAssistantSessionMode({
+            assistantModeOverride: 'live',
+            sessionId: 'session-1',
+            recordingState: RecordingState.CHECKING,
+        })).toBe('live');
+    });
+
+    it.each(['live', 'front_desk', 'user_summary'] as const)(
+        'does not expose a recorded session id in %s mode',
+        (sessionMode) => {
+            expect(resolveAssistantRecordedSessionId(sessionMode, 'session-1')).toBeUndefined();
+        },
+    );
+
+    it('keeps the recorded session id in recorded mode', () => {
+        expect(resolveAssistantRecordedSessionId('recorded', 'session-1')).toBe('session-1');
+    });
+
+    it('isolates the live conversation from a recorded session selection', () => {
+        const sessionId = resolveAssistantRecordedSessionId('live', 'session-1');
+        expect(buildAssistantConversationKey('live', sessionId)).toBe('live:none');
     });
 
     it('builds a stable front desk conversation key', () => {

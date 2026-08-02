@@ -4,7 +4,7 @@ jest.mock('./charts/ImitationGuidanceChart', () => () => null);
 jest.mock('./charts/EventLogChart', () => () => null);
 jest.mock('./charts/AnalysisResultsChart', () => () => null);
 
-import { visualizationController } from './VisualizationRegistry';
+import { visualizationController, visualizationRegistry } from './VisualizationRegistry';
 
 describe('analysis-results visualization controls', () => {
     beforeEach(() => {
@@ -74,5 +74,17 @@ describe('analysis-results visualization controls', () => {
             message: expect.stringContaining('already exists'),
         });
         expect(visualizationController.getCurrentInstances()[0].data).toEqual(before);
+    });
+
+    it('keeps Analysis Results out of the recorded workspace menu', () => {
+        const recordedTypes = visualizationRegistry.getRecordedWorkspaceTypes();
+
+        expect(recordedTypes).not.toContain('analysis-results');
+        expect(recordedTypes).toEqual(expect.arrayContaining([
+            'telemetry-overview',
+            'map-visualization',
+            'imitation-guidance-chart',
+            'event-log',
+        ]));
     });
 });

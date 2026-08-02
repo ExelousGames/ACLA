@@ -74,12 +74,6 @@
     background: var(--lp-bg);
 }
 
-/* When the floating recording bar is rendered (electron only), reserve
-   space at the bottom so it doesn't cover the chat input / pills. */
-.LiveAnalysisTabsRoot.has-recording-bar .live-analysis-container {
-    padding-bottom: 96px;
-}
-
 .TabContent {
     height: 100%;
     overflow: hidden;

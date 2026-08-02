@@ -1,7 +1,6 @@
-import React, { useContext, useMemo, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Badge, Box, Card, Flex, ScrollArea, Table, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
-import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { EventType, SessionEvent } from '../../session-intelligence/types';
 
@@ -35,16 +34,13 @@ const formatMetadata = (metadata?: Record<string, any>): string => {
         .join(', ');
 };
 
-const EventLogChart: React.FC<VisualizationProps> = ({ width = '100%', height = 320 }) => {
-    const analysisContext = useContext(AnalysisContext);
+const EventLogChart: React.FC<VisualizationProps> = ({ data, width = '100%', height = 320 }) => {
     const [filter, setFilter] = useState<EventType | 'ALL'>('ALL');
     const [search, setSearch] = useState('');
 
-    // Re-read on every liveData tick so newly emitted events appear in the table.
     const events: SessionEvent[] = useMemo(() => {
-        return analysisContext.sessionIntelligence?.getAllEvents() ?? [];
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [analysisContext.sessionIntelligence, analysisContext.liveData]);
+        return Array.isArray(data) ? data : [];
+    }, [data]);
 
     const counts = useMemo(() => {
         const c: Record<EventType, number> = { CORNER: 0, STRAIGHT: 0, CRASHED: 0, OVERTAKE: 0 };

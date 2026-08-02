@@ -12,33 +12,47 @@ const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`
 
 const HIDDEN_METADATA_KEYS = new Set(['source', 'start_index', 'end_index']);
 
-type AnalysisResultsSortMode = 'original' | 'most-frequent' | 'most-time-lost';
+type AnalysisResultsSortMode = 'original' | 'most-frequent-sub-label' | 'most-time-lost';
+type AnalysisResultsMainLabelFilter = 'MSP' | 'MSR';
+
+interface MainLabelFilterOption {
+    value: AnalysisResultsMainLabelFilter;
+    label: string;
+    resolvedLabel: string;
+}
+
+const MAIN_LABEL_FILTER_OPTIONS: readonly MainLabelFilterOption[] = [
+    { value: 'MSP', label: 'Training Mistake', resolvedLabel: 'Mistake (Practice)' },
+    { value: 'MSR', label: 'Racing Mistake', resolvedLabel: 'Mistake (Racing)' },
+];
+
+interface AnalysisResultsChartProps extends VisualizationProps {
+    showElementId?: boolean;
+}
 
 interface IndexedAnalysisResult {
     element: AnalysisResultElement;
     originalIndex: number;
 }
 
-interface RecognizedSubMistake {
+interface RecognizedSubLabel {
     id: string;
     label: string;
 }
 
-type RecognizedSubMistakes = ReadonlyMap<string, RecognizedSubMistake>;
-
-const MISTAKE_PARENT_LABEL_IDS = ['MSP', 'MSR'] as const;
+type RecognizedSubLabels = ReadonlyMap<string, RecognizedSubLabel>;
 
 const compareLabelText = (left: string, right: string): number => (
     left.localeCompare(right, undefined, { sensitivity: 'base' }) || left.localeCompare(right)
 );
 
-const getSubMistakes = (
+const getSubLabels = (
     element: AnalysisResultElement,
-    recognizedSubMistakes: RecognizedSubMistakes,
-): RecognizedSubMistake[] => {
-    const matches = new Map<string, RecognizedSubMistake>();
+    recognizedSubLabels: RecognizedSubLabels,
+): RecognizedSubLabel[] => {
+    const matches = new Map<string, RecognizedSubLabel>();
     element.labels.forEach((label) => {
-        const recognized = recognizedSubMistakes.get(label);
+        const recognized = recognizedSubLabels.get(label);
         if (recognized) matches.set(recognized.id, recognized);
     });
     return Array.from(matches.values());
@@ -47,7 +61,7 @@ const getSubMistakes = (
 const sortAnalysisResults = (
     elements: AnalysisResultElement[],
     sortMode: AnalysisResultsSortMode,
-    recognizedSubMistakes: RecognizedSubMistakes,
+    recognizedSubLabels: RecognizedSubLabels,
 ): AnalysisResultElement[] => {
     const indexedElements: IndexedAnalysisResult[] = elements.map((element, originalIndex) => ({
         element,
@@ -75,23 +89,23 @@ const sortAnalysisResults = (
             .map(({ element }) => element);
     }
 
-    const mistakesByElement = indexedElements.map(({ element }) => (
-        getSubMistakes(element, recognizedSubMistakes)
+    const subLabelsByElement = indexedElements.map(({ element }) => (
+        getSubLabels(element, recognizedSubLabels)
     ));
-    const mistakeCounts = new Map<string, number>();
-    mistakesByElement.forEach((mistakes) => {
-        mistakes.forEach((mistake) => {
-            mistakeCounts.set(mistake.id, (mistakeCounts.get(mistake.id) ?? 0) + 1);
+    const subLabelCounts = new Map<string, number>();
+    subLabelsByElement.forEach((subLabels) => {
+        subLabels.forEach((subLabel) => {
+            subLabelCounts.set(subLabel.id, (subLabelCounts.get(subLabel.id) ?? 0) + 1);
         });
     });
-    const rankings = mistakesByElement.map((mistakes) => (
-        mistakes.reduce((ranking, mistake) => {
-            const count = mistakeCounts.get(mistake.id) ?? 0;
+    const rankings = subLabelsByElement.map((subLabels) => (
+        subLabels.reduce((ranking, subLabel) => {
+            const count = subLabelCounts.get(subLabel.id) ?? 0;
             if (
                 count > ranking.count
-                || (count === ranking.count && (!ranking.label || compareLabelText(mistake.label, ranking.label) < 0))
+                || (count === ranking.count && (!ranking.label || compareLabelText(subLabel.label, ranking.label) < 0))
             ) {
-                return { count, label: mistake.label };
+                return { count, label: subLabel.label };
             }
             return ranking;
         }, { count: 0, label: '' })
@@ -138,17 +152,31 @@ const TimeGap: React.FC<{ element: AnalysisResultElement }> = ({ element }) => {
     return <Text size="1" color="gray">Time gap: {text}</Text>;
 };
 
-const AnalysisResultCard: React.FC<{ element: AnalysisResultElement }> = ({ element }) => {
+const AnalysisResultCard: React.FC<{
+    element: AnalysisResultElement;
+    resultNumber: number;
+    showElementId: boolean;
+}> = ({ element, resultNumber, showElementId }) => {
     const metadataEntries = Object.entries(element.metadata ?? {})
         .filter(([key]) => !HIDDEN_METADATA_KEYS.has(key));
 
     return (
         <Box className={styles.element} data-testid={`analysis-result-${element.id}`}>
             <Flex justify="between" align="start" gap="2" wrap="wrap">
-                <Box>
-                    {element.title && <Text size="2" weight="bold" as="div">{element.title}</Text>}
-                    <Text size="1" className={styles.id} as="div">{element.id}</Text>
-                </Box>
+                <Flex className={styles.heading} align="start" gap="2">
+                    <Text
+                        className={styles.number}
+                        size="1"
+                        weight="bold"
+                        aria-label={`Analysis result ${resultNumber}`}
+                    >
+                        {resultNumber}
+                    </Text>
+                    <Box>
+                        {element.title && <Text size="2" weight="bold" as="div">{element.title}</Text>}
+                        {showElementId && <Text size="1" className={styles.id} as="div">{element.id}</Text>}
+                    </Box>
+                </Flex>
                 <Flex gap="1" wrap="wrap" justify="end">
                     {element.labels.length > 0
                         ? element.labels.map((label, index) => (
@@ -183,24 +211,40 @@ const AnalysisResultCard: React.FC<{ element: AnalysisResultElement }> = ({ elem
     );
 };
 
-const AnalysisResultsChart: React.FC<VisualizationProps> = ({ data, width = '100%', height = '100%' }) => {
+const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
+    data,
+    width = '100%',
+    height = '100%',
+    showElementId = true,
+}) => {
     const [sortMode, setSortMode] = React.useState<AnalysisResultsSortMode>('original');
+    const [mainLabelFilter, setMainLabelFilter] = React.useState<AnalysisResultsMainLabelFilter>('MSP');
     const { getCategoryLabels, getLabelName } = useAiLabels();
     const { elements } = React.useMemo(() => normalizeAnalysisResultsData(data), [data]);
-    const recognizedSubMistakes = React.useMemo(() => {
-        const matches = new Map<string, RecognizedSubMistake>();
-        MISTAKE_PARENT_LABEL_IDS.forEach((parentId) => {
-            getCategoryLabels(parentId).forEach((childId) => {
-                const child = { id: childId, label: getLabelName(childId) ?? childId };
-                matches.set(childId, child);
-                matches.set(child.label, child);
-            });
+    const selectedFilter = MAIN_LABEL_FILTER_OPTIONS.find(({ value }) => value === mainLabelFilter)!;
+    const recognizedParentLabels = React.useMemo(() => new Set([
+        selectedFilter.value,
+        selectedFilter.resolvedLabel,
+        getLabelName(selectedFilter.value),
+    ].filter((label): label is string => Boolean(label))), [getLabelName, selectedFilter]);
+    const filteredElements = React.useMemo(
+        () => elements.filter((element) => (
+            element.labels.some((label) => recognizedParentLabels.has(label))
+        )),
+        [elements, recognizedParentLabels],
+    );
+    const recognizedSubLabels = React.useMemo(() => {
+        const matches = new Map<string, RecognizedSubLabel>();
+        getCategoryLabels(mainLabelFilter).forEach((childId) => {
+            const child = { id: childId, label: getLabelName(childId) ?? childId };
+            matches.set(childId, child);
+            matches.set(child.label, child);
         });
         return matches;
-    }, [getCategoryLabels, getLabelName]);
+    }, [getCategoryLabels, getLabelName, mainLabelFilter]);
     const sortedElements = React.useMemo(
-        () => sortAnalysisResults(elements, sortMode, recognizedSubMistakes),
-        [elements, recognizedSubMistakes, sortMode],
+        () => sortAnalysisResults(filteredElements, sortMode, recognizedSubLabels),
+        [filteredElements, recognizedSubLabels, sortMode],
     );
 
     return (
@@ -208,29 +252,52 @@ const AnalysisResultsChart: React.FC<VisualizationProps> = ({ data, width = '100
             <Flex className={styles.summary} justify="between" align="center" gap="2" wrap="wrap">
                 <Flex className={styles.summaryText} align="center" justify="between" gap="2">
                     <Text size="2" weight="medium">Labeled elements</Text>
-                    <Text size="2" weight="bold" className={styles.count}>{elements.length} total</Text>
+                    <Text size="2" weight="bold" className={styles.count}>
+                        {filteredElements.length} of {elements.length} total
+                    </Text>
                 </Flex>
-                <label className={styles.sortControl}>
-                    <Text size="1" color="gray" as="span">Sort by</Text>
-                    <select
-                        className={styles.sortSelect}
-                        value={sortMode}
-                        onChange={(event) => setSortMode(event.target.value as AnalysisResultsSortMode)}
-                    >
-                        <option value="original">Original order</option>
-                        <option value="most-frequent">Most frequent mistake</option>
-                        <option value="most-time-lost">Most time lost</option>
-                    </select>
-                </label>
+                <Flex className={styles.controls} align="center" gap="2" wrap="wrap">
+                    <label className={styles.filterControl}>
+                        <Text size="1" color="gray" as="span">Main label</Text>
+                        <select
+                            className={styles.filterSelect}
+                            value={mainLabelFilter}
+                            onChange={(event) => (
+                                setMainLabelFilter(event.target.value as AnalysisResultsMainLabelFilter)
+                            )}
+                        >
+                            {MAIN_LABEL_FILTER_OPTIONS.map((option) => (
+                                <option value={option.value} key={option.value}>{option.label}</option>
+                            ))}
+                        </select>
+                    </label>
+                    <label className={styles.sortControl}>
+                        <Text size="1" color="gray" as="span">Sort by</Text>
+                        <select
+                            className={styles.sortSelect}
+                            value={sortMode}
+                            onChange={(event) => setSortMode(event.target.value as AnalysisResultsSortMode)}
+                        >
+                            <option value="original">Original order</option>
+                            <option value="most-frequent-sub-label">Most frequent sub labels</option>
+                            <option value="most-time-lost">Most time lost</option>
+                        </select>
+                    </label>
+                </Flex>
             </Flex>
-            {elements.length === 0 ? (
+            {filteredElements.length === 0 ? (
                 <Box className={styles.empty} data-testid="analysis-results-empty-state">
-                    <Text color="gray">No analysis results yet.</Text>
+                    <Text color="gray">No {selectedFilter.label} results yet.</Text>
                 </Box>
             ) : (
                 <ScrollArea type="hover" className={styles.list}>
-                    {sortedElements.map((element) => (
-                        <AnalysisResultCard element={element} key={element.id} />
+                    {sortedElements.map((element, index) => (
+                        <AnalysisResultCard
+                            element={element}
+                            key={element.id}
+                            resultNumber={index + 1}
+                            showElementId={showElementId}
+                        />
                     ))}
                 </ScrollArea>
             )}

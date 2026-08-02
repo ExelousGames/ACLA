@@ -1847,21 +1847,6 @@ const summarizeProcedureRequestForAi = (request: unknown) => {
     };
 };
 
-const summarizeLiveRecordedSegmentsForAi = (segments: unknown): Record<string, unknown>[] => (
-    Array.isArray(segments)
-        ? segments.slice(0, 5).map((segment) => {
-            const record = getToolUiRecord(segment);
-            return {
-                id: record.id ?? null,
-                track_section: record.track_section ?? null,
-                labels: Array.isArray(record.labels) ? record.labels : [],
-                start_position: record.start_position ?? null,
-                end_position: record.end_position ?? null,
-            };
-        })
-        : []
-);
-
 const buildToolAiOutput = (
     name: typeof ALL_AI_TOOL_NAMES[number],
     uiOutputValue: unknown,
@@ -1958,14 +1943,6 @@ const buildToolAiOutput = (
             break;
         case 'get_live_section_history':
             output.history_count = Array.isArray(uiOutput.history) ? uiOutput.history.length : 0;
-            break;
-        case 'analyze_live_recorded_analysis':
-            output.source = uiOutput.source ?? null;
-            output.samples_analyzed = uiOutput.analysis?.samples_analyzed ?? 0;
-            output.expert_time_available = uiOutput.analysis?.expert_time_available ?? null;
-            output.segments = summarizeLiveRecordedSegmentsForAi(uiOutput.analysis?.segments);
-            output.chart_id = uiOutput.chartId ?? null;
-            output.total_result_count = uiOutput.totalResultCount ?? 0;
             break;
         case '_get_live_section_telemetry':
             output.section = uiOutput.section

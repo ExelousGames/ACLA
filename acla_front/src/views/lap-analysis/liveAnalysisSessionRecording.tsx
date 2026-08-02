@@ -1,13 +1,14 @@
-import { Card, Flex, Box, IconButton, Heading, Grid, Text, Spinner, AlertDialog, Button } from '@radix-ui/themes';
-import { useContext, useEffect, useRef, useState, useMemo, useCallback, JSX } from 'react';
-import { AnalysisContext } from './analysis-context';
+import { Card, Flex, Box, Heading, Grid, Text, Spinner, AlertDialog, Button } from '@radix-ui/themes';
+import { useContext, useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import './liveAnalysisSessionRecording.css';
-import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto, RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
+import { UploadReacingSessionInitDto, UploadRacingSessionInitReturnDto } from 'data/live-analysis/live-analysis-type';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useAuth } from 'hooks/AuthProvider';
 import apiService from 'services/api.service';
 import { PythonShellOptions } from 'services/pythonService';
 import { RecordingState, StopReason } from './recording-state';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 
 const UPLOAD_CHUNK_SIZE = 1000;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
@@ -31,14 +32,12 @@ const UploadIcon = ({ size = 16 }: { size?: number }) => (
     </svg>
 );
 
-const PauseBadgeIcon = ({ size = 16 }: { size?: number }) => (
-    <svg width={size} height={size} viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M5 3C4.44772 3 4 3.44772 4 4V11C4 11.5523 4.44772 12 5 12C5.55228 12 6 11.5523 6 11V4C6 3.44772 5.55228 3 5 3ZM10 3C9.44772 3 9 3.44772 9 4V11C9 11.5523 9.44772 12 10 12C10.5523 12 11 11.5523 11 11V4C11 3.44772 10.5523 3 10 3Z" fill="currentColor" />
-    </svg>
-);
+type LiveAnalysisSessionRecordingProps = {
+    recorderHostId?: string;
+};
 
-export default function LiveAnalysisSessionRecording() {
-    const analysisContext = useContext(AnalysisContext);
+export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAnalysisSessionRecordingProps) {
+    const analysisContext = useContext(LiveSessionContext);
     const auth = useAuth();
     const state = analysisContext.recordingState;
     const transition = analysisContext.transitionRecordingState;
@@ -48,7 +47,7 @@ export default function LiveAnalysisSessionRecording() {
         analysisContextRef.current = analysisContext;
     }, [analysisContext]);
 
-    const TelemetryDataLiveStatus = analysisContext.TelemetryDataLiveStatus;
+    const TelemetryDataLiveStatus = analysisContext.telemetryStatus;
     const canRecord = state === RecordingState.READY || state === RecordingState.RESUME_READY;
 
     const recordingShellIdRef = useRef<number | null>(null);
@@ -65,9 +64,19 @@ export default function LiveAnalysisSessionRecording() {
     const [uploadError, setUploadError] = useState<string | null>(null);
     const [showRetryButton, setShowRetryButton] = useState(false);
     const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+    const [recorderHost, setRecorderHost] = useState<HTMLElement | null>(null);
+
+    useEffect(() => {
+        if (!recorderHostId) {
+            setRecorderHost(null);
+            return;
+        }
+        setRecorderHost(document.getElementById(recorderHostId));
+        return () => setRecorderHost(null);
+    }, [recorderHostId]);
 
     const uploadInFlightRef = useRef(false);
-    const hasRecordedData = analysisContext.recordedTelemetryDataCount > 0 && Boolean(analysisContext.recordedSessionDataFilePath);
+    const hasRecordedData = analysisContext.recordedSampleCount > 0 && Boolean(analysisContext.recordingFileKey);
 
     const uploadStatusLabel = isUploading
         ? 'Uploading...'
@@ -169,7 +178,7 @@ export default function LiveAnalysisSessionRecording() {
         }
 
         const ctx = analysisContextRef.current;
-        const liveStatus = ctx?.TelemetryDataLiveStatus ?? null;
+        const liveStatus = ctx?.telemetryStatus ?? null;
         console.log('Determining stop reason, live status:', liveStatus);
         if (liveStatus === ACC_STATUS.ACC_PAUSE) {
             return 'pause';
@@ -203,7 +212,14 @@ export default function LiveAnalysisSessionRecording() {
         }
 
         const ctx = analysisContextRef.current;
-        ctx.setMap((ctx.recordedSessioStaticsData as any)?.track || ctx.mapSelected || 'Unknown Track');
+        const trackName = ctx.staticData?.track
+            || ctx.currentTelemetry?.Static_track
+            || ctx.currentTelemetry?.Static?.track
+            || 'Unknown Track';
+        const carName = ctx.staticData?.car_model
+            || ctx.currentTelemetry?.Static_car_model
+            || ctx.currentTelemetry?.Static?.car_model
+            || 'Unknown Car';
         let folder = '../session_recording';
         let filename: string;
 
@@ -220,19 +236,15 @@ export default function LiveAnalysisSessionRecording() {
 
         if (!resumeExisting) {
             const newSessionName = `Racing Session ${new Date().toLocaleString()}`;
-            ctx.setSession({
-                session_name: newSessionName,
-                SessionId: '',
-                map: ctx.mapSelected || (ctx.recordedSessioStaticsData as any)?.track || 'Unknown Track',
-                user_id: '',
-                points: [],
-                data: [],
-                car: (ctx.recordedSessioStaticsData as any)?.car_model || 'Unknown Car'
-            } as RacingSessionDetailedInfoDto as any);
+            ctx.setRecordingMetadata({
+                sessionName: newSessionName,
+                mapName: trackName,
+                carName,
+            });
         }
 
         // Reset live data to clear stale status
-        ctx.setLiveSessionData({});
+        ctx.setCurrentTelemetry({});
 
         hasReceivedLiveSampleRef.current = false;
         transition({ type: resumeExisting ? 'recordingResumed' : 'recordingStarted' });
@@ -252,7 +264,7 @@ export default function LiveAnalysisSessionRecording() {
                     const obj = JSON.parse(message);
                     const status = obj.Graphics?.status;
                     const latestContext = analysisContextRef.current;
-                    latestContext.setLiveSessionData(obj);
+                    latestContext.setCurrentTelemetry(obj);
 
                     if (obj.available === false) {
                         wasUnavailable = true;
@@ -280,7 +292,7 @@ export default function LiveAnalysisSessionRecording() {
                         }
                         wasUnavailable = false;
                         lastValidObj = obj;
-                        void latestContext.writeRecordedLiveSessionData(obj).catch(() => undefined);
+                        void latestContext.appendTelemetrySample(obj).catch(() => undefined);
                     }
 
                     if (status !== undefined && status !== null) {
@@ -367,8 +379,6 @@ export default function LiveAnalysisSessionRecording() {
 
     const resetToChecking = useCallback(() => {
         analysisContext.clearRecordingSession();
-        // Clear the current session to ensure a fresh one is created for the next recording
-        analysisContext.setSession(null);
         recordingFileInfoRef.current = null;
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
@@ -380,16 +390,14 @@ export default function LiveAnalysisSessionRecording() {
     const handleUpload = useCallback(async () => {
         if (uploadInFlightRef.current) return false;
         if (!hasRecordedData) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
-        if (!analysisContext.sessionSelected?.session_name || !analysisContext.mapSelected || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
+        if (!analysisContext.recordingMetadata?.sessionName || !analysisContext.recordingMetadata?.mapName || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
         uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
         try {
             await analysisContext.finalizeRecordingWrites();
             setUploadStatus('Reading telemetry data...');
             // Reserve progress ranges: 0-40% for reading, 40-90% for chunk upload, 90-100% finalize
             let estimatedTotal: number | null = null;
-            let lastRead = 0;
-            const data = await analysisContext.readRecordedSessionData((read, total, bytesRead, totalBytes) => {
-                lastRead = read;
+            const data = await analysisContext.readRecordedTelemetry((read, total, bytesRead, totalBytes) => {
                 if (total && total > 0) estimatedTotal = total;
                 // If total known compute percentage otherwise logarithmic approximation
                 let pct: number;
@@ -406,7 +414,12 @@ export default function LiveAnalysisSessionRecording() {
             if (!data || data.length === 0) throw new Error('No telemetry data found to upload');
             setUploadProgress(45); setUploadStatus(`Processing ${data.length} telemetry points...`);
             const chunks: any[] = []; for (let i = 0; i < data.length; i += UPLOAD_CHUNK_SIZE) chunks.push(data.slice(i, i + UPLOAD_CHUNK_SIZE));
-            const metadata: UploadReacingSessionInitDto = { sessionName: analysisContext.sessionSelected.session_name, mapName: analysisContext.mapSelected, carName: analysisContext.recordedSessioStaticsData.car_model || 'Unknown Car', userId: auth?.userProfile.id || 'unknown' };
+            const metadata: UploadReacingSessionInitDto = {
+                sessionName: analysisContext.recordingMetadata.sessionName,
+                mapName: analysisContext.recordingMetadata.mapName,
+                carName: analysisContext.recordingMetadata.carName,
+                userId: auth?.userProfile.id || 'unknown',
+            };
             setUploadProgress(50); setUploadStatus('Initializing upload...');
             const initResp = await apiService.post('/racing-session/upload/init', metadata); if (!initResp.data) throw new Error('Failed to initialize upload');
             const { uploadId } = initResp.data as UploadRacingSessionInitReturnDto;
@@ -424,7 +437,8 @@ export default function LiveAnalysisSessionRecording() {
                         console.warn(`Chunk ${i} upload failed, retrying... (${retries} attempts left)`, err);
                         retries--;
                         if (retries === 0) throw err;
-                        await new Promise(resolve => setTimeout(resolve, 1000 * (4 - retries))); // Exponential backoff: 1s, 2s, 3s
+                        const retryDelayMs = 1000 * (4 - retries);
+                        await new Promise(resolve => setTimeout(resolve, retryDelayMs)); // Backoff: 1s, 2s, 3s
                     }
                 }
                 const pct = Math.floor(55 + (i + 1) / chunks.length * 35);
@@ -434,7 +448,7 @@ export default function LiveAnalysisSessionRecording() {
             setUploadProgress(92); setUploadStatus('Finalizing upload...');
             const final = new URLSearchParams(); final.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/complete?${final.toString()}`, {});
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
-            if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath);
+            if (analysisContext.recordingFileKey) await cleanupTelemetryFile(analysisContext.recordingFileKey);
             setTimeout(() => { setIsUploading(false); setTimeout(() => resetToChecking(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
             uploadInFlightRef.current = false;
             return true;
@@ -448,7 +462,7 @@ export default function LiveAnalysisSessionRecording() {
         }
     }, [analysisContext, auth, cleanupTelemetryFile, resetToChecking, hasRecordedData]);
 
-    const handleCancelUpload = useCallback(async () => { if (analysisContext.recordedSessionDataFilePath) await cleanupTelemetryFile(analysisContext.recordedSessionDataFilePath); resetToChecking(); }, [analysisContext, cleanupTelemetryFile, resetToChecking]);
+    const handleCancelUpload = useCallback(async () => { if (analysisContext.recordingFileKey) await cleanupTelemetryFile(analysisContext.recordingFileKey); resetToChecking(); }, [analysisContext, cleanupTelemetryFile, resetToChecking]);
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
 
     const openUploadDialog = useCallback(() => {
@@ -537,7 +551,7 @@ export default function LiveAnalysisSessionRecording() {
             default:
                 return null;
         }
-    }, [state, canRecord, startRecording, stopRecordingProcess, TelemetryDataLiveStatus, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
+    }, [state, canRecord, startRecording, stopRecordingProcess, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
 
     const isRecording = state === RecordingState.RECORDING;
     const isPaused = state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
@@ -555,8 +569,9 @@ export default function LiveAnalysisSessionRecording() {
         state === RecordingState.READY ? 'live-recording-bar__channel--live' :
         state === RecordingState.UPLOAD_READY ? 'live-recording-bar__channel--stopped' :
         '';
-    return (
-        <>
+    if (!recorderHost) return null;
+
+    return createPortal(
         <Box className={`live-recording-bar ${isRecording ? 'live-recording-bar--rec' : ''}`} position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
             <Flex height="100%" align="center" position="relative" overflow="hidden" className="live-recording-bar__inner">
                 <Flex gap="3" align="center" p="3" style={{ minWidth: 0, flex: 1 }}>
@@ -586,16 +601,16 @@ export default function LiveAnalysisSessionRecording() {
                                 </Box>
                             )}
                             <Card size="4">
-                                <Heading as="h3" size="6" trim="start" mb="5">Session <Text as="div" size="3" weight="bold" color="blue">{analysisContext.sessionSelected?.session_name || 'Unknown Session'}</Text></Heading>
+                                <Heading as="h3" size="6" trim="start" mb="5">Session <Text as="div" size="3" weight="bold" color="blue">{analysisContext.recordingMetadata?.sessionName || 'Unknown Session'}</Text></Heading>
                                 <Grid columns="2" gapX="4" gapY="5">
                                     <Box>
                                         <Text as="div" size="2" mb="1" color="gray">Map</Text>
-                                        <Text as="div" size="3" mb="1" weight="bold">{analysisContext.mapSelected || 'Unknown Map'}</Text>
+                                        <Text as="div" size="3" mb="1" weight="bold">{analysisContext.recordingMetadata?.mapName || analysisContext.staticData.track || 'Unknown Map'}</Text>
                                         <Text as="div" size="2">Practice session</Text>
                                     </Box>
                                     <Box>
                                         <Text as="div" size="2" mb="1" color="gray">Car</Text>
-                                        <Text as="div" size="3" weight="bold">{analysisContext.recordedSessioStaticsData?.car_model || 'Unknown Car'}</Text>
+                                        <Text as="div" size="3" weight="bold">{analysisContext.recordingMetadata?.carName || analysisContext.staticData.car_model || 'Unknown Car'}</Text>
                                     </Box>
                                     <Flex direction="column" gap="1" gridColumn="1 / -1">
                                         <Flex justify="between"><Text size="3" mb="1" weight="bold">Status</Text><Text size="2" color={uploadStatusColor}>{uploadStatusLabel}</Text></Flex>
@@ -619,18 +634,18 @@ export default function LiveAnalysisSessionRecording() {
                 <div className="live-recording-bar__status">
                     <div className="live-recording-bar__status-row">
                         <span className="live-recording-bar__status-label">MAP</span>
-                        <span className="live-recording-bar__status-value">{analysisContext.mapSelected || '—'}</span>
+                        <span className="live-recording-bar__status-value">{analysisContext.recordingMetadata?.mapName || analysisContext.staticData.track || '—'}</span>
                     </div>
                     <div className="live-recording-bar__status-row">
                         <span className="live-recording-bar__status-label">SAMPLES</span>
                         <span className="live-recording-bar__status-value live-recording-bar__status-value--mono">
-                            {analysisContext.recordedTelemetryDataCount.toLocaleString()}
+                            {analysisContext.recordedSampleCount.toLocaleString()}
                         </span>
                     </div>
                 </div>
 
             </Flex>
-        </Box>
-        </>
+        </Box>,
+        recorderHost,
     );
 }
