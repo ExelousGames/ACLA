@@ -33,6 +33,22 @@ jest.mock('contexts/AiLabelsContext', () => ({
     }),
 }));
 
+jest.mock('components/data-graphs', () => ({
+    DataGraph: ({ spec }: any) => (
+        <div
+            data-testid="mistake-frequency-graph"
+            data-graph-data={JSON.stringify(spec.data)}
+            data-graph-height={String(spec.height)}
+            data-graph-orientation={spec.orientation}
+            data-graph-value-axis-label={spec.xAxisLabel}
+            data-graph-colors={JSON.stringify(spec.colors)}
+        >
+            <span>{spec.title}</span>
+            {spec.data.length === 0 && <span role="status">{spec.emptyStateText}</span>}
+        </div>
+    ),
+}));
+
 import AnalysisResultsChart from './AnalysisResultsChart';
 import {
     appendAnalysisResultElement,
@@ -54,6 +70,10 @@ const selectSortMode = (value: string): void => {
 const selectMainLabel = (value: string): void => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Showing' }), { target: { value } });
 };
+
+const renderedFrequencyData = (): Array<{ label: string; occurrences: number }> => (
+    JSON.parse(screen.getByTestId('mistake-frequency-graph').getAttribute('data-graph-data') ?? '[]')
+);
 
 describe('AnalysisResultsChart', () => {
     it('renders arbitrary labels, context, and metadata safely', () => {
@@ -259,6 +279,23 @@ describe('AnalysisResultsChart', () => {
             'unknown-first',
             'racing-sub-label-only',
         ]);
+        expect(renderedFrequencyData()).toEqual([
+            { label: 'Late turn-in', occurrences: 3 },
+            { label: 'Wheel lock', occurrences: 3 },
+        ]);
+        expect(screen.getByText('Training mistake frequency')).toBeInTheDocument();
+        expect(screen.getByTestId('mistake-frequency-graph')).toHaveAttribute(
+            'data-graph-orientation',
+            'horizontal',
+        );
+        expect(screen.getByTestId('mistake-frequency-graph')).toHaveAttribute(
+            'data-graph-value-axis-label',
+            'Occurrences',
+        );
+        expect(screen.getByTestId('mistake-frequency-graph')).toHaveAttribute(
+            'data-graph-colors',
+            JSON.stringify(['#00e676']),
+        );
         expect(screen.getByText('7 of 9 total')).toBeInTheDocument();
     });
 
@@ -292,6 +329,58 @@ describe('AnalysisResultsChart', () => {
             'practice-sub-label-only',
             'unknown-second',
         ]);
+        expect(renderedFrequencyData()).toEqual([
+            { label: 'Failed overtake attempt', occurrences: 3 },
+            { label: 'Contact', occurrences: 2 },
+        ]);
+        expect(screen.getByText('Racing mistake frequency')).toBeInTheDocument();
+    });
+
+    it('keeps aggregation independent from card sorting and sizes the graph by category count', () => {
+        render(
+            <AnalysisResultsChart
+                id="independent-graph-order"
+                data={{
+                    elements: [
+                        { id: 'late', labels: ['MSP', 'MSP1'], timeGap: { deltaMs: 5 } },
+                        { id: 'wheel', labels: ['MSP', 'MSP2'], timeGap: { deltaMs: 50 } },
+                        { id: 'both', labels: ['MSP', 'Late turn-in', 'Wheel lock'], timeGap: { deltaMs: 10 } },
+                    ],
+                }}
+            />,
+        );
+        const graph = screen.getByTestId('mistake-frequency-graph');
+        const initialData = renderedFrequencyData();
+
+        expect(initialData).toEqual([
+            { label: 'Late turn-in', occurrences: 2 },
+            { label: 'Wheel lock', occurrences: 2 },
+        ]);
+        expect(graph).toHaveAttribute('data-graph-height', String(160 + (2 * 36)));
+
+        selectSortMode('most-time-lost');
+
+        expect(renderedResultIds()).toEqual(['wheel', 'both', 'late']);
+        expect(renderedFrequencyData()).toEqual(initialData);
+    });
+
+    it('shows the graph empty state when matching cards have no recognized sub-labels', () => {
+        render(
+            <AnalysisResultsChart
+                id="empty-frequency"
+                data={{ elements: [{ id: 'unknown', labels: ['MSP', 'Unknown mistake'] }] }}
+            />,
+        );
+
+        expect(renderedResultIds()).toEqual(['unknown']);
+        expect(renderedFrequencyData()).toEqual([]);
+        expect(screen.getByRole('status')).toHaveTextContent(
+            'No recognized training mistakes to graph.',
+        );
+        expect(screen.getByTestId('mistake-frequency-graph')).toHaveAttribute(
+            'data-graph-height',
+            String(160 + 36),
+        );
     });
 
     it('sorts numeric time losses descending and leaves invalid values last in source order', () => {
@@ -359,6 +448,9 @@ describe('AnalysisResultsChart', () => {
         expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveValue('most-frequent-sub-label');
         expect(renderedResultIds()).toEqual(['two', 'three', 'one']);
         expect(screen.getByText('3 of 4 total')).toBeInTheDocument();
+        expect(renderedFrequencyData()).toEqual([
+            { label: 'Failed overtake attempt', occurrences: 2 },
+        ]);
     });
 });
 

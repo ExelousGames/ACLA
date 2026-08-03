@@ -98,6 +98,14 @@
     padding: 12px;
 }
 
+.graph {
+    margin-bottom: 12px;
+}
+
+.cards {
+    min-width: 0;
+}
+
 .element {
     padding: 12px;
     margin-bottom: 10px;

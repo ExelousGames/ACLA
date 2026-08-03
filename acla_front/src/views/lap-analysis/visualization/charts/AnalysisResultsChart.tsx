@@ -6,6 +6,7 @@ import {
     normalizeAnalysisResultsData,
 } from './analysisResultsModel';
 import { useAiLabels } from 'contexts/AiLabelsContext';
+import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import styles from './AnalysisResultsChart.module.css';
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
@@ -68,6 +69,33 @@ const getSubLabels = (
     });
     return Array.from(matches.values());
 };
+
+export const buildMistakeFrequencyData = (
+    elements: readonly AnalysisResultElement[],
+    recognizedSubLabels: ReadonlyMap<string, RecognizedSubLabel>,
+): GraphRecord[] => {
+    const frequencies = new Map<string, { label: string; occurrences: number }>();
+    elements.forEach((element) => {
+        getSubLabels(element, recognizedSubLabels).forEach((subLabel) => {
+            const current = frequencies.get(subLabel.id);
+            frequencies.set(subLabel.id, {
+                label: subLabel.label,
+                occurrences: (current?.occurrences ?? 0) + 1,
+            });
+        });
+    });
+
+    return Array.from(frequencies.values())
+        .filter(({ occurrences }) => occurrences > 0)
+        .sort((left, right) => (
+            right.occurrences - left.occurrences
+            || compareLabelText(left.label, right.label)
+        ));
+};
+
+export const getMistakeFrequencyGraphHeight = (categoryCount: number): number => (
+    160 + (Math.max(1, categoryCount) * 36)
+);
 
 const sortAnalysisResults = (
     elements: AnalysisResultElement[],
@@ -257,6 +285,25 @@ const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
         () => sortAnalysisResults(filteredElements, sortMode, recognizedSubLabels),
         [filteredElements, recognizedSubLabels, sortMode],
     );
+    const mistakeFrequencyData = React.useMemo(
+        () => buildMistakeFrequencyData(filteredElements, recognizedSubLabels),
+        [filteredElements, recognizedSubLabels],
+    );
+    const graphSubject = mainLabelFilter === 'MSP' ? 'Training' : 'Racing';
+    const mistakeFrequencySpec = React.useMemo<GraphSpec>(() => ({
+        type: 'bar',
+        data: mistakeFrequencyData,
+        categoryKey: 'label',
+        series: [{ key: 'occurrences', label: 'Occurrences' }],
+        orientation: 'horizontal',
+        title: `${graphSubject} mistake frequency`,
+        xAxisLabel: 'Occurrences',
+        showLegend: false,
+        colors: ['#00e676'],
+        accessibleLabel: `${graphSubject} mistake frequency by recognized taxonomy sub-label`,
+        height: getMistakeFrequencyGraphHeight(mistakeFrequencyData.length),
+        emptyStateText: `No recognized ${graphSubject.toLowerCase()} mistakes to graph.`,
+    }), [graphSubject, mistakeFrequencyData]);
 
     return (
         <Card className={styles.chart} style={{ width, height }}>
@@ -296,22 +343,27 @@ const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
                     </label>
                 </Flex>
             </Flex>
-            {filteredElements.length === 0 ? (
-                <Box className={styles.empty} data-testid="analysis-results-empty-state">
-                    <Text color="gray">No {selectedFilter.label} results yet.</Text>
+            <ScrollArea type="hover" className={styles.list}>
+                <Box className={styles.graph}>
+                    <DataGraph spec={mistakeFrequencySpec} />
                 </Box>
-            ) : (
-                <ScrollArea type="hover" className={styles.list}>
-                    {sortedElements.map((element, index) => (
-                        <AnalysisResultCard
-                            element={element}
-                            key={element.id}
-                            resultNumber={index + 1}
-                            showElementId={showElementId}
-                        />
-                    ))}
-                </ScrollArea>
-            )}
+                {filteredElements.length === 0 ? (
+                    <Box className={styles.empty} data-testid="analysis-results-empty-state">
+                        <Text color="gray">No {selectedFilter.label} results yet.</Text>
+                    </Box>
+                ) : (
+                    <Box className={styles.cards}>
+                        {sortedElements.map((element, index) => (
+                            <AnalysisResultCard
+                                element={element}
+                                key={element.id}
+                                resultNumber={index + 1}
+                                showElementId={showElementId}
+                            />
+                        ))}
+                    </Box>
+                )}
+            </ScrollArea>
         </Card>
     );
 };
