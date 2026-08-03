@@ -5,7 +5,7 @@ exist we no-op; otherwise we fetch the active payload from the backend and
 write the artifacts back into ``segment_classifier.models_directory``.
 
 Backend upload happens at the tail of
-:meth:`SegmentClassifierService.train_model`, so the round-trip is
+:meth:`SegmentClassifierTrainer.train_model`, so the round-trip is
 train → backend → next-boot → disk → lazy ``load_model()``.
 """
 

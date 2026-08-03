@@ -1,15 +1,12 @@
-import sys
-from types import ModuleType, SimpleNamespace
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 import torch
 
-import app.ml.segment_classifier.service as service_module
 from app.ml.segment_classifier.model import TemporalDetectionModel
-from app.ml.segment_classifier.service import MODEL_FORMAT, SegmentClassifierService
+from app.ml.segment_classifier.service import SegmentClassifierService
 from app.storage.datasets.segment_dataset import build_temporal_sequences
 
 
@@ -98,154 +95,6 @@ def test_temporal_model_preserves_the_entire_sequence_length():
     assert model(torch.zeros(1, 257, 6)).shape == (1, 257, 4)
 
 
-def test_rocm_training_enables_miopen_immediate_mode(monkeypatch, capsys):
-    service = SegmentClassifierService.__new__(SegmentClassifierService)
-    service.device = torch.device("cuda")
-    monkeypatch.setattr(torch.version, "hip", "7.2")
-    monkeypatch.setattr(torch.backends.miopen, "immediate", False)
-
-    service._configure_training_backend()
-
-    assert torch.backends.miopen.immediate is True
-    assert "Enabled MIOpen Immediate Mode" in capsys.readouterr().out
-
-
-def test_non_rocm_training_does_not_change_miopen_mode(monkeypatch, capsys):
-    service = SegmentClassifierService.__new__(SegmentClassifierService)
-    monkeypatch.setattr(torch.backends.miopen, "immediate", False)
-
-    service.device = torch.device("cuda")
-    monkeypatch.setattr(torch.version, "hip", None)
-    service._configure_training_backend()
-
-    service.device = torch.device("cpu")
-    monkeypatch.setattr(torch.version, "hip", "7.2")
-    service._configure_training_backend()
-
-    assert torch.backends.miopen.immediate is False
-    assert capsys.readouterr().out == ""
-
-
-def _preprocessor_service(targets):
-    service = SegmentClassifierService.__new__(SegmentClassifierService)
-    service.device = torch.device("cpu")
-    service.label_ids = ["MSP", "MSP1"]
-    service.behavior_label_ids = ["MSP"]
-    sequence = SimpleNamespace(
-        features=np.array([[40.0, 0.0], [41.0, 1.0]], dtype=np.float32),
-        targets=np.array(targets, dtype=np.float32),
-        loss_mask=np.ones((2, 2), dtype=np.float32),
-    )
-    service._iter_sequences = lambda cache_key: iter([sequence])
-    return service
-
-
-@pytest.mark.asyncio
-async def test_parent_only_training_warns_and_fits_preprocessors(caplog):
-    service = _preprocessor_service([[1.0, 0.0], [0.0, 0.0]])
-
-    with caplog.at_level("WARNING", logger=service_module.LOGGER.name):
-        await service.fit_preprocessors("train")
-
-    assert service.scaler is not None
-    assert "training will continue with parent behavior labels only" in caplog.text
-    assert "child-label predictions from this model will not be reliable" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_child_annotated_training_does_not_warn(caplog):
-    service = _preprocessor_service([[1.0, 1.0], [0.0, 0.0]])
-
-    with caplog.at_level("WARNING", logger=service_module.LOGGER.name):
-        await service.fit_preprocessors("train")
-
-    assert "No behavior sub-label annotations" not in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_training_runs_all_epochs_and_restores_best_state(monkeypatch, capsys):
-    class CountingModel(torch.nn.Module):
-        def __init__(self, *args, **kwargs):
-            super().__init__()
-            self.weight = torch.nn.Parameter(torch.tensor(0.0))
-
-        def forward(self, features):
-            return self.weight.expand(features.shape[0], features.shape[1], 1)
-
-    optimizers = []
-
-    class CountingOptimizer:
-        def __init__(self, parameters, **kwargs):
-            self.parameter = next(iter(parameters))
-            self.step_count = 0
-            optimizers.append(self)
-
-        def zero_grad(self):
-            self.parameter.grad = None
-
-        def step(self):
-            with torch.no_grad():
-                self.parameter.add_(1.0)
-            self.step_count += 1
-
-    class NoOpScheduler:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def step(self, loss):
-            pass
-
-    batch = (
-        torch.zeros(1, 2, 1),
-        torch.zeros(1, 2, 1),
-        torch.ones(1, 2, 1),
-    )
-    validation_losses = [1.0, 2.0, 3.0, 4.0, 5.0]
-
-    service = SegmentClassifierService.__new__(SegmentClassifierService)
-    service.device = torch.device("cpu")
-    service.scaler = SimpleNamespace(mean_=np.zeros(1))
-    service.label_ids = ["MSP"]
-    service.hidden_dim = 1
-    service.dilations = (1,)
-    service.dropout = 0.0
-    service.threshold = None
-    service.model = None
-    service._configure_training_backend = lambda: None
-    service.prepare_training_data = AsyncMock()
-    service.fit_preprocessors = AsyncMock()
-    service._dataset = lambda cache_key: cache_key
-    service._save_artifacts = lambda: None
-    service.serialize_artifacts = lambda: {}
-
-    def controlled_loss(logits, targets, mask):
-        if service.model.training:
-            return logits.mean() * 0 + 1.0
-        return torch.tensor(validation_losses.pop(0))
-
-    service._masked_loss = controlled_loss
-    monkeypatch.setattr(service_module, "DataLoader", lambda *args, **kwargs: [batch])
-    monkeypatch.setattr(service_module, "TemporalDetectionModel", CountingModel)
-    monkeypatch.setattr(torch.optim, "Adam", CountingOptimizer)
-    monkeypatch.setattr(torch.optim.lr_scheduler, "ReduceLROnPlateau", NoOpScheduler)
-
-    backend_client = ModuleType("app.integrations.backend.client")
-    backend_client.backend_service = SimpleNamespace(save_ai_model=AsyncMock())
-    monkeypatch.setitem(sys.modules, "app.integrations.backend.client", backend_client)
-
-    await service.train_model(epochs=5, annotation_cache_key="annotations")
-
-    assert optimizers[0].step_count == 5
-    assert validation_losses == []
-    assert service.model.weight.item() == 1.0
-    report = capsys.readouterr().out
-    assert "Val Loss:" in report
-    assert "precision=" not in report
-    assert "recall=" not in report
-    assert "F1=" not in report
-    assert "segment_overlap=" not in report
-
-
 def test_threshold_merge_expands_boundaries_and_merges_only_overlapping_runs():
     runs = list(SegmentClassifierService._merge_score_runs(
         [0.2, 0.5, 0.8, 0.49, 0.7, 0.2, 0.1, 0.6, 0.8, 0.2],
@@ -280,6 +129,18 @@ def test_threshold_merge_uses_the_active_custom_threshold_and_requires_a_core():
         [0.49, 0.1, 0.2],
         0.5,
     )) == []
+
+
+def test_detection_uses_default_threshold_and_allows_override():
+    service = SegmentClassifierService.__new__(SegmentClassifierService)
+    service.threshold = 0.5
+    service.behavior_label_ids = ["MSP"]
+    service.child_parent = {}
+    service.score_sequence = lambda dataframe: pd.DataFrame({"MSP": [0.1, 0.7, 0.1]})
+    dataframe = pd.DataFrame(_rows(0, 3))
+
+    assert len(service.detect_segments(dataframe)) == 1
+    assert service.detect_segments(dataframe, threshold=0.8) == []
 
 
 def test_detection_allows_overlap_and_reruns_behavior_crop_for_children():

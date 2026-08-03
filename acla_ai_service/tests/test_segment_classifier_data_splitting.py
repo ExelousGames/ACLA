@@ -1,6 +1,6 @@
 import pytest
 
-from app.ml.segment_classifier.service import SegmentClassifierService
+from app.ml.segment_classifier.trainer import SegmentClassifierTrainer
 
 
 class _Store:
@@ -34,10 +34,10 @@ def _segment(segment_id, label="MSP", parent_id=None):
     return segment
 
 
-def _service(store):
-    service = SegmentClassifierService.__new__(SegmentClassifierService)
-    service.store = store
-    return service
+def _trainer(store):
+    trainer = SegmentClassifierTrainer.__new__(SegmentClassifierTrainer)
+    trainer.store = store
+    return trainer
 
 
 def _saved_session_ids(store, *keys):
@@ -62,7 +62,7 @@ async def test_prepare_training_data_splits_samples_and_keeps_children_with_pare
         }
     })
 
-    await _service(store).prepare_training_data(
+    await _trainer(store).prepare_training_data(
         "source",
         "train",
         "val",
@@ -107,7 +107,7 @@ async def test_prepare_training_data_uses_only_selected_sessions():
         }
     })
 
-    await _service(store).prepare_training_data(
+    await _trainer(store).prepare_training_data(
         "source",
         "train",
         "val",
@@ -122,7 +122,7 @@ async def test_prepare_training_data_rejects_empty_session_selection():
     store = _Store({"source": {"session-a": [_segment(1)]}})
 
     with pytest.raises(ValueError, match="At least one session"):
-        await _service(store).prepare_training_data(
+        await _trainer(store).prepare_training_data(
             "source",
             "train",
             "val",
@@ -135,7 +135,7 @@ async def test_prepare_training_data_rejects_missing_selected_sessions():
     store = _Store({"source": {"session-a": [_segment(1)]}})
 
     with pytest.raises(ValueError, match="No annotation sessions.*session-missing"):
-        await _service(store).prepare_training_data(
+        await _trainer(store).prepare_training_data(
             "source",
             "train",
             "val",
@@ -152,7 +152,7 @@ async def test_zero_validation_split_keeps_every_session_in_training():
         }
     })
 
-    await _service(store).prepare_training_data(
+    await _trainer(store).prepare_training_data(
         "source",
         "train",
         "val",
@@ -168,7 +168,7 @@ async def test_positive_validation_split_requires_two_samples():
     store = _Store({"source": {"session-a": [_segment(1)]}})
 
     with pytest.raises(ValueError, match="at least two annotated behavior samples"):
-        await _service(store).prepare_training_data(
+        await _trainer(store).prepare_training_data(
             "source",
             "train",
             "val",

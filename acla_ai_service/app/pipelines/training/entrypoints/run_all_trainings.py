@@ -14,7 +14,7 @@ project_root = Path(__file__).resolve().parents[4]
 sys.path.append(str(project_root))
 
 from app.pipelines.training.config import TrainingPipelineConfig
-from app.ml.segment_classifier.service import segment_classifier
+from app.ml.segment_classifier.trainer import segment_classifier_trainer
 from app.pipelines.training.full_dataset import Full_dataset_TelemetryMLService
 from app.pipelines.training.llm_trainer import DEFAULT_MODEL, run_llm_training
 from app.pipelines.training.pipeline import run_transformer_guidance_training
@@ -37,7 +37,7 @@ async def main() -> int:
     logger = logging.getLogger("run_all_trainings")
 
     print("\n=== [1/3] Segment classifier ===")
-    await segment_classifier.train_model(annotation_cache_key=args.annotation_key)
+    await segment_classifier_trainer.train_model(annotation_cache_key=args.annotation_key)
 
     print("\n=== [2/3] Transformer guidance ===")
     service = Full_dataset_TelemetryMLService(logger=logger, pipeline_config=cfg)

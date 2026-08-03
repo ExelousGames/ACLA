@@ -1,35 +1,23 @@
-"""Training, artifact handling, and inference for temporal behavior detection."""
+"""Artifact handling and inference for temporal behavior detection."""
 
 from __future__ import annotations
 
 import base64
-import copy
-import hashlib
 import logging
-import math
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Collection, Dict, Iterable, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 import joblib
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 from sklearn.preprocessing import StandardScaler
-from torch.utils.data import DataLoader
 
 from app.ml.segment_classifier.model import TemporalDetectionModel
 from app.shared.labels import BEHAVIOR_LABELS, LABEL_CATEGORIES, LABEL_MAPPING
 from app.shared.segment import PredictedSegment
 from app.shared.segment_classifier_features import SEGMENT_CLASSIFIER_FEATURES
-from app.storage import get_shared_telemetry_store
-from app.storage.datasets.segment_dataset import (
-    TemporalStreamingDataset,
-    build_temporal_sequences,
-    compute_derived_features,
-    pad_temporal_batch,
-)
+from app.storage.datasets.segment_dataset import compute_derived_features
 
 
 LOGGER = logging.getLogger(__name__)
@@ -50,47 +38,12 @@ def _behavior_and_child_labels() -> tuple[list[str], dict[str, str]]:
     return behaviors, child_parent
 
 
-def _chunk_records(chunk: Any) -> list[dict]:
-    if isinstance(chunk, list):
-        return [record for record in chunk if isinstance(record, dict)]
-    if isinstance(chunk, dict) and isinstance(chunk.get("data"), list):
-        return [record for record in chunk["data"] if isinstance(record, dict)]
-    if isinstance(chunk, dict) and isinstance(chunk.get("payload"), dict):
-        return [chunk["payload"]]
-    return [chunk] if isinstance(chunk, dict) else []
-
-
-def _annotation_samples(records: Sequence[dict]) -> list[tuple[str, list[dict]]]:
-    """Keep each behavior annotation and its child annotations as one sample."""
-    children_by_parent: dict[str, list[dict]] = defaultdict(list)
-    for record in records:
-        parent_id = record.get("parent_id")
-        if parent_id:
-            children_by_parent[str(parent_id)].append(record)
-
-    samples = []
-    for index, record in enumerate(records):
-        if record.get("parent_id"):
-            continue
-        if (
-            record.get("start_index") is None
-            or record.get("end_index") is None
-            or not record.get("telemetry_data")
-        ):
-            continue
-        fallback_id = f"{record['start_index']}:{record['end_index']}:{index}"
-        sample_id = str(record.get("id") or fallback_id)
-        samples.append((sample_id, [record, *children_by_parent.get(sample_id, [])]))
-    return samples
-
-
 class SegmentClassifierService:
     def __init__(self, models_directory: str = "models") -> None:
         self.models_directory = Path(models_directory).resolve()
         self.models_directory.mkdir(parents=True, exist_ok=True)
         self.model_path = self.models_directory / "segment_classifier.pth"
         self.scaler_path = self.models_directory / "segment_scaler.joblib"
-        self.store = get_shared_telemetry_store()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model: Optional[TemporalDetectionModel] = None
         self.scaler: Optional[StandardScaler] = None
@@ -101,287 +54,6 @@ class SegmentClassifierService:
         self.hidden_dim = DEFAULT_HIDDEN_DIM
         self.dilations = DEFAULT_DILATIONS
         self.dropout = DEFAULT_DROPOUT
-
-    def _configure_training_backend(self) -> None:
-        if self.device.type != "cuda" or not getattr(torch.version, "hip", None):
-            return
-        torch.backends.miopen.immediate = True
-        print("[INFO] Enabled MIOpen Immediate Mode for ROCm classifier training.")
-
-    @staticmethod
-    def _split_order(session_id: str, sample_id: str) -> str:
-        return hashlib.sha256(f"{session_id}\0{sample_id}".encode("utf-8")).hexdigest()
-
-    async def prepare_training_data(
-        self,
-        source_cache_key: str,
-        train_cache_key: str,
-        val_cache_key: str,
-        val_split: float = 0.2,
-        session_ids: Optional[Collection[str]] = None,
-    ) -> None:
-        """Split annotated behavior samples while keeping child ranges attached."""
-        if not 0 <= val_split < 1:
-            raise ValueError(
-                "Validation split must be greater than or equal to 0 and less than 1."
-            )
-        selected = None if session_ids is None else {str(value) for value in session_ids}
-        if selected is not None and not selected:
-            raise ValueError("At least one session must be selected for classifier training.")
-
-        sessions_found: set[str] = set()
-        samples: list[tuple[str, str, list[dict]]] = []
-        for chunk, raw_session_id in self.store.get_cached_data_chunks(
-            source_cache_key,
-            include_ids=True,
-        ):
-            session_id = str(raw_session_id)
-            if selected is not None and session_id not in selected:
-                continue
-            records = _chunk_records(chunk)
-            if records:
-                sessions_found.add(session_id)
-                for sample_id, sample_records in _annotation_samples(records):
-                    samples.append((session_id, sample_id, sample_records))
-
-        if selected is not None and not sessions_found:
-            names = ", ".join(sorted(selected))
-            raise ValueError(f"No annotation sessions found for selection: {names}")
-        if not samples:
-            raise ValueError("No annotated behavior samples found for classifier training.")
-        if val_split > 0 and len(samples) < 2:
-            raise ValueError(
-                "Validation requires at least two annotated behavior samples when "
-                "Val split is greater than 0."
-            )
-
-        ordered_samples = sorted(
-            samples,
-            key=lambda item: self._split_order(item[0], item[1]),
-        )
-        validation_count = 0
-        if val_split > 0:
-            validation_count = min(len(samples) - 1, math.ceil(len(samples) * val_split))
-        validation_samples = ordered_samples[:validation_count]
-        training_samples = ordered_samples[validation_count:]
-
-        training_records: dict[str, list[dict]] = defaultdict(list)
-        validation_records: dict[str, list[dict]] = defaultdict(list)
-        for session_id, _, records in training_samples:
-            training_records[session_id].extend(records)
-        for session_id, _, records in validation_samples:
-            validation_records[session_id].extend(records)
-
-        self.store.clear_cache(train_cache_key)
-        self.store.clear_cache(val_cache_key)
-        for session_id, records in training_records.items():
-            self.store.save_chunk(train_cache_key, session_id, records)
-        for session_id, records in validation_records.items():
-            self.store.save_chunk(val_cache_key, session_id, records)
-        print(
-            f"[INFO] Classifier sample split: train={len(training_samples)} "
-            f"validation={len(validation_samples)} requested_val_split={val_split:.1%}"
-        )
-
-    def _iter_sequences(self, cache_key: str):
-        for chunk in self.store.get_cached_data_chunks(cache_key):
-            yield from build_temporal_sequences(
-                chunk,
-                expected_features=self.feature_names,
-                label_ids=self.label_ids,
-                child_parent=self.child_parent,
-            )
-
-    async def fit_preprocessors(self, cache_key: str) -> None:
-        scaler = StandardScaler()
-        positives = np.zeros(len(self.label_ids), dtype=np.float64)
-        sequence_count = 0
-
-        for sequence in self._iter_sequences(cache_key):
-            scaler.partial_fit(sequence.features)
-            positives += (sequence.targets * sequence.loss_mask).sum(axis=0)
-            sequence_count += 1
-
-        if sequence_count == 0:
-            raise ValueError("No contiguous annotated telemetry sequences found in cache.")
-        behavior_count = len(self.behavior_label_ids)
-        if positives[:behavior_count].sum() == 0:
-            raise ValueError("No behavior annotations found in classifier training data.")
-        if positives[behavior_count:].sum() == 0:
-            LOGGER.warning(
-                "No behavior sub-label annotations found in classifier training data; "
-                "training will continue with parent behavior labels only, and child-label "
-                "predictions from this model will not be reliable."
-            )
-
-        self.scaler = scaler
-
-    def _dataset(self, cache_key: str) -> TemporalStreamingDataset:
-        return TemporalStreamingDataset(
-            self.store,
-            cache_key,
-            self.scaler,
-            self.feature_names,
-            self.label_ids,
-            self.child_parent,
-        )
-
-    @staticmethod
-    def _masked_loss(logits, targets, mask):
-        raw_loss = F.binary_cross_entropy_with_logits(
-            logits,
-            targets,
-            reduction="none",
-        )
-        denominator = mask.sum()
-        if denominator.item() == 0:
-            return None
-        return (raw_loss * mask).sum() / denominator
-
-    async def train_model(
-        self,
-        epochs: int = 10,
-        batch_size: int = 32,
-        learning_rate: float = 0.001,
-        val_split: float = 0.1,
-        annotation_cache_key: Optional[str] = None,
-        session_ids: Optional[Collection[str]] = None,
-    ) -> None:
-        self._configure_training_backend()
-
-        from app.pipelines.training.config import TrainingPipelineConfig
-
-        source_key = annotation_cache_key or TrainingPipelineConfig().annotation_cache_key
-        train_key = f"{source_key}_train"
-        val_key = f"{source_key}_val"
-        await self.prepare_training_data(
-            source_key,
-            train_key,
-            val_key,
-            val_split,
-            session_ids=session_ids,
-        )
-        await self.fit_preprocessors(train_key)
-
-        train_loader = DataLoader(
-            self._dataset(train_key),
-            batch_size=batch_size,
-            collate_fn=pad_temporal_batch,
-            num_workers=0,
-        )
-        val_loader = DataLoader(
-            self._dataset(val_key),
-            batch_size=batch_size,
-            collate_fn=pad_temporal_batch,
-            num_workers=0,
-        )
-        input_dim = int(self.scaler.mean_.shape[0])
-        self.model = TemporalDetectionModel(
-            input_dim=input_dim,
-            output_dim=len(self.label_ids),
-            hidden_dim=self.hidden_dim,
-            dilations=self.dilations,
-            dropout=self.dropout,
-        ).to(self.device)
-        optimizer = torch.optim.Adam(
-            self.model.parameters(),
-            lr=learning_rate,
-            weight_decay=1e-4,
-        )
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=0.5,
-            patience=2,
-        )
-
-        best_loss = float("inf")
-        best_state = None
-        best_epoch = None
-        for epoch in range(epochs):
-            self.model.train()
-            train_losses = []
-            for features, targets, mask in train_loader:
-                features = features.to(self.device)
-                targets = targets.to(self.device)
-                mask = mask.to(self.device)
-                optimizer.zero_grad()
-                loss = self._masked_loss(
-                    self.model(features),
-                    targets,
-                    mask,
-                )
-                if loss is None:
-                    continue
-                loss.backward()
-                optimizer.step()
-                train_losses.append(float(loss.item()))
-
-            self.model.eval()
-            val_losses = []
-            val_sequence_count = 0
-            with torch.no_grad():
-                for features, targets, mask in val_loader:
-                    logits = self.model(features.to(self.device))
-                    device_targets = targets.to(self.device)
-                    device_mask = mask.to(self.device)
-                    loss = self._masked_loss(
-                        logits,
-                        device_targets,
-                        device_mask,
-                    )
-                    if loss is not None:
-                        val_losses.append(float(loss.item()))
-                        val_sequence_count += int(features.shape[0])
-
-            if not train_losses:
-                raise ValueError("No valid temporal training samples were produced.")
-            if val_split > 0 and not val_losses:
-                raise ValueError("No valid temporal validation samples were produced by Val split.")
-
-            train_loss = float(np.mean(train_losses))
-            if val_losses:
-                monitored_loss = float(np.mean(val_losses))
-                print(
-                    f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, "
-                    f"Val Loss: {monitored_loss:.4f}, Val Samples: {val_sequence_count}"
-                )
-            else:
-                monitored_loss = train_loss
-                print(
-                    f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, "
-                    "Validation: disabled (Val split is 0)"
-                )
-            scheduler.step(monitored_loss)
-            if monitored_loss < best_loss:
-                best_loss = monitored_loss
-                best_state = copy.deepcopy(self.model.state_dict())
-                best_epoch = epoch + 1
-
-        if best_state is not None:
-            self.model.load_state_dict(best_state)
-        if best_epoch is not None and val_split > 0:
-            print(
-                f"[INFO] Best validation result: epoch={best_epoch} loss={best_loss:.4f}"
-            )
-        self.model.eval()
-        self._save_artifacts()
-
-        try:
-            from app.integrations.backend.client import backend_service
-
-            await backend_service.save_ai_model(
-                model_type="segment_classifier",
-                model_data=self.serialize_artifacts(),
-                metadata={
-                    "format": MODEL_FORMAT,
-                    "num_labels": len(self.label_ids),
-                    "feature_count": input_dim,
-                },
-                is_active=True,
-            )
-        except Exception as exc:
-            LOGGER.warning("segment_classifier backend upload failed: %s", exc)
 
     def _save_artifacts(self) -> None:
         torch.save(self.model.state_dict(), self.model_path)

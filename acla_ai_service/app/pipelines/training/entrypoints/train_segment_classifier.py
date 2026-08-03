@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin CLI around `segment_classifier.train_model(...)`.
+"""Thin CLI around `segment_classifier_trainer.train_model(...)`.
 
 Same entry point the UI Training tab invokes as a subprocess.
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parents[4]
 sys.path.append(str(project_root))
 
-from app.ml.segment_classifier.service import segment_classifier
+from app.ml.segment_classifier.trainer import segment_classifier_trainer
 from app.pipelines.training.config import TrainingPipelineConfig
 
 
@@ -41,7 +41,7 @@ async def main() -> int:
         f"batch_size={args.batch_size} lr={args.lr} val_split={args.val_split} "
         f"annotation_key={args.annotation_key} sessions={selected_sessions}"
     )
-    await segment_classifier.train_model(
+    await segment_classifier_trainer.train_model(
         epochs=args.epochs,
         batch_size=args.batch_size,
         learning_rate=args.lr,
