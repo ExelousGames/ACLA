@@ -1,4 +1,3 @@
-import json
 import sys
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock
@@ -327,17 +326,42 @@ def test_detection_allows_overlap_and_reruns_behavior_crop_for_children():
     assert detections[0].to_dict()["subsegments"][0]["label"] == "MSP1"
 
 
-def test_old_artifact_format_is_not_ready(tmp_path):
+def test_model_round_trip_uses_code_owned_configuration(tmp_path):
+    source = SegmentClassifierService(str(tmp_path))
+    source.scaler = SimpleNamespace(mean_=np.zeros(2))
+    source.model = TemporalDetectionModel(
+        input_dim=2,
+        output_dim=len(source.label_ids),
+        hidden_dim=source.hidden_dim,
+        dilations=source.dilations,
+        dropout=source.dropout,
+    )
+    source._save_artifacts()
+
+    target = SegmentClassifierService(str(tmp_path))
+
+    assert target.load_model() is True
+    assert target.feature_names == source.feature_names
+    assert target.label_ids == source.label_ids
+    assert target.hidden_dim == source.hidden_dim
+    assert target.dilations == source.dilations
+    assert target.dropout == source.dropout
+    assert target.threshold == source.threshold
+    assert not (tmp_path / "segment_config.json").exists()
+
+
+def test_local_artifacts_do_not_depend_on_legacy_config(tmp_path):
     service = SegmentClassifierService.__new__(SegmentClassifierService)
     service.models_directory = tmp_path
     service.model_path = tmp_path / "segment_classifier.pth"
     service.scaler_path = tmp_path / "segment_scaler.joblib"
-    service.config_path = tmp_path / "segment_config.json"
     service.model_path.touch()
     service.scaler_path.touch()
-    service.config_path.write_text(json.dumps({"format": "segment_classifier/v2"}))
+    (tmp_path / "segment_config.json").write_text(
+        '{"format": "segment_classifier/v2"}'
+    )
 
-    assert service.has_local_artifacts() is False
+    assert service.has_local_artifacts() is True
 
 
 def test_temporal_artifacts_round_trip_without_legacy_files(tmp_path):
@@ -350,10 +374,8 @@ def test_temporal_artifacts_round_trip_without_legacy_files(tmp_path):
     source.models_directory = source_dir
     source.model_path = source_dir / "segment_classifier.pth"
     source.scaler_path = source_dir / "segment_scaler.joblib"
-    source.config_path = source_dir / "segment_config.json"
     source.model_path.write_bytes(b"weights")
     source.scaler_path.write_bytes(b"scaler")
-    source.config_path.write_text(json.dumps({"format": MODEL_FORMAT}))
 
     payload = source.serialize_artifacts()
     assert set(payload["files"]) == set(source._ARTIFACT_FILES)
@@ -362,9 +384,8 @@ def test_temporal_artifacts_round_trip_without_legacy_files(tmp_path):
     target.models_directory = target_dir
     target.model_path = target_dir / "segment_classifier.pth"
     target.scaler_path = target_dir / "segment_scaler.joblib"
-    target.config_path = target_dir / "segment_config.json"
     target.deserialize_artifacts(payload)
 
     assert target.model_path.read_bytes() == b"weights"
     assert target.scaler_path.read_bytes() == b"scaler"
-    assert json.loads(target.config_path.read_text())["format"] == MODEL_FORMAT
+    assert not (target_dir / "segment_config.json").exists()

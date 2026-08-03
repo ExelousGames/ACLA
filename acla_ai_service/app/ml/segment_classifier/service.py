@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import copy
 import hashlib
-import json
 import logging
 import math
 from collections import defaultdict
@@ -91,7 +90,6 @@ class SegmentClassifierService:
         self.models_directory.mkdir(parents=True, exist_ok=True)
         self.model_path = self.models_directory / "segment_classifier.pth"
         self.scaler_path = self.models_directory / "segment_scaler.joblib"
-        self.config_path = self.models_directory / "segment_config.json"
         self.store = get_shared_telemetry_store()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model: Optional[TemporalDetectionModel] = None
@@ -385,46 +383,13 @@ class SegmentClassifierService:
         except Exception as exc:
             LOGGER.warning("segment_classifier backend upload failed: %s", exc)
 
-    def _config(self) -> dict:
-        return {
-            "format": MODEL_FORMAT,
-            "feature_names": self.feature_names,
-            "label_ids": self.label_ids,
-            "hidden_dim": self.hidden_dim,
-            "dilations": list(self.dilations),
-            "dropout": self.dropout,
-            "threshold": self.threshold,
-        }
-
     def _save_artifacts(self) -> None:
         torch.save(self.model.state_dict(), self.model_path)
         joblib.dump(self.scaler, self.scaler_path)
-        with self.config_path.open("w", encoding="utf-8") as handle:
-            json.dump(self._config(), handle)
 
     def load_model(self) -> bool:
         if not self.has_local_artifacts():
             return False
-        with self.config_path.open("r", encoding="utf-8") as handle:
-            config = json.load(handle)
-        if config.get("format") != MODEL_FORMAT:
-            return False
-
-        self.feature_names = list(config["feature_names"])
-        self.label_ids = list(config["label_ids"])
-        self.behavior_label_ids = [
-            label_id for label_id in BEHAVIOR_LABELS if label_id in self.label_ids
-        ]
-        _, catalog_children = _behavior_and_child_labels()
-        self.child_parent = {
-            child_id: parent_id
-            for child_id, parent_id in catalog_children.items()
-            if child_id in self.label_ids and parent_id in self.label_ids
-        }
-        self.hidden_dim = int(config["hidden_dim"])
-        self.dilations = tuple(int(value) for value in config["dilations"])
-        self.dropout = float(config["dropout"])
-        self.threshold = float(config.get("threshold", DEFAULT_THRESHOLD))
         self.scaler = joblib.load(self.scaler_path)
         self.model = TemporalDetectionModel(
             input_dim=int(self.scaler.mean_.shape[0]),
@@ -440,17 +405,13 @@ class SegmentClassifierService:
     _ARTIFACT_FILES = (
         "segment_classifier.pth",
         "segment_scaler.joblib",
-        "segment_config.json",
     )
 
     def has_local_artifacts(self) -> bool:
-        if not all((self.models_directory / name).is_file() for name in self._ARTIFACT_FILES):
-            return False
-        try:
-            with self.config_path.open("r", encoding="utf-8") as handle:
-                return json.load(handle).get("format") == MODEL_FORMAT
-        except (OSError, ValueError, TypeError):
-            return False
+        return all(
+            (self.models_directory / name).is_file()
+            for name in self._ARTIFACT_FILES
+        )
 
     def serialize_artifacts(self) -> Dict[str, Any]:
         if not self.has_local_artifacts():
