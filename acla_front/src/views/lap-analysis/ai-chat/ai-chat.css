@@ -661,19 +661,24 @@
   background: rgba(41, 182, 246, 0.14);
 }
 
-.ai-chat__range-tracker {
+.ai-chat__range-todo {
   border: 1px solid rgba(0, 230, 118, 0.36);
   border-radius: var(--lp-radius-sm);
   background: rgba(10, 22, 18, 0.64);
   padding: 12px 14px;
 }
-.ai-chat__range-tracker-head {
+.ai-chat__range-todo--panel {
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+.ai-chat__range-todo-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
-.ai-chat__range-tracker-kicker {
+.ai-chat__range-todo-kicker {
   display: block;
   font-family: var(--lp-mono);
   font-size: 9px;
@@ -681,14 +686,14 @@
   text-transform: uppercase;
   color: var(--lp-green);
 }
-.ai-chat__range-tracker-title {
+.ai-chat__range-todo-title {
   margin-top: 4px;
   color: var(--lp-white);
   font-size: 14px;
   font-weight: 700;
   line-height: 1.3;
 }
-.ai-chat__range-tracker-state {
+.ai-chat__range-todo-rate {
   flex-shrink: 0;
   padding: 3px 8px;
   border: 1px solid var(--lp-border-strong);
@@ -699,11 +704,7 @@
   text-transform: uppercase;
   color: var(--lp-gray);
 }
-.ai-chat__range-tracker-state--open {
-  border-color: var(--lp-green);
-  color: var(--lp-green);
-}
-.ai-chat__range-list {
+.ai-chat__range-todo-list {
   list-style: none;
   display: flex;
   flex-direction: column;
@@ -711,81 +712,72 @@
   margin: 12px 0 0;
   padding: 0;
 }
-.ai-chat__range-item {
+.ai-chat__range-todo-item {
   border: 1px solid rgba(232, 232, 240, 0.12);
   border-radius: var(--lp-radius-sm);
   background: rgba(5, 8, 14, 0.45);
   padding: 9px 10px;
 }
-.ai-chat__range-item--classifying {
+.ai-chat__range-todo-item--running {
   border-color: rgba(255, 183, 77, 0.5);
+  background: rgba(255, 183, 77, 0.08);
 }
-.ai-chat__range-item--classified {
+.ai-chat__range-todo-item--completed {
   border-color: rgba(0, 230, 118, 0.5);
+  background: rgba(0, 230, 118, 0.08);
 }
-.ai-chat__range-item--error {
+.ai-chat__range-todo-item--error {
   border-color: rgba(255, 82, 82, 0.55);
+  background: rgba(255, 82, 82, 0.08);
 }
-.ai-chat__range-item-main {
+.ai-chat__range-todo-item-main {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
-.ai-chat__range-item-name {
+.ai-chat__range-todo-item-name {
   color: var(--lp-white);
   font-size: 13px;
   font-weight: 700;
   overflow-wrap: anywhere;
 }
-.ai-chat__range-item-pos,
-.ai-chat__range-item-status {
+.ai-chat__range-todo-item-status,
+.ai-chat__range-todo-metrics {
   font-family: var(--lp-mono);
   font-size: 9px;
   letter-spacing: 1px;
   text-transform: uppercase;
 }
-.ai-chat__range-item-pos {
-  color: var(--lp-gray);
-  font-variant-numeric: tabular-nums;
-}
-.ai-chat__range-item-status {
+.ai-chat__range-todo-item-status {
   color: var(--lp-amber);
 }
-.ai-chat__range-segment {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: 8px;
+.ai-chat__range-todo-detail {
   margin-top: 7px;
   color: var(--lp-gray);
   font-size: 11px;
   line-height: 1.35;
 }
-.ai-chat__range-segment span,
-.ai-chat__range-segment em {
-  font-family: var(--lp-mono);
-  font-size: 9px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
+.ai-chat__range-todo-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 7px;
   color: var(--lp-gray-dim);
-  font-style: normal;
+  font-variant-numeric: tabular-nums;
 }
-.ai-chat__range-segment strong {
-  min-width: 0;
-  color: var(--lp-white);
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.ai-chat__range-children {
-  margin-top: 2px;
-}
-.ai-chat__range-error {
+.ai-chat__range-todo-error {
   margin-top: 7px;
   color: var(--lp-red);
   font-size: 11px;
   line-height: 1.35;
+}
+.ai-chat__range-todo-empty {
+  padding: 24px 8px;
+  color: var(--lp-gray);
+  font-size: 12px;
+  text-align: center;
 }
 
 /* Map tool attachment */

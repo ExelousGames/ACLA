@@ -15,6 +15,7 @@ import {
     SegmentClassificationSegment,
 } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import type { AnalysisResultElement } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
+import { adaptAnalysisResultsComparison } from 'views/lap-analysis/visualization/charts/analysisResultsComparisonAdapter';
 import {
     DEFAULT_ANALYST_COOLDOWN_MS,
     DEFAULT_ANALYST_MIN_DISTANCE,
@@ -46,7 +47,7 @@ import {
     type ToolOutputEnvelope,
     executeAiToolDefinition,
 } from './ai-tool-base';
-import type { LiveRangeTrackerToolResult } from './LiveRangeTracker';
+import type { LiveRangeTodoListToolResult } from 'views/live-session/live-range-todo-list-types';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
@@ -131,9 +132,9 @@ export interface AiCommandRegistryContext {
         game: CircuitMapGame,
         sourceTrackKey: string | null | undefined,
     ) => Promise<CircuitMapDto | null>;
-    setLiveRangeTracker?: (args: Record<string, unknown>) => LiveRangeTrackerToolResult;
-    updateLiveRangeTracker?: (args: Record<string, unknown>) => LiveRangeTrackerToolResult;
-    getLiveRangeTracker?: () => LiveRangeTrackerToolResult;
+    setLiveRangeTodoList?: (args: Record<string, unknown>) => LiveRangeTodoListToolResult;
+    updateLiveRangeTodoList?: (args: Record<string, unknown>) => LiveRangeTodoListToolResult;
+    getLiveRangeTodoList?: () => LiveRangeTodoListToolResult;
     displayMap?: (display: AiMapDisplayPayload) => void;
 }
 
@@ -574,6 +575,12 @@ const buildLiveAnalysisResultElements = (
                 deltaMs: segment.time_gap.delta_ms,
             }
             : undefined;
+        const comparison = adaptAnalysisResultsComparison({
+            baselineRecords: baselineRecord.records,
+            expertReferenceData: result.expert_reference_data,
+            startIndex: segment.start_index,
+            endIndex: segment.end_index,
+        });
 
         return {
             id,
@@ -583,6 +590,7 @@ const buildLiveAnalysisResultElements = (
                 ? { normalizedPositionRange: { start, end } }
                 : {}),
             ...(timeGap ? { timeGap } : {}),
+            ...(comparison.samples.length > 0 ? { comparison } : {}),
             metadata: {
                 source: 'live_classifier',
                 start_index: segment.start_index,
@@ -1413,40 +1421,40 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
         };
     },
 
-    async set_live_range_tracker(args) {
+    async set_live_range_todo_list(args) {
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        if (!context.setLiveRangeTracker) {
+        if (!context.setLiveRangeTodoList) {
             return {
                 status: 'error',
-                error: 'live_range_tracker_unavailable',
-                message: 'Live range tracker UI is not mounted.',
+                error: 'live_range_todo_list_unavailable',
+                message: 'Open the Live Range To-do List panel in Live Data Visualizations before using this tool.',
             };
         }
-        return context.setLiveRangeTracker(args);
+        return context.setLiveRangeTodoList(args);
     },
 
-    async update_live_range_tracker(args) {
+    async update_live_range_todo_list(args) {
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        if (!context.updateLiveRangeTracker) {
+        if (!context.updateLiveRangeTodoList) {
             return {
                 status: 'error',
-                error: 'live_range_tracker_unavailable',
-                message: 'Live range tracker UI is not mounted.',
+                error: 'live_range_todo_list_unavailable',
+                message: 'Open the Live Range To-do List panel in Live Data Visualizations before using this tool.',
             };
         }
-        return context.updateLiveRangeTracker(args);
+        return context.updateLiveRangeTodoList(args);
     },
 
-    async get_live_range_tracker() {
+    async get_live_range_todo_list() {
         if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        if (!context.getLiveRangeTracker) {
+        if (!context.getLiveRangeTodoList) {
             return {
                 status: 'error',
-                error: 'live_range_tracker_unavailable',
-                message: 'Live range tracker UI is not mounted.',
+                error: 'live_range_todo_list_unavailable',
+                message: 'Open the Live Range To-do List panel in Live Data Visualizations before using this tool.',
             };
         }
-        return context.getLiveRangeTracker();
+        return context.getLiveRangeTodoList();
     },
 
     async analyze_live_recorded_analysis(args) {
@@ -1768,9 +1776,9 @@ const ALL_AI_TOOL_NAMES = [
     'get_next_corner',
     'get_live_focus_section',
     'get_live_section_history',
-    'set_live_range_tracker',
-    'update_live_range_tracker',
-    'get_live_range_tracker',
+    'set_live_range_todo_list',
+    'update_live_range_todo_list',
+    'get_live_range_todo_list',
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
@@ -1826,17 +1834,14 @@ const summarizeMapForAi = (uiOutput: Record<string, any>) => ({
     section: uiOutput.section ?? null,
 });
 
-const summarizeLiveRangeForAi = (uiOutput: Record<string, any>) => {
-    const ranges = Array.isArray(uiOutput.tracker?.ranges) ? uiOutput.tracker.ranges : [];
+const summarizeLiveRangeTodoListForAi = (uiOutput: Record<string, any>) => {
+    const events = Array.isArray(uiOutput.todo_list?.events) ? uiOutput.todo_list.events : [];
     return {
-        tracker_status: uiOutput.tracker?.status ?? null,
-        range_count: ranges.length,
+        event_count: events.length,
+        pending_count: events.filter((event: Record<string, any>) => event.status === 'pending').length,
+        running_count: events.filter((event: Record<string, any>) => event.status === 'running').length,
     };
 };
-
-const summarizeLiveRangeSetForAi = (uiOutput: Record<string, any>) => ({
-    tracker_status: uiOutput.tracker?.status ?? null,
-});
 
 const summarizeProcedureRequestForAi = (request: unknown) => {
     const record = getToolUiRecord(request);
@@ -1880,12 +1885,10 @@ const buildToolAiOutput = (
         case 'show_map':
             Object.assign(output, summarizeMapForAi(uiOutput));
             break;
-        case 'update_live_range_tracker':
-        case 'get_live_range_tracker':
-            Object.assign(output, summarizeLiveRangeForAi(uiOutput));
-            break;
-        case 'set_live_range_tracker':
-            Object.assign(output, summarizeLiveRangeSetForAi(uiOutput));
+        case 'set_live_range_todo_list':
+        case 'update_live_range_todo_list':
+        case 'get_live_range_todo_list':
+            Object.assign(output, summarizeLiveRangeTodoListForAi(uiOutput));
             break;
         case 'set_procedure_plan':
             output.goal = uiOutput.goal ?? null;

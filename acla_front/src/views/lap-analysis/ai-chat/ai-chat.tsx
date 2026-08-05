@@ -40,11 +40,10 @@ import {
 import {
     BaselineCollectionTracker,
 } from './BaselineCollectionTracker';
-import LiveRangeTracker, {
-    type LiveRangeTrackerHandle,
-    type LiveRangeTrackerState,
-} from './LiveRangeTracker';
+import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
+import type { JsonValue, LiveRangeTodoEventCallbackContext } from 'views/live-session/live-range-todo-list-types';
 import { useBaselineCollectionRuntime } from './BaselineCollectionRuntime';
+import { createLiveRangeTodoAiAdapter } from './live-range-todo-ai-adapter';
 import {
     getToolEnvelopeError,
     getToolEnvelopeUiOutput,
@@ -53,6 +52,10 @@ import {
 } from './ai-tool-base';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import { resolveAssistantRecordedSessionId } from 'views/lap-analysis/assistant-session-mode';
+import {
+    broadcastFloatingPillPayload,
+    type FloatingPillPayloadInput,
+} from 'views/floating-chat/floating-pill-bridge';
 
 type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
@@ -360,12 +363,15 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const activeVoiceToolResultRef = useRef<(frame: ToolResultFrame) => boolean>(
         () => false,
     );
+    const activeVoiceToolStatusRef = useRef<(data: Record<string, unknown>) => boolean>(
+        () => false,
+    );
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
     const planToolRunsRef = useRef<Set<string>>(new Set());
     const lastBroadcastedProcedurePlanKeyRef = useRef<string | null>(null);
-    const liveRangeTrackerRef = useRef<LiveRangeTrackerHandle | null>(null);
+    const lastBroadcastedLiveRangeTodoListKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
         activeAgentSessionRef.current = activeAgentSession;
@@ -400,23 +406,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, []);
 
     const broadcastPillPayload = useCallback((
-        payload: {
-            kind: 'message' | 'tool' | 'baseline' | 'map' | 'plan' | 'range';
-            text?: string;
-            data?: unknown;
-            emotion?: Emotion | null;
-            tags?: string[];
-            name?: string;
-        },
+        payload: Omit<FloatingPillPayloadInput, 'emotion'> & { emotion?: Emotion | null },
     ) => {
-        try {
-            localStorage.setItem('acla-pill-msg', JSON.stringify({
-                ...payload,
-                ts: Date.now(),
-                emotion: payload.emotion ?? undefined,
-                tags: payload.tags ?? activeAgentTagsRef.current,
-            }));
-        } catch { /* ignore storage write failures */ }
+        broadcastFloatingPillPayload({
+            ...payload,
+            emotion: payload.emotion ?? undefined,
+            tags: payload.tags ?? activeAgentTagsRef.current,
+        });
     }, []);
 
     const broadcastPillMessage = useCallback((text: string, options: { emotion?: Emotion | null; tags?: string[]; name?: string } = {}) => {
@@ -751,14 +747,31 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         });
     }, [baselineCollectionEnabled, baselineCollectionTag, broadcastPillPayload]);
 
-    const handleLiveRangeTrackerStateChange = useCallback((tracker: LiveRangeTrackerState | null) => {
-        if (!tracker || tracker.ranges.length === 0) return;
+    useEffect(() => {
+        const todoList = liveSession.liveRangeTodoListSnapshot;
+        if (!todoList || todoList.events.length === 0) {
+            lastBroadcastedLiveRangeTodoListKeyRef.current = null;
+            return;
+        }
+        const lifecycleKey = JSON.stringify(todoList.events.map((event) => ({
+            id: event.id,
+            position: event.normalized_position,
+            lead: event.lead_time_seconds,
+            content: event.content,
+            data: event.data,
+            status: event.status,
+        })));
+        if (lifecycleKey === lastBroadcastedLiveRangeTodoListKeyRef.current) return;
+        lastBroadcastedLiveRangeTodoListKeyRef.current = lifecycleKey;
+        const emphasizedEvent = [...todoList.events].reverse().find((event) => event.status !== 'pending');
         broadcastPillPayload({
-            kind: 'range',
-            text: `${tracker.ranges.length} tracked range${tracker.ranges.length === 1 ? '' : 's'}`,
-            data: tracker,
+            kind: 'live_range_todo_list',
+            text: emphasizedEvent
+                ? `${emphasizedEvent.content.title}: ${emphasizedEvent.status}`
+                : `${todoList.events.length} planned event${todoList.events.length === 1 ? '' : 's'}`,
+            data: todoList,
         });
-    }, [broadcastPillPayload]);
+    }, [broadcastPillPayload, liveSession.liveRangeTodoListSnapshot]);
 
     const startTrackGuide = useCallback(() => {
         trackGuideRunTokenRef.current += 1;
@@ -910,21 +923,90 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const inactiveAgentToolHandlers = useMemo(() => ({}), []);
     const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
-    const getMissingLiveRangeTrackerResult = useCallback(() => ({
-        status: 'error' as const,
-        tracker: null,
-        error: 'live_range_tracker_unavailable',
-        message: 'Live range tracker UI is not mounted.',
-    }), []);
-    const setLiveRangeTracker = useCallback((args: Record<string, unknown>) => (
-        liveRangeTrackerRef.current?.setTracker(args) ?? getMissingLiveRangeTrackerResult()
-    ), [getMissingLiveRangeTrackerResult]);
-    const updateLiveRangeTracker = useCallback((args: Record<string, unknown>) => (
-        liveRangeTrackerRef.current?.updateTracker(args) ?? getMissingLiveRangeTrackerResult()
-    ), [getMissingLiveRangeTrackerResult]);
-    const getLiveRangeTracker = useCallback(() => (
-        liveRangeTrackerRef.current?.getTracker() ?? getMissingLiveRangeTrackerResult()
-    ), [getMissingLiveRangeTrackerResult]);
+    const notifyAiForLiveRangeEvent = useCallback(async ({
+        event,
+        data,
+        lap,
+        eta_seconds: etaSeconds,
+        sessionIntelligence,
+        signal,
+    }: LiveRangeTodoEventCallbackContext) => {
+        if (signal.aborted) throw new Error('Live range to-do notification was aborted.');
+        const notificationOptions = isRecord(data) ? data : {};
+        const rangeRequest = isRecord(notificationOptions.telemetry_range_summary)
+            ? notificationOptions.telemetry_range_summary
+            : isRecord(notificationOptions.telemetry_range)
+                ? notificationOptions.telemetry_range
+                : null;
+        const includeRangeSummary = Boolean(rangeRequest)
+            || notificationOptions.include_telemetry_range_summary === true;
+        let telemetryRangeSummary: Record<string, JsonValue> | undefined;
+
+        if (includeRangeSummary) {
+            const startPosition = Number(
+                rangeRequest?.start_position ?? notificationOptions.range_start_position,
+            );
+            const endPosition = Number(
+                rangeRequest?.end_position ?? notificationOptions.range_end_position,
+            );
+            if (
+                !Number.isFinite(startPosition)
+                || startPosition < 0
+                || startPosition > 1
+                || !Number.isFinite(endPosition)
+                || endPosition < 0
+                || endPosition > 1
+            ) {
+                throw new Error('AI notification telemetry range summaries require start_position and end_position from 0 through 1.');
+            }
+            const requestedLap = rangeRequest?.lap;
+            const rangeWindow = sessionIntelligence.getTelemetryWindowForNormalizedRange({
+                start_position: startPosition,
+                end_position: endPosition,
+                lap: requestedLap === 'current' || requestedLap === 'last' || typeof requestedLap === 'number'
+                    ? requestedLap
+                    : lap,
+            });
+            telemetryRangeSummary = {
+                status: rangeWindow.status,
+                start_position: rangeWindow.startPosition,
+                end_position: rangeWindow.endPosition,
+                lap: rangeWindow.lap,
+                start_sample_idx: rangeWindow.startSampleIdx ?? null,
+                end_sample_idx: rangeWindow.endSampleIdx ?? null,
+                telemetry_row_count: rangeWindow.rows.length,
+            };
+        }
+
+        const payload = {
+            source: 'live_range_todo_list',
+            event: typeof notificationOptions.event === 'string' && notificationOptions.event.trim()
+                ? notificationOptions.event.trim()
+                : 'live_range_todo_event_due',
+            event_id: event.id,
+            content: event.content,
+            normalized_position: event.normalized_position,
+            lead_time_seconds: event.lead_time_seconds,
+            eta_seconds: etaSeconds,
+            lap: lap ?? null,
+            ...(telemetryRangeSummary ? { telemetry_range_summary: telemetryRangeSummary } : {}),
+        };
+        const sent = activeVoiceToolStatusRef.current(payload);
+        if (!sent) throw new Error('AI session is not connected; the due notification could not be sent.');
+    }, []);
+    const liveRangeTodoAiAdapter = useMemo(() => createLiveRangeTodoAiAdapter(
+        liveSession.liveRangeTodoListHandle,
+        notifyAiForLiveRangeEvent,
+    ), [liveSession.liveRangeTodoListHandle, notifyAiForLiveRangeEvent]);
+    const setLiveRangeTodoList = useCallback((args: Record<string, unknown>) => (
+        liveRangeTodoAiAdapter.set(args)
+    ), [liveRangeTodoAiAdapter]);
+    const updateLiveRangeTodoList = useCallback((args: Record<string, unknown>) => (
+        liveRangeTodoAiAdapter.update(args)
+    ), [liveRangeTodoAiAdapter]);
+    const getLiveRangeTodoList = useCallback(() => (
+        liveRangeTodoAiAdapter.get()
+    ), [liveRangeTodoAiAdapter]);
 
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
@@ -1096,9 +1178,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
-        setLiveRangeTracker,
-        updateLiveRangeTracker,
-        getLiveRangeTracker,
+        setLiveRangeTodoList,
+        updateLiveRangeTodoList,
+        getLiveRangeTodoList,
         displayMap: displayMapInChat,
     }), [
         activeAgentSession,
@@ -1109,7 +1191,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
-        getLiveRangeTracker,
+        getLiveRangeTodoList,
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
@@ -1122,14 +1204,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         sessionMode,
         setAgentTag,
         setBaselineCollectionEnabled,
-        setLiveRangeTracker,
+        setLiveRangeTodoList,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
         setTrackGuideAgentEnabled,
         startAgentSession,
         startTrackGuide,
         stopAgentSession,
-        updateLiveRangeTracker,
+        updateLiveRangeTodoList,
         userSummary,
         userSummaryError,
         userSummaryLoading,
@@ -1197,9 +1279,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
-        setLiveRangeTracker,
-        updateLiveRangeTracker,
-        getLiveRangeTracker,
+        setLiveRangeTodoList,
+        updateLiveRangeTodoList,
+        getLiveRangeTodoList,
         displayMap: displayMapInChat,
     }), [
         activeAgentSession,
@@ -1210,7 +1292,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
-        getLiveRangeTracker,
+        getLiveRangeTodoList,
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
@@ -1223,13 +1305,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         sessionMode,
         setAgentTag,
         setBaselineCollectionEnabled,
-        setLiveRangeTracker,
+        setLiveRangeTodoList,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
         setTrackGuideAgentEnabled,
         startTrackGuide,
         stopAgentSession,
-        updateLiveRangeTracker,
+        updateLiveRangeTodoList,
         userSummary,
         userSummaryError,
         userSummaryLoading,
@@ -1343,9 +1425,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 getCategoryLabels,
                 getCircuitMapById,
                 getCircuitMapByTrack,
-                setLiveRangeTracker,
-                updateLiveRangeTracker,
-                getLiveRangeTracker,
+                setLiveRangeTodoList,
+                updateLiveRangeTodoList,
+                getLiveRangeTodoList,
                 displayMap: displayMapInChat,
             }, {}, {
                 sendToolStatus: agentVoiceConversation.sendToolStatus,
@@ -1364,7 +1446,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
-        getLiveRangeTracker,
+        getLiveRangeTodoList,
         getLabelName,
         getOpportunityTelemetryRows,
         getBaselineCollectionTag,
@@ -1377,13 +1459,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         sessionMode,
         setAgentTag,
         setBaselineCollectionEnabled,
-        setLiveRangeTracker,
+        setLiveRangeTodoList,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
         setTrackGuideAgentEnabled,
         startTrackGuide,
         stopAgentSession,
-        updateLiveRangeTracker,
+        updateLiveRangeTodoList,
         userSummary,
         userSummaryError,
         userSummaryLoading,
@@ -1419,10 +1501,17 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const sendActiveVoiceToolResult = activeVoiceConversation.sendToolResult;
     useEffect(() => {
         activeVoiceToolResultRef.current = sendActiveVoiceToolResult;
-    }, [sendActiveVoiceToolResult]);
-    const sendLiveRangeTrackerToolStatus = useCallback((
-        data: Record<string, unknown>,
-    ) => sendActiveVoiceToolStatus(data), [sendActiveVoiceToolStatus]);
+        activeVoiceToolStatusRef.current = sendActiveVoiceToolStatus;
+        return () => {
+            if (activeVoiceToolResultRef.current === sendActiveVoiceToolResult) {
+                activeVoiceToolResultRef.current = () => false;
+            }
+            if (activeVoiceToolStatusRef.current === sendActiveVoiceToolStatus) {
+                activeVoiceToolStatusRef.current = () => false;
+            }
+        };
+    }, [sendActiveVoiceToolResult, sendActiveVoiceToolStatus]);
+
     const canOpenFloatingChat = typeof window !== 'undefined'
         && Boolean((window as any).electronAPI?.openFloatingChat);
 
@@ -1836,7 +1925,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         vState === 'idle' ? 'TAP MIC' :
         vState === 'connecting' ? 'CONNECTING' :
         micDisabled ? 'MIC' :
-        vState === 'speaking' ? 'ACLA' :
+        vState === 'speaking' ? 'Kestrel' :
         vState === 'listening' ? 'DRIVER' :
         'VOICE';
     const statusBottom =
@@ -2096,7 +2185,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     </div>
 
                     <div className="ai-chat__mic-hint">
-                        Push <kbd>PTT</kbd> or say <kbd>&ldquo;Hey ACLA&rdquo;</kbd><br />
+                        Push <kbd>PTT</kbd> or say <kbd>&ldquo;Hey Kestrel&rdquo;</kbd><br />
                         No menus. No screens. Just talk.
                     </div>
 
@@ -2115,14 +2204,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         <BaselineProgressDisplay tag={baselineCollectionTag} />
                     )}
 
-                    <LiveRangeTracker
-                        ref={liveRangeTrackerRef}
-                        liveData={analysisContext?.liveData as Record<string, any> | null}
-                        sessionMode={sessionMode}
-                        sessionIntelligence={analysisContext?.sessionIntelligence}
-                        sendToolStatus={sendLiveRangeTrackerToolStatus}
-                        resolveLabel={getLabelName}
-                        onStateChange={handleLiveRangeTrackerStateChange}
+                    <LiveRangeTodoListDisplay
+                        snapshot={liveSession.liveRangeTodoListSnapshot}
+                        surface="chat"
                     />
 
                     {procedurePlan && (
@@ -2136,7 +2220,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                                 message={message}
                                 debugMode={debugMode}
                                 assistantAvatarLabel={activeAgentSession ? 'LA' : 'AI'}
-                                assistantWhoLabel={activeAgentSession ? getAgentDisplayName(activeAgentSession.agentMode).toUpperCase() : 'ACLA'}
+                                assistantWhoLabel={activeAgentSession ? getAgentDisplayName(activeAgentSession.agentMode).toUpperCase() : 'Kestrel'}
                             />
                         ))}
                         <div ref={messagesEndRef} />

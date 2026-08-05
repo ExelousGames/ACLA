@@ -9,11 +9,11 @@ interface Msg {
 
 const CONVO_SCRIPT: Msg[] = [
   { who: 'driver', name: 'YOU',  stamp: '00:14:02', text: 'How are my front tires holding up?' },
-  { who: 'acla',   name: 'ACLA', stamp: '00:14:03', text: 'Front-left at 96°C, light graining. Soften your turn-in through T7 and they’ll recover in two laps.' },
+  { who: 'acla',   name: 'Kestrel', stamp: '00:14:03', text: 'Front-left at 96°C, light graining. Soften your turn-in through T7 and they’ll recover in two laps.' },
   { who: 'driver', name: 'YOU',  stamp: '00:14:21', text: 'Can I push for the leader before the pit window?' },
-  { who: 'acla',   name: 'ACLA', stamp: '00:14:22', text: 'Gap is 1.4s and closing. You have the pace — save fuel through S1, then attack into T6.' },
+  { who: 'acla',   name: 'Kestrel', stamp: '00:14:22', text: 'Gap is 1.4s and closing. You have the pace — save fuel through S1, then attack into T6.' },
   { who: 'driver', name: 'YOU',  stamp: '00:14:48', text: 'What’s the weather looking like in S3?' },
-  { who: 'acla',   name: 'ACLA', stamp: '00:14:49', text: 'Light drizzle starting next lap. Box for inters is on the table — I’ll call it if it intensifies.' },
+  { who: 'acla',   name: 'Kestrel', stamp: '00:14:49', text: 'Light drizzle starting next lap. Box for inters is on the table — I’ll call it if it intensifies.' },
 ];
 
 const ConversationSection: React.FC = () => {
@@ -84,7 +84,7 @@ const ConversationSection: React.FC = () => {
             Conversational <span className="lp-convo__heading-accent">AI</span>
           </h2>
           <p className="lp-convo__sub">
-            Talk to ACLA while you race. Ask questions on the fly — tires, fuel, strategy, the car ahead.
+            Talk to Kestrel while you race. Ask questions on the fly — tires, fuel, strategy, the car ahead.
             Hands on the wheel, eyes on the apex.
           </p>
         </div>
@@ -120,7 +120,7 @@ const ConversationSection: React.FC = () => {
             </div>
 
             <div className="lp-convo__mic-status">
-              {lastDriverSpoke ? 'ACLA' : 'Driver'}
+              {lastDriverSpoke ? 'Kestrel' : 'Driver'}
               <b>{typing ? 'THINKING…' : (lastDriverSpoke ? 'RESPONDING' : 'LISTENING')}</b>
             </div>
 
@@ -135,7 +135,7 @@ const ConversationSection: React.FC = () => {
             </div>
 
             <div className="lp-convo__hint">
-              Push <kbd>PTT</kbd> or just say <kbd>&ldquo;Hey ACLA&rdquo;</kbd><br />
+              Push <kbd>PTT</kbd> or just say <kbd>&ldquo;Hey Kestrel&rdquo;</kbd><br />
               No menus. No screens. Just talk.
             </div>
           </div>
@@ -167,7 +167,7 @@ const ConversationSection: React.FC = () => {
                   <div className="lp-convo__msg-avatar">AI</div>
                   <div className="lp-convo__msg-body">
                     <div className="lp-convo__msg-meta">
-                      <span className="lp-convo__msg-who">ACLA</span>
+                      <span className="lp-convo__msg-who">Kestrel</span>
                     </div>
                     <div className="lp-convo__typing">
                       <span className="lp-convo__typing-dot" />

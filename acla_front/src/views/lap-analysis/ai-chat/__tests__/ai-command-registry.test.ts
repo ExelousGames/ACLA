@@ -149,9 +149,9 @@ describe('ai command registry user summary tools', () => {
 
         expect(Object.keys(registry).every((name) => definitionNames.has(name))).toBe(true);
         expect(registry).toEqual(expect.objectContaining([
-            'set_live_range_tracker',
-            'update_live_range_tracker',
-            'get_live_range_tracker',
+            'set_live_range_todo_list',
+            'update_live_range_todo_list',
+            'get_live_range_todo_list',
             '_get_live_section_telemetry',
             'run_recorded_ai_analysis',
         ].reduce<Record<string, unknown>>((handlers, name) => {
@@ -160,26 +160,27 @@ describe('ai command registry user summary tools', () => {
         }, {})));
     });
 
-    it('routes live range tracker tools to component-owned callbacks', async () => {
-        const tracker = {
-            status: 'open',
-            ranges: [{
+    it('routes live range to-do list tools to the panel-owned callbacks', async () => {
+        const todoList = {
+            events: [{
                 id: 'r1',
-                start_position: 0.1,
-                end_position: 0.2,
-                lifecycle_status: 'pending',
-                child_segments: [{
-                    labels: ['entry', 'apex'],
-                    start_index: 10,
-                    end_index: 20,
-                }],
+                normalized_position: 0.2,
+                lead_time_seconds: 2,
+                content: { title: 'Turn exit' },
+                data: {},
+                status: 'pending' as const,
+                eta_seconds: null,
+                created_at: 1,
+                updated_at: 1,
             }],
+            current_position: null,
+            rolling_rate: null,
             created_at: 1,
             updated_at: 1,
         };
-        const setLiveRangeTracker = jest.fn(() => ({ status: 'ready', tracker }));
-        const updateLiveRangeTracker = jest.fn(() => ({ status: 'ready', tracker }));
-        const getLiveRangeTracker = jest.fn(() => ({ status: 'ready', tracker }));
+        const setLiveRangeTodoList = jest.fn(() => ({ status: 'ready' as const, todo_list: todoList }));
+        const updateLiveRangeTodoList = jest.fn(() => ({ status: 'ready' as const, todo_list: todoList }));
+        const getLiveRangeTodoList = jest.fn(() => ({ status: 'ready' as const, todo_list: todoList }));
         const registry = createAiCommandRegistry({
             sessionMode: 'live',
             recordingState: RecordingState.RECORDING,
@@ -192,45 +193,45 @@ describe('ai command registry user summary tools', () => {
             startTrackGuide: jest.fn(),
             setTrackGuideEnabled: jest.fn(),
             getOpportunityTelemetryRows: () => [],
-            setLiveRangeTracker,
-            updateLiveRangeTracker,
-            getLiveRangeTracker,
+            setLiveRangeTodoList,
+            updateLiveRangeTodoList,
+            getLiveRangeTodoList,
         });
         const toolContext = { sendToolStatus: jest.fn() };
 
-        const setResult = await registry.set_live_range_tracker(
-            { ranges: [{ id: 'r1', start_position: 0.1, end_position: 0.2 }] },
+        const setResult = await registry.set_live_range_todo_list(
+            { events: [{ id: 'r1', normalized_position: 0.2, content: { title: 'Turn exit' } }] },
             toolContext,
         );
-        const updateResult = await registry.update_live_range_tracker(
-            { action: 'close' },
+        const updateResult = await registry.update_live_range_todo_list(
+            { action: 'reset_events', ids: ['r1'] },
             toolContext,
         );
-        const getResult = await registry.get_live_range_tracker({}, toolContext);
+        const getResult = await registry.get_live_range_todo_list({}, toolContext);
 
-        expect(setLiveRangeTracker).toHaveBeenCalledWith({
-            ranges: [{ id: 'r1', start_position: 0.1, end_position: 0.2 }],
+        expect(setLiveRangeTodoList).toHaveBeenCalledWith({
+            events: [{ id: 'r1', normalized_position: 0.2, content: { title: 'Turn exit' } }],
         });
-        expect(updateLiveRangeTracker).toHaveBeenCalledWith({ action: 'close' });
-        expect(getLiveRangeTracker).toHaveBeenCalled();
-        expect(getUiOutput(setResult)).toMatchObject({ status: 'ready', tracker });
-        expect(getUiOutput(updateResult)).toMatchObject({ status: 'ready', tracker });
-        expect(getUiOutput(getResult)).toMatchObject({ status: 'ready', tracker });
+        expect(updateLiveRangeTodoList).toHaveBeenCalledWith({ action: 'reset_events', ids: ['r1'] });
+        expect(getLiveRangeTodoList).toHaveBeenCalled();
+        expect(getUiOutput(setResult)).toMatchObject({ status: 'ready', todo_list: todoList });
+        expect(getUiOutput(updateResult)).toMatchObject({ status: 'ready', todo_list: todoList });
+        expect(getUiOutput(getResult)).toMatchObject({ status: 'ready', todo_list: todoList });
         expect(setResult).toMatchObject({
             output: {
-                name: 'set_live_range_tracker',
+                name: 'set_live_range_todo_list',
                 status: 'ready',
-                tracker_status: 'open',
+                event_count: 1,
+                pending_count: 1,
             },
         });
-        expect((setResult.output as any)).not.toHaveProperty('tracker');
-        expect((setResult.output as any)).not.toHaveProperty('ranges');
-        expect((setResult.output as any)).not.toHaveProperty('range_count');
+        expect((setResult.output as any)).not.toHaveProperty('todo_list');
+        expect((setResult.output as any)).not.toHaveProperty('events');
         expect(updateResult).toMatchObject({
             output: {
-                name: 'update_live_range_tracker',
+                name: 'update_live_range_todo_list',
                 status: 'ready',
-                range_count: 1,
+                event_count: 1,
             },
         });
     });
@@ -544,7 +545,7 @@ describe('ai command registry live recording gate', () => {
             setTrackGuideEnabled: jest.fn(),
             startAgentSession: jest.fn(),
             getOpportunityTelemetryRows: () => [],
-            setLiveRangeTracker: jest.fn(),
+            setLiveRangeTodoList: jest.fn(),
         });
 
         await expect(registry.query_telemetry_metric(
@@ -560,8 +561,8 @@ describe('ai command registry live recording gate', () => {
             status: 'error',
             error: 'non_live_context_live_tools_unavailable',
         });
-        await expect(registry.set_live_range_tracker(
-            { ranges: [] },
+        await expect(registry.set_live_range_todo_list(
+            { events: [] },
             { sendToolStatus: jest.fn() },
         )).resolves.toMatchObject({
             error: 'non_live_context_live_tools_unavailable',
@@ -1559,6 +1560,26 @@ describe('ai command registry live performance analyst tools', () => {
                         track_section: 'brands_hatch2',
                     },
                 ],
+                expert_reference_data: [
+                    {
+                        raw_index: 0,
+                        expert_optimal_player_pos_x: 100,
+                        expert_optimal_player_pos_z: 200,
+                        Graphics_normalized_car_position: 0.01,
+                        expert_optimal_throttle: 0.7,
+                        expert_optimal_brake: 0.2,
+                        expert_optimal_gear: 3,
+                    },
+                    {
+                        raw_index: 1,
+                        expert_optimal_player_pos_x: 110,
+                        expert_optimal_player_pos_z: 210,
+                        Graphics_normalized_car_position: 0.99,
+                        expert_optimal_throttle: 0.8,
+                        expert_optimal_brake: 0.1,
+                        expert_optimal_gear: 4,
+                    },
+                ],
             },
         });
         let cachedRecord: BaselineLapRecord | null = null;
@@ -1608,8 +1629,24 @@ describe('ai command registry live performance analyst tools', () => {
                 baseline_progress_percent: 100,
             },
             records: [
-                { Graphics_completed_laps: 0, Graphics_normalized_car_position: 0.01 },
-                { Graphics_completed_laps: 0, Graphics_normalized_car_position: 0.99 },
+                {
+                    Graphics_completed_laps: 0,
+                    Graphics_normalized_car_position: 0.01,
+                    Graphics_car_coordinates: [{ x: 10, y: 20, z: 30 }],
+                    Graphics_player_car_id: 0,
+                    Physics_gas: 0.5,
+                    Physics_brake: 0.3,
+                    Physics_gear: 2,
+                },
+                {
+                    Graphics_completed_laps: 0,
+                    Graphics_normalized_car_position: 0.99,
+                    Graphics_car_coordinates: [{ x: 11, y: 21, z: 31 }],
+                    Graphics_player_car_id: 0,
+                    Physics_gas: 0.6,
+                    Physics_brake: 0.2,
+                    Physics_gear: 3,
+                },
             ],
         };
 
@@ -1667,6 +1704,20 @@ describe('ai command registry live performance analyst tools', () => {
                     id: 'live-segment-1',
                     labels: ['Mistake (Practice)', 'FALLBACK_CHILD'],
                     section: 'Druids',
+                    comparison: {
+                        samples: [
+                            expect.objectContaining({
+                                progress: 0,
+                                driverGas: 0.5,
+                                expertGas: 0.7,
+                            }),
+                            expect.objectContaining({
+                                progress: 100,
+                                driverGas: 0.6,
+                                expertGas: 0.8,
+                            }),
+                        ],
+                    },
                 })],
             },
         );
@@ -1693,9 +1744,57 @@ describe('ai command registry live performance analyst tools', () => {
                     { id: 'recovery', start_index: 1, end_index: 2, labels: ['RECOVERY'] },
                     { id: 'future', start_index: 1, end_index: 2, labels: ['FUTURE_LABEL'] },
                 ],
+                expert_reference_data: [
+                    {
+                        raw_index: 0,
+                        Graphics_normalized_car_position: 0.1,
+                        expert_optimal_player_pos_x: 100,
+                        expert_optimal_player_pos_z: 200,
+                        expert_optimal_throttle: 0.7,
+                        expert_optimal_brake: 0.2,
+                        expert_optimal_gear: 3,
+                    },
+                    {
+                        raw_index: 1,
+                        Graphics_normalized_car_position: 0.2,
+                        expert_optimal_player_pos_x: 110,
+                        expert_optimal_player_pos_z: 210,
+                        expert_optimal_throttle: 0.8,
+                        expert_optimal_brake: 0.1,
+                        expert_optimal_gear: 4,
+                    },
+                    {
+                        raw_index: 2,
+                        Graphics_normalized_car_position: 0.3,
+                        expert_optimal_player_pos_x: 120,
+                        expert_optimal_player_pos_z: 220,
+                        expert_optimal_throttle: 0.9,
+                        expert_optimal_brake: 0,
+                        expert_optimal_gear: 5,
+                    },
+                ],
             },
         });
-        const { registry } = createLiveAnalystRegistry();
+        const baselineRecords = [0, 1, 2].map((index) => ({
+            Graphics_normalized_car_position: (index + 1) / 10,
+            Graphics_car_coordinates: [{ x: index + 1, y: index + 2, z: index + 3 }],
+            Graphics_player_car_id: 0,
+            Physics_gas: 0.4 + (index / 10),
+            Physics_brake: 0.3 - (index / 10),
+            Physics_gear: index + 2,
+        }));
+        const { registry } = createLiveAnalystRegistry({
+            getBaselineLapRecord: () => ({
+                id: 'comparison-baseline',
+                lap: 0,
+                captured_at: 1,
+                track: 'brands_hatch',
+                car: 'Ferrari 296',
+                sample_count: baselineRecords.length,
+                snapshot: { baseline_ready: true },
+                records: baselineRecords,
+            }),
+        });
 
         const result = await registry.analyze_live_recorded_analysis(
             { limit: 1 },
@@ -1717,6 +1816,11 @@ describe('ai command registry live performance analyst tools', () => {
                     expect.objectContaining({
                         id: 'practice',
                         labels: ['Mistake (Practice)', 'Initiate brake too late'],
+                        comparison: {
+                            samples: expect.arrayContaining([
+                                expect.objectContaining({ driverGas: 0.4, expertGas: 0.7 }),
+                            ]),
+                        },
                     }),
                     expect.objectContaining({
                         id: 'racing',
@@ -1732,6 +1836,33 @@ describe('ai command registry live performance analyst tools', () => {
             name: 'analyze_live_recorded_analysis',
             status: 'ready',
             message: 'Live baseline lap analysis is ready.',
+        });
+    });
+
+    it('returns an actionable error when the live range to-do panel is absent', async () => {
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+        });
+
+        const result = await registry.set_live_range_todo_list(
+            { events: [] },
+            { sendToolStatus: jest.fn() },
+        );
+
+        expect(getUiOutput(result)).toMatchObject({
+            status: 'error',
+            error: 'live_range_todo_list_unavailable',
+            message: expect.stringContaining('Open the Live Range To-do List panel'),
         });
     });
 

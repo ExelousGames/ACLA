@@ -15,13 +15,31 @@
     flex: 1;
     min-height: 0;
     display: flex;
-    overflow: hidden;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    scroll-padding-block-end: 16px;
 }
 
 .live-session-view__workspace > * {
     flex: 1;
     min-width: 0;
     min-height: 0;
+}
+
+/*
+ * The live visualization manager grows with all of its wrapped panels. The
+ * workspace above is the only vertical scroll owner, so the final panel is
+ * always included in the scroll range instead of being clipped by a nested
+ * grid/flex viewport.
+ */
+.live-session-view__workspace > .live-telemetry-workspace {
+    flex: 0 0 auto;
+    width: 100%;
+    height: auto;
+    min-height: 100%;
+    max-height: none;
+    overflow: visible;
 }
 
 .live-session-view__recorder {

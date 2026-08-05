@@ -1,0 +1,84 @@
+import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+export type LiveRangeTodoStatus = 'pending' | 'running';
+
+export interface LiveRangeTodoContent {
+    title: string;
+    detail?: string;
+    metadata?: JsonValue;
+}
+
+export interface LiveRangeTodoEventCallbackContext {
+    event: LiveRangeTodoSnapshotEvent;
+    data: JsonValue;
+    telemetry: Record<string, any>;
+    lap?: number;
+    eta_seconds: number | null;
+    sessionIntelligence: SessionIntelligence;
+    signal: AbortSignal;
+}
+
+export type LiveRangeTodoEventCallback = (
+    context: LiveRangeTodoEventCallbackContext,
+) => unknown | Promise<unknown>;
+
+export interface LiveRangeTodoEventInput {
+    id: string;
+    normalized_position: number;
+    lead_time_seconds?: number;
+    content: LiveRangeTodoContent;
+    data: JsonValue;
+    callback: LiveRangeTodoEventCallback;
+}
+
+export interface LiveRangeTodoEventUpdate {
+    id: string;
+    normalized_position?: number;
+    lead_time_seconds?: number;
+    content?: Partial<LiveRangeTodoContent>;
+    data?: JsonValue;
+    callback?: LiveRangeTodoEventCallback;
+}
+
+export interface LiveRangeTodoSnapshotEvent {
+    id: string;
+    normalized_position: number;
+    lead_time_seconds: number;
+    content: LiveRangeTodoContent;
+    data: JsonValue;
+    status: LiveRangeTodoStatus;
+    eta_seconds: number | null;
+    created_at: number;
+    updated_at: number;
+    started_at?: number;
+    lap?: number;
+}
+
+export interface LiveRangeTodoListSnapshot {
+    readonly events: readonly Readonly<LiveRangeTodoSnapshotEvent>[];
+    readonly current_position: number | null;
+    readonly rolling_rate: number | null;
+    readonly lap?: number;
+    readonly created_at: number;
+    readonly updated_at: number;
+}
+
+export interface LiveRangeTodoListToolResult {
+    status: 'ready' | 'empty' | 'error';
+    todo_list: LiveRangeTodoListSnapshot | null;
+    error?: string;
+    message?: string;
+}
+
+export interface LiveRangeTodoListHandle {
+    addEvent: (event: LiveRangeTodoEventInput) => LiveRangeTodoListToolResult;
+    replaceEvents: (events: readonly LiveRangeTodoEventInput[]) => LiveRangeTodoListToolResult;
+    updateEvents: (updates: readonly LiveRangeTodoEventUpdate[]) => LiveRangeTodoListToolResult;
+    removeEvents: (ids: readonly string[]) => LiveRangeTodoListToolResult;
+    resetEvents: (ids?: readonly string[]) => LiveRangeTodoListToolResult;
+    clear: () => LiveRangeTodoListToolResult;
+    get: () => LiveRangeTodoListToolResult;
+}

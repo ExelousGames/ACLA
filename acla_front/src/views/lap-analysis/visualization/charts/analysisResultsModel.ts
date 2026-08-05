@@ -1,3 +1,8 @@
+import {
+    DriverExpertComparisonData,
+    normalizeDriverExpertComparisonData,
+} from 'components/driver-expert-comparison';
+
 export interface AnalysisResultPositionRange {
     start: number;
     end: number;
@@ -17,6 +22,7 @@ export interface AnalysisResultElement {
     section?: string;
     normalizedPositionRange?: AnalysisResultPositionRange;
     timeGap?: AnalysisResultTimeGap;
+    comparison?: DriverExpertComparisonData;
     metadata?: Record<string, unknown>;
 }
 
@@ -109,6 +115,7 @@ export const normalizeAnalysisResultElement = (
     const section = optionalText(input.section ?? input.track_section ?? input.trackSection);
     const normalizedPositionRange = normalizePositionRange(input);
     const timeGap = normalizeTimeGap(input.timeGap ?? input.time_gap);
+    const comparison = normalizeDriverExpertComparisonData(input.comparison);
     const metadata = isRecord(input.metadata) ? { ...input.metadata } : undefined;
 
     return {
@@ -118,6 +125,7 @@ export const normalizeAnalysisResultElement = (
         ...(section ? { section } : {}),
         ...(normalizedPositionRange ? { normalizedPositionRange } : {}),
         ...(timeGap ? { timeGap } : {}),
+        ...(comparison ? { comparison } : {}),
         ...(metadata ? { metadata } : {}),
     };
 };

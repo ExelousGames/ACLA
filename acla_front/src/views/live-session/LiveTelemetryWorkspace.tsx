@@ -7,11 +7,13 @@ import { LiveVisualizationInstance } from './live-session-types';
 import LiveTrajectoryMap from './LiveTrajectoryMap';
 import LiveTelemetryOverview from './LiveTelemetryOverview';
 import LiveEventLog from './LiveEventLog';
+import LiveRangeTodoList from './LiveRangeTodoList';
 
 const OPTIONAL_VISUALIZATIONS = {
     'telemetry-overview': { name: 'Live Telemetry Overview' },
     'event-log': { name: 'Live Event Log' },
     'analysis-results': { name: 'Analysis Results' },
+    'live-range-todo-list': { name: 'Live Range To-do List' },
 } as const;
 
 class LiveTelemetryWorkspace extends VisualizationPanelManager<{}, LiveVisualizationInstance> {
@@ -110,6 +112,9 @@ class LiveTelemetryWorkspace extends VisualizationPanelManager<{}, LiveVisualiza
         }
         if (instance.type === 'event-log') {
             return <LiveEventLog events={events} />;
+        }
+        if (instance.type === 'live-range-todo-list') {
+            return <LiveRangeTodoList />;
         }
         return (
             <AnalysisResultsChart

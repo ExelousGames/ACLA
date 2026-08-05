@@ -22,7 +22,7 @@ const Preloader: React.FC = () => {
           />
         </svg>
       </div>
-      <div className="lp-preloader__logo">ACLA</div>
+      <div className="lp-preloader__logo">Kestrel</div>
       <div className="lp-preloader__tagline">AI Race Engineer</div>
     </div>
   );

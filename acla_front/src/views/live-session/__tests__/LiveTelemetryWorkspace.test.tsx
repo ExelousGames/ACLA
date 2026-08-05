@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationController';
 import LiveTelemetryWorkspace from '../LiveTelemetryWorkspace';
+import { LiveSessionProvider } from '../LiveSessionContext';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
@@ -85,6 +86,26 @@ describe('LiveTelemetryWorkspace analysis results', () => {
             overflowY: 'auto',
             overflowX: 'hidden',
         });
+    });
+
+    it('offers one Live Range To-do List panel and supports controller removal', async () => {
+        render(<LiveSessionProvider><LiveTelemetryWorkspace /></LiveSessionProvider>);
+
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Live Range To-do List' }));
+
+        expect(screen.getByTestId('live-range-todo-list-empty')).toBeInTheDocument();
+        expect(screen.queryByRole('menuitem', { name: 'Live Range To-do List' })).not.toBeInTheDocument();
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+        expect(visualizationController.openVisualization('live-range-todo-list').success).toBe(false);
+        warn.mockRestore();
+
+        const panel = visualizationController.getCurrentInstances()
+            .find((item) => item.type === 'live-range-todo-list');
+        expect(panel).toBeDefined();
+        act(() => {
+            visualizationController.closeVisualization({ id: panel!.id });
+        });
+        expect(screen.queryByTestId('live-range-todo-list-empty')).not.toBeInTheDocument();
     });
 
     it('replaces controller-updated data on the existing panel', () => {

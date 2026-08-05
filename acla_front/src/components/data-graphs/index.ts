@@ -8,4 +8,6 @@ export type {
     GraphSpec,
     HistogramGraphSpec,
     LineGraphSpec,
+    XYLineGraphSeries,
+    XYLineGraphSpec,
 } from './types';

@@ -5,6 +5,8 @@ import {
     GraphSpec,
     HistogramGraphSpec,
     LineGraphSpec,
+    XYLineGraphSeries,
+    XYLineGraphSpec,
 } from './types';
 import { ACLA_GRAPH_THEME, getSeriesColor, getSpecColors } from './theme';
 
@@ -14,6 +16,7 @@ type GraphType = GraphSpec['type'];
 interface GraphSpecByType {
     bar: BarGraphSpec;
     line: LineGraphSpec;
+    'xy-line': XYLineGraphSpec;
     histogram: HistogramGraphSpec;
 }
 
@@ -86,6 +89,29 @@ const isLineGraphSpec = (value: unknown): value is LineGraphSpec => {
     return hasTabularShape(value)
         && isNonEmptyString(value.xKey)
         && (value.xAxisType === 'category' || value.xAxisType === 'value' || value.xAxisType === 'time')
+        && (value.smooth === undefined || typeof value.smooth === 'boolean')
+        && (value.showPoints === undefined || typeof value.showPoints === 'boolean')
+        && (value.step === undefined
+            || typeof value.step === 'boolean'
+            || value.step === 'start'
+            || value.step === 'middle'
+            || value.step === 'end');
+};
+
+const isXYLineSeries = (value: unknown): value is XYLineGraphSeries => (
+    isGraphSeries(value)
+    && isRecord(value)
+    && isNonEmptyString(value.xKey)
+    && isNonEmptyString(value.yKey)
+);
+
+const isXYLineGraphSpec = (value: unknown): value is XYLineGraphSpec => {
+    if (!isRecord(value) || value.type !== 'xy-line' || !isCommonShape(value)) return false;
+    return Array.isArray(value.data)
+        && value.data.every(isRecord)
+        && Array.isArray(value.series)
+        && value.series.length > 0
+        && value.series.every(isXYLineSeries)
         && (value.smooth === undefined || typeof value.smooth === 'boolean')
         && (value.showPoints === undefined || typeof value.showPoints === 'boolean');
 };
@@ -184,6 +210,23 @@ const sanitizeRows = (
         }
     });
     return hasNumericValue ? [sanitized] : [];
+});
+
+const sanitizeXYRows = (
+    data: readonly GraphRecord[],
+    series: readonly XYLineGraphSeries[],
+): GraphRecord[] => data.flatMap((row) => {
+    const sanitized: GraphRecord = {};
+    let hasPair = false;
+    series.forEach(({ xKey, yKey }) => {
+        const x = row[xKey];
+        const y = row[yKey];
+        if (!isFiniteNumber(x) || !isFiniteNumber(y)) return;
+        sanitized[xKey] = x;
+        sanitized[yKey] = y;
+        hasPair = true;
+    });
+    return hasPair ? [sanitized] : [];
 });
 
 const allSeriesValuesAreIntegers = (
@@ -301,6 +344,40 @@ const buildLineOption = (spec: LineGraphSpec): VendorGraphOption | null => {
             name: series.label ?? series.key,
             encode: { x: spec.xKey, y: series.key },
             smooth: spec.smooth ?? false,
+            step: spec.step ?? false,
+            showSymbol: spec.showPoints ?? true,
+            symbol: 'circle',
+            itemStyle: { color: getSeriesColor(spec, series, index) },
+            lineStyle: { color: getSeriesColor(spec, series, index), width: 2 },
+            connectNulls: false,
+        })),
+    };
+};
+
+const buildXYLineOption = (spec: XYLineGraphSpec): VendorGraphOption | null => {
+    const rows = sanitizeXYRows(spec.data, spec.series);
+    if (rows.length === 0) return null;
+
+    return {
+        ...makeBaseOption(spec),
+        dataset: { source: rows },
+        xAxis: {
+            ...makeValueAxis(axisLabelName(spec, 'x'), false),
+            scale: true,
+        },
+        yAxis: {
+            ...makeValueAxis(axisLabelName(spec, 'y'), false),
+            scale: true,
+        },
+        tooltip: {
+            ...(makeBaseOption(spec).tooltip as VendorGraphOption),
+            trigger: 'item',
+        },
+        series: spec.series.map((series, index) => ({
+            type: 'line',
+            name: series.label ?? series.key,
+            encode: { x: series.xKey, y: series.yKey },
+            smooth: spec.smooth ?? false,
             showSymbol: spec.showPoints ?? true,
             symbol: 'circle',
             itemStyle: { color: getSeriesColor(spec, series, index) },
@@ -335,6 +412,7 @@ const buildHistogramOption = (spec: HistogramGraphSpec): VendorGraphOption | nul
 const strategyRegistry: { [K in GraphType]: GraphStrategy<K> } = {
     bar: { isValid: isBarGraphSpec, buildOption: buildBarOption },
     line: { isValid: isLineGraphSpec, buildOption: buildLineOption },
+    'xy-line': { isValid: isXYLineGraphSpec, buildOption: buildXYLineOption },
     histogram: { isValid: isHistogramGraphSpec, buildOption: buildHistogramOption },
 };
 
@@ -355,6 +433,12 @@ export const resolveGraphSpec = (value: unknown): GraphResolution => {
             }
             case 'line': {
                 const strategy = strategyRegistry.line;
+                if (!strategy.isValid(value)) return { status: 'unsupported' };
+                const option = strategy.buildOption(value);
+                return option ? { status: 'ready', option } : { status: 'empty' };
+            }
+            case 'xy-line': {
+                const strategy = strategyRegistry['xy-line'];
                 if (!strategy.isValid(value)) return { status: 'unsupported' };
                 const option = strategy.buildOption(value);
                 return option ? { status: 'ready', option } : { status: 'empty' };

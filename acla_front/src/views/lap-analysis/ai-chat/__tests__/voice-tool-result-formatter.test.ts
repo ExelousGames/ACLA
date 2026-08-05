@@ -85,13 +85,15 @@ describe('formatToolResultForLlm', () => {
         })).toBe('custom_alert section=T1 lap=3 telemetry_rows=2. Respond with one short engineer suggestion.');
 
         expect(formatToolResultForLlm({
-            source: 'live_range_tracker',
-            event: 'live_range_classification_requested',
-            range_id: 'r1',
-            label: 'Druids exit',
+            source: 'live_range_todo_list',
+            event: 'live_range_todo_event_due',
+            event_id: 'r1',
+            content: { title: 'Druids exit' },
+            normalized_position: 0.42,
+            eta_seconds: 1.8,
             lap: 2,
-            telemetry_row_count: 214,
-        })).toBe('live_range_tracker live_range_classification_requested range_id=r1 label=Druids exit lap=2 telemetry_rows=214.');
+            telemetry_range_summary: { telemetry_row_count: 214 },
+        })).toBe('live_range_todo_list live_range_todo_event_due event_id=r1 normalized_position=0.42 eta_seconds=1.8 lap=2 title=Druids exit telemetry_rows=214.');
     });
 
     it('builds the formatted websocket tool_result frame sent to the backend', () => {

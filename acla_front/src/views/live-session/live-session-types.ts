@@ -1,6 +1,10 @@
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { RecordingEvent, RecordingState } from 'views/lap-analysis/recording-state';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import type {
+    LiveRangeTodoListHandle,
+    LiveRangeTodoListSnapshot,
+} from './live-range-todo-list-types';
 
 export type LiveTelemetry = Record<string, any>;
 
@@ -18,7 +22,7 @@ export interface LiveRecordingMetadata {
 
 export interface LiveVisualizationInstance {
     id: string;
-    type: 'telemetry-overview' | 'event-log' | 'analysis-results';
+    type: 'telemetry-overview' | 'event-log' | 'analysis-results' | 'live-range-todo-list';
     height: number;
     data?: unknown;
 }
@@ -32,6 +36,8 @@ export interface LiveSessionRuntime {
     recordingFileKey: string | null;
     recordedSampleCount: number;
     sessionIntelligence: SessionIntelligence;
+    liveRangeTodoListHandle: LiveRangeTodoListHandle | null;
+    liveRangeTodoListSnapshot: LiveRangeTodoListSnapshot | null;
     setCurrentTelemetry: (data: LiveTelemetry) => void;
     setStaticData: (data: LiveSessionStaticData) => void;
     setRecordingMetadata: (metadata: LiveRecordingMetadata | null) => void;
@@ -42,4 +48,6 @@ export interface LiveSessionRuntime {
     ) => Promise<LiveTelemetry[]>;
     finalizeRecordingWrites: () => Promise<void>;
     clearRecordingSession: () => void;
+    registerLiveRangeTodoListHandle: (handle: LiveRangeTodoListHandle | null) => void;
+    publishLiveRangeTodoListSnapshot: (snapshot: LiveRangeTodoListSnapshot | null) => void;
 }

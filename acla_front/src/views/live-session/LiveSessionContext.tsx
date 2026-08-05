@@ -10,6 +10,10 @@ import {
     LiveSessionStaticData,
     LiveTelemetry,
 } from './live-session-types';
+import type {
+    LiveRangeTodoListHandle,
+    LiveRangeTodoListSnapshot,
+} from './live-range-todo-list-types';
 
 const TELEMETRY_WRITE_TIMEOUT_MS = 6000;
 const LIVE_TELEMETRY_UI_UPDATE_MS = 100;
@@ -46,6 +50,8 @@ const defaultRuntime: LiveSessionRuntime = {
     recordingFileKey: null,
     recordedSampleCount: 0,
     sessionIntelligence: new SessionIntelligence(),
+    liveRangeTodoListHandle: null,
+    liveRangeTodoListSnapshot: null,
     setCurrentTelemetry: missingProvider,
     setStaticData: missingProvider,
     setRecordingMetadata: missingProvider,
@@ -57,6 +63,8 @@ const defaultRuntime: LiveSessionRuntime = {
     },
     finalizeRecordingWrites: async () => missingProvider(),
     clearRecordingSession: missingProvider,
+    registerLiveRangeTodoListHandle: missingProvider,
+    publishLiveRangeTodoListSnapshot: missingProvider,
 };
 
 export const LiveSessionContext = createContext<LiveSessionRuntime>(defaultRuntime);
@@ -69,6 +77,8 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
     const [recordingMetadata, setRecordingMetadata] = useState<LiveRecordingMetadata | null>(null);
     const [recordingFileKey, setRecordingFileKeyState] = useState<string | null>(null);
     const [recordedSampleCount, setRecordedSampleCount] = useState(0);
+    const [liveRangeTodoListHandle, setLiveRangeTodoListHandle] = useState<LiveRangeTodoListHandle | null>(null);
+    const [liveRangeTodoListSnapshot, setLiveRangeTodoListSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
 
     const sessionIntelligenceRef = useRef(new SessionIntelligence());
     const latestTelemetryRef = useRef<LiveTelemetry>({});
@@ -84,6 +94,13 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
     const sampleCountRef = useRef(0);
     const committedSampleCountRef = useRef(0);
     const sampleCountFlushTimeoutRef = useRef<number | null>(null);
+    const registerLiveRangeTodoListHandle = useCallback((handle: LiveRangeTodoListHandle | null) => {
+        setLiveRangeTodoListHandle(handle);
+    }, []);
+
+    const publishLiveRangeTodoListSnapshot = useCallback((snapshot: LiveRangeTodoListSnapshot | null) => {
+        setLiveRangeTodoListSnapshot(snapshot);
+    }, []);
 
     const flushCurrentTelemetry = useCallback(() => {
         if (telemetryFlushTimeoutRef.current !== null) {
@@ -402,6 +419,8 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         recordingFileKey,
         recordedSampleCount,
         sessionIntelligence: sessionIntelligenceRef.current,
+        liveRangeTodoListHandle,
+        liveRangeTodoListSnapshot,
         setCurrentTelemetry,
         setStaticData,
         setRecordingMetadata,
@@ -410,6 +429,8 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         readRecordedTelemetry,
         finalizeRecordingWrites,
         clearRecordingSession,
+        registerLiveRangeTodoListHandle,
+        publishLiveRangeTodoListSnapshot,
     }), [
         appendTelemetrySample,
         clearRecordingSession,
@@ -417,6 +438,8 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         finalizeRecordingWrites,
         readRecordedTelemetry,
         recordedSampleCount,
+        liveRangeTodoListHandle,
+        liveRangeTodoListSnapshot,
         recordingFileKey,
         recordingMetadata,
         recordingState,
@@ -425,6 +448,8 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         staticData,
         telemetryStatus,
         transitionRecordingState,
+        registerLiveRangeTodoListHandle,
+        publishLiveRangeTodoListSnapshot,
     ]);
 
     return <LiveSessionContext.Provider value={value}>{children}</LiveSessionContext.Provider>;

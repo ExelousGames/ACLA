@@ -72,7 +72,7 @@
   "main": "public/electron.js",
   "build": {
     "appId": "com.example.myapp",
-    "productName": "My Electron App",
+    "productName": "Kestrel Motorsport Analyst",
     "win": {
       "target": "nsis"
     },
@@ -80,6 +80,7 @@
       "build/**/*",
       "node_modules/**/*",
       "public/electron.js",
+      "public/desktop-game-detection.js",
       "src/common/preload.js"
     ],
     "extraResources": [

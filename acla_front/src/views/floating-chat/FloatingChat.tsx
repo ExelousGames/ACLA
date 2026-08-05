@@ -5,7 +5,17 @@ import AiMapToolDisplay, { type AiMapDisplayPayload } from 'views/lap-analysis/a
 import BaselineProgressDisplay from 'views/lap-analysis/ai-chat/BaselineProgressDisplay';
 import ProcedurePlanDisplay from 'views/lap-analysis/ai-chat/ProcedurePlanDisplay';
 import ToolMessageDisplay, { type ToolMessageDisplayData } from 'views/lap-analysis/ai-chat/ToolMessageDisplay';
-import { LiveRangeTrackerDisplay, type LiveRangeTrackerState } from 'views/lap-analysis/ai-chat/LiveRangeTracker';
+import {
+    FLOATING_PILL_RICH_CONTENT_HOLD_MS,
+    FLOATING_PILL_STORAGE_KEY,
+    type FloatingPillPayloadKind,
+} from './floating-pill-bridge';
+import {
+    DriverExpertComparisonData,
+    DriverExpertComparisonGraph,
+} from 'components/driver-expert-comparison';
+import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
+import type { LiveRangeTodoListSnapshot } from 'views/live-session/live-range-todo-list-types';
 import type { BaselineCollectionTag } from 'views/lap-analysis/ai-chat/BaselineCollectionTracker';
 import type { ProcedurePlan } from 'views/lap-analysis/ai-chat/ai-chat-plan';
 
@@ -13,7 +23,7 @@ import type { ProcedurePlan } from 'views/lap-analysis/ai-chat/ai-chat-plan';
  * AI Chat Pill — ambient overlay for the always-on-top Electron window.
  *
  * Idle: a small pulsing circle showing the "AI" avatar.
- * Active: expands horizontally and types out ACLA's latest reply, then
+ * Active: expands horizontally and types out Kestrel's latest reply, then
  *         auto-collapses back to the circle.
  *
  * Voice is started from the main application — this window is read-only.
@@ -21,14 +31,13 @@ import type { ProcedurePlan } from 'views/lap-analysis/ai-chat/ai-chat-plan';
  * (`storage` events fire across all same-origin BrowserWindows).
  */
 
-const SHARED_KEY = 'acla-pill-msg';
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const TYPE_INTERVAL_MS = 28;
-const POST_TYPE_HOLD_MS = 3800;
 const EMOTE_HOLD_MS = 3000;
 const MIN_W = 220;
 const MAX_W = 620;
 const RICH_W = 420;
+const COMPARISON_W = 760;
 const MIN_H = 72;
 // Match the source prototype's measurement: pill-height (72 = left-pad +
 // avatar + right-pad at idle) + body left margin (16) + open right padding
@@ -36,16 +45,21 @@ const MIN_H = 72;
 const CHROME = 72 + 16 + 26 + 8;
 
 interface PillPayload {
-    kind: 'message' | 'tool' | 'baseline' | 'map' | 'plan' | 'range';
+    kind: FloatingPillPayloadKind;
     text: string;
     ts: number;
-    /** Optional override label for the name line; defaults to "ACLA". */
+    /** Optional override label for the name line; defaults to "Kestrel". */
     name?: string;
     /** Emotion tag emitted by the AI (e.g. "vibing", "sad"). */
     emotion?: string;
     /** Active agent tags to display beside the assistant label. */
     tags?: string[];
     data?: unknown;
+}
+
+interface ComparisonPillData {
+    title?: string;
+    comparison: DriverExpertComparisonData;
 }
 
 const parsePayload = (raw: string | null): PillPayload | null => {
@@ -61,7 +75,14 @@ const parsePayload = (raw: string | null): PillPayload | null => {
                 : undefined;
         if (text || tags || obj?.data) {
             return {
-                kind: ['tool', 'baseline', 'map', 'plan', 'range'].includes(kind) ? kind as PillPayload['kind'] : 'message',
+                kind: [
+                    'tool',
+                    'baseline',
+                    'map',
+                    'plan',
+                    'live_range_todo_list',
+                    'driver_expert_comparison',
+                ].includes(kind) ? kind as PillPayload['kind'] : 'message',
                 text,
                 ts: Number(obj.ts) || Date.now(),
                 name: typeof obj.name === 'string' ? obj.name : undefined,
@@ -82,20 +103,25 @@ const readEmotionGifs = (): Record<string, string> => {
 };
 
 const getRichPayloadHeight = (payload: PillPayload): number => {
+    if (payload.kind === 'driver_expert_comparison') return 500;
     if (payload.kind === 'map') return 260;
     if (payload.kind === 'plan') return 220;
-    if (payload.kind === 'range') return 210;
+    if (payload.kind === 'live_range_todo_list') return 210;
     if (payload.kind === 'baseline') return 136;
     if (payload.kind === 'tool') return 118;
     return MIN_H;
 };
+
+const getRichPayloadWidth = (payload: PillPayload): number => (
+    payload.kind === 'driver_expert_comparison' ? COMPARISON_W : RICH_W
+);
 
 const FloatingChat: React.FC = () => {
     const [open, setOpen] = useState(false);
     const [displayText, setDisplayText] = useState('');
     const [richPayload, setRichPayload] = useState<PillPayload | null>(null);
     const [showCaret, setShowCaret] = useState(false);
-    const [name, setName] = useState('ACLA');
+    const [name, setName] = useState('Kestrel');
     const [targetWidth, setTargetWidth] = useState<number>(MIN_W);
     const [targetHeight, setTargetHeight] = useState<number>(MIN_H);
     const [currentEmotion, setCurrentEmotion] = useState<string | null>(null);
@@ -182,7 +208,7 @@ const FloatingChat: React.FC = () => {
         clearTimers();
         setRichPayload(null);
         setTargetHeight(MIN_H);
-        setName(displayName || 'ACLA');
+        setName(displayName || 'Kestrel');
         setCurrentEmotion(emotion ?? null);
         setPersistentTags(tags);
         const cleanText = text.trim();
@@ -216,7 +242,7 @@ const FloatingChat: React.FC = () => {
                 // *here* — not from speak() start — so the hold duration is
                 // independent of typing length and never gets cut short.
                 caretTimerRef.current = window.setTimeout(() => setShowCaret(false), 600);
-                hideTimerRef.current = window.setTimeout(shrink, POST_TYPE_HOLD_MS);
+                hideTimerRef.current = window.setTimeout(shrink, FLOATING_PILL_RICH_CONTENT_HOLD_MS);
             }
         }, TYPE_INTERVAL_MS);
     }, [clearTimers, measure, setPersistentTags, shrink]);
@@ -228,16 +254,16 @@ const FloatingChat: React.FC = () => {
         }
 
         clearTimers();
-        setName(payload.name || 'ACLA');
+        setName(payload.name || 'Kestrel');
         setCurrentEmotion(payload.emotion ?? null);
         setPersistentTags(payload.tags);
         setDisplayText(payload.text.trim());
         setShowCaret(false);
         setRichPayload(payload);
-        setTargetWidth(RICH_W);
+        setTargetWidth(getRichPayloadWidth(payload));
         setTargetHeight(getRichPayloadHeight(payload));
         setOpen(true);
-        hideTimerRef.current = window.setTimeout(shrink, POST_TYPE_HOLD_MS);
+        hideTimerRef.current = window.setTimeout(shrink, FLOATING_PILL_RICH_CONTENT_HOLD_MS);
     }, [clearTimers, setPersistentTags, shrink, speak]);
 
     // Subscribe to cross-window messages. The 'storage' event only fires in
@@ -254,7 +280,7 @@ const FloatingChat: React.FC = () => {
         // always strictly greater. Do not seed tags here: localStorage is
         // stale across app/overlay restarts, while agent activation is live
         // in-memory state owned by the main chat window.
-        const seed = parsePayload(localStorage.getItem(SHARED_KEY));
+        const seed = parsePayload(localStorage.getItem(FLOATING_PILL_STORAGE_KEY));
         if (seed) {
             lastTsRef.current = seed.ts;
         }
@@ -264,7 +290,7 @@ const FloatingChat: React.FC = () => {
                 setEmotionGifs(readEmotionGifs());
                 return;
             }
-            if (event.key !== SHARED_KEY) return;
+            if (event.key !== FLOATING_PILL_STORAGE_KEY) return;
             const payload = parsePayload(event.newValue);
             if (!payload) return;
             if (payload.ts <= lastTsRef.current) return;
@@ -298,8 +324,23 @@ const FloatingChat: React.FC = () => {
         if (richPayload.kind === 'plan') {
             return <ProcedurePlanDisplay plan={richPayload.data as ProcedurePlan} surface="pill" />;
         }
-        if (richPayload.kind === 'range') {
-            return <LiveRangeTrackerDisplay tracker={richPayload.data as LiveRangeTrackerState} surface="pill" />;
+        if (richPayload.kind === 'live_range_todo_list') {
+            return <LiveRangeTodoListDisplay snapshot={richPayload.data as LiveRangeTodoListSnapshot} surface="pill" />;
+        }
+        if (richPayload.kind === 'driver_expert_comparison') {
+            const display = richPayload.data as ComparisonPillData;
+            return (
+                <DriverExpertComparisonGraph
+                    className="floating-pill-comparison"
+                    data={display.comparison}
+                    title={display.title || 'Driver vs Expert'}
+                    layout={{
+                        chartHeight: 150,
+                        trajectoryHeight: 180,
+                        minColumnWidth: 260,
+                    }}
+                />
+            );
         }
         if (richPayload.kind === 'tool') {
             return <ToolMessageDisplay tool={richPayload.data as ToolMessageDisplayData} surface="pill" />;

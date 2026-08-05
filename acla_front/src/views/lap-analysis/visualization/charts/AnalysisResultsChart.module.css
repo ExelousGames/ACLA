@@ -68,9 +68,49 @@
     color: var(--lp-white);
 }
 
-.sortSelect option {
-    background: var(--lp-bg-panel);
-    color: var(--lp-white);
+.queueAction {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+
+.queueButton {
+    min-height: 28px;
+    padding: 4px 10px;
+    border: 1px solid var(--lp-green);
+    border-radius: var(--lp-radius-pill);
+    background: var(--lp-green-dim);
+    color: var(--lp-green);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.queueButton:hover:not(:disabled),
+.queueButton:focus-visible:not(:disabled) {
+    background: rgba(0, 230, 118, 0.2);
+    outline: none;
+}
+
+.queueButton:disabled {
+    border-color: var(--lp-border-strong);
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--lp-gray);
+    cursor: not-allowed;
+    opacity: 0.72;
+}
+
+.queueStatus {
+    max-width: 260px;
+    color: var(--lp-gray);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    line-height: 1.35;
+    text-align: right;
 }
 
 @media (max-width: 640px) {
@@ -89,6 +129,16 @@
     .filterSelect,
     .sortSelect {
         width: 100%;
+    }
+
+    .queueAction {
+        grid-column: 1 / -1;
+        align-items: stretch;
+    }
+
+    .queueStatus {
+        max-width: none;
+        text-align: left;
     }
 }
 
@@ -117,6 +167,47 @@
 
 .element:last-child {
     margin-bottom: 0;
+}
+
+.comparisonTrigger {
+    cursor: help;
+}
+
+.comparisonTrigger:hover,
+.comparisonTrigger:focus-visible {
+    border-color: var(--lp-green);
+    outline: none;
+}
+
+.comparisonHint,
+.comparisonUnavailable {
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px solid var(--lp-border);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+}
+
+.comparisonHint {
+    color: var(--lp-green);
+}
+
+.comparisonUnavailable {
+    color: var(--lp-gray);
+}
+
+.comparisonContent {
+    box-sizing: border-box;
+    width: min(900px, calc(100vw - 24px));
+    max-width: calc(100vw - 24px);
+    max-height: min(760px, calc(100vh - 24px));
+    padding: 14px;
+    overflow: auto;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius);
+    background: var(--lp-bg-panel, #101020);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+    z-index: 50;
 }
 
 .heading {

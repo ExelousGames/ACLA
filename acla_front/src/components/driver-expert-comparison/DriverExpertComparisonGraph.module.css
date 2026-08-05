@@ -1,0 +1,447 @@
+.root {
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 13px;
+    overflow: hidden;
+    border: 1px solid rgba(123, 168, 210, 0.2);
+    border-radius: 14px;
+    color: #e9f4ff;
+    background:
+        linear-gradient(rgba(96, 149, 193, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(96, 149, 193, 0.035) 1px, transparent 1px),
+        radial-gradient(circle at 50% -25%, rgba(42, 100, 155, 0.2), transparent 52%),
+        #07111f;
+    background-size: 24px 24px, 24px 24px, auto, auto;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+    font-family: var(--lp-sans, 'Geist', system-ui, sans-serif);
+}
+
+.header {
+    min-width: 0;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 18px;
+}
+
+.titleBlock {
+    min-width: 0;
+}
+
+.eyebrow,
+.replayStatus,
+.progressValue,
+.panelHeader,
+.identity,
+.gearLabel,
+.gaugeLabel,
+.gaugeUnavailableValue {
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.eyebrow {
+    display: block;
+    margin-bottom: 2px;
+    color: #66839f;
+    font-size: 8px;
+    font-weight: 600;
+}
+
+.title {
+    margin: 0;
+    overflow: hidden;
+    color: #f2f8ff;
+    font-size: 14px;
+    font-weight: 650;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.replayReadout {
+    min-width: max-content;
+    padding: 6px 8px;
+    border: 1px solid rgba(113, 157, 194, 0.18);
+    border-radius: 6px;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: rgba(5, 14, 26, 0.78);
+}
+
+.statusDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ffc857;
+    box-shadow: 0 0 8px rgba(255, 200, 87, 0.75);
+    animation: replayPulse 1s ease-in-out infinite;
+}
+
+.statusDotComplete {
+    background: #21e58b;
+    box-shadow: 0 0 7px rgba(33, 229, 139, 0.55);
+    animation: none;
+}
+
+.replayStatus,
+.progressValue {
+    font-size: 8px;
+    font-weight: 650;
+}
+
+.replayStatus {
+    color: #94abc0;
+}
+
+.progressDivider {
+    width: 1px;
+    height: 10px;
+    background: rgba(139, 177, 210, 0.2);
+}
+
+.progressValue {
+    min-width: 28px;
+    color: #e6f2ff;
+    text-align: right;
+}
+
+.overallUnavailable {
+    margin: -2px 0 9px;
+    padding: 6px 8px;
+    border-left: 2px solid #42556a;
+    color: #6f859a;
+    background: rgba(42, 61, 80, 0.17);
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    font-size: 9px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.hud {
+    min-width: 0;
+    display: grid;
+    gap: 10px;
+}
+
+.trackPanel,
+.competitorPanel {
+    box-sizing: border-box;
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid rgba(111, 155, 194, 0.17);
+    border-radius: 9px;
+    background: rgba(4, 12, 23, 0.72);
+    box-shadow: inset 0 0 20px rgba(30, 83, 126, 0.055);
+}
+
+.trackPanel {
+    min-height: 130px;
+    display: flex;
+    flex-direction: column;
+}
+
+.panelHeader,
+.competitorHeader {
+    min-height: 30px;
+    padding: 0 10px;
+    border-bottom: 1px solid rgba(111, 155, 194, 0.13);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: rgba(10, 26, 43, 0.58);
+}
+
+.panelHeader {
+    color: #8ca4bb;
+    font-size: 8px;
+    font-weight: 650;
+}
+
+.traceLabels {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 7px;
+    letter-spacing: 0.07em;
+}
+
+.traceLabels span::before {
+    width: 9px;
+    height: 1px;
+    margin-right: 4px;
+    display: inline-block;
+    vertical-align: middle;
+    background: currentColor;
+    box-shadow: 0 0 5px currentColor;
+    content: '';
+}
+
+.trackSvg {
+    width: 100%;
+    min-height: 0;
+    flex: 1 1 auto;
+    display: block;
+}
+
+.trackViewport {
+    fill: rgba(7, 19, 34, 0.35);
+}
+
+.trackShadow,
+.driverPath,
+.expertPath {
+    fill: none;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.trackShadow {
+    stroke: rgba(197, 219, 235, 0.08);
+    stroke-width: 11;
+}
+
+.driverPath {
+    stroke: #00e676;
+    stroke-width: 3.2;
+}
+
+.expertPath {
+    stroke: #448aff;
+    stroke-width: 2.4;
+    stroke-dasharray: 7 5;
+    opacity: 0.92;
+}
+
+.positionMarker {
+    transition: none;
+}
+
+.markerHalo {
+    opacity: 0.16;
+}
+
+.trackUnavailable {
+    min-height: 0;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    color: #526a80;
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    font-size: 8px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+.placeholderTrack {
+    width: min(42%, 210px);
+    height: 30px;
+    border: 1px dashed rgba(98, 126, 151, 0.34);
+    border-radius: 48% 52% 43% 57%;
+    display: block;
+    transform: rotate(-4deg);
+}
+
+.competitorGrid {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(
+        auto-fit,
+        minmax(min(100%, var(--driver-expert-min-column-width, 260px)), 1fr)
+    );
+    gap: 10px;
+}
+
+.competitorPanel {
+    min-height: 142px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+
+.competitorPanel::before {
+    width: 2px;
+    position: absolute;
+    inset: 0 auto 0 0;
+    background: var(--identity-color);
+    box-shadow: 0 0 9px color-mix(in srgb, var(--identity-color) 55%, transparent);
+    content: '';
+}
+
+.competitorHeader {
+    padding-left: 11px;
+}
+
+.identity {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--identity-color);
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.identityMarker {
+    width: 7px;
+    height: 7px;
+    border: 1px solid currentColor;
+    border-radius: 2px;
+    box-shadow: 0 0 7px currentColor;
+    transform: rotate(45deg);
+}
+
+.gear {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.gearLabel {
+    color: #657f98;
+    font-size: 7px;
+    font-weight: 600;
+}
+
+.gear strong {
+    min-width: 15px;
+    color: #f1f7ff;
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    font-size: 18px;
+    font-weight: 500;
+    line-height: 1;
+    text-align: center;
+}
+
+.gearUnavailable strong {
+    color: #41576b;
+}
+
+.gaugeRow {
+    min-height: 0;
+    padding: 4px 8px 6px;
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: center;
+    gap: 5px;
+}
+
+.gauge {
+    min-width: 0;
+    min-height: 92px;
+    position: relative;
+}
+
+.gaugeSvg {
+    width: 100%;
+    height: 100%;
+    max-height: 106px;
+    display: block;
+    overflow: visible;
+}
+
+.gaugeTrack,
+.gaugeFill {
+    fill: none;
+    stroke-linecap: round;
+    stroke-width: 6;
+}
+
+.gaugeTrack {
+    stroke: rgba(111, 139, 164, 0.15);
+}
+
+.gaugeFill {
+    filter: drop-shadow(0 0 3px currentColor);
+}
+
+.gaugeArm {
+    opacity: 0.48;
+    stroke-linecap: round;
+    stroke-width: 1.5;
+}
+
+.gaugeMarker {
+    filter: drop-shadow(0 0 4px currentColor);
+}
+
+.gaugeLabel {
+    position: absolute;
+    left: 8px;
+    bottom: 6px;
+    color: #627c94;
+    font-size: 7px;
+    font-weight: 650;
+}
+
+.gaugeValue,
+.gaugeUnavailableValue {
+    position: absolute;
+    right: 9px;
+    bottom: 3px;
+}
+
+.gaugeValue {
+    color: #eaf5ff;
+    font-family: var(--lp-mono, 'Geist Mono', monospace);
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+
+.gaugeValue small {
+    margin-left: 1px;
+    color: #637d95;
+    font-size: 8px;
+}
+
+.gaugeUnavailable {
+    opacity: 0.46;
+}
+
+.gaugeUnavailableValue {
+    color: #5a7186;
+    font-size: 8px;
+}
+
+@keyframes replayPulse {
+    0%, 100% { opacity: 0.48; }
+    50% { opacity: 1; }
+}
+
+@media (max-width: 600px) {
+    .root {
+        padding: 10px;
+    }
+
+    .header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .replayReadout {
+        width: 100%;
+        justify-content: flex-end;
+    }
+
+    .competitorGrid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .traceLabels {
+        gap: 7px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .statusDot {
+        animation: none;
+    }
+}
