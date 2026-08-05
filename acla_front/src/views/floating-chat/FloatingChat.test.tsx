@@ -78,4 +78,83 @@ describe('FloatingChat', () => {
         expect(screen.getByText('Live Performance Analysis')).toBeInTheDocument();
         expect(screen.getAllByText('Collect Baseline Lap').length).toBeGreaterThan(0);
     });
+
+    it('renders due live range to-do lifecycle content', async () => {
+        render(<FloatingChat />);
+
+        act(() => {
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'acla-pill-msg',
+                newValue: JSON.stringify({
+                    kind: 'live_range_todo_list',
+                    text: 'Brake reminder: running',
+                    ts: Date.now() + 10,
+                    data: {
+                        events: [{
+                            id: 'brake',
+                            normalized_position: 0.25,
+                            lead_time_seconds: 2,
+                            content: { title: 'Brake reminder' },
+                            data: { source: 'ai' },
+                            status: 'running',
+                            eta_seconds: 1.4,
+                            created_at: 1,
+                            updated_at: 2,
+                        }],
+                        current_position: 0.2,
+                        rolling_rate: 0.04,
+                        created_at: 1,
+                        updated_at: 2,
+                    },
+                }),
+            }));
+        });
+
+        await waitFor(() => expect(screen.getByText('Brake reminder')).toBeInTheDocument());
+        expect(screen.getByText('running')).toBeInTheDocument();
+        expect(screen.getByText('ETA 1.4s')).toBeInTheDocument();
+    });
+
+    it('renders the pedal replay HUD inside the 760 by 500 comparison panel', async () => {
+        const resizeFloatingChat = jest.fn();
+        Object.defineProperty(window, 'electronAPI', {
+            value: { resizeFloatingChat },
+            configurable: true,
+        });
+        render(<FloatingChat />);
+
+        act(() => {
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'acla-pill-msg',
+                newValue: JSON.stringify({
+                    kind: 'driver_expert_comparison',
+                    text: 'Turn 6 replay',
+                    ts: Date.now() + 20,
+                    data: {
+                        title: 'Turn 6 replay',
+                        comparison: {
+                            samples: [{
+                                progress: 100,
+                                driverTrajectory: { x: 10, z: 20 },
+                                expertTrajectory: { x: 11, z: 21 },
+                                driverGas: 0.7,
+                                expertGas: 0.8,
+                                driverBrake: 0.2,
+                                expertBrake: 0.1,
+                                driverGear: 4,
+                                expertGear: 5,
+                            }],
+                        },
+                    },
+                }),
+            }));
+        });
+
+        await waitFor(() => expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument());
+        expect(screen.getByTestId('comparison-track-map')).toBeInTheDocument();
+        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.7');
+        expect(screen.getByTestId('expert-gear')).toHaveTextContent('5');
+        expect(screen.queryByTestId('comparison-graph-gas')).not.toBeInTheDocument();
+        await waitFor(() => expect(resizeFloatingChat).toHaveBeenCalledWith(760, 500));
+    });
 });

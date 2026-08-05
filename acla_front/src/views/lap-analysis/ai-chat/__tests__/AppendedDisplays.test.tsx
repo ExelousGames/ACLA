@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import BaselineProgressDisplay from '../BaselineProgressDisplay';
 import ProcedurePlanDisplay from '../ProcedurePlanDisplay';
 import ToolMessageDisplay from '../ToolMessageDisplay';
-import { LiveRangeTrackerDisplay } from '../LiveRangeTracker';
+import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
 
 describe('appended AI display components', () => {
     it('renders baseline progress on both chat and pill surfaces', () => {
@@ -66,22 +66,26 @@ describe('appended AI display components', () => {
         expect(screen.queryByText('collect_live_baseline')).not.toBeInTheDocument();
     });
 
-    it('renders a compact live range tracker state', () => {
+    it('renders a compact live range to-do list snapshot', () => {
         render(
-            <LiveRangeTrackerDisplay
+            <LiveRangeTodoListDisplay
                 surface="pill"
-                tracker={{
-                    status: 'open',
+                snapshot={{
                     created_at: 1,
                     updated_at: 2,
-                    ranges: [
+                    current_position: 0.1,
+                    rolling_rate: 0.05,
+                    events: [
                         {
                             id: 'range-1',
-                            label: 'Turn exit',
-                            start_position: 0.1,
-                            end_position: 0.2,
-                            lifecycle_status: 'classifying',
-                            child_segments: [],
+                            normalized_position: 0.2,
+                            lead_time_seconds: 2,
+                            content: { title: 'Turn exit' },
+                            data: {},
+                            status: 'running',
+                            eta_seconds: 2,
+                            created_at: 1,
+                            updated_at: 2,
                         },
                     ],
                 }}
@@ -89,6 +93,6 @@ describe('appended AI display components', () => {
         );
 
         expect(screen.getByText('Turn exit')).toBeInTheDocument();
-        expect(screen.getByText('classifying')).toBeInTheDocument();
+        expect(screen.getByText('running')).toBeInTheDocument();
     });
 });

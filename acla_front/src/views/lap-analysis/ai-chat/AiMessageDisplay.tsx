@@ -26,7 +26,7 @@ type AiMessageDisplayProps = {
 const AiMessageDisplay: React.FC<AiMessageDisplayProps> = ({
     message,
     assistantAvatarLabel = 'AI',
-    assistantWhoLabel = 'ACLA',
+    assistantWhoLabel = 'Kestrel',
     debugMode = false,
     surface = 'chat',
 }) => {

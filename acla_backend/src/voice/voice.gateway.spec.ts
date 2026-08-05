@@ -120,9 +120,9 @@ describe('VoiceGateway', () => {
             'get_event_log',
         ]));
         expect(toolNames).not.toEqual(expect.arrayContaining([
-            'set_live_range_tracker',
-            'update_live_range_tracker',
-            'get_live_range_tracker',
+            'set_live_range_todo_list',
+            'update_live_range_todo_list',
+            'get_live_range_todo_list',
             'collect_live_baseline',
             'restart_live_baseline',
             'analyze_live_recorded_analysis',
@@ -147,14 +147,23 @@ describe('VoiceGateway', () => {
             'collect_live_baseline',
             'restart_live_baseline',
             'analyze_live_recorded_analysis',
-            'set_live_range_tracker',
-            'update_live_range_tracker',
-            'get_live_range_tracker',
+            'set_live_range_todo_list',
+            'update_live_range_todo_list',
+            'get_live_range_todo_list',
             'classify_live_section',
             'analyze_telemetry',
             'stop_agent_session',
         ]));
+        expect(toolNames).not.toEqual(expect.arrayContaining([
+            'set_live_range_tracker',
+            'update_live_range_tracker',
+            'get_live_range_tracker',
+        ]));
         expect(toolNames).not.toContain('start_agent_session');
+        expect(payload.tool_metadata.set_live_range_todo_list.description)
+            .toContain('panel must already be open');
+        expect(payload.tool_metadata.set_live_range_todo_list.description)
+            .toContain('AI adapter attaches its notification callback');
     });
 
     it('advertises query_telemetry_metric field guidance in live frontend_info frames', () => {

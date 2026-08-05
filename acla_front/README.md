@@ -1,4 +1,4 @@
-# ACLA Frontend & Desktop Companion
+# Kestrel Motorsport Analyst Frontend & Desktop Companion
 
 This package contains the React UI and the Electron desktop shell that executes all Python automation located in `src/py-scripts/`.
 

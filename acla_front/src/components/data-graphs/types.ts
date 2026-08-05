@@ -42,6 +42,20 @@ export interface LineGraphSpec extends CommonGraphSpec {
     series: readonly GraphSeries[];
     smooth?: boolean;
     showPoints?: boolean;
+    step?: boolean | 'start' | 'middle' | 'end';
+}
+
+export interface XYLineGraphSeries extends GraphSeries {
+    xKey: string;
+    yKey: string;
+}
+
+export interface XYLineGraphSpec extends CommonGraphSpec {
+    type: 'xy-line';
+    data: readonly GraphRecord[];
+    series: readonly XYLineGraphSeries[];
+    smooth?: boolean;
+    showPoints?: boolean;
 }
 
 export interface HistogramGraphSpec extends CommonGraphSpec {
@@ -50,7 +64,7 @@ export interface HistogramGraphSpec extends CommonGraphSpec {
     binCount?: number;
 }
 
-export type GraphSpec = BarGraphSpec | LineGraphSpec | HistogramGraphSpec;
+export type GraphSpec = BarGraphSpec | LineGraphSpec | XYLineGraphSpec | HistogramGraphSpec;
 
 export interface DataGraphProps {
     spec: GraphSpec;

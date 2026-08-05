@@ -562,7 +562,7 @@ if __name__ == "__main__":
 }
 
 // Add a small delay to make the output more readable
-console.log('🚀 Setting up ACLA Electron app...\n');
+console.log('🚀 Setting up Kestrel Motorsport Analyst Electron app...\n');
 setTimeout(() => {
     checkAndInstallSpeechDeps();
 }, 500);

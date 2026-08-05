@@ -14,7 +14,7 @@ const readyOption = (spec: unknown): any => {
 
 describe('data graph strategy registry', () => {
     it('exhaustively registers the supported graph discriminants', () => {
-        expect(GRAPH_STRATEGY_TYPES).toEqual(['bar', 'line', 'histogram']);
+        expect(GRAPH_STRATEGY_TYPES).toEqual(['bar', 'line', 'xy-line', 'histogram']);
     });
 
     it('builds a horizontal stacked multi-series bar option', () => {
@@ -117,6 +117,53 @@ describe('data graph strategy registry', () => {
             { x: 1, value: 2 },
             { x: 2, other: 5 },
         ]);
+    });
+
+    it('builds independent XY line pairs and drops incomplete coordinates', () => {
+        const option = readyOption({
+            type: 'xy-line',
+            data: [
+                { driverX: 1, driverZ: 2, expertX: 3, expertZ: 4 },
+                { driverX: 5, driverZ: Number.NaN, expertX: 6, expertZ: 7 },
+            ],
+            series: [
+                { key: 'driver', xKey: 'driverX', yKey: 'driverZ', label: 'Driver' },
+                { key: 'expert', xKey: 'expertX', yKey: 'expertZ', label: 'Expert' },
+            ],
+        });
+
+        expect(option.xAxis).toMatchObject({ type: 'value', scale: true });
+        expect(option.yAxis).toMatchObject({ type: 'value', scale: true });
+        expect(option.tooltip).toMatchObject({ trigger: 'item' });
+        expect(option.dataset.source).toEqual([
+            { driverX: 1, driverZ: 2, expertX: 3, expertZ: 4 },
+            { expertX: 6, expertZ: 7 },
+        ]);
+        expect(option.series).toEqual([
+            expect.objectContaining({
+                type: 'line',
+                name: 'Driver',
+                encode: { x: 'driverX', y: 'driverZ' },
+            }),
+            expect.objectContaining({
+                type: 'line',
+                name: 'Expert',
+                encode: { x: 'expertX', y: 'expertZ' },
+            }),
+        ]);
+    });
+
+    it('configures stepped line traces for discrete changes', () => {
+        const option = readyOption({
+            type: 'line',
+            data: [{ progress: 0, gear: 2 }, { progress: 50, gear: 3 }],
+            xKey: 'progress',
+            xAxisType: 'value',
+            series: [{ key: 'gear' }],
+            step: 'end',
+        });
+
+        expect(option.series[0]).toMatchObject({ step: 'end' });
     });
 
     it('returns empty for valid specs without usable numeric data', () => {

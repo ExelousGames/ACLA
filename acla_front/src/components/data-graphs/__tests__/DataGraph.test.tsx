@@ -7,12 +7,18 @@ const mockChart = {
     resize: jest.fn(),
     dispose: jest.fn(),
 };
-const mockInit = jest.fn(() => mockChart);
+const mockInit = jest.fn((
+    _element?: unknown,
+    _theme?: unknown,
+    _options?: unknown,
+) => mockChart);
 const mockUse = jest.fn();
 
 jest.mock('echarts/core', () => ({
-    init: (...args: unknown[]) => mockInit(...args),
-    use: (...args: unknown[]) => mockUse(...args),
+    init: (element: unknown, theme?: unknown, options?: unknown) => (
+        mockInit(element, theme, options)
+    ),
+    use: (modules: unknown[]) => mockUse(modules),
 }));
 
 jest.mock('echarts/charts', () => ({ BarChart: {}, LineChart: {} }));

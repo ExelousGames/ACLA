@@ -43,7 +43,7 @@ const HeaderMenu = () => {
 
     return (
         <div className='menu-header'>
-            <Box className="MainDashboardTitle Title">Assetto Corsa Competizione Lap Analysis</Box>
+            <Box className="MainDashboardTitle Title">Kestrel Motorsport Analyst</Box>
             <DropdownMenu.Root>
                 <DropdownMenu.Trigger>
                     <button className='header-menu-button'>

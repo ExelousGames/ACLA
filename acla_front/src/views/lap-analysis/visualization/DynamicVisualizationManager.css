@@ -1,10 +1,13 @@
 .dynamic-visualization-manager {
     width: 100%;
     height: 100%;
+    min-width: 0;
+    min-height: 0;
     padding: 16px;
     background: var(--lp-bg);
     display: flex;
     flex-direction: column;
+    overflow: hidden;
     color: var(--lp-white);
 }
 
@@ -61,6 +64,28 @@
     grid-template-columns: minmax(0, 1fr);
 }
 
+.live-telemetry-workspace .visualization-workspace {
+    flex: 0 0 auto;
+    min-height: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    overflow: visible;
+}
+
+.live-telemetry-workspace .static-map-container {
+    flex: 1 1 640px;
+    height: clamp(460px, 60vh, 620px);
+    max-height: none;
+}
+
+.live-telemetry-workspace .visualizations-container {
+    flex: 1 1 320px;
+    height: max-content;
+    max-height: none;
+    overflow: visible;
+}
+
 .static-map-container {
     min-width: 0;
     min-height: 0;
@@ -100,11 +125,26 @@
 .visualizations-container {
     min-width: 0;
     min-height: 0;
+    max-height: 100%;
     padding-right: 4px;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    scroll-padding-block-end: 15px;
     display: flex;
     flex-direction: column;
     gap: 14px;
+}
+
+/*
+ * Keep a concrete final flex item in the scroll extent. Chromium can omit a
+ * flex/grid container's trailing padding from its scrollHeight, which leaves
+ * the bottom border of the last visualization hidden at maximum scroll.
+ */
+.visualizations-container::after {
+    content: '';
+    width: 100%;
+    flex: 0 0 1px;
 }
 
 .visualization-container {
@@ -115,12 +155,16 @@
     transition: box-shadow 0.2s ease-in-out, transform 0.2s ease-in-out, border-color 0.2s;
     overflow: hidden;
     min-height: 220px;
+    width: 100%;
+    max-width: 100%;
+    flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     min-width: 0;
     position: relative;
     color: var(--lp-white);
 }
+
 .visualization-container.is-dragging {
     opacity: 0.5;
     box-shadow: 0 8px 18px rgba(0, 0, 0, 0.5);
@@ -208,6 +252,9 @@
         min-height: 460px;
     }
     .visualizations-container {
+        width: 100%;
+        height: max-content;
+        max-height: none;
         padding: 0;
         overflow: visible;
     }

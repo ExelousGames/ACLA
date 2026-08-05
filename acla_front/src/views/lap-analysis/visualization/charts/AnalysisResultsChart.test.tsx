@@ -1,16 +1,73 @@
 import React from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+
+const mockOpenVisualization = jest.fn();
+const mockGetCurrentInstances = jest.fn();
+
+jest.mock('../VisualizationController', () => ({
+    visualizationController: {
+        getCurrentInstances: mockGetCurrentInstances,
+        openVisualization: mockOpenVisualization,
+    },
+}));
 
 jest.mock('@radix-ui/themes', () => {
     const ReactModule = require('react');
     const Component = ({ as: Tag = 'div', children, ...props }: any) => (
         <Tag {...props}>{children}</Tag>
     );
+    const HoverCardContext = ReactModule.createContext({
+        open: false,
+        onOpenChange: (_open: boolean) => undefined,
+    });
+    const HoverCardRoot = ({ open, onOpenChange, children }: any) => (
+        <HoverCardContext.Provider value={{ open, onOpenChange }}>
+            {children}
+        </HoverCardContext.Provider>
+    );
+    const HoverCardTrigger = ({ children }: any) => {
+        const context = ReactModule.useContext(HoverCardContext);
+        return ReactModule.cloneElement(children, {
+            onMouseEnter: () => context.onOpenChange(true),
+            onMouseLeave: () => context.onOpenChange(false),
+            onFocus: () => context.onOpenChange(true),
+            onBlur: () => context.onOpenChange(false),
+        });
+    };
+    const HoverCardContent = ({
+        children,
+        side,
+        align,
+        avoidCollisions,
+        collisionPadding,
+        sideOffset,
+        ...props
+    }: any) => {
+        const context = ReactModule.useContext(HoverCardContext);
+        return context.open ? (
+            <div
+                {...props}
+                data-testid="comparison-hover-content"
+                data-side={side}
+                data-align={align}
+                data-avoid-collisions={String(avoidCollisions)}
+                data-collision-padding={String(collisionPadding)}
+                data-side-offset={String(sideOffset)}
+            >
+                {children}
+            </div>
+        ) : null;
+    };
     return {
         Badge: Component,
         Box: Component,
         Card: Component,
         Flex: Component,
+        HoverCard: {
+            Root: HoverCardRoot,
+            Trigger: HoverCardTrigger,
+            Content: HoverCardContent,
+        },
         ScrollArea: Component,
         Text: Component,
     };
@@ -50,6 +107,12 @@ jest.mock('components/data-graphs', () => ({
 }));
 
 import AnalysisResultsChart from './AnalysisResultsChart';
+import { FLOATING_PILL_RICH_CONTENT_HOLD_MS } from 'views/floating-chat/floating-pill-bridge';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import type {
+    LiveRangeTodoEventInput,
+    LiveRangeTodoListHandle,
+} from 'views/live-session/live-range-todo-list-types';
 import {
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,
@@ -75,7 +138,46 @@ const renderedFrequencyData = (): Array<{ label: string; occurrences: number }> 
     JSON.parse(screen.getByTestId('mistake-frequency-graph').getAttribute('data-graph-data') ?? '[]')
 );
 
+const comparableData = (driverGas: number, expertGas: number) => ({
+    samples: [{ progress: 0, driverGas, expertGas }],
+});
+
+const createQueueHandle = (events: LiveRangeTodoEventInput[]): LiveRangeTodoListHandle => ({
+    addEvent: jest.fn((event: LiveRangeTodoEventInput) => {
+        events.push(event);
+        return { status: 'ready', todo_list: null };
+    }),
+    replaceEvents: jest.fn(),
+    updateEvents: jest.fn(),
+    removeEvents: jest.fn(),
+    resetEvents: jest.fn(),
+    clear: jest.fn(),
+    get: jest.fn(),
+});
+
+const withQueueHandle = (
+    chart: React.ReactElement,
+    handle: LiveRangeTodoListHandle | null,
+) => (
+    <LiveSessionContext.Provider value={{ liveRangeTodoListHandle: handle } as any}>
+        {chart}
+    </LiveSessionContext.Provider>
+);
+
 describe('AnalysisResultsChart', () => {
+    beforeEach(() => {
+        mockGetCurrentInstances.mockReset().mockReturnValue([]);
+        mockOpenVisualization.mockReset().mockReturnValue({
+            success: true,
+            message: 'Opened chart.',
+        });
+        localStorage.clear();
+    });
+
+    afterEach(() => {
+        jest.useRealTimers();
+    });
+
     it('renders arbitrary labels, context, and metadata safely', () => {
         render(
             <AnalysisResultsChart
@@ -452,6 +554,350 @@ describe('AnalysisResultsChart', () => {
             { label: 'Failed overtake attempt', occurrences: 2 },
         ]);
     });
+
+    it('appends tied leading occurrences once with fresh IDs, source context, and current-view filtering', () => {
+        const existingEvent: LiveRangeTodoEventInput = {
+            id: 'existing',
+            normalized_position: 0.05,
+            content: { title: 'Existing reminder' },
+            data: null,
+            callback: jest.fn(),
+        };
+        const queuedEvents = [existingEvent];
+        const handle = createQueueHandle(queuedEvents);
+        const chart = (
+            <AnalysisResultsChart
+                id="queue-leading"
+                data={{
+                    elements: [
+                        {
+                            id: 'both-leading',
+                            labels: ['MSP', 'MSP1', 'MSP2'],
+                            title: 'Use a cleaner entry',
+                            section: 'Turn 1',
+                            normalizedPositionRange: { start: 0.1, end: 0.2 },
+                            comparison: comparableData(0.2, 0.4),
+                            timeGap: { deltaMs: 5 },
+                        },
+                        {
+                            id: 'late-fallback',
+                            labels: ['MSP', 'Late turn-in'],
+                            section: 'Turn 2',
+                            normalizedPositionRange: { start: 0.2, end: 0.3 },
+                            comparison: comparableData(0.3, 0.5),
+                            timeGap: { deltaMs: 50 },
+                        },
+                        {
+                            id: 'late-no-comparison',
+                            labels: ['MSP', 'MSP1'],
+                            normalizedPositionRange: { start: 0.3, end: 0.4 },
+                        },
+                        {
+                            id: 'wheel-no-position',
+                            labels: ['MSP', 'MSP2'],
+                            comparison: comparableData(0.4, 0.6),
+                        },
+                        {
+                            id: 'wheel-valid',
+                            labels: ['MSP', 'Wheel lock'],
+                            title: 'Ease off the brake',
+                            normalizedPositionRange: { start: 0.5, end: 0.6 },
+                            comparison: comparableData(0.5, 0.7),
+                            timeGap: { deltaMs: 20 },
+                        },
+                        {
+                            id: 'racing-valid',
+                            labels: ['MSR', 'MSR1'],
+                            normalizedPositionRange: { start: 0.7, end: 0.8 },
+                            comparison: comparableData(0.6, 0.8),
+                        },
+                    ],
+                }}
+            />
+        );
+        render(withQueueHandle(chart, handle));
+        selectSortMode('most-time-lost');
+
+        const button = screen.getByRole('button', { name: 'Send most common mistakes' });
+        fireEvent.click(button);
+
+        expect(queuedEvents[0]).toBe(existingEvent);
+        expect(queuedEvents.slice(1).map((event) => (
+            (event.data as any).context.source_result_id
+        ))).toEqual(['both-leading', 'late-fallback', 'wheel-valid']);
+        expect(queuedEvents.slice(1).every((event) => event.lead_time_seconds === 0)).toBe(true);
+        expect(queuedEvents.slice(1).map((event) => event.normalized_position)).toEqual([0.1, 0.2, 0.5]);
+        expect(queuedEvents[1].content).toMatchObject({
+            title: 'Use a cleaner entry',
+            metadata: {
+                section: 'Turn 1',
+                position: 0.1,
+                source_result_id: 'both-leading',
+                matched_leading_labels: ['Late turn-in', 'Wheel lock'],
+            },
+        });
+        expect(queuedEvents[2].content.title).toBe('Late turn-in');
+        expect(() => JSON.stringify(queuedEvents.slice(1).map((event) => ({
+            content: event.content,
+            data: event.data,
+        })))).not.toThrow();
+        expect(screen.getByRole('status')).toHaveTextContent('Queued: 3. Skipped: 2.');
+        expect(mockOpenVisualization).not.toHaveBeenCalled();
+
+        const firstClickIds = queuedEvents.slice(1).map((event) => event.id);
+        fireEvent.click(button);
+        const secondClickIds = queuedEvents.slice(4).map((event) => event.id);
+        expect(secondClickIds).toHaveLength(3);
+        expect(new Set([...firstClickIds, ...secondClickIds])).toHaveProperty('size', 6);
+
+        selectMainLabel('MSR');
+        fireEvent.click(button);
+        expect((queuedEvents[7].data as any).context.source_result_id).toBe('racing-valid');
+        expect(screen.getByRole('status')).toHaveTextContent('Queued: 1. Skipped: 0.');
+    });
+
+    it('disables the action when every leading occurrence lacks a usable position or comparison', () => {
+        render(
+            <AnalysisResultsChart
+                id="queue-disabled"
+                data={{
+                    elements: [
+                        {
+                            id: 'invalid-position',
+                            labels: ['MSP', 'MSP1'],
+                            normalizedPositionRange: { start: -0.1, end: 0.1 },
+                            comparison: comparableData(0.2, 0.4),
+                        },
+                        {
+                            id: 'invalid-comparison',
+                            labels: ['MSP', 'Late turn-in'],
+                            normalizedPositionRange: { start: 0.2, end: 0.3 },
+                            comparison: { samples: [{ progress: 0, driverGas: 0.2 }] },
+                        },
+                    ],
+                }}
+            />,
+        );
+
+        expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeDisabled();
+    });
+
+    it('opens a closed queue, retains prepared events, and drains them when the handle registers', async () => {
+        const queuedEvents: LiveRangeTodoEventInput[] = [];
+        const handle = createQueueHandle(queuedEvents);
+        const chart = (
+            <AnalysisResultsChart
+                id="queue-deferred"
+                data={{ elements: [{
+                    id: 'deferred-result',
+                    labels: ['MSP', 'MSP1'],
+                    normalizedPositionRange: { start: 0.25, end: 0.3 },
+                    comparison: comparableData(0.2, 0.4),
+                }] }}
+            />
+        );
+        const view = render(withQueueHandle(chart, null));
+
+        fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
+        expect(screen.getByRole('button', { name: 'Sending…' })).toBeDisabled();
+        await waitFor(() => expect(mockOpenVisualization).toHaveBeenCalledWith('live-range-todo-list'));
+        expect(queuedEvents).toHaveLength(0);
+
+        view.rerender(withQueueHandle(chart, handle));
+        await waitFor(() => expect(queuedEvents).toHaveLength(1));
+        expect((queuedEvents[0].data as any).context.source_result_id).toBe('deferred-result');
+        expect(screen.getByRole('status')).toHaveTextContent('Queued: 1. Skipped: 0.');
+        expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeEnabled();
+    });
+
+    it('reports an accessible error after the queue panel mount timeout', async () => {
+        jest.useFakeTimers();
+        render(
+            <AnalysisResultsChart
+                id="queue-timeout"
+                data={{ elements: [{
+                    id: 'timeout-result',
+                    labels: ['MSP', 'MSP1'],
+                    normalizedPositionRange: { start: 0.25, end: 0.3 },
+                    comparison: comparableData(0.2, 0.4),
+                }] }}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
+        await act(async () => {
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+        expect(mockOpenVisualization).toHaveBeenCalledWith('live-range-todo-list');
+        act(() => jest.advanceTimersByTime(2000));
+
+        expect(screen.getByRole('status')).toHaveTextContent(
+            'Live Range To-do List did not open within two seconds. Nothing was queued.',
+        );
+        expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeEnabled();
+    });
+
+    it('reports an accessible error when the visualization controller cannot open the queue', async () => {
+        mockOpenVisualization.mockReturnValue({
+            success: false,
+            message: 'Unable to open chart.',
+        });
+        render(
+            <AnalysisResultsChart
+                id="queue-open-failure"
+                data={{ elements: [{
+                    id: 'open-failure-result',
+                    labels: ['MSP', 'MSP1'],
+                    normalizedPositionRange: { start: 0.25, end: 0.3 },
+                    comparison: comparableData(0.2, 0.4),
+                }] }}
+            />,
+        );
+
+        fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
+
+        await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
+            'Unable to open Live Range To-do List. Nothing was queued.',
+        ));
+        expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeEnabled();
+    });
+
+    it('defers an exact comparison payload for rendering, holds it for 3.8 seconds, and clears on abort', async () => {
+        jest.useFakeTimers();
+        const originalRequestAnimationFrame = window.requestAnimationFrame;
+        const originalCancelAnimationFrame = window.cancelAnimationFrame;
+        window.requestAnimationFrame = (callback: FrameRequestCallback) => (
+            window.setTimeout(() => callback(0), 0)
+        );
+        window.cancelAnimationFrame = (frameId: number) => window.clearTimeout(frameId);
+        const queuedEvents: LiveRangeTodoEventInput[] = [];
+        const comparison = comparableData(0.35, 0.7);
+        const handle = createQueueHandle(queuedEvents);
+        render(withQueueHandle(
+            <AnalysisResultsChart
+                id="queue-callback"
+                data={{ elements: [{
+                    id: 'callback-result',
+                    labels: ['MSP', 'MSP1'],
+                    title: 'Exact crossing graph',
+                    normalizedPositionRange: { start: 0.4, end: 0.5 },
+                    comparison,
+                }] }}
+            />,
+            handle,
+        ));
+        fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
+        const controller = new AbortController();
+        let completed = false;
+        const callbackPromise = Promise.resolve(queuedEvents[0].callback({
+            signal: controller.signal,
+        } as any)).then(() => { completed = true; });
+
+        expect(localStorage.getItem('acla-pill-msg')).toBeNull();
+        act(() => jest.advanceTimersByTime(1));
+        act(() => jest.advanceTimersByTime(1));
+        const pillPayload = JSON.parse(localStorage.getItem('acla-pill-msg') || '{}');
+        expect(pillPayload).toMatchObject({
+            kind: 'driver_expert_comparison',
+            text: 'Exact crossing graph',
+            data: {
+                title: 'Exact crossing graph',
+                comparison,
+            },
+        });
+        expect(completed).toBe(false);
+
+        act(() => jest.advanceTimersByTime(FLOATING_PILL_RICH_CONTENT_HOLD_MS - 10));
+        await act(async () => Promise.resolve());
+        expect(completed).toBe(false);
+        act(() => jest.advanceTimersByTime(10));
+        await act(async () => callbackPromise);
+        expect(completed).toBe(true);
+
+        const abortController = new AbortController();
+        const clearTimeoutSpy = jest.spyOn(window, 'clearTimeout');
+        const abortedPromise = Promise.resolve(queuedEvents[0].callback({
+            signal: abortController.signal,
+        } as any));
+        act(() => jest.advanceTimersByTime(1));
+        act(() => jest.advanceTimersByTime(1));
+        clearTimeoutSpy.mockClear();
+        act(() => abortController.abort());
+        await act(async () => abortedPromise);
+        expect(clearTimeoutSpy).toHaveBeenCalled();
+        clearTimeoutSpy.mockRestore();
+
+        window.requestAnimationFrame = originalRequestAnimationFrame;
+        window.cancelAnimationFrame = originalCancelAnimationFrame;
+    });
+
+    it('mounts a collision-aware comparison only while a capable card is hovered or focused', () => {
+        render(
+            <AnalysisResultsChart
+                id="comparison-card"
+                data={{
+                    elements: [{
+                        id: 'comparable',
+                        labels: ['MSP'],
+                        comparison: {
+                            samples: [{
+                                progress: 0,
+                                driverGas: 0.4,
+                                expertGas: 0.5,
+                            }],
+                        },
+                    }],
+                }}
+            />,
+        );
+
+        const card = screen.getByTestId('analysis-result-comparable');
+        expect(card).toHaveAttribute('tabindex', '0');
+        expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
+
+        fireEvent.mouseEnter(card);
+
+        expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument();
+        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.4');
+        expect(screen.getByTestId('trajectory-unavailable')).toHaveTextContent('Track data unavailable');
+        expect(screen.queryByTestId('comparison-graph-gas')).not.toBeInTheDocument();
+        expect(screen.getByTestId('comparison-hover-content')).toHaveAttribute('data-side', 'right');
+        expect(screen.getByTestId('comparison-hover-content')).toHaveAttribute(
+            'data-avoid-collisions',
+            'true',
+        );
+
+        fireEvent.mouseLeave(card);
+        expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
+
+        fireEvent.focus(card);
+        expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument();
+
+        fireEvent.blur(card);
+        expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
+    });
+
+    it('shows comparison unavailability without making an empty card interactive', () => {
+        render(
+            <AnalysisResultsChart
+                id="unavailable-comparison-card"
+                data={{
+                    elements: [{
+                        id: 'unavailable-comparison',
+                        labels: ['MSP'],
+                        comparison: { samples: [{ progress: 0, driverGas: 0.4 }] },
+                    }],
+                }}
+            />,
+        );
+
+        const card = screen.getByTestId('analysis-result-unavailable-comparison');
+        expect(card).not.toHaveAttribute('tabindex');
+        expect(within(card).getByText('Expert comparison unavailable')).toBeInTheDocument();
+        fireEvent.mouseEnter(card);
+        expect(screen.queryByTestId('comparison-hover-content')).not.toBeInTheDocument();
+    });
 });
 
 describe('analysis results mutations', () => {
@@ -520,5 +966,33 @@ describe('analysis results mutations', () => {
             data: { id: 'two', count: 1 },
         });
         expect(removed.data.elements.map((element) => element.id)).toEqual(['one']);
+    });
+
+    it('preserves compact normalized comparison data through unrelated mutations', () => {
+        const data = normalizeAnalysisResultsData({
+            elements: [{
+                id: 'comparison',
+                labels: ['MSP'],
+                comparison: {
+                    samples: [{
+                        progress: 25,
+                        driverGas: 0.4,
+                        expertGas: 0.5,
+                        Physics_gas: 1,
+                    }],
+                },
+                baselineRecords: [{ very: 'large' }],
+            }],
+        });
+
+        expect(data.elements[0].comparison).toEqual({
+            samples: [{ progress: 25, driverGas: 0.4, expertGas: 0.5 }],
+        });
+        expect(data.elements[0]).not.toHaveProperty('baselineRecords');
+
+        const updated = updateAnalysisResultElement(data, 'comparison', {
+            title: 'Updated title',
+        });
+        expect(updated.data.elements[0].comparison).toEqual(data.elements[0].comparison);
     });
 });

@@ -158,14 +158,19 @@ export const formatToolResultForLlm = (data: Record<string, unknown>): string =>
         );
     }
 
-    if (data.source === 'live_range_tracker') {
-        const bits = ['live_range_tracker', event];
-        ['range_id', 'label', 'lap'].forEach((key) => {
+    if (data.source === 'live_range_todo_list') {
+        const bits = ['live_range_todo_list', event];
+        ['event_id', 'normalized_position', 'eta_seconds', 'lap'].forEach((key) => {
             const value = data[key];
             if (value !== undefined && value !== null) bits.push(`${key}=${value}`);
         });
-        if (isNumber(data.telemetry_row_count)) {
-            bits.push(`telemetry_rows=${data.telemetry_row_count}`);
+        const content = asRecord(data.content);
+        if (typeof content.title === 'string' && content.title.trim()) {
+            bits.push(`title=${content.title.trim()}`);
+        }
+        const telemetryRange = asRecord(data.telemetry_range_summary);
+        if (isNumber(telemetryRange.telemetry_row_count)) {
+            bits.push(`telemetry_rows=${telemetryRange.telemetry_row_count}`);
         }
         return `${bits.join(' ')}.`;
     }

@@ -294,86 +294,82 @@ export const FRONTEND_APPLICATION_TOOLS = [
         required: [],
     },
     {
-        name: 'set_live_range_tracker',
-        description: 'Create or replace the single live range tracker with normalized start/end ranges. The tracker monitors live telemetry and requests classification after each range end is crossed.',
+        name: 'set_live_range_todo_list',
+        description: 'Replace the panel-owned Live Range To-do List with AI notification events. The Live Range To-do List panel must already be open; this tool never opens it. The frontend AI adapter attaches its notification callback only to events supplied to this tool.',
         properties: {
-            ranges: {
+            events: {
                 type: 'array',
-                description: 'Tracked normalized ranges. Each range needs start_position and end_position from 0 to 1.',
+                description: 'Complete replacement queue. Every event needs an id, normalized_position from 0 through 1, and content.title.',
                 items: {
                     type: 'object',
                     properties: {
-                        id: { type: 'string' },
-                        label: { type: 'string' },
-                        start_position: { type: 'number' },
-                        end_position: { type: 'number' },
+                        id: { type: 'string', description: 'Unique event id.' },
+                        normalized_position: { type: 'number', minimum: 0, maximum: 1 },
+                        lead_time_seconds: { type: 'number', minimum: 0, description: 'How early to run the event. Defaults to 2 seconds.' },
+                        content: {
+                            type: 'object',
+                            properties: {
+                                title: { type: 'string' },
+                                detail: { type: 'string' },
+                                metadata: { description: 'Optional JSON-safe metadata.' },
+                            },
+                            required: ['title'],
+                        },
+                        data: {
+                            type: 'object',
+                            description: 'Optional JSON-safe AI notification options, such as event or telemetry_range_summary. Stored on the event and passed to its callback.',
+                        },
                     },
-                    required: ['start_position', 'end_position'],
+                    required: ['id', 'normalized_position', 'content'],
                 },
             },
         },
-        required: ['ranges'],
+        required: ['events'],
     },
     {
-        name: 'update_live_range_tracker',
-        description: 'Update the live range tracker. Use action=record_classification after the classifier determines the tracked range status.',
+        name: 'update_live_range_todo_list',
+        description: 'Mutate the panel-owned Live Range To-do List. The panel must already be open. AI updates can change serializable event fields but preserve each event callback; newly added AI events receive the frontend AI notification callback.',
         properties: {
             action: {
                 type: 'string',
-                enum: ['update_ranges', 'remove_ranges', 'record_classification', 'close'],
+                enum: ['add_events', 'update_events', 'remove_events', 'reset_events', 'clear'],
             },
-            ranges: {
+            events: {
                 type: 'array',
-                description: 'Ranges for update_ranges.',
+                description: 'Events for add_events or partial serializable event objects with id for update_events.',
                 items: {
                     type: 'object',
                     properties: {
                         id: { type: 'string' },
-                        label: { type: 'string' },
-                        start_position: { type: 'number' },
-                        end_position: { type: 'number' },
-                    },
-                },
-            },
-            range_ids: {
-                type: 'array',
-                description: 'Range ids for remove_ranges.',
-                items: { type: 'string' },
-            },
-            range_id: {
-                type: 'string',
-                description: 'Range id for record_classification.',
-            },
-            classifier_status: {
-                type: 'string',
-                description: 'Classifier-derived status for the tracked range.',
-            },
-            parent_segment: {
-                type: 'object',
-                description: 'Parent segment with its own labels and optional start/end indexes.',
-            },
-            child_segments: {
-                type: 'array',
-                description: 'Child segments with labels, start_index, and end_index.',
-                items: {
-                    type: 'object',
-                    properties: {
-                        labels: {
-                            type: 'array',
-                            items: { type: 'string' },
+                        normalized_position: { type: 'number', minimum: 0, maximum: 1 },
+                        lead_time_seconds: { type: 'number', minimum: 0 },
+                        content: {
+                            type: 'object',
+                            properties: {
+                                title: { type: 'string' },
+                                detail: { type: 'string' },
+                                metadata: { description: 'Optional JSON-safe metadata.' },
+                            },
                         },
-                        start_index: { type: 'integer' },
-                        end_index: { type: 'integer' },
+                        data: {
+                            type: 'object',
+                            description: 'JSON-safe event data. For AI events, store notification options here.',
+                        },
                     },
-                    required: ['labels', 'start_index', 'end_index'],
+                    required: ['id'],
                 },
+            },
+            ids: {
+                type: 'array',
+                description: 'Event ids for remove_events or reset_events. Omit for reset_events to reset every event.',
+                items: { type: 'string' },
             },
         },
         required: ['action'],
     },
     {
-        name: 'get_live_range_tracker',
-        description: 'View the current live range tracker, including tracked ranges, lifecycle states, classifier status, parent labels, and child segment labels/indexes.',
+        name: 'get_live_range_todo_list',
+        description: 'Read the serializable Live Range To-do List snapshot, including event data, content, targets, ETA, lead time, lifecycle status, and timestamps. The panel must be open.',
         properties: {},
         required: [],
     },
@@ -663,9 +659,9 @@ type AiToolMetadata = {
 const FRONTEND_APPLICATION_TOOL_TITLES: Record<FrontendApplicationToolName, string> = {
     start_agent_session: 'Starting agent mode',
     stop_agent_session: 'Stopping agent mode',
-    set_live_range_tracker: 'Setting live range tracker',
-    update_live_range_tracker: 'Updating live range tracker',
-    get_live_range_tracker: 'Reading live range tracker',
+    set_live_range_todo_list: 'Setting live range to-do list',
+    update_live_range_todo_list: 'Updating live range to-do list',
+    get_live_range_todo_list: 'Reading live range to-do list',
     collect_live_baseline: 'Collecting baseline lap',
     restart_live_baseline: 'Restarting baseline lap',
     analyze_live_recorded_analysis: 'Analyzing baseline lap',
@@ -711,9 +707,9 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
-    'set_live_range_tracker',
-    'update_live_range_tracker',
-    'get_live_range_tracker',
+    'set_live_range_todo_list',
+    'update_live_range_todo_list',
+    'get_live_range_todo_list',
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',

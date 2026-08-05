@@ -74,6 +74,8 @@ const baseContext: LiveSessionRuntime = {
     recordingFileKey: null,
     recordedSampleCount: 0,
     sessionIntelligence: new SessionIntelligence(),
+    liveRangeTodoListHandle: null,
+    liveRangeTodoListSnapshot: null,
     setCurrentTelemetry: jest.fn(),
     setStaticData: jest.fn(),
     setRecordingMetadata: jest.fn(),
@@ -82,6 +84,8 @@ const baseContext: LiveSessionRuntime = {
     readRecordedTelemetry: jest.fn(),
     finalizeRecordingWrites: jest.fn(),
     clearRecordingSession: jest.fn(),
+    registerLiveRangeTodoListHandle: jest.fn(),
+    publishLiveRangeTodoListSnapshot: jest.fn(),
 };
 
 const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (

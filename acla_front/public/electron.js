@@ -124,6 +124,7 @@ async function checkSpeechRecognitionAvailability() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
+    title: 'Kestrel Motorsport Analyst',
     width: 900, height: 680,
     webPreferences: {
       //To send messages to the listener created above, you can use the ipcRenderer.send API. 
@@ -483,7 +484,7 @@ function createFloatingChatWindow() {
   // transparent area outside the pill would show whatever the overlay
   // sits over (main app title bar, etc.) and read as a "white frame".
   floatingChatWindow = new BrowserWindow({
-    title: 'ACLA',
+    title: 'Kestrel Motorsport Analyst',
     width: 72,
     height: 72,
     frame: false,
@@ -569,7 +570,7 @@ ipcMain.handle('resize-floating-chat', (event, payload) => {
     return { success: false };
   }
   const width = Math.max(72, Math.min(800, Math.round(Number(payload?.width) || 72)));
-  const height = Math.max(72, Math.min(200, Math.round(Number(payload?.height) || 72)));
+  const height = Math.max(72, Math.min(640, Math.round(Number(payload?.height) || 72)));
   const bounds = floatingChatWindow.getBounds();
   const newX = bounds.x - Math.round((width - bounds.width) / 2);
   const newY = bounds.y - Math.round((height - bounds.height) / 2);

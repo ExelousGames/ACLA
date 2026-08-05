@@ -72,7 +72,7 @@
   "main": "public/electron.js",
   "build": {
     "appId": "com.example.myapp",
-    "productName": "My Electron App",
+    "productName": "Kestrel Motorsport Analyst",
     "win": {
       "target": "nsis"
     },
