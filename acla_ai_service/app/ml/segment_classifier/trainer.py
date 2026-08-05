@@ -76,6 +76,7 @@ class SegmentClassifierTrainer:
         self.device = classifier_service.device
         self.model: Optional[TemporalDetectionModel] = None
         self.scaler: Optional[StandardScaler] = None
+        self.pos_weight: Optional[torch.Tensor] = None
 
     def _configure_training_backend(self) -> None:
         if self.device.type != "cuda" or not getattr(torch.version, "hip", None):
@@ -172,11 +173,13 @@ class SegmentClassifierTrainer:
         classifier = self.classifier_service
         scaler = StandardScaler()
         positives = np.zeros(len(classifier.label_ids), dtype=np.float64)
+        evaluated = np.zeros(len(classifier.label_ids), dtype=np.float64)
         sequence_count = 0
 
         for sequence in self._iter_sequences(cache_key):
             scaler.partial_fit(sequence.features)
             positives += (sequence.targets * sequence.loss_mask).sum(axis=0)
+            evaluated += sequence.loss_mask.sum(axis=0)
             sequence_count += 1
 
         if sequence_count == 0:
@@ -192,6 +195,20 @@ class SegmentClassifierTrainer:
             )
 
         self.scaler = scaler
+        negatives = evaluated - positives
+        self.pos_weight = torch.tensor(
+            np.minimum(
+                np.divide(
+                    negatives,
+                    positives,
+                    out=np.ones_like(negatives),
+                    where=positives > 0,
+                ),
+                20.0,
+            ),
+            dtype=torch.float32,
+            device=self.device,
+        )
 
     def _dataset(self, cache_key: str) -> TemporalStreamingDataset:
         classifier = self.classifier_service
@@ -205,10 +222,11 @@ class SegmentClassifierTrainer:
         )
 
     @staticmethod
-    def _masked_loss(logits, targets, mask):
+    def _masked_loss(logits, targets, mask, pos_weight):
         raw_loss = F.binary_cross_entropy_with_logits(
             logits,
             targets,
+            pos_weight=pos_weight,
             reduction="none",
         )
         denominator = mask.sum()
@@ -221,9 +239,11 @@ class SegmentClassifierTrainer:
         logits,
         targets,
         mask,
+        pos_weight,
     ) -> tuple[tuple[int, int], tuple[int, int]]:
         evaluated = mask > 0
-        predicted_positive = logits >= 0
+        corrected_logits = logits - torch.log(pos_weight)
+        predicted_positive = corrected_logits >= 0
         expected_positive = targets >= 0.5
         positives = expected_positive & evaluated
         negatives = ~expected_positive & evaluated
@@ -266,6 +286,8 @@ class SegmentClassifierTrainer:
             session_ids=session_ids,
         )
         await self.fit_preprocessors(train_key)
+        if self.pos_weight is None:
+            raise RuntimeError("Classifier positive class weights were not fitted.")
 
         train_loader = DataLoader(
             self._dataset(train_key),
@@ -316,6 +338,7 @@ class SegmentClassifierTrainer:
                     self.model(features),
                     targets,
                     mask,
+                    self.pos_weight,
                 )
                 if loss is None:
                     continue
@@ -339,6 +362,7 @@ class SegmentClassifierTrainer:
                         logits,
                         device_targets,
                         device_mask,
+                        self.pos_weight,
                     )
                     if loss is not None:
                         val_losses.append(float(loss.item()))
@@ -347,6 +371,7 @@ class SegmentClassifierTrainer:
                             logits,
                             device_targets,
                             device_mask,
+                            self.pos_weight,
                         )
                         val_positive_correct += positive_counts[0]
                         val_positive_evaluated += positive_counts[1]
@@ -422,6 +447,13 @@ class SegmentClassifierTrainer:
 
         classifier.model = self.model
         classifier.scaler = self.scaler
+        classifier.label_weights = {
+            label_id: float(weight)
+            for label_id, weight in zip(
+                classifier.label_ids,
+                self.pos_weight.detach().cpu().tolist(),
+            )
+        }
         classifier._save_artifacts()
 
         try:

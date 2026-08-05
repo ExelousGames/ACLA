@@ -1,9 +1,8 @@
-from types import SimpleNamespace
-
 import numpy as np
 import pandas as pd
 import pytest
 import torch
+from sklearn.preprocessing import StandardScaler
 
 from app.ml.segment_classifier.model import TemporalDetectionModel
 from app.ml.segment_classifier.service import SegmentClassifierService
@@ -15,6 +14,53 @@ def _rows(start, end):
         {"speed": float(index), "brake": float(index % 2)}
         for index in range(start, end)
     ]
+
+
+def _configured_service(models_directory):
+    service = SegmentClassifierService(str(models_directory))
+    service.scaler = StandardScaler().fit(np.array([[0.0, 1.0], [2.0, 3.0]]))
+    service.model = TemporalDetectionModel(
+        input_dim=2,
+        output_dim=len(service.label_ids),
+        hidden_dim=service.hidden_dim,
+        dilations=service.dilations,
+        dropout=service.dropout,
+    ).to(service.device)
+    service.label_weights = {
+        label_id: float(index + 1)
+        for index, label_id in enumerate(service.label_ids)
+    }
+    return service
+
+
+class _FixedLogitModel(torch.nn.Module):
+    def __init__(self, logits):
+        super().__init__()
+        self.register_buffer("logits", torch.tensor(logits, dtype=torch.float32))
+
+    def forward(self, features):
+        return self.logits.view(1, 1, -1).expand(
+            features.shape[0],
+            features.shape[1],
+            -1,
+        )
+
+
+class _IdentityScaler:
+    @staticmethod
+    def transform(values):
+        return values
+
+
+def _fixed_logit_service(label_ids, label_weights, logits):
+    service = SegmentClassifierService.__new__(SegmentClassifierService)
+    service.device = torch.device("cpu")
+    service.model = _FixedLogitModel(logits)
+    service.scaler = _IdentityScaler()
+    service.label_ids = list(label_ids)
+    service.label_weights = dict(label_weights)
+    service._prepare_numeric_features = lambda dataframe: dataframe[["speed"]]
+    return service
 
 
 def test_temporal_targets_follow_parent_and_child_ranges():
@@ -93,6 +139,27 @@ def test_temporal_model_preserves_the_entire_sequence_length():
 
     assert model(torch.zeros(2, 7, 6)).shape == (2, 7, 4)
     assert model(torch.zeros(1, 257, 6)).shape == (1, 257, 4)
+
+
+def test_score_sequence_corrects_weighted_logits_in_label_id_order():
+    raw_logits = [0.0, float(np.log(20.0)), 0.0]
+    service = _fixed_logit_service(
+        label_ids=["neutral", "rare", "common"],
+        label_weights={"common": 0.25, "neutral": 1.0, "rare": 20.0},
+        logits=raw_logits,
+    )
+
+    scores = service.score_sequence(pd.DataFrame({"speed": [1.0, 2.0]}))
+    raw_scores = torch.sigmoid(torch.tensor(raw_logits)).numpy()
+    expected = torch.sigmoid(
+        torch.tensor(raw_logits) - torch.log(torch.tensor([1.0, 20.0, 0.25]))
+    ).numpy()
+
+    assert list(scores.columns) == ["neutral", "rare", "common"]
+    np.testing.assert_allclose(scores.iloc[0].to_numpy(), expected, rtol=1e-6)
+    assert scores.loc[0, "neutral"] == pytest.approx(raw_scores[0])
+    assert scores.loc[0, "rare"] < raw_scores[1]
+    assert scores.loc[0, "common"] > raw_scores[2]
 
 
 def test_threshold_merge_expands_boundaries_and_merges_only_overlapping_runs():
@@ -187,27 +254,52 @@ def test_detection_allows_overlap_and_reruns_behavior_crop_for_children():
     assert detections[0].to_dict()["subsegments"][0]["label"] == "MSP1"
 
 
-def test_model_round_trip_uses_code_owned_configuration(tmp_path):
-    source = SegmentClassifierService(str(tmp_path))
-    source.scaler = SimpleNamespace(mean_=np.zeros(2))
-    source.model = TemporalDetectionModel(
-        input_dim=2,
-        output_dim=len(source.label_ids),
-        hidden_dim=source.hidden_dim,
-        dilations=source.dilations,
-        dropout=source.dropout,
+def test_detection_thresholds_corrected_parent_and_child_probabilities():
+    service = _fixed_logit_service(
+        label_ids=["MSP", "EA", "MSP1"],
+        label_weights={"MSP1": 20.0, "EA": 20.0, "MSP": 20.0},
+        logits=[float(np.log(20.0) + 1.0), 1.0, 1.0],
     )
+    service.threshold = 0.5
+    service.behavior_label_ids = ["MSP", "EA"]
+    service.child_parent = {"MSP1": "MSP"}
+
+    detections = service.detect_segments(pd.DataFrame({"speed": [1.0, 2.0, 3.0]}))
+
+    assert [item.label for item in detections] == ["MSP"]
+    assert detections[0].score == pytest.approx(float(torch.sigmoid(torch.tensor(1.0))))
+    assert detections[0].subsegments == []
+
+
+def test_model_round_trip_uses_code_owned_configuration(tmp_path):
+    source = _configured_service(tmp_path)
+    source.model.eval()
+    inputs = torch.randn(1, 5, 2, device=source.device)
+    expected_output = source.model(inputs)
+    dataframe = pd.DataFrame(_rows(0, 3))
+    source._prepare_numeric_features = lambda frame: frame[["speed", "brake"]]
+    expected_scores = source.score_sequence(dataframe)
     source._save_artifacts()
+    checkpoint = torch.load(source.model_path, map_location="cpu")
 
     target = SegmentClassifierService(str(tmp_path))
 
     assert target.load_model() is True
+    assert set(checkpoint) == {"model_state_dict", "label_weights"}
+    assert checkpoint["label_weights"] == source.label_weights
+    assert set(checkpoint["label_weights"]) == set(source.label_ids)
     assert target.feature_names == source.feature_names
     assert target.label_ids == source.label_ids
+    assert target.label_weights == source.label_weights
     assert target.hidden_dim == source.hidden_dim
     assert target.dilations == source.dilations
     assert target.dropout == source.dropout
     assert target.threshold == source.threshold
+    for name, parameter in source.model.state_dict().items():
+        torch.testing.assert_close(target.model.state_dict()[name], parameter)
+    torch.testing.assert_close(target.model(inputs), expected_output)
+    target._prepare_numeric_features = lambda frame: frame[["speed", "brake"]]
+    np.testing.assert_allclose(target.score_sequence(dataframe), expected_scores)
     assert not (tmp_path / "segment_config.json").exists()
 
 
@@ -225,28 +317,28 @@ def test_local_artifacts_do_not_depend_on_legacy_config(tmp_path):
     assert service.has_local_artifacts() is True
 
 
-def test_temporal_artifacts_round_trip_without_legacy_files(tmp_path):
+def test_backend_artifact_round_trip_preserves_model_and_label_weights(tmp_path):
     source_dir = tmp_path / "source"
     target_dir = tmp_path / "target"
-    source_dir.mkdir()
-    target_dir.mkdir()
-
-    source = SegmentClassifierService.__new__(SegmentClassifierService)
-    source.models_directory = source_dir
-    source.model_path = source_dir / "segment_classifier.pth"
-    source.scaler_path = source_dir / "segment_scaler.joblib"
-    source.model_path.write_bytes(b"weights")
-    source.scaler_path.write_bytes(b"scaler")
+    source = _configured_service(source_dir)
+    source.model.eval()
+    dataframe = pd.DataFrame(_rows(0, 3))
+    source._prepare_numeric_features = lambda frame: frame[["speed", "brake"]]
+    expected_scores = source.score_sequence(dataframe)
+    source._save_artifacts()
 
     payload = source.serialize_artifacts()
+    assert payload["format"] == "segment_classifier/temporal-v2"
     assert set(payload["files"]) == set(source._ARTIFACT_FILES)
 
-    target = SegmentClassifierService.__new__(SegmentClassifierService)
-    target.models_directory = target_dir
-    target.model_path = target_dir / "segment_classifier.pth"
-    target.scaler_path = target_dir / "segment_scaler.joblib"
+    target = SegmentClassifierService(str(target_dir))
     target.deserialize_artifacts(payload)
 
-    assert target.model_path.read_bytes() == b"weights"
-    assert target.scaler_path.read_bytes() == b"scaler"
+    assert target.load_model() is True
+    assert target.label_weights == source.label_weights
+    np.testing.assert_array_equal(target.scaler.mean_, source.scaler.mean_)
+    for name, parameter in source.model.state_dict().items():
+        torch.testing.assert_close(target.model.state_dict()[name], parameter)
+    target._prepare_numeric_features = lambda frame: frame[["speed", "brake"]]
+    np.testing.assert_allclose(target.score_sequence(dataframe), expected_scores)
     assert not (target_dir / "segment_config.json").exists()

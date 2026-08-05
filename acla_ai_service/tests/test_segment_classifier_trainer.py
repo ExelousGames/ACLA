@@ -42,6 +42,7 @@ def test_non_rocm_training_does_not_change_miopen_mode(monkeypatch, capsys):
 
 def _preprocessor_trainer(targets):
     trainer = SegmentClassifierTrainer.__new__(SegmentClassifierTrainer)
+    trainer.device = torch.device("cpu")
     trainer.classifier_service = SimpleNamespace(
         label_ids=["MSP", "MSP1"],
         behavior_label_ids=["MSP"],
@@ -78,19 +79,59 @@ async def test_child_annotated_training_does_not_warn(caplog):
     assert "No behavior sub-label annotations" not in caplog.text
 
 
-def test_masked_loss_is_continuous_bce_with_logits():
+@pytest.mark.asyncio
+async def test_preprocessors_set_positive_weights_from_training_targets():
+    trainer = _preprocessor_trainer([[1.0, 1.0], [0.0, 0.0]])
+    sequence = next(trainer._iter_sequences("train"))
+    sequence.targets = np.array(
+        [[1.0, 1.0], [0.0, 1.0], [0.0, 0.0], [0.0, 0.0]],
+        dtype=np.float32,
+    )
+    sequence.features = np.zeros((4, 2), dtype=np.float32)
+    sequence.loss_mask = np.ones((4, 2), dtype=np.float32)
+
+    await trainer.fit_preprocessors("train")
+
+    assert trainer.pos_weight.tolist() == pytest.approx([3.0, 1.0])
+
+
+def test_masked_loss_applies_positive_class_weights():
     logits = torch.tensor([[[0.2, -0.4], [1.3, -2.0]]])
     targets = torch.tensor([[[0.0, 1.0], [1.0, 0.0]]])
     mask = torch.tensor([[[1.0, 0.0], [1.0, 1.0]]])
+    pos_weight = torch.tensor([2.0, 3.0])
 
-    loss = SegmentClassifierTrainer._masked_loss(logits, targets, mask)
+    loss = SegmentClassifierTrainer._masked_loss(logits, targets, mask, pos_weight)
     expected = (F.binary_cross_entropy_with_logits(
         logits,
         targets,
+        pos_weight=pos_weight,
         reduction="none",
     ) * mask).sum() / mask.sum()
 
     assert loss.item() == pytest.approx(expected.item())
+
+
+@pytest.mark.asyncio
+async def test_preprocessors_use_neutral_weight_for_label_without_positives():
+    trainer = _preprocessor_trainer([[1.0, 0.0], [0.0, 0.0]])
+
+    await trainer.fit_preprocessors("train")
+
+    assert trainer.pos_weight.tolist() == pytest.approx([1.0, 1.0])
+
+
+@pytest.mark.asyncio
+async def test_preprocessors_cap_positive_weight_at_twenty():
+    targets = [[1.0, 1.0], *([[0.0, 0.0]] * 24)]
+    trainer = _preprocessor_trainer(targets)
+    sequence = next(trainer._iter_sequences("train"))
+    sequence.features = np.zeros((25, 2), dtype=np.float32)
+    sequence.loss_mask = np.ones((25, 2), dtype=np.float32)
+
+    await trainer.fit_preprocessors("train")
+
+    assert trainer.pos_weight.tolist() == pytest.approx([20.0, 20.0])
 
 
 def test_masked_class_accuracy_counts_positive_and_negative_predictions():
@@ -102,9 +143,26 @@ def test_masked_class_accuracy_counts_positive_and_negative_predictions():
         logits,
         targets,
         mask,
+        torch.ones(2),
     )
 
     assert positive_counts == (1, 2)
+    assert negative_counts == (1, 1)
+
+
+def test_masked_class_accuracy_counts_use_corrected_weighted_logits():
+    logits = torch.tensor([[[1.0, -0.5]]])
+    targets = torch.tensor([[[0.0, 1.0]]])
+    mask = torch.ones_like(targets)
+
+    positive_counts, negative_counts = SegmentClassifierTrainer._masked_class_accuracy_counts(
+        logits,
+        targets,
+        mask,
+        torch.tensor([20.0, 0.25]),
+    )
+
+    assert positive_counts == (1, 1)
     assert negative_counts == (1, 1)
 
 
@@ -123,9 +181,14 @@ async def test_training_runs_all_epochs_and_restores_best_loss_state(monkeypatch
         def __init__(self, *args, **kwargs):
             super().__init__()
             self.weight = torch.nn.Parameter(torch.tensor(0.0))
+            self.output_dim = kwargs["output_dim"]
 
         def forward(self, features):
-            return self.weight.expand(features.shape[0], features.shape[1], 1)
+            return self.weight.expand(
+                features.shape[0],
+                features.shape[1],
+                self.output_dim,
+            )
 
     optimizers = []
 
@@ -152,13 +215,14 @@ async def test_training_runs_all_epochs_and_restores_best_loss_state(monkeypatch
 
     class ClassifierStub:
         device = torch.device("cpu")
-        label_ids = ["MSP"]
+        label_ids = ["MSP", "EA"]
         hidden_dim = 1
         dilations = (1,)
         dropout = 0.0
         model = None
         scaler = None
         artifacts_saved = False
+        saved_label_weights = None
 
         @property
         def threshold(self):
@@ -166,14 +230,15 @@ async def test_training_runs_all_epochs_and_restores_best_loss_state(monkeypatch
 
         def _save_artifacts(self):
             self.artifacts_saved = True
+            self.saved_label_weights = dict(self.label_weights)
 
         def serialize_artifacts(self):
             return {}
 
     batch = (
         torch.zeros(1, 2, 1),
-        torch.tensor([[[0.0], [1.0]]]),
-        torch.ones(1, 2, 1),
+        torch.tensor([[[0.0, 0.0], [1.0, 0.0]]]),
+        torch.tensor([[[1.0, 0.0], [1.0, 0.0]]]),
     )
     validation_losses = [1.0, 2.0, 3.0, 4.0, 5.0]
     classifier = ClassifierStub()
@@ -181,13 +246,14 @@ async def test_training_runs_all_epochs_and_restores_best_loss_state(monkeypatch
     trainer.classifier_service = classifier
     trainer.device = torch.device("cpu")
     trainer.scaler = SimpleNamespace(mean_=np.zeros(1))
+    trainer.pos_weight = torch.tensor([2.0, 3.0])
     trainer.model = None
     trainer._configure_training_backend = lambda: None
     trainer.prepare_training_data = AsyncMock()
     trainer.fit_preprocessors = AsyncMock()
     trainer._dataset = lambda cache_key: cache_key
 
-    def controlled_loss(logits, targets, mask):
+    def controlled_loss(logits, targets, mask, pos_weight):
         if trainer.model.training:
             return logits.mean() * 0 + 1.0
         return torch.tensor(validation_losses.pop(0))
@@ -210,6 +276,7 @@ async def test_training_runs_all_epochs_and_restores_best_loss_state(monkeypatch
     assert classifier.model is trainer.model
     assert classifier.scaler is trainer.scaler
     assert classifier.artifacts_saved is True
+    assert classifier.saved_label_weights == {"MSP": 2.0, "EA": 3.0}
     report = capsys.readouterr().out
     assert "Train Loss:" in report
     assert "Val Loss:" in report

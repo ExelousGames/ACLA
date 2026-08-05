@@ -21,7 +21,7 @@ from app.storage.datasets.segment_dataset import compute_derived_features
 
 
 LOGGER = logging.getLogger(__name__)
-MODEL_FORMAT = "segment_classifier/temporal-v1"
+MODEL_FORMAT = "segment_classifier/temporal-v2"
 DEFAULT_THRESHOLD = 0.5
 DEFAULT_HIDDEN_DIM = 128
 DEFAULT_DILATIONS = (1, 2, 4, 8)
@@ -47,6 +47,7 @@ class SegmentClassifierService:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model: Optional[TemporalDetectionModel] = None
         self.scaler: Optional[StandardScaler] = None
+        self.label_weights: dict[str, float] = {}
         self.feature_names = list(SEGMENT_CLASSIFIER_FEATURES)
         self.behavior_label_ids, self.child_parent = _behavior_and_child_labels()
         self.label_ids = [*self.behavior_label_ids, *self.child_parent]
@@ -56,7 +57,13 @@ class SegmentClassifierService:
         self.dropout = DEFAULT_DROPOUT
 
     def _save_artifacts(self) -> None:
-        torch.save(self.model.state_dict(), self.model_path)
+        torch.save(
+            {
+                "model_state_dict": self.model.state_dict(),
+                "label_weights": self.label_weights,
+            },
+            self.model_path,
+        )
         joblib.dump(self.scaler, self.scaler_path)
 
     def load_model(self) -> bool:
@@ -70,7 +77,9 @@ class SegmentClassifierService:
             dilations=self.dilations,
             dropout=self.dropout,
         ).to(self.device)
-        self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+        checkpoint = torch.load(self.model_path, map_location=self.device)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.label_weights = checkpoint["label_weights"]
         self.model.eval()
         return True
 
@@ -131,7 +140,13 @@ class SegmentClassifierService:
         inputs = torch.tensor(scaled, dtype=torch.float32, device=self.device).unsqueeze(0)
         self.model.eval()
         with torch.no_grad():
-            scores = torch.sigmoid(self.model(inputs))[0].cpu().numpy()
+            logits = self.model(inputs)
+            pos_weight = logits.new_tensor([
+                self.label_weights[label_id]
+                for label_id in self.label_ids
+            ])
+            corrected_logits = logits - torch.log(pos_weight)
+            scores = torch.sigmoid(corrected_logits)[0].cpu().numpy()
         return pd.DataFrame(scores, columns=self.label_ids)
 
     @staticmethod
