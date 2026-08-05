@@ -120,18 +120,18 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.queryByText('Track X')).not.toBeInTheDocument();
     });
 
-    it('maps pedal values over the exact clockwise 2-to-6-o’clock sweep with clamping', () => {
+    it('maps pedal values over the exact clockwise 1-to-3-o’clock sweep with clamping', () => {
         setReducedMotion(true);
         render(<DriverExpertComparisonGraph data={completeData} />);
 
         expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '1');
-        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-gauge-angle', '90');
+        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-gauge-angle', '0');
         expect(screen.getByTestId('driver-brake-gauge')).toHaveAttribute('data-value', '0');
-        expect(screen.getByTestId('driver-brake-gauge')).toHaveAttribute('data-gauge-angle', '-30');
+        expect(screen.getByTestId('driver-brake-gauge')).toHaveAttribute('data-gauge-angle', '-60');
         expect(screen.getByTestId('expert-throttle-gauge')).toHaveAttribute('data-value', '1');
-        expect(screen.getByTestId('expert-throttle-gauge')).toHaveAttribute('data-gauge-angle', '90');
+        expect(screen.getByTestId('expert-throttle-gauge')).toHaveAttribute('data-gauge-angle', '0');
         expect(screen.getByTestId('expert-brake-gauge')).toHaveAttribute('data-value', '0');
-        expect(screen.getByTestId('expert-brake-gauge')).toHaveAttribute('data-gauge-angle', '-30');
+        expect(screen.getByTestId('expert-brake-gauge')).toHaveAttribute('data-gauge-angle', '-60');
     });
 
     it('interpolates pedals and both markers while stepping gears at sample boundaries', () => {
