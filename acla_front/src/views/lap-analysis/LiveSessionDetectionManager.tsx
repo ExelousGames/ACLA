@@ -3,6 +3,7 @@ import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
 import { RecordingState } from './recording-state';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import { useDesktopGame } from 'contexts/DesktopGameContext';
 
 const toAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -32,10 +33,12 @@ const getStaticPayload = (data: Record<string, any>): Record<string, unknown> | 
 
 export default function LiveSessionDetectionManager() {
     const liveSession = useContext(LiveSessionContext);
+    const { detectedGame } = useDesktopGame();
     const liveSessionRef = useRef(liveSession);
     const sessionCheckingStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
     const sessionCheckingStreamCleanupRef = useRef<(() => void) | null>(null);
-    const sessionCheckingStreamStartingRef = useRef(false);
+    const sessionCheckingStreamGenerationRef = useRef(0);
+    const sessionCheckingStreamStartingGenerationRef = useRef<number | null>(null);
 
     useEffect(() => {
         liveSessionRef.current = liveSession;
@@ -82,12 +85,13 @@ export default function LiveSessionDetectionManager() {
             sessionCheckingStreamCleanupRef.current?.();
             sessionCheckingStreamCleanupRef.current = null;
             sessionCheckingStreamRef.current = null;
-            sessionCheckingStreamStartingRef.current = false;
+            sessionCheckingStreamStartingGenerationRef.current = null;
         }
     }, []);
 
     const stopSessionCheckingStream = useCallback(async ({ force = false } = {}) => {
-        sessionCheckingStreamStartingRef.current = false;
+        sessionCheckingStreamGenerationRef.current += 1;
+        sessionCheckingStreamStartingGenerationRef.current = null;
 
         const cleanup = sessionCheckingStreamCleanupRef.current;
         sessionCheckingStreamCleanupRef.current = null;
@@ -108,11 +112,12 @@ export default function LiveSessionDetectionManager() {
     }, []);
 
     const startSessionCheckingStream = useCallback(async () => {
-        if (sessionCheckingStreamStartingRef.current || sessionCheckingStreamRef.current) {
+        if (sessionCheckingStreamStartingGenerationRef.current !== null || sessionCheckingStreamRef.current) {
             return sessionCheckingStreamRef.current;
         }
 
-        sessionCheckingStreamStartingRef.current = true;
+        const generation = sessionCheckingStreamGenerationRef.current;
+        sessionCheckingStreamStartingGenerationRef.current = generation;
         try {
             const stream = await createPythonStreamSession<Record<string, unknown>>({
                 scriptName: 'ACCCheckAvailableSession.py',
@@ -120,29 +125,47 @@ export default function LiveSessionDetectionManager() {
                 readyTimeoutMs: 8000
             });
 
+            if (generation !== sessionCheckingStreamGenerationRef.current) {
+                await stream.dispose({ force: true });
+                return null;
+            }
+
             sessionCheckingStreamRef.current = stream;
             sessionCheckingStreamCleanupRef.current = stream.onMessage(processCheckingSessionStreamUpdate);
 
             await stream.waitUntilReady();
             return stream;
         } catch (error) {
+            if (generation !== sessionCheckingStreamGenerationRef.current) {
+                return null;
+            }
             console.error('Failed to start ACC session checker stream', error);
             await stopSessionCheckingStream({ force: true });
             throw error;
         } finally {
-            sessionCheckingStreamStartingRef.current = false;
+            if (sessionCheckingStreamStartingGenerationRef.current === generation) {
+                sessionCheckingStreamStartingGenerationRef.current = null;
+            }
         }
     }, [processCheckingSessionStreamUpdate, stopSessionCheckingStream]);
 
     const shouldMaintainSessionCheckingStream =
-        liveSession.recordingState === RecordingState.CHECKING
-        || liveSession.recordingState === RecordingState.HOLDING
-        || liveSession.recordingState === RecordingState.RESUME_READY;
+        detectedGame === 'acc'
+        && (
+            liveSession.recordingState === RecordingState.CHECKING
+            || liveSession.recordingState === RecordingState.HOLDING
+            || liveSession.recordingState === RecordingState.RESUME_READY
+        );
 
     useEffect(() => {
         let cancelled = false;
 
         const ensureStream = async () => {
+            await Promise.resolve();
+            if (cancelled) {
+                return;
+            }
+
             if (shouldMaintainSessionCheckingStream) {
                 try {
                     await startSessionCheckingStream();
@@ -152,6 +175,9 @@ export default function LiveSessionDetectionManager() {
                     }
                 }
             } else {
+                if (detectedGame !== 'acc') {
+                    liveSessionRef.current?.transitionRecordingState({ type: 'sessionUnavailable' });
+                }
                 await stopSessionCheckingStream();
             }
         };
@@ -162,7 +188,7 @@ export default function LiveSessionDetectionManager() {
             cancelled = true;
             void stopSessionCheckingStream({ force: true });
         };
-    }, [shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
+    }, [detectedGame, shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
 
     return null;
 }

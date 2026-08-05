@@ -11,6 +11,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 //contextBridge.exposeInMainWorld makes the function available in the global electronAPI object within the renderer.
 contextBridge.exposeInMainWorld('electronAPI', {
 
+    detectDesktopGame: () => ipcRenderer.invoke('detect-desktop-game'),
+
     //run script in main process using async
     runPythonScript: (scriptPath, options) => ipcRenderer.invoke('run-python-script', scriptPath, options),
     stopPythonScript: (shellId) => ipcRenderer.invoke('stop-python-script', shellId),

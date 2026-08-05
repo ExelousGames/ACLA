@@ -2,9 +2,10 @@ const { app, BrowserWindow, ipcMain } = require('electron');
 const { PythonShell } = require('python-shell');
 const path = require('path');
 const isDev = require('electron-is-dev');
-const { spawn, execSync } = require('child_process');
+const { spawn, execFile, execSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
+const { detectSupportedDesktopGame } = require('./desktop-game-detection');
 
 function getPythonExecutable() {
   const manualOverride = process.env.ACLA_PYTHON_PATH;
@@ -38,6 +39,31 @@ function getPythonExecutable() {
 
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
+
+function getWindowsTasklist() {
+  return new Promise((resolve, reject) => {
+    execFile('tasklist', ['/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true }, (error, stdout) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+
+      resolve(stdout);
+    });
+  });
+}
+
+ipcMain.handle('detect-desktop-game', async () => {
+  if (process.platform !== 'win32') {
+    return { supported: false, detectedGame: null };
+  }
+
+  const tasklistOutput = await getWindowsTasklist();
+  return {
+    supported: true,
+    detectedGame: detectSupportedDesktopGame(tasklistOutput),
+  };
+});
 
 // Store active Python shells, Multiple concurrent Python processes
 const activeShells = new Map();

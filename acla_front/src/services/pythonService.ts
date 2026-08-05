@@ -17,6 +17,11 @@ declare global {
     //preload.js runs in runtime. the renderer process has no Node.js or Electron module access. 
     interface Window {
         electronAPI: {
+            detectDesktopGame: () => Promise<{
+                supported: boolean;
+                detectedGame: 'ac' | 'acc' | 'iracing' | null;
+            }>;
+
             /**
              * Run python script in main process
              * @param script 
