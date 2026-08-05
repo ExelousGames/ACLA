@@ -23,6 +23,7 @@ from app.ml.model_hub import (
 )
 from app.top_laps.runtime import TopLapReferenceModelError
 from app.services.user_session_analysis import analyze_user_sessions
+from app.shared.expert_features import ExpertFeatureCatalog
 from app.shared.label_hierarchy import build_track_area_segments
 from app.shared.labels import (
     LABEL_CATEGORIES,
@@ -109,18 +110,6 @@ class LiveBaselineAnalysisRequest(BaseModel):
 # Initialize telemetry service
 telemetryMLService = Full_dataset_TelemetryMLService()
 
-EXPERT_TIME_DIFFERENCE_FIELD = "expert_time_difference"
-EXPERT_REFERENCE_FIELDS = (
-    EXPERT_TIME_DIFFERENCE_FIELD,
-    "expert_optimal_player_pos_x",
-    "expert_optimal_player_pos_y",
-    "expert_optimal_player_pos_z",
-    "Graphics_normalized_car_position",
-    "expert_optimal_throttle",
-    "expert_optimal_brake",
-    "expert_optimal_gear",
-)
-
 
 def _classify_telemetry_segments(
     telemetry_data: List[Dict[str, Any]],
@@ -155,10 +144,27 @@ def _project_expert_reference_data(
     enriched_rows: List[Dict[str, Any]],
     raw_indices: List[int],
 ) -> List[Dict[str, Any]]:
+    expert_features = ExpertFeatureCatalog.ExpertFeatures
+    reference_features = (
+        expert_features.EXPERT_TIME_DIFFERENCE,
+        expert_features.EXPERT_OPTIMAL_PLAYER_POS_X,
+        expert_features.EXPERT_OPTIMAL_PLAYER_POS_Y,
+        expert_features.EXPERT_OPTIMAL_PLAYER_POS_Z,
+        expert_features.EXPERT_OPTIMAL_THROTTLE,
+        expert_features.EXPERT_OPTIMAL_BRAKE,
+        expert_features.EXPERT_OPTIMAL_GEAR,
+    )
+
     return [
         {
             "raw_index": raw_index,
-            **{field: row[field] for field in EXPERT_REFERENCE_FIELDS},
+            **{
+                feature.value: row[feature.value]
+                for feature in reference_features
+            },
+            "Graphics_normalized_car_position": row[
+                "Graphics_normalized_car_position"
+            ],
         }
         for row, raw_index in zip(enriched_rows, raw_indices)
     ]
@@ -181,8 +187,11 @@ def _build_time_gap(
     if start >= len(expert_rows) or end_exclusive <= start:
         return None
 
-    start_diff = expert_rows[start].get(EXPERT_TIME_DIFFERENCE_FIELD)
-    end_diff = expert_rows[end_exclusive - 1].get(EXPERT_TIME_DIFFERENCE_FIELD)
+    time_difference = (
+        ExpertFeatureCatalog.ExpertFeatures.EXPERT_TIME_DIFFERENCE.value
+    )
+    start_diff = expert_rows[start].get(time_difference)
+    end_diff = expert_rows[end_exclusive - 1].get(time_difference)
     try:
         start_ms = float(start_diff)
         end_ms = float(end_diff)
