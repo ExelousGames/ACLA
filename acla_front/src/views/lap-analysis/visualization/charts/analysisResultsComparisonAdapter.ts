@@ -39,15 +39,36 @@ const finiteIndex = (value: unknown): number | undefined => {
     return parsed === undefined ? undefined : Math.trunc(parsed);
 };
 
+const arrayValue = (value: unknown): unknown[] => {
+    if (Array.isArray(value)) return value;
+    if (typeof value !== 'string') return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+};
+
 const normalizedInput = (value: unknown): number | undefined => {
     const parsed = finiteNumber(value);
     return parsed === undefined ? undefined : clamp(parsed, 0, 1);
 };
 
-const trajectoryPoint = (xValue: unknown, zValue: unknown): DriverExpertTrajectoryPoint | undefined => {
+const trajectoryPoint = (
+    xValue: unknown,
+    yValue: unknown,
+    zValue: unknown,
+): DriverExpertTrajectoryPoint | undefined => {
     const x = finiteNumber(xValue);
+    const y = finiteNumber(yValue);
     const z = finiteNumber(zValue);
-    return x === undefined || z === undefined ? undefined : { x, z };
+    if (x === undefined || (y === undefined && z === undefined)) return undefined;
+    return {
+        x,
+        ...(y !== undefined ? { y } : {}),
+        ...(z !== undefined ? { z } : {}),
+    };
 };
 
 const getDriverTrajectory = (
@@ -57,7 +78,10 @@ const getDriverTrajectory = (
     const frame = parseTelemetryFrame(row, sourceIndex);
     if (!frame?.playerKey) return undefined;
     const player = frame.cars.find((car) => car.key === frame.playerKey);
-    return player ? { x: player.position.x, z: player.position.z } : undefined;
+    if (!player) return undefined;
+    const sourcePosition = arrayValue(row.Graphics_car_coordinates)[player.slot];
+    if (!isRecord(sourcePosition)) return undefined;
+    return trajectoryPoint(sourcePosition.x, sourcePosition.y, sourcePosition.z);
 };
 
 const getTrackPosition = (
@@ -144,6 +168,7 @@ export const adaptAnalysisResultsComparison = ({
         const driverTrajectory = getDriverTrajectory(row.driver, row.driverArrayIndex);
         const expertTrajectory = trajectoryPoint(
             row.expert.expert_optimal_player_pos_x,
+            row.expert.expert_optimal_player_pos_y,
             row.expert.expert_optimal_player_pos_z,
         );
 

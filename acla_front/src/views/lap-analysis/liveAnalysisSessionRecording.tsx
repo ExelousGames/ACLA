@@ -9,6 +9,7 @@ import apiService from 'services/api.service';
 import { PythonShellOptions } from 'services/pythonService';
 import { RecordingState, StopReason } from './recording-state';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import { classifyAccSessionContinuity } from './acc-session-continuity';
 
 const UPLOAD_CHUNK_SIZE = 1000;
 const POST_UPLOAD_RESET_DELAY_MS = 1200;
@@ -41,6 +42,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     const auth = useAuth();
     const state = analysisContext.recordingState;
     const transition = analysisContext.transitionRecordingState;
+    const registerRecorderControl = analysisContext.registerRecorderControl;
     const analysisContextRef = useRef(analysisContext);
 
     useEffect(() => {
@@ -48,15 +50,18 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     }, [analysisContext]);
 
     const TelemetryDataLiveStatus = analysisContext.telemetryStatus;
-    const canRecord = state === RecordingState.READY || state === RecordingState.RESUME_READY;
+    const canRecord = analysisContext.sessionGame === 'acc'
+        && (state === RecordingState.READY || state === RecordingState.RESUME_READY);
 
     const recordingShellIdRef = useRef<number | null>(null);
     const pythonMessageCleanupRef = useRef<(() => void) | null>(null);
     const pythonEndCleanupRef = useRef<(() => void) | null>(null);
     const stopReasonRef = useRef<StopReason | null>(null);
     const startInFlightRef = useRef(false);
+    const recordingStartGenerationRef = useRef(0);
     const hasReceivedLiveSampleRef = useRef(false);
     const recordingFileInfoRef = useRef<{ folder: string; filename: string } | null>(null);
+    const recordingFinalizationRef = useRef<Promise<void>>(Promise.resolve());
 
     const [isUploading, setIsUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -73,10 +78,14 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         }
         setRecorderHost(document.getElementById(recorderHostId));
         return () => setRecorderHost(null);
-    }, [recorderHostId]);
+    }, [analysisContext.sessionGame, recorderHostId]);
 
     const uploadInFlightRef = useRef(false);
-    const hasRecordedData = analysisContext.recordedSampleCount > 0 && Boolean(analysisContext.recordingFileKey);
+    const hasRecordedData = Boolean(analysisContext.recordingFileKey)
+        && (
+            analysisContext.recordedSampleCount > 0
+            || state === RecordingState.RECORDING
+        );
 
     const uploadStatusLabel = isUploading
         ? 'Uploading...'
@@ -113,9 +122,11 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         const ctx = analysisContextRef.current;
 
         if (reason === 'manual' || reason === 'complete') {
-            void ctx.finalizeRecordingWrites().catch((error) => {
+            recordingFinalizationRef.current = ctx.finalizeRecordingWrites().catch((error) => {
                 console.warn('Failed to finalize telemetry writer', error);
             });
+        } else {
+            recordingFinalizationRef.current = Promise.resolve();
         }
 
         switch (reason) {
@@ -141,36 +152,50 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
 
     const stopRecordingProcess = useCallback(async (reason: StopReason) => {
         if (stopReasonRef.current && stopReasonRef.current !== 'complete') {
+            await recordingFinalizationRef.current;
             return;
         }
 
         stopReasonRef.current = reason;
+        recordingStartGenerationRef.current += 1;
+        startInFlightRef.current = false;
 
-        if (state !== RecordingState.RECORDING) {
+        if (analysisContextRef.current.recordingState !== RecordingState.RECORDING) {
             applyStopOutcome(reason);
+            await recordingFinalizationRef.current;
             return;
         }
 
         const shellId = recordingShellIdRef.current;
         if (shellId == null || !window?.electronAPI?.stopPythonScript) {
             applyStopOutcome(reason);
+            await recordingFinalizationRef.current;
             return;
         }
 
         try {
             const result = await window.electronAPI.stopPythonScript(shellId);
             if (!result?.success) {
-                if (recordingShellIdRef.current === null) return;
+                if (recordingShellIdRef.current === null) {
+                    await recordingFinalizationRef.current;
+                    return;
+                }
                 console.warn('Stop script reported failure, applying intended outcome', reason);
+                applyStopOutcome(reason);
+            } else if (recordingShellIdRef.current !== null) {
                 applyStopOutcome(reason);
             }
         } catch (error) {
             console.error('Failed to stop python script', error);
-            if (recordingShellIdRef.current === null) return;
+            if (recordingShellIdRef.current === null) {
+                await recordingFinalizationRef.current;
+                return;
+            }
             console.warn('Stop script threw error, applying intended outcome', reason);
             applyStopOutcome(reason);
         }
-    }, [applyStopOutcome, state]);
+        await recordingFinalizationRef.current;
+    }, [applyStopOutcome]);
 
     const determineStopReason = useCallback((): StopReason => {
         if (stopReasonRef.current) {
@@ -202,6 +227,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         }
 
         startInFlightRef.current = true;
+        const startGeneration = ++recordingStartGenerationRef.current;
         if (pythonMessageCleanupRef.current) {
             pythonMessageCleanupRef.current();
             pythonMessageCleanupRef.current = null;
@@ -212,6 +238,11 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         }
 
         const ctx = analysisContextRef.current;
+        const sessionGame = ctx.sessionGame;
+        if (sessionGame !== 'acc') {
+            startInFlightRef.current = false;
+            return;
+        }
         const trackName = ctx.staticData?.track
             || ctx.currentTelemetry?.Static_track
             || ctx.currentTelemetry?.Static?.track
@@ -240,6 +271,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 sessionName: newSessionName,
                 mapName: trackName,
                 carName,
+                gameRecordedFrom: sessionGame,
             });
         }
 
@@ -250,6 +282,15 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         transition({ type: resumeExisting ? 'recordingResumed' : 'recordingStarted' });
         try {
             const { shellId } = await window.electronAPI.runPythonScript(script, options);
+            if (
+                startGeneration !== recordingStartGenerationRef.current
+                || analysisContextRef.current.sessionGame !== 'acc'
+            ) {
+                if (window?.electronAPI?.stopPythonScript) {
+                    await window.electronAPI.stopPythonScript(shellId).catch(() => undefined);
+                }
+                return;
+            }
             recordingShellIdRef.current = shellId;
             stopReasonRef.current = null;
 
@@ -269,22 +310,11 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                     if (obj.available === false) {
                         wasUnavailable = true;
                     } else if (Object.keys(obj).length > 2) {
-                        if (wasUnavailable && lastValidObj) {
-                            const condition1 = obj.Physics_packed_id > lastValidObj.Physics_packed_id;
-                            const condition2 = obj.Static_car_model === lastValidObj.Static_car_model;
-                            const condition3 = obj.Static_track === lastValidObj.Static_track;
-                            const condition4 = obj.Graphics_completed_lap >= lastValidObj.Graphics_completed_lap;
-                              const condition5 = obj.Graphics_completed_lap === lastValidObj.Graphics_completed_lap 
-                                  ? obj.Graphics_current_time >= lastValidObj.Graphics_current_time 
-                                  : true;
-
-                              if (!condition1 || !condition2 || !condition3 || !condition4 || !condition5) {
-                                  console.warn('Telemetry data validation failed after unavailability', {
-                                      cond1: condition1,
-                                      cond2: condition2,
-                                      cond3: condition3,
-                                      cond4: condition4,
-                                      cond5: condition5
+                        if (wasUnavailable) {
+                            const continuity = classifyAccSessionContinuity(lastValidObj, obj);
+                            if (continuity.continuityBroken) {
+                                console.warn('ACC session continuity broke after telemetry unavailability', {
+                                    reason: continuity.reason,
                                 });
                                 void stopRecordingProcess('complete');
                                 return;
@@ -357,6 +387,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
 
     useEffect(() => {
         return () => {
+            recordingStartGenerationRef.current += 1;
             if (pythonMessageCleanupRef.current) {
                 pythonMessageCleanupRef.current();
                 pythonMessageCleanupRef.current = null;
@@ -377,27 +408,50 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
     }, []);
 
-    const resetToChecking = useCallback(() => {
-        analysisContext.clearRecordingSession();
+    const resetRecorderUi = useCallback(() => {
         recordingFileInfoRef.current = null;
+        recordingFinalizationRef.current = Promise.resolve();
         uploadInFlightRef.current = false;
         setUploadProgress(0); setUploadStatus(''); setUploadError(null); setShowRetryButton(false); setUploadDialogOpen(false); setIsUploading(false);
-        transition({ type: 'reset' });
         hasReceivedLiveSampleRef.current = false;
         stopReasonRef.current = null;
-    }, [analysisContext, transition]);
+        startInFlightRef.current = false;
+        recordingStartGenerationRef.current += 1;
+    }, []);
+
+    const returnToDetectionGate = useCallback(() => {
+        resetRecorderUi();
+        analysisContextRef.current.endLiveSession();
+    }, [resetRecorderUi]);
+
+    useEffect(() => {
+        if (analysisContext.sessionGame === null) {
+            resetRecorderUi();
+        }
+    }, [analysisContext.sessionGame, resetRecorderUi]);
 
     const handleUpload = useCallback(async () => {
         if (uploadInFlightRef.current) return false;
-        if (!hasRecordedData) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
-        if (!analysisContext.recordingMetadata?.sessionName || !analysisContext.recordingMetadata?.mapName || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
+        const initialContext = analysisContextRef.current;
+        const canAttemptUpload = Boolean(initialContext.recordingFileKey)
+            && (
+                initialContext.recordedSampleCount > 0
+                || initialContext.recordingState === RecordingState.RECORDING
+            );
+        if (!canAttemptUpload) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
+        if (!initialContext.recordingMetadata?.sessionName || !initialContext.recordingMetadata?.mapName || !initialContext.sessionGame || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
         uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
         try {
-            await analysisContext.finalizeRecordingWrites();
+            if (initialContext.recordingState === RecordingState.RECORDING) {
+                await stopRecordingProcess('manual');
+            } else {
+                await initialContext.finalizeRecordingWrites();
+            }
+            const uploadContext = analysisContextRef.current;
             setUploadStatus('Reading telemetry data...');
             // Reserve progress ranges: 0-40% for reading, 40-90% for chunk upload, 90-100% finalize
             let estimatedTotal: number | null = null;
-            const data = await analysisContext.readRecordedTelemetry((read, total, bytesRead, totalBytes) => {
+            const data = await uploadContext.readRecordedTelemetry((read, total, bytesRead, totalBytes) => {
                 if (total && total > 0) estimatedTotal = total;
                 // If total known compute percentage otherwise logarithmic approximation
                 let pct: number;
@@ -415,10 +469,11 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             setUploadProgress(45); setUploadStatus(`Processing ${data.length} telemetry points...`);
             const chunks: any[] = []; for (let i = 0; i < data.length; i += UPLOAD_CHUNK_SIZE) chunks.push(data.slice(i, i + UPLOAD_CHUNK_SIZE));
             const metadata: UploadReacingSessionInitDto = {
-                sessionName: analysisContext.recordingMetadata.sessionName,
-                mapName: analysisContext.recordingMetadata.mapName,
-                carName: analysisContext.recordingMetadata.carName,
+                sessionName: uploadContext.recordingMetadata!.sessionName,
+                mapName: uploadContext.recordingMetadata!.mapName,
+                carName: uploadContext.recordingMetadata!.carName,
                 userId: auth?.userProfile.id || 'unknown',
+                game_recorded_from: uploadContext.sessionGame!,
             };
             setUploadProgress(50); setUploadStatus('Initializing upload...');
             const initResp = await apiService.post('/racing-session/upload/init', metadata); if (!initResp.data) throw new Error('Failed to initialize upload');
@@ -448,8 +503,8 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             setUploadProgress(92); setUploadStatus('Finalizing upload...');
             const final = new URLSearchParams(); final.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/complete?${final.toString()}`, {});
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
-            if (analysisContext.recordingFileKey) await cleanupTelemetryFile(analysisContext.recordingFileKey);
-            setTimeout(() => { setIsUploading(false); setTimeout(() => resetToChecking(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
+            if (uploadContext.recordingFileKey) await cleanupTelemetryFile(uploadContext.recordingFileKey);
+            setTimeout(() => { setIsUploading(false); setTimeout(() => returnToDetectionGate(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
             uploadInFlightRef.current = false;
             return true;
         } catch (e: any) {
@@ -460,9 +515,20 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             uploadInFlightRef.current = false;
             return false;
         }
-    }, [analysisContext, auth, cleanupTelemetryFile, resetToChecking, hasRecordedData]);
+    }, [auth, cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess]);
 
-    const handleCancelUpload = useCallback(async () => { if (analysisContext.recordingFileKey) await cleanupTelemetryFile(analysisContext.recordingFileKey); resetToChecking(); }, [analysisContext, cleanupTelemetryFile, resetToChecking]);
+    const handleDiscardSession = useCallback(async () => {
+        if (uploadInFlightRef.current) return;
+        const discardContext = analysisContextRef.current;
+        const fileKey = discardContext.recordingFileKey;
+        if (discardContext.recordingState === RecordingState.RECORDING) {
+            await stopRecordingProcess('manual');
+        } else {
+            await discardContext.finalizeRecordingWrites();
+        }
+        if (fileKey) await cleanupTelemetryFile(fileKey);
+        returnToDetectionGate();
+    }, [cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess]);
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
 
     const openUploadDialog = useCallback(() => {
@@ -486,7 +552,69 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         setUploadDialogOpen(open);
     }, [isUploading]);
 
+    useEffect(() => {
+        const control = { openUploadFlow: openUploadDialog };
+        registerRecorderControl(control);
+        return () => registerRecorderControl(null);
+    }, [openUploadDialog, registerRecorderControl]);
+
+    const uploadDialog = (
+        <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
+            <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
+                <AlertDialog.Title>Finish Live Session</AlertDialog.Title>
+                <AlertDialog.Description size="2">
+                    Upload the recorded data, discard it, or keep the current session open.
+                </AlertDialog.Description>
+                {(isUploading || showRetryButton || uploadError) && (
+                    <Box my="4">
+                        {isUploading && (
+                            <>
+                                <Flex justify="between" mb="2"><Text size="2" weight="medium">{uploadStatus}</Text><Text size="2" color="gray">{uploadProgress}%</Text></Flex>
+                                <Box width="100%" height="8px" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-2)', overflow: 'hidden' }}>
+                                    <Box height="100%" style={{ width: `${uploadProgress}%`, backgroundColor: uploadError ? 'var(--red-9)' : 'var(--blue-9)', transition: 'width 0.3s ease' }} />
+                                </Box>
+                            </>
+                        )}
+                        {uploadError && <Text size="2" color="red" mt="2">{uploadError}</Text>}
+                        {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
+                    </Box>
+                )}
+                <Card size="4">
+                    <Heading as="h3" size="6" trim="start" mb="5">Session <Text as="div" size="3" weight="bold" color="blue">{analysisContext.recordingMetadata?.sessionName || 'Unknown Session'}</Text></Heading>
+                    <Grid columns="2" gapX="4" gapY="5">
+                        <Box>
+                            <Text as="div" size="2" mb="1" color="gray">Map</Text>
+                            <Text as="div" size="3" mb="1" weight="bold">{analysisContext.recordingMetadata?.mapName || analysisContext.staticData.track || 'Unknown Map'}</Text>
+                            <Text as="div" size="2">Practice session</Text>
+                        </Box>
+                        <Box>
+                            <Text as="div" size="2" mb="1" color="gray">Car</Text>
+                            <Text as="div" size="3" weight="bold">{analysisContext.recordingMetadata?.carName || analysisContext.staticData.car_model || 'Unknown Car'}</Text>
+                        </Box>
+                        <Flex direction="column" gap="1" gridColumn="1 / -1">
+                            <Flex justify="between"><Text size="3" mb="1" weight="bold">Status</Text><Text size="2" color={uploadStatusColor}>{uploadStatusLabel}</Text></Flex>
+                        </Flex>
+                    </Grid>
+                </Card>
+                <Flex gap="3" mt="4" justify="end">
+                    {!isUploading && uploadProgress < 100 && (
+                        <>
+                            <Button variant="outline" color="gray" onClick={closeUploadDialog}>Keep Session</Button>
+                            <Button variant="outline" color="red" onClick={() => { void handleDiscardSession(); }}>Discard Session</Button>
+                            <Button onClick={() => { void handleUpload(); }} disabled={isUploading || !hasRecordedData}>Upload Session</Button>
+                        </>
+                    )}
+                    {isUploading && uploadProgress < 100 && (<Button variant="outline" disabled><Spinner size="1" />Uploading...</Button>)}
+                    {!isUploading && uploadProgress === 100 && (<Button onClick={closeUploadDialog}>Close</Button>)}
+                </Flex>
+            </AlertDialog.Content>
+        </AlertDialog.Root>
+    );
+
     const controlButtons = useMemo(() => {
+        if (analysisContext.sessionGame !== 'acc') {
+            return null;
+        }
         switch (state) {
             case RecordingState.CHECKING:
                 return (
@@ -543,7 +671,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                                 <span>Upload Session</span>
                             </Flex>
                         </Button>
-                        <Button radius="full" variant="outline" color="gray" onClick={() => { void handleCancelUpload(); closeUploadDialog(); }} disabled={isUploading}>
+                        <Button radius="full" variant="outline" color="gray" onClick={() => { void handleDiscardSession(); }} disabled={isUploading}>
                             <span>Discard</span>
                         </Button>
                     </Flex>
@@ -551,7 +679,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             default:
                 return null;
         }
-    }, [state, canRecord, startRecording, stopRecordingProcess, hasRecordedData, isUploading, openUploadDialog, handleCancelUpload, closeUploadDialog]);
+    }, [analysisContext.sessionGame, state, canRecord, startRecording, stopRecordingProcess, hasRecordedData, isUploading, openUploadDialog, handleDiscardSession]);
 
     const isRecording = state === RecordingState.RECORDING;
     const isPaused = state === RecordingState.HOLDING || state === RecordingState.RESUME_READY;
@@ -571,6 +699,10 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
         '';
     if (!recorderHost) return null;
 
+    if (analysisContext.sessionGame !== 'acc') {
+        return createPortal(uploadDialog, recorderHost);
+    }
+
     return createPortal(
         <Box className={`live-recording-bar ${isRecording ? 'live-recording-bar--rec' : ''}`} position="absolute" left="0" right="0" bottom="0" mb="5" height="64px" style={{ marginLeft: 'max(24px, 10%)', marginRight: 'max(24px, 10%)' }}>
             <Flex height="100%" align="center" position="relative" overflow="hidden" className="live-recording-bar__inner">
@@ -582,53 +714,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                     </div>
 
                     {controlButtons}
-                    <AlertDialog.Root open={uploadDialogOpen} onOpenChange={handleDialogOpenChange}>
-                        <AlertDialog.Content maxWidth="450px" onEscapeKeyDown={(e) => { if (isUploading) e.preventDefault(); }}>
-                            <AlertDialog.Title>Upload Racing Session</AlertDialog.Title>
-                            <AlertDialog.Description size="2">Upload your recorded racing session data.</AlertDialog.Description>
-                            {(isUploading || showRetryButton || uploadError) && (
-                                <Box my="4">
-                                    {isUploading && (
-                                        <>
-                                            <Flex justify="between" mb="2"><Text size="2" weight="medium">{uploadStatus}</Text><Text size="2" color="gray">{uploadProgress}%</Text></Flex>
-                                            <Box width="100%" height="8px" style={{ backgroundColor: 'var(--gray-a5)', borderRadius: 'var(--radius-2)', overflow: 'hidden' }}>
-                                                <Box height="100%" style={{ width: `${uploadProgress}%`, backgroundColor: uploadError ? 'var(--red-9)' : 'var(--blue-9)', transition: 'width 0.3s ease' }} />
-                                            </Box>
-                                        </>
-                                    )}
-                                    {uploadError && <Text size="2" color="red" mt="2">{uploadError}</Text>}
-                                    {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
-                                </Box>
-                            )}
-                            <Card size="4">
-                                <Heading as="h3" size="6" trim="start" mb="5">Session <Text as="div" size="3" weight="bold" color="blue">{analysisContext.recordingMetadata?.sessionName || 'Unknown Session'}</Text></Heading>
-                                <Grid columns="2" gapX="4" gapY="5">
-                                    <Box>
-                                        <Text as="div" size="2" mb="1" color="gray">Map</Text>
-                                        <Text as="div" size="3" mb="1" weight="bold">{analysisContext.recordingMetadata?.mapName || analysisContext.staticData.track || 'Unknown Map'}</Text>
-                                        <Text as="div" size="2">Practice session</Text>
-                                    </Box>
-                                    <Box>
-                                        <Text as="div" size="2" mb="1" color="gray">Car</Text>
-                                        <Text as="div" size="3" weight="bold">{analysisContext.recordingMetadata?.carName || analysisContext.staticData.car_model || 'Unknown Car'}</Text>
-                                    </Box>
-                                    <Flex direction="column" gap="1" gridColumn="1 / -1">
-                                        <Flex justify="between"><Text size="3" mb="1" weight="bold">Status</Text><Text size="2" color={uploadStatusColor}>{uploadStatusLabel}</Text></Flex>
-                                    </Flex>
-                                </Grid>
-                            </Card>
-                            <Flex gap="3" mt="4" justify="end">
-                                {!isUploading && uploadProgress < 100 && (
-                                    <>
-                                        <Button variant="outline" color="red" onClick={() => { void handleCancelUpload(); closeUploadDialog(); }}>Cancel</Button>
-                                        <Button onClick={() => { void handleUpload(); }} disabled={isUploading || !hasRecordedData}>Upload Session</Button>
-                                    </>
-                                )}
-                                {isUploading && uploadProgress < 100 && (<Button variant="outline" disabled><Spinner size="1" />Uploading...</Button>)}
-                                {!isUploading && uploadProgress === 100 && (<Button onClick={closeUploadDialog}>Close</Button>)}
-                            </Flex>
-                        </AlertDialog.Content>
-                    </AlertDialog.Root>
+                    {uploadDialog}
 
                 </Flex>
                 <div className="live-recording-bar__status">

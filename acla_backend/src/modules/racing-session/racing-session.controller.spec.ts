@@ -4,7 +4,7 @@ import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
 import { AiServiceClient } from 'src/shared/ai/ai-service.client';
 import { UserInfoService } from '../user-info/user-info.service';
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 
 describe('RacingSessionController', () => {
   let controller: RacingSessionController;
@@ -15,6 +15,7 @@ describe('RacingSessionController', () => {
     racingSessionService = {
       listUserSessionsForAnalysis: jest.fn(),
       getSessionTelemetryForClassification: jest.fn(),
+      createRacingSessionFromChunks: jest.fn(),
     };
     aiServiceClient = {
       classifySegments: jest.fn(),
@@ -36,6 +37,53 @@ describe('RacingSessionController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  it.each([undefined, '', 'forza'])('rejects unsupported upload game %p before creating upload state', async (gameRecordedFrom) => {
+    await expect(controller.initUpload({
+      sessionName: 'Race 1',
+      mapName: 'Monza',
+      carName: 'GT3',
+      userId: 'user-1',
+      game_recorded_from: gameRecordedFrom as any,
+    })).rejects.toBeInstanceOf(BadRequestException);
+
+    expect((controller as any).uploadStates.size).toBe(0);
+  });
+
+  it.each(['acc', 'ac', 'iracing'] as const)('accepts supported upload game %s', async (gameRecordedFrom) => {
+    await expect(controller.initUpload({
+      sessionName: 'Race 1',
+      mapName: 'Monza',
+      carName: 'GT3',
+      userId: 'user-1',
+      game_recorded_from: gameRecordedFrom,
+    })).resolves.toEqual({ uploadId: expect.any(String) });
+  });
+
+  it('persists upload game metadata when completing a chunked session', async () => {
+    racingSessionService.createRacingSessionFromChunks.mockResolvedValue({ _id: 'session-1' });
+    const { uploadId } = await controller.initUpload({
+      sessionName: 'Race 1',
+      mapName: 'Monza',
+      carName: 'GT3',
+      userId: 'user-1',
+      game_recorded_from: 'acc',
+    });
+
+    await expect(controller.completeUpload({}, uploadId)).resolves.toMatchObject({
+      sessionId: 'session-1',
+    });
+    expect(racingSessionService.createRacingSessionFromChunks).toHaveBeenCalledWith(
+      'Race 1',
+      'Monza',
+      'GT3',
+      'user-1',
+      'acc',
+      [],
+      0,
+      1000,
+    );
   });
 
   it('blocks analysis metadata for another user', async () => {

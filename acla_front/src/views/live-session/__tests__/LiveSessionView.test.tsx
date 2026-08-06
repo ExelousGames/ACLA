@@ -1,16 +1,208 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
+import type { DesktopGame, DesktopGameContextValue } from 'contexts/DesktopGameContext';
+import { RecordingState } from 'views/lap-analysis/recording-state';
+import { LiveSessionContext } from '../LiveSessionContext';
+
+jest.mock('contexts/DesktopGameContext', () => ({
+    useDesktopGame: jest.fn(),
+}));
 
 jest.mock('../LiveTelemetryWorkspace', () => () => <div>Live workspace</div>);
 
+import { useDesktopGame } from 'contexts/DesktopGameContext';
 import LiveSessionView from '../LiveSessionView';
 
-describe('LiveSessionView', () => {
-    it('contains the recorder host within the Live Session content area', () => {
-        render(<LiveSessionView />);
+const mockedUseDesktopGame = useDesktopGame as jest.Mock;
 
-        const view = screen.getByRole('region', { name: 'Live Session' });
-        expect(view).toContainElement(screen.getByTestId('live-session-recorder-host'));
-        expect(view).toHaveTextContent('Live workspace');
+const detectionCases: Array<{
+    name: string;
+    detection: DesktopGameContextValue;
+    title: string;
+    visualState: string;
+    canStart: boolean;
+}> = [
+    {
+        name: 'checking',
+        detection: { detectedGame: null, detectionStatus: 'checking', error: null },
+        title: 'Scanning for simulator...',
+        visualState: 'checking',
+        canStart: false,
+    },
+    {
+        name: 'ACC',
+        detection: { detectedGame: 'acc', detectionStatus: 'detected', error: null },
+        title: 'Assetto Corsa Competizione detected',
+        visualState: 'ready',
+        canStart: true,
+    },
+    {
+        name: 'Assetto Corsa',
+        detection: { detectedGame: 'ac', detectionStatus: 'detected', error: null },
+        title: 'Assetto Corsa detected',
+        visualState: 'limited',
+        canStart: true,
+    },
+    {
+        name: 'iRacing',
+        detection: { detectedGame: 'iracing', detectionStatus: 'detected', error: null },
+        title: 'iRacing detected',
+        visualState: 'limited',
+        canStart: true,
+    },
+    {
+        name: 'not detected',
+        detection: { detectedGame: null, detectionStatus: 'not-detected', error: null },
+        title: 'No simulator detected.',
+        visualState: 'idle',
+        canStart: false,
+    },
+    {
+        name: 'unsupported',
+        detection: { detectedGame: null, detectionStatus: 'unsupported', error: null },
+        title: 'Simulator detection unavailable',
+        visualState: 'unsupported',
+        canStart: false,
+    },
+    {
+        name: 'error',
+        detection: { detectedGame: null, detectionStatus: 'error', error: 'tasklist failed' },
+        title: 'Simulator detection failed',
+        visualState: 'error',
+        canStart: false,
+    },
+];
+
+const createRuntime = (sessionGame: DesktopGame | null = null) => ({
+    sessionGame,
+    currentTelemetry: {},
+    telemetryStatus: null,
+    staticData: {},
+    recordingState: RecordingState.CHECKING,
+    recordingMetadata: null,
+    recordingFileKey: null,
+    recordedSampleCount: 0,
+    sessionIntelligence: {},
+    liveRangeTodoListHandle: null,
+    liveRangeTodoListSnapshot: null,
+    recorderControl: { openUploadFlow: jest.fn() },
+    startLiveSession: jest.fn(),
+    endLiveSession: jest.fn(),
+    setCurrentTelemetry: jest.fn(),
+    setStaticData: jest.fn(),
+    setRecordingMetadata: jest.fn(),
+    transitionRecordingState: jest.fn(),
+    appendTelemetrySample: jest.fn(),
+    readRecordedTelemetry: jest.fn(),
+    finalizeRecordingWrites: jest.fn(),
+    clearRecordingSession: jest.fn(),
+    registerLiveRangeTodoListHandle: jest.fn(),
+    publishLiveRangeTodoListSnapshot: jest.fn(),
+    registerRecorderControl: jest.fn(),
+});
+
+const renderView = (runtime = createRuntime()) => render(
+    <LiveSessionContext.Provider value={runtime as any}>
+        <LiveSessionView />
+    </LiveSessionContext.Provider>,
+);
+
+describe('LiveSessionView', () => {
+    beforeEach(() => {
+        mockedUseDesktopGame.mockReset();
+    });
+
+    it.each(detectionCases)('shows the $name detector state at the session gate', ({
+        detection,
+        title,
+        visualState,
+        canStart,
+    }) => {
+        mockedUseDesktopGame.mockReturnValue(detection);
+
+        renderView();
+
+        expect(screen.getByRole('status')).toHaveTextContent(title);
+        expect(screen.getByRole('status').parentElement).toHaveAttribute('data-state', visualState);
+        expect(screen.getByTestId('live-session-gate')).toBeInTheDocument();
+        expect(screen.queryByTestId('live-session-recorder-host')).not.toBeInTheDocument();
+        expect(screen.queryByText('Live workspace')).not.toBeInTheDocument();
+        const startButton = screen.getByRole('button', { name: 'Start New Session' });
+        if (canStart) {
+            expect(startButton).toBeEnabled();
+        } else {
+            expect(startButton).toBeDisabled();
+        }
+    });
+
+    it.each([
+        ['acc', 'Assetto Corsa Competizione'],
+        ['ac', 'Assetto Corsa'],
+        ['iracing', 'iRacing'],
+    ] as const)('captures detected %s when Start New Session is selected', (game, label) => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: game, detectionStatus: 'detected', error: null });
+        const runtime = createRuntime();
+        renderView(runtime);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Start New Session' }));
+
+        expect(runtime.startLiveSession).toHaveBeenCalledWith(game);
+        expect(screen.getByRole('status')).toHaveTextContent(`${label} detected`);
+    });
+
+    it('keeps the captured ACC workspace when detector polling changes or errors', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const runtime = createRuntime('acc');
+        const view = renderView(runtime);
+
+        expect(screen.getByRole('status')).toHaveTextContent('Assetto Corsa Competizione session');
+        expect(screen.getByText('Live workspace')).toBeInTheDocument();
+
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: null, detectionStatus: 'error', error: 'tasklist failed' });
+        view.rerender(
+            <LiveSessionContext.Provider value={runtime as any}>
+                <LiveSessionView />
+            </LiveSessionContext.Provider>,
+        );
+
+        expect(screen.getByRole('status')).toHaveTextContent('Assetto Corsa Competizione session');
+        expect(screen.getByRole('status')).not.toHaveTextContent('tasklist failed');
+        expect(screen.getByText('Live workspace')).toBeInTheDocument();
+    });
+
+    it.each([
+        ['ac', 'Assetto Corsa'],
+        ['iracing', 'iRacing'],
+    ] as const)('renders a limited workspace without ACC controls for %s', (game, label) => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+
+        renderView(createRuntime(game));
+
+        expect(screen.getByTestId('limited-live-workspace')).toHaveAccessibleName(`${label} limited live workspace`);
+        expect(screen.queryByText('Live workspace')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Start Recording' })).not.toBeInTheDocument();
+        expect(screen.getByTestId('live-session-recorder-host')).toBeInTheDocument();
+    });
+
+    it('keeps New Session enabled during an active recording and opens the recorder flow', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: null, detectionStatus: 'not-detected', error: null });
+        const runtime = {
+            ...createRuntime('acc'),
+            recordingState: RecordingState.RECORDING,
+        };
+        renderView(runtime);
+
+        const newSessionButton = screen.getByRole('button', { name: 'New Session' });
+        expect(newSessionButton).toBeEnabled();
+        fireEvent.click(newSessionButton);
+        expect(runtime.recorderControl.openUploadFlow).toHaveBeenCalledTimes(1);
+    });
+
+    it('exposes detector updates as an atomic polite live status', () => {
+        mockedUseDesktopGame.mockReturnValue(detectionCases[0].detection);
+        renderView();
+
+        expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+        expect(screen.getByRole('status')).toHaveAttribute('aria-atomic', 'true');
     });
 });

@@ -3,7 +3,6 @@ import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
 import { RecordingState } from './recording-state';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
-import { useDesktopGame } from 'contexts/DesktopGameContext';
 
 const toAccStatus = (value: unknown): ACC_STATUS | null => {
     const numeric = typeof value === 'string' ? Number(value) : value;
@@ -33,20 +32,17 @@ const getStaticPayload = (data: Record<string, any>): Record<string, unknown> | 
 
 export default function LiveSessionDetectionManager() {
     const liveSession = useContext(LiveSessionContext);
-    const { detectedGame } = useDesktopGame();
     const liveSessionRef = useRef(liveSession);
     const sessionCheckingStreamRef = useRef<PythonStreamSession<Record<string, unknown>> | null>(null);
     const sessionCheckingStreamCleanupRef = useRef<(() => void) | null>(null);
     const sessionCheckingStreamGenerationRef = useRef(0);
     const sessionCheckingStreamStartingGenerationRef = useRef<number | null>(null);
 
-    useEffect(() => {
-        liveSessionRef.current = liveSession;
-    }, [liveSession]);
+    liveSessionRef.current = liveSession;
 
     const processCheckingSessionStreamUpdate = useCallback((event: PythonStreamEvent<Record<string, unknown>>) => {
         const ctx = liveSessionRef.current;
-        if (!ctx || !event) {
+        if (!ctx || ctx.sessionGame !== 'acc' || !event) {
             return;
         }
 
@@ -150,7 +146,7 @@ export default function LiveSessionDetectionManager() {
     }, [processCheckingSessionStreamUpdate, stopSessionCheckingStream]);
 
     const shouldMaintainSessionCheckingStream =
-        detectedGame === 'acc'
+        liveSession.sessionGame === 'acc'
         && (
             liveSession.recordingState === RecordingState.CHECKING
             || liveSession.recordingState === RecordingState.HOLDING
@@ -175,7 +171,7 @@ export default function LiveSessionDetectionManager() {
                     }
                 }
             } else {
-                if (detectedGame !== 'acc') {
+                if (liveSession.sessionGame !== 'acc') {
                     liveSessionRef.current?.transitionRecordingState({ type: 'sessionUnavailable' });
                 }
                 await stopSessionCheckingStream();
@@ -188,7 +184,7 @@ export default function LiveSessionDetectionManager() {
             cancelled = true;
             void stopSessionCheckingStream({ force: true });
         };
-    }, [detectedGame, shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
+    }, [liveSession.sessionGame, shouldMaintainSessionCheckingStream, startSessionCheckingStream, stopSessionCheckingStream]);
 
     return null;
 }

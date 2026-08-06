@@ -1,4 +1,13 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
+
+jest.mock('contexts/DesktopGameContext', () => ({
+    useDesktopGame: () => ({
+        detectedGame: null,
+        detectionStatus: 'not-detected',
+        error: null,
+    }),
+}));
+
 import FloatingChat from './FloatingChat';
 
 describe('FloatingChat', () => {
@@ -135,8 +144,8 @@ describe('FloatingChat', () => {
                         comparison: {
                             samples: [{
                                 progress: 100,
-                                driverTrajectory: { x: 10, z: 20 },
-                                expertTrajectory: { x: 11, z: 21 },
+                                driverTrajectory: { x: 10, y: 20, z: 30 },
+                                expertTrajectory: { x: 11, y: 21, z: 31 },
                                 driverGas: 0.7,
                                 expertGas: 0.8,
                                 driverBrake: 0.2,

@@ -6,14 +6,22 @@ import {
     DriverExpertComparisonGraph,
     normalizeDriverExpertComparisonData,
 } from './DriverExpertComparisonGraph';
+import { useDesktopGame } from 'contexts/DesktopGameContext';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
+
+jest.mock('contexts/DesktopGameContext', () => ({
+    useDesktopGame: jest.fn(),
+}));
+
+const mockedUseDesktopGame = useDesktopGame as jest.Mock;
 
 const completeData = {
     samples: [
         {
             progress: 0,
             trackPosition: 0.2,
-            driverTrajectory: { x: 0, z: 0 },
-            expertTrajectory: { x: 0, z: 10 },
+            driverTrajectory: { x: 0, y: 0, z: 100 },
+            expertTrajectory: { x: 0, y: 10, z: 1000 },
             driverGas: 0,
             expertGas: 0.2,
             driverBrake: 1,
@@ -24,8 +32,8 @@ const completeData = {
         {
             progress: 50,
             trackPosition: 0.25,
-            driverTrajectory: { x: 50, z: 25 },
-            expertTrajectory: { x: 50, z: 35 },
+            driverTrajectory: { x: 50, y: 25, z: 200 },
+            expertTrajectory: { x: 50, y: 35, z: 2000 },
             driverGas: 0.5,
             expertGas: 0.6,
             driverBrake: 0.5,
@@ -36,8 +44,8 @@ const completeData = {
         {
             progress: 100,
             trackPosition: 0.3,
-            driverTrajectory: { x: 100, z: 50 },
-            expertTrajectory: { x: 100, z: 60 },
+            driverTrajectory: { x: 100, y: 50, z: 300 },
+            expertTrajectory: { x: 100, y: 60, z: 3000 },
             driverGas: 1.2,
             expertGas: 1,
             driverBrake: -0.2,
@@ -49,6 +57,7 @@ const completeData = {
 };
 
 describe('DriverExpertComparisonGraph', () => {
+    let detectedGame: DesktopGame | null;
     let nextFrameId = 1;
     let pendingFrames: Map<number, FrameRequestCallback>;
     let requestAnimationFrameMock: jest.Mock;
@@ -77,6 +86,12 @@ describe('DriverExpertComparisonGraph', () => {
     };
 
     beforeEach(() => {
+        detectedGame = null;
+        mockedUseDesktopGame.mockImplementation(() => ({
+            detectedGame,
+            detectionStatus: detectedGame ? 'detected' : 'not-detected',
+            error: null,
+        }));
         nextFrameId = 1;
         pendingFrames = new Map();
         requestAnimationFrameMock = jest.fn((callback: FrameRequestCallback) => {
@@ -120,6 +135,111 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.queryByText('Track X')).not.toBeInTheDocument();
     });
 
+    it.each(['ac', 'iracing', null] as const)(
+        'uses driver X/Y coordinates when the detected game is %s',
+        (game) => {
+            detectedGame = game;
+            setReducedMotion(true);
+            render(<DriverExpertComparisonGraph data={completeData} />);
+
+            expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '100');
+            expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '50');
+        },
+    );
+
+    it('uses driver X/Z for ACC while expert paths and markers remain on X/Y', () => {
+        detectedGame = 'acc';
+        setReducedMotion(true);
+        const { rerender } = render(<DriverExpertComparisonGraph data={completeData} />);
+
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '300');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '60');
+        const expertPath = screen.getByTestId('expert-track-path').getAttribute('d');
+        const expertMarkerY = screen.getByTestId('expert-position-marker')
+            .querySelector('circle:last-child')?.getAttribute('cy');
+
+        const changedExpertZ = {
+            samples: completeData.samples.map((sample) => ({
+                ...sample,
+                expertTrajectory: {
+                    ...sample.expertTrajectory,
+                    z: sample.expertTrajectory.z * -100,
+                },
+            })),
+        };
+        rerender(<DriverExpertComparisonGraph data={changedExpertZ} />);
+
+        expect(screen.getByTestId('expert-track-path')).toHaveAttribute('d', expertPath);
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '60');
+        expect(screen.getByTestId('expert-position-marker')
+            .querySelector('circle:last-child')).toHaveAttribute('cy', expertMarkerY);
+    });
+
+    it('reprojects an existing comparison payload when the detected game changes', () => {
+        setReducedMotion(true);
+        const { rerender } = render(<DriverExpertComparisonGraph data={completeData} />);
+        const xyPath = screen.getByTestId('driver-track-path').getAttribute('d');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '50');
+
+        detectedGame = 'acc';
+        rerender(<DriverExpertComparisonGraph data={completeData} />);
+
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-y', '300');
+        expect(screen.getByTestId('driver-track-path').getAttribute('d')).not.toBe(xyPath);
+    });
+
+    it('requires finite coordinates for the active driver plane and expert X/Y plane', () => {
+        const xyOnlyData = {
+            samples: [{
+                progress: 0,
+                driverTrajectory: { x: 1, y: 2 },
+                expertTrajectory: { x: 3, y: 4, z: Number.NaN },
+            }],
+        };
+        const { rerender } = render(<DriverExpertComparisonGraph data={xyOnlyData} />);
+        expect(screen.getByTestId('comparison-track-map')).toBeInTheDocument();
+
+        detectedGame = 'acc';
+        rerender(<DriverExpertComparisonGraph data={xyOnlyData} />);
+        expect(screen.getByTestId('trajectory-unavailable')).toHaveTextContent(
+            'Track data unavailable',
+        );
+
+        rerender(<DriverExpertComparisonGraph data={{
+            samples: [{
+                progress: 0,
+                driverTrajectory: { x: 1, y: 2, z: 3 },
+                expertTrajectory: { x: 4, z: 5 },
+            }],
+        }} />);
+        expect(screen.getByTestId('trajectory-unavailable')).toHaveTextContent(
+            'Track data unavailable',
+        );
+    });
+
+    it('normalizes and preserves every finite source axis independently', () => {
+        expect(normalizeDriverExpertComparisonData({
+            samples: [{
+                progress: 10,
+                driverTrajectory: { x: 1, y: 2, z: 3 },
+                expertTrajectory: { x: 4, y: 5, z: Number.POSITIVE_INFINITY },
+            }, {
+                progress: 20,
+                driverTrajectory: { x: Number.NaN, y: 6, z: 7 },
+                expertTrajectory: { x: 8, y: Number.NaN, z: 9 },
+            }],
+        })).toEqual({
+            samples: [{
+                progress: 10,
+                driverTrajectory: { x: 1, y: 2, z: 3 },
+                expertTrajectory: { x: 4, y: 5 },
+            }, {
+                progress: 20,
+                expertTrajectory: { x: 8, z: 9 },
+            }],
+        });
+    });
+
     it('maps pedal values over the exact clockwise 1-to-3-o’clock sweep with clamping', () => {
         setReducedMotion(true);
         render(<DriverExpertComparisonGraph data={completeData} />);
@@ -147,7 +267,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('replay-progress')).toHaveAttribute('aria-valuenow', '25');
         expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.25');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '25');
-        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-z', '22.5');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '22.5');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('2');
         expect(screen.getByTestId('expert-gear')).toHaveTextContent('3');
 
@@ -157,7 +277,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.5');
         expect(screen.getByTestId('driver-brake-gauge')).toHaveAttribute('data-value', '0.5');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '50');
-        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-z', '35');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '35');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('3');
         expect(screen.getByTestId('expert-gear')).toHaveTextContent('4');
 
@@ -166,7 +286,7 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
         expect(screen.getByTestId('replay-progress')).toHaveAttribute('aria-valuenow', '100');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '100');
-        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-z', '60');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '60');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('5');
         expect(screen.getByTestId('expert-gear')).toHaveTextContent('6');
         expect(pendingFrames.size).toBe(0);

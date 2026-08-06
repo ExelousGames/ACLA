@@ -12,15 +12,15 @@ jest.mock('hooks/AuthProvider', () => ({
 // A simple child component that PrivateRoute should render when authenticated
 const TestChild = () => <div data-testid="protected-content">Protected</div>;
 
-const renderWithRouter = (initialEntries: string[] = ['/']) => {
+const renderWithRouter = (initialEntries: string[] = ['/dashboard']) => {
     const { Routes, Route } = require('react-router-dom');
     return render(
         <MemoryRouter initialEntries={initialEntries}>
             <Routes>
                 <Route element={<PrivateRoute />}>
-                    <Route path="/" element={<TestChild />} />
+                    <Route path="/dashboard" element={<TestChild />} />
                 </Route>
-                <Route path="/login" element={<div data-testid="login-page">Login</div>} />
+                <Route path="/" element={<div data-testid="landing-page">Landing</div>} />
             </Routes>
         </MemoryRouter>
     );
@@ -35,20 +35,20 @@ describe('PrivateRoute', () => {
         expect(screen.getByTestId('protected-content')).toBeInTheDocument();
     });
 
-    it('should redirect to /login when user has no token', () => {
+    it('should redirect to the public landing page when user has no token', () => {
         mockUseAuth.mockReturnValue({ token: '' });
 
         renderWithRouter();
 
-        expect(screen.getByTestId('login-page')).toBeInTheDocument();
+        expect(screen.getByTestId('landing-page')).toBeInTheDocument();
         expect(screen.queryByTestId('protected-content')).not.toBeInTheDocument();
     });
 
-    it('should redirect to /login when token is null', () => {
+    it('should redirect to the public landing page when token is null', () => {
         mockUseAuth.mockReturnValue({ token: null });
 
         renderWithRouter();
 
-        expect(screen.getByTestId('login-page')).toBeInTheDocument();
+        expect(screen.getByTestId('landing-page')).toBeInTheDocument();
     });
 });

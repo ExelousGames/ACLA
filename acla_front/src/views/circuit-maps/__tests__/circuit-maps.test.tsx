@@ -66,6 +66,7 @@ jest.mock('contexts/CircuitMapsContext', () => ({
 const mockedApi = apiService as jest.Mocked<typeof apiService>;
 
 const baseContext: LiveSessionRuntime = {
+    sessionGame: null,
     currentTelemetry: {},
     telemetryStatus: null,
     staticData: {},
@@ -76,6 +77,9 @@ const baseContext: LiveSessionRuntime = {
     sessionIntelligence: new SessionIntelligence(),
     liveRangeTodoListHandle: null,
     liveRangeTodoListSnapshot: null,
+    recorderControl: null,
+    startLiveSession: jest.fn(),
+    endLiveSession: jest.fn(),
     setCurrentTelemetry: jest.fn(),
     setStaticData: jest.fn(),
     setRecordingMetadata: jest.fn(),
@@ -86,6 +90,7 @@ const baseContext: LiveSessionRuntime = {
     clearRecordingSession: jest.fn(),
     registerLiveRangeTodoListHandle: jest.fn(),
     publishLiveRangeTodoListSnapshot: jest.fn(),
+    registerRecorderControl: jest.fn(),
 };
 
 const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (

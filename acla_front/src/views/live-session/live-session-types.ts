@@ -1,4 +1,5 @@
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { RecordingEvent, RecordingState } from 'views/lap-analysis/recording-state';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import type {
@@ -18,6 +19,7 @@ export interface LiveRecordingMetadata {
     sessionName: string;
     mapName: string;
     carName: string;
+    gameRecordedFrom: 'acc' | 'ac' | 'iracing';
 }
 
 export interface LiveVisualizationInstance {
@@ -27,7 +29,12 @@ export interface LiveVisualizationInstance {
     data?: unknown;
 }
 
+export interface LiveSessionRecorderControl {
+    openUploadFlow: () => void;
+}
+
 export interface LiveSessionRuntime {
+    sessionGame: DesktopGame | null;
     currentTelemetry: LiveTelemetry;
     telemetryStatus: ACC_STATUS | null;
     staticData: LiveSessionStaticData;
@@ -38,6 +45,9 @@ export interface LiveSessionRuntime {
     sessionIntelligence: SessionIntelligence;
     liveRangeTodoListHandle: LiveRangeTodoListHandle | null;
     liveRangeTodoListSnapshot: LiveRangeTodoListSnapshot | null;
+    recorderControl: LiveSessionRecorderControl | null;
+    startLiveSession: (game: DesktopGame) => void;
+    endLiveSession: () => void;
     setCurrentTelemetry: (data: LiveTelemetry) => void;
     setStaticData: (data: LiveSessionStaticData) => void;
     setRecordingMetadata: (metadata: LiveRecordingMetadata | null) => void;
@@ -50,4 +60,5 @@ export interface LiveSessionRuntime {
     clearRecordingSession: () => void;
     registerLiveRangeTodoListHandle: (handle: LiveRangeTodoListHandle | null) => void;
     publishLiveRangeTodoListSnapshot: (snapshot: LiveRangeTodoListSnapshot | null) => void;
+    registerRecorderControl: (control: LiveSessionRecorderControl | null) => void;
 }

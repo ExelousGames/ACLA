@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto, MapBasicInfoListDto } from 'src/dto/racing-session.dto';
+import { AnalysisSessionMetadataDto, RacingSessionDetailedInfoDto, SessionBasicInfoListDto, AllSessionsInitResponseDto, SessionChunkDto, MapBasicInfoListDto } from 'src/dto/racing-session.dto';
 import { RacingSession } from 'src/schemas/racing-session.schema';
 import { GridFSService, GRIDFS_BUCKETS } from '../gridfs/gridfs.service';
 import { ObjectId } from 'mongodb';
@@ -9,6 +9,7 @@ import { Types } from 'mongoose';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { GameRecordedFrom } from 'src/racing-session-game';
 
 @Injectable()
 export class RacingSessionService {
@@ -78,6 +79,7 @@ export class RacingSessionService {
 
             if (data) {
                 session.session_name = data.session_name;
+                session.game_recorded_from = data.game_recorded_from;
                 session.map = data.map;
                 session.userId = data.user_id.toString();
                 session.points = data.points;
@@ -107,6 +109,7 @@ export class RacingSessionService {
         map: string,
         car_name: string,
         userId: string,
+        gameRecordedFrom: GameRecordedFrom,
         data: any[],
         options?: { chunkSize?: number }
     ) {
@@ -140,6 +143,7 @@ export class RacingSessionService {
             map,
             car_name,
             user_id: userId,
+            game_recorded_from: gameRecordedFrom,
             dataChunkFileIds: dataChunkFileIds,
             chunkSize: chunkSize,
             totalChunks: totalChunks,
@@ -194,6 +198,7 @@ export class RacingSessionService {
         map: string,
         car_name: string,
         userId: string,
+        gameRecordedFrom: GameRecordedFrom,
         dataChunkFileIds: ObjectId[],
         totalDataPoints: number,
         chunkSize: number
@@ -203,6 +208,7 @@ export class RacingSessionService {
             map,
             car_name,
             user_id: userId,
+            game_recorded_from: gameRecordedFrom,
             dataChunkFileIds: dataChunkFileIds,
             chunkSize: chunkSize,
             totalChunks: dataChunkFileIds.length,
@@ -222,6 +228,7 @@ export class RacingSessionService {
             const sessionMetadata = sessions.map(session => ({
                 sessionId: session._id.toString(),
                 session_name: session.session_name,
+                game_recorded_from: session.game_recorded_from,
                 map: session.map,
                 car_name: session.car_name,
                 userId: session.user_id,
@@ -286,7 +293,7 @@ export class RacingSessionService {
         if (carName) filter.car_name = carName;
 
         return this.racingSession.find(filter)
-            .select('session_name map car_name user_id totalDataPoints totalChunks dataChunkFileIds')
+            .select('session_name game_recorded_from map car_name user_id totalDataPoints totalChunks dataChunkFileIds')
             .exec();
     }
 
@@ -327,19 +334,10 @@ export class RacingSessionService {
         };
     }
 
-    async listUserSessionsForAnalysis(userId: string, sessionLimit = 10): Promise<Array<{
-        sessionId: string;
-        session_name: string;
-        map: string;
-        car_name: string;
-        userId: string;
-        totalDataPoints: number;
-        totalChunks: number;
-        chunkSize: number;
-    }>> {
+    async listUserSessionsForAnalysis(userId: string, sessionLimit = 10): Promise<AnalysisSessionMetadataDto[]> {
         const limit = Math.max(1, Math.min(Math.floor(Number(sessionLimit) || 10), 10));
         const sessions = await this.racingSession.find({ user_id: userId })
-            .select('session_name map car_name user_id totalDataPoints totalChunks chunkSize dataChunkFileIds')
+            .select('session_name game_recorded_from map car_name user_id totalDataPoints totalChunks chunkSize dataChunkFileIds')
             .sort({ created_date: -1, _id: -1 })
             .limit(limit)
             .exec();
@@ -347,6 +345,7 @@ export class RacingSessionService {
         return sessions.map((session) => ({
             sessionId: session._id.toString(),
             session_name: session.session_name,
+            game_recorded_from: session.game_recorded_from,
             map: session.map,
             car_name: session.car_name,
             userId: session.user_id,

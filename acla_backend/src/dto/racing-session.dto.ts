@@ -1,3 +1,5 @@
+import { GameRecordedFrom } from 'src/racing-session-game';
+
 export class SessionBasicInfoListDto {
     list: {
         name: string,
@@ -16,6 +18,7 @@ export class UploadReacingSessionInitDto {
     mapName: string;
     carName: string;
     userId: string;
+    game_recorded_from: GameRecordedFrom;
 }
 
 export class UploadReacingSessionProgressDto {
@@ -27,6 +30,7 @@ export class UploadReacingSessionProgressDto {
 
 export class RacingSessionDetailedInfoDto {
     session_name: string;
+    game_recorded_from: GameRecordedFrom;
     userId: string;
     map: string;
     user_email: string;
@@ -51,6 +55,7 @@ export class AllSessionsInitResponseDto {
     sessionMetadata: {
         sessionId: string;
         session_name: string;
+        game_recorded_from: GameRecordedFrom;
         map: string;
         car_name: string;
         userId: string;
@@ -59,6 +64,24 @@ export class AllSessionsInitResponseDto {
         fileSize?: number; // New field for streaming
         dataPoints?: number; // New field for streaming
     }[];
+}
+
+export class AnalysisSessionMetadataDto {
+    sessionId: string;
+    session_name: string;
+    game_recorded_from: GameRecordedFrom;
+    map: string;
+    car_name: string;
+    userId: string;
+    totalDataPoints: number;
+    totalChunks: number;
+    chunkSize: number;
+}
+
+export class UserSessionsAnalysisInitResponseDto {
+    userId: string;
+    totalSessions: number;
+    sessions: AnalysisSessionMetadataDto[];
 }
 
 export class SessionChunkDto {

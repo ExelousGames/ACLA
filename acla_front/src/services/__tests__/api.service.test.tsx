@@ -1,11 +1,7 @@
 import axios from 'axios';
 
-// Use a global container to capture interceptor callbacks from the hoisted jest.mock
-const _capture: { requestInterceptor?: Function } = {};
-(global as any).__axisMockCapture = _capture;
-
 jest.mock('axios', () => {
-    const capture = (global as any).__axisMockCapture;
+    const capture = ((global as any).__axiosMockCapture ??= {});
     const instance = {
         get: jest.fn(),
         post: jest.fn(),
@@ -31,6 +27,7 @@ jest.mock('axios', () => {
 
 import { ApiService } from 'services/api.service';
 
+const _capture = (global as any).__axiosMockCapture as { requestInterceptor?: Function };
 const mockedAxios = axios as any;
 const mockAxiosInstance = mockedAxios.__mockInstance;
 
@@ -77,7 +74,7 @@ describe('ApiService', () => {
 
             const result = await apiService.post('/test', { name: 'test' });
 
-            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/test', { name: 'test' });
+            expect(mockAxiosInstance.post).toHaveBeenCalledWith('/test', { name: 'test' }, undefined);
             expect(result).toEqual(mockResponse);
         });
     });

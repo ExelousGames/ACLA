@@ -1,7 +1,7 @@
 import { Controller, Get, UseGuards, Request, Post, Body, Query, BadRequestException, ForbiddenException, HttpException, Inject, forwardRef, Logger, Res } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
-import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, TrackCornerKnowledgeRequestDto, TrackCornerKnowledgeResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto, LiveBaselineAnalysisRequestDto, LiveBaselineAnalysisResponseDto } from 'src/dto/racing-session.dto';
+import { RacingSessionDetailedInfoDto, SessionBasicInfoListDto, UploadReacingSessionInitDto, AllSessionsInitResponseDto, SessionChunkDto, AllSessionsChunkRequestDto, ImitationLearningGuidanceRequestDto, ImitationLearningGuidanceResponseDto, OpportunityForecastRequestDto, OpportunityForecastResponseDto, TrackCornerKnowledgeRequestDto, TrackCornerKnowledgeResponseDto, MapBasicInfoListDto, SegmentClassificationRequestDto, SegmentClassificationResponseDto, LiveBaselineAnalysisRequestDto, LiveBaselineAnalysisResponseDto, UserSessionsAnalysisInitResponseDto } from 'src/dto/racing-session.dto';
 import { AiModelResponseDto } from 'src/dto/ai-model.dto';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
@@ -12,6 +12,7 @@ import { model, Types } from 'mongoose';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as crypto from 'crypto';
+import { GAME_RECORDED_FROM_VALUES } from 'src/racing-session-game';
 
 @Controller('racing-session')
 export class RacingSessionController {
@@ -177,7 +178,7 @@ export class RacingSessionController {
     async initializeUserSessionsAnalysis(
         @Request() req,
         @Body() body: { userId?: string; sessionLimit?: number }
-    ) {
+    ): Promise<UserSessionsAnalysisInitResponseDto> {
         const targetUserId = body.userId;
         if (!targetUserId) {
             throw new BadRequestException('userId is required');
@@ -393,6 +394,12 @@ export class RacingSessionController {
     @UseGuards(AuthGuard('jwt'))
     @Post('upload/init')
     async initUpload(@Body() metadata: UploadReacingSessionInitDto) {
+        if (!GAME_RECORDED_FROM_VALUES.includes(metadata.game_recorded_from)) {
+            throw new BadRequestException(
+                `game_recorded_from must be one of: ${GAME_RECORDED_FROM_VALUES.join(', ')}`,
+            );
+        }
+
         const uploadId = crypto.randomUUID();
         console.log('Initialized upload with ID:', uploadId, 'for user:', metadata.userId);
 
@@ -491,6 +498,7 @@ export class RacingSessionController {
                 upload.metadata.mapName,
                 upload.metadata.carName,
                 upload.metadata.userId,
+                upload.metadata.game_recorded_from,
                 upload.fileIds as unknown as any[],
                 upload.totalDataPoints,
                 1000

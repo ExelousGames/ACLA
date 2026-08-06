@@ -100,4 +100,11 @@ describe('live session detection recording transitions', () => {
             { type: 'reset' },
         )).toBe(RecordingState.CHECKING);
     });
+
+    it('makes a completed recording upload-ready', () => {
+        expect(getNextRecordingState(
+            RecordingState.RECORDING,
+            { type: 'recordingStopped', reason: 'complete' },
+        )).toBe(RecordingState.UPLOAD_READY);
+    });
 });

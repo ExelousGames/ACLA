@@ -28,6 +28,7 @@ const expertRow = (
     raw_index: rawIndex,
     Graphics_normalized_car_position: position,
     expert_optimal_player_pos_x: rawIndex * 10,
+    expert_optimal_player_pos_y: rawIndex * 5,
     expert_optimal_player_pos_z: rawIndex * -10,
     expert_optimal_throttle: 0.6,
     expert_optimal_brake: 0.2,
@@ -58,8 +59,8 @@ describe('adaptAnalysisResultsComparison', () => {
         expect(result.samples.map((sample) => sample.trackPosition)).toEqual([0.1, 0.2, 0.3]);
         expect(result.samples[0]).toMatchObject({
             progress: 0,
-            driverTrajectory: { x: 10, z: 12 },
-            expertTrajectory: { x: 100, z: -100 },
+            driverTrajectory: { x: 10, y: 11, z: 12 },
+            expertTrajectory: { x: 100, y: 50, z: -100 },
             driverGas: 0.5,
             expertGas: 0.6,
         });
@@ -88,6 +89,27 @@ describe('adaptAnalysisResultsComparison', () => {
             100,
         ]);
         expect(result.samples.map((sample) => sample.trackPosition)).toEqual([0.98, 0.01, 0.04]);
+    });
+
+    it('retains each available source axis without synthesizing missing coordinates', () => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [driverRow(25, 0.4, { x: 1, y: 2, z: 3 }, {
+                Graphics_car_coordinates: [
+                    { x: -1, y: -2, z: -3 },
+                    { x: 10, y: 20 },
+                ],
+            })],
+            expertReferenceData: [expertRow(25, 0.4, {
+                expert_optimal_player_pos_x: 30,
+                expert_optimal_player_pos_y: 40,
+                expert_optimal_player_pos_z: undefined,
+            })],
+            startIndex: 25,
+            endIndex: 25,
+        });
+
+        expect(result.samples[0].driverTrajectory).toEqual({ x: 10, y: 20 });
+        expect(result.samples[0].expertTrajectory).toEqual({ x: 30, y: 40 });
     });
 
     it('omits non-finite values without losing other comparable channels', () => {
@@ -132,6 +154,6 @@ describe('adaptAnalysisResultsComparison', () => {
         });
 
         expect(result.samples).toHaveLength(1);
-        expect(result.samples[0].driverTrajectory).toEqual({ x: 2, z: 2 });
+        expect(result.samples[0].driverTrajectory).toEqual({ x: 2, y: 2, z: 2 });
     });
 });

@@ -1,4 +1,5 @@
 import React, { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { PythonShellOptions } from 'services/pythonService';
 import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } from 'services/pythonStreaming';
@@ -6,6 +7,7 @@ import { getNextRecordingState, RecordingEvent, RecordingState } from 'views/lap
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import {
     LiveRecordingMetadata,
+    LiveSessionRecorderControl,
     LiveSessionRuntime,
     LiveSessionStaticData,
     LiveTelemetry,
@@ -42,6 +44,7 @@ const normalizeAccStatus = (value: unknown): ACC_STATUS | null => {
 const missingProvider = () => console.warn('No provider for LiveSessionContext');
 
 const defaultRuntime: LiveSessionRuntime = {
+    sessionGame: null,
     currentTelemetry: {},
     telemetryStatus: null,
     staticData: {},
@@ -52,6 +55,9 @@ const defaultRuntime: LiveSessionRuntime = {
     sessionIntelligence: new SessionIntelligence(),
     liveRangeTodoListHandle: null,
     liveRangeTodoListSnapshot: null,
+    recorderControl: null,
+    startLiveSession: missingProvider,
+    endLiveSession: missingProvider,
     setCurrentTelemetry: missingProvider,
     setStaticData: missingProvider,
     setRecordingMetadata: missingProvider,
@@ -65,11 +71,13 @@ const defaultRuntime: LiveSessionRuntime = {
     clearRecordingSession: missingProvider,
     registerLiveRangeTodoListHandle: missingProvider,
     publishLiveRangeTodoListSnapshot: missingProvider,
+    registerRecorderControl: missingProvider,
 };
 
 export const LiveSessionContext = createContext<LiveSessionRuntime>(defaultRuntime);
 
 export const LiveSessionProvider = ({ children }: { children: React.ReactNode }) => {
+    const [sessionGame, setSessionGame] = useState<DesktopGame | null>(null);
     const [currentTelemetry, setCommittedTelemetry] = useState<LiveTelemetry>({});
     const [telemetryStatus, setTelemetryStatus] = useState<ACC_STATUS | null>(null);
     const [staticData, setStaticDataState] = useState<LiveSessionStaticData>({});
@@ -79,8 +87,11 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
     const [recordedSampleCount, setRecordedSampleCount] = useState(0);
     const [liveRangeTodoListHandle, setLiveRangeTodoListHandle] = useState<LiveRangeTodoListHandle | null>(null);
     const [liveRangeTodoListSnapshot, setLiveRangeTodoListSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
+    const [recorderControl, setRecorderControl] = useState<LiveSessionRecorderControl | null>(null);
 
     const sessionIntelligenceRef = useRef(new SessionIntelligence());
+    const sessionGameRef = useRef<DesktopGame | null>(null);
+    const sessionGenerationRef = useRef(0);
     const latestTelemetryRef = useRef<LiveTelemetry>({});
     const committedTelemetryRef = useRef<LiveTelemetry>({});
     const telemetryFlushTimeoutRef = useRef<number | null>(null);
@@ -100,6 +111,10 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
 
     const publishLiveRangeTodoListSnapshot = useCallback((snapshot: LiveRangeTodoListSnapshot | null) => {
         setLiveRangeTodoListSnapshot(snapshot);
+    }, []);
+
+    const registerRecorderControl = useCallback((control: LiveSessionRecorderControl | null) => {
+        setRecorderControl(control);
     }, []);
 
     const flushCurrentTelemetry = useCallback(() => {
@@ -224,7 +239,7 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         }
     }, [disposeTelemetryWriter]);
 
-    const ensureTelemetryWriter = useCallback(async (fileKey: string) => {
+    const ensureTelemetryWriter = useCallback(async (fileKey: string, sessionGeneration: number) => {
         if (telemetryWriterSessionRef.current && telemetryWriterFileKeyRef.current === fileKey) {
             await telemetryWriterSessionRef.current.waitUntilReady();
             return telemetryWriterSessionRef.current;
@@ -242,6 +257,13 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
                 },
                 readyTimeoutMs: 8000,
             });
+            if (
+                sessionGeneration !== sessionGenerationRef.current
+                || sessionGameRef.current === null
+            ) {
+                await session.dispose({ force: true });
+                throw new Error('Live session ended');
+            }
             telemetryWriterSessionRef.current = session;
             telemetryWriterFileKeyRef.current = fileKey;
             telemetryWriterCleanupRef.current = session.onMessage(handleTelemetryWriterEvent);
@@ -266,7 +288,14 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
     }, [disposeTelemetryWriter, flushSampleCount]);
 
     const appendTelemetrySample = useCallback(async (data: LiveTelemetry) => {
+        const sessionGeneration = sessionGenerationRef.current;
         const enqueueWrite = async () => {
+            if (
+                sessionGeneration !== sessionGenerationRef.current
+                || sessionGameRef.current === null
+            ) {
+                return;
+            }
             let fileKey = recordingFileKeyRef.current;
             if (!fileKey) {
                 fileKey = `../session_recording/temp/telemetry_live_${Date.now()}.jsonl`;
@@ -274,7 +303,13 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
                 resetSampleCount();
             }
 
-            const session = await ensureTelemetryWriter(fileKey);
+            const session = await ensureTelemetryWriter(fileKey, sessionGeneration);
+            if (
+                sessionGeneration !== sessionGenerationRef.current
+                || sessionGameRef.current === null
+            ) {
+                return;
+            }
             const requestId = `telemetry-append-${Date.now()}-${++telemetryWriterSequenceRef.current}`;
             let resolveAck!: () => void;
             let rejectAck!: (error: Error) => void;
@@ -318,12 +353,18 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
 
         const nextWrite = writeQueueRef.current.then(enqueueWrite);
         writeQueueRef.current = nextWrite.catch((error) => {
-            if (!(error instanceof Error && error.message === 'Telemetry writer disposed')) {
+            if (!(error instanceof Error && (
+                error.message === 'Telemetry writer disposed'
+                || error.message === 'Live session ended'
+            ))) {
                 console.error('Telemetry write failed', error);
             }
         });
         return nextWrite.catch((error) => {
-            if (error instanceof Error && error.message === 'Telemetry writer disposed') return;
+            if (error instanceof Error && (
+                error.message === 'Telemetry writer disposed'
+                || error.message === 'Live session ended'
+            )) return;
             throw error;
         });
     }, [ensureTelemetryWriter, incrementSampleCount, resetSampleCount, setRecordingFileKey]);
@@ -393,6 +434,39 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         void disposeTelemetryWriter({ force: true });
     }, [disposeTelemetryWriter, resetSampleCount, setRecordingFileKey]);
 
+    const resetLiveSession = useCallback((nextGame: DesktopGame | null) => {
+        sessionGenerationRef.current += 1;
+        sessionGameRef.current = nextGame;
+        setSessionGame(nextGame);
+
+        if (telemetryFlushTimeoutRef.current !== null) {
+            window.clearTimeout(telemetryFlushTimeoutRef.current);
+            telemetryFlushTimeoutRef.current = null;
+        }
+        latestTelemetryRef.current = {};
+        committedTelemetryRef.current = {};
+        setCommittedTelemetry({});
+        setTelemetryStatus(null);
+        setStaticDataState({});
+        setRecordingState(RecordingState.CHECKING);
+        setRecordingMetadata(null);
+        setRecordingFileKey(null);
+        resetSampleCount();
+        writeQueueRef.current = Promise.resolve();
+        sessionIntelligenceRef.current.reset();
+        setLiveRangeTodoListSnapshot(null);
+        void disposeTelemetryWriter({ force: true });
+    }, [disposeTelemetryWriter, resetSampleCount, setRecordingFileKey]);
+
+    const startLiveSession = useCallback((game: DesktopGame) => {
+        if (sessionGameRef.current !== null) return;
+        resetLiveSession(game);
+    }, [resetLiveSession]);
+
+    const endLiveSession = useCallback(() => {
+        resetLiveSession(null);
+    }, [resetLiveSession]);
+
     useEffect(() => {
         const nextStatus = normalizeAccStatus(
             currentTelemetry?.Graphics_status ?? currentTelemetry?.Graphics?.status,
@@ -411,6 +485,7 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
     }, [disposeTelemetryWriter]);
 
     const value = useMemo<LiveSessionRuntime>(() => ({
+        sessionGame,
         currentTelemetry,
         telemetryStatus,
         staticData,
@@ -421,6 +496,9 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         sessionIntelligence: sessionIntelligenceRef.current,
         liveRangeTodoListHandle,
         liveRangeTodoListSnapshot,
+        recorderControl,
+        startLiveSession,
+        endLiveSession,
         setCurrentTelemetry,
         setStaticData,
         setRecordingMetadata,
@@ -431,25 +509,31 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         clearRecordingSession,
         registerLiveRangeTodoListHandle,
         publishLiveRangeTodoListSnapshot,
+        registerRecorderControl,
     }), [
         appendTelemetrySample,
         clearRecordingSession,
         currentTelemetry,
+        endLiveSession,
         finalizeRecordingWrites,
         readRecordedTelemetry,
         recordedSampleCount,
         liveRangeTodoListHandle,
         liveRangeTodoListSnapshot,
+        recorderControl,
         recordingFileKey,
         recordingMetadata,
         recordingState,
         setCurrentTelemetry,
         setStaticData,
+        sessionGame,
+        startLiveSession,
         staticData,
         telemetryStatus,
         transitionRecordingState,
         registerLiveRangeTodoListHandle,
         publishLiveRangeTodoListSnapshot,
+        registerRecorderControl,
     ]);
 
     return <LiveSessionContext.Provider value={value}>{children}</LiveSessionContext.Provider>;

@@ -44,9 +44,13 @@ function App() {
     // Render bare — no .App wrapper, since .App paints a full-viewport
     // background that would defeat the Electron window's transparency.
     return (
-      <React.Suspense fallback={null}>
-        <FloatingChat />
-      </React.Suspense>
+      <EnvironmentProvider>
+        <DesktopGameProvider>
+          <React.Suspense fallback={null}>
+            <FloatingChat />
+          </React.Suspense>
+        </DesktopGameProvider>
+      </EnvironmentProvider>
     );
   }
 

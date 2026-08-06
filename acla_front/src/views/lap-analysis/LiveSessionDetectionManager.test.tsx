@@ -31,6 +31,7 @@ const flushPromises = async () => {
 };
 
 const createRuntime = () => ({
+    sessionGame: mockDetectedGame,
     currentTelemetry: {},
     telemetryStatus: null,
     staticData: {},
@@ -41,6 +42,9 @@ const createRuntime = () => ({
     sessionIntelligence: {},
     liveRangeTodoListHandle: null,
     liveRangeTodoListSnapshot: null,
+    recorderControl: null,
+    startLiveSession: jest.fn(),
+    endLiveSession: jest.fn(),
     setCurrentTelemetry: jest.fn(),
     setStaticData: jest.fn(),
     setRecordingMetadata: jest.fn(),
@@ -51,6 +55,7 @@ const createRuntime = () => ({
     clearRecordingSession: jest.fn(),
     registerLiveRangeTodoListHandle: jest.fn(),
     publishLiveRangeTodoListSnapshot: jest.fn(),
+    registerRecorderControl: jest.fn(),
 });
 
 describe('LiveSessionDetectionManager desktop game gating', () => {
@@ -84,7 +89,7 @@ describe('LiveSessionDetectionManager desktop game gating', () => {
         managerTree(runtime),
     );
 
-    it('starts the ACC shared-memory checker exactly once while ACC remains selected', async () => {
+    it('starts the ACC shared-memory checker exactly once after ACC is captured', async () => {
         mockDetectedGame = 'acc';
         const runtime = createRuntime();
         const view = render(<React.StrictMode>{managerTree(runtime)}</React.StrictMode>);
@@ -116,7 +121,7 @@ describe('LiveSessionDetectionManager desktop game gating', () => {
         expect(runtime.transitionRecordingState).toHaveBeenCalledWith({ type: 'sessionUnavailable' });
     });
 
-    it('stops the checker and marks the session unavailable when ACC is lost', async () => {
+    it('retains the checker when later detector polling reports a different game', async () => {
         mockDetectedGame = 'acc';
         const runtime = createRuntime();
         const view = renderManager(runtime);
@@ -126,6 +131,26 @@ describe('LiveSessionDetectionManager desktop game gating', () => {
         mockDetectedGame = 'ac';
         view.rerender(
             <LiveSessionContext.Provider value={runtime as any}>
+                <LiveSessionDetectionManager />
+            </LiveSessionContext.Provider>,
+        );
+        await flushPromises();
+
+        expect(mockedCreatePythonStreamSession).toHaveBeenCalledTimes(1);
+        expect(removeMessageListener).not.toHaveBeenCalled();
+        expect(stream.dispose).not.toHaveBeenCalled();
+    });
+
+    it('stops the checker when the captured session ends', async () => {
+        mockDetectedGame = 'acc';
+        const runtime = createRuntime();
+        const view = renderManager(runtime);
+        await flushPromises();
+        expect(mockedCreatePythonStreamSession).toHaveBeenCalledTimes(1);
+
+        const endedRuntime = { ...runtime, sessionGame: null };
+        view.rerender(
+            <LiveSessionContext.Provider value={endedRuntime as any}>
                 <LiveSessionDetectionManager />
             </LiveSessionContext.Provider>,
         );

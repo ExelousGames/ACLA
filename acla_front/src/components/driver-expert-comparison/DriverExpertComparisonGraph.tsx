@@ -1,4 +1,6 @@
 import React from 'react';
+import { useDesktopGame } from 'contexts/DesktopGameContext';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
 import styles from './DriverExpertComparisonGraph.module.css';
 
 export const DRIVER_COMPARISON_COLOR = '#00e676';
@@ -17,7 +19,8 @@ const PEDAL_RADIUS = 42;
 
 export interface DriverExpertTrajectoryPoint {
     x: number;
-    z: number;
+    y?: number;
+    z?: number;
 }
 
 export interface DriverExpertComparisonSample {
@@ -66,6 +69,19 @@ type ContinuousScalarKey = 'driverGas' | 'expertGas' | 'driverBrake' | 'expertBr
 type GearKey = 'driverGear' | 'expertGear';
 type TrajectoryKey = 'driverTrajectory' | 'expertTrajectory';
 
+interface PlottingTrajectoryPoint {
+    x: number;
+    y: number;
+}
+
+interface PlottingComparisonSample extends Omit<
+    DriverExpertComparisonSample,
+    'driverTrajectory' | 'expertTrajectory'
+> {
+    driverTrajectory?: PlottingTrajectoryPoint;
+    expertTrajectory?: PlottingTrajectoryPoint;
+}
+
 interface ReplayFrame {
     progress: number;
     driverGas?: number;
@@ -74,11 +90,11 @@ interface ReplayFrame {
     expertBrake?: number;
     driverGear?: number;
     expertGear?: number;
-    driverTrajectory?: DriverExpertTrajectoryPoint;
-    expertTrajectory?: DriverExpertTrajectoryPoint;
+    driverTrajectory?: PlottingTrajectoryPoint;
+    expertTrajectory?: PlottingTrajectoryPoint;
 }
 
-interface PositionedTrajectoryPoint extends DriverExpertTrajectoryPoint {
+interface PositionedTrajectoryPoint extends PlottingTrajectoryPoint {
     svgX: number;
     svgY: number;
 }
@@ -86,7 +102,7 @@ interface PositionedTrajectoryPoint extends DriverExpertTrajectoryPoint {
 interface TrackGeometry {
     driver: PositionedTrajectoryPoint[];
     expert: PositionedTrajectoryPoint[];
-    project: (point: DriverExpertTrajectoryPoint | undefined) => PositionedTrajectoryPoint | undefined;
+    project: (point: PlottingTrajectoryPoint | undefined) => PositionedTrajectoryPoint | undefined;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -101,11 +117,43 @@ const clamp = (value: number, minimum: number, maximum: number): number => (
     Math.min(maximum, Math.max(minimum, value))
 );
 
-const normalizeTrajectory = (value: unknown): DriverExpertTrajectoryPoint | undefined => {
+const normalizeSourceTrajectory = (value: unknown): DriverExpertTrajectoryPoint | undefined => {
     if (!isRecord(value)) return undefined;
     const x = finiteNumber(value.x);
+    const y = finiteNumber(value.y);
     const z = finiteNumber(value.z);
-    return x === undefined || z === undefined ? undefined : { x, z };
+    if (x === undefined || (y === undefined && z === undefined)) return undefined;
+    return {
+        x,
+        ...(y !== undefined ? { y } : {}),
+        ...(z !== undefined ? { z } : {}),
+    };
+};
+
+const toPlottingTrajectory = (
+    value: unknown,
+    verticalAxis: 'y' | 'z',
+): PlottingTrajectoryPoint | undefined => {
+    const source = normalizeSourceTrajectory(value);
+    const vertical = source ? finiteNumber(source[verticalAxis]) : undefined;
+    return source && vertical !== undefined ? { x: source.x, y: vertical } : undefined;
+};
+
+const selectPlottingSamples = (
+    samples: readonly DriverExpertComparisonSample[],
+    detectedGame: DesktopGame | null,
+): PlottingComparisonSample[] => {
+    const driverVerticalAxis = detectedGame === 'acc' ? 'z' : 'y';
+    return samples.map((sample) => {
+        const { driverTrajectory, expertTrajectory, ...scalarSample } = sample;
+        const driverPoint = toPlottingTrajectory(driverTrajectory, driverVerticalAxis);
+        const expertPoint = toPlottingTrajectory(expertTrajectory, 'y');
+        return {
+            ...scalarSample,
+            ...(driverPoint ? { driverTrajectory: driverPoint } : {}),
+            ...(expertPoint ? { expertTrajectory: expertPoint } : {}),
+        };
+    });
 };
 
 export const normalizeDriverExpertComparisonData = (
@@ -125,8 +173,8 @@ export const normalizeDriverExpertComparisonData = (
         if (trackPosition !== undefined) {
             normalized.trackPosition = clamp(trackPosition, 0, 1);
         }
-        const driverTrajectory = normalizeTrajectory(sample.driverTrajectory);
-        const expertTrajectory = normalizeTrajectory(sample.expertTrajectory);
+        const driverTrajectory = normalizeSourceTrajectory(sample.driverTrajectory);
+        const expertTrajectory = normalizeSourceTrajectory(sample.expertTrajectory);
         if (driverTrajectory) normalized.driverTrajectory = driverTrajectory;
         if (expertTrajectory) normalized.expertTrajectory = expertTrajectory;
 
@@ -159,13 +207,18 @@ const hasScalarPair = (
 
 export const getDriverExpertComparisonAvailability = (
     data: DriverExpertComparisonData | null | undefined,
+    detectedGame: DesktopGame | null = null,
 ): DriverExpertComparisonAvailability => {
     const samples = data && Array.isArray(data.samples) ? data.samples : [];
+    const driverVerticalAxis = detectedGame === 'acc' ? 'z' : 'y';
+    const hasDriverTrajectory = samples.some((sample) => (
+        toPlottingTrajectory(sample.driverTrajectory, driverVerticalAxis) !== undefined
+    ));
+    const hasExpertTrajectory = samples.some((sample) => (
+        toPlottingTrajectory(sample.expertTrajectory, 'y') !== undefined
+    ));
     return {
-        trajectory: samples.some((sample) => (
-            normalizeTrajectory(sample.driverTrajectory) !== undefined
-            && normalizeTrajectory(sample.expertTrajectory) !== undefined
-        )),
+        trajectory: hasDriverTrajectory && hasExpertTrajectory,
         gas: hasScalarPair(samples, 'driverGas', 'expertGas'),
         brake: hasScalarPair(samples, 'driverBrake', 'expertBrake'),
         gear: hasScalarPair(samples, 'driverGear', 'expertGear'),
@@ -174,7 +227,8 @@ export const getDriverExpertComparisonAvailability = (
 
 export const hasComparableDriverExpertData = (
     data: DriverExpertComparisonData | null | undefined,
-): boolean => Object.values(getDriverExpertComparisonAvailability(data)).some(Boolean);
+    detectedGame: DesktopGame | null = null,
+): boolean => Object.values(getDriverExpertComparisonAvailability(data, detectedGame)).some(Boolean);
 
 const toCssSize = (value: number | string | undefined): number | string | undefined => (
     typeof value === 'number' ? `${value}px` : value
@@ -214,9 +268,9 @@ const prefersReducedMotion = (): boolean => (
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 );
 
-const orderSamples = (
-    samples: readonly DriverExpertComparisonSample[],
-): DriverExpertComparisonSample[] => samples
+const orderSamples = <Sample extends { progress: number }>(
+    samples: readonly Sample[],
+): Sample[] => samples
     .map((sample, index) => ({ sample, index }))
     .sort((left, right) => (
         left.sample.progress - right.sample.progress || left.index - right.index
@@ -224,7 +278,7 @@ const orderSamples = (
     .map(({ sample }) => sample);
 
 const getFrameIndexes = (
-    samples: readonly DriverExpertComparisonSample[],
+    samples: readonly PlottingComparisonSample[],
     progress: number,
 ): { lower: number; upper: number } => {
     if (samples.length <= 1) return { lower: 0, upper: 0 };
@@ -236,7 +290,7 @@ const getFrameIndexes = (
 };
 
 const interpolateScalar = (
-    samples: readonly DriverExpertComparisonSample[],
+    samples: readonly PlottingComparisonSample[],
     key: ContinuousScalarKey,
     progress: number,
     lower: number,
@@ -261,25 +315,25 @@ const interpolateScalar = (
 };
 
 const interpolateTrajectory = (
-    samples: readonly DriverExpertComparisonSample[],
+    samples: readonly PlottingComparisonSample[],
     key: TrajectoryKey,
     progress: number,
     lower: number,
     upper: number,
-): DriverExpertTrajectoryPoint | undefined => {
+): PlottingTrajectoryPoint | undefined => {
     let previousIndex = lower;
-    while (previousIndex >= 0 && !normalizeTrajectory(samples[previousIndex][key])) {
+    while (previousIndex >= 0 && !samples[previousIndex][key]) {
         previousIndex -= 1;
     }
     let nextIndex = upper;
-    while (nextIndex < samples.length && !normalizeTrajectory(samples[nextIndex][key])) {
+    while (nextIndex < samples.length && !samples[nextIndex][key]) {
         nextIndex += 1;
     }
     const previous = previousIndex >= 0
-        ? normalizeTrajectory(samples[previousIndex][key])
+        ? samples[previousIndex][key]
         : undefined;
     const next = nextIndex < samples.length
-        ? normalizeTrajectory(samples[nextIndex][key])
+        ? samples[nextIndex][key]
         : undefined;
     if (!previous) return next;
     if (!next) return previous;
@@ -288,12 +342,12 @@ const interpolateTrajectory = (
     const ratio = clamp((progress - samples[previousIndex].progress) / span, 0, 1);
     return {
         x: previous.x + ((next.x - previous.x) * ratio),
-        z: previous.z + ((next.z - previous.z) * ratio),
+        y: previous.y + ((next.y - previous.y) * ratio),
     };
 };
 
 const steppedGear = (
-    samples: readonly DriverExpertComparisonSample[],
+    samples: readonly PlottingComparisonSample[],
     key: GearKey,
     lower: number,
 ): number | undefined => {
@@ -309,7 +363,7 @@ const steppedGear = (
 };
 
 const buildReplayFrame = (
-    samples: readonly DriverExpertComparisonSample[],
+    samples: readonly PlottingComparisonSample[],
     playhead: number,
 ): ReplayFrame => {
     if (!samples.length) return { progress: 0 };
@@ -342,7 +396,7 @@ const buildReplayFrame = (
     };
 };
 
-const useReplayPlayhead = (samples: readonly DriverExpertComparisonSample[]): number => {
+const useReplayPlayhead = (samples: readonly PlottingComparisonSample[]): number => {
     const shouldFinishImmediately = samples.length <= 1 || prefersReducedMotion();
     const [playhead, setPlayhead] = React.useState(shouldFinishImmediately ? 1 : 0);
 
@@ -377,14 +431,14 @@ const useReplayPlayhead = (samples: readonly DriverExpertComparisonSample[]): nu
 };
 
 const createTrackGeometry = (
-    samples: readonly DriverExpertComparisonSample[],
+    samples: readonly PlottingComparisonSample[],
 ): TrackGeometry => {
     const driverPoints = samples.flatMap((sample) => {
-        const point = normalizeTrajectory(sample.driverTrajectory);
+        const point = sample.driverTrajectory;
         return point ? [point] : [];
     });
     const expertPoints = samples.flatMap((sample) => {
-        const point = normalizeTrajectory(sample.expertTrajectory);
+        const point = sample.expertTrajectory;
         return point ? [point] : [];
     });
     const allPoints = [...driverPoints, ...expertPoints];
@@ -394,30 +448,29 @@ const createTrackGeometry = (
 
     const minX = Math.min(...allPoints.map(({ x }) => x));
     const maxX = Math.max(...allPoints.map(({ x }) => x));
-    const minZ = Math.min(...allPoints.map(({ z }) => z));
-    const maxZ = Math.max(...allPoints.map(({ z }) => z));
+    const minY = Math.min(...allPoints.map(({ y }) => y));
+    const maxY = Math.max(...allPoints.map(({ y }) => y));
     const spanX = maxX - minX;
-    const spanZ = maxZ - minZ;
+    const spanY = maxY - minY;
     const usableWidth = TRACK_VIEWBOX_WIDTH - (TRACK_PADDING * 2);
     const usableHeight = TRACK_VIEWBOX_HEIGHT - (TRACK_PADDING * 2);
     const scaleCandidates = [
         spanX > 0 ? usableWidth / spanX : Number.POSITIVE_INFINITY,
-        spanZ > 0 ? usableHeight / spanZ : Number.POSITIVE_INFINITY,
+        spanY > 0 ? usableHeight / spanY : Number.POSITIVE_INFINITY,
     ];
     const finiteScales = scaleCandidates.filter(Number.isFinite);
     const scale = finiteScales.length ? Math.min(...finiteScales) : 1;
     const centerX = (minX + maxX) / 2;
-    const centerZ = (minZ + maxZ) / 2;
+    const centerY = (minY + maxY) / 2;
 
     const project = (
-        point: DriverExpertTrajectoryPoint | undefined,
+        point: PlottingTrajectoryPoint | undefined,
     ): PositionedTrajectoryPoint | undefined => {
-        const normalized = normalizeTrajectory(point);
-        if (!normalized) return undefined;
+        if (!point) return undefined;
         return {
-            ...normalized,
-            svgX: (TRACK_VIEWBOX_WIDTH / 2) + ((normalized.x - centerX) * scale),
-            svgY: (TRACK_VIEWBOX_HEIGHT / 2) - ((normalized.z - centerZ) * scale),
+            ...point,
+            svgX: (TRACK_VIEWBOX_WIDTH / 2) + ((point.x - centerX) * scale),
+            svgY: (TRACK_VIEWBOX_HEIGHT / 2) - ((point.y - centerY) * scale),
         };
     };
 
@@ -638,7 +691,7 @@ const TrackReplay: React.FC<{
                             className={styles.positionMarker}
                             data-testid="driver-position-marker"
                             data-x={formatNumber(driverMarker.x)}
-                            data-z={formatNumber(driverMarker.z)}
+                            data-y={formatNumber(driverMarker.y)}
                         >
                             <circle
                                 className={styles.markerHalo}
@@ -660,7 +713,7 @@ const TrackReplay: React.FC<{
                             className={styles.positionMarker}
                             data-testid="expert-position-marker"
                             data-x={formatNumber(expertMarker.x)}
-                            data-z={formatNumber(expertMarker.z)}
+                            data-y={formatNumber(expertMarker.y)}
                         >
                             <circle
                                 className={styles.markerHalo}
@@ -699,12 +752,20 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     width = '100%',
     layout,
 }) => {
+    const { detectedGame } = useDesktopGame();
     const rawSamples = data?.samples;
-    const samples = React.useMemo(
+    const sourceSamples = React.useMemo(
         () => orderSamples(Array.isArray(rawSamples) ? rawSamples : []),
         [rawSamples],
     );
-    const availability = React.useMemo(() => getDriverExpertComparisonAvailability(data), [data]);
+    const samples = React.useMemo(
+        () => selectPlottingSamples(sourceSamples, detectedGame),
+        [detectedGame, sourceSamples],
+    );
+    const availability = React.useMemo(
+        () => getDriverExpertComparisonAvailability(data, detectedGame),
+        [data, detectedGame],
+    );
     const hasAnyComparison = Object.values(availability).some(Boolean);
     const chartHeight = layout?.chartHeight ?? 190;
     const trajectoryHeight = layout?.trajectoryHeight ?? 220;

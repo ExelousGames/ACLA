@@ -22,6 +22,7 @@ export type UploadReacingSessionInitDto = {
     mapName: string;
     carName: string;
     userId: string;
+    game_recorded_from: 'acc' | 'ac' | 'iracing';
 }
 
 export type UploadRacingSessionInitReturnDto = {
@@ -38,6 +39,7 @@ export type SessionBasicInfoListDto = {
 
 export type RacingSessionDetailedInfoDto = {
     session_name: string;
+    game_recorded_from?: 'acc' | 'ac' | 'iracing';
     SessionId: string;
     map: string;
     car: string;

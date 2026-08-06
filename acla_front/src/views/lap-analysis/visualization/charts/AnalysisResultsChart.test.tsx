@@ -4,6 +4,14 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 const mockOpenVisualization = jest.fn();
 const mockGetCurrentInstances = jest.fn();
 
+jest.mock('contexts/DesktopGameContext', () => ({
+    useDesktopGame: () => ({
+        detectedGame: null,
+        detectionStatus: 'not-detected',
+        error: null,
+    }),
+}));
+
 jest.mock('../VisualizationController', () => ({
     visualizationController: {
         getCurrentInstances: mockGetCurrentInstances,

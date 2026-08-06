@@ -11,6 +11,101 @@
     font-family: var(--lp-sans);
 }
 
+.live-session-game-status {
+    --live-session-status-color: var(--lp-gray);
+    flex: 0 0 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border: 1px solid var(--lp-border);
+    border-radius: var(--lp-radius-sm);
+    background: var(--lp-bg-panel);
+    box-shadow: inset 3px 0 0 color-mix(in srgb, var(--live-session-status-color) 65%, transparent);
+}
+
+.live-session-game-status__message {
+    min-width: 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+
+.live-session-game-status__dot {
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    margin-top: 4px;
+    border-radius: 50%;
+    background: var(--live-session-status-color);
+    box-shadow: 0 0 10px color-mix(in srgb, var(--live-session-status-color) 45%, transparent);
+}
+
+.live-session-game-status__copy {
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    column-gap: 10px;
+    row-gap: 3px;
+}
+
+.live-session-game-status__title {
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+    text-transform: uppercase;
+}
+
+.live-session-game-status__detail {
+    min-width: 0;
+    color: var(--lp-gray);
+    font-size: 12px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.live-session-game-status__action {
+    flex: 0 0 auto;
+    min-height: 34px;
+    padding: 0 16px;
+    border: 1px solid color-mix(in srgb, var(--live-session-status-color) 70%, var(--lp-border));
+    border-radius: var(--lp-radius-pill);
+    background: color-mix(in srgb, var(--live-session-status-color) 14%, transparent);
+    color: var(--lp-white);
+    cursor: pointer;
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.live-session-game-status__action:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--live-session-status-color) 24%, transparent);
+}
+
+.live-session-game-status__action:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+.live-session-game-status--checking { --live-session-status-color: var(--lp-blue); }
+.live-session-game-status--ready { --live-session-status-color: var(--lp-green); }
+.live-session-game-status--limited { --live-session-status-color: var(--lp-amber); }
+.live-session-game-status--error { --live-session-status-color: var(--lp-red); }
+
+.live-session-game-status--checking .live-session-game-status__dot,
+.live-session-game-status--ready .live-session-game-status__dot {
+    animation: hud-led-blink 1.4s ease-in-out infinite;
+}
+
 .live-session-view__workspace {
     flex: 1;
     min-height: 0;
@@ -19,6 +114,53 @@
     overflow-y: auto;
     scrollbar-gutter: stable;
     scroll-padding-block-end: 16px;
+}
+
+.live-session-waiting {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.live-session-waiting__copy,
+.live-session-limited-workspace {
+    flex: 1;
+    min-height: 280px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 36px;
+    border: 1px dashed var(--lp-border-strong);
+    border-radius: var(--lp-radius);
+    background: radial-gradient(circle at 50% 35%, rgba(61, 139, 255, 0.08), transparent 52%);
+    color: var(--lp-gray);
+    text-align: center;
+}
+
+.live-session-waiting__eyebrow,
+.live-session-limited-workspace__eyebrow {
+    color: var(--lp-blue);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+}
+
+.live-session-waiting__copy h2,
+.live-session-limited-workspace h2 {
+    margin: 10px 0 8px;
+    color: var(--lp-white);
+    font-size: 24px;
+}
+
+.live-session-waiting__copy p,
+.live-session-limited-workspace p {
+    max-width: 600px;
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.6;
 }
 
 .live-session-view__workspace > * {
@@ -76,5 +218,7 @@
 
 @media (max-width: 768px) {
     .live-session-view { padding: 8px; }
+    .live-session-game-status { margin-bottom: 8px; padding: 9px 12px; }
+    .live-session-game-status__action { padding: 0 11px; }
     .live-session-view__recorder { height: 108px; flex-basis: 108px; }
 }
