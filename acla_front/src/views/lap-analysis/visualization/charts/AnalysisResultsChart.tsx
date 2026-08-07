@@ -9,10 +9,12 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
+    getDriverExpertReplayDurationMs,
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
 import type { DriverExpertComparisonData } from 'components/driver-expert-comparison';
 import {
+    FLOATING_PILL_COMPARISON_COMPLETION_PAUSE_MS,
     FLOATING_PILL_RICH_CONTENT_HOLD_MS,
     broadcastFloatingPillPayload,
 } from 'views/floating-chat/floating-pill-bridge';
@@ -88,7 +90,12 @@ const showComparisonPayloadForHold = (
             text: payload.title,
             data: payload,
         });
-        holdTimer = window.setTimeout(finish, FLOATING_PILL_RICH_CONTENT_HOLD_MS);
+        const holdDurationMs = Math.max(
+            FLOATING_PILL_RICH_CONTENT_HOLD_MS,
+            getDriverExpertReplayDurationMs(payload.comparison)
+                + FLOATING_PILL_COMPARISON_COMPLETION_PAUSE_MS,
+        );
+        holdTimer = window.setTimeout(finish, holdDurationMs);
     };
 
     signal.addEventListener('abort', finish, { once: true });

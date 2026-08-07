@@ -147,7 +147,7 @@ const renderedFrequencyData = (): Array<{ label: string; occurrences: number }> 
 );
 
 const comparableData = (driverGas: number, expertGas: number) => ({
-    samples: [{ progress: 0, driverGas, expertGas }],
+    samples: [{ driverTimeMs: 0, expertTimeMs: 0, driverGas, expertGas }],
 });
 
 const createQueueHandle = (events: LiveRangeTodoEventInput[]): LiveRangeTodoListHandle => ({
@@ -680,7 +680,7 @@ describe('AnalysisResultsChart', () => {
                             id: 'invalid-comparison',
                             labels: ['MSP', 'Late turn-in'],
                             normalizedPositionRange: { start: 0.2, end: 0.3 },
-                            comparison: { samples: [{ progress: 0, driverGas: 0.2 }] },
+                            comparison: { samples: [{ driverTimeMs: 0, expertTimeMs: 0, driverGas: 0.2 }] },
                         },
                     ],
                 }}
@@ -850,7 +850,8 @@ describe('AnalysisResultsChart', () => {
                         labels: ['MSP'],
                         comparison: {
                             samples: [{
-                                progress: 0,
+                                driverTimeMs: 0,
+                                expertTimeMs: 0,
                                 driverGas: 0.4,
                                 expertGas: 0.5,
                             }],
@@ -894,7 +895,7 @@ describe('AnalysisResultsChart', () => {
                     elements: [{
                         id: 'unavailable-comparison',
                         labels: ['MSP'],
-                        comparison: { samples: [{ progress: 0, driverGas: 0.4 }] },
+                            comparison: { samples: [{ driverTimeMs: 0, expertTimeMs: 0, driverGas: 0.4 }] },
                     }],
                 }}
             />,
@@ -983,7 +984,8 @@ describe('analysis results mutations', () => {
                 labels: ['MSP'],
                 comparison: {
                     samples: [{
-                        progress: 25,
+                        driverTimeMs: 250,
+                        expertTimeMs: 500,
                         driverGas: 0.4,
                         expertGas: 0.5,
                         Physics_gas: 1,
@@ -994,7 +996,12 @@ describe('analysis results mutations', () => {
         });
 
         expect(data.elements[0].comparison).toEqual({
-            samples: [{ progress: 25, driverGas: 0.4, expertGas: 0.5 }],
+            samples: [{
+                driverTimeMs: 250,
+                expertTimeMs: 500,
+                driverGas: 0.4,
+                expertGas: 0.5,
+            }],
         });
         expect(data.elements[0]).not.toHaveProperty('baselineRecords');
 

@@ -4,6 +4,7 @@ export type RecordedAiAnalysisStatus = 'idle' | 'loading' | 'ready' | 'empty' | 
 
 export type ExpertReferenceRow = {
     raw_index: number;
+    expert_optimal_time: number;
     expert_time_difference: number;
     expert_optimal_player_pos_x: number;
     expert_optimal_player_pos_y: number;

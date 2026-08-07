@@ -6,6 +6,7 @@ import BaselineProgressDisplay from 'views/lap-analysis/ai-chat/BaselineProgress
 import ProcedurePlanDisplay from 'views/lap-analysis/ai-chat/ProcedurePlanDisplay';
 import ToolMessageDisplay, { type ToolMessageDisplayData } from 'views/lap-analysis/ai-chat/ToolMessageDisplay';
 import {
+    FLOATING_PILL_COMPARISON_COMPLETION_PAUSE_MS,
     FLOATING_PILL_RICH_CONTENT_HOLD_MS,
     FLOATING_PILL_STORAGE_KEY,
     type FloatingPillPayloadKind,
@@ -13,6 +14,8 @@ import {
 import {
     DriverExpertComparisonData,
     DriverExpertComparisonGraph,
+    getDriverExpertReplayDurationMs,
+    normalizeDriverExpertComparisonData,
 } from 'components/driver-expert-comparison';
 import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
 import type { LiveRangeTodoListSnapshot } from 'views/live-session/live-range-todo-list-types';
@@ -115,6 +118,35 @@ const getRichPayloadHeight = (payload: PillPayload): number => {
 const getRichPayloadWidth = (payload: PillPayload): number => (
     payload.kind === 'driver_expert_comparison' ? COMPARISON_W : RICH_W
 );
+
+const normalizeComparisonPayload = (payload: PillPayload): PillPayload | null => {
+    if (payload.kind !== 'driver_expert_comparison') return payload;
+    const source = payload.data;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+    const comparison = normalizeDriverExpertComparisonData(
+        (source as Record<string, unknown>).comparison,
+    );
+    if (!comparison) return null;
+    return {
+        ...payload,
+        data: {
+            ...source,
+            comparison,
+        },
+    };
+};
+
+const getRichPayloadHoldDurationMs = (payload: PillPayload): number => {
+    if (payload.kind !== 'driver_expert_comparison') {
+        return FLOATING_PILL_RICH_CONTENT_HOLD_MS;
+    }
+    const display = payload.data as ComparisonPillData;
+    return Math.max(
+        FLOATING_PILL_RICH_CONTENT_HOLD_MS,
+        getDriverExpertReplayDurationMs(display.comparison)
+            + FLOATING_PILL_COMPARISON_COMPLETION_PAUSE_MS,
+    );
+};
 
 const FloatingChat: React.FC = () => {
     const [open, setOpen] = useState(false);
@@ -253,17 +285,23 @@ const FloatingChat: React.FC = () => {
             return;
         }
 
+        const normalizedPayload = normalizeComparisonPayload(payload);
+        if (!normalizedPayload) return;
+
         clearTimers();
-        setName(payload.name || 'Kestrel');
-        setCurrentEmotion(payload.emotion ?? null);
-        setPersistentTags(payload.tags);
-        setDisplayText(payload.text.trim());
+        setName(normalizedPayload.name || 'Kestrel');
+        setCurrentEmotion(normalizedPayload.emotion ?? null);
+        setPersistentTags(normalizedPayload.tags);
+        setDisplayText(normalizedPayload.text.trim());
         setShowCaret(false);
-        setRichPayload(payload);
-        setTargetWidth(getRichPayloadWidth(payload));
-        setTargetHeight(getRichPayloadHeight(payload));
+        setRichPayload(normalizedPayload);
+        setTargetWidth(getRichPayloadWidth(normalizedPayload));
+        setTargetHeight(getRichPayloadHeight(normalizedPayload));
         setOpen(true);
-        hideTimerRef.current = window.setTimeout(shrink, FLOATING_PILL_RICH_CONTENT_HOLD_MS);
+        hideTimerRef.current = window.setTimeout(
+            shrink,
+            getRichPayloadHoldDurationMs(normalizedPayload),
+        );
     }, [clearTimers, setPersistentTags, shrink, speak]);
 
     // Subscribe to cross-window messages. The 'storage' event only fires in

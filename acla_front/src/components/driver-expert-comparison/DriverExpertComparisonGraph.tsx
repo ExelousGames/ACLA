@@ -8,7 +8,6 @@ export const EXPERT_COMPARISON_COLOR = '#448aff';
 
 const THROTTLE_COLOR = '#21e58b';
 const BRAKE_COLOR = '#ff4d62';
-const REPLAY_DURATION_MS = 3000;
 const TRACK_VIEWBOX_WIDTH = 760;
 const TRACK_VIEWBOX_HEIGHT = 220;
 const TRACK_PADDING = 28;
@@ -24,7 +23,8 @@ export interface DriverExpertTrajectoryPoint {
 }
 
 export interface DriverExpertComparisonSample {
-    progress: number;
+    driverTimeMs: number;
+    expertTimeMs: number;
     trackPosition?: number;
     driverTrajectory?: DriverExpertTrajectoryPoint;
     expertTrajectory?: DriverExpertTrajectoryPoint;
@@ -63,11 +63,16 @@ export interface DriverExpertComparisonGraphProps {
 
 type OptionalScalarKey = Exclude<
     keyof DriverExpertComparisonSample,
-    'progress' | 'trackPosition' | 'driverTrajectory' | 'expertTrajectory'
+    | 'driverTimeMs'
+    | 'expertTimeMs'
+    | 'trackPosition'
+    | 'driverTrajectory'
+    | 'expertTrajectory'
 >;
 type ContinuousScalarKey = 'driverGas' | 'expertGas' | 'driverBrake' | 'expertBrake';
 type GearKey = 'driverGear' | 'expertGear';
 type TrajectoryKey = 'driverTrajectory' | 'expertTrajectory';
+type ReplayClockKey = 'driverTimeMs' | 'expertTimeMs';
 
 interface PlottingTrajectoryPoint {
     x: number;
@@ -83,7 +88,6 @@ interface PlottingComparisonSample extends Omit<
 }
 
 interface ReplayFrame {
-    progress: number;
     driverGas?: number;
     expertGas?: number;
     driverBrake?: number;
@@ -161,13 +165,25 @@ export const normalizeDriverExpertComparisonData = (
 ): DriverExpertComparisonData | undefined => {
     if (!isRecord(value) || !Array.isArray(value.samples)) return undefined;
 
-    const samples = value.samples.flatMap((sample): DriverExpertComparisonSample[] => {
-        if (!isRecord(sample)) return [];
-        const progress = finiteNumber(sample.progress);
-        if (progress === undefined) return [];
+    const samples: DriverExpertComparisonSample[] = [];
+    let previousDriverTimeMs: number | undefined;
+    let previousExpertTimeMs: number | undefined;
+    for (const sample of value.samples) {
+        if (!isRecord(sample)) return undefined;
+        const driverTimeMs = finiteNumber(sample.driverTimeMs);
+        const expertTimeMs = finiteNumber(sample.expertTimeMs);
+        if (
+            driverTimeMs === undefined
+            || expertTimeMs === undefined
+            || (previousDriverTimeMs !== undefined && driverTimeMs <= previousDriverTimeMs)
+            || (previousExpertTimeMs !== undefined && expertTimeMs <= previousExpertTimeMs)
+        ) {
+            return undefined;
+        }
 
         const normalized: DriverExpertComparisonSample = {
-            progress: clamp(progress, 0, 100),
+            driverTimeMs,
+            expertTimeMs,
         };
         const trackPosition = finiteNumber(sample.trackPosition);
         if (trackPosition !== undefined) {
@@ -190,8 +206,10 @@ export const normalizeDriverExpertComparisonData = (
             const scalar = finiteNumber(sample[key]);
             if (scalar !== undefined) normalized[key] = scalar;
         });
-        return [normalized];
-    });
+        samples.push(normalized);
+        previousDriverTimeMs = driverTimeMs;
+        previousExpertTimeMs = expertTimeMs;
+    }
 
     return { samples };
 };
@@ -250,6 +268,7 @@ const polarPoint = (
 };
 
 const formatNumber = (value: number): string => Number(value.toFixed(3)).toString();
+const formatReplayTimeMs = (value: number): string => `${(value / 1000).toFixed(2)}s`;
 
 const buildPedalArc = (): string => {
     const start = polarPoint(PEDAL_START_ANGLE);
@@ -268,22 +287,44 @@ const prefersReducedMotion = (): boolean => (
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 );
 
-const orderSamples = <Sample extends { progress: number }>(
-    samples: readonly Sample[],
-): Sample[] => samples
-    .map((sample, index) => ({ sample, index }))
-    .sort((left, right) => (
-        left.sample.progress - right.sample.progress || left.index - right.index
-    ))
-    .map(({ sample }) => sample);
+const getClockDurationMs = (
+    samples: readonly DriverExpertComparisonSample[],
+    clockKey: ReplayClockKey,
+): number => {
+    if (samples.length <= 1) return 0;
+    const firstTime = finiteNumber(samples[0][clockKey]);
+    const finalTime = finiteNumber(samples[samples.length - 1][clockKey]);
+    if (firstTime === undefined || finalTime === undefined) return 0;
+    return Math.max(0, finalTime - firstTime);
+};
+
+export const getDriverExpertReplayDurationMs = (
+    data: DriverExpertComparisonData | null | undefined,
+): number => {
+    const samples = data && Array.isArray(data.samples) ? data.samples : [];
+    return Math.max(
+        getClockDurationMs(samples, 'driverTimeMs'),
+        getClockDurationMs(samples, 'expertTimeMs'),
+    );
+};
+
+const normalizedSampleTime = (
+    samples: readonly PlottingComparisonSample[],
+    clockKey: ReplayClockKey,
+    index: number,
+): number => samples[index][clockKey] - samples[0][clockKey];
 
 const getFrameIndexes = (
     samples: readonly PlottingComparisonSample[],
-    progress: number,
+    clockKey: ReplayClockKey,
+    elapsedTimeMs: number,
 ): { lower: number; upper: number } => {
     if (samples.length <= 1) return { lower: 0, upper: 0 };
     let lower = 0;
-    while (lower + 1 < samples.length && samples[lower + 1].progress <= progress) {
+    while (
+        lower + 1 < samples.length
+        && normalizedSampleTime(samples, clockKey, lower + 1) <= elapsedTimeMs
+    ) {
         lower += 1;
     }
     return { lower, upper: Math.min(samples.length - 1, lower + 1) };
@@ -292,7 +333,8 @@ const getFrameIndexes = (
 const interpolateScalar = (
     samples: readonly PlottingComparisonSample[],
     key: ContinuousScalarKey,
-    progress: number,
+    clockKey: ReplayClockKey,
+    elapsedTimeMs: number,
     lower: number,
     upper: number,
 ): number | undefined => {
@@ -308,16 +350,19 @@ const interpolateScalar = (
     const next = nextIndex < samples.length ? finiteNumber(samples[nextIndex][key]) : undefined;
     if (previous === undefined) return next;
     if (next === undefined) return previous;
-    const span = samples[nextIndex].progress - samples[previousIndex].progress;
+    const previousTime = normalizedSampleTime(samples, clockKey, previousIndex);
+    const nextTime = normalizedSampleTime(samples, clockKey, nextIndex);
+    const span = nextTime - previousTime;
     if (span <= 0) return next;
-    const ratio = clamp((progress - samples[previousIndex].progress) / span, 0, 1);
+    const ratio = clamp((elapsedTimeMs - previousTime) / span, 0, 1);
     return previous + ((next - previous) * ratio);
 };
 
 const interpolateTrajectory = (
     samples: readonly PlottingComparisonSample[],
     key: TrajectoryKey,
-    progress: number,
+    clockKey: ReplayClockKey,
+    elapsedTimeMs: number,
     lower: number,
     upper: number,
 ): PlottingTrajectoryPoint | undefined => {
@@ -337,9 +382,11 @@ const interpolateTrajectory = (
         : undefined;
     if (!previous) return next;
     if (!next) return previous;
-    const span = samples[nextIndex].progress - samples[previousIndex].progress;
+    const previousTime = normalizedSampleTime(samples, clockKey, previousIndex);
+    const nextTime = normalizedSampleTime(samples, clockKey, nextIndex);
+    const span = nextTime - previousTime;
     if (span <= 0) return next;
-    const ratio = clamp((progress - samples[previousIndex].progress) / span, 0, 1);
+    const ratio = clamp((elapsedTimeMs - previousTime) / span, 0, 1);
     return {
         x: previous.x + ((next.x - previous.x) * ratio),
         y: previous.y + ((next.y - previous.y) * ratio),
@@ -364,57 +411,89 @@ const steppedGear = (
 
 const buildReplayFrame = (
     samples: readonly PlottingComparisonSample[],
-    playhead: number,
+    elapsedTimeMs: number,
 ): ReplayFrame => {
-    if (!samples.length) return { progress: 0 };
-    const firstProgress = samples[0].progress;
-    const lastProgress = samples[samples.length - 1].progress;
-    const progress = firstProgress + ((lastProgress - firstProgress) * clamp(playhead, 0, 1));
-    const { lower, upper } = getFrameIndexes(samples, progress);
+    if (!samples.length) return {};
+    const driverIndexes = getFrameIndexes(samples, 'driverTimeMs', elapsedTimeMs);
+    const expertIndexes = getFrameIndexes(samples, 'expertTimeMs', elapsedTimeMs);
     return {
-        progress,
-        driverGas: interpolateScalar(samples, 'driverGas', progress, lower, upper),
-        expertGas: interpolateScalar(samples, 'expertGas', progress, lower, upper),
-        driverBrake: interpolateScalar(samples, 'driverBrake', progress, lower, upper),
-        expertBrake: interpolateScalar(samples, 'expertBrake', progress, lower, upper),
-        driverGear: steppedGear(samples, 'driverGear', lower),
-        expertGear: steppedGear(samples, 'expertGear', lower),
+        driverGas: interpolateScalar(
+            samples,
+            'driverGas',
+            'driverTimeMs',
+            elapsedTimeMs,
+            driverIndexes.lower,
+            driverIndexes.upper,
+        ),
+        expertGas: interpolateScalar(
+            samples,
+            'expertGas',
+            'expertTimeMs',
+            elapsedTimeMs,
+            expertIndexes.lower,
+            expertIndexes.upper,
+        ),
+        driverBrake: interpolateScalar(
+            samples,
+            'driverBrake',
+            'driverTimeMs',
+            elapsedTimeMs,
+            driverIndexes.lower,
+            driverIndexes.upper,
+        ),
+        expertBrake: interpolateScalar(
+            samples,
+            'expertBrake',
+            'expertTimeMs',
+            elapsedTimeMs,
+            expertIndexes.lower,
+            expertIndexes.upper,
+        ),
+        driverGear: steppedGear(samples, 'driverGear', driverIndexes.lower),
+        expertGear: steppedGear(samples, 'expertGear', expertIndexes.lower),
         driverTrajectory: interpolateTrajectory(
             samples,
             'driverTrajectory',
-            progress,
-            lower,
-            upper,
+            'driverTimeMs',
+            elapsedTimeMs,
+            driverIndexes.lower,
+            driverIndexes.upper,
         ),
         expertTrajectory: interpolateTrajectory(
             samples,
             'expertTrajectory',
-            progress,
-            lower,
-            upper,
+            'expertTimeMs',
+            elapsedTimeMs,
+            expertIndexes.lower,
+            expertIndexes.upper,
         ),
     };
 };
 
-const useReplayPlayhead = (samples: readonly PlottingComparisonSample[]): number => {
+const useReplayElapsedTime = (
+    samples: readonly PlottingComparisonSample[],
+    durationMs: number,
+): number => {
     const shouldFinishImmediately = samples.length <= 1 || prefersReducedMotion();
-    const [playhead, setPlayhead] = React.useState(shouldFinishImmediately ? 1 : 0);
+    const [elapsedTimeMs, setElapsedTimeMs] = React.useState(
+        shouldFinishImmediately ? durationMs : 0,
+    );
 
     React.useEffect(() => {
         if (samples.length <= 1 || prefersReducedMotion()) {
-            setPlayhead(1);
+            setElapsedTimeMs(durationMs);
             return undefined;
         }
 
         let animationFrame: number | null = null;
         let startedAt: number | null = null;
-        setPlayhead(0);
+        setElapsedTimeMs(0);
 
         const animate = (timestamp: number) => {
             if (startedAt === null) startedAt = timestamp;
-            const nextPlayhead = clamp((timestamp - startedAt) / REPLAY_DURATION_MS, 0, 1);
-            setPlayhead(nextPlayhead);
-            if (nextPlayhead < 1) {
+            const nextElapsedTimeMs = clamp(timestamp - startedAt, 0, durationMs);
+            setElapsedTimeMs(nextElapsedTimeMs);
+            if (nextElapsedTimeMs < durationMs) {
                 animationFrame = window.requestAnimationFrame(animate);
             } else {
                 animationFrame = null;
@@ -425,9 +504,9 @@ const useReplayPlayhead = (samples: readonly PlottingComparisonSample[]): number
         return () => {
             if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
         };
-    }, [samples]);
+    }, [durationMs, samples]);
 
-    return playhead;
+    return elapsedTimeMs;
 };
 
 const createTrackGeometry = (
@@ -755,7 +834,7 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     const { detectedGame } = useDesktopGame();
     const rawSamples = data?.samples;
     const sourceSamples = React.useMemo(
-        () => orderSamples(Array.isArray(rawSamples) ? rawSamples : []),
+        () => (Array.isArray(rawSamples) ? [...rawSamples] : []),
         [rawSamples],
     );
     const samples = React.useMemo(
@@ -774,13 +853,19 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
         width: toCssSize(width),
         '--driver-expert-min-column-width': toCssSize(layout?.minColumnWidth ?? 260),
     } as React.CSSProperties;
-    const playhead = useReplayPlayhead(samples);
-    const frame = React.useMemo(() => buildReplayFrame(samples, playhead), [playhead, samples]);
+    const replayDurationMs = React.useMemo(
+        () => getDriverExpertReplayDurationMs({ samples: sourceSamples }),
+        [sourceSamples],
+    );
+    const elapsedTimeMs = useReplayElapsedTime(samples, replayDurationMs);
+    const frame = React.useMemo(
+        () => buildReplayFrame(samples, elapsedTimeMs),
+        [elapsedTimeMs, samples],
+    );
     const geometry = React.useMemo(() => createTrackGeometry(samples), [samples]);
     const reactId = React.useId();
     const filterId = React.useMemo(() => `driver-expert-${reactId.replace(/:/g, '')}`, [reactId]);
-    const isComplete = samples.length <= 1 || playhead >= 1;
-    const progressPercentage = Math.round(clamp(frame.progress, 0, 100));
+    const isComplete = samples.length <= 1 || elapsedTimeMs >= replayDurationMs;
     const replayStatus = !samples.length ? 'No data' : isComplete ? 'Replay complete' : 'Replaying';
 
     return (
@@ -808,13 +893,13 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
                     <span
                         className={styles.progressValue}
                         role="progressbar"
-                        aria-label="Segment progress"
+                        aria-label="Replay elapsed time"
                         aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={progressPercentage}
+                        aria-valuemax={Math.round(replayDurationMs)}
+                        aria-valuenow={Math.round(elapsedTimeMs)}
                         data-testid="replay-progress"
                     >
-                        {progressPercentage}%
+                        {formatReplayTimeMs(elapsedTimeMs)} / {formatReplayTimeMs(replayDurationMs)}
                     </span>
                 </div>
             </header>

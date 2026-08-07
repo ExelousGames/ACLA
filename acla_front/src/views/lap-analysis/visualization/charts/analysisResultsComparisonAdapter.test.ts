@@ -7,6 +7,7 @@ const driverRow = (
     overrides: Record<string, unknown> = {},
 ) => ({
     raw_index: rawIndex,
+    Graphics_current_time: rawIndex * 100,
     Graphics_normalized_car_position: position,
     Graphics_car_id: [7, 42],
     Graphics_player_car_id: 42,
@@ -26,6 +27,7 @@ const expertRow = (
     overrides: Record<string, unknown> = {},
 ) => ({
     raw_index: rawIndex,
+    expert_optimal_time: rawIndex * 90,
     Graphics_normalized_car_position: position,
     expert_optimal_player_pos_x: rawIndex * 10,
     expert_optimal_player_pos_y: rawIndex * 5,
@@ -58,16 +60,20 @@ describe('adaptAnalysisResultsComparison', () => {
         expect(result.samples).toHaveLength(3);
         expect(result.samples.map((sample) => sample.trackPosition)).toEqual([0.1, 0.2, 0.3]);
         expect(result.samples[0]).toMatchObject({
-            progress: 0,
+            driverTimeMs: 1_000,
+            expertTimeMs: 900,
             driverTrajectory: { x: 10, y: 11, z: 12 },
             expertTrajectory: { x: 100, y: 50, z: -100 },
             driverGas: 0.5,
             expertGas: 0.6,
         });
-        expect(result.samples[2].progress).toBe(100);
+        expect(result.samples[2]).toMatchObject({
+            driverTimeMs: 1_200,
+            expertTimeMs: 1_080,
+        });
     });
 
-    it('computes monotonic relative progress through a finish-line crossing', () => {
+    it('keeps timestamp mapping independent of distance through a finish-line crossing', () => {
         const result = adaptAnalysisResultsComparison({
             baselineRecords: [
                 driverRow(20, 0.98, { x: 1, y: 1, z: 1 }),
@@ -83,10 +89,13 @@ describe('adaptAnalysisResultsComparison', () => {
             endIndex: 22,
         });
 
-        expect(result.samples.map((sample) => sample.progress)).toEqual([
-            0,
-            expect.closeTo(50),
-            100,
+        expect(result.samples.map(({ driverTimeMs, expertTimeMs }) => ({
+            driverTimeMs,
+            expertTimeMs,
+        }))).toEqual([
+            { driverTimeMs: 2_000, expertTimeMs: 1_800 },
+            { driverTimeMs: 2_100, expertTimeMs: 1_890 },
+            { driverTimeMs: 2_200, expertTimeMs: 1_980 },
         ]);
         expect(result.samples.map((sample) => sample.trackPosition)).toEqual([0.98, 0.01, 0.04]);
     });
@@ -134,7 +143,8 @@ describe('adaptAnalysisResultsComparison', () => {
         });
 
         expect(result.samples).toEqual([{
-            progress: 0,
+            driverTimeMs: 3_000,
+            expertTimeMs: 2_700,
             trackPosition: 0.5,
             driverBrake: 0.3,
             expertBrake: 0.4,
@@ -155,5 +165,44 @@ describe('adaptAnalysisResultsComparison', () => {
 
         expect(result.samples).toHaveLength(1);
         expect(result.samples[0].driverTrajectory).toEqual({ x: 2, y: 2, z: 2 });
+    });
+
+    it.each([
+        ['missing', { Graphics_current_time: undefined }, {}],
+        ['non-finite', {}, { expert_optimal_time: Number.POSITIVE_INFINITY }],
+    ])('rejects every joined sample when a timestamp is %s', (_case, driverOverrides, expertOverrides) => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [driverRow(40, 0.1, { x: 1, y: 2, z: 3 }, driverOverrides)],
+            expertReferenceData: [expertRow(40, 0.1, expertOverrides)],
+            startIndex: 40,
+            endIndex: 40,
+        });
+
+        expect(result.samples).toEqual([]);
+    });
+
+    it.each([
+        ['repeated driver clock', [100, 100], [500, 600]],
+        ['decreasing driver clock', [200, 100], [500, 600]],
+        ['repeated expert clock', [100, 200], [500, 500]],
+        ['decreasing expert clock', [100, 200], [600, 500]],
+    ])('rejects the complete comparison for a %s', (_case, driverTimes, expertTimes) => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [50, 51].map((rawIndex, index) => driverRow(
+                rawIndex,
+                index / 10,
+                { x: index, y: index, z: index },
+                { Graphics_current_time: driverTimes[index] },
+            )),
+            expertReferenceData: [50, 51].map((rawIndex, index) => expertRow(
+                rawIndex,
+                index / 10,
+                { expert_optimal_time: expertTimes[index] },
+            )),
+            startIndex: 50,
+            endIndex: 51,
+        });
+
+        expect(result.samples).toEqual([]);
     });
 });

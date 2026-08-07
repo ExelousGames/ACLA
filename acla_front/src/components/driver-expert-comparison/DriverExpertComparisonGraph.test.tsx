@@ -4,6 +4,7 @@ import {
     DRIVER_COMPARISON_COLOR,
     EXPERT_COMPARISON_COLOR,
     DriverExpertComparisonGraph,
+    getDriverExpertReplayDurationMs,
     normalizeDriverExpertComparisonData,
 } from './DriverExpertComparisonGraph';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
@@ -18,7 +19,8 @@ const mockedUseDesktopGame = useDesktopGame as jest.Mock;
 const completeData = {
     samples: [
         {
-            progress: 0,
+            driverTimeMs: 10_000,
+            expertTimeMs: 50_000,
             trackPosition: 0.2,
             driverTrajectory: { x: 0, y: 0, z: 100 },
             expertTrajectory: { x: 0, y: 10, z: 1000 },
@@ -30,7 +32,8 @@ const completeData = {
             expertGear: 3,
         },
         {
-            progress: 50,
+            driverTimeMs: 11_000,
+            expertTimeMs: 52_000,
             trackPosition: 0.25,
             driverTrajectory: { x: 50, y: 25, z: 200 },
             expertTrajectory: { x: 50, y: 35, z: 2000 },
@@ -42,7 +45,8 @@ const completeData = {
             expertGear: 4,
         },
         {
-            progress: 100,
+            driverTimeMs: 13_000,
+            expertTimeMs: 52_500,
             trackPosition: 0.3,
             driverTrajectory: { x: 100, y: 50, z: 300 },
             expertTrajectory: { x: 100, y: 60, z: 3000 },
@@ -191,7 +195,8 @@ describe('DriverExpertComparisonGraph', () => {
     it('requires finite coordinates for the active driver plane and expert X/Y plane', () => {
         const xyOnlyData = {
             samples: [{
-                progress: 0,
+                driverTimeMs: 0,
+                expertTimeMs: 0,
                 driverTrajectory: { x: 1, y: 2 },
                 expertTrajectory: { x: 3, y: 4, z: Number.NaN },
             }],
@@ -207,7 +212,8 @@ describe('DriverExpertComparisonGraph', () => {
 
         rerender(<DriverExpertComparisonGraph data={{
             samples: [{
-                progress: 0,
+                driverTimeMs: 0,
+                expertTimeMs: 0,
                 driverTrajectory: { x: 1, y: 2, z: 3 },
                 expertTrajectory: { x: 4, z: 5 },
             }],
@@ -217,27 +223,60 @@ describe('DriverExpertComparisonGraph', () => {
         );
     });
 
-    it('normalizes and preserves every finite source axis independently', () => {
+    it('normalizes complete timed payloads and preserves every finite source axis independently', () => {
         expect(normalizeDriverExpertComparisonData({
             samples: [{
-                progress: 10,
+                driverTimeMs: 100,
+                expertTimeMs: 1_000,
                 driverTrajectory: { x: 1, y: 2, z: 3 },
                 expertTrajectory: { x: 4, y: 5, z: Number.POSITIVE_INFINITY },
             }, {
-                progress: 20,
+                driverTimeMs: 200,
+                expertTimeMs: 1_100,
                 driverTrajectory: { x: Number.NaN, y: 6, z: 7 },
                 expertTrajectory: { x: 8, y: Number.NaN, z: 9 },
             }],
         })).toEqual({
             samples: [{
-                progress: 10,
+                driverTimeMs: 100,
+                expertTimeMs: 1_000,
                 driverTrajectory: { x: 1, y: 2, z: 3 },
                 expertTrajectory: { x: 4, y: 5 },
             }, {
-                progress: 20,
+                driverTimeMs: 200,
+                expertTimeMs: 1_100,
                 expertTrajectory: { x: 8, z: 9 },
             }],
         });
+    });
+
+    it.each([
+        ['missing driver time', [
+            { expertTimeMs: 1_000 },
+        ]],
+        ['missing expert time', [
+            { driverTimeMs: 100 },
+        ]],
+        ['non-finite driver time', [
+            { driverTimeMs: Number.POSITIVE_INFINITY, expertTimeMs: 1_000 },
+        ]],
+        ['non-finite expert time', [
+            { driverTimeMs: 100, expertTimeMs: Number.NaN },
+        ]],
+        ['repeated driver time', [
+            { driverTimeMs: 100, expertTimeMs: 1_000 },
+            { driverTimeMs: 100, expertTimeMs: 1_100 },
+        ]],
+        ['decreasing expert time', [
+            { driverTimeMs: 100, expertTimeMs: 1_000 },
+            { driverTimeMs: 200, expertTimeMs: 900 },
+        ]],
+    ])('rejects the complete payload for %s', (_case, samples) => {
+        expect(normalizeDriverExpertComparisonData({ samples })).toBeUndefined();
+    });
+
+    it('reports the slower normalized clock duration without including absolute offsets', () => {
+        expect(getDriverExpertReplayDurationMs(completeData)).toBe(3_000);
     });
 
     it('maps pedal values over the exact clockwise 1-to-3-o’clock sweep with clamping', () => {
@@ -254,37 +293,47 @@ describe('DriverExpertComparisonGraph', () => {
         expect(screen.getByTestId('expert-brake-gauge')).toHaveAttribute('data-gauge-angle', '-60');
     });
 
-    it('interpolates pedals and both markers while stepping gears at sample boundaries', () => {
+    it('uses each normalized irregular clock at 1x, interpolates continuous values, and steps gears', () => {
         render(<DriverExpertComparisonGraph data={completeData} />);
 
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replaying');
-        expect(screen.getByTestId('replay-progress')).toHaveAttribute('aria-valuenow', '0');
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.00s / 3.00s');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '0');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '10');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('2');
 
         runAnimationFrame(1000);
         runAnimationFrame(1750);
 
-        expect(screen.getByTestId('replay-progress')).toHaveAttribute('aria-valuenow', '25');
-        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.25');
-        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '25');
-        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '22.5');
+        expect(screen.getByTestId('replay-progress')).toHaveAttribute('aria-valuenow', '750');
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.75s / 3.00s');
+        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.375');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '37.5');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '19.375');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('2');
         expect(screen.getByTestId('expert-gear')).toHaveTextContent('3');
 
         runAnimationFrame(2500);
 
-        expect(screen.getByTestId('replay-progress')).toHaveTextContent('50%');
-        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.5');
-        expect(screen.getByTestId('driver-brake-gauge')).toHaveAttribute('data-value', '0.5');
-        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '50');
-        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '35');
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('1.50s / 3.00s');
+        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.675');
+        expect(screen.getByTestId('driver-brake-gauge')).toHaveAttribute('data-value', '0.325');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '62.5');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '28.75');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('3');
-        expect(screen.getByTestId('expert-gear')).toHaveTextContent('4');
+        expect(screen.getByTestId('expert-gear')).toHaveTextContent('3');
+
+        runAnimationFrame(3500);
+
+        expect(screen.getByTestId('replay-status')).toHaveTextContent('Replaying');
+        expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '60');
+        expect(screen.getByTestId('expert-gear')).toHaveTextContent('6');
+        expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '87.5');
 
         runAnimationFrame(4000);
 
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
-        expect(screen.getByTestId('replay-progress')).toHaveAttribute('aria-valuenow', '100');
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('3.00s / 3.00s');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '100');
         expect(screen.getByTestId('expert-position-marker')).toHaveAttribute('data-y', '60');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('5');
@@ -312,7 +361,7 @@ describe('DriverExpertComparisonGraph', () => {
 
     it('renders available pedals while showing muted placeholders for missing channels', () => {
         render(<DriverExpertComparisonGraph data={{
-            samples: [{ progress: 0, driverGas: 0.5, expertGas: 0.6 }],
+            samples: [{ driverTimeMs: 100, expertTimeMs: 500, driverGas: 0.5, expertGas: 0.6 }],
         }} />);
 
         expect(screen.getByTestId('trajectory-unavailable')).toHaveTextContent('Track data unavailable');
@@ -327,7 +376,8 @@ describe('DriverExpertComparisonGraph', () => {
     it('handles a single sample and an empty normalized payload without scheduling movement', () => {
         const single = render(<DriverExpertComparisonGraph data={{
             samples: [{
-                progress: 40,
+                driverTimeMs: 4_000,
+                expertTimeMs: 8_000,
                 driverGas: 0.4,
                 expertGas: 0.5,
                 driverGear: 3,
@@ -336,17 +386,17 @@ describe('DriverExpertComparisonGraph', () => {
         }} />);
 
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
-        expect(screen.getByTestId('replay-progress')).toHaveTextContent('40%');
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.00s / 0.00s');
         expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.4');
         expect(requestAnimationFrameMock).not.toHaveBeenCalled();
         single.unmount();
 
         const normalized = normalizeDriverExpertComparisonData({
-            samples: [{ progress: 0, Physics_gas: 1, expert_optimal_throttle: 1 }],
+            samples: [{ driverTimeMs: 0, expertTimeMs: 0, Physics_gas: 1, expert_optimal_throttle: 1 }],
         });
         const unavailable = render(<DriverExpertComparisonGraph data={normalized!} />);
 
-        expect(normalized).toEqual({ samples: [{ progress: 0 }] });
+        expect(normalized).toEqual({ samples: [{ driverTimeMs: 0, expertTimeMs: 0 }] });
         expect(screen.getByText(/^Expert comparison unavailable$/)).toBeInTheDocument();
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
         expect(screen.queryAllByRole('meter')).toHaveLength(0);
@@ -354,7 +404,7 @@ describe('DriverExpertComparisonGraph', () => {
         unavailable.unmount();
         render(<DriverExpertComparisonGraph data={{ samples: [] }} />);
         expect(screen.getByTestId('replay-status')).toHaveTextContent('No data');
-        expect(screen.getByTestId('replay-progress')).toHaveTextContent('0%');
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('0.00s / 0.00s');
     });
 
     it('skips directly to the final sample when reduced motion is requested', () => {
@@ -362,7 +412,7 @@ describe('DriverExpertComparisonGraph', () => {
         render(<DriverExpertComparisonGraph data={completeData} />);
 
         expect(screen.getByTestId('replay-status')).toHaveTextContent('Replay complete');
-        expect(screen.getByTestId('replay-progress')).toHaveTextContent('100%');
+        expect(screen.getByTestId('replay-progress')).toHaveTextContent('3.00s / 3.00s');
         expect(screen.getByTestId('driver-position-marker')).toHaveAttribute('data-x', '100');
         expect(screen.getByTestId('driver-gear')).toHaveTextContent('5');
         expect(requestAnimationFrameMock).not.toHaveBeenCalled();

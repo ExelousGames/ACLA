@@ -4,6 +4,7 @@ describe('normalizeSegmentClassificationResult', () => {
     it('preserves the complete expert reference array for recorded and live results', () => {
         const expertReferenceData = [{
             raw_index: 7,
+            expert_optimal_time: 1_250,
             expert_time_difference: 12.5,
             expert_optimal_player_pos_x: 100,
             expert_optimal_player_pos_y: 200,

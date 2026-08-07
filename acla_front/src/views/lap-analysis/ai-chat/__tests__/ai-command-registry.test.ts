@@ -1563,6 +1563,7 @@ describe('ai command registry live performance analyst tools', () => {
                 expert_reference_data: [
                     {
                         raw_index: 0,
+                        expert_optimal_time: 3_000,
                         expert_optimal_player_pos_x: 100,
                         expert_optimal_player_pos_z: 200,
                         Graphics_normalized_car_position: 0.01,
@@ -1572,6 +1573,7 @@ describe('ai command registry live performance analyst tools', () => {
                     },
                     {
                         raw_index: 1,
+                        expert_optimal_time: 3_150,
                         expert_optimal_player_pos_x: 110,
                         expert_optimal_player_pos_z: 210,
                         Graphics_normalized_car_position: 0.99,
@@ -1631,6 +1633,7 @@ describe('ai command registry live performance analyst tools', () => {
             records: [
                 {
                     Graphics_completed_laps: 0,
+                    Graphics_current_time: 1_000,
                     Graphics_normalized_car_position: 0.01,
                     Graphics_car_coordinates: [{ x: 10, y: 20, z: 30 }],
                     Graphics_player_car_id: 0,
@@ -1640,6 +1643,7 @@ describe('ai command registry live performance analyst tools', () => {
                 },
                 {
                     Graphics_completed_laps: 0,
+                    Graphics_current_time: 1_200,
                     Graphics_normalized_car_position: 0.99,
                     Graphics_car_coordinates: [{ x: 11, y: 21, z: 31 }],
                     Graphics_player_car_id: 0,
@@ -1707,12 +1711,14 @@ describe('ai command registry live performance analyst tools', () => {
                     comparison: {
                         samples: [
                             expect.objectContaining({
-                                progress: 0,
+                                driverTimeMs: 1_000,
+                                expertTimeMs: 3_000,
                                 driverGas: 0.5,
                                 expertGas: 0.7,
                             }),
                             expect.objectContaining({
-                                progress: 100,
+                                driverTimeMs: 1_200,
+                                expertTimeMs: 3_150,
                                 driverGas: 0.6,
                                 expertGas: 0.8,
                             }),
@@ -1747,6 +1753,7 @@ describe('ai command registry live performance analyst tools', () => {
                 expert_reference_data: [
                     {
                         raw_index: 0,
+                        expert_optimal_time: 5_000,
                         Graphics_normalized_car_position: 0.1,
                         expert_optimal_player_pos_x: 100,
                         expert_optimal_player_pos_z: 200,
@@ -1756,6 +1763,7 @@ describe('ai command registry live performance analyst tools', () => {
                     },
                     {
                         raw_index: 1,
+                        expert_optimal_time: 5_100,
                         Graphics_normalized_car_position: 0.2,
                         expert_optimal_player_pos_x: 110,
                         expert_optimal_player_pos_z: 210,
@@ -1765,6 +1773,7 @@ describe('ai command registry live performance analyst tools', () => {
                     },
                     {
                         raw_index: 2,
+                        expert_optimal_time: 5_200,
                         Graphics_normalized_car_position: 0.3,
                         expert_optimal_player_pos_x: 120,
                         expert_optimal_player_pos_z: 220,
@@ -1776,6 +1785,7 @@ describe('ai command registry live performance analyst tools', () => {
             },
         });
         const baselineRecords = [0, 1, 2].map((index) => ({
+            Graphics_current_time: 1_000 + (index * 100),
             Graphics_normalized_car_position: (index + 1) / 10,
             Graphics_car_coordinates: [{ x: index + 1, y: index + 2, z: index + 3 }],
             Graphics_player_car_id: 0,

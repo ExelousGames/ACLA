@@ -94,30 +94,6 @@ const getTrackPosition = (
     ?? expert.Graphics_normalized_car_position,
 );
 
-const computeProgress = (rows: readonly JoinedComparisonRow[]): number[] => {
-    if (rows.length <= 1) return rows.map(() => 0);
-    const positions = rows.map(({ trackPosition }) => trackPosition);
-    if (positions.every((position): position is number => position !== undefined)) {
-        let wrapOffset = 0;
-        let previous = positions[0];
-        const unwrapped = positions.map((position, index) => {
-            if (index > 0 && previous - position > 0.5) wrapOffset += 1;
-            previous = position;
-            return position + wrapOffset;
-        });
-        const distance = unwrapped[unwrapped.length - 1] - unwrapped[0];
-        if (distance > 0) {
-            return unwrapped.map((position) => clamp(
-                ((position - unwrapped[0]) / distance) * 100,
-                0,
-                100,
-            ));
-        }
-    }
-
-    return rows.map((_, index) => (index / (rows.length - 1)) * 100);
-};
-
 export const adaptAnalysisResultsComparison = ({
     baselineRecords,
     expertReferenceData,
@@ -157,7 +133,18 @@ export const adaptAnalysisResultsComparison = ({
         }];
     }).sort((left, right) => left.rawIndex - right.rawIndex);
 
-    const progress = computeProgress(joinedRows);
+    const timing = joinedRows.map((row) => ({
+        driverTimeMs: finiteNumber(row.driver.Graphics_current_time),
+        expertTimeMs: finiteNumber(row.expert.expert_optimal_time),
+    }));
+    const invalidTiming = timing.some((sample, index) => (
+        sample.driverTimeMs === undefined
+        || sample.expertTimeMs === undefined
+        || (index > 0 && sample.driverTimeMs <= timing[index - 1].driverTimeMs!)
+        || (index > 0 && sample.expertTimeMs <= timing[index - 1].expertTimeMs!)
+    ));
+    if (invalidTiming) return { samples: [] };
+
     const samples: DriverExpertComparisonSample[] = joinedRows.map((row, index) => {
         const driverGas = normalizedInput(row.driver.Physics_gas);
         const expertGas = normalizedInput(row.expert.expert_optimal_throttle);
@@ -173,7 +160,8 @@ export const adaptAnalysisResultsComparison = ({
         );
 
         return {
-            progress: progress[index],
+            driverTimeMs: timing[index].driverTimeMs!,
+            expertTimeMs: timing[index].expertTimeMs!,
             ...(row.trackPosition !== undefined ? { trackPosition: row.trackPosition } : {}),
             ...(driverTrajectory ? { driverTrajectory } : {}),
             ...(expertTrajectory ? { expertTrajectory } : {}),

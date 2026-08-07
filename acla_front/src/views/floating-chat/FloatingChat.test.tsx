@@ -143,7 +143,8 @@ describe('FloatingChat', () => {
                         title: 'Turn 6 replay',
                         comparison: {
                             samples: [{
-                                progress: 100,
+                                driverTimeMs: 1_000,
+                                expertTimeMs: 2_000,
                                 driverTrajectory: { x: 10, y: 20, z: 30 },
                                 expertTrajectory: { x: 11, y: 21, z: 31 },
                                 driverGas: 0.7,
@@ -165,5 +166,46 @@ describe('FloatingChat', () => {
         expect(screen.getByTestId('expert-gear')).toHaveTextContent('5');
         expect(screen.queryByTestId('comparison-graph-gas')).not.toBeInTheDocument();
         await waitFor(() => expect(resizeFloatingChat).toHaveBeenCalledWith(760, 500));
+    });
+
+    it('keeps a long comparison open through the slower replay plus its completion pause', () => {
+        jest.useFakeTimers();
+        const { container, unmount } = render(<FloatingChat />);
+
+        act(() => {
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'acla-pill-msg',
+                newValue: JSON.stringify({
+                    kind: 'driver_expert_comparison',
+                    text: 'Long replay',
+                    ts: Date.now() + 30,
+                    data: {
+                        title: 'Long replay',
+                        comparison: {
+                            samples: [{
+                                driverTimeMs: 1_000,
+                                expertTimeMs: 9_000,
+                                driverGas: 0,
+                                expertGas: 0,
+                            }, {
+                                driverTimeMs: 6_000,
+                                expertTimeMs: 11_000,
+                                driverGas: 1,
+                                expertGas: 1,
+                            }],
+                        },
+                    },
+                }),
+            }));
+        });
+
+        expect(container.querySelector('.pill')).toHaveClass('open');
+        act(() => jest.advanceTimersByTime(5_799));
+        expect(container.querySelector('.pill')).toHaveClass('open');
+        act(() => jest.advanceTimersByTime(1));
+        expect(container.querySelector('.pill')).not.toHaveClass('open');
+
+        unmount();
+        jest.useRealTimers();
     });
 });

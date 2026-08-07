@@ -1,5 +1,6 @@
 export const FLOATING_PILL_STORAGE_KEY = 'acla-pill-msg';
 export const FLOATING_PILL_RICH_CONTENT_HOLD_MS = 3800;
+export const FLOATING_PILL_COMPARISON_COMPLETION_PAUSE_MS = 800;
 
 export type FloatingPillPayloadKind =
     | 'message'
