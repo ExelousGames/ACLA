@@ -1245,8 +1245,36 @@ def _render_add_annotation(pipeline: Pipeline, store: Any, cfg: TrainingPipeline
 
 
 # ── Training card / add ──────────────────────────────────────────────────────
+def _delete_training_node(pipeline: Pipeline, node_id: str) -> None:
+    pipeline.trainings = [n for n in pipeline.trainings if n.id != node_id]
+    save_pipeline(pipeline)
+    st.rerun()
+
+
 def _render_training_card(pipeline: Pipeline, node: TrainingNode, store: Any) -> None:
-    spec = node_kinds.get(node.kind)
+    try:
+        spec = node_kinds.get(node.kind)
+    except KeyError:
+        display_name = node.name or node.id
+        _card(
+            f'<div class="title">⚠️ {display_name} '
+            f'<span style="font-weight:400;color:#6e7781">· {node.id}</span></div>'
+            f'<div class="sub">Saved kind: <code>{node.kind}</code></div>'
+            f'<div class="meta">Input: <code>{node.input_ref or "—"}</code></div>',
+            kind_class="behind",
+        )
+        st.warning(
+            f"Training component kind `{node.kind}` is no longer registered, "
+            "so this saved node cannot be configured. You can safely delete it."
+        )
+        if st.button(
+            "🗑 Delete unsupported component",
+            key=f"del_tr_{node.id}",
+            width="stretch",
+        ):
+            _delete_training_node(pipeline, node.id)
+        return
+
     input_key = pipeline.resolve_source_key(node.input_ref)
     display_name = node.name or spec.display
     _card(
@@ -1290,9 +1318,7 @@ def _render_training_card(pipeline: Pipeline, node: TrainingNode, store: Any) ->
         if st.button("🗑", key=f"del_tr_{node.id}",
                      width="stretch",
                      help="Delete this training node"):
-            pipeline.trainings = [n for n in pipeline.trainings if n.id != node.id]
-            save_pipeline(pipeline)
-            st.rerun()
+            _delete_training_node(pipeline, node.id)
 
 
 def _render_add_training(pipeline: Pipeline) -> None:

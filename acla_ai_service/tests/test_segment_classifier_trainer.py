@@ -166,6 +166,22 @@ def test_masked_class_accuracy_counts_use_corrected_weighted_logits():
     assert negative_counts == (1, 1)
 
 
+def test_masked_label_accuracy_counts_report_each_label_separately():
+    logits = torch.tensor([[[2.0, -2.0], [2.0, -2.0]]])
+    targets = torch.tensor([[[1.0, 0.0], [0.0, 1.0]]])
+    mask = torch.tensor([[[1.0, 1.0], [0.0, 1.0]]])
+
+    positive_counts, negative_counts = SegmentClassifierTrainer._masked_label_accuracy_counts(
+        logits,
+        targets,
+        mask,
+        torch.ones(2),
+    )
+
+    assert positive_counts == [(1, 1), (0, 1)]
+    assert negative_counts == [(0, 0), (1, 1)]
+
+
 def test_accuracy_percentage_is_unavailable_without_class_examples():
     assert SegmentClassifierTrainer._accuracy_percentage(0, 0) == "N/A"
     assert SegmentClassifierTrainer._accuracy_percentage(3, 4) == "75.00%"
@@ -284,6 +300,14 @@ async def test_training_runs_all_epochs_and_restores_best_loss_state(monkeypatch
     assert "Val Accuracy: 50.00% (1/2 labeled predictions)" in report
     assert "Positive Accuracy: 100.00% (1/1)" in report
     assert "Negative Accuracy: 0.00% (0/1)" in report
+    assert (
+        "Label MSP: Positive Validation Accuracy: 100.00% (1/1), "
+        "Negative Validation Accuracy: 0.00% (0/1)"
+    ) in report
+    assert (
+        "Label EA: Positive Validation Accuracy: N/A (0/0), "
+        "Negative Validation Accuracy: N/A (0/0)"
+    ) in report
     assert (
         "Best validation result: epoch=1 loss=1.0000 accuracy=50.00% "
         "(1/2 labeled predictions) positive_accuracy=100.00% (1/1) "

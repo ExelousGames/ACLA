@@ -32,8 +32,18 @@ def _predicted_segment(*child_labels: str) -> PredictedSegment:
 def _classify(monkeypatch, segment, telemetry_data=None, track_name=None):
     monkeypatch.setattr(
         racing_session,
+        "split_runtime_segments",
+        lambda dataframe, circuit_id: {
+            "circuit_id": circuit_id or "test_circuit",
+            "segments": [{"start_index": 0, "end_index": len(dataframe)}],
+        },
+    )
+    monkeypatch.setattr(
+        racing_session,
         "get_segment_classifier",
-        lambda: SimpleNamespace(detect_segments=lambda _dataframe: [segment]),
+        lambda: SimpleNamespace(
+            classify_ranges=lambda dataframe, ranges: [segment],
+        ),
     )
     return racing_session._classify_telemetry_segments(
         telemetry_data if telemetry_data is not None else [{}, {}, {}, {}],
@@ -82,8 +92,18 @@ def _configure_endpoint_services(monkeypatch, segment):
     )
     monkeypatch.setattr(
         racing_session,
+        "split_runtime_segments",
+        lambda dataframe, circuit_id: {
+            "circuit_id": circuit_id or "test_circuit",
+            "segments": [{"start_index": 0, "end_index": len(dataframe)}],
+        },
+    )
+    monkeypatch.setattr(
+        racing_session,
         "get_segment_classifier",
-        lambda: SimpleNamespace(detect_segments=lambda _dataframe: [segment]),
+        lambda: SimpleNamespace(
+            classify_ranges=lambda dataframe, ranges: [segment],
+        ),
     )
 
 

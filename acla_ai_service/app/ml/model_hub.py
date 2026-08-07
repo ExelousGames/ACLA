@@ -39,6 +39,12 @@ def get_segment_classifier():
     return segment_classifier
 
 
+def get_segment_cropper():
+    from app.ml.segment_cropper.service import segment_cropper
+
+    return segment_cropper
+
+
 def get_opportunity_forecaster():
     from app.ml.opportunity_forecaster.service import opportunity_forecaster
 
@@ -66,6 +72,10 @@ def _segment_classifier_ready() -> bool:
     )
 
 
+def _segment_cropper_ready() -> bool:
+    return get_segment_cropper().is_ready()
+
+
 def _opportunity_forecaster_ready() -> bool:
     opportunity_forecaster = get_opportunity_forecaster()
     return opportunity_forecaster.model is not None and opportunity_forecaster.scaler is not None
@@ -83,6 +93,12 @@ def _hydrate_segment_classifier(payload: ModelPayload) -> bool:
     segment_classifier = get_segment_classifier()
     segment_classifier.deserialize_artifacts(payload)
     return bool(segment_classifier.load_model())
+
+
+def _hydrate_segment_cropper(payload: ModelPayload) -> bool:
+    segment_cropper = get_segment_cropper()
+    segment_cropper.deserialize_artifacts(payload)
+    return bool(segment_cropper.load_model())
 
 
 def _hydrate_opportunity_forecaster(payload: ModelPayload) -> bool:
@@ -103,6 +119,12 @@ def _hydrate_tire_grip(payload: ModelPayload) -> bool:
 
 
 _MODEL_SPECS = (
+    ChatbotModelSpec(
+        name="segment_cropper",
+        backend_model_type="segment_cropper",
+        hydrate=_hydrate_segment_cropper,
+        is_ready=_segment_cropper_ready,
+    ),
     ChatbotModelSpec(
         name="segment_classifier",
         backend_model_type="segment_classifier",
@@ -194,6 +216,7 @@ __all__ = [
     "get_chatbot_model_status",
     "get_opportunity_forecaster",
     "get_top_lap_reference_model",
+    "get_segment_cropper",
     "get_segment_classifier",
     "get_tire_grip_analysis",
     "hydrate_chatbot_models",

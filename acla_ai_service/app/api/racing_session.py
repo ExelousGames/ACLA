@@ -21,6 +21,10 @@ from app.ml.model_hub import (
     get_tire_grip_analysis,
     get_top_lap_reference_model,
 )
+from app.services.runtime_segment_splitter import (
+    RuntimeSegmentSplitError,
+    split_runtime_segments,
+)
 from app.top_laps.runtime import TopLapReferenceModelError
 from app.services.user_session_analysis import analyze_user_sessions
 from app.shared.expert_features import ExpertFeatureCatalog
@@ -115,9 +119,14 @@ def _classify_telemetry_segments(
     telemetry_data: List[Dict[str, Any]],
     track_name: Optional[str],
     include_empty_track_sections: bool = False,
+    splitter_result: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     dataframe = pd.DataFrame(telemetry_data)
-    predicted_segments = get_segment_classifier().detect_segments(dataframe)
+    splitter_result = splitter_result or split_runtime_segments(dataframe, track_name)
+    predicted_segments = get_segment_classifier().classify_ranges(
+        dataframe,
+        splitter_result["segments"],
+    )
     raw_segments = []
 
     for segment in predicted_segments:
@@ -132,10 +141,13 @@ def _classify_telemetry_segments(
             "end_index": segment.end_index,
         })
 
+    if splitter_result.get("opponent_session") and not raw_segments:
+        return []
+
     return build_track_area_segments(
         raw_segments,
         telemetry_data,
-        track_name,
+        splitter_result["circuit_id"],
         include_empty_sections=include_empty_track_sections,
     )
 
@@ -379,9 +391,13 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             raise HTTPException(status_code=400, detail="telemetry_data is required")
 
         preprocessed = preprocess_inference_telemetry(request.telemetry_data)
+        splitter_result = split_runtime_segments(
+            pd.DataFrame(preprocessed.records),
+            request.track_name,
+        )
         enriched_rows = get_top_lap_reference_model().enrich(
             preprocessed.records,
-            track=request.track_name,
+            track=request.track_name or splitter_result["circuit_id"],
             car=request.car_name,
         )
         enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
@@ -391,7 +407,8 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
         )
         segments = _classify_telemetry_segments(
             enriched_rows,
-            request.track_name,
+            splitter_result["circuit_id"],
+            splitter_result=splitter_result,
         )
         segments = _translate_segment_ranges_to_raw_indices(
             segments,
@@ -410,6 +427,8 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
         raise
     except TopLapReferenceModelError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except RuntimeSegmentSplitError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
@@ -423,9 +442,13 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             raise HTTPException(status_code=400, detail="records is required")
 
         preprocessed = preprocess_inference_telemetry(request.records)
+        splitter_result = split_runtime_segments(
+            pd.DataFrame(preprocessed.records),
+            request.track,
+        )
         enriched_rows = get_top_lap_reference_model().enrich(
             preprocessed.records,
-            track=request.track,
+            track=request.track or splitter_result["circuit_id"],
             car=request.car,
         )
         enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
@@ -435,8 +458,9 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
         )
         segments = _classify_telemetry_segments(
             enriched_rows,
-            request.track,
+            splitter_result["circuit_id"],
             include_empty_track_sections=True,
+            splitter_result=splitter_result,
         )
         segments = _annotate_segments_with_time_gaps(segments, enriched_rows)
         segments = _translate_segment_ranges_to_raw_indices(
@@ -459,6 +483,8 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
         raise
     except TopLapReferenceModelError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except RuntimeSegmentSplitError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:

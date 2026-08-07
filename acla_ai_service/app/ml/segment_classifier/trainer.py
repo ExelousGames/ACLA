@@ -241,21 +241,51 @@ class SegmentClassifierTrainer:
         mask,
         pos_weight,
     ) -> tuple[tuple[int, int], tuple[int, int]]:
+        positive_counts, negative_counts = (
+            SegmentClassifierTrainer._masked_label_accuracy_counts(
+                logits,
+                targets,
+                mask,
+                pos_weight,
+            )
+        )
+        return (
+            (
+                sum(correct for correct, _ in positive_counts),
+                sum(evaluated for _, evaluated in positive_counts),
+            ),
+            (
+                sum(correct for correct, _ in negative_counts),
+                sum(evaluated for _, evaluated in negative_counts),
+            ),
+        )
+
+    @staticmethod
+    def _masked_label_accuracy_counts(
+        logits,
+        targets,
+        mask,
+        pos_weight,
+    ) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
         evaluated = mask > 0
         corrected_logits = logits - torch.log(pos_weight)
         predicted_positive = corrected_logits >= 0
         expected_positive = targets >= 0.5
         positives = expected_positive & evaluated
         negatives = ~expected_positive & evaluated
+        positive_correct = (predicted_positive & positives).sum(dim=(0, 1)).tolist()
+        positive_evaluated = positives.sum(dim=(0, 1)).tolist()
+        negative_correct = (~predicted_positive & negatives).sum(dim=(0, 1)).tolist()
+        negative_evaluated = negatives.sum(dim=(0, 1)).tolist()
         return (
-            (
-                int((predicted_positive & positives).sum().item()),
-                int(positives.sum().item()),
-            ),
-            (
-                int((~predicted_positive & negatives).sum().item()),
-                int(negatives.sum().item()),
-            ),
+            [
+                (int(correct), int(count))
+                for correct, count in zip(positive_correct, positive_evaluated)
+            ],
+            [
+                (int(correct), int(count))
+                for correct, count in zip(negative_correct, negative_evaluated)
+            ],
         )
 
     @staticmethod
@@ -349,10 +379,8 @@ class SegmentClassifierTrainer:
             self.model.eval()
             val_losses = []
             val_sequence_count = 0
-            val_positive_correct = 0
-            val_positive_evaluated = 0
-            val_negative_correct = 0
-            val_negative_evaluated = 0
+            val_positive_counts = [[0, 0] for _ in classifier.label_ids]
+            val_negative_counts = [[0, 0] for _ in classifier.label_ids]
             with torch.no_grad():
                 for features, targets, mask in val_loader:
                     logits = self.model(features.to(self.device))
@@ -367,16 +395,19 @@ class SegmentClassifierTrainer:
                     if loss is not None:
                         val_losses.append(float(loss.item()))
                         val_sequence_count += int(features.shape[0])
-                        positive_counts, negative_counts = self._masked_class_accuracy_counts(
+                        positive_counts, negative_counts = self._masked_label_accuracy_counts(
                             logits,
                             device_targets,
                             device_mask,
                             self.pos_weight,
                         )
-                        val_positive_correct += positive_counts[0]
-                        val_positive_evaluated += positive_counts[1]
-                        val_negative_correct += negative_counts[0]
-                        val_negative_evaluated += negative_counts[1]
+                        for totals, batch_counts in (
+                            (val_positive_counts, positive_counts),
+                            (val_negative_counts, negative_counts),
+                        ):
+                            for total, (correct, evaluated) in zip(totals, batch_counts):
+                                total[0] += correct
+                                total[1] += evaluated
 
             if not train_losses:
                 raise ValueError("No valid temporal training samples were produced.")
@@ -384,6 +415,10 @@ class SegmentClassifierTrainer:
                 raise ValueError("No valid temporal validation samples were produced by Val split.")
 
             train_loss = float(np.mean(train_losses))
+            val_positive_correct = sum(counts[0] for counts in val_positive_counts)
+            val_positive_evaluated = sum(counts[1] for counts in val_positive_counts)
+            val_negative_correct = sum(counts[0] for counts in val_negative_counts)
+            val_negative_evaluated = sum(counts[1] for counts in val_negative_counts)
             if val_losses:
                 monitored_loss = float(np.mean(val_losses))
                 val_correct = val_positive_correct + val_negative_correct
@@ -408,6 +443,19 @@ class SegmentClassifierTrainer:
                     f"({val_negative_correct}/{val_negative_evaluated}), "
                     f"Val Samples: {val_sequence_count}"
                 )
+                for label_id, positive_counts, negative_counts in zip(
+                    classifier.label_ids,
+                    val_positive_counts,
+                    val_negative_counts,
+                ):
+                    print(
+                        f"  Label {label_id}: Positive Validation Accuracy: "
+                        f"{self._accuracy_percentage(*positive_counts)} "
+                        f"({positive_counts[0]}/{positive_counts[1]}), "
+                        f"Negative Validation Accuracy: "
+                        f"{self._accuracy_percentage(*negative_counts)} "
+                        f"({negative_counts[0]}/{negative_counts[1]})"
+                    )
             else:
                 monitored_loss = train_loss
                 print(

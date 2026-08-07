@@ -63,7 +63,7 @@ services:
       - ./acla_ai_service/service_src:/app/service_src:ro
       # One volume for ALL on-disk AI models: chat sidecar GGUF, Kokoro TTS,
       # annotation VLM GGUFs + mmproj, HuggingFace cache, LoRA adapters,
-      # training datasets. Subdirs are created on demand by the service.
+      # and trained telemetry models. Subdirs are created on demand.
       - ai_models:/app/models
       - ai_telemetry_store:/app/app/storage/telemetry_lance_store
       - ai_telemetry_backups:/app/app/storage/telemetry_lance_backups

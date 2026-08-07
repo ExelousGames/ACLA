@@ -249,6 +249,86 @@ class SegmentClassifierService:
         detections.sort(key=lambda item: (item.start_index, item.end_index, item.label))
         return detections
 
+    def classify_ranges(
+        self,
+        dataframe: pd.DataFrame,
+        ranges: Sequence[Dict[str, Any]],
+    ) -> list[PredictedSegment]:
+        """Classify each valid splitter range and retain its best parent."""
+        source = dataframe.reset_index(drop=True)
+        parent_order = {
+            label_id: index
+            for index, label_id in enumerate(self.behavior_label_ids)
+        }
+        fallback_order = len(parent_order)
+        accepted: list[PredictedSegment] = []
+
+        for range_data in ranges:
+            try:
+                range_start = int(range_data["start_index"])
+                range_end = int(range_data["end_index"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if range_start < 0 or range_end <= range_start or range_end > len(source):
+                continue
+
+            range_frame = source.iloc[range_start:range_end].reset_index(drop=True)
+            detections = self.detect_segments(range_frame)
+            if not detections:
+                continue
+            _, selected = min(
+                enumerate(detections),
+                key=lambda item: (
+                    -float(item[1].score),
+                    parent_order.get(str(item[1].label), fallback_order),
+                    item[0],
+                ),
+            )
+
+            parent_start = range_start + int(selected.start_index or 0)
+            parent_end = range_start + int(
+                selected.end_index
+                if selected.end_index is not None
+                else selected.start_index or 0
+            )
+            if (
+                parent_start < range_start
+                or parent_end <= parent_start
+                or parent_end > range_end
+            ):
+                continue
+
+            remapped_children: list[PredictedSegment] = []
+            for child in selected.subsegments:
+                child_start = range_start + int(child.start_index or 0)
+                child_end = range_start + int(
+                    child.end_index
+                    if child.end_index is not None
+                    else child.start_index or 0
+                )
+                if child_start < range_start or child_end <= child_start or child_end > range_end:
+                    continue
+                remapped_children.append(PredictedSegment(
+                    id=child.id,
+                    label=child.label,
+                    score=child.score,
+                    start_index=child_start,
+                    end_index=child_end,
+                    telemetry_data=source.iloc[child_start:child_end].to_dict("records"),
+                ))
+
+            accepted.append(PredictedSegment(
+                id=selected.id,
+                label=selected.label,
+                score=selected.score,
+                start_index=parent_start,
+                end_index=parent_end,
+                telemetry_data=source.iloc[parent_start:parent_end].to_dict("records"),
+                subsegments=remapped_children,
+            ))
+
+        return accepted
+
 
 segment_classifier = SegmentClassifierService()
 

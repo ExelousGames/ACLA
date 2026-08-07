@@ -15,6 +15,18 @@ from app.pipelines.training.pipeline.enrich import enrich_sessions_with_context
 from app.services import user_session_analysis
 
 
+@pytest.fixture(autouse=True)
+def _runtime_ranges_for_enrichment_tests(monkeypatch):
+    monkeypatch.setattr(
+        racing_session,
+        "split_runtime_segments",
+        lambda dataframe, circuit_id: {
+            "circuit_id": circuit_id or "brands_hatch",
+            "segments": [{"start_index": 0, "end_index": len(dataframe)}],
+        },
+    )
+
+
 class EnrichingRuntime:
     def __init__(self, time_differences=None):
         self.calls = []
@@ -210,7 +222,7 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
     monkeypatch.setattr(
         racing_session,
         "_classify_telemetry_segments",
-        lambda rows, track_name, include_empty_track_sections=False: (
+        lambda rows, track_name, include_empty_track_sections=False, splitter_result=None: (
             classified.append(rows)
             or [{
                 "id": "segment-1",
@@ -306,7 +318,7 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
     monkeypatch.setattr(
         racing_session,
         "_classify_telemetry_segments",
-        lambda rows, track_name, include_empty_track_sections=False: (
+        lambda rows, track_name, include_empty_track_sections=False, splitter_result=None: (
             classified.append(rows)
             or [{
                 "id": "segment-1",
@@ -410,7 +422,7 @@ async def test_empty_preprocessed_output_returns_empty_expert_references(
     monkeypatch.setattr(
         racing_session,
         "_classify_telemetry_segments",
-        lambda rows, track_name, include_empty_track_sections=False: (
+        lambda rows, track_name, include_empty_track_sections=False, splitter_result=None: (
             classified.append(rows) or []
         ),
     )
@@ -550,14 +562,11 @@ async def test_missing_tire_grip_inputs_return_503(
 
 
 @pytest.mark.asyncio
-async def test_user_summary_window_classifier_receives_enriched_copies(monkeypatch):
+async def test_user_summary_session_classifier_receives_enriched_copies(monkeypatch):
     runtime = EnrichingRuntime()
     tire_service = EnrichingTireService()
     source = [{"Graphics_normalized_car_position": 0.5}]
     classifier_frames = []
-    classifier = SimpleNamespace(
-        detect_segments=lambda dataframe: classifier_frames.append(dataframe) or []
-    )
     monkeypatch.setattr(
         user_session_analysis,
         "get_top_lap_reference_model",
@@ -571,10 +580,14 @@ async def test_user_summary_window_classifier_receives_enriched_copies(monkeypat
     monkeypatch.setattr(
         user_session_analysis,
         "get_segment_classifier",
-        lambda: classifier,
+        lambda: SimpleNamespace(
+            classify_ranges=lambda dataframe, ranges: (
+                classifier_frames.append(dataframe) or []
+            ),
+        ),
     )
 
-    await user_session_analysis._scan_window(
+    await user_session_analysis._scan_session(
         {"tracks": {}},
         {
             "sessionId": "session-1",
@@ -582,9 +595,6 @@ async def test_user_summary_window_classifier_receives_enriched_copies(monkeypat
             "car_name": "car-a",
         },
         source,
-        0,
-        None,
-        set(),
     )
 
     assert classifier_frames[0].iloc[0]["expert_optimal_speed"] == 150.0
@@ -701,12 +711,6 @@ async def test_user_sessions_preprocess_each_assembled_session_once(monkeypatch)
 
     runtime = EnrichingRuntime()
     classifier_frames = []
-    classifier = SimpleNamespace(
-        detect_segments=lambda dataframe: (
-            classifier_frames.append(dataframe) or []
-        )
-    )
-
     monkeypatch.setattr(user_session_analysis, "backend_service", Backend())
     monkeypatch.setattr(
         user_session_analysis,
@@ -726,10 +730,12 @@ async def test_user_sessions_preprocess_each_assembled_session_once(monkeypatch)
     monkeypatch.setattr(
         user_session_analysis,
         "get_segment_classifier",
-        lambda: classifier,
+        lambda: SimpleNamespace(
+            classify_ranges=lambda dataframe, ranges: (
+                classifier_frames.append(dataframe) or []
+            ),
+        ),
     )
-    monkeypatch.setattr(user_session_analysis, "WINDOW_ROWS", 2)
-    monkeypatch.setattr(user_session_analysis, "WINDOW_OVERLAP_ROWS", 0)
 
     result = await user_session_analysis.analyze_user_sessions("user-1")
 
@@ -742,10 +748,64 @@ async def test_user_sessions_preprocess_each_assembled_session_once(monkeypatch)
     assert [
         frame["clean"].tolist()
         for frame in classifier_frames
-    ] == [[0, 1], [2]]
+    ] == [[0, 1, 2]]
     assert result["sessionsAnalyzed"] == 1
     assert result["totalTelemetryRows"] == 4
     assert result["tracks"]["brands_hatch"]["totalTelemetryRows"] == 4
+
+
+@pytest.mark.asyncio
+async def test_user_sessions_use_static_track_when_session_map_is_missing(monkeypatch):
+    rows = [{
+        "Graphics_normalized_car_position": 0.12,
+        "Static_track": "brands_hatch",
+    }]
+
+    class Backend:
+        async def get_user_analysis_sessions(self, user_id, session_limit):
+            return {
+                "sessions": [{
+                    "sessionId": "session-1",
+                    "map": None,
+                    "car_name": "car-a",
+                }]
+            }
+
+        async def iter_user_analysis_chunks(self, user_id, session_meta):
+            yield rows
+
+    classifier_ranges = []
+    monkeypatch.setattr(user_session_analysis, "backend_service", Backend())
+    monkeypatch.setattr(
+        user_session_analysis,
+        "preprocess_inference_telemetry",
+        lambda records: _preprocessed(records),
+    )
+    monkeypatch.setattr(
+        user_session_analysis,
+        "get_top_lap_reference_model",
+        EnrichingRuntime,
+    )
+    monkeypatch.setattr(
+        user_session_analysis,
+        "get_tire_grip_analysis",
+        EnrichingTireService,
+    )
+    monkeypatch.setattr(
+        user_session_analysis,
+        "get_segment_classifier",
+        lambda: SimpleNamespace(
+            classify_ranges=lambda dataframe, ranges: (
+                classifier_ranges.append(ranges) or []
+            ),
+        ),
+    )
+
+    result = await user_session_analysis.analyze_user_sessions("user-1")
+
+    assert result["sessionsAnalyzed"] == 1
+    assert result["tracks"]["brands_hatch"]["sessionsAnalyzed"] == 1
+    assert classifier_ranges[0][0]["circuit_section_id"] == "brands_hatch3"
 
 
 @pytest.mark.asyncio

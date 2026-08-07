@@ -1,208 +1,41 @@
-"""High-level orchestration for training and serving telemetry guidance LLMs."""
+"""High-level orchestration for serving telemetry guidance LLMs."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import io
-import json
 import shutil
 import zipfile
 from collections import OrderedDict
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 import traceback
 
 from app.integrations.backend.schemas import ActiveModelData
-from app.integrations.backend.client import backend_service
 from app.local_llm.local_llm import LocalLLMConfig, LocalTelemetryLLM
 from app.storage.cache import model_cache_service
-from app.storage import get_shared_telemetry_store
 
 
 class TelemetryLLMOrchestrator:
-	"""Coordinates fine-tuning and inference for the telemetry LLM."""
+	"""Coordinates loading and inference for the telemetry LLM."""
 
 	def __init__(
 		self,
 		*,
 		llm_config: Optional[LocalLLMConfig] = None,
 		adapter_directory: Path,
-		dataset_directory: Path,
 	) -> None:
 		self.llm_config = llm_config or LocalLLMConfig()
 		self.adapter_directory = Path(adapter_directory)
-		self.dataset_directory = Path(dataset_directory)
-		self.backend_service = backend_service
 		self.model_cache = model_cache_service
-		self.data_cache = get_shared_telemetry_store()
 
 		self.adapter_directory.mkdir(parents=True, exist_ok=True)
-		self.dataset_directory.mkdir(parents=True, exist_ok=True)
 
 		self._model_fetch_locks: Dict[str, asyncio.Event] = {}
 		self._lock_creation_lock = asyncio.Lock()
-
-	def _initialize_dataset_summary(self, dataset_path: Path) -> Dict[str, Any]:
-		return {
-			"dataset_path": str(dataset_path),
-			"total_examples": 0,
-			"annotated_examples": 0,
-			"annotation_ratio": 0.0,
-		}
-
-	def _update_summary_from_line(
-		self,
-		line: str,
-		summary: Dict[str, Any],
-	) -> None:
-		summary["total_examples"] += 1
-		try:
-			record = json.loads(line)
-		except json.JSONDecodeError:
-			return
-
-		metadata = record.get("metadata") or {}
-		if metadata.get("annotation_complete"):
-			summary["annotated_examples"] += 1
-
-	def _finalize_summary(self, summary: Dict[str, Any]) -> None:
-		total = summary.get("total_examples", 0)
-		annotated = summary.get("annotated_examples", 0)
-		summary["annotation_ratio"] = (annotated / total) if total else 0.0
-
-	def _summarize_dataset(self, dataset_path: Path) -> Dict[str, Any]:
-		"""Collect lightweight statistics for an existing dataset file."""
-
-		summary = self._initialize_dataset_summary(dataset_path)
-
-		if not dataset_path.exists():
-			return summary
-
-		try:
-			with dataset_path.open("r", encoding="utf-8") as jsonl_file:
-				for raw_line in jsonl_file:
-					line = raw_line.strip()
-					if not line:
-						continue
-					self._update_summary_from_line(line, summary)
-		except Exception as error:  # pragma: no cover - logging safety
-			print(f"[WARNING] Failed to summarize dataset {dataset_path}: {error}")
-			return summary
-
-		self._finalize_summary(summary)
-		return summary
-
-	# ------------------------------------------------------------------
-	# Training helpers
-	# ------------------------------------------------------------------
-	async def train_from_dataset(
-		self,
-		*,
-		dataset_path: Path,
-		eval_dataset_path: Optional[Path] = None,
-		dataset_stats: Optional[Dict[str, Any]] = None,
-		cleanup_dataset_file: bool = False,
-	) -> Dict[str, Any]:
-		dataset_path = Path(dataset_path)
-		dataset_stats = dataset_stats or self._summarize_dataset(dataset_path)
-
-		training_artifacts = await self._train_llm(dataset_path=dataset_path, eval_dataset_path=eval_dataset_path)
-
-		serialized_adapter = training_artifacts["serialized_adapter"]
-		adapter_dir: Path = training_artifacts["adapter_dir"]
-		metrics = training_artifacts["metrics"]
-
-		metadata_payload = {
-			"training_metrics": metrics,
-			"dataset_stats": dataset_stats,
-			"adapter_directory": adapter_dir.name,
-			"llm_config": training_artifacts["config"],
-			"generated_dataset": str(dataset_path),
-			"training_timestamp": datetime.now().isoformat(),
-		}
-
-		print(
-			f"[INFO] LLM fine-tuning complete. Saving adapter '{adapter_dir.name}' to backend"
-		)
-
-		# await self.backend_service.save_ai_model(
-		# 	model_type="llm_guidance_v1",
-		# 	model_data=serialized_adapter,
-		# 	metadata=metadata_payload,
-		# 	is_active=True,
-		# )
-		print("[WARN] Model saving temporarily disabled by user request.")
-
-		if cleanup_dataset_file:
-			try:
-				dataset_path.unlink(missing_ok=True)
-			except Exception as cleanup_error:
-				print(f"[WARNING] Failed to delete dataset file {dataset_path}: {cleanup_error}")
-
-		return {
-			"success": True,
-			"training_metrics": metrics,
-			"adapter_directory": adapter_dir.name,
-			"serialized_adapter": serialized_adapter,
-		}
-
-	async def _train_llm(self, dataset_path: Path, eval_dataset_path: Optional[Path] = None) -> Dict[str, Any]:
-		return await asyncio.to_thread(self._train_local_llm_sync, Path(dataset_path), eval_dataset_path)
-
-	def _train_local_llm_sync(self, dataset_path: Path, eval_dataset_path: Optional[Path] = None) -> Dict[str, Any]:
-		timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-		dataset_identifier = (dataset_path.stem or "telemetry").replace(" ", "_")
-		adapter_dir = self.adapter_directory / f"{dataset_identifier}_{timestamp}"
-		adapter_dir.mkdir(parents=True, exist_ok=True)
-
-		print(f"[INFO] Initializing LocalTelemetryLLM for training...")
-		print(f"[INFO] Dataset: {dataset_path}")
-		print(f"[INFO] Output directory: {adapter_dir}")
-		
-		try:
-			llm = LocalTelemetryLLM(config=self.llm_config)
-			print(f"[INFO] Starting LLM training (this may take a while)...")
-			metrics = llm.train(
-				dataset_path=dataset_path,
-				output_dir=adapter_dir,
-				eval_dataset_path=eval_dataset_path,
-			)
-			print(f"[INFO] Training completed successfully")
-		except ValueError as ve:
-			print(f"[ERROR] LLM training validation error: {ve}")
-			raise
-		except Exception as e:
-			print(f"[ERROR] LLM training failed: {type(e).__name__}: {e}")
-			traceback.print_exc()
-			raise
-
-		serialized_adapter = self._serialize_adapter_directory(adapter_dir)
-		serialized_adapter["adapter_directory_name"] = adapter_dir.name
-
-		return {
-			"metrics": metrics,
-			"adapter_dir": adapter_dir,
-			"serialized_adapter": serialized_adapter,
-			"config": asdict(self.llm_config),
-		}
-
-	def _serialize_adapter_directory(self, adapter_dir: Path) -> Dict[str, Any]:
-		buffer = io.BytesIO()
-		with zipfile.ZipFile(buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
-			for file_path in adapter_dir.rglob("*"):
-				if file_path.is_file():
-					zip_file.write(file_path, arcname=file_path.relative_to(adapter_dir))
-
-		buffer.seek(0)
-		encoded = base64.b64encode(buffer.read()).decode("utf-8")
-
-		return {
-			"adapter_zip_base64": encoded,
-			"created_at": datetime.now().isoformat(),
-		}
 
 	def _deserialize_llm_model(self, payload: Dict[str, Any]) -> LocalTelemetryLLM:
 		encoded = payload.get("adapter_zip_base64")

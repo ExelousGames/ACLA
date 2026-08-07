@@ -110,7 +110,7 @@ services:
       - ${HOME}/.claude.json:/root/.claude.json
       # One volume for ALL on-disk AI models: chat sidecar GGUF, Kokoro TTS,
       # annotation VLM GGUFs + mmproj, HuggingFace cache, LoRA adapters,
-      # training datasets. Subdirs are created on demand by the service.
+      # and trained telemetry models. Subdirs are created on demand.
       - ai_models:/app/models
     ports:
       - '8000:8000'

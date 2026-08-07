@@ -51,7 +51,7 @@ async def prepare_training_data(
     backend_service=None,
     top_lap_reference_feature_names: List[str],
 ) -> Dict[str, Any]:
-    """Stream telemetry, build a segment-purpose dataset, and fine-tune the LLM."""
+    """Stream telemetry and build a segment-purpose training dataset."""
 
     pipeline_config = config or cache_config
     if pipeline_config is None:

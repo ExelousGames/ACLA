@@ -171,6 +171,13 @@ register(NodeKindSpec(
     ui_route="classifier",
 ))
 register(NodeKindSpec(
+    kind="segment_cropper",
+    category="training",
+    display="Segment Cropper Training",
+    description="Class-agnostic complete-session boundary detector.",
+    ui_route="segment_cropper",
+))
+register(NodeKindSpec(
     kind="transformer",
     category="training",
     display="Transformer Training",
@@ -183,13 +190,6 @@ register(NodeKindSpec(
     display="Opportunity Forecaster Training",
     description="Future successful overtake / defense probability model.",
     ui_route="opportunity_forecaster",
-))
-register(NodeKindSpec(
-    kind="llm_training",
-    category="training",
-    display="LLM Training",
-    description="LLM fine-tune on chat-format JSONL.",
-    ui_route="llm_training",
 ))
 
 

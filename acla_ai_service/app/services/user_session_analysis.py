@@ -18,11 +18,14 @@ from app.pipelines.inference.preprocessing import (
     preprocess_inference_telemetry,
 )
 from app.top_laps.runtime import TopLapReferenceModelError
+from app.services.runtime_segment_splitter import (
+    RuntimeSegmentSplitError,
+    resolve_runtime_circuit,
+    split_runtime_segments,
+)
 
 
 NORMALIZED_POSITION_COLUMN = "Graphics_normalized_car_position"
-WINDOW_ROWS = 2000
-WINDOW_OVERLAP_ROWS = 100
 logger = logging.getLogger(__name__)
 
 
@@ -34,11 +37,6 @@ def _track_id(raw: Any) -> str:
     if mapped:
         return mapped
     return value.lower().replace(" ", "_").replace("-", "_")
-
-
-def _has_measured_sections(track_id: str) -> bool:
-    prefix = f"{track_id}"
-    return any(section_id.startswith(prefix) for section_id in CIRCUIT_SECTION_RANGES)
 
 
 def _position_in_range(position: float, section_range: Tuple[float, float]) -> bool:
@@ -237,28 +235,35 @@ def _increment_label(section_summary: Dict[str, Any], label: str) -> None:
         section_summary["racingMistakes"] += 1
 
 
-async def _scan_window(
+async def _scan_session(
     summary: Dict[str, Any],
     session_meta: Dict[str, Any],
     rows: List[Dict[str, Any]],
-    base_index: int,
-    emit_end_index: Optional[int],
-    seen: set,
-) -> None:
+) -> Optional[str]:
     if not rows:
-        return
+        return None
 
-    track_id = _track_id(session_meta.get("map"))
-    track_summary = _ensure_track(summary, track_id, str(session_meta.get("map") or track_id))
+    splitter_result = split_runtime_segments(
+        pd.DataFrame(rows),
+        session_meta.get("map"),
+    )
+    track_id = splitter_result["circuit_id"]
+    track_summary = _ensure_track(
+        summary,
+        track_id,
+        str(session_meta.get("map") or track_id),
+    )
     enriched_rows = get_top_lap_reference_model().enrich(
         rows,
-        track=session_meta.get("map"),
+        track=session_meta.get("map") or track_id,
         car=session_meta.get("car_name"),
     )
     enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
     df = pd.DataFrame(enriched_rows)
-    predicted_segments = get_segment_classifier().detect_segments(df)
-    session_id = str(session_meta.get("sessionId") or "")
+    predicted_segments = get_segment_classifier().classify_ranges(
+        df,
+        splitter_result["segments"],
+    )
 
     detections = [
         detection
@@ -271,25 +276,15 @@ async def _scan_window(
         if end <= start:
             continue
 
-        global_start = base_index + start
-        global_end = base_index + end
-        midpoint = (global_start + global_end) / 2
-        if emit_end_index is not None and midpoint >= emit_end_index:
-            continue
-
-        segment_rows = rows[start:end]
+        segment_rows = enriched_rows[start:end]
         section_id = _section_for_rows(segment_rows, track_id)
         if not section_id:
             continue
 
         label = str(segment.label)
-        dedupe_key = (session_id, global_start, global_end, label)
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-
         section_summary = _ensure_section(track_summary, section_id)
         _increment_label(section_summary, label)
+    return track_id
 
 
 async def analyze_user_sessions(user_id: str, session_limit: int = 10) -> Dict[str, Any]:
@@ -315,58 +310,53 @@ async def analyze_user_sessions(user_id: str, session_limit: int = 10) -> Dict[s
         sessions = []
 
     for session_meta in sessions:
-        track_id = _track_id(session_meta.get("map"))
-        track_name = str(session_meta.get("map") or track_id)
-        track_summary = _ensure_track(summary, track_id, track_name)
-
-        if not _has_measured_sections(track_id):
-            summary["sessionsSkipped"] += 1
-            track_summary["sessionsSkipped"] += 1
-            continue
-
-        car_name = str(session_meta.get("car_name") or "unknown")
-        track_summary["cars"][car_name] = track_summary["cars"].get(car_name, 0) + 1
-
         session_rows: List[Dict[str, Any]] = []
+        session_row_count = 0
+        track_id: Optional[str] = None
 
         try:
             async for chunk_rows in backend_service.iter_user_analysis_chunks(user_id, session_meta):
                 summary["totalTelemetryRows"] += len(chunk_rows)
-                track_summary["totalTelemetryRows"] += len(chunk_rows)
+                session_row_count += len(chunk_rows)
                 session_rows.extend(chunk_rows)
 
             preprocessed = preprocess_inference_telemetry(session_rows)
-            buffer = preprocessed.records
-            buffer_start = 0
-            seen = set()
-            advance = max(1, WINDOW_ROWS - WINDOW_OVERLAP_ROWS)
-
-            while len(buffer) >= WINDOW_ROWS:
-                window = buffer[:WINDOW_ROWS]
-                emit_end = buffer_start + advance
-                await _scan_window(
-                    summary,
-                    session_meta,
-                    window,
-                    buffer_start,
-                    emit_end,
-                    seen,
-                )
-                buffer = buffer[advance:]
-                buffer_start += advance
-
-            if buffer:
-                await _scan_window(
-                    summary,
-                    session_meta,
-                    buffer,
-                    buffer_start,
-                    None,
-                    seen,
-                )
+            track_id = resolve_runtime_circuit(
+                pd.DataFrame(preprocessed.records),
+                session_meta.get("map"),
+            )
+            track_id = await _scan_session(
+                summary,
+                session_meta,
+                preprocessed.records,
+            )
+            if track_id is None:
+                raise RuntimeSegmentSplitError("session telemetry is empty")
+            track_summary = summary["tracks"][track_id]
+            track_summary["totalTelemetryRows"] += session_row_count
+            car_name = str(session_meta.get("car_name") or "unknown")
+            track_summary["cars"][car_name] = track_summary["cars"].get(car_name, 0) + 1
         except TopLapReferenceModelError:
             raise
+        except RuntimeSegmentSplitError:
+            track_id = track_id or _track_id(session_meta.get("map")) or "unknown"
+            track_summary = _ensure_track(
+                summary,
+                track_id,
+                str(session_meta.get("map") or track_id),
+            )
+            track_summary["totalTelemetryRows"] += session_row_count
+            summary["sessionsSkipped"] += 1
+            track_summary["sessionsSkipped"] += 1
+            continue
         except Exception as exc:
+            track_id = track_id or _track_id(session_meta.get("map")) or "unknown"
+            track_summary = _ensure_track(
+                summary,
+                track_id,
+                str(session_meta.get("map") or track_id),
+            )
+            track_summary["totalTelemetryRows"] += session_row_count
             session_id = str(session_meta.get("sessionId") or "")
             message = str(exc)
             logger.exception("User session analysis failed for session %s", session_id)
@@ -389,6 +379,7 @@ async def analyze_user_sessions(user_id: str, session_limit: int = 10) -> Dict[s
 
 __all__ = [
     "analyze_user_sessions",
+    "_scan_session",
     "_section_for_rows",
     "_track_id",
 ]
