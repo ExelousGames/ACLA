@@ -159,6 +159,7 @@ def _project_expert_reference_data(
     expert_features = ExpertFeatureCatalog.ExpertFeatures
     reference_features = (
         expert_features.EXPERT_TIME_DIFFERENCE,
+        expert_features.EXPERT_OPTIMAL_TIME,
         expert_features.EXPERT_OPTIMAL_PLAYER_POS_X,
         expert_features.EXPERT_OPTIMAL_PLAYER_POS_Y,
         expert_features.EXPERT_OPTIMAL_PLAYER_POS_Z,

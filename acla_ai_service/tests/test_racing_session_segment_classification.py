@@ -55,6 +55,7 @@ def _expert_row(index: int):
     return {
         "Graphics_normalized_car_position": index / 10,
         "expert_time_difference": float(index * 10),
+        "expert_optimal_time": float(90_000 + index * 250),
         "expert_optimal_player_pos_x": float(index),
         "expert_optimal_player_pos_y": float(index + 1),
         "expert_optimal_player_pos_z": float(index + 2),
@@ -138,6 +139,10 @@ async def test_classifier_endpoints_return_one_parent_range_with_all_sub_labels(
     assert result["segments"][0]["labels"] == ["MSP", "MSP1", "MSP2"]
     assert result["segments"][0]["start_index"] == 0
     assert result["segments"][0]["end_index"] == 4
+    assert [
+        row["expert_optimal_time"]
+        for row in result["expert_reference_data"]
+    ] == [90_000.0, 90_250.0, 90_500.0, 90_750.0]
 
 
 def test_main_label_without_subsegments_remains_a_single_label(monkeypatch):

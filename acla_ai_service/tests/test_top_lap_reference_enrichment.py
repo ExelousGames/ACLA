@@ -28,9 +28,10 @@ def _runtime_ranges_for_enrichment_tests(monkeypatch):
 
 
 class EnrichingRuntime:
-    def __init__(self, time_differences=None):
+    def __init__(self, time_differences=None, expert_optimal_times=None):
         self.calls = []
         self.time_differences = time_differences or []
+        self.expert_optimal_times = expert_optimal_times or []
 
     def is_ready(self):
         return True
@@ -43,6 +44,11 @@ class EnrichingRuntime:
                 self.time_differences[index]
                 if index < len(self.time_differences)
                 else 0.0
+            )
+            row["expert_optimal_time"] = (
+                self.expert_optimal_times[index]
+                if index < len(self.expert_optimal_times)
+                else 90_000.0 + index * 250.0
             )
             row["expert_optimal_player_pos_x"] = 100.0 + index
             row["expert_optimal_player_pos_y"] = 200.0 + index
@@ -262,6 +268,7 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
     assert result["expert_reference_data"] == [{
         "raw_index": 2,
         "expert_time_difference": 0.0,
+        "expert_optimal_time": 90_000.0,
         "expert_optimal_player_pos_x": 100.0,
         "expert_optimal_player_pos_y": 200.0,
         "expert_optimal_player_pos_z": 300.0,
@@ -283,7 +290,10 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
-    runtime = EnrichingRuntime(time_differences=[10.0, 25.0])
+    runtime = EnrichingRuntime(
+        time_differences=[10.0, 25.0],
+        expert_optimal_times=[91_234.0, 93_456.0],
+    )
     tire_service = EnrichingTireService()
     source = [
         {"Graphics_normalized_car_position": 0.0},
@@ -359,6 +369,7 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
         {
             "raw_index": 1,
             "expert_time_difference": 10.0,
+            "expert_optimal_time": 91_234.0,
             "expert_optimal_player_pos_x": 100.0,
             "expert_optimal_player_pos_y": 200.0,
             "expert_optimal_player_pos_z": 300.0,
@@ -370,6 +381,7 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
         {
             "raw_index": 3,
             "expert_time_difference": 25.0,
+            "expert_optimal_time": 93_456.0,
             "expert_optimal_player_pos_x": 101.0,
             "expert_optimal_player_pos_y": 201.0,
             "expert_optimal_player_pos_z": 301.0,
