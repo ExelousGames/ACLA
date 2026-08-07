@@ -50,7 +50,7 @@ import {
     isToolOutputEnvelope,
     type ToolOutputEnvelope,
 } from './ai-tool-base';
-import { RecordingState } from 'views/lap-analysis/recording-state';
+import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 import { resolveAssistantRecordedSessionId } from 'views/lap-analysis/assistant-session-mode';
 import {
     broadcastFloatingPillPayload,
@@ -312,6 +312,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const shouldAutoScrollMessagesRef = useRef(true);
     const recordedAnalysisContext = useContext(AnalysisContext);
     const liveSession = useContext(LiveSessionContext);
+    const liveSessionEnded = sessionMode === 'live'
+        && liveSession.recordingState === RecordingState.UPLOAD_READY;
     const analysisContext = useMemo(() => ({
         ...recordedAnalysisContext,
         mapSelected: sessionMode === 'recorded' ? recordedAnalysisContext.mapSelected : null,
@@ -367,6 +369,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         () => false,
     );
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
+    const endedAiShutdownAppliedRef = useRef(false);
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
     const planToolRunsRef = useRef<Set<string>>(new Set());
@@ -1052,7 +1055,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         agentMode: AgentSessionMode,
         args: Record<string, any> = {},
     ): AgentSessionStartResult => {
-        if (sessionMode !== 'live' || analysisContext?.recordingState !== RecordingState.RECORDING) {
+        if (sessionMode !== 'live' || !isLiveSessionAiAvailable(analysisContext?.recordingState)) {
             return {
                 status: 'error',
                 conversation_role: 'agent',
@@ -1329,6 +1332,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
     });
     const sendAgentVoiceToolStatus = agentVoiceConversation.sendToolStatus;
+    const stopMainVoiceConversation = voiceConversation.stop;
+    const stopAgentVoiceConversation = agentVoiceConversation.stop;
 
     useEffect(() => {
         mainVoiceStopRef.current = voiceConversation.stop;
@@ -1337,6 +1342,26 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     useEffect(() => {
         agentVoiceStopRef.current = agentVoiceConversation.stop;
     }, [agentVoiceConversation.stop]);
+
+    useEffect(() => {
+        if (!liveSessionEnded) {
+            endedAiShutdownAppliedRef.current = false;
+            return;
+        }
+        if (endedAiShutdownAppliedRef.current) return;
+        endedAiShutdownAppliedRef.current = true;
+
+        stopMainVoiceConversation();
+        stopAgentVoiceConversation();
+        resetAgentRuntimes();
+        agentAutoStartSessionIdRef.current = null;
+        setActiveAgentSession((current) => {
+            if (!current) return current;
+            const stopped = { ...current, status: 'stopped' as const };
+            activeAgentSessionRef.current = stopped;
+            return stopped;
+        });
+    }, [liveSessionEnded, resetAgentRuntimes, stopAgentVoiceConversation, stopMainVoiceConversation]);
 
     const activeAgentSessionId = activeAgentSession?.clientSessionId;
     const activeAgentSessionStatus = activeAgentSession?.status;
@@ -1475,7 +1500,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         const sessionIntelligence = analysisContext?.sessionIntelligence;
         if (
             sessionMode !== 'live'
-            || analysisContext?.recordingState !== RecordingState.RECORDING
+            || !isLiveSessionAiAvailable(analysisContext?.recordingState)
             || !sessionIntelligence
             || !activeAgentSession
         ) return;
@@ -1846,7 +1871,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const handleSendMessage = async (override?: string) => {
         const text = (override ?? inputValue).trim();
-        if (!text || isLoading) return;
+        if (!text || isLoading || liveSessionEnded) return;
         if (isProcedurePlanOptOutRequest(text)) {
             optOutProcedurePlan();
         }
@@ -1942,6 +1967,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         '';
 
     const toggleVoice = () => {
+        if (liveSessionEnded) return;
         if (vState === 'idle' || vState === 'error') {
             activeVoiceConversation.start().catch((err) => {
                 console.error('Voice conversation failed to start:', err);
@@ -1952,6 +1978,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     };
 
     const toggleMicDisabled = () => {
+        if (liveSessionEnded) return;
         activeVoiceConversation.setMicDisabled(!micDisabled);
     };
 
@@ -2033,7 +2060,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                         type="button"
                         className={`ai-chat__chip-btn ${micDisabled ? 'ai-chat__chip-btn--red' : ''}`}
                         onClick={toggleMicDisabled}
-                        disabled={isLoading}
+                        disabled={isLoading || liveSessionEnded}
                         aria-pressed={micDisabled}
                         title={micDisabled ? 'Enable microphone capture' : 'Disable microphone capture'}
                     >
@@ -2044,6 +2071,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                             type="button"
                             className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
                             onClick={() => { void toggleFloatingChat(); }}
+                            disabled={liveSessionEnded}
                             aria-pressed={floatingChatOpen}
                             title={floatingChatOpen
                                 ? 'Close the always-on-top AI chat overlay'
@@ -2133,7 +2161,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                             type="button"
                             className={`ai-chat__mic-core ${coreMod} ${micDisabled ? 'ai-chat__mic-core--muted' : ''}`}
                             onClick={toggleVoice}
-                            disabled={vState === 'connecting'}
+                            disabled={vState === 'connecting' || liveSessionEnded}
                             title={
                                 vState === 'error' ? `Voice error: ${activeVoiceConversation.error}. Click to retry.` :
                                 vState === 'connecting' ? 'Connecting…' :
@@ -2214,6 +2242,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     )}
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
+                        {liveSessionEnded && (
+                            <div className="ai-chat__ended-notice" role="status">
+                                This session has already ended. AI chat is unavailable because live recording is off.
+                            </div>
+                        )}
                         {messages.map((message) => (
                             <AiMessageDisplay
                                 key={message.id}
@@ -2248,13 +2281,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     value={inputValue}
                     onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
-                    disabled={isLoading}
+                    disabled={isLoading || liveSessionEnded}
                 />
                 <button
                     type="button"
                     className="ai-chat__btn ai-chat__btn--primary"
                     onClick={() => handleSendMessage()}
-                    disabled={!inputValue.trim() || isLoading}
+                    disabled={!inputValue.trim() || isLoading || liveSessionEnded}
                     title="Send"
                 >
                     SEND

@@ -147,6 +147,7 @@ export default function LiveSessionDetectionManager() {
 
     const shouldMaintainSessionCheckingStream =
         liveSession.sessionGame === 'acc'
+        && liveSession.restorationStatus !== 'restoring'
         && (
             liveSession.recordingState === RecordingState.CHECKING
             || liveSession.recordingState === RecordingState.HOLDING

@@ -339,6 +339,49 @@ ipcMain.handle('delete-temp-file', async (event, filePath) => {
   }
 });
 
+ipcMain.handle('validate-telemetry-file', async (event, filePath) => {
+  if (typeof filePath !== 'string' || !filePath || !path.isAbsolute(filePath)) {
+    return {
+      exists: false,
+      readable: false,
+      hasData: false,
+      size: 0,
+      error: 'Telemetry file path must be absolute',
+    };
+  }
+
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) {
+      return {
+        exists: true,
+        readable: false,
+        hasData: false,
+        size: 0,
+        error: 'Telemetry path is not a file',
+      };
+    }
+
+    const handle = await fs.promises.open(filePath, 'r');
+    await handle.close();
+    return {
+      exists: true,
+      readable: true,
+      hasData: stat.size > 0,
+      size: stat.size,
+    };
+  } catch (error) {
+    const missing = error && error.code === 'ENOENT';
+    return {
+      exists: !missing,
+      readable: false,
+      hasData: false,
+      size: 0,
+      error: error && error.message ? error.message : String(error),
+    };
+  }
+});
+
 //renderer process send message to a python shell
 ipcMain.handle('send-message-to-python', async (event, shellId, message) => {
   const shellEntry = getShellEntry(shellId);

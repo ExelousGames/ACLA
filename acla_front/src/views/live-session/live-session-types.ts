@@ -22,6 +22,34 @@ export interface LiveRecordingMetadata {
     gameRecordedFrom: 'acc' | 'ac' | 'iracing';
 }
 
+export const PERSISTED_LIVE_SESSION_DRAFT_VERSION = 1 as const;
+
+export interface PersistedLiveSessionDraft {
+    version: typeof PERSISTED_LIVE_SESSION_DRAFT_VERSION;
+    ownerEmail: string;
+    sessionGame: DesktopGame;
+    recordingMetadata: LiveRecordingMetadata;
+    telemetryFilePath: string;
+    recordedSampleCount: number;
+    lastRuntimeState: RecordingState;
+    updatedAt: string;
+}
+
+export type LiveSessionRestorationStatus =
+    | 'idle'
+    | 'restoring'
+    | 'not-found'
+    | 'restored'
+    | 'error';
+
+export interface LocalTelemetryFileValidation {
+    exists: boolean;
+    readable: boolean;
+    hasData: boolean;
+    size: number;
+    error?: string;
+}
+
 export interface LiveVisualizationInstance {
     id: string;
     type: 'telemetry-overview' | 'event-log' | 'analysis-results' | 'live-range-todo-list';
@@ -42,6 +70,9 @@ export interface LiveSessionRuntime {
     recordingMetadata: LiveRecordingMetadata | null;
     recordingFileKey: string | null;
     recordedSampleCount: number;
+    restorationStatus: LiveSessionRestorationStatus;
+    restorationError: string | null;
+    recordingFileValidation: LocalTelemetryFileValidation | null;
     sessionIntelligence: SessionIntelligence;
     liveRangeTodoListHandle: LiveRangeTodoListHandle | null;
     liveRangeTodoListSnapshot: LiveRangeTodoListSnapshot | null;
@@ -58,6 +89,7 @@ export interface LiveSessionRuntime {
     ) => Promise<LiveTelemetry[]>;
     finalizeRecordingWrites: () => Promise<void>;
     clearRecordingSession: () => void;
+    clearPersistedDraft: () => void;
     registerLiveRangeTodoListHandle: (handle: LiveRangeTodoListHandle | null) => void;
     publishLiveRangeTodoListSnapshot: (snapshot: LiveRangeTodoListSnapshot | null) => void;
     registerRecorderControl: (control: LiveSessionRecorderControl | null) => void;

@@ -82,6 +82,9 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
     recordingMetadata: null,
     recordingFileKey: null,
     recordedSampleCount: 0,
+    restorationStatus: 'idle',
+    restorationError: null,
+    recordingFileValidation: null,
     sessionIntelligence: {},
     liveRangeTodoListHandle: null,
     liveRangeTodoListSnapshot: null,
@@ -96,6 +99,7 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
     readRecordedTelemetry: jest.fn(),
     finalizeRecordingWrites: jest.fn(),
     clearRecordingSession: jest.fn(),
+    clearPersistedDraft: jest.fn(),
     registerLiveRangeTodoListHandle: jest.fn(),
     publishLiveRangeTodoListSnapshot: jest.fn(),
     registerRecorderControl: jest.fn(),
@@ -196,6 +200,22 @@ describe('LiveSessionView', () => {
         expect(newSessionButton).toBeEnabled();
         fireEvent.click(newSessionButton);
         expect(runtime.recorderControl.openUploadFlow).toHaveBeenCalledTimes(1);
+    });
+
+    it('shows a restored local-recording error without hiding the session workspace', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: null, detectionStatus: 'not-detected', error: null });
+        const runtime = {
+            ...createRuntime('acc'),
+            recordingState: RecordingState.UPLOAD_READY,
+            restorationStatus: 'error',
+            restorationError: 'The local recording file is missing or unreadable. Upload is unavailable; discard this draft to clear it.',
+        };
+
+        renderView(runtime as any);
+
+        expect(screen.getByRole('alert')).toHaveTextContent('local recording file is missing or unreadable');
+        expect(screen.getByText('Live workspace')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'New Session' })).toBeEnabled();
     });
 
     it('exposes detector updates as an atomic polite live status', () => {

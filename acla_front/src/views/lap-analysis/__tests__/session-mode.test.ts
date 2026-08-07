@@ -3,7 +3,11 @@ import {
     resolveAssistantRecordedSessionId,
     resolveAssistantSessionMode,
 } from '../assistant-session-mode';
-import { getNextRecordingState, RecordingState } from '../recording-state';
+import {
+    getNextRecordingState,
+    isLiveSessionAiAvailable,
+    RecordingState,
+} from '../recording-state';
 
 describe('assistant session mode resolution', () => {
     it('defaults to front desk before a session is selected or recording starts', () => {
@@ -16,6 +20,20 @@ describe('assistant session mode resolution', () => {
         expect(resolveAssistantSessionMode({
             recordingState: RecordingState.RECORDING,
         })).toBe('live');
+    });
+
+    it.each([
+        RecordingState.HOLDING,
+        RecordingState.RESUME_READY,
+        RecordingState.UPLOAD_READY,
+    ])('keeps the live assistant mounted in %s', (recordingState) => {
+        expect(resolveAssistantSessionMode({ recordingState })).toBe('live');
+    });
+
+    it('keeps AI available while paused but closes it after ending', () => {
+        expect(isLiveSessionAiAvailable(RecordingState.HOLDING)).toBe(true);
+        expect(isLiveSessionAiAvailable(RecordingState.RESUME_READY)).toBe(true);
+        expect(isLiveSessionAiAvailable(RecordingState.UPLOAD_READY)).toBe(false);
     });
 
     it('uses recorded mode when a recorded session id is selected', () => {

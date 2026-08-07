@@ -12,6 +12,9 @@ import { DASHBOARD_TABS, getDefaultDashboardTab } from './dashboard-navigation';
 
 const MainDashboard = ({ onTaskCreated }) => {
     const environment = useEnvironment();
+    const authenticatedOwnerEmail = typeof window !== 'undefined'
+        ? window.localStorage.getItem('username')
+        : null;
 
     const [mainMenuTab, setMainMenuTab] = useState(() => getDefaultDashboardTab(environment));
     const assistantModeOverride = mainMenuTab === DASHBOARD_TABS.LIVE_SESSION
@@ -21,7 +24,7 @@ const MainDashboard = ({ onTaskCreated }) => {
             : undefined;
 
     return (
-        <LiveSessionProvider>
+        <LiveSessionProvider ownerEmail={authenticatedOwnerEmail}>
             <SessionAnalysisProvider>
                 {environment === 'electron' ? <LiveSessionDetectionManager /> : null}
                 <div className="main-dashboard-container">

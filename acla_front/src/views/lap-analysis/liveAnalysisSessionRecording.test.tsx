@@ -60,6 +60,9 @@ const createRuntime = (overrides: Record<string, unknown> = {}) => ({
     recordingMetadata: null,
     recordingFileKey: null,
     recordedSampleCount: 0,
+    restorationStatus: 'idle',
+    restorationError: null,
+    recordingFileValidation: null,
     sessionIntelligence: {},
     liveRangeTodoListHandle: null,
     liveRangeTodoListSnapshot: null,
@@ -74,6 +77,7 @@ const createRuntime = (overrides: Record<string, unknown> = {}) => ({
     readRecordedTelemetry: jest.fn().mockResolvedValue([]),
     finalizeRecordingWrites: jest.fn().mockResolvedValue(undefined),
     clearRecordingSession: jest.fn(),
+    clearPersistedDraft: jest.fn(),
     registerLiveRangeTodoListHandle: jest.fn(),
     publishLiveRangeTodoListSnapshot: jest.fn(),
     registerRecorderControl: jest.fn(),
@@ -274,6 +278,7 @@ describe('ACC racing session recording metadata', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Discard Session' }));
 
         await waitFor(() => expect(activeRuntime.endLiveSession).toHaveBeenCalledTimes(1));
+        expect(activeRuntime.clearPersistedDraft).toHaveBeenCalledTimes(1);
         expect(window.electronAPI.stopPythonScript).toHaveBeenCalledWith(7);
         expect(activeRuntime.finalizeRecordingWrites).toHaveBeenCalledTimes(1);
         expect(window.electronAPI.runPythonScript).toHaveBeenCalledWith(
@@ -332,6 +337,7 @@ describe('ACC racing session recording metadata', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Keep Session' }));
 
         expect(runtime.endLiveSession).not.toHaveBeenCalled();
+        expect(runtime.clearPersistedDraft).not.toHaveBeenCalled();
         expect(window.electronAPI.stopPythonScript).not.toHaveBeenCalled();
         expect(screen.queryByText('Finish Live Session')).not.toBeInTheDocument();
         host.remove();
@@ -359,6 +365,41 @@ describe('ACC racing session recording metadata', () => {
 
         expect(await screen.findByText('network unavailable')).toBeInTheDocument();
         expect(runtime.endLiveSession).not.toHaveBeenCalled();
+        expect(runtime.clearPersistedDraft).not.toHaveBeenCalled();
+        host.remove();
+    });
+
+    it('shows a broken local recording, disables upload, and still allows discard', async () => {
+        const runtime = createRuntime({
+            recordingState: RecordingState.UPLOAD_READY,
+            recordingMetadata: {
+                sessionName: 'Broken Race',
+                mapName: 'Monza',
+                carName: 'GT3',
+                gameRecordedFrom: 'acc',
+            },
+            recordingFileKey: 'C:\\recordings\\telemetry_broken.jsonl',
+            recordedSampleCount: 10,
+            restorationStatus: 'error',
+            restorationError: 'The local recording file is missing or unreadable. Upload is unavailable; discard this draft to clear it.',
+            recordingFileValidation: {
+                exists: false,
+                readable: false,
+                hasData: false,
+                size: 0,
+            },
+        });
+        const { host } = renderRecorder(runtime);
+
+        await waitFor(() => expect(registeredRecorderControl).not.toBeNull());
+        act(() => registeredRecorderControl?.openUploadFlow());
+
+        expect(screen.getByText(/local recording file is missing or unreadable/i)).toBeInTheDocument();
+        expect(screen.getAllByRole('button', { name: 'Upload Session' }).every((button) => button.hasAttribute('disabled'))).toBe(true);
+        fireEvent.click(screen.getByRole('button', { name: 'Discard Session' }));
+
+        await waitFor(() => expect(runtime.endLiveSession).toHaveBeenCalledTimes(1));
+        expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1);
         host.remove();
     });
 
@@ -395,6 +436,7 @@ describe('ACC racing session recording metadata', () => {
         act(() => jest.advanceTimersByTime(2500));
 
         expect(runtime.endLiveSession).toHaveBeenCalledTimes(1);
+        expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1);
         jest.useRealTimers();
         host.remove();
     });
@@ -416,6 +458,7 @@ describe('ACC racing session recording metadata', () => {
         fireEvent.click(await screen.findByRole('button', { name: 'Discard' }));
 
         await waitFor(() => expect(runtime.endLiveSession).toHaveBeenCalledTimes(1));
+        expect(runtime.clearPersistedDraft).toHaveBeenCalledTimes(1);
         expect(window.electronAPI.runPythonScript).toHaveBeenCalledWith(
             'delete_telemetry_file.py',
             expect.objectContaining({ args: ['../session_recording/temp/floating-discard.jsonl'] }),

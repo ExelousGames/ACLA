@@ -667,6 +667,17 @@
   background: rgba(10, 22, 18, 0.64);
   padding: 12px 14px;
 }
+
+.ai-chat__ended-notice {
+    margin: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--gray-a6);
+    border-radius: var(--radius-2);
+    color: var(--gray-11);
+    background: var(--gray-a3);
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
 .ai-chat__range-todo--panel {
   min-height: 100%;
   border: 0;

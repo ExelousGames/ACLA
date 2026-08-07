@@ -48,7 +48,7 @@ import {
     executeAiToolDefinition,
 } from './ai-tool-base';
 import type { LiveRangeTodoListToolResult } from 'views/live-session/live-range-todo-list-types';
-import { RecordingState } from 'views/lap-analysis/recording-state';
+import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
 export type AiCommandToolDefinition = AiToolDefinition<AiCommandRegistryContext, ToolHandlerContext>;
@@ -222,7 +222,7 @@ const getLiveToolsUnavailableError = (context: AiCommandRegistryContext) => (
 
 const isLiveSessionContext = (context: AiCommandRegistryContext): boolean =>
     (!context.sessionMode || context.sessionMode === 'live')
-    && context.recordingState === RecordingState.RECORDING;
+    && isLiveSessionAiAvailable(context.recordingState);
 
 const isRecordedSessionContext = (context: AiCommandRegistryContext): boolean =>
     context.sessionMode === 'recorded';

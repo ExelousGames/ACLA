@@ -1,4 +1,4 @@
-import { RecordingState } from './recording-state';
+import { hasLiveSessionAssistant, RecordingState } from './recording-state';
 
 export type SessionAnalysisAssistantMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
@@ -25,7 +25,7 @@ export const resolveAssistantSessionMode = ({
     if (sessionId) {
         return 'recorded';
     }
-    if (recordingState === RecordingState.RECORDING) {
+    if (hasLiveSessionAssistant(recordingState)) {
         return 'live';
     }
     return 'front_desk';

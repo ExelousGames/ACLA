@@ -6,12 +6,21 @@ import { createPythonStreamSession, PythonStreamEvent, PythonStreamSession } fro
 import { getNextRecordingState, RecordingEvent, RecordingState } from 'views/lap-analysis/recording-state';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import {
+    LocalTelemetryFileValidation,
     LiveRecordingMetadata,
     LiveSessionRecorderControl,
+    LiveSessionRestorationStatus,
     LiveSessionRuntime,
     LiveSessionStaticData,
     LiveTelemetry,
+    PERSISTED_LIVE_SESSION_DRAFT_VERSION,
 } from './live-session-types';
+import {
+    getPersistedLiveSessionDraft,
+    normalizeLiveSessionOwnerEmail,
+    removePersistedLiveSessionDraft,
+    savePersistedLiveSessionDraft,
+} from './live-session-draft-storage';
 import type {
     LiveRangeTodoListHandle,
     LiveRangeTodoListSnapshot,
@@ -20,6 +29,11 @@ import type {
 const TELEMETRY_WRITE_TIMEOUT_MS = 6000;
 const LIVE_TELEMETRY_UI_UPDATE_MS = 100;
 const LIVE_SAMPLE_COUNT_UI_UPDATE_MS = 250;
+
+const RESTORED_RECORDING_ERROR = 'The local recording file is missing or unreadable. Upload is unavailable; discard this draft to clear it.';
+
+const isAbsoluteFilePath = (filePath: string): boolean =>
+    /^(?:[a-zA-Z]:[\\/]|\\\\|\/)/.test(filePath);
 
 type TelemetryWriterEvent = {
     status?: string;
@@ -52,6 +66,9 @@ const defaultRuntime: LiveSessionRuntime = {
     recordingMetadata: null,
     recordingFileKey: null,
     recordedSampleCount: 0,
+    restorationStatus: 'idle',
+    restorationError: null,
+    recordingFileValidation: null,
     sessionIntelligence: new SessionIntelligence(),
     liveRangeTodoListHandle: null,
     liveRangeTodoListSnapshot: null,
@@ -69,6 +86,7 @@ const defaultRuntime: LiveSessionRuntime = {
     },
     finalizeRecordingWrites: async () => missingProvider(),
     clearRecordingSession: missingProvider,
+    clearPersistedDraft: missingProvider,
     registerLiveRangeTodoListHandle: missingProvider,
     publishLiveRangeTodoListSnapshot: missingProvider,
     registerRecorderControl: missingProvider,
@@ -76,21 +94,36 @@ const defaultRuntime: LiveSessionRuntime = {
 
 export const LiveSessionContext = createContext<LiveSessionRuntime>(defaultRuntime);
 
-export const LiveSessionProvider = ({ children }: { children: React.ReactNode }) => {
+export const LiveSessionProvider = ({
+    children,
+    ownerEmail,
+}: {
+    children: React.ReactNode;
+    ownerEmail?: string | null;
+}) => {
+    const normalizedOwnerEmail = normalizeLiveSessionOwnerEmail(ownerEmail);
     const [sessionGame, setSessionGame] = useState<DesktopGame | null>(null);
     const [currentTelemetry, setCommittedTelemetry] = useState<LiveTelemetry>({});
     const [telemetryStatus, setTelemetryStatus] = useState<ACC_STATUS | null>(null);
     const [staticData, setStaticDataState] = useState<LiveSessionStaticData>({});
     const [recordingState, setRecordingState] = useState(RecordingState.CHECKING);
-    const [recordingMetadata, setRecordingMetadata] = useState<LiveRecordingMetadata | null>(null);
+    const [recordingMetadata, setRecordingMetadataState] = useState<LiveRecordingMetadata | null>(null);
     const [recordingFileKey, setRecordingFileKeyState] = useState<string | null>(null);
     const [recordedSampleCount, setRecordedSampleCount] = useState(0);
+    const [restorationStatus, setRestorationStatus] = useState<LiveSessionRestorationStatus>(
+        normalizedOwnerEmail ? 'restoring' : 'idle',
+    );
+    const [restorationError, setRestorationError] = useState<string | null>(null);
+    const [recordingFileValidation, setRecordingFileValidation] = useState<LocalTelemetryFileValidation | null>(null);
     const [liveRangeTodoListHandle, setLiveRangeTodoListHandle] = useState<LiveRangeTodoListHandle | null>(null);
     const [liveRangeTodoListSnapshot, setLiveRangeTodoListSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
     const [recorderControl, setRecorderControl] = useState<LiveSessionRecorderControl | null>(null);
 
     const sessionIntelligenceRef = useRef(new SessionIntelligence());
     const sessionGameRef = useRef<DesktopGame | null>(null);
+    const ownerEmailRef = useRef(normalizedOwnerEmail);
+    const recordingStateRef = useRef(RecordingState.CHECKING);
+    const recordingMetadataRef = useRef<LiveRecordingMetadata | null>(null);
     const sessionGenerationRef = useRef(0);
     const latestTelemetryRef = useRef<LiveTelemetry>({});
     const committedTelemetryRef = useRef<LiveTelemetry>({});
@@ -105,6 +138,8 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
     const sampleCountRef = useRef(0);
     const committedSampleCountRef = useRef(0);
     const sampleCountFlushTimeoutRef = useRef<number | null>(null);
+    const persistDraftRef = useRef<() => void>(() => undefined);
+    const draftPersistenceSuppressedRef = useRef(false);
     const registerLiveRangeTodoListHandle = useCallback((handle: LiveRangeTodoListHandle | null) => {
         setLiveRangeTodoListHandle(handle);
     }, []);
@@ -115,6 +150,47 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
 
     const registerRecorderControl = useCallback((control: LiveSessionRecorderControl | null) => {
         setRecorderControl(control);
+    }, []);
+
+    const persistCurrentDraft = useCallback(() => {
+        const currentOwnerEmail = ownerEmailRef.current;
+        const currentGame = sessionGameRef.current;
+        const currentMetadata = recordingMetadataRef.current;
+        const currentFilePath = recordingFileKeyRef.current;
+        const currentState = recordingStateRef.current;
+        if (
+            draftPersistenceSuppressedRef.current
+            || !currentOwnerEmail
+            || !currentGame
+            || !currentMetadata
+            || !currentFilePath
+            || ![
+                RecordingState.RECORDING,
+                RecordingState.HOLDING,
+                RecordingState.RESUME_READY,
+                RecordingState.UPLOAD_READY,
+            ].includes(currentState)
+        ) {
+            return;
+        }
+
+        savePersistedLiveSessionDraft({
+            version: PERSISTED_LIVE_SESSION_DRAFT_VERSION,
+            ownerEmail: currentOwnerEmail,
+            sessionGame: currentGame,
+            recordingMetadata: currentMetadata,
+            telemetryFilePath: currentFilePath,
+            recordedSampleCount: sampleCountRef.current,
+            lastRuntimeState: currentState,
+            updatedAt: new Date().toISOString(),
+        });
+    }, []);
+    persistDraftRef.current = persistCurrentDraft;
+
+    const clearPersistedDraft = useCallback(() => {
+        draftPersistenceSuppressedRef.current = true;
+        const currentOwnerEmail = ownerEmailRef.current;
+        if (currentOwnerEmail) removePersistedLiveSessionDraft(currentOwnerEmail);
     }, []);
 
     const flushCurrentTelemetry = useCallback(() => {
@@ -149,13 +225,24 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         setStaticDataState(data && typeof data === 'object' ? data : {});
     }, []);
 
+    const setRecordingMetadata = useCallback((metadata: LiveRecordingMetadata | null) => {
+        recordingMetadataRef.current = metadata;
+        setRecordingMetadataState(metadata);
+        persistDraftRef.current();
+    }, []);
+
     const transitionRecordingState = useCallback((event: RecordingEvent) => {
-        setRecordingState((previous) => getNextRecordingState(previous, event));
+        const next = getNextRecordingState(recordingStateRef.current, event);
+        recordingStateRef.current = next;
+        setRecordingState(next);
+        persistDraftRef.current();
     }, []);
 
     const setRecordingFileKey = useCallback((fileKey: string | null) => {
         recordingFileKeyRef.current = fileKey;
         setRecordingFileKeyState(fileKey);
+        setRecordingFileValidation(null);
+        persistDraftRef.current();
     }, []);
 
     const flushSampleCount = useCallback(() => {
@@ -298,7 +385,15 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
             }
             let fileKey = recordingFileKeyRef.current;
             if (!fileKey) {
-                fileKey = `../session_recording/temp/telemetry_live_${Date.now()}.jsonl`;
+                const created = await window.electronAPI.writeTempFile({
+                    content: '',
+                    prefix: 'telemetry_live',
+                    extension: '.jsonl',
+                });
+                if (!created.success || !created.path || !isAbsoluteFilePath(created.path)) {
+                    throw new Error(created.error || 'Unable to create persistent telemetry file');
+                }
+                fileKey = created.path;
                 setRecordingFileKey(fileKey);
                 resetSampleCount();
             }
@@ -432,7 +527,7 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         writeQueueRef.current = Promise.resolve();
         sessionIntelligenceRef.current.reset();
         void disposeTelemetryWriter({ force: true });
-    }, [disposeTelemetryWriter, resetSampleCount, setRecordingFileKey]);
+    }, [disposeTelemetryWriter, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const resetLiveSession = useCallback((nextGame: DesktopGame | null) => {
         sessionGenerationRef.current += 1;
@@ -448,6 +543,7 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         setCommittedTelemetry({});
         setTelemetryStatus(null);
         setStaticDataState({});
+        recordingStateRef.current = RecordingState.CHECKING;
         setRecordingState(RecordingState.CHECKING);
         setRecordingMetadata(null);
         setRecordingFileKey(null);
@@ -455,17 +551,102 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         writeQueueRef.current = Promise.resolve();
         sessionIntelligenceRef.current.reset();
         setLiveRangeTodoListSnapshot(null);
+        setRestorationError(null);
         void disposeTelemetryWriter({ force: true });
-    }, [disposeTelemetryWriter, resetSampleCount, setRecordingFileKey]);
+    }, [disposeTelemetryWriter, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const startLiveSession = useCallback((game: DesktopGame) => {
         if (sessionGameRef.current !== null) return;
+        draftPersistenceSuppressedRef.current = false;
         resetLiveSession(game);
+        setRestorationStatus('not-found');
     }, [resetLiveSession]);
 
     const endLiveSession = useCallback(() => {
         resetLiveSession(null);
-    }, [resetLiveSession]);
+        setRestorationStatus(normalizedOwnerEmail ? 'not-found' : 'idle');
+    }, [normalizedOwnerEmail, resetLiveSession]);
+
+    useEffect(() => {
+        let cancelled = false;
+        persistDraftRef.current();
+        ownerEmailRef.current = normalizedOwnerEmail;
+        draftPersistenceSuppressedRef.current = false;
+        resetLiveSession(null);
+
+        if (!normalizedOwnerEmail) {
+            setRestorationStatus('idle');
+            return () => {
+                cancelled = true;
+            };
+        }
+
+        setRestorationStatus('restoring');
+        const draft = getPersistedLiveSessionDraft(normalizedOwnerEmail);
+        if (!draft) {
+            setRestorationStatus('not-found');
+            return () => {
+                cancelled = true;
+            };
+        }
+
+        const restoreDraft = async () => {
+            let validation: LocalTelemetryFileValidation;
+            try {
+                if (!window.electronAPI?.validateTelemetryFile) {
+                    throw new Error('Local telemetry validation is unavailable');
+                }
+                validation = await window.electronAPI.validateTelemetryFile(draft.telemetryFilePath);
+            } catch (error) {
+                validation = {
+                    exists: false,
+                    readable: false,
+                    hasData: false,
+                    size: 0,
+                    error: error instanceof Error ? error.message : String(error),
+                };
+            }
+            if (cancelled || ownerEmailRef.current !== normalizedOwnerEmail) return;
+
+            resetLiveSession(draft.sessionGame);
+            setRecordingMetadata(draft.recordingMetadata);
+            setRecordingFileKey(draft.telemetryFilePath);
+            sampleCountRef.current = draft.recordedSampleCount;
+            committedSampleCountRef.current = draft.recordedSampleCount;
+            setRecordedSampleCount(draft.recordedSampleCount);
+            setStaticDataState({
+                track: draft.recordingMetadata.mapName,
+                car_model: draft.recordingMetadata.carName,
+            });
+            recordingStateRef.current = RecordingState.UPLOAD_READY;
+            setRecordingState(RecordingState.UPLOAD_READY);
+            setRecordingFileValidation(validation);
+
+            if (!validation.exists || !validation.readable) {
+                setRestorationStatus('error');
+                setRestorationError(RESTORED_RECORDING_ERROR);
+            } else {
+                setRestorationStatus('restored');
+                setRestorationError(null);
+            }
+        };
+
+        void restoreDraft();
+        return () => {
+            cancelled = true;
+        };
+    }, [normalizedOwnerEmail, resetLiveSession, setRecordingFileKey, setRecordingMetadata]);
+
+    useEffect(() => {
+        persistCurrentDraft();
+    }, [
+        persistCurrentDraft,
+        recordedSampleCount,
+        recordingFileKey,
+        recordingMetadata,
+        recordingState,
+        sessionGame,
+    ]);
 
     useEffect(() => {
         const nextStatus = normalizeAccStatus(
@@ -478,7 +659,14 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         }
     }, [currentTelemetry]);
 
+    useEffect(() => {
+        const persistBeforeUnload = () => persistDraftRef.current();
+        window.addEventListener('beforeunload', persistBeforeUnload);
+        return () => window.removeEventListener('beforeunload', persistBeforeUnload);
+    }, []);
+
     useEffect(() => () => {
+        persistDraftRef.current();
         if (telemetryFlushTimeoutRef.current !== null) window.clearTimeout(telemetryFlushTimeoutRef.current);
         if (sampleCountFlushTimeoutRef.current !== null) window.clearTimeout(sampleCountFlushTimeoutRef.current);
         void disposeTelemetryWriter({ force: true });
@@ -493,6 +681,9 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         recordingMetadata,
         recordingFileKey,
         recordedSampleCount,
+        restorationStatus,
+        restorationError,
+        recordingFileValidation,
         sessionIntelligence: sessionIntelligenceRef.current,
         liveRangeTodoListHandle,
         liveRangeTodoListSnapshot,
@@ -507,23 +698,29 @@ export const LiveSessionProvider = ({ children }: { children: React.ReactNode })
         readRecordedTelemetry,
         finalizeRecordingWrites,
         clearRecordingSession,
+        clearPersistedDraft,
         registerLiveRangeTodoListHandle,
         publishLiveRangeTodoListSnapshot,
         registerRecorderControl,
     }), [
         appendTelemetrySample,
         clearRecordingSession,
+        clearPersistedDraft,
         currentTelemetry,
         endLiveSession,
         finalizeRecordingWrites,
         readRecordedTelemetry,
         recordedSampleCount,
+        restorationStatus,
+        restorationError,
+        recordingFileValidation,
         liveRangeTodoListHandle,
         liveRangeTodoListSnapshot,
         recorderControl,
         recordingFileKey,
         recordingMetadata,
         recordingState,
+        setRecordingMetadata,
         setCurrentTelemetry,
         setStaticData,
         sessionGame,

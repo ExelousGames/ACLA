@@ -81,11 +81,16 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     }, [analysisContext.sessionGame, recorderHostId]);
 
     const uploadInFlightRef = useRef(false);
+    const restoredFileIsUploadable = analysisContext.recordingFileValidation
+        ? analysisContext.recordingFileValidation.exists
+            && analysisContext.recordingFileValidation.readable
+            && analysisContext.recordingFileValidation.hasData
+        : null;
     const hasRecordedData = Boolean(analysisContext.recordingFileKey)
-        && (
+        && (restoredFileIsUploadable ?? (
             analysisContext.recordedSampleCount > 0
             || state === RecordingState.RECORDING
-        );
+        ));
 
     const uploadStatusLabel = isUploading
         ? 'Uploading...'
@@ -405,7 +410,17 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     }, []);
 
     const cleanupTelemetryFile = useCallback(async (filePath: string) => {
-        try { const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] }; await window.electronAPI.runPythonScript('delete_telemetry_file.py', options); } catch { }
+        try {
+            if (window.electronAPI?.deleteTempFile) {
+                const result = await window.electronAPI.deleteTempFile(filePath);
+                return result.success;
+            }
+            const options: PythonShellOptions = { mode: 'text', pythonOptions: ['-u'], scriptPath: 'src/py-scripts', args: [filePath] };
+            await window.electronAPI.runPythonScript('delete_telemetry_file.py', options);
+            return true;
+        } catch {
+            return false;
+        }
     }, []);
 
     const resetRecorderUi = useCallback(() => {
@@ -433,11 +448,15 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
     const handleUpload = useCallback(async () => {
         if (uploadInFlightRef.current) return false;
         const initialContext = analysisContextRef.current;
-        const canAttemptUpload = Boolean(initialContext.recordingFileKey)
-            && (
+        const validationAllowsUpload = initialContext.recordingFileValidation
+            ? initialContext.recordingFileValidation.exists
+                && initialContext.recordingFileValidation.readable
+                && initialContext.recordingFileValidation.hasData
+            : (
                 initialContext.recordedSampleCount > 0
                 || initialContext.recordingState === RecordingState.RECORDING
             );
+        const canAttemptUpload = Boolean(initialContext.recordingFileKey) && validationAllowsUpload;
         if (!canAttemptUpload) { setUploadError('No telemetry data available for upload'); setShowRetryButton(false); return false; }
         if (!initialContext.recordingMetadata?.sessionName || !initialContext.recordingMetadata?.mapName || !initialContext.sessionGame || !auth?.userEmail) { setUploadError('Missing required session or user information'); setShowRetryButton(false); return false; }
         uploadInFlightRef.current = true; setIsUploading(true); setUploadProgress(0); setUploadStatus('Preparing telemetry data...'); setUploadError(null); setShowRetryButton(false);
@@ -504,6 +523,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             const final = new URLSearchParams(); final.append('uploadId', uploadId); await apiService.post(`/racing-session/upload/complete?${final.toString()}`, {});
             setUploadProgress(100); setUploadStatus('Upload completed successfully!');
             if (uploadContext.recordingFileKey) await cleanupTelemetryFile(uploadContext.recordingFileKey);
+            uploadContext.clearPersistedDraft?.();
             setTimeout(() => { setIsUploading(false); setTimeout(() => returnToDetectionGate(), POST_SUCCESS_DIALOG_CLOSE_MS); }, POST_UPLOAD_RESET_DELAY_MS);
             uploadInFlightRef.current = false;
             return true;
@@ -527,6 +547,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
             await discardContext.finalizeRecordingWrites();
         }
         if (fileKey) await cleanupTelemetryFile(fileKey);
+        discardContext.clearPersistedDraft?.();
         returnToDetectionGate();
     }, [cleanupTelemetryFile, returnToDetectionGate, stopRecordingProcess]);
     const handleRetryUpload = useCallback(() => { setUploadError(null); setShowRetryButton(false); setUploadProgress(0); handleUpload(); }, [handleUpload]);
@@ -565,7 +586,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                 <AlertDialog.Description size="2">
                     Upload the recorded data, discard it, or keep the current session open.
                 </AlertDialog.Description>
-                {(isUploading || showRetryButton || uploadError) && (
+                {(isUploading || showRetryButton || uploadError || analysisContext.restorationError) && (
                     <Box my="4">
                         {isUploading && (
                             <>
@@ -576,6 +597,7 @@ export default function LiveAnalysisSessionRecording({ recorderHostId }: LiveAna
                             </>
                         )}
                         {uploadError && <Text size="2" color="red" mt="2">{uploadError}</Text>}
+                        {analysisContext.restorationError && <Text size="2" color="red" mt="2">{analysisContext.restorationError}</Text>}
                         {showRetryButton && !isUploading && <Flex mt="2" gap="2"><Button size="1" variant="outline" onClick={handleRetryUpload}>Retry Upload</Button></Flex>}
                     </Box>
                 )}

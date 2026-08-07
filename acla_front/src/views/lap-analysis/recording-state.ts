@@ -69,3 +69,12 @@ export const getNextRecordingState = (
 
 export const isRecordingLive = (recordingState?: RecordingState | null): boolean =>
     recordingState === RecordingState.RECORDING;
+
+export const isLiveSessionAiAvailable = (recordingState?: RecordingState | null): boolean =>
+    recordingState === RecordingState.RECORDING
+    || recordingState === RecordingState.HOLDING
+    || recordingState === RecordingState.RESUME_READY;
+
+export const hasLiveSessionAssistant = (recordingState?: RecordingState | null): boolean =>
+    isLiveSessionAiAvailable(recordingState)
+    || recordingState === RecordingState.UPLOAD_READY;

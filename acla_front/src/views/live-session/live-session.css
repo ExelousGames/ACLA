@@ -116,6 +116,16 @@
     scroll-padding-block-end: 16px;
 }
 
+.live-session-recovery-error {
+    margin: 0 24px 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--red-a7);
+    border-radius: var(--radius-3);
+    color: var(--red-11);
+    background: var(--red-a3);
+    font-size: 0.85rem;
+}
+
 .live-session-waiting {
     flex: 1;
     min-height: 0;

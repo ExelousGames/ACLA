@@ -24,7 +24,7 @@ const LimitedLiveWorkspace = ({ game }: { game: Exclude<DesktopGame, 'acc'> }) =
 );
 
 const LiveSessionView = () => {
-    const { sessionGame } = useContext(LiveSessionContext);
+    const { restorationError, sessionGame } = useContext(LiveSessionContext);
 
     return (
         <section className="live-session-view" aria-label="Live Session">
@@ -43,6 +43,11 @@ const LiveSessionView = () => {
             ) : (
                 <>
                     <LiveSessionGameStatus />
+                    {restorationError && (
+                        <div className="live-session-recovery-error" role="alert">
+                            {restorationError}
+                        </div>
+                    )}
                     <div className="live-session-view__workspace">
                         {sessionGame === 'acc'
                             ? <LiveTelemetryWorkspace />

@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     writeTempFile: (options) => ipcRenderer.invoke('write-temp-file', options),
     deleteTempFile: (filePath) => ipcRenderer.invoke('delete-temp-file', filePath),
+    validateTelemetryFile: (filePath) => ipcRenderer.invoke('validate-telemetry-file', filePath),
 
     //
     onPythonEnd: (listenerIdOrCallback, maybeCallback) => {

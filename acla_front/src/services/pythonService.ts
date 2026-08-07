@@ -32,6 +32,13 @@ declare global {
             stopPythonScript: (shellId: number) => Promise<{ success: boolean; error?: string }>;
             writeTempFile: (options: { content: string; directory?: string; prefix?: string; extension?: string }) => Promise<{ success: boolean; path?: string; error?: string; skipped?: boolean }>;
             deleteTempFile: (filePath: string) => Promise<{ success: boolean; error?: string; skipped?: boolean }>;
+            validateTelemetryFile: (filePath: string) => Promise<{
+                exists: boolean;
+                readable: boolean;
+                hasData: boolean;
+                size: number;
+                error?: string;
+            }>;
 
             /**
              * 
