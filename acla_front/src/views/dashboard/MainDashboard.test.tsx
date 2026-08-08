@@ -21,8 +21,8 @@ jest.mock('views/side-main-menu/side-main-menu', () => ({
 ));
 jest.mock('views/lap-analysis/session-analysis', () => ({
     SessionAnalysisProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    SessionAnalysisAssistant: ({ assistantModeOverride }: { assistantModeOverride?: string }) => (
-        <aside aria-label="AI Assistant" data-mode={assistantModeOverride}>Assistant</aside>
+    SessionAnalysisAssistant: (props: Record<string, unknown>) => (
+        <aside aria-label="AI Assistant" data-prop-count={Object.keys(props).length}>Assistant</aside>
     ),
 }));
 jest.mock('views/live-session/LiveSessionContext', () => ({
@@ -46,20 +46,20 @@ describe('MainDashboard desktop composition', () => {
 
         expect(screen.getByTestId('active-dashboard-tab')).toHaveTextContent('liveSession');
         expect(screen.getAllByLabelText('AI Assistant')).toHaveLength(1);
-        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-mode', 'live');
+        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-prop-count', '0');
         expect(screen.getByTestId('recorder-runtime')).toHaveAttribute('data-host', 'live-session-recorder-host');
     });
 
-    it('maps Analysis, User Summary, and Live Session tabs to assistant overrides', () => {
+    it('does not derive assistant identity from dashboard tabs', () => {
         render(<MainDashboard onTaskCreated={jest.fn()} />);
 
         fireEvent.click(screen.getByRole('button', { name: 'Analysis' }));
-        expect(screen.getByLabelText('AI Assistant')).not.toHaveAttribute('data-mode');
+        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-prop-count', '0');
 
         fireEvent.click(screen.getByRole('button', { name: 'User Summary' }));
-        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-mode', 'user_summary');
+        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-prop-count', '0');
 
         fireEvent.click(screen.getByRole('button', { name: 'Live Session' }));
-        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-mode', 'live');
+        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-prop-count', '0');
     });
 });

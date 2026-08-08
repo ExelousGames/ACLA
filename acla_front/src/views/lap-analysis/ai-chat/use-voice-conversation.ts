@@ -331,6 +331,8 @@ export function useVoiceConversation(
 
     // Hold refs to all the resources we need to tear down on stop().
     const wsRef = useRef<WebSocket | null>(null);
+    const readyWsRef = useRef<WebSocket | null>(null);
+    const chatSessionIdRef = useRef<string | null>(null);
     const audioContextRef = useRef<AudioContext | null>(null);
     const micStreamRef = useRef<MediaStream | null>(null);
     const workletNodeRef = useRef<AudioWorkletNode | null>(null);
@@ -339,6 +341,7 @@ export function useVoiceConversation(
     const playbackSerialRef = useRef<number>(0);
     const playbackIdleTimeoutRef = useRef<number | null>(null);
     const connectTimeoutRef = useRef<number | null>(null);
+    const connectionAttemptRef = useRef(0);
     const micDisabledRef = useRef(false);
     const micLevelRef = useRef(0);
     const pendingMicLevelRef = useRef<number | null>(null);
@@ -352,7 +355,10 @@ export function useVoiceConversation(
      * source as every REST call. `user_id` is derived server-side from
      * the JWT claim and isn't sent from here.
      */
-    const openWs = useCallback((): WebSocket => {
+    const openWs = useCallback((
+        chatSessionAction: 'create' | 'resume',
+        chatSessionId: string | null,
+    ): WebSocket => {
         const sessionMode = typeof sessionContextRef.current?.session_mode === 'string'
             ? sessionContextRef.current.session_mode
             : undefined;
@@ -370,6 +376,8 @@ export function useVoiceConversation(
             parent_client_session_id: metadata.parent_client_session_id || undefined,
             agent_mode: metadata.agent_mode || undefined,
             chat_llm_model: options.chatLlmModel?.trim() || undefined,
+            chat_session_action: chatSessionAction,
+            chat_session_id: chatSessionId || undefined,
         });
     }, [
         options.agentMode,
@@ -408,7 +416,7 @@ export function useVoiceConversation(
     useEffect(() => {
         sessionContextRef.current = options.sessionContext ?? null;
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
 
         try {
             ws.send(JSON.stringify({
@@ -478,7 +486,9 @@ export function useVoiceConversation(
         closeCode = 1000,
         closeReason = 'client stop',
     ) => {
+        connectionAttemptRef.current += 1;
         clearConnectTimeout();
+        readyWsRef.current = null;
 
         try { workletNodeRef.current?.disconnect(); } catch { /* ignore */ }
         workletNodeRef.current = null;
@@ -500,20 +510,22 @@ export function useVoiceConversation(
             playbackIdleTimeoutRef.current = null;
         }
 
-        if (wsRef.current) {
+        const ws = wsRef.current;
+        wsRef.current = null;
+        if (ws) {
             try {
-                if (wsRef.current.readyState <= WebSocket.OPEN) {
-                    wsRef.current.close(closeCode, closeReason);
+                if (ws.readyState <= WebSocket.OPEN) {
+                    ws.close(closeCode, closeReason);
                 }
             } catch { /* ignore */ }
         }
-        wsRef.current = null;
 
         resetMicLevel();
     }, [clearConnectTimeout, resetMicLevel]);
 
     const stop = useCallback(() => {
         // Tear down in reverse order of construction. All steps are idempotent.
+        chatSessionIdRef.current = null;
         releaseSessionResources();
         setState('idle');
     }, [releaseSessionResources]);
@@ -522,6 +534,11 @@ export function useVoiceConversation(
         if (state !== 'idle' && state !== 'error') {
             return;
         }
+
+        if (state === 'error') {
+            releaseSessionResources(1000, 'connection retry');
+        }
+        const connectionAttempt = ++connectionAttemptRef.current;
 
         const connectionEventSessionId = eventSessionId ?? options.clientSessionId;
         activeEventSessionIdRef.current = connectionEventSessionId;
@@ -543,6 +560,10 @@ export function useVoiceConversation(
                 },
                 video: false,
             });
+            if (connectionAttempt !== connectionAttemptRef.current) {
+                micStream.getTracks().forEach((track) => track.stop());
+                return;
+            }
             micStream.getAudioTracks().forEach((track) => {
                 track.enabled = !micDisabledRef.current;
             });
@@ -572,6 +593,7 @@ export function useVoiceConversation(
                 console.error('[voice] failed to load pcm-capture-worklet.js — check that /pcm-capture-worklet.js is reachable:', err);
                 throw err;
             }
+            if (connectionAttempt !== connectionAttemptRef.current) return;
 
             const source = captureContext.createMediaStreamSource(micStream);
             const workletNode = new AudioWorkletNode(captureContext, 'pcm-capture');
@@ -581,11 +603,13 @@ export function useVoiceConversation(
             // would echo the mic back to the speakers.
 
             // --- 3. Open WebSocket ---
-            const ws = openWs();
+            const requestedChatSessionId = chatSessionIdRef.current;
+            const chatSessionAction = requestedChatSessionId ? 'resume' : 'create';
+            const ws = openWs(chatSessionAction, requestedChatSessionId);
             ws.binaryType = 'arraybuffer';
             wsRef.current = ws;
             connectTimeoutRef.current = window.setTimeout(() => {
-                if (wsRef.current !== ws || ws.readyState === WebSocket.OPEN) {
+                if (wsRef.current !== ws || readyWsRef.current === ws) {
                     return;
                 }
 
@@ -619,6 +643,7 @@ export function useVoiceConversation(
                 }
                 if (!data || data.type !== 'pcm' || !data.buffer) return;
                 if (micDisabledRef.current) return;
+                if (wsRef.current !== ws || readyWsRef.current !== ws) return;
                 if (ws.readyState !== WebSocket.OPEN) return;
                 try {
                     ws.send(data.buffer as ArrayBuffer);
@@ -633,7 +658,7 @@ export function useVoiceConversation(
             playbackQueueTimeRef.current = playbackContext.currentTime;
 
             ws.onopen = () => {
-                clearConnectTimeout();
+                if (wsRef.current !== ws) return;
                 // First text frame on every voice session: hand the backend
                 // compact runtime context. The backend injects the full
                 // frontend application tool registry before relaying this to
@@ -653,13 +678,13 @@ export function useVoiceConversation(
                 } catch (err) {
                     console.warn('[voice] frontend_info send failed:', err);
                 }
-                setState('listening');
             };
 
             // ── Tool-relay text channel ────────────────────────────────────
             // Helpers that wrap the WS for tool handlers. Defined here so
             // they capture the live `ws` instance; not exposed externally.
             const sendText = (payload: object) => {
+                if (wsRef.current !== ws || readyWsRef.current !== ws) return;
                 if (ws.readyState !== WebSocket.OPEN) return;
                 try {
                     const json = JSON.stringify(payload);
@@ -707,12 +732,74 @@ export function useVoiceConversation(
                 });
             };
 
+            let connectionFailureReported = false;
+            const reportConnectionFailure = (message: string) => {
+                if (wsRef.current !== ws) return;
+                connectionFailureReported = true;
+                readyWsRef.current = null;
+                console.error('[voice] connection failed:', message);
+                setError(message);
+                setState('error');
+            };
+
             ws.onmessage = (event) => {
+                if (wsRef.current !== ws) return;
                 // Text frame → tool-relay channel. Binary frame → PCM audio.
                 if (typeof event.data === 'string') {
                     let parsed: any;
                     try { parsed = JSON.parse(event.data); }
                     catch { console.warn('[voice/tool-relay] non-JSON text frame:', event.data); return; }
+                    if (parsed?.type === 'chat_session_ready') {
+                        const readyChatSessionId = typeof parsed.chat_session_id === 'string'
+                            ? parsed.chat_session_id.trim()
+                            : '';
+                        const validCreate = (
+                            chatSessionAction === 'create'
+                            && readyChatSessionId.length > 0
+                            && parsed.resumed === false
+                        );
+                        const validResume = (
+                            chatSessionAction === 'resume'
+                            && readyChatSessionId === requestedChatSessionId
+                            && parsed.resumed === true
+                        );
+                        if (!validCreate && !validResume) {
+                            reportConnectionFailure(
+                                chatSessionAction === 'resume'
+                                    ? 'Voice session resume handshake returned an unexpected chat session'
+                                    : 'Voice session create handshake was invalid',
+                            );
+                            releaseSessionResources(4002, 'invalid chat session handshake');
+                            return;
+                        }
+
+                        chatSessionIdRef.current = readyChatSessionId;
+                        readyWsRef.current = ws;
+                        clearConnectTimeout();
+                        setState('listening');
+                        return;
+                    }
+
+                    if (parsed?.type === 'error') {
+                        // Backend explicit error (e.g. a stale process-local
+                        // chat session or unavailable voice dependency).
+                        const msg = parsed.message || parsed.error_type || 'backend error';
+                        if (parsed.error_type === 'ChatSessionNotFound') {
+                            chatSessionIdRef.current = null;
+                        }
+                        console.error('[voice] backend error frame:', msg);
+                        connectionFailureReported = true;
+                        readyWsRef.current = null;
+                        setError(msg);
+                        setState('error');
+                        return;
+                    }
+
+                    if (readyWsRef.current !== ws) {
+                        console.warn('[voice/tool-relay] frame received before chat session readiness:', parsed?.type);
+                        return;
+                    }
+
                     if (parsed?.type === 'tool_call') {
                         void handleToolCall(parsed);
                     } else if (parsed?.type === 'user_transcript') {
@@ -736,19 +823,13 @@ export function useVoiceConversation(
                                 emitConnectionEvent({ kind: 'assistant_transcript', text: cleanText, emotion });
                             }
                         }
-                    } else if (parsed?.type === 'error') {
-                        // Backend explicit error (e.g. pipecat / faster-whisper
-                        // not installed — see acla_ai_service/app/api/voice.py).
-                        const msg = parsed.message || parsed.error_type || 'backend error';
-                        console.error('[voice] backend error frame:', msg);
-                        setError(msg);
-                        setState('error');
                     } else {
                         console.warn('[voice/tool-relay] unknown text frame:', parsed?.type);
                     }
                     return;
                 }
                 if (!(event.data instanceof ArrayBuffer)) return;
+                if (readyWsRef.current !== ws) return;
                 // Server sent raw PCM16 mono at the kokoro sample rate.
                 queuePlayback(event.data, playbackContext);
                 // Always set 'speaking' — setState is idempotent and the
@@ -757,25 +838,26 @@ export function useVoiceConversation(
             };
 
             ws.onerror = (event) => {
+                if (wsRef.current !== ws) return;
                 clearConnectTimeout();
                 console.error('[voice] WS error event:', event);
+                connectionFailureReported = true;
+                readyWsRef.current = null;
                 setError('Voice connection error');
                 setState('error');
             };
 
             ws.onclose = (event) => {
+                if (wsRef.current !== ws) return;
                 clearConnectTimeout();
-                // closure-captured `state` is stale; use the setter form.
-                setState((prev) => {
-                    if (prev === 'idle') return prev;
-                    if (event.code !== 1000) {
-                        setError(`Voice connection closed (${event.code}): ${event.reason || 'unknown'}`);
-                        return 'error';
-                    }
-                    return 'idle';
-                });
+                readyWsRef.current = null;
+                if (!connectionFailureReported) {
+                    setError(`Voice connection closed (${event.code}): ${event.reason || 'unknown'}`);
+                }
+                setState('error');
             };
         } catch (err) {
+            if (connectionAttempt !== connectionAttemptRef.current) return;
             console.error('[voice] start failed:', err);
             setError((err as Error).message || 'Failed to start voice session');
             setState('error');
@@ -824,7 +906,8 @@ export function useVoiceConversation(
             playbackIdleTimeoutRef.current = window.setTimeout(() => {
                 playbackIdleTimeoutRef.current = null;
                 if (serial !== playbackSerialRef.current) return;
-                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                const ws = wsRef.current;
+                if (ws && readyWsRef.current === ws && ws.readyState === WebSocket.OPEN) {
                     playbackQueueTimeRef.current = context.currentTime;
                     setState((prev) => (prev === 'speaking' ? 'listening' : prev));
                 }
@@ -844,7 +927,7 @@ export function useVoiceConversation(
      */
     const sendUserText = useCallback((text: string): boolean => {
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
         const trimmed = text.trim();
         if (!trimmed) return false;
         try {
@@ -861,9 +944,9 @@ export function useVoiceConversation(
     }, []);
 
     const sendToolStatus = useCallback((data: Record<string, unknown>): boolean => {
-        emitVoiceEvent({ kind: 'tool_status', data });
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
+        emitVoiceEvent({ kind: 'tool_status', data });
         try {
             const frame = buildFormattedToolResultFrame(data);
             const json = JSON.stringify(frame);
@@ -878,7 +961,7 @@ export function useVoiceConversation(
 
     const sendToolResult = useCallback((frame: ToolResultFrame): boolean => {
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
             const payload = buildToolResultFrame(
                 String(frame.id || ''),
@@ -899,9 +982,10 @@ export function useVoiceConversation(
         call: SubscribedToolCall,
     ): Promise<ToolSubscriptionResult | null> => {
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return null;
+        if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return null;
 
         const sendText = (payload: object) => {
+            if (wsRef.current !== ws || readyWsRef.current !== ws) return;
             if (ws.readyState !== WebSocket.OPEN) return;
             try {
                 const json = JSON.stringify(payload);

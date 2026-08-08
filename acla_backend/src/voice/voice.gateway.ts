@@ -65,8 +65,17 @@ export class VoiceGateway implements OnGatewayConnection {
         const chatLlmModel = this.normalizeChatLlmModel(
             parsed.searchParams.get('chat_llm_model'),
         );
+        const chatSessionAction = parsed.searchParams.get('chat_session_action');
+        const chatSessionId = parsed.searchParams.get('chat_session_id');
 
-        this.bridge(client, userId, sessionId, chatLlmModel);
+        this.bridge(
+            client,
+            userId,
+            sessionId,
+            chatLlmModel,
+            chatSessionAction,
+            chatSessionId,
+        );
     }
 
     private aiServiceWsBase(): string {
@@ -84,11 +93,15 @@ export class VoiceGateway implements OnGatewayConnection {
         userId: string,
         sessionId: string,
         chatLlmModel: string | null = null,
+        chatSessionAction: string | null = null,
+        chatSessionId: string | null = null,
     ): string {
         const params = new URLSearchParams();
         params.set('user_id', userId);
         if (sessionId) params.set('session_id', sessionId);
         if (chatLlmModel) params.set('chat_llm_model', chatLlmModel);
+        if (chatSessionAction) params.set('chat_session_action', chatSessionAction);
+        if (chatSessionId) params.set('chat_session_id', chatSessionId);
         return `${this.aiServiceWsBase()}/voice/stream?${params.toString()}`;
     }
 
@@ -131,11 +144,15 @@ export class VoiceGateway implements OnGatewayConnection {
         userId: string,
         sessionId: string,
         chatLlmModel: string | null,
+        chatSessionAction: string | null,
+        chatSessionId: string | null,
     ): void {
         const upstreamUrl = this.buildUpstreamUrl(
             userId,
             sessionId,
             chatLlmModel,
+            chatSessionAction,
+            chatSessionId,
         );
 
         const upstream = new WsClient(upstreamUrl);

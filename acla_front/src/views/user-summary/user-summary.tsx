@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
     Box,
     Card,
@@ -10,6 +10,13 @@ import {
 } from '@radix-ui/themes';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
+import {
+    AiChatScreenHandle,
+    USER_SUMMARY_SCREEN_TOOL_NAMES,
+    createAiChatScreenToolHandlers,
+    toAiChatJsonValue,
+    useAiChatScreenRegistration,
+} from 'contexts/AiChatScreenContext';
 import AnalyzeAllSessionsControl from './AnalyzeAllSessionsControl';
 import {
     asRecord,
@@ -20,6 +27,8 @@ import {
     PracticeParentSegmentView
 } from './user-summary-model';
 import './user-summary.css';
+
+const USER_SUMMARY_TOOL_HANDLERS = createAiChatScreenToolHandlers(USER_SUMMARY_SCREEN_TOOL_NAMES);
 
 type SegmentGroupProps = {
     title: string;
@@ -95,6 +104,80 @@ const UserSummary = () => {
         () => buildPracticeTrackSummaryViews(asRecord(parsedSummary), getLabelName, getCategoryLabels),
         [getCategoryLabels, getLabelName, parsedSummary],
     );
+    const screenStateRef = useRef({
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+        labelsLoading,
+        labelsError,
+        trackSummaries,
+    });
+    screenStateRef.current = {
+        userSummary,
+        userSummaryLoading,
+        userSummaryError,
+        labelsLoading,
+        labelsError,
+        trackSummaries,
+    };
+    const componentRef = useRef<AiChatScreenHandle | null>(null);
+
+    if (componentRef.current === null) {
+        componentRef.current = {
+            getAiContext: () => {
+                const current = screenStateRef.current;
+                const state = current.userSummaryLoading || current.labelsLoading
+                    ? 'loading'
+                    : current.userSummaryError || current.labelsError
+                        ? 'error'
+                        : current.trackSummaries.length > 0
+                            ? 'ready'
+                            : 'empty';
+
+                return {
+                    screen_kind: 'user_summary',
+                    summary_scope: 'Most recent 10 practice sessions by track section.',
+                    summary_state: state,
+                    loading: current.userSummaryLoading || current.labelsLoading,
+                    error: current.userSummaryError || current.labelsError || null,
+                    track_count: current.trackSummaries.length,
+                    normalized_summary: toAiChatJsonValue(current.trackSummaries),
+                    query_capabilities: {
+                        map_lookup: true,
+                        available_maps: true,
+                        search: true,
+                    },
+                };
+            },
+            getToolHandlers: () => USER_SUMMARY_TOOL_HANDLERS,
+        };
+    }
+
+    const summaryStatus = useMemo(() => (
+        userSummaryLoading || labelsLoading
+            ? { label: 'Loading', tone: 'info' as const }
+            : userSummaryError || labelsError
+                ? { label: 'Unavailable', tone: 'error' as const }
+                : trackSummaries.length > 0
+                    ? { label: 'Ready', tone: 'success' as const }
+                    : { label: 'No summary yet', tone: 'neutral' as const }
+    ), [labelsError, labelsLoading, trackSummaries.length, userSummaryError, userSummaryLoading]);
+    const registration = useMemo(() => ({
+        screenId: 'user-summary',
+        assistantMode: 'user_summary' as const,
+        pillLabel: 'User Summary',
+        componentRef,
+        getPillInfo: () => ({
+            title: 'User Summary',
+            description: 'Long-term practice patterns normalized across tracks and track sections.',
+            status: summaryStatus,
+            facts: [
+                { label: 'Scope', value: 'Most recent 10 practice sessions' },
+                { label: 'Tracks', value: trackSummaries.length.toLocaleString() },
+            ],
+        }),
+    }), [summaryStatus, trackSummaries.length]);
+    useAiChatScreenRegistration(registration);
 
     return (
         <Box className="user-summary-container">

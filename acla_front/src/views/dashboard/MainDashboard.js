@@ -9,6 +9,7 @@ import LiveSessionDetectionManager from 'views/lap-analysis/LiveSessionDetection
 import { LiveSessionProvider } from 'views/live-session/LiveSessionContext';
 import { LIVE_SESSION_RECORDER_HOST_ID } from 'views/live-session/LiveSessionView';
 import { DASHBOARD_TABS, getDefaultDashboardTab } from './dashboard-navigation';
+import { AiChatScreenProvider } from 'contexts/AiChatScreenContext';
 
 const MainDashboard = ({ onTaskCreated }) => {
     const environment = useEnvironment();
@@ -17,33 +18,29 @@ const MainDashboard = ({ onTaskCreated }) => {
         : null;
 
     const [mainMenuTab, setMainMenuTab] = useState(() => getDefaultDashboardTab(environment));
-    const assistantModeOverride = mainMenuTab === DASHBOARD_TABS.LIVE_SESSION
-        ? 'live'
-        : mainMenuTab === DASHBOARD_TABS.USER_SUMMARY
-            ? 'user_summary'
-            : undefined;
-
     return (
         <LiveSessionProvider ownerEmail={authenticatedOwnerEmail}>
             <SessionAnalysisProvider>
-                {environment === 'electron' ? <LiveSessionDetectionManager /> : null}
-                <div className="main-dashboard-container">
-                <div className="main-dashboard-header">
-                    <HeaderMenu />
-                </div>
+                <AiChatScreenProvider>
+                    {environment === 'electron' ? <LiveSessionDetectionManager /> : null}
+                    <div className="main-dashboard-container">
+                        <div className="main-dashboard-header">
+                            <HeaderMenu />
+                        </div>
 
-                <div className="main-dashboard-content">
-                    <div className="main-dashboard-primary">
-                        <SideMainMenu activeTab={mainMenuTab} onTabChange={setMainMenuTab} />
+                        <div className="main-dashboard-content">
+                            <div className="main-dashboard-primary">
+                                <SideMainMenu activeTab={mainMenuTab} onTabChange={setMainMenuTab} />
+                            </div>
+                            <SessionAnalysisAssistant />
+                            {environment === 'electron' ? (
+                                <LiveAnalysisSessionRecording
+                                    recorderHostId={mainMenuTab === DASHBOARD_TABS.LIVE_SESSION ? LIVE_SESSION_RECORDER_HOST_ID : undefined}
+                                />
+                            ) : null}
+                        </div>
                     </div>
-                    <SessionAnalysisAssistant assistantModeOverride={assistantModeOverride} />
-                    {environment === 'electron' ? (
-                        <LiveAnalysisSessionRecording
-                            recorderHostId={mainMenuTab === DASHBOARD_TABS.LIVE_SESSION ? LIVE_SESSION_RECORDER_HOST_ID : undefined}
-                        />
-                    ) : null}
-                </div>
-                </div>
+                </AiChatScreenProvider>
             </SessionAnalysisProvider>
         </LiveSessionProvider>
     );

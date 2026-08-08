@@ -8,15 +8,53 @@ import {
 describe('VoiceGateway', () => {
     const gateway = new VoiceGateway({ verify: jest.fn() } as any) as any;
 
-    it('adds a chat LLM model selector to the AI service session URL', () => {
+    it('builds the exact create URL while preserving telemetry and model parameters', () => {
         const upstreamUrl = gateway.buildUpstreamUrl(
             'user-1',
             'session-1',
             'openai:gpt-4.1',
+            'create',
         );
 
         expect(upstreamUrl).toBe(
-            'ws://localhost:8000/voice/stream?user_id=user-1&session_id=session-1&chat_llm_model=openai%3Agpt-4.1',
+            'ws://localhost:8000/voice/stream?user_id=user-1&session_id=session-1&chat_llm_model=openai%3Agpt-4.1&chat_session_action=create',
+        );
+    });
+
+    it('builds the exact resume URL and URL-encodes the server-issued ID', () => {
+        const upstreamUrl = gateway.buildUpstreamUrl(
+            'user-1',
+            'session/1',
+            'hosted:qwen/qwen3-32b',
+            'resume',
+            'server/id + 1',
+        );
+
+        expect(upstreamUrl).toBe(
+            'ws://localhost:8000/voice/stream?user_id=user-1&session_id=session%2F1&chat_llm_model=hosted%3Aqwen%2Fqwen3-32b&chat_session_action=resume&chat_session_id=server%2Fid+%2B+1',
+        );
+    });
+
+    it('forwards browser chat-session query parameters into the upstream bridge', () => {
+        const forwardingGateway = new VoiceGateway({
+            verify: jest.fn().mockReturnValue({ id: 'user-1' }),
+        } as any) as any;
+        forwardingGateway.bridge = jest.fn();
+
+        forwardingGateway.handleConnection(
+            { close: jest.fn() } as any,
+            {
+                url: '/voice/stream?token=jwt&session_id=session-1&chat_llm_model=openai%3Agpt-4.1&chat_session_action=resume&chat_session_id=server%2Fid',
+            } as any,
+        );
+
+        expect(forwardingGateway.bridge).toHaveBeenCalledWith(
+            expect.anything(),
+            'user-1',
+            'session-1',
+            'openai:gpt-4.1',
+            'resume',
+            'server/id',
         );
     });
 

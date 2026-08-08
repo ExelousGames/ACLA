@@ -29,6 +29,11 @@ import apiService from 'services/api.service';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import { getToolEnvelopeUiOutput, type ToolOutputEnvelope } from '../ai-tool-base';
 import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
+import {
+    SCREEN_OWNED_TOOL_NAMES,
+    createAiChatScreenToolHandlers,
+    type AiChatScreenRegistration,
+} from 'contexts/AiChatScreenContext';
 
 const labelNames: Record<string, string> = {
     brands_hatch: 'Brands Hatch',
@@ -55,7 +60,37 @@ beforeEach(() => {
     jest.clearAllMocks();
 });
 
-const createRegistry = () => createAiCommandRegistry({
+const TEST_SCREEN_TOOL_HANDLERS = createAiChatScreenToolHandlers(
+    Array.from(SCREEN_OWNED_TOOL_NAMES),
+);
+
+const createRegisteredAiCommandRegistry = (context: AiCommandRegistryContext) => {
+    const activeScreen: AiChatScreenRegistration = {
+        screenId: 'test-screen',
+        assistantMode: context.sessionMode ?? 'live',
+        pillLabel: 'Test Screen',
+        recordedSessionId: context.sessionId,
+        getPillInfo: () => ({
+            title: 'Test Screen',
+            description: '',
+            status: { label: 'Ready', tone: 'neutral' },
+            facts: [],
+        }),
+        componentRef: {
+            current: {
+                getAiContext: () => ({}),
+                getToolHandlers: () => TEST_SCREEN_TOOL_HANDLERS,
+            },
+        },
+    };
+
+    return createAiCommandRegistry({
+        ...context,
+        getActiveScreen: () => activeScreen,
+    });
+};
+
+const createRegistry = () => createRegisteredAiCommandRegistry({
     sessionMode: 'live',
     recordingState: RecordingState.RECORDING,
     opportunityAgentState: {
@@ -181,7 +216,7 @@ describe('ai command registry user summary tools', () => {
         const setLiveRangeTodoList = jest.fn(() => ({ status: 'ready' as const, todo_list: todoList }));
         const updateLiveRangeTodoList = jest.fn(() => ({ status: 'ready' as const, todo_list: todoList }));
         const getLiveRangeTodoList = jest.fn(() => ({ status: 'ready' as const, todo_list: todoList }));
-        const registry = createAiCommandRegistry({
+        const registry = createRegisteredAiCommandRegistry({
             sessionMode: 'live',
             recordingState: RecordingState.RECORDING,
             opportunityAgentState: {
@@ -245,7 +280,7 @@ describe('ai command registry user summary tools', () => {
             Physics_wheel_pressure_rear_left: 25.9,
             Physics_wheel_pressure_rear_right: 26,
         });
-        const registry = createAiCommandRegistry({
+        const registry = createRegisteredAiCommandRegistry({
             sessionMode: 'live',
             recordingState: RecordingState.RECORDING,
             sessionIntelligence,
@@ -326,7 +361,7 @@ describe('ai command registry user summary tools', () => {
 
     it('displays a requested circuit map through the frontend callback', async () => {
         const displayMap = jest.fn();
-        const registry = createAiCommandRegistry({
+        const registry = createRegisteredAiCommandRegistry({
             sessionMode: 'live',
             recordingState: RecordingState.RECORDING,
             opportunityAgentState: {
@@ -386,7 +421,7 @@ describe('ai command registry user summary tools', () => {
 
     it('shows the map unavailable fallback when no circuit map can be resolved', async () => {
         const displayMap = jest.fn();
-        const registry = createAiCommandRegistry({
+        const registry = createRegisteredAiCommandRegistry({
             sessionMode: 'live',
             recordingState: RecordingState.RECORDING,
             opportunityAgentState: {
@@ -527,11 +562,117 @@ describe('ai command registry user summary tools', () => {
     });
 });
 
+describe('active screen tool routing', () => {
+    const createScreenRegistry = (getActiveScreen: AiCommandRegistryContext['getActiveScreen']) => (
+        createAiCommandRegistry({
+            sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            getActiveScreen,
+        })
+    );
+
+    it('resolves the active component handle when the tool executes', async () => {
+        const previousHandler = jest.fn(async () => ({ status: 'previous' }));
+        const activeRegistration = {
+            screenId: 'live-session',
+            assistantMode: 'live' as const,
+            pillLabel: 'Live Session',
+            getPillInfo: jest.fn(),
+            componentRef: {
+                current: {
+                    getAiContext: () => ({}),
+                    getToolHandlers: () => ({ query_telemetry_metric: previousHandler }),
+                },
+            },
+        };
+        let activeScreen: any = activeRegistration;
+        const registry = createScreenRegistry(() => activeScreen);
+
+        activeScreen = {
+            screenId: 'recorded-session',
+            assistantMode: 'recorded',
+            pillLabel: 'Recorded Session',
+            recordedSessionId: 'recorded-1',
+            getPillInfo: jest.fn(),
+            componentRef: {
+                current: {
+                    getAiContext: () => ({}),
+                    getToolHandlers: () => ({}),
+                },
+            },
+        };
+
+        const result = await registry.query_telemetry_metric(
+            { fields: ['speed'] },
+            { sendToolStatus: jest.fn() },
+        );
+
+        expect(previousHandler).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ error: 'recorded_session_live_tools_unavailable' });
+    });
+
+    it('dispatches through the active handle and retains core result formatting', async () => {
+        const sessionIntelligence = new SessionIntelligence();
+        sessionIntelligence.tick({
+            Graphics_completed_laps: 1,
+            Graphics_normalized_car_position: 0.2,
+            Physics_speed_kmh: 120,
+        });
+        const routedHandler = jest.fn(async (args, context) => (
+            context.executeCore('query_telemetry_metric', args)
+        ));
+        const activeScreen: any = {
+            screenId: 'live-session',
+            assistantMode: 'live',
+            pillLabel: 'Live Session',
+            getPillInfo: jest.fn(),
+            componentRef: {
+                current: {
+                    getAiContext: () => ({}),
+                    getToolHandlers: () => ({ query_telemetry_metric: routedHandler }),
+                },
+            },
+        };
+        const registry = createAiCommandRegistry({
+            sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
+            sessionIntelligence,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+            getActiveScreen: () => activeScreen,
+        });
+
+        const result = await registry.query_telemetry_metric(
+            { fields: ['Physics_speed_kmh'], reduce: 'max', scope: { type: 'now' } },
+            { sendToolStatus: jest.fn() },
+        );
+
+        expect(routedHandler).toHaveBeenCalledTimes(1);
+        expect(getUiOutput(result)).toMatchObject({ Physics_speed_kmh: 120 });
+    });
+});
+
 describe('ai command registry live recording gate', () => {
     it('rejects live-only tools when live mode is not actively recording', async () => {
         const sessionIntelligence = new SessionIntelligence();
         sessionIntelligence.tick({ Physics_fuel: 20 });
-        const registry = createAiCommandRegistry({
+        const registry = createRegisteredAiCommandRegistry({
             sessionMode: 'live',
             recordingState: RecordingState.READY,
             sessionIntelligence,
@@ -650,7 +791,7 @@ describe('ai command registry recorded session tools', () => {
 
         return {
             analysisContext,
-            registry: createAiCommandRegistry({
+            registry: createRegisteredAiCommandRegistry({
                 sessionMode: 'recorded',
                 analysisContext,
                 opportunityAgentState: {
@@ -945,7 +1086,7 @@ describe('ai command registry live performance analyst tools', () => {
             sessionIntelligence,
             livePerformanceAnalystState,
             context,
-            registry: createAiCommandRegistry(context),
+            registry: createRegisteredAiCommandRegistry(context),
         };
     };
 
@@ -1424,7 +1565,7 @@ describe('ai command registry live performance analyst tools', () => {
                 sourceEvent: 'live_analysis_plan_started',
             }),
         };
-        const registry = createAiCommandRegistry(context);
+        const registry = createRegisteredAiCommandRegistry(context);
 
         const result = await registry.advance_plan_step(
             { reason: 'skip ahead' },
@@ -1503,7 +1644,7 @@ describe('ai command registry live performance analyst tools', () => {
                 sourceEvent: 'procedure_plan_started',
             }),
         };
-        const registry = createAiCommandRegistry(context);
+        const registry = createRegisteredAiCommandRegistry(context);
 
         const result = await registry.advance_plan_step(
             { reason: 'baseline step completed' },
@@ -1850,7 +1991,7 @@ describe('ai command registry live performance analyst tools', () => {
     });
 
     it('returns an actionable error when the live range to-do panel is absent', async () => {
-        const registry = createAiCommandRegistry({
+        const registry = createRegisteredAiCommandRegistry({
             sessionMode: 'live',
             recordingState: RecordingState.RECORDING,
             opportunityAgentState: {
@@ -2034,7 +2175,7 @@ describe('ai command registry live performance analyst tools', () => {
             setTrackGuideEnabled: jest.fn(),
             getOpportunityTelemetryRows: () => [],
         };
-        const registry = createAiCommandRegistry(context);
+        const registry = createRegisteredAiCommandRegistry(context);
 
         const focusResult = await registry.get_live_focus_section(
             {},
@@ -2169,7 +2310,7 @@ describe('ai command registry live performance analyst tools', () => {
                 name: 'analyze_live_recorded_analysis',
             },
         }));
-        const planRegistry = createAiCommandRegistry({
+        const planRegistry = createRegisteredAiCommandRegistry({
             sessionMode: 'live',
             recordingState: RecordingState.RECORDING,
             analysisContext,
@@ -2447,7 +2588,7 @@ describe('ai command registry live performance analyst tools', () => {
                 sourceEvent: 'live_analysis_plan_started',
             }),
         };
-        const registry = createAiCommandRegistry(context);
+        const registry = createRegisteredAiCommandRegistry(context);
         const sendToolStatus = jest.fn();
         sessionIntelligence.onLiveAnalystToolStatus(sendToolStatus);
         const toolContextSendToolStatus = jest.fn();

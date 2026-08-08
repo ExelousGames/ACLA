@@ -49,6 +49,14 @@ import {
 } from './ai-tool-base';
 import type { LiveRangeTodoListToolResult } from 'views/live-session/live-range-todo-list-types';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
+import {
+    LIVE_SCREEN_TOOL_NAMES,
+    RECORDED_SCREEN_TOOL_NAMES,
+    SCREEN_OWNED_TOOL_NAMES,
+    USER_SUMMARY_SCREEN_TOOL_NAMES,
+    type AiChatScreenRegistration,
+    type AiChatScreenToolHandlerContext,
+} from 'contexts/AiChatScreenContext';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
 export type AiCommandToolDefinition = AiToolDefinition<AiCommandRegistryContext, ToolHandlerContext>;
@@ -136,6 +144,7 @@ export interface AiCommandRegistryContext {
     updateLiveRangeTodoList?: (args: Record<string, unknown>) => LiveRangeTodoListToolResult;
     getLiveRangeTodoList?: () => LiveRangeTodoListToolResult;
     displayMap?: (display: AiMapDisplayPayload) => void;
+    getActiveScreen?: () => AiChatScreenRegistration | null;
 }
 
 export interface OpportunityAgentState {
@@ -1758,6 +1767,75 @@ const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<s
     return registry;
 };
 
+const getScreenToolUnavailableResult = (
+    name: string,
+    context: AiCommandRegistryContext,
+) => {
+    if ((RECORDED_SCREEN_TOOL_NAMES as readonly string[]).includes(name)) {
+        return { status: 'error', error: 'not_recorded_mode' };
+    }
+    if ((LIVE_SCREEN_TOOL_NAMES as readonly string[]).includes(name)) {
+        return { error: getLiveToolsUnavailableError(context) };
+    }
+    if ((USER_SUMMARY_SCREEN_TOOL_NAMES as readonly string[]).includes(name)) {
+        return {
+            status: 'error',
+            error: 'user_summary_unavailable',
+            message: 'User summary tools are only available from the User Summary screen.',
+            maps: [],
+        };
+    }
+    return {
+        status: 'error',
+        error: 'active_screen_tool_unavailable',
+        message: 'This tool is not available from the active screen.',
+    };
+};
+
+const executeScreenOwnedTool = async (
+    name: string,
+    args: Record<string, any>,
+    context: AiCommandRegistryContext,
+    handlerContext: ToolHandlerContext,
+) => {
+    const activeScreen = context.getActiveScreen?.() ?? null;
+    const handle = activeScreen?.componentRef.current;
+    const handler = handle?.getToolHandlers()[name];
+    if (!handler) return getScreenToolUnavailableResult(name, {
+        ...context,
+        sessionMode: activeScreen?.assistantMode ?? context.sessionMode,
+    });
+
+    const currentContext: AiCommandRegistryContext = {
+        ...context,
+        sessionId: activeScreen?.recordedSessionId ?? context.sessionId,
+        sessionMode: activeScreen?.assistantMode ?? context.sessionMode,
+    };
+    const rawRegistry = createRawAiCommandRegistry(currentContext);
+    const screenHandlerContext: AiChatScreenToolHandlerContext = {
+        ...handlerContext,
+        executeCore: async (requestedName, requestedArgs) => {
+            if (requestedName !== name) {
+                return {
+                    status: 'error',
+                    error: 'screen_tool_mismatch',
+                    message: `Screen handler for ${name} cannot execute ${requestedName}.`,
+                };
+            }
+            const coreHandler = rawRegistry[name];
+            if (!coreHandler) {
+                return {
+                    status: 'error',
+                    error: 'tool_not_registered',
+                    message: `Tool ${name} is not registered.`,
+                };
+            }
+            return coreHandler(requestedArgs, handlerContext);
+        },
+    };
+    return handler(args, screenHandlerContext);
+};
+
 const ALL_AI_TOOL_NAMES = [
     'start_agent_session',
     'stop_agent_session',
@@ -1985,6 +2063,9 @@ const createAiToolDefinition = (
             }
             if (name === 'restart_live_baseline') {
                 return restartLiveBaselineCollection(context, output);
+            }
+            if (SCREEN_OWNED_TOOL_NAMES.has(name)) {
+                return executeScreenOwnedTool(name, args, context, handlerContext);
             }
 
             const rawRegistry = createRawAiCommandRegistry(context);

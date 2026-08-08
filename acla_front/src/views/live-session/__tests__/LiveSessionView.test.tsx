@@ -3,6 +3,11 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import type { DesktopGame, DesktopGameContextValue } from 'contexts/DesktopGameContext';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import { LiveSessionContext } from '../LiveSessionContext';
+import {
+    AiChatScreenProvider,
+    AiChatScreenRegistration,
+    useAiChatScreen,
+} from 'contexts/AiChatScreenContext';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: jest.fn(),
@@ -111,9 +116,79 @@ const renderView = (runtime = createRuntime()) => render(
     </LiveSessionContext.Provider>,
 );
 
+let observedScreen: AiChatScreenRegistration | null = null;
+const RegistrationObserver = () => {
+    observedScreen = useAiChatScreen().activeScreen;
+    return null;
+};
+
 describe('LiveSessionView', () => {
     beforeEach(() => {
         mockedUseDesktopGame.mockReset();
+        observedScreen = null;
+    });
+
+    it('registers current live context and live-owned tool capabilities', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const runtime: any = createRuntime('acc');
+        runtime.recordingState = RecordingState.RECORDING;
+        runtime.recordingMetadata = {
+            sessionName: 'Monza Run',
+            mapName: 'Monza',
+            carName: 'BMW M4 GT3',
+            gameRecordedFrom: 'acc',
+        };
+        runtime.currentTelemetry = { Physics_speed_kmh: 210 };
+        runtime.sessionIntelligence = {
+            getLiveSessionSnapshot: () => ({
+                status: 'ready',
+                track: 'Monza',
+                car: 'BMW M4 GT3',
+                current_lap: 4,
+                completed_laps: 3,
+                normalized_position: 0.42,
+                sample_count: 1250,
+                live_session_type: 'practice',
+                baseline_ready: true,
+                baseline_collection_started: true,
+                baseline_progress_percent: 100,
+                baseline_lap: 3,
+                completed_lap_count: 3,
+                section_count: 6,
+            }),
+        };
+
+        render(
+            <AiChatScreenProvider>
+                <LiveSessionContext.Provider value={runtime as any}>
+                    <LiveSessionView />
+                </LiveSessionContext.Provider>
+                <RegistrationObserver />
+            </AiChatScreenProvider>,
+        );
+
+        expect(observedScreen).toMatchObject({
+            screenId: 'live-session',
+            assistantMode: 'live',
+            pillLabel: 'Live Session',
+        });
+        expect(observedScreen!.getPillInfo()).toMatchObject({
+            title: 'Monza Run',
+            status: { label: 'Recording', tone: 'success' },
+        });
+        expect(observedScreen!.componentRef.current!.getAiContext()).toMatchObject({
+            simulator: 'acc',
+            track: 'Monza',
+            car: 'BMW M4 GT3',
+            current_lap: 4,
+            sample_count: 1250,
+        });
+        expect(observedScreen!.componentRef.current!.getToolHandlers()).toEqual(expect.objectContaining({
+            query_telemetry_metric: expect.any(Function),
+            get_event_log: expect.any(Function),
+            set_live_range_todo_list: expect.any(Function),
+            open_visualization_chart: expect.any(Function),
+        }));
     });
 
     it.each(detectionCases)('shows the $name detector state at the session gate', ({

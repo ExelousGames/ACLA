@@ -1,6 +1,9 @@
-import { hasLiveSessionAssistant, RecordingState } from './recording-state';
+import type {
+    AiChatAssistantMode,
+    AiChatScreenRegistration,
+} from 'contexts/AiChatScreenContext';
 
-export type SessionAnalysisAssistantMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
+export type SessionAnalysisAssistantMode = AiChatAssistantMode;
 
 export const buildAssistantConversationKey = (sessionMode: string, sessionId?: string | null): string =>
     `${sessionMode}:${sessionId || 'none'}`;
@@ -10,23 +13,23 @@ export const resolveAssistantRecordedSessionId = (
     sessionId?: string | null,
 ): string | undefined => sessionMode === 'recorded' && sessionId ? sessionId : undefined;
 
-export const resolveAssistantSessionMode = ({
-    assistantModeOverride,
-    sessionId,
-    recordingState,
-}: {
-    assistantModeOverride?: SessionAnalysisAssistantMode;
-    sessionId?: string | null;
-    recordingState?: RecordingState | null;
-}): SessionAnalysisAssistantMode => {
-    if (assistantModeOverride) {
-        return assistantModeOverride;
-    }
-    if (sessionId) {
-        return 'recorded';
-    }
-    if (hasLiveSessionAssistant(recordingState)) {
-        return 'live';
-    }
-    return 'front_desk';
+export const resolveRegisteredAssistantIdentity = (
+    activeScreen: AiChatScreenRegistration | null,
+) => {
+    const sessionMode = activeScreen?.assistantMode ?? 'front_desk';
+    const sessionId = resolveAssistantRecordedSessionId(
+        sessionMode,
+        activeScreen?.recordedSessionId,
+    );
+    const label = activeScreen?.pillLabel ?? 'Front Desk';
+
+    return {
+        sessionMode,
+        sessionId,
+        label,
+        conversationKey: buildAssistantConversationKey(sessionMode, sessionId),
+        title: sessionMode === 'front_desk'
+            ? 'AI Assistant - Front Desk'
+            : `AI Assistant - ${label}`,
+    };
 };

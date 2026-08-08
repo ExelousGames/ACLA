@@ -1,7 +1,7 @@
 import {
     buildAssistantConversationKey,
     resolveAssistantRecordedSessionId,
-    resolveAssistantSessionMode,
+    resolveRegisteredAssistantIdentity,
 } from '../assistant-session-mode';
 import {
     getNextRecordingState,
@@ -10,24 +10,36 @@ import {
 } from '../recording-state';
 
 describe('assistant session mode resolution', () => {
-    it('defaults to front desk before a session is selected or recording starts', () => {
-        expect(resolveAssistantSessionMode({
-            recordingState: RecordingState.CHECKING,
-        })).toBe('front_desk');
+    const createRegistration = (overrides: Record<string, unknown> = {}) => ({
+        screenId: 'live-session',
+        assistantMode: 'live' as const,
+        pillLabel: 'Live Session',
+        componentRef: { current: null },
+        getPillInfo: () => ({
+            title: 'Live Session',
+            description: 'Live',
+            status: { label: 'Ready', tone: 'success' as const },
+            facts: [],
+        }),
+        ...overrides,
     });
 
-    it('uses live mode while shared recording state is actively recording', () => {
-        expect(resolveAssistantSessionMode({
-            recordingState: RecordingState.RECORDING,
-        })).toBe('live');
+    it('uses the Front Desk fallback while registration is temporarily unavailable', () => {
+        expect(resolveRegisteredAssistantIdentity(null)).toEqual({
+            sessionMode: 'front_desk',
+            sessionId: undefined,
+            label: 'Front Desk',
+            conversationKey: 'front_desk:none',
+            title: 'AI Assistant - Front Desk',
+        });
     });
 
-    it.each([
-        RecordingState.HOLDING,
-        RecordingState.RESUME_READY,
-        RecordingState.UPLOAD_READY,
-    ])('keeps the live assistant mounted in %s', (recordingState) => {
-        expect(resolveAssistantSessionMode({ recordingState })).toBe('live');
+    it('uses the active registration instead of recording or dashboard state', () => {
+        expect(resolveRegisteredAssistantIdentity(createRegistration())).toMatchObject({
+            sessionMode: 'live',
+            label: 'Live Session',
+            conversationKey: 'live:none',
+        });
     });
 
     it('keeps AI available while paused but closes it after ending', () => {
@@ -36,27 +48,19 @@ describe('assistant session mode resolution', () => {
         expect(isLiveSessionAiAvailable(RecordingState.UPLOAD_READY)).toBe(false);
     });
 
-    it('uses recorded mode when a recorded session id is selected', () => {
-        expect(resolveAssistantSessionMode({
+    it('uses the registered recorded id for title and conversation identity', () => {
+        expect(resolveRegisteredAssistantIdentity(createRegistration({
+            screenId: 'recorded-session',
+            assistantMode: 'recorded',
+            pillLabel: 'Race 12',
+            recordedSessionId: 'session-1',
+        }) as any)).toMatchObject({
+            sessionMode: 'recorded',
             sessionId: 'session-1',
-            recordingState: RecordingState.CHECKING,
-        })).toBe('recorded');
-    });
-
-    it('keeps explicit assistant overrides authoritative', () => {
-        expect(resolveAssistantSessionMode({
-            assistantModeOverride: 'user_summary',
-            sessionId: 'session-1',
-            recordingState: RecordingState.RECORDING,
-        })).toBe('user_summary');
-    });
-
-    it('keeps a live tab override authoritative while checking with a recorded session selected', () => {
-        expect(resolveAssistantSessionMode({
-            assistantModeOverride: 'live',
-            sessionId: 'session-1',
-            recordingState: RecordingState.CHECKING,
-        })).toBe('live');
+            label: 'Race 12',
+            conversationKey: 'recorded:session-1',
+            title: 'AI Assistant - Race 12',
+        });
     });
 
     it.each(['live', 'front_desk', 'user_summary'] as const)(
