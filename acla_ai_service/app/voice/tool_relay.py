@@ -1,4 +1,4 @@
-"""Per-connection WS tool relay for the voice pipeline.
+"""Per-chat-session WS tool relay for the voice pipeline.
 
 Backend and frontend share the same ``/voice/stream`` WebSocket. Binary
 frames carry PCM audio for Pipecat. Text frames carry JSON control messages
@@ -27,7 +27,7 @@ SessionContextSink = Callable[[Dict[str, Any]], Any]
 
 
 class _ConnectionState:
-    """Per-connection state held by the relay."""
+    """Active transport state held by the relay for one chat session."""
 
     __slots__ = (
         "send_text",
@@ -53,29 +53,29 @@ class ToolRelay:
     """Process-wide registry for active voice connections."""
 
     def __init__(self, max_ai_visible_tool_payload_chars: int = MAX_AI_VISIBLE_TOOL_PAYLOAD_CHARS) -> None:
-        self._by_conn: Dict[int, _ConnectionState] = {}
+        self._by_chat_session_id: Dict[str, _ConnectionState] = {}
         self._max_ai_visible_tool_payload_chars = max_ai_visible_tool_payload_chars
 
     def bind(
         self,
-        conn: Any,
+        chat_session_id: str,
         send_text: SendText,
         user_text_sink: UserTextSink,
         session_context_sink: Optional[SessionContextSink] = None,
         tool_result_sink: Optional[ToolResultSink] = None,
     ) -> None:
-        """Register a connection and its inbound text-frame sinks."""
-        self._by_conn[id(conn)] = _ConnectionState(
+        """Bind a chat session to its current transport and inbound sinks."""
+        self._by_chat_session_id[chat_session_id] = _ConnectionState(
             send_text, user_text_sink, tool_result_sink, session_context_sink,
         )
 
-    def unbind(self, conn: Any) -> None:
-        """Drop the registration for a connection."""
-        self._by_conn.pop(id(conn), None)
+    def unbind(self, chat_session_id: str) -> None:
+        """Drop only the active transport binding for a chat session."""
+        self._by_chat_session_id.pop(chat_session_id, None)
 
     async def send_tool_call(
         self,
-        conn: Any,
+        chat_session_id: str,
         name: str,
         arguments: Optional[Dict[str, Any]] = None,
         title: Optional[str] = None,
@@ -87,9 +87,13 @@ class ToolRelay:
         for backend diagnostics and UI metadata; it is not LLM-visible
         frontend tool data.
         """
-        state = self._by_conn.get(id(conn))
+        state = self._by_chat_session_id.get(chat_session_id)
         if state is None:
-            LOGGER.warning("tool_relay: no bound connection for %s", name)
+            LOGGER.warning(
+                "tool_relay: no transport bound for chat_session=%s tool=%s",
+                chat_session_id,
+                name,
+            )
             return None
 
         call_id = uuid.uuid4().hex
@@ -108,13 +112,17 @@ class ToolRelay:
             return None
         return call_id
 
-    def handle_text_frame(self, conn: Any, payload: Dict[str, Any]) -> None:
+    def handle_text_frame(
+        self,
+        chat_session_id: str,
+        payload: Dict[str, Any],
+    ) -> None:
         """Route one inbound text frame.
 
         Tool payload frames are serialized to text and sent through the
         tool-result sink. Typed user text uses the user-text sink.
         """
-        state = self._by_conn.get(id(conn))
+        state = self._by_chat_session_id.get(chat_session_id)
         if state is None:
             return
 

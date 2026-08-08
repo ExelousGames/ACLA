@@ -12,8 +12,8 @@ Builds a per-WebSocket-session pipeline:
         → FastAPIWebsocketTransport.output()
 
 The factory returns a `PipelineTask` that the WS endpoint runs via
-`PipelineRunner`. Each connection gets its own pipeline instance, so
-conversation history is isolated.
+`PipelineRunner`. Each connection gets a fresh pipeline instance, with
+conversation history restored from the process-local chat session registry.
 
 All Pipecat imports are deferred so the AI service still boots when
 pipecat-ai isn't installed in the active container (e.g. a partial dev
@@ -26,7 +26,7 @@ Phase 3b additions:
       the same tool implementations.
 
 Known limitations (deferred):
-    - No per-user conversation history persistence — each WS = fresh context.
+    - Chat history is process-local and does not survive service restarts.
 """
 
 from __future__ import annotations
@@ -34,7 +34,8 @@ from __future__ import annotations
 import logging
 import json
 import re
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
 
 from app.chat_llm import resolve_chat_llm_config
@@ -396,14 +397,14 @@ def _build_openai_llm_service(
 
 @dataclass
 class VoiceSessionConfig:
-    """Per-WS-session configuration.
+    """Per-connection configuration for a reconnectable chat session.
 
-    The WS connection takes only ``session_id`` and ``user_id`` as query
-    params — anything else the LLM wants (current track/car, lap data,
-    recent telemetry, etc.) is fetched on demand via tool calls. See the
-    plan's "everything is pulled on demand" principle.
+    ``session_id`` remains the optional telemetry session identifier and is
+    deliberately separate from ``chat_session_id``.
     """
 
+    chat_session_id: str
+    committed_history: List[Dict[str, Any]] = field(default_factory=list)
     session_id: Optional[str] = None
     session_context: Optional[Dict[str, Any]] = None
     user_id: Optional[str] = None
@@ -645,7 +646,7 @@ def _build_title_map(
 def _make_tool_handler(
     tool_executor,
     session_config: "VoiceSessionConfig",
-    conn: Any,
+    chat_session_id: str,
     *,
     frontend_tool_names: frozenset[str],
     tool_titles: Dict[str, str],
@@ -653,9 +654,8 @@ def _make_tool_handler(
     """Build a per-session async handler with two-bucket dispatch.
 
     * Tool names in ``frontend_tool_names`` (derived from the WS handshake)
-      → forwarded to the frontend over the WS via
-      :func:`app.voice.tool_relay.get_relay().dispatch`. The ``conn`` arg
-      identifies which WS connection to send the call on.
+      → forwarded to the frontend through the active transport bound to
+      ``chat_session_id``.
     * Everything else → forwarded to ``tool_executor`` (server-side path,
       typically ``AIService._execute_function``).
 
@@ -679,7 +679,12 @@ def _make_tool_handler(
         arguments = arguments or {}
 
         LOGGER.info("[FRONTEND-TOOL-CALL] name=%s args=%r", function_name, arguments)
-        call_id = await relay.send_tool_call(conn, function_name, arguments, title)
+        call_id = await relay.send_tool_call(
+            chat_session_id,
+            function_name,
+            arguments,
+            title,
+        )
         LOGGER.info(
             "[FRONTEND-TOOL-DISPATCHED] name=%s ok=%s call_id=%r",
             function_name, bool(call_id), call_id,
@@ -708,16 +713,11 @@ def _make_tool_handler(
             else:
                 # Server-side path. Context carries the connect-time IDs;
                 # track/car are intentionally absent (LLM fetches via tool).
-                # ``_conn`` is an opaque handle that server-side composite
-                # helpers use to relay back to the
-                # frontend via the same WS — underscore-prefixed because
-                # it's a server-internal channel, not part of the OpenAI
-                # context schema.
                 context = {
                     "session_id": session_config.session_id,
                     "session_context": session_config.session_context,
                     "user_id": session_config.user_id,
-                    "_conn": conn,
+                    "_chat_session_id": chat_session_id,
                 }
                 result = await tool_executor(function_name, arguments, context)
         except Exception as exc:
@@ -1108,6 +1108,51 @@ def _build_context_logger():
     return ContextLogger
 
 
+def _build_initial_context_messages(
+    session_config: VoiceSessionConfig,
+    tool_result_handling: Optional[str],
+) -> tuple[List[Dict[str, Any]], int]:
+    """Build a fresh connection root followed by stored conversation history."""
+    system_prompt = _build_system_prompt(
+        session_config.session_context,
+        tool_result_handling,
+    )
+    history = [
+        deepcopy(message)
+        for message in session_config.committed_history
+        if isinstance(message, dict)
+    ]
+    return ([{"role": "system", "content": system_prompt}, *history], len(history))
+
+
+def _committed_history_from_messages(
+    messages: Iterable[Any],
+    initial_history_length: int,
+) -> List[Dict[str, Any]]:
+    """Remove the root prompt and any new turn lacking a final assistant reply."""
+    conversation = [
+        deepcopy(message)
+        for message in list(messages)[1:]
+        if isinstance(message, dict)
+    ]
+    prior_count = min(max(initial_history_length, 0), len(conversation))
+    prior_history = conversation[:prior_count]
+    current_messages = conversation[prior_count:]
+
+    last_complete_assistant = -1
+    for index, message in enumerate(current_messages):
+        if (
+            message.get("role") == "assistant"
+            and message.get("content")
+            and not message.get("tool_calls")
+        ):
+            last_complete_assistant = index
+
+    if last_complete_assistant < 0:
+        return prior_history
+    return prior_history + current_messages[:last_complete_assistant + 1]
+
+
 async def build_voice_pipeline_task(
     websocket: Any,
     session_config: VoiceSessionConfig,
@@ -1160,8 +1205,10 @@ async def build_voice_pipeline_task(
     ContextLogger = _build_context_logger()
 
     LOGGER.info(
-        "Building voice pipeline (session=%s user=%s)",
-        session_config.session_id, session_config.user_id,
+        "Building voice pipeline (chat_session=%s telemetry_session=%s user=%s)",
+        session_config.chat_session_id,
+        session_config.session_id,
+        session_config.user_id,
     )
 
     # --- Transport ---
@@ -1238,7 +1285,9 @@ async def build_voice_pipeline_task(
     tools = ToolsSchema(standard_tools=tool_schemas)
 
     tool_handler, send_frontend_tool, dispatch_server_tool = _make_tool_handler(
-        tool_executor, session_config, conn=websocket,
+        tool_executor,
+        session_config,
+        chat_session_id=session_config.chat_session_id,
         frontend_tool_names=frontend_tool_names,
         tool_titles=tool_titles,
     )
@@ -1251,13 +1300,13 @@ async def build_voice_pipeline_task(
     #
     # Startup behavior docs live in editable .md files. Each new socket gets
     # shared chatbot rules plus exactly one agent-specific role document.
-    system_prompt = _build_system_prompt(
-        session_config.session_context,
+    initial_messages, initial_history_length = _build_initial_context_messages(
+        session_config,
         tool_result_handling,
     )
 
     context = LLMContext(
-        messages=[{"role": "system", "content": system_prompt}],
+        messages=initial_messages,
         tools=tools,
     )
     context_aggregator = LLMContextAggregatorPair(context)
@@ -1328,6 +1377,8 @@ async def build_voice_pipeline_task(
             enable_metrics=False,
         ),
     )
+    task._acla_llm_context = context
+    task._acla_initial_history_length = initial_history_length
     task_ref["task"] = task
     # --- Text control sinks -------------------------------------------------
     # Tool results/errors are serialized by the relay and sent through a
@@ -1375,7 +1426,7 @@ async def build_voice_pipeline_task(
         _trigger_llm_run("tool_result_sink")
 
     get_relay().bind(
-        websocket,
+        session_config.chat_session_id,
         send_text=_send_text,
         user_text_sink=user_text_sink,
         tool_result_sink=tool_result_sink,
@@ -1405,26 +1456,57 @@ async def run_voice_session(
     ``tool_executor`` (typically AIService._execute_function), and passing
     ``frontend_tools`` from the WS handshake (see :mod:`app.api.voice`).
 
-    Also unbinds the WebSocket from :mod:`app.voice.tool_relay` on exit so
-    in-flight tool-call futures are cancelled cleanly.
+    On exit, committed context is copied back to the chat session registry,
+    the active transport is unbound, and the session becomes resumable.
     """
     # Deferred imports.
     from pipecat.pipeline.runner import PipelineRunner
+    from app.voice.chat_sessions import get_chat_session_registry
     from app.voice.tool_relay import get_relay
 
-    task = await build_voice_pipeline_task(
-        websocket, session_config, tool_executor,
-        frontend_tools=frontend_tools,
-        tool_metadata=tool_metadata,
-        query_scope_schema=query_scope_schema,
-        tool_result_handling=tool_result_handling,
-    )
-    runner = PipelineRunner()
+    task = None
     try:
+        task = await build_voice_pipeline_task(
+            websocket, session_config, tool_executor,
+            frontend_tools=frontend_tools,
+            tool_metadata=tool_metadata,
+            query_scope_schema=query_scope_schema,
+            tool_result_handling=tool_result_handling,
+        )
+        runner = PipelineRunner()
         await runner.run(task)
     finally:
         stop_control_pump = getattr(websocket, "stop_text_control_pump", None)
         if callable(stop_control_pump):
-            await stop_control_pump()
-        get_relay().unbind(websocket)
-        LOGGER.info("Voice session ended (user=%s)", session_config.user_id)
+            try:
+                await stop_control_pump()
+            except Exception:
+                LOGGER.exception(
+                    "Could not stop voice control pump (chat_session=%s)",
+                    session_config.chat_session_id,
+                )
+        get_relay().unbind(session_config.chat_session_id)
+
+        committed_history = None
+        context = getattr(task, "_acla_llm_context", None)
+        if context is not None:
+            try:
+                committed_history = _committed_history_from_messages(
+                    getattr(context, "messages", []) or [],
+                    getattr(task, "_acla_initial_history_length", 0),
+                )
+            except Exception:
+                LOGGER.exception(
+                    "Could not snapshot voice chat history (chat_session=%s)",
+                    session_config.chat_session_id,
+                )
+
+        get_chat_session_registry().detach(
+            session_config.chat_session_id,
+            committed_history,
+        )
+        LOGGER.info(
+            "Voice session ended (chat_session=%s user=%s)",
+            session_config.chat_session_id,
+            session_config.user_id,
+        )

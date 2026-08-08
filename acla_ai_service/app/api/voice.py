@@ -151,6 +151,8 @@ async def voice_stream(
     session_id: Optional[str] = Query(None),
     user_id: Optional[str] = Query(None),
     chat_llm_model: Optional[str] = Query(None),
+    chat_session_action: Optional[str] = Query(None),
+    chat_session_id: Optional[str] = Query(None),
 ):
     """WebSocket endpoint for full bidirectional voice conversation.
 
@@ -168,113 +170,147 @@ async def voice_stream(
     Pipeline (binary frames only):
         VAD → Whisper STT → selected chat LLM → Kokoro TTS
 
-    Query params kept minimal — only what the relay needs at connect
-    time. ``track_name`` / ``car_name`` are not passed in; the LLM
-    responds to what the driver says rather than carrying session
-    state. See the plan's "everything is pulled on demand" principle.
+    ``session_id`` identifies optional telemetry context. The separately
+    issued ``chat_session_id`` owns reconnectable LLM conversation history.
     """
     await websocket.accept()
 
-    selected_chat_llm_model = normalize_chat_llm_model(chat_llm_model)
-    if selected_chat_llm_model is not None:
+    from app.voice.chat_sessions import (
+        ChatSessionError,
+        get_chat_session_registry,
+    )
+
+    try:
+        action, owner_user_id, requested_chat_session_id = (
+            _validate_chat_session_request(
+                chat_session_action,
+                chat_session_id,
+                user_id,
+            )
+        )
+    except ChatSessionError as exc:
+        await _reject_chat_session_request(websocket, exc)
+        return
+
+    registry = get_chat_session_registry()
+    chat_session = None
+    resumed = action == "resume"
+    if resumed:
         try:
-            parse_chat_llm_model_selector(selected_chat_llm_model)
-        except RuntimeError as exc:
-            await websocket.send_json({
-                "type": "error",
-                "message": str(exc),
-                "error_type": "InvalidChatLLMModel",
-            })
-            await websocket.close(code=1008, reason="invalid chat_llm_model")
+            chat_session = registry.resume_attached(
+                requested_chat_session_id,
+                owner_user_id,
+            )
+        except ChatSessionError as exc:
+            await _reject_chat_session_request(websocket, exc)
             return
 
-    # Deferred imports — keeps the rest of the API importable even when
-    # pipecat isn't installed in the running container.
     try:
-        from app.voice.pipecat_pipeline import (
-            VoiceSessionConfig,
-            run_voice_session,
-        )
-    except ImportError as exc:
-        LOGGER.error("Pipecat / faster-whisper not installed: %s", exc)
-        await websocket.send_json({
-            "type": "error",
-            "message": (
-                "Voice conversation is not available in this environment "
-                "(pipecat-ai or faster-whisper not installed)."
-            ),
-            "error_type": "DependencyMissing",
-        })
-        await websocket.close(code=1011, reason="voice dependency missing")
-        return
+        selected_chat_llm_model = normalize_chat_llm_model(chat_llm_model)
+        if selected_chat_llm_model is not None:
+            try:
+                parse_chat_llm_model_selector(selected_chat_llm_model)
+            except RuntimeError as exc:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": str(exc),
+                    "error_type": "InvalidChatLLMModel",
+                })
+                await websocket.close(code=1008, reason="invalid chat_llm_model")
+                return
 
-    # ── Handshake: frontend declares executable tool capabilities ─────────
-    # The first text frame on every voice session must be
-    # ``{"type": "frontend_info", "tools": [...]}``. The backend gateway injects
-    # browser-side executable capability shapes and LLM-facing metadata before
-    # the AI service builds the LLM's tool surface.
-    # Audio frames before the handshake are dropped (we haven't built the
-    # pipeline yet anyway).
-    try:
-        (
-            frontend_tools,
-            tool_metadata,
-            query_scope_schema,
-            tool_result_handling,
-            session_context,
-        ) = await _await_frontend_info(
-            websocket,
-            timeout=5.0,
-        )
-    except _HandshakeError as exc:
-        LOGGER.warning(
-            "Voice WS handshake failed (user=%s): %s", user_id, exc,
-        )
+        # Deferred imports — keeps the rest of the API importable even when
+        # pipecat isn't installed in the running container.
         try:
+            from app.voice.pipecat_pipeline import (
+                VoiceSessionConfig,
+                run_voice_session,
+            )
+        except ImportError as exc:
+            LOGGER.error("Pipecat / faster-whisper not installed: %s", exc)
             await websocket.send_json({
                 "type": "error",
-                "message": str(exc),
-                "error_type": "HandshakeError",
+                "message": (
+                    "Voice conversation is not available in this environment "
+                    "(pipecat-ai or faster-whisper not installed)."
+                ),
+                "error_type": "DependencyMissing",
             })
-        except Exception:
-            pass
+            await websocket.close(code=1011, reason="voice dependency missing")
+            return
+
+        # The first text frame on every connection declares frontend tools and
+        # current context. Audio frames before it are dropped.
         try:
-            await websocket.close(code=1002, reason="frontend_info handshake failed")
-        except Exception:
-            pass
-        return
+            (
+                frontend_tools,
+                tool_metadata,
+                query_scope_schema,
+                tool_result_handling,
+                session_context,
+            ) = await _await_frontend_info(
+                websocket,
+                timeout=5.0,
+            )
+        except _HandshakeError as exc:
+            LOGGER.warning(
+                "Voice WS handshake failed (user=%s): %s", owner_user_id, exc,
+            )
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": str(exc),
+                    "error_type": "HandshakeError",
+                })
+            except Exception:
+                pass
+            try:
+                await websocket.close(code=1002, reason="frontend_info handshake failed")
+            except Exception:
+                pass
+            return
 
-    config = VoiceSessionConfig(
-        session_id=session_id,
-        session_context=session_context,
-        user_id=user_id,
-        chat_llm_model=selected_chat_llm_model,
-    )
+        if not resumed:
+            chat_session = registry.create_attached(owner_user_id)
 
-    # Construct the tool executor here, in the inbound-adapter band, so
-    # app/voice/ never imports from app/pipelines/ (see .importlinter
-    # contract voice-no-pipeline-or-api).
-    from app.racing_engineer import AIService
-    ai_service = AIService(
-        chat_llm_model=selected_chat_llm_model,
-    )
-    tool_executor = ai_service._execute_function
+        await websocket.send_json({
+            "type": "chat_session_ready",
+            "chat_session_id": chat_session.chat_session_id,
+            "resumed": resumed,
+        })
 
-    # Wrap the WS so inbound text frames go to the tool relay and only
-    # binary frames reach Pipecat. The relay singleton is bound to the
-    # underlying ``websocket`` (identity is keyed by id(websocket)) inside
-    # ``build_voice_pipeline_task``.
-    filtered_ws = _TextFilteringWebSocket(websocket)
+        config = VoiceSessionConfig(
+            chat_session_id=chat_session.chat_session_id,
+            committed_history=chat_session.committed_history,
+            session_id=session_id,
+            session_context=session_context,
+            user_id=owner_user_id,
+            chat_llm_model=selected_chat_llm_model,
+        )
 
-    LOGGER.info(
-        "Voice WS connected (session=%s user=%s chat_llm_model=%s frontend_tools=%d)",
-        session_id,
-        user_id,
-        selected_chat_llm_model or "default",
-        len(frontend_tools),
-    )
+        # Construct the server-side tool executor in the inbound adapter band.
+        from app.racing_engineer import AIService
+        ai_service = AIService(
+            chat_llm_model=selected_chat_llm_model,
+        )
+        tool_executor = ai_service._execute_function
 
-    try:
+        filtered_ws = _TextFilteringWebSocket(
+            websocket,
+            chat_session.chat_session_id,
+        )
+
+        LOGGER.info(
+            "Voice WS connected (chat_session=%s telemetry_session=%s user=%s "
+            "chat_llm_model=%s frontend_tools=%d resumed=%s)",
+            chat_session.chat_session_id,
+            session_id,
+            owner_user_id,
+            selected_chat_llm_model or "default",
+            len(frontend_tools),
+            resumed,
+        )
+
         await run_voice_session(
             filtered_ws, config, tool_executor,
             frontend_tools=frontend_tools,
@@ -283,13 +319,74 @@ async def voice_stream(
             tool_result_handling=tool_result_handling,
         )
     except WebSocketDisconnect:
-        LOGGER.info("Voice WS client disconnected (user=%s)", user_id)
+        LOGGER.info("Voice WS client disconnected (user=%s)", owner_user_id)
     except Exception:
-        LOGGER.exception("Voice session crashed (user=%s)", user_id)
+        LOGGER.exception("Voice session crashed (user=%s)", owner_user_id)
         try:
             await websocket.close(code=1011, reason="voice session error")
         except Exception:
             pass
+    finally:
+        if chat_session is not None:
+            registry.detach(chat_session.chat_session_id)
+
+
+def _validate_chat_session_request(
+    chat_session_action: Optional[str],
+    chat_session_id: Optional[str],
+    user_id: Optional[str],
+) -> Tuple[str, str, Optional[str]]:
+    """Validate the strict create/resume query contract before the handshake."""
+    from app.voice.chat_sessions import ChatSessionError
+
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise ChatSessionError(
+            "UserIdRequired",
+            "user_id is required for voice chat sessions.",
+        )
+    owner_user_id = user_id.strip()
+
+    if chat_session_action is None:
+        raise ChatSessionError(
+            "ChatSessionActionRequired",
+            "chat_session_action is required and must be 'create' or 'resume'.",
+        )
+    if chat_session_action not in {"create", "resume"}:
+        raise ChatSessionError(
+            "InvalidChatSessionAction",
+            "chat_session_action must be 'create' or 'resume'.",
+        )
+
+    if chat_session_action == "create":
+        if chat_session_id is not None:
+            raise ChatSessionError(
+                "ChatSessionIdNotAllowed",
+                "chat_session_id must be absent when creating a chat session.",
+            )
+        return chat_session_action, owner_user_id, None
+
+    if not isinstance(chat_session_id, str) or not chat_session_id.strip():
+        raise ChatSessionError(
+            "ChatSessionIdRequired",
+            "chat_session_id is required when resuming a chat session.",
+        )
+    return chat_session_action, owner_user_id, chat_session_id.strip()
+
+
+async def _reject_chat_session_request(websocket: WebSocket, error: Any) -> None:
+    """Send one explicit policy error and close a rejected connection."""
+    try:
+        await websocket.send_json({
+            "type": "error",
+            "message": str(error),
+            "error_type": error.error_type,
+        })
+    except Exception:
+        pass
+    try:
+        await websocket.close(code=1008, reason="chat session policy violation")
+    except Exception:
+        pass
 
 
 class _HandshakeError(Exception):
@@ -413,14 +510,13 @@ class _TextFilteringWebSocket:
     routed immediately, even when Pipecat is not currently pulling microphone
     audio, while binary/disconnect frames are queued for Pipecat.
 
-    Identity is preserved via :py:meth:`__hash__` / :py:meth:`__eq__` so
-    callers can use either the proxy or the underlying WS as a dict key
-    interchangeably (the relay binds against the proxy; downstream code
-    that compares identity still works).
+    Text routing uses the server-issued chat session ID. The WebSocket proxy
+    itself is never used as process-wide relay identity.
     """
 
-    def __init__(self, ws: WebSocket) -> None:
+    def __init__(self, ws: WebSocket, chat_session_id: str) -> None:
         self._ws = ws
+        self._chat_session_id = chat_session_id
         self._pipecat_frames: asyncio.Queue[dict] = asyncio.Queue()
         self._receive_task: Optional[asyncio.Task] = None
 
@@ -428,12 +524,6 @@ class _TextFilteringWebSocket:
     # close, headers, query_params, state, etc.).
     def __getattr__(self, name: str):
         return getattr(self._ws, name)
-
-    def __hash__(self) -> int:  # so id(proxy) is stable and unique per WS
-        return id(self)
-
-    def __eq__(self, other: object) -> bool:
-        return other is self
 
     # ---- receive path: route text frames into the relay --------------------
 
@@ -467,7 +557,7 @@ class _TextFilteringWebSocket:
                     except Exception:
                         LOGGER.exception("voice WS: bad JSON text frame")
                         continue
-                    relay.handle_text_frame(self, payload)
+                    relay.handle_text_frame(self._chat_session_id, payload)
                     continue
 
                 await self._pipecat_frames.put(msg)
