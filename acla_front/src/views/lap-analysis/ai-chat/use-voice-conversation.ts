@@ -49,7 +49,7 @@ export type ConversationRole = 'main' | 'agent';
 
 /** One event surfaced to the chat UI off the voice WS. The hook fires
  *  these via `onEvent` so the caller can append them to a message list. */
-export type VoiceEvent =
+type VoiceEventPayload =
     | { kind: 'user_transcript'; text: string; source?: 'voice' | 'typed' }
     | { kind: 'assistant_transcript'; text: string; emotion?: string }
     | { kind: 'tool_status'; data: Record<string, unknown> }
@@ -64,6 +64,8 @@ export type VoiceEvent =
         ok?: boolean;
         error?: string | null;
     };
+
+export type VoiceEvent = VoiceEventPayload & { clientSessionId?: string };
 
 export interface VoiceConversationOptions {
     /** Driving session id — required for backend tools that look up
@@ -109,7 +111,7 @@ export interface VoiceConversation {
     micLevel: number;
     micDisabled: boolean;
     /** Start the session — opens mic + WS. Throws if user denies mic. */
-    start: () => Promise<void>;
+    start: (eventSessionId?: string) => Promise<void>;
     /** Stop the session — closes mic, WS, audio playback. Idempotent. */
     stop: () => void;
     setMicDisabled: (disabled: boolean) => void;
@@ -391,9 +393,17 @@ export function useVoiceConversation(
     const onEventRef = useRef<((event: VoiceEvent) => void) | undefined>(
         options.onEvent,
     );
+    const activeEventSessionIdRef = useRef<string | undefined>(options.clientSessionId);
     useEffect(() => {
         onEventRef.current = options.onEvent;
     }, [options.onEvent]);
+
+    const emitVoiceEvent = useCallback((event: VoiceEvent) => {
+        onEventRef.current?.({
+            ...event,
+            clientSessionId: event.clientSessionId ?? activeEventSessionIdRef.current ?? options.clientSessionId,
+        });
+    }, [options.clientSessionId]);
 
     useEffect(() => {
         sessionContextRef.current = options.sessionContext ?? null;
@@ -508,10 +518,16 @@ export function useVoiceConversation(
         setState('idle');
     }, [releaseSessionResources]);
 
-    const start = useCallback(async () => {
+    const start = useCallback(async (eventSessionId?: string) => {
         if (state !== 'idle' && state !== 'error') {
             return;
         }
+
+        const connectionEventSessionId = eventSessionId ?? options.clientSessionId;
+        activeEventSessionIdRef.current = connectionEventSessionId;
+        const emitConnectionEvent = (event: VoiceEvent) => {
+            onEventRef.current?.({ ...event, clientSessionId: connectionEventSessionId });
+        };
 
         setError(null);
         setState('connecting');
@@ -654,7 +670,7 @@ export function useVoiceConversation(
             };
             const toolCtx: Pick<ToolHandlerContext, 'sendToolStatus'> = {
                 sendToolStatus: (data) => {
-                    onEventRef.current?.({ kind: 'tool_status', data });
+                    emitConnectionEvent({ kind: 'tool_status', data });
                     sendText(buildFormattedToolResultFrame(data));
                 },
             };
@@ -673,7 +689,7 @@ export function useVoiceConversation(
                     handlers: toolHandlersRef.current,
                     baseContext: toolCtx,
                     sendText,
-                    emitEvent: onEventRef.current,
+                    emitEvent: emitConnectionEvent,
                 });
             };
 
@@ -687,7 +703,7 @@ export function useVoiceConversation(
                     handlers: toolHandlersRef.current,
                     baseContext: toolCtx,
                     sendText,
-                    emitEvent: onEventRef.current,
+                    emitEvent: emitConnectionEvent,
                 });
             };
 
@@ -702,7 +718,7 @@ export function useVoiceConversation(
                     } else if (parsed?.type === 'user_transcript') {
                         const text = String(parsed.text || '').trim();
                         if (text) {
-                            onEventRef.current?.({
+                            emitConnectionEvent({
                                 kind: 'user_transcript',
                                 text,
                                 source: parsed.source === 'typed' ? 'typed' : 'voice',
@@ -717,7 +733,7 @@ export function useVoiceConversation(
                             });
                             const emotion = typeof parsed.emotion === 'string' ? parsed.emotion : undefined;
                             if (cleanText) {
-                                onEventRef.current?.({ kind: 'assistant_transcript', text: cleanText, emotion });
+                                emitConnectionEvent({ kind: 'assistant_transcript', text: cleanText, emotion });
                             }
                         }
                     } else if (parsed?.type === 'error') {
@@ -845,7 +861,7 @@ export function useVoiceConversation(
     }, []);
 
     const sendToolStatus = useCallback((data: Record<string, unknown>): boolean => {
-        onEventRef.current?.({ kind: 'tool_status', data });
+        emitVoiceEvent({ kind: 'tool_status', data });
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
@@ -858,7 +874,7 @@ export function useVoiceConversation(
             console.warn('[voice] sendToolStatus failed:', err);
             return false;
         }
-    }, []);
+    }, [emitVoiceEvent]);
 
     const sendToolResult = useCallback((frame: ToolResultFrame): boolean => {
         const ws = wsRef.current;
@@ -900,14 +916,14 @@ export function useVoiceConversation(
             handlers: toolHandlersRef.current,
             baseContext: {
                 sendToolStatus: (data) => {
-                    onEventRef.current?.({ kind: 'tool_status', data });
+                    emitVoiceEvent({ kind: 'tool_status', data });
                     sendText(buildFormattedToolResultFrame(data));
                 },
             },
             sendText,
-            emitEvent: onEventRef.current,
+            emitEvent: emitVoiceEvent,
         });
-    }, []);
+    }, [emitVoiceEvent]);
 
     // Auto-cleanup on unmount.
     useEffect(() => {

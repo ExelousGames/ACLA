@@ -115,7 +115,7 @@ jest.mock('components/data-graphs', () => ({
 }));
 
 import AnalysisResultsChart from './AnalysisResultsChart';
-import { FLOATING_PILL_RICH_CONTENT_HOLD_MS } from 'views/floating-chat/floating-pill-bridge';
+import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import type {
     LiveRangeTodoEventInput,
@@ -147,7 +147,14 @@ const renderedFrequencyData = (): Array<{ label: string; occurrences: number }> 
 );
 
 const comparableData = (driverGas: number, expertGas: number) => ({
-    samples: [{ driverTimeMs: 0, expertTimeMs: 0, driverGas, expertGas }],
+    samples: [{
+        driverTimeMs: 0,
+        expertTimeMs: 0,
+        driverTrackPosition: 0.2,
+        expertTrackPosition: 0.2,
+        driverGas,
+        expertGas,
+    }],
 });
 
 const createQueueHandle = (events: LiveRangeTodoEventInput[]): LiveRangeTodoListHandle => ({
@@ -680,7 +687,13 @@ describe('AnalysisResultsChart', () => {
                             id: 'invalid-comparison',
                             labels: ['MSP', 'Late turn-in'],
                             normalizedPositionRange: { start: 0.2, end: 0.3 },
-                            comparison: { samples: [{ driverTimeMs: 0, expertTimeMs: 0, driverGas: 0.2 }] },
+                            comparison: { samples: [{
+                                driverTimeMs: 0,
+                                expertTimeMs: 0,
+                                driverTrackPosition: 0.2,
+                                driverGas: 0.2,
+                                expertGas: 0.4,
+                            }] },
                         },
                     ],
                 }}
@@ -771,7 +784,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeEnabled();
     });
 
-    it('defers an exact comparison payload for rendering, holds it for 3.8 seconds, and clears on abort', async () => {
+    it('defers an exact comparison snapshot and observes its overlay lifecycle with abort cleanup', async () => {
         jest.useFakeTimers();
         const originalRequestAnimationFrame = window.requestAnimationFrame;
         const originalCancelAnimationFrame = window.cancelAnimationFrame;
@@ -779,6 +792,34 @@ describe('AnalysisResultsChart', () => {
             window.setTimeout(() => callback(0), 0)
         );
         window.cancelAnimationFrame = (frameId: number) => window.clearTimeout(frameId);
+        let lifecycleListener: ((event: any) => void) | null = null;
+        const sendOverlayDisplayRequest = jest.fn(async (request: any) => ({
+            presentationId: request.presentationId,
+            requestId: request.requestId,
+            accepted: true,
+            instanceId: 'driver_expert_comparison:multiple:test',
+        }));
+        Object.defineProperty(window, 'electronAPI', {
+            configurable: true,
+            value: {
+                createOverlaySession: jest.fn(async (descriptor: any) => ({
+                    success: true,
+                    presentation: { ...descriptor, presentationId: 'presentation-analysis' },
+                })),
+                destroyOverlaySession: jest.fn(async () => ({ success: true, ended: true })),
+                setOverlayEnabled: jest.fn(async () => ({ success: true })),
+                sendOverlayDisplayRequest,
+                onOverlayLifecycle: (listener: (event: any) => void) => {
+                    lifecycleListener = listener;
+                    return () => { lifecycleListener = null; };
+                },
+            },
+        });
+        await overlaySessionClient.create({
+            aiSessionId: 'ai-analysis',
+            mode: 'recorded',
+            displayIdentity: { name: 'Kestrel', agentTags: ['Recorded'] },
+        });
         const queuedEvents: LiveRangeTodoEventInput[] = [];
         const comparison = comparableData(0.35, 0.7);
         const handle = createQueueHandle(queuedEvents);
@@ -802,39 +843,42 @@ describe('AnalysisResultsChart', () => {
             signal: controller.signal,
         } as any)).then(() => { completed = true; });
 
-        expect(localStorage.getItem('acla-pill-msg')).toBeNull();
         act(() => jest.advanceTimersByTime(1));
         act(() => jest.advanceTimersByTime(1));
-        const pillPayload = JSON.parse(localStorage.getItem('acla-pill-msg') || '{}');
-        expect(pillPayload).toMatchObject({
-            kind: 'driver_expert_comparison',
-            text: 'Exact crossing graph',
-            data: {
+        await act(async () => Promise.resolve());
+        expect(sendOverlayDisplayRequest).toHaveBeenCalledWith(expect.objectContaining({
+            command: {
+                operation: 'upsert',
+                type: 'driver_expert_comparison',
+                snapshot: {
                 title: 'Exact crossing graph',
                 comparison,
             },
-        });
+            },
+        }));
         expect(completed).toBe(false);
 
-        act(() => jest.advanceTimersByTime(FLOATING_PILL_RICH_CONTENT_HOLD_MS - 10));
-        await act(async () => Promise.resolve());
-        expect(completed).toBe(false);
-        act(() => jest.advanceTimersByTime(10));
+        act(() => lifecycleListener?.({
+            eventId: 'event-1',
+            presentationId: 'presentation-analysis',
+            instanceId: 'driver_expert_comparison:multiple:test',
+            kind: 'exited',
+            at: Date.now(),
+            reason: 'transient_complete',
+        }));
         await act(async () => callbackPromise);
         expect(completed).toBe(true);
 
         const abortController = new AbortController();
-        const clearTimeoutSpy = jest.spyOn(window, 'clearTimeout');
         const abortedPromise = Promise.resolve(queuedEvents[0].callback({
             signal: abortController.signal,
         } as any));
         act(() => jest.advanceTimersByTime(1));
         act(() => jest.advanceTimersByTime(1));
-        clearTimeoutSpy.mockClear();
+        await act(async () => Promise.resolve());
         act(() => abortController.abort());
         await act(async () => abortedPromise);
-        expect(clearTimeoutSpy).toHaveBeenCalled();
-        clearTimeoutSpy.mockRestore();
+        await overlaySessionClient.destroy('presentation-analysis');
 
         window.requestAnimationFrame = originalRequestAnimationFrame;
         window.cancelAnimationFrame = originalCancelAnimationFrame;
@@ -852,6 +896,8 @@ describe('AnalysisResultsChart', () => {
                             samples: [{
                                 driverTimeMs: 0,
                                 expertTimeMs: 0,
+                                driverTrackPosition: 0.2,
+                                expertTrackPosition: 0.2,
                                 driverGas: 0.4,
                                 expertGas: 0.5,
                             }],
@@ -895,7 +941,13 @@ describe('AnalysisResultsChart', () => {
                     elements: [{
                         id: 'unavailable-comparison',
                         labels: ['MSP'],
-                            comparison: { samples: [{ driverTimeMs: 0, expertTimeMs: 0, driverGas: 0.4 }] },
+                        comparison: { samples: [{
+                            driverTimeMs: 0,
+                            expertTimeMs: 0,
+                            trackPosition: 0.2,
+                            driverGas: 0.4,
+                            expertGas: 0.5,
+                        }] },
                     }],
                 }}
             />,
@@ -986,6 +1038,8 @@ describe('analysis results mutations', () => {
                     samples: [{
                         driverTimeMs: 250,
                         expertTimeMs: 500,
+                        driverTrackPosition: 0.2,
+                        expertTrackPosition: 0.2,
                         driverGas: 0.4,
                         expertGas: 0.5,
                         Physics_gas: 1,
@@ -999,6 +1053,8 @@ describe('analysis results mutations', () => {
             samples: [{
                 driverTimeMs: 250,
                 expertTimeMs: 500,
+                driverTrackPosition: 0.2,
+                expertTrackPosition: 0.2,
                 driverGas: 0.4,
                 expertGas: 0.5,
             }],

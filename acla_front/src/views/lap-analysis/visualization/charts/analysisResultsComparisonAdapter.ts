@@ -2,6 +2,7 @@ import {
     DriverExpertComparisonData,
     DriverExpertComparisonSample,
     DriverExpertTrajectoryPoint,
+    normalizeDriverExpertComparisonData,
 } from 'components/driver-expert-comparison';
 import { parseTelemetryFrame } from './mapTelemetry';
 
@@ -17,7 +18,8 @@ interface JoinedComparisonRow {
     driver: Record<string, any>;
     expert: Record<string, unknown>;
     driverArrayIndex: number;
-    trackPosition?: number;
+    driverTrackPosition?: number;
+    expertTrackPosition?: number;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
@@ -55,6 +57,11 @@ const normalizedInput = (value: unknown): number | undefined => {
     return parsed === undefined ? undefined : clamp(parsed, 0, 1);
 };
 
+const normalizedPosition = (value: unknown): number | undefined => {
+    const parsed = finiteNumber(value);
+    return parsed !== undefined && parsed >= 0 && parsed <= 1 ? parsed : undefined;
+};
+
 const trajectoryPoint = (
     xValue: unknown,
     yValue: unknown,
@@ -84,14 +91,20 @@ const getDriverTrajectory = (
     return trajectoryPoint(sourcePosition.x, sourcePosition.y, sourcePosition.z);
 };
 
-const getTrackPosition = (
+const getDriverTrackPosition = (
     driver: Record<string, any>,
-    expert: Record<string, unknown>,
-): number | undefined => normalizedInput(
+): number | undefined => normalizedPosition(
     driver.Graphics_normalized_car_position
     ?? driver.normalized_position
-    ?? driver.normalizedPosition
-    ?? expert.Graphics_normalized_car_position,
+    ?? driver.normalizedPosition,
+);
+
+const getExpertTrackPosition = (
+    expert: Record<string, unknown>,
+): number | undefined => normalizedPosition(
+    expert.Graphics_normalized_car_position
+    ?? expert.normalized_position
+    ?? expert.normalizedPosition,
 );
 
 export const adaptAnalysisResultsComparison = ({
@@ -129,7 +142,8 @@ export const adaptAnalysisResultsComparison = ({
             driver: driverEntry.row,
             expert: value,
             driverArrayIndex: driverEntry.arrayIndex,
-            trackPosition: getTrackPosition(driverEntry.row, value),
+            driverTrackPosition: getDriverTrackPosition(driverEntry.row),
+            expertTrackPosition: getExpertTrackPosition(value),
         }];
     }).sort((left, right) => left.rawIndex - right.rawIndex);
 
@@ -143,7 +157,10 @@ export const adaptAnalysisResultsComparison = ({
         || (index > 0 && sample.driverTimeMs <= timing[index - 1].driverTimeMs!)
         || (index > 0 && sample.expertTimeMs <= timing[index - 1].expertTimeMs!)
     ));
-    if (invalidTiming) return { samples: [] };
+    const invalidPositions = joinedRows.some((row) => (
+        row.driverTrackPosition === undefined || row.expertTrackPosition === undefined
+    ));
+    if (invalidTiming || invalidPositions) return { samples: [] };
 
     const samples: DriverExpertComparisonSample[] = joinedRows.map((row, index) => {
         const driverGas = normalizedInput(row.driver.Physics_gas);
@@ -162,7 +179,8 @@ export const adaptAnalysisResultsComparison = ({
         return {
             driverTimeMs: timing[index].driverTimeMs!,
             expertTimeMs: timing[index].expertTimeMs!,
-            ...(row.trackPosition !== undefined ? { trackPosition: row.trackPosition } : {}),
+            driverTrackPosition: row.driverTrackPosition!,
+            expertTrackPosition: row.expertTrackPosition!,
             ...(driverTrajectory ? { driverTrajectory } : {}),
             ...(expertTrajectory ? { expertTrajectory } : {}),
             ...(driverGas !== undefined ? { driverGas } : {}),
@@ -174,5 +192,5 @@ export const adaptAnalysisResultsComparison = ({
         };
     });
 
-    return { samples };
+    return normalizeDriverExpertComparisonData({ samples }) ?? { samples: [] };
 };

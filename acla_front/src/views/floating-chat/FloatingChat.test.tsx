@@ -1,4 +1,10 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
+import type {
+    OverlayDisplayAcknowledgement,
+    OverlayDisplayRequest,
+    OverlayLifecycleEvent,
+    OverlayPresentationChange,
+} from './overlay-display-types';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: () => ({
@@ -10,202 +16,336 @@ jest.mock('contexts/DesktopGameContext', () => ({
 
 import FloatingChat from './FloatingChat';
 
-describe('FloatingChat', () => {
-    it('renders compact appended UI payloads from storage events', async () => {
-        const resizeFloatingChat = jest.fn();
+describe('FloatingChat overlay stack', () => {
+    const presentation = {
+        presentationId: 'presentation-live',
+        aiSessionId: 'ai-live',
+        mode: 'live' as const,
+        displayIdentity: { name: 'Kestrel', emotion: 'idle', agentTags: ['Live'] },
+    };
+    let commandListener: ((request: OverlayDisplayRequest) => void) | null;
+    let enabledListener: ((enabled: boolean) => void) | null;
+    let presentationListener: ((change: OverlayPresentationChange) => void) | null;
+    let acknowledgements: OverlayDisplayAcknowledgement[];
+    let lifecycleEvents: OverlayLifecycleEvent[];
+    let requestSequence: number;
+    const resizeFloatingChat = jest.fn();
+
+    const send = (
+        command: OverlayDisplayRequest['command'],
+        presentationId = presentation.presentationId,
+    ) => {
+        const request: OverlayDisplayRequest = {
+            presentationId,
+            requestId: `test-request-${++requestSequence}`,
+            command,
+        };
+        act(() => commandListener?.(request));
+        return acknowledgements[acknowledgements.length - 1];
+    };
+
+    beforeEach(() => {
+        commandListener = null;
+        enabledListener = null;
+        presentationListener = null;
+        acknowledgements = [];
+        lifecycleEvents = [];
+        requestSequence = 0;
+        resizeFloatingChat.mockReset();
         Object.defineProperty(window, 'electronAPI', {
-            value: { resizeFloatingChat },
             configurable: true,
+            value: {
+                onOverlayDisplayCommand: (listener: typeof commandListener) => {
+                    commandListener = listener;
+                    return () => { commandListener = null; };
+                },
+                acknowledgeOverlayDisplayRequest: (ack: OverlayDisplayAcknowledgement) => {
+                    acknowledgements.push(ack);
+                },
+                emitOverlayLifecycle: (event: OverlayLifecycleEvent) => {
+                    lifecycleEvents.push(event);
+                },
+                reportOverlayReady: () => presentationListener?.({ kind: 'started', presentation }),
+                onOverlayEnabledChange: (listener: typeof enabledListener) => {
+                    enabledListener = listener;
+                    return () => { enabledListener = null; };
+                },
+                onOverlayPresentationChange: (listener: typeof presentationListener) => {
+                    presentationListener = listener;
+                    return () => { presentationListener = null; };
+                },
+                resizeFloatingChat,
+            },
         });
-
-        render(<FloatingChat />);
-
-        act(() => {
-            window.dispatchEvent(new StorageEvent('storage', {
-                key: 'acla-pill-msg',
-                newValue: JSON.stringify({
-                    kind: 'baseline',
-                    text: 'Lap 1 baseline',
-                    ts: Date.now() + 1,
-                    data: {
-                        status: 'collecting',
-                        progress_percent: 64,
-                        detail: 'Lap 1 baseline',
-                        track: 'brands_hatch',
-                        car: 'Ferrari 296',
-                        current_lap: 0,
-                        baseline_lap: 0,
-                    },
-                }),
-            }));
-        });
-
-        await waitFor(() => expect(screen.getAllByText('Lap 1 baseline').length).toBeGreaterThan(0));
-        expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '64');
-        await waitFor(() => expect(resizeFloatingChat).toHaveBeenCalledWith(420, 136));
     });
 
-    it('shows a plan update without replaying the previous assistant line', async () => {
-        const { container } = render(<FloatingChat />);
-
-        const now = Date.now();
-        act(() => {
-            window.dispatchEvent(new StorageEvent('storage', {
-                key: 'acla-pill-msg',
-                newValue: JSON.stringify({
-                    kind: 'message',
-                    text: 'I will collect a baseline lap before comparing sectors.',
-                    ts: now + 1,
-                }),
-            }));
-        });
-
-        act(() => {
-            window.dispatchEvent(new StorageEvent('storage', {
-                key: 'acla-pill-msg',
-                newValue: JSON.stringify({
-                    kind: 'plan',
-                    text: 'Collect Baseline Lap',
-                    ts: now + 2,
-                    data: {
-                        goal: 'Live Performance Analysis',
-                        currentStep: 0,
-                        requests: [
-                            { type: 'tool_call', title: 'Collect Baseline Lap', status: 'running' },
-                            { type: 'tool_call', title: 'Compare Live Lap', status: 'pending' },
-                        ],
-                    },
-                }),
-            }));
-        });
-
-        await waitFor(() => {
-            expect(container.querySelector('.pill .msg-inner')).toHaveTextContent(
-                'Collect Baseline Lap',
-            );
-        });
-        expect(screen.getByText('Live Performance Analysis')).toBeInTheDocument();
-        expect(screen.getAllByText('Collect Baseline Lap').length).toBeGreaterThan(0);
-    });
-
-    it('renders due live range to-do lifecycle content', async () => {
-        render(<FloatingChat />);
-
-        act(() => {
-            window.dispatchEvent(new StorageEvent('storage', {
-                key: 'acla-pill-msg',
-                newValue: JSON.stringify({
-                    kind: 'live_range_todo_list',
-                    text: 'Brake reminder: running',
-                    ts: Date.now() + 10,
-                    data: {
-                        events: [{
-                            id: 'brake',
-                            normalized_position: 0.25,
-                            lead_time_seconds: 2,
-                            content: { title: 'Brake reminder' },
-                            data: { source: 'ai' },
-                            status: 'running',
-                            eta_seconds: 1.4,
-                            created_at: 1,
-                            updated_at: 2,
-                        }],
-                        current_position: 0.2,
-                        rolling_rate: 0.04,
-                        created_at: 1,
-                        updated_at: 2,
-                    },
-                }),
-            }));
-        });
-
-        await waitFor(() => expect(screen.getByText('Brake reminder')).toBeInTheDocument());
-        expect(screen.getByText('running')).toBeInTheDocument();
-        expect(screen.getByText('ETA 1.4s')).toBeInTheDocument();
-    });
-
-    it('renders the pedal replay HUD inside the 760 by 500 comparison panel', async () => {
-        const resizeFloatingChat = jest.fn();
-        Object.defineProperty(window, 'electronAPI', {
-            value: { resizeFloatingChat },
-            configurable: true,
-        });
-        render(<FloatingChat />);
-
-        act(() => {
-            window.dispatchEvent(new StorageEvent('storage', {
-                key: 'acla-pill-msg',
-                newValue: JSON.stringify({
-                    kind: 'driver_expert_comparison',
-                    text: 'Turn 6 replay',
-                    ts: Date.now() + 20,
-                    data: {
-                        title: 'Turn 6 replay',
-                        comparison: {
-                            samples: [{
-                                driverTimeMs: 1_000,
-                                expertTimeMs: 2_000,
-                                driverTrajectory: { x: 10, y: 20, z: 30 },
-                                expertTrajectory: { x: 11, y: 21, z: 31 },
-                                driverGas: 0.7,
-                                expertGas: 0.8,
-                                driverBrake: 0.2,
-                                expertBrake: 0.1,
-                                driverGear: 4,
-                                expertGear: 5,
-                            }],
-                        },
-                    },
-                }),
-            }));
-        });
-
-        await waitFor(() => expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument());
-        expect(screen.getByTestId('comparison-track-map')).toBeInTheDocument();
-        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.7');
-        expect(screen.getByTestId('expert-gear')).toHaveTextContent('5');
-        expect(screen.queryByTestId('comparison-graph-gas')).not.toBeInTheDocument();
-        await waitFor(() => expect(resizeFloatingChat).toHaveBeenCalledWith(760, 500));
-    });
-
-    it('keeps a long comparison open through the slower replay plus its completion pause', () => {
-        jest.useFakeTimers();
-        const { container, unmount } = render(<FloatingChat />);
-
-        act(() => {
-            window.dispatchEvent(new StorageEvent('storage', {
-                key: 'acla-pill-msg',
-                newValue: JSON.stringify({
-                    kind: 'driver_expert_comparison',
-                    text: 'Long replay',
-                    ts: Date.now() + 30,
-                    data: {
-                        title: 'Long replay',
-                        comparison: {
-                            samples: [{
-                                driverTimeMs: 1_000,
-                                expertTimeMs: 9_000,
-                                driverGas: 0,
-                                expertGas: 0,
-                            }, {
-                                driverTimeMs: 6_000,
-                                expertTimeMs: 11_000,
-                                driverGas: 1,
-                                expertGas: 1,
-                            }],
-                        },
-                    },
-                }),
-            }));
-        });
-
-        expect(container.querySelector('.pill')).toHaveClass('open');
-        act(() => jest.advanceTimersByTime(5_799));
-        expect(container.querySelector('.pill')).toHaveClass('open');
-        act(() => jest.advanceTimersByTime(1));
-        expect(container.querySelector('.pill')).not.toHaveClass('open');
-
-        unmount();
+    afterEach(() => {
         jest.useRealTimers();
+    });
+
+    it('renders the compact idle shell even when the presentation has no content', () => {
+        const { container } = render(<FloatingChat />);
+        expect(container.querySelectorAll('.overlay-shell')).toHaveLength(1);
+        expect(container.querySelector('.overlay-shell')).toHaveClass('overlay-shell--idle');
+        expect(screen.getByText('Overlay ready')).toBeInTheDocument();
+        expect(resizeFloatingChat).toHaveBeenCalled();
+    });
+
+    it('renders concurrent singleton displays and orders the pinned card first', () => {
+        const { container } = render(<FloatingChat />);
+        act(() => enabledListener?.(true));
+
+        send({
+            operation: 'upsert',
+            type: 'procedure_plan',
+            snapshot: {
+                goal: 'Live Performance Analysis',
+                currentStep: 0,
+                requests: [{ type: 'tool_call', title: 'Collect Baseline Lap', status: 'running' }],
+            },
+        });
+        send({
+            operation: 'upsert',
+            type: 'baseline_progress',
+            snapshot: {
+                status: 'collecting',
+                progress_percent: 64,
+                detail: 'Lap 1 baseline',
+                track: 'brands_hatch',
+                car: 'Ferrari 296',
+                current_lap: 0,
+                baseline_lap: 0,
+            },
+        });
+        send({
+            operation: 'upsert',
+            type: 'live_range_todo',
+            snapshot: {
+                events: [{
+                    id: 'brake',
+                    normalized_position: 0.25,
+                    lead_time_seconds: 2,
+                    content: { title: 'Brake reminder' },
+                    data: { source: 'ai' },
+                    status: 'running',
+                    eta_seconds: 1.4,
+                    created_at: 1,
+                    updated_at: 2,
+                }],
+                current_position: 0.2,
+                rolling_rate: 0.04,
+                created_at: 1,
+                updated_at: 2,
+            },
+        });
+
+        const cards = Array.from(container.querySelectorAll<HTMLElement>('.overlay-list-item'));
+        expect(cards).toHaveLength(3);
+        expect(cards[0]).toHaveAttribute('data-display-type', 'live_range_todo');
+        expect(screen.getByText('Live Performance Analysis')).toBeInTheDocument();
+        expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '64');
+        expect(screen.getByText('Brake reminder')).toBeInTheDocument();
+        expect(lifecycleEvents.some((event) => event.kind === 'shown')).toBe(true);
+    });
+
+    it('replaces a singleton with a complete snapshot instead of merging it', () => {
+        render(<FloatingChat />);
+        const first = {
+            status: 'collecting' as const,
+            progress_percent: 12,
+            detail: 'Old detail',
+            track: 'old',
+            car: 'old',
+            current_lap: 1,
+            baseline_lap: null,
+        };
+        send({ operation: 'upsert', type: 'baseline_progress', snapshot: first });
+        const acknowledgement = send({
+            operation: 'upsert',
+            type: 'baseline_progress',
+            snapshot: { ...first, progress_percent: 80, detail: 'New detail', track: null },
+        });
+
+        expect(acknowledgement.instanceId).toBe('baseline_progress:singleton');
+        expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '80');
+        expect(screen.queryByText('Old detail')).not.toBeInTheDocument();
+        expect(screen.getByText('New detail')).toBeInTheDocument();
+    });
+
+    it('folds baseline updates after their pulse while retaining the instance', () => {
+        jest.useFakeTimers();
+        const { container } = render(<FloatingChat />);
+        send({
+            operation: 'upsert',
+            type: 'baseline_progress',
+            snapshot: {
+                status: 'collecting', progress_percent: 50, detail: 'Halfway',
+                track: null, car: null, current_lap: null, baseline_lap: null,
+            },
+        });
+
+        act(() => jest.advanceTimersByTime(3_799));
+        expect(container.querySelector('.overlay-list-item')).not.toHaveClass('overlay-list-item--folded');
+        act(() => jest.advanceTimersByTime(1));
+        expect(container.querySelector('.overlay-list-item')).toHaveClass('overlay-list-item--folded');
+        expect(lifecycleEvents.some((event) => event.kind === 'folded')).toBe(true);
+    });
+
+    it('holds completed AI text for 3.8 seconds without restarting the typewriter', () => {
+        jest.useFakeTimers();
+        const { container } = render(<FloatingChat />);
+        const text = 'Done';
+        send({ operation: 'upsert', type: 'ai_message', snapshot: { text } });
+
+        act(() => jest.advanceTimersByTime((text.length * 28) - 1));
+        expect(screen.getByTestId('overlay-ai-message')).toHaveTextContent('Don');
+        expect(container.querySelector('.overlay-card__caret')).toBeInTheDocument();
+
+        act(() => jest.advanceTimersByTime(1));
+        expect(screen.getByTestId('overlay-ai-message')).toHaveTextContent('Done');
+        expect(container.querySelector('.overlay-card__caret')).not.toBeInTheDocument();
+
+        act(() => jest.advanceTimersByTime(3_799));
+        expect(screen.getByTestId('overlay-ai-message')).toHaveTextContent('Done');
+        expect(container.querySelector('.overlay-card__caret')).not.toBeInTheDocument();
+
+        act(() => jest.advanceTimersByTime(1));
+        expect(container.querySelector('[data-display-type="ai_message"]')).not.toBeInTheDocument();
+        expect(container.querySelector('.overlay-shell')).toHaveClass('overlay-shell--idle');
+        expect(lifecycleEvents.filter((event) => (
+            event.kind === 'exited' && event.reason === 'transient_complete'
+        ))).toHaveLength(1);
+    });
+
+    it('restarts an in-progress typewriter only for the replacement revision', () => {
+        jest.useFakeTimers();
+        const { container } = render(<FloatingChat />);
+        const first = send({ operation: 'upsert', type: 'ai_message', snapshot: { text: 'First' } });
+        act(() => jest.advanceTimersByTime(2 * 28));
+        expect(screen.getByTestId('overlay-ai-message')).toHaveTextContent('Fi');
+
+        const second = send({ operation: 'upsert', type: 'ai_message', snapshot: { text: 'Second' } });
+
+        expect(second.instanceId).toBe(first.instanceId);
+        expect(container.querySelectorAll('[data-display-type="ai_message"]')).toHaveLength(1);
+        expect(screen.getByTestId('overlay-ai-message')).toHaveTextContent('');
+
+        act(() => jest.advanceTimersByTime(28));
+        expect(screen.getByTestId('overlay-ai-message')).toHaveTextContent('S');
+        expect(screen.queryByText('First')).not.toBeInTheDocument();
+
+        act(() => jest.advanceTimersByTime(5 * 28));
+        expect(screen.getByTestId('overlay-ai-message')).toHaveTextContent('Second');
+        expect(container.querySelector('.overlay-card__caret')).not.toBeInTheDocument();
+    });
+
+    it('updates keyed tool status in place and renders map and comparison siblings', () => {
+        const { container } = render(<FloatingChat />);
+        const started = send({
+            operation: 'upsert',
+            type: 'tool_status',
+            snapshot: { runId: 'run-7', name: 'analyze', title: 'Analyzing', status: 'started' },
+            options: { key: 'run-7' },
+        });
+        const completed = send({
+            operation: 'upsert',
+            type: 'tool_status',
+            snapshot: { runId: 'run-7', name: 'analyze', title: 'Analysis complete', status: 'completed', ok: true },
+            options: { key: 'run-7' },
+        });
+        send({
+            operation: 'upsert',
+            type: 'map',
+            snapshot: { status: 'unavailable', title: 'Track map', reason: 'No circuit selected' },
+        });
+        send({
+            operation: 'upsert',
+            type: 'driver_expert_comparison',
+            snapshot: {
+                title: 'Turn 6 replay',
+                comparison: { samples: [{
+                    driverTimeMs: 1_000,
+                    expertTimeMs: 2_000,
+                    driverTrackPosition: 0.2,
+                    expertTrackPosition: 0.2,
+                    driverGas: 0.7,
+                    expertGas: 0.8,
+                }] },
+            },
+        });
+
+        expect(started.instanceId).toBe(completed.instanceId);
+        expect(container.querySelectorAll('[data-display-type="tool_status"]')).toHaveLength(1);
+        expect(screen.getByText('Analysis complete')).toBeInTheDocument();
+        expect(screen.getByText('Map is not available')).toBeInTheDocument();
+        expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument();
+        expect(container.querySelector('.overlay-shell')).toHaveStyle({ width: '760px' });
+    });
+
+    it('rejects malformed comparisons and does not render user item controls', () => {
+        const { container } = render(<FloatingChat />);
+        const rejected = send({
+            operation: 'upsert',
+            type: 'driver_expert_comparison',
+            snapshot: {
+                title: 'Unavailable replay',
+                comparison: { samples: [{
+                    driverTimeMs: 1_000,
+                    expertTimeMs: 2_000,
+                    trackPosition: 0.2,
+                }] },
+            },
+        });
+        expect(rejected.accepted).toBe(false);
+        expect(container.querySelector('[data-display-type="driver_expert_comparison"]')).not.toBeInTheDocument();
+
+        send({ operation: 'upsert', type: 'ai_message', snapshot: { text: 'Dismiss me' } });
+        send({
+            operation: 'upsert',
+            type: 'baseline_progress',
+            snapshot: {
+                status: 'collecting', progress_percent: 50, detail: 'Halfway',
+                track: null, car: null, current_lap: null, baseline_lap: null,
+            },
+        });
+
+        expect(container.querySelector('[data-display-type="ai_message"]')).toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Dismiss overlay item' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Fold overlay item' })).not.toBeInTheDocument();
+        expect(container.querySelector('.overlay-item__actions')).not.toBeInTheDocument();
+    });
+
+    it('clears replaced content and ignores stale requests and stale cleanup', () => {
+        const { container } = render(<FloatingChat />);
+        send({ operation: 'upsert', type: 'ai_message', snapshot: { text: 'Old speech' } });
+        const replacement = {
+            presentationId: 'presentation-agent',
+            aiSessionId: 'ai-agent',
+            mode: 'agent' as const,
+            displayIdentity: { name: 'Track Guide', agentTags: ['Agent'] },
+        };
+
+        act(() => presentationListener?.({ kind: 'started', presentation: replacement }));
+        expect(container.querySelector('[data-display-type="ai_message"]')).not.toBeInTheDocument();
+        expect(screen.getByText('Track Guide')).toBeInTheDocument();
+        expect(container.querySelector('.overlay-shell')).toHaveClass('overlay-shell--idle');
+
+        const stale = send(
+            { operation: 'upsert', type: 'ai_message', snapshot: { text: 'Too late' } },
+            presentation.presentationId,
+        );
+        expect(stale.accepted).toBe(false);
+        expect(screen.queryByText('Too late')).not.toBeInTheDocument();
+
+        send(
+            { operation: 'upsert', type: 'ai_message', snapshot: { text: 'New speech' } },
+            replacement.presentationId,
+        );
+        act(() => presentationListener?.({ kind: 'ended', presentationId: presentation.presentationId }));
+        expect(container.querySelector('[data-display-type="ai_message"]')).toBeInTheDocument();
+
+        act(() => presentationListener?.({ kind: 'ended', presentationId: replacement.presentationId }));
+        expect(container.querySelector('[data-display-type="ai_message"]')).not.toBeInTheDocument();
+        expect(container.querySelector('.overlay-shell')).toHaveClass('overlay-shell--idle');
     });
 });

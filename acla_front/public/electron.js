@@ -39,6 +39,7 @@ function getPythonExecutable() {
 
 const devMode = app.isPackaged ? false : isDev;
 let mainWindow;
+let isAppQuitting = false;
 
 function getWindowsTasklist() {
   return new Promise((resolve, reject) => {
@@ -164,9 +165,7 @@ function createWindow() {
   mainWindow.loadURL(devMode ? 'http://localhost:3000' : `file://${path.join(__dirname, '../build/index.html')}`);
   mainWindow.on('closed', () => {
     mainWindow = null;
-    if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
-      floatingChatWindow.close();
-    }
+    if (process.platform !== 'darwin' && !isAppQuitting) app.quit();
   });
 }
 
@@ -531,31 +530,133 @@ ipcMain.handle('start-speech-recognition', async (event) => {
 });
 
 // ── Floating AI-chat window ─────────────────────────────────────────────
-// A small frameless, always-on-top window that loads the same React bundle
-// under hash route #/floating-chat. Shares localStorage (JWT, settings) with
-// the main window since both run in the default session partition.
+// A frameless, always-on-top window that loads the same React bundle under
+// #/floating-chat. Typed display snapshots arrive through the IPC broker.
 //
 // "Always on top" uses the highest Windows level ('screen-saver'). Note: a
 // true exclusive-fullscreen game will still cover this — users need to run
 // the game in borderless windowed mode for the overlay to show through.
 let floatingChatWindow = null;
+let overlayEnabled = false;
+let overlayRendererReady = false;
+let currentOverlayPresentation = null;
+let overlayPresentationSequence = 0;
+const overlayPendingRequests = new Map();
+const overlayCommandQueue = [];
+const OVERLAY_ACK_TIMEOUT_MS = 15000;
+
+function isOverlayRendererSender(event) {
+  return Boolean(
+    floatingChatWindow
+    && !floatingChatWindow.isDestroyed()
+    && event.sender.id === floatingChatWindow.webContents.id
+  );
+}
+
+function isSerializableOverlayValue(value) {
+  try {
+    const json = JSON.stringify(value);
+    return typeof json === 'string' && json.length <= 5_000_000;
+  } catch {
+    return false;
+  }
+}
+
+function validateOverlayRequest(request) {
+  if (!request || typeof request !== 'object' || Array.isArray(request)) return 'Malformed overlay request.';
+  if (typeof request.presentationId !== 'string' || !request.presentationId.trim()) return 'Overlay presentationId is required.';
+  if (typeof request.requestId !== 'string' || !request.requestId.trim()) return 'Overlay requestId is required.';
+  if (!request.command || typeof request.command !== 'object' || Array.isArray(request.command)) return 'Overlay command is required.';
+  if (!['upsert', 'set_policy', 'exit'].includes(request.command.operation)) return 'Unknown overlay operation.';
+  if (!isSerializableOverlayValue(request)) return 'Overlay request must be JSON-safe.';
+  return null;
+}
+
+function validateOverlaySessionDescriptor(descriptor) {
+  if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) return 'Overlay session descriptor is required.';
+  if (typeof descriptor.aiSessionId !== 'string' || !descriptor.aiSessionId.trim()) return 'Overlay AI session ID is required.';
+  if (!['front_desk', 'live', 'recorded', 'user_summary', 'agent'].includes(descriptor.mode)) return 'Unknown overlay session mode.';
+  if (!descriptor.displayIdentity || typeof descriptor.displayIdentity !== 'object' || Array.isArray(descriptor.displayIdentity)) {
+    return 'Overlay display identity is required.';
+  }
+  if (!isSerializableOverlayValue(descriptor)) return 'Overlay session descriptor must be JSON-safe.';
+  return null;
+}
+
+function settleOverlayRequest(requestId, acknowledgement) {
+  const pending = overlayPendingRequests.get(requestId);
+  if (!pending) return;
+  overlayPendingRequests.delete(requestId);
+  if (pending.timer) clearTimeout(pending.timer);
+  pending.resolve(acknowledgement);
+}
+
+function rejectOverlayRequests(error, presentationId = null) {
+  const retainedCommands = presentationId
+    ? overlayCommandQueue.filter((request) => request.presentationId !== presentationId)
+    : [];
+  overlayCommandQueue.splice(0, overlayCommandQueue.length, ...retainedCommands);
+  Array.from(overlayPendingRequests.entries()).forEach(([requestId, pending]) => {
+    if (presentationId && pending.presentationId !== presentationId) return;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.resolve({ presentationId: pending.presentationId, requestId, accepted: false, error });
+    overlayPendingRequests.delete(requestId);
+  });
+}
+
+function forwardOverlayRequest(request) {
+  const pending = overlayPendingRequests.get(request.requestId);
+  if (!pending || !floatingChatWindow || floatingChatWindow.isDestroyed()) return;
+  if (request.presentationId !== currentOverlayPresentation?.presentationId) {
+    settleOverlayRequest(request.requestId, {
+      presentationId: request.presentationId,
+      requestId: request.requestId,
+      accepted: false,
+      error: `Overlay presentation '${request.presentationId}' is no longer active.`,
+    });
+    return;
+  }
+  if (!pending.timer) {
+    pending.timer = setTimeout(() => {
+      settleOverlayRequest(request.requestId, {
+        presentationId: request.presentationId,
+        requestId: request.requestId,
+        accepted: false,
+        error: 'Overlay acknowledgement timed out.',
+      });
+    }, OVERLAY_ACK_TIMEOUT_MS);
+  }
+  floatingChatWindow.webContents.send('overlay-display-command', request);
+}
+
+function syncOverlayVisibility() {
+  if (!floatingChatWindow || floatingChatWindow.isDestroyed()) return;
+  if (overlayEnabled && overlayRendererReady) {
+    floatingChatWindow.showInactive();
+  } else {
+    floatingChatWindow.hide();
+  }
+}
+
+function flushOverlayCommandQueue() {
+  if (!overlayRendererReady || !floatingChatWindow || floatingChatWindow.isDestroyed()) return;
+  while (overlayCommandQueue.length > 0) {
+    forwardOverlayRequest(overlayCommandQueue.shift());
+  }
+}
 
 function createFloatingChatWindow() {
   if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
-    floatingChatWindow.show();
-    floatingChatWindow.focus();
     return floatingChatWindow;
   }
 
-  // Start at idle pill dimensions exactly (72x72 circle). The window
-  // grows horizontally on demand from the renderer when the pill opens
-  // to type a message — see `resize-floating-chat` IPC below. Any
-  // transparent area outside the pill would show whatever the overlay
-  // sits over (main app title bar, etc.) and read as a "white frame".
+  overlayRendererReady = false;
+
+  // Start hidden; once ready, the renderer reports the unified shell dimensions.
   floatingChatWindow = new BrowserWindow({
     title: 'Kestrel Motorsport Analyst',
-    width: 72,
-    height: 72,
+    width: 300,
+    height: 64,
     frame: false,
     // Without thickFrame:false, Windows still attaches the WS_THICKFRAME
     // resize-handle chrome to frameless+transparent windows. When the
@@ -594,12 +695,14 @@ function createFloatingChatWindow() {
     : `file://${path.join(__dirname, '../build/index.html')}`;
   floatingChatWindow.loadURL(`${base}#/floating-chat`);
 
-  floatingChatWindow.once('ready-to-show', () => {
-    floatingChatWindow.show();
+  floatingChatWindow.on('close', (event) => {
+    if (!isAppQuitting) event.preventDefault();
   });
 
   floatingChatWindow.on('closed', () => {
     floatingChatWindow = null;
+    overlayRendererReady = false;
+    rejectOverlayRequests('Overlay renderer shut down before acknowledging the request.');
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('floating-chat-closed');
     }
@@ -608,9 +711,135 @@ function createFloatingChatWindow() {
   return floatingChatWindow;
 }
 
+ipcMain.handle('overlay-session-create', (_event, descriptor) => {
+  const validationError = validateOverlaySessionDescriptor(descriptor);
+  if (validationError) return { success: false, error: validationError };
+  try {
+    createFloatingChatWindow();
+    const previousPresentationId = currentOverlayPresentation?.presentationId;
+    if (previousPresentationId) {
+      rejectOverlayRequests('Overlay presentation was replaced.', previousPresentationId);
+    }
+    currentOverlayPresentation = {
+      ...JSON.parse(JSON.stringify(descriptor)),
+      presentationId: `overlay-presentation-${Date.now().toString(36)}-${(++overlayPresentationSequence).toString(36)}`,
+    };
+    if (overlayRendererReady) {
+      floatingChatWindow.webContents.send('overlay-presentation-changed', {
+        kind: 'started',
+        presentation: currentOverlayPresentation,
+      });
+    }
+    syncOverlayVisibility();
+    return { success: true, presentation: currentOverlayPresentation };
+  } catch (error) {
+    console.error('Failed to create overlay session:', error);
+    return { success: false, error: error?.message || 'Unknown overlay session error' };
+  }
+});
+
+ipcMain.handle('overlay-session-destroy', (_event, presentationId) => {
+  if (typeof presentationId !== 'string' || !presentationId.trim()) {
+    return { success: false, error: 'Overlay presentationId is required.' };
+  }
+  if (currentOverlayPresentation?.presentationId !== presentationId) {
+    return { success: true, ended: false };
+  }
+  rejectOverlayRequests('Overlay presentation ended before acknowledging the request.', presentationId);
+  currentOverlayPresentation = null;
+  if (overlayRendererReady && floatingChatWindow && !floatingChatWindow.isDestroyed()) {
+    floatingChatWindow.webContents.send('overlay-presentation-changed', {
+      kind: 'ended',
+      presentationId,
+    });
+  }
+  return { success: true, ended: true };
+});
+
+ipcMain.handle('overlay-session-set-enabled', (_event, enabled) => {
+  overlayEnabled = Boolean(enabled);
+  if (overlayEnabled) createFloatingChatWindow();
+  if (overlayRendererReady) floatingChatWindow.webContents.send('overlay-enabled-changed', overlayEnabled);
+  syncOverlayVisibility();
+  return { success: true, enabled: overlayEnabled };
+});
+
+ipcMain.handle('overlay-session-is-enabled', () => overlayEnabled);
+
+ipcMain.handle('overlay-display-request', (event, request) => {
+  const validationError = validateOverlayRequest(request);
+  if (validationError) {
+    return {
+      presentationId: request?.presentationId || 'unknown',
+      requestId: request?.requestId || 'unknown',
+      accepted: false,
+      error: validationError,
+    };
+  }
+  if (request.presentationId !== currentOverlayPresentation?.presentationId) {
+    return {
+      presentationId: request.presentationId,
+      requestId: request.requestId,
+      accepted: false,
+      error: `Overlay presentation '${request.presentationId}' is no longer active.`,
+    };
+  }
+  if (!floatingChatWindow || floatingChatWindow.isDestroyed()) {
+    return { presentationId: request.presentationId, requestId: request.requestId, accepted: false, error: 'Overlay window is unavailable.' };
+  }
+  if (isOverlayRendererSender(event)) {
+    return { presentationId: request.presentationId, requestId: request.requestId, accepted: false, error: 'Overlay renderer cannot submit producer commands.' };
+  }
+  if (overlayPendingRequests.has(request.requestId)) {
+    return { presentationId: request.presentationId, requestId: request.requestId, accepted: false, error: 'Duplicate overlay requestId.' };
+  }
+
+  return new Promise((resolve) => {
+    overlayPendingRequests.set(request.requestId, { presentationId: request.presentationId, resolve, timer: null });
+    if (overlayRendererReady) {
+      forwardOverlayRequest(request);
+    } else {
+      overlayCommandQueue.push(request);
+    }
+  });
+});
+
+ipcMain.on('overlay-renderer-ready', (event) => {
+  if (!isOverlayRendererSender(event)) return;
+  overlayRendererReady = true;
+  floatingChatWindow.webContents.send('overlay-enabled-changed', overlayEnabled);
+  if (currentOverlayPresentation) {
+    floatingChatWindow.webContents.send('overlay-presentation-changed', {
+      kind: 'started',
+      presentation: currentOverlayPresentation,
+    });
+  }
+  flushOverlayCommandQueue();
+  syncOverlayVisibility();
+});
+
+ipcMain.on('overlay-display-acknowledgement', (event, acknowledgement) => {
+  if (!isOverlayRendererSender(event)) return;
+  if (!acknowledgement || typeof acknowledgement.requestId !== 'string') return;
+  const pending = overlayPendingRequests.get(acknowledgement.requestId);
+  if (!pending || acknowledgement.presentationId !== pending.presentationId) return;
+  settleOverlayRequest(acknowledgement.requestId, acknowledgement);
+});
+
+ipcMain.on('overlay-lifecycle-event', (event, lifecycleEvent) => {
+  if (!isOverlayRendererSender(event) || !isSerializableOverlayValue(lifecycleEvent)) return;
+  if (typeof lifecycleEvent?.presentationId !== 'string') return;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('overlay-lifecycle-event', lifecycleEvent);
+  }
+});
+
 ipcMain.handle('open-floating-chat', () => {
   try {
     createFloatingChatWindow();
+    overlayEnabled = true;
+    if (overlayRendererReady) floatingChatWindow.webContents.send('overlay-enabled-changed', true);
+    syncOverlayVisibility();
     return { success: true };
   } catch (error) {
     console.error('Failed to open floating chat window:', error);
@@ -619,31 +848,29 @@ ipcMain.handle('open-floating-chat', () => {
 });
 
 ipcMain.handle('close-floating-chat', () => {
-  if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
-    floatingChatWindow.close();
+  overlayEnabled = false;
+  if (floatingChatWindow && !floatingChatWindow.isDestroyed() && overlayRendererReady) {
+    floatingChatWindow.webContents.send('overlay-enabled-changed', false);
   }
+  syncOverlayVisibility();
   return { success: true };
 });
 
 ipcMain.handle('is-floating-chat-open', () => {
-  return Boolean(floatingChatWindow && !floatingChatWindow.isDestroyed());
+  return overlayEnabled;
 });
 
-// Renderer asks the OS window to track the pill's current size so there's
-// no transparent buffer area around it (which would read as a white frame
-// over the main app's title bar). We expand/contract around the window's
-// current visual center so the avatar appears to stay anchored as the
-// pill grows or shrinks.
+// Track the widest card and total stack height. Horizontal resizing keeps
+// the visual center; vertical resizing keeps the dragged top edge fixed.
 ipcMain.handle('resize-floating-chat', (event, payload) => {
-  if (!floatingChatWindow || floatingChatWindow.isDestroyed()) {
+  if (!isOverlayRendererSender(event) || !floatingChatWindow || floatingChatWindow.isDestroyed()) {
     return { success: false };
   }
-  const width = Math.max(72, Math.min(800, Math.round(Number(payload?.width) || 72)));
-  const height = Math.max(72, Math.min(640, Math.round(Number(payload?.height) || 72)));
+  const width = Math.max(280, Math.round(Number(payload?.width) || 280));
+  const height = Math.max(58, Math.round(Number(payload?.height) || 58));
   const bounds = floatingChatWindow.getBounds();
   const newX = bounds.x - Math.round((width - bounds.width) / 2);
-  const newY = bounds.y - Math.round((height - bounds.height) / 2);
-  floatingChatWindow.setBounds({ x: newX, y: newY, width, height });
+  floatingChatWindow.setBounds({ x: newX, y: bounds.y, width, height });
   return { success: true };
 });
 
@@ -675,6 +902,14 @@ app.on('ready', () => {
   createWindow();
   // Check speech recognition availability on startup
   checkSpeechRecognitionAvailability();
+});
+
+app.on('before-quit', () => {
+  isAppQuitting = true;
+  rejectOverlayRequests('Application is shutting down.');
+  if (floatingChatWindow && !floatingChatWindow.isDestroyed()) {
+    floatingChatWindow.close();
+  }
 });
 
 app.on('window-all-closed', () => {

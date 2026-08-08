@@ -30,7 +30,6 @@ import ProcedurePlanDisplay from './ProcedurePlanDisplay';
 import {
     advanceProcedurePlan,
     buildProcedurePlan,
-    getProcedurePlanUpdateKey,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
@@ -53,9 +52,16 @@ import {
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 import { resolveAssistantRecordedSessionId } from 'views/lap-analysis/assistant-session-mode';
 import {
-    broadcastFloatingPillPayload,
-    type FloatingPillPayloadInput,
-} from 'views/floating-chat/floating-pill-bridge';
+    overlayDisplayClient,
+    overlaySessionClient,
+} from 'views/floating-chat/overlay-display-client';
+import type {
+    OverlayDisplayType,
+    OverlayPresentationSession,
+    OverlayShellMetadata,
+    OverlaySnapshotByType,
+    OverlayUpsertOptions,
+} from 'views/floating-chat/overlay-display-types';
 
 type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
@@ -289,6 +295,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
+    const [overlayPresentationId, setOverlayPresentationId] = useState<string | null>(null);
+    const [overlayAgentTags, setOverlayAgentTags] = useState<string[]>([]);
     const [selectedChatLlmModel, setSelectedChatLlmModel] = useState(
         DEFAULT_CHAT_LLM_MODEL_OPTION.value,
     );
@@ -370,10 +378,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     );
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
     const endedAiShutdownAppliedRef = useRef(false);
+    const overlayPresentationRef = useRef<OverlayPresentationSession | null>(null);
+    const overlayPresentationsByAiSessionRef = useRef<Map<string, string>>(new Map());
+    const overlayAiSessionByVoiceSessionRef = useRef<Map<string, string>>(new Map());
+    const overlayStartByVoiceSessionRef = useRef<Map<string, Promise<OverlayPresentationSession | null>>>(new Map());
+    const voiceSessionSeenActiveRef = useRef(false);
     const procedurePlanRef = useRef<ProcedurePlan | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
     const planToolRunsRef = useRef<Set<string>>(new Set());
-    const lastBroadcastedProcedurePlanKeyRef = useRef<string | null>(null);
     const lastBroadcastedLiveRangeTodoListKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
@@ -408,17 +420,33 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         return `${prefix}-${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
     }, []);
 
-    const broadcastPillPayload = useCallback((
-        payload: Omit<FloatingPillPayloadInput, 'emotion'> & { emotion?: Emotion | null },
+    const upsertOverlayDisplay = useCallback(<T extends OverlayDisplayType,>(
+        type: T,
+        snapshot: OverlaySnapshotByType[T],
+        metadata: OverlayShellMetadata = {},
+        options: Omit<OverlayUpsertOptions, 'metadata'> = {},
+        presentationId = overlayPresentationRef.current?.presentationId,
     ) => {
-        broadcastFloatingPillPayload({
-            ...payload,
-            emotion: payload.emotion ?? undefined,
-            tags: payload.tags ?? activeAgentTagsRef.current,
-        });
+        if (!presentationId) return;
+        void overlayDisplayClient.forPresentation(presentationId).upsert(type, snapshot, {
+            ...options,
+            metadata: {
+                ...metadata,
+                name: metadata.name ?? (
+                    activeAgentSessionRef.current
+                        ? getAgentDisplayName(activeAgentSessionRef.current.agentMode)
+                        : undefined
+                ),
+                agentTags: metadata.agentTags ?? activeAgentTagsRef.current,
+            },
+        }).catch(() => undefined);
     }, []);
 
-    const broadcastPillMessage = useCallback((text: string, options: { emotion?: Emotion | null; tags?: string[]; name?: string } = {}) => {
+    const presentAssistantOverlayMessage = useCallback((
+        text: string,
+        options: { emotion?: Emotion | null; tags?: string[]; name?: string } = {},
+        presentationId?: string,
+    ) => {
         try {
             const pillText = text
                 .replace(/\*\*(.*?)\*\*/g, '$1')
@@ -428,26 +456,22 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 .trim()
                 .slice(0, 280);
             if (pillText || options.tags !== undefined) {
-                broadcastPillPayload({
-                    kind: 'message',
-                    text: pillText,
-                    name: options.name,
-                    emotion: options.emotion ?? undefined,
-                    tags: options.tags ?? activeAgentTagsRef.current,
-                });
+                if (pillText) {
+                    upsertOverlayDisplay('ai_message', { text: pillText }, {
+                        name: options.name,
+                        emotion: options.emotion ?? undefined,
+                        agentTags: options.tags ?? activeAgentTagsRef.current,
+                    }, {}, presentationId);
+                }
             }
-        } catch { /* ignore storage write failures */ }
-    }, [broadcastPillPayload]);
+        } catch { /* ignore unavailable overlay failures */ }
+    }, [upsertOverlayDisplay]);
 
     const displayMapInChat = useCallback((display: AiMapDisplayPayload) => {
         const fallbackText = display.status === 'unavailable'
             ? 'Map is not available'
             : display.note || display.title || display.map?.circuit_name || 'Map';
-        broadcastPillPayload({
-            kind: 'map',
-            text: fallbackText,
-            data: display,
-        });
+        upsertOverlayDisplay('map', display);
         setMessages(prev => prev
             .filter(m => !m.isLoading)
             .concat({
@@ -458,7 +482,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 kind: 'chat',
                 mapDisplay: display,
             }));
-    }, [broadcastPillPayload, generateUniqueId, setMessages]);
+    }, [generateUniqueId, setMessages, upsertOverlayDisplay]);
 
     const setAgentTag = useCallback((tag: string, active: boolean) => {
         const current = activeAgentTagsRef.current;
@@ -469,13 +493,66 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
         activeAgentTagsRef.current = next;
-        broadcastPillMessage('', { tags: next });
-    }, [broadcastPillMessage]);
+        setOverlayAgentTags(next);
+    }, []);
 
     useEffect(() => {
         activeAgentTagsRef.current = [];
-        broadcastPillMessage('', { tags: [] });
-    }, [broadcastPillMessage]);
+        setOverlayAgentTags([]);
+    }, []);
+
+    const beginOverlaySession = useCallback(async (
+        aiSessionId: string,
+        target: 'main' | 'agent',
+        agentMode?: AgentSessionMode,
+    ): Promise<OverlayPresentationSession | null> => {
+        if (!overlaySessionClient.available()) return null;
+        const mode = target === 'agent' ? 'agent' : sessionMode;
+        const modeTag = mode === 'front_desk'
+            ? 'Front Desk'
+            : mode === 'user_summary'
+                ? 'User Summary'
+                : mode.charAt(0).toUpperCase() + mode.slice(1);
+        const agentName = target === 'agent' ? getAgentDisplayName(agentMode) : undefined;
+        const presentation = await overlaySessionClient.create({
+            aiSessionId,
+            mode,
+            displayIdentity: {
+                name: agentName || 'Kestrel',
+                emotion: 'idle',
+                agentTags: Array.from(new Set([
+                    modeTag,
+                    ...(agentName ? [agentName] : []),
+                    ...activeAgentTagsRef.current,
+                ])),
+            },
+        });
+        overlayPresentationsByAiSessionRef.current.set(aiSessionId, presentation.presentationId);
+        if (overlaySessionClient.current()?.presentationId === presentation.presentationId) {
+            overlayPresentationRef.current = presentation;
+            setOverlayPresentationId(presentation.presentationId);
+        }
+        return presentation;
+    }, [sessionMode]);
+
+    const endOverlaySession = useCallback(async (aiSessionId?: string | null) => {
+        const presentationId = aiSessionId
+            ? overlayPresentationsByAiSessionRef.current.get(aiSessionId)
+            : overlayPresentationRef.current?.presentationId;
+        if (!presentationId) return;
+        await overlaySessionClient.destroy(presentationId);
+        if (aiSessionId) overlayPresentationsByAiSessionRef.current.delete(aiSessionId);
+        if (overlayPresentationRef.current?.presentationId === presentationId) {
+            overlayPresentationRef.current = null;
+            setOverlayPresentationId(null);
+        }
+    }, []);
+
+    useEffect(() => () => {
+        const presentationId = overlayPresentationRef.current?.presentationId;
+        overlayPresentationRef.current = null;
+        if (presentationId) void overlaySessionClient.destroy(presentationId).catch(() => undefined);
+    }, []);
 
     const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
         if (!enabled) {
@@ -496,22 +573,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         procedurePlanRef.current = plan;
         setProcedurePlanState(plan);
         if (!plan) {
-            lastBroadcastedProcedurePlanKeyRef.current = null;
             return;
         }
+    }, []);
 
-        const planKey = getProcedurePlanUpdateKey(plan);
-        if (planKey === lastBroadcastedProcedurePlanKeyRef.current) {
+    useEffect(() => {
+        if (!overlayPresentationId) return;
+        if (procedurePlan) {
+            upsertOverlayDisplay('procedure_plan', procedurePlan, {}, {}, overlayPresentationId);
             return;
         }
-        lastBroadcastedProcedurePlanKeyRef.current = planKey;
-
-        broadcastPillPayload({
-            kind: 'plan',
-            text: plan.requests[plan.currentStep]?.title || plan.goal,
-            data: plan,
-        });
-    }, [broadcastPillPayload]);
+        void overlayDisplayClient.forPresentation(overlayPresentationId).exit(
+            { type: 'procedure_plan' },
+            'producer_exit',
+        ).catch(() => undefined);
+    }, [overlayAgentTags, overlayPresentationId, procedurePlan, upsertOverlayDisplay]);
 
     const advanceProcedurePlanStep = useCallback((reason?: string) => {
         const current = procedurePlanRef.current;
@@ -563,6 +639,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     // backend LLM via JSON text frames.
     const handleSessionVoiceEvent = useCallback((event: VoiceEvent, target: 'main' | 'agent') => {
         const setTargetMessages = target === 'agent' ? setAgentMessages : setMainMessages;
+        const eventAiSessionId = event.clientSessionId ?? (
+            target === 'agent'
+                ? activeAgentSessionRef.current?.clientSessionId
+                : mainClientSessionIdRef.current
+        );
+        const presentationId = eventAiSessionId
+            ? overlayPresentationsByAiSessionRef.current.get(eventAiSessionId)
+            : undefined;
         if (event.kind === 'user_transcript') {
             if (isProcedurePlanOptOutRequest(event.text)) {
                 optOutProcedurePlan();
@@ -593,13 +677,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     timestamp: new Date(),
                     kind: 'chat',
                 }));
-            // Broadcast to the floating pill overlay (separate Electron window).
-            // 'storage' events fire in other same-origin BrowserWindows but not
-            // in the window that writes — perfect one-way fanout.
-            broadcastPillMessage(cleanText, {
+            // Send a complete presentation snapshot to the Electron overlay.
+            presentAssistantOverlayMessage(cleanText, {
                 emotion,
                 name: target === 'agent' ? getAgentDisplayName(activeAgentSessionRef.current?.agentMode) : undefined,
-            });
+            }, presentationId);
             return;
         }
         if (event.kind === 'tool_status') {
@@ -621,10 +703,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
         if (event.kind === 'tool_call') {
-            broadcastPillPayload({
-                kind: 'tool',
-                text: event.title,
-                data: {
+            if (event.runId) {
+                upsertOverlayDisplay('tool_status', {
                     runId: event.runId,
                     name: event.name,
                     title: event.title,
@@ -632,8 +712,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     ok: event.ok,
                     error: event.error ?? null,
                     result: event.result,
-                },
-            });
+                }, {}, { key: event.runId }, presentationId);
+            }
             setTargetMessages(prev => {
                 for (let i = prev.length - 1; i >= 0; i--) {
                     const m = prev[i];
@@ -677,12 +757,12 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             return;
         }
     }, [
-        broadcastPillMessage,
-        broadcastPillPayload,
+        presentAssistantOverlayMessage,
         clearProcedurePlan,
         generateUniqueId,
         optOutProcedurePlan,
         setProcedurePlan,
+        upsertOverlayDisplay,
     ]);
 
     const handleMainVoiceEvent = useCallback((event: VoiceEvent) => {
@@ -742,39 +822,33 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const restartBaselineCollection = baselineCollectionRuntime.restart;
 
     useEffect(() => {
-        if (!baselineCollectionEnabled || !baselineCollectionTag) return;
-        broadcastPillPayload({
-            kind: 'baseline',
-            text: baselineCollectionTag.detail,
-            data: baselineCollectionTag,
-        });
-    }, [baselineCollectionEnabled, baselineCollectionTag, broadcastPillPayload]);
+        if (!overlayPresentationId) return;
+        if (!baselineCollectionEnabled || !baselineCollectionTag) {
+            void overlayDisplayClient.forPresentation(overlayPresentationId).exit(
+                { type: 'baseline_progress' },
+                'producer_exit',
+            ).catch(() => undefined);
+            return;
+        }
+        upsertOverlayDisplay('baseline_progress', baselineCollectionTag, {}, {}, overlayPresentationId);
+    }, [baselineCollectionEnabled, baselineCollectionTag, overlayAgentTags, overlayPresentationId, upsertOverlayDisplay]);
 
     useEffect(() => {
+        if (!overlayPresentationId) return;
         const todoList = liveSession.liveRangeTodoListSnapshot;
         if (!todoList || todoList.events.length === 0) {
             lastBroadcastedLiveRangeTodoListKeyRef.current = null;
+            void overlayDisplayClient.forPresentation(overlayPresentationId).exit(
+                { type: 'live_range_todo' },
+                'producer_exit',
+            ).catch(() => undefined);
             return;
         }
-        const lifecycleKey = JSON.stringify(todoList.events.map((event) => ({
-            id: event.id,
-            position: event.normalized_position,
-            lead: event.lead_time_seconds,
-            content: event.content,
-            data: event.data,
-            status: event.status,
-        })));
+        const lifecycleKey = JSON.stringify({ overlayPresentationId, agentTags: overlayAgentTags, todoList });
         if (lifecycleKey === lastBroadcastedLiveRangeTodoListKeyRef.current) return;
         lastBroadcastedLiveRangeTodoListKeyRef.current = lifecycleKey;
-        const emphasizedEvent = [...todoList.events].reverse().find((event) => event.status !== 'pending');
-        broadcastPillPayload({
-            kind: 'live_range_todo_list',
-            text: emphasizedEvent
-                ? `${emphasizedEvent.content.title}: ${emphasizedEvent.status}`
-                : `${todoList.events.length} planned event${todoList.events.length === 1 ? '' : 's'}`,
-            data: todoList,
-        });
-    }, [broadcastPillPayload, liveSession.liveRangeTodoListSnapshot]);
+        upsertOverlayDisplay('live_range_todo', todoList, {}, {}, overlayPresentationId);
+    }, [liveSession.liveRangeTodoListSnapshot, overlayAgentTags, overlayPresentationId, upsertOverlayDisplay]);
 
     const startTrackGuide = useCallback(() => {
         trackGuideRunTokenRef.current += 1;
@@ -1069,6 +1143,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         if (existing && existing.agentMode === agentMode && existing.status !== 'stopped') {
             if (existing.status === 'error') {
                 agentAutoStartSessionIdRef.current = null;
+                const overlayAiSessionId = createClientSessionId(`overlay-agent-${agentMode}`);
+                overlayAiSessionByVoiceSessionRef.current.set(existing.clientSessionId, overlayAiSessionId);
+                const overlayStart = beginOverlaySession(overlayAiSessionId, 'agent', agentMode);
+                overlayStartByVoiceSessionRef.current.set(existing.clientSessionId, overlayStart);
+                void overlayStart.catch(() => undefined);
             }
             setActiveAgentSession({ ...existing, status: existing.status === 'error' ? 'starting' : existing.status });
             return {
@@ -1085,6 +1164,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         resetAgentRuntimes();
 
         const clientSessionId = createClientSessionId(`agent-${agentMode}`);
+        const overlayAiSessionId = createClientSessionId(`overlay-agent-${agentMode}`);
+        overlayAiSessionByVoiceSessionRef.current.set(clientSessionId, overlayAiSessionId);
+        const overlayStart = beginOverlaySession(overlayAiSessionId, 'agent', agentMode);
+        overlayStartByVoiceSessionRef.current.set(clientSessionId, overlayStart);
+        void overlayStart.catch(() => undefined);
         const nextSession: AgentSessionInfo = {
             sessionRole: 'agent',
             clientSessionId,
@@ -1096,10 +1180,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         setActiveAgentSession(nextSession);
         setAgentMessages([]);
         setAgentTag(getAgentDisplayName(agentMode), true);
-        broadcastPillMessage('', {
-            name: getAgentDisplayName(agentMode),
-            tags: [getAgentDisplayName(agentMode)],
-        });
 
         return {
             status: 'started',
@@ -1109,9 +1189,9 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             parent_client_session_id: mainClientSessionIdRef.current,
         };
     }, [
-        broadcastPillMessage,
         resetAgentRuntimes,
         analysisContext?.recordingState,
+        beginOverlaySession,
         sessionMode,
         setAgentTag,
     ]);
@@ -1137,7 +1217,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         activeAgentSessionRef.current = null;
         agentAutoStartSessionIdRef.current = null;
         setAgentTag(getAgentDisplayName(current.agentMode), false);
-        broadcastPillMessage('', { tags: [] });
+        const overlayAiSessionId = overlayAiSessionByVoiceSessionRef.current.get(current.clientSessionId);
+        overlayAiSessionByVoiceSessionRef.current.delete(current.clientSessionId);
+        overlayStartByVoiceSessionRef.current.delete(current.clientSessionId);
+        void endOverlaySession(overlayAiSessionId).catch(() => undefined);
 
         return {
             status: 'stopped',
@@ -1145,7 +1228,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             agent_mode: current.agentMode,
             agent_session_id: current.clientSessionId,
         };
-    }, [broadcastPillMessage, resetAgentRuntimes, setAgentTag]);
+    }, [endOverlaySession, resetAgentRuntimes, setAgentTag]);
 
     const toolHandlers = useMemo(() => createAiCommandRegistry({
         sessionId: resolvedSessionId,
@@ -1353,6 +1436,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
         stopMainVoiceConversation();
         stopAgentVoiceConversation();
+        const activeVoiceSessionId = activeAgentSessionRef.current?.clientSessionId ?? mainClientSessionIdRef.current;
+        const overlayAiSessionId = overlayAiSessionByVoiceSessionRef.current.get(activeVoiceSessionId);
+        overlayAiSessionByVoiceSessionRef.current.delete(activeVoiceSessionId);
+        overlayStartByVoiceSessionRef.current.delete(activeVoiceSessionId);
+        void endOverlaySession(overlayAiSessionId).catch(() => undefined);
         resetAgentRuntimes();
         agentAutoStartSessionIdRef.current = null;
         setActiveAgentSession((current) => {
@@ -1361,7 +1449,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             activeAgentSessionRef.current = stopped;
             return stopped;
         });
-    }, [liveSessionEnded, resetAgentRuntimes, stopAgentVoiceConversation, stopMainVoiceConversation]);
+    }, [endOverlaySession, liveSessionEnded, resetAgentRuntimes, stopAgentVoiceConversation, stopMainVoiceConversation]);
 
     const activeAgentSessionId = activeAgentSession?.clientSessionId;
     const activeAgentSessionStatus = activeAgentSession?.status;
@@ -1378,7 +1466,14 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         if (agentAutoStartSessionIdRef.current === activeAgentSessionId) return;
 
         agentAutoStartSessionIdRef.current = activeAgentSessionId;
-        startAgentVoiceConversation().catch((err) => {
+        const overlayStart = overlayStartByVoiceSessionRef.current.get(activeAgentSessionId)
+            ?? Promise.resolve(null);
+        overlayStart.catch(() => null).then(() => {
+            if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSessionId) return;
+            return startAgentVoiceConversation(
+                overlayAiSessionByVoiceSessionRef.current.get(activeAgentSessionId),
+            );
+        }).catch((err) => {
             console.error('Agent voice conversation failed to start:', err);
             setActiveAgentSession((current) => current
                 ? { ...current, status: 'error' }
@@ -1525,6 +1620,20 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const sendActiveVoiceToolStatus = activeVoiceConversation.sendToolStatus;
     const sendActiveVoiceToolResult = activeVoiceConversation.sendToolResult;
     useEffect(() => {
+        if (vState === 'connecting' || vState === 'listening' || vState === 'speaking') {
+            voiceSessionSeenActiveRef.current = true;
+            return;
+        }
+        if (vState !== 'idle' || !voiceSessionSeenActiveRef.current) return;
+        if (activeAgentSession?.status === 'starting') return;
+        voiceSessionSeenActiveRef.current = false;
+        const activeVoiceSessionId = activeAgentSessionRef.current?.clientSessionId ?? mainClientSessionIdRef.current;
+        const overlayAiSessionId = overlayAiSessionByVoiceSessionRef.current.get(activeVoiceSessionId);
+        overlayAiSessionByVoiceSessionRef.current.delete(activeVoiceSessionId);
+        overlayStartByVoiceSessionRef.current.delete(activeVoiceSessionId);
+        void endOverlaySession(overlayAiSessionId).catch(() => undefined);
+    }, [activeAgentSession?.status, endOverlaySession, vState]);
+    useEffect(() => {
         activeVoiceToolResultRef.current = sendActiveVoiceToolResult;
         activeVoiceToolStatusRef.current = sendActiveVoiceToolStatus;
         return () => {
@@ -1537,8 +1646,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         };
     }, [sendActiveVoiceToolResult, sendActiveVoiceToolStatus]);
 
-    const canOpenFloatingChat = typeof window !== 'undefined'
-        && Boolean((window as any).electronAPI?.openFloatingChat);
+    const canOpenFloatingChat = overlaySessionClient.available();
 
     useEffect(() => {
         if (!procedurePlan) return;
@@ -1649,16 +1757,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, [clearProcedurePlan, sessionMode, setAgentTag, setBaselineCollectionEnabled, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled, stopAgentSession]);
 
     const toggleFloatingChat = useCallback(async () => {
-        const api = (window as any).electronAPI;
-        if (!api?.openFloatingChat) return;
         try {
-            if (floatingChatOpen) {
-                await api.closeFloatingChat();
-                setFloatingChatOpen(false);
-            } else {
-                await api.openFloatingChat();
-                setFloatingChatOpen(true);
-            }
+            const enabled = !floatingChatOpen;
+            await overlaySessionClient.setEnabled(enabled);
+            setFloatingChatOpen(enabled);
         } catch (err) {
             console.warn('Failed to toggle floating chat:', err);
         }
@@ -1667,9 +1769,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     useEffect(() => {
         const api = (window as any).electronAPI;
         if (!api?.onFloatingChatClosed) return;
-        const unsubscribe = api.onFloatingChatClosed(() => setFloatingChatOpen(false));
-        if (api.isFloatingChatOpen) {
-            api.isFloatingChatOpen()
+        const unsubscribe = api.onFloatingChatClosed(() => {
+            overlayPresentationRef.current = null;
+            setOverlayPresentationId(null);
+            setFloatingChatOpen(false);
+        });
+        if (api.isOverlayEnabled) {
+            api.isOverlayEnabled()
                 .then((open: boolean) => setFloatingChatOpen(Boolean(open)))
                 .catch(() => undefined);
         }
@@ -1968,12 +2074,32 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
 
     const toggleVoice = () => {
         if (liveSessionEnded) return;
+        const agentSession = activeAgentSessionRef.current;
+        const voiceSessionId = agentSession?.clientSessionId ?? mainClientSessionIdRef.current;
+        const overlayTarget = agentSession ? 'agent' : 'main';
         if (vState === 'idle' || vState === 'error') {
-            activeVoiceConversation.start().catch((err) => {
-                console.error('Voice conversation failed to start:', err);
-            });
+            const overlayAiSessionId = createClientSessionId(`overlay-${overlayTarget}`);
+            overlayAiSessionByVoiceSessionRef.current.set(voiceSessionId, overlayAiSessionId);
+            const overlayStart = beginOverlaySession(overlayAiSessionId, overlayTarget, agentSession?.agentMode);
+            overlayStartByVoiceSessionRef.current.set(voiceSessionId, overlayStart);
+            void overlayStart
+                .catch((overlayError) => {
+                    console.warn(
+                        'AI overlay failed to initialize; continuing voice conversation without it:',
+                        overlayError,
+                    );
+                })
+                .then(() => activeVoiceConversation.start(overlayAiSessionId))
+                .catch((err) => {
+                    console.error('Voice conversation failed to start:', err);
+                    void endOverlaySession(overlayAiSessionId).catch(() => undefined);
+                });
         } else {
+            const overlayAiSessionId = overlayAiSessionByVoiceSessionRef.current.get(voiceSessionId);
+            overlayAiSessionByVoiceSessionRef.current.delete(voiceSessionId);
+            overlayStartByVoiceSessionRef.current.delete(voiceSessionId);
             activeVoiceConversation.stop();
+            void endOverlaySession(overlayAiSessionId).catch(() => undefined);
         }
     };
 
@@ -2071,14 +2197,13 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                             type="button"
                             className={`ai-chat__chip-btn ai-chat__chip-btn--icon ${floatingChatOpen ? 'ai-chat__chip-btn--green' : ''}`}
                             onClick={() => { void toggleFloatingChat(); }}
-                            disabled={liveSessionEnded}
                             aria-pressed={floatingChatOpen}
                             title={floatingChatOpen
-                                ? 'Close the always-on-top AI chat overlay'
-                                : 'Open the always-on-top AI chat overlay (visible over the game in borderless windowed mode)'}
+                                ? 'Hide the always-on-top AI overlay'
+                                : 'Show the always-on-top AI overlay'}
                         >
                             <OverlayIcon size={14} />
-                            <span>{floatingChatOpen ? 'Overlay On' : 'AI Overlay'}</span>
+                            <span>{floatingChatOpen ? 'Overlay On' : 'Overlay Off'}</span>
                         </button>
                     )}
                     <button

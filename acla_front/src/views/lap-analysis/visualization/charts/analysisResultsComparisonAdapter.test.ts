@@ -47,10 +47,10 @@ describe('adaptAnalysisResultsComparison', () => {
                 driverRow(12, 0.3, { x: 30, y: 31, z: 32 }),
             ],
             expertReferenceData: [
-                expertRow(12, 0.3),
+                expertRow(12, 0.32),
                 expertRow(9, 0.05),
-                expertRow(10, 0.1),
-                expertRow(11, 0.2),
+                expertRow(10, 0.12),
+                expertRow(11, 0.22),
                 expertRow(13, 0.4),
             ],
             startIndex: 10,
@@ -58,10 +58,13 @@ describe('adaptAnalysisResultsComparison', () => {
         });
 
         expect(result.samples).toHaveLength(3);
-        expect(result.samples.map((sample) => sample.trackPosition)).toEqual([0.1, 0.2, 0.3]);
+        expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([0.1, 0.2, 0.3]);
+        expect(result.samples.map((sample) => sample.expertTrackPosition)).toEqual([0.12, 0.22, 0.32]);
         expect(result.samples[0]).toMatchObject({
             driverTimeMs: 1_000,
             expertTimeMs: 900,
+            driverTrackPosition: 0.1,
+            expertTrackPosition: 0.12,
             driverTrajectory: { x: 10, y: 11, z: 12 },
             expertTrajectory: { x: 100, y: 50, z: -100 },
             driverGas: 0.5,
@@ -81,9 +84,9 @@ describe('adaptAnalysisResultsComparison', () => {
                 driverRow(22, 0.04, { x: 3, y: 3, z: 3 }),
             ],
             expertReferenceData: [
-                expertRow(20, 0.98),
-                expertRow(21, 0.01),
-                expertRow(22, 0.04),
+                expertRow(20, 0.96),
+                expertRow(21, 0.99),
+                expertRow(22, 0.02),
             ],
             startIndex: 20,
             endIndex: 22,
@@ -97,7 +100,8 @@ describe('adaptAnalysisResultsComparison', () => {
             { driverTimeMs: 2_100, expertTimeMs: 1_890 },
             { driverTimeMs: 2_200, expertTimeMs: 1_980 },
         ]);
-        expect(result.samples.map((sample) => sample.trackPosition)).toEqual([0.98, 0.01, 0.04]);
+        expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([0.98, 0.01, 0.04]);
+        expect(result.samples.map((sample) => sample.expertTrackPosition)).toEqual([0.96, 0.99, 0.02]);
     });
 
     it('retains each available source axis without synthesizing missing coordinates', () => {
@@ -145,7 +149,8 @@ describe('adaptAnalysisResultsComparison', () => {
         expect(result.samples).toEqual([{
             driverTimeMs: 3_000,
             expertTimeMs: 2_700,
-            trackPosition: 0.5,
+            driverTrackPosition: 0.5,
+            expertTrackPosition: 0.5,
             driverBrake: 0.3,
             expertBrake: 0.4,
         }]);
@@ -201,6 +206,43 @@ describe('adaptAnalysisResultsComparison', () => {
             )),
             startIndex: 50,
             endIndex: 51,
+        });
+
+        expect(result.samples).toEqual([]);
+    });
+
+    it.each([
+        ['missing driver position', { Graphics_normalized_car_position: undefined }, {}],
+        ['missing expert position', {}, { Graphics_normalized_car_position: undefined }],
+        ['non-finite driver position', { Graphics_normalized_car_position: Number.NaN }, {}],
+        ['out-of-range expert position', {}, { Graphics_normalized_car_position: 1.1 }],
+    ])('rejects the comparison for a %s', (_case, driverOverrides, expertOverrides) => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [driverRow(60, 0.2, { x: 1, y: 2, z: 3 }, driverOverrides)],
+            expertReferenceData: [expertRow(60, 0.2, expertOverrides)],
+            startIndex: 60,
+            endIndex: 60,
+        });
+
+        expect(result.samples).toEqual([]);
+    });
+
+    it.each([
+        ['directionally invalid', [0.4, 0.3], [0.4, 0.5]],
+        ['non-overlapping', [0.1, 0.2], [0.4, 0.5]],
+    ])('rejects %s position streams', (_case, driverPositions, expertPositions) => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [70, 71].map((rawIndex, index) => driverRow(
+                rawIndex,
+                driverPositions[index],
+                { x: index, y: index, z: index },
+            )),
+            expertReferenceData: [70, 71].map((rawIndex, index) => expertRow(
+                rawIndex,
+                expertPositions[index],
+            )),
+            startIndex: 70,
+            endIndex: 71,
         });
 
         expect(result.samples).toEqual([]);

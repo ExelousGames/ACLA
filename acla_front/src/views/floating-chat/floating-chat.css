@@ -1,388 +1,225 @@
-/* AI Chat Pill — ambient Kestrel overlay inside the always-on-top Electron
- * window. The window is frameless and transparent; the entire visual is
- * just the pill. Dragging is via -webkit-app-region: drag on the pill
- * surface; clicking it (when expanded) dismisses the message.
- *
- * Ported from the Claude Design "AI Chat Pill.html" prototype.
- */
-
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap');
 
 :root {
-    --pill-bg: #0b0710;
-    --pill-ink: #f3eefb;
-    --pill-muted: #9b8fb0;
-    --pill-1: #1b0f2c;
-    --pill-2: #2a1546;
-    --pill-accent: #e8ff3a;
-    --pill-accent-ink: #0a0a0a;
-    --pill-violet-soft: #a78bfa;
+    --overlay-bg: #0b0710;
+    --overlay-ink: #f3eefb;
+    --overlay-muted: #9b8fb0;
+    --overlay-accent: #e8ff3a;
+    --overlay-violet: #a78bfa;
 }
 
 * { box-sizing: border-box; }
 
 html, body, #root, .App {
-    margin: 0;
-    padding: 0;
-    background: transparent !important;
-    background-color: transparent !important;
-    color: var(--pill-ink);
-    font-family: 'Geist', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    user-select: none;
-    overflow: hidden;
+    width: 100%;
     min-height: 0 !important;
     height: 100% !important;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: transparent !important;
+    color: var(--overlay-ink);
+    font-family: 'Geist', system-ui, sans-serif;
 }
 
-/* Center the pill inside the transparent canvas. The window is fixed at
- * ~640x110; the pill animates its own width within. */
-.floating-pill-stage {
-    position: fixed;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+.floating-overlay-stage {
+    width: 100%;
+    min-height: 100%;
 }
 
-/* ---------- The Pill ---------- */
-.pill {
-    --h: 72px;
-    --pad: 10px;
-    --avatar: calc(var(--h) - var(--pad) * 2);
-
+.overlay-shell {
     position: relative;
-    display: inline-flex;
-    align-items: center;
-    height: var(--h);
-    padding: var(--pad);
-    padding-right: var(--pad);
-    border-radius: 999px;
+    overflow: hidden;
+    border: 1px solid rgba(167, 139, 250, 0.28);
+    border-radius: 24px;
+    color: var(--overlay-ink);
     background:
-        radial-gradient(120% 200% at 0% 0%, rgba(167, 139, 250, 0.22), transparent 55%),
-        linear-gradient(180deg, var(--pill-2), var(--pill-1));
+        radial-gradient(120% 180% at 0% 0%, rgba(167, 139, 250, 0.2), transparent 52%),
+        linear-gradient(180deg, rgba(42, 21, 70, .98), rgba(20, 10, 34, .98));
     box-shadow:
         inset 0 1px 0 rgba(255, 255, 255, 0.08),
-        inset 0 -1px 0 rgba(0, 0, 0, 0.4),
-        0 30px 60px -20px rgba(124, 58, 237, 0.45),
-        0 18px 30px -18px rgba(0, 0, 0, 0.7);
-    color: var(--pill-ink);
-    overflow: hidden;
-    width: var(--h);  /* idle = perfect circle */
-    transition:
-        width 700ms cubic-bezier(.2, .9, .2, 1),
-        padding-right 700ms cubic-bezier(.2, .9, .2, 1);
-    will-change: width;
+        0 24px 48px -18px rgba(124, 58, 237, 0.45),
+        0 16px 28px -18px rgba(0, 0, 0, 0.75);
+    transition: width 150ms ease, border-radius 150ms ease;
 }
 
-.pill.rich {
-    --h: var(--target-h, 180px);
-    --avatar: 52px;
-    align-items: flex-start;
-    border-radius: 24px;
-}
-
-/* Drag the window from the pill while idle; clicks-to-dismiss when open.
- * (Drag regions absorb clicks on Windows, so we toggle by state.) */
-.pill:not(.open) {
-    -webkit-app-region: drag;
-    cursor: move;
-}
-.pill.open {
-    cursor: pointer;
-}
-
-.pill::before {
-    content: "";
-    position: absolute;
-    inset: 1px;
+.overlay-shell--idle {
     border-radius: 999px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0) 35%);
-    pointer-events: none;
-    z-index: 2;
 }
 
-.pill.open {
-    width: var(--target-w, 520px);
-    padding-right: 26px;
-}
-
-.pill.open.rich {
-    width: var(--target-w, 420px);
-    padding-right: 14px;
-}
-
-.pill.tagged:not(.open) {
-    width: var(--target-w, 220px);
-    padding-right: 18px;
-}
-
-/* Avatar — always visible */
-.pill .avatar {
-    width: var(--avatar);
-    height: var(--avatar);
-    flex: 0 0 var(--avatar);
-    border-radius: 50%;
-    background:
-        radial-gradient(circle at 30% 28%, #f6ff85, var(--pill-accent) 55%, #b8cc1e 100%);
-    color: var(--pill-accent-ink);
-    display: grid;
-    place-items: center;
-    font-weight: 700;
-    font-size: 18px;
-    letter-spacing: -0.02em;
-    box-shadow:
-        inset 0 -8px 14px rgba(0, 0, 0, 0.18),
-        inset 0 6px 10px rgba(255, 255, 255, 0.55),
-        0 6px 14px rgba(232, 255, 58, 0.25);
+.overlay-shell__header {
     position: relative;
-    z-index: 3;
-}
-
-/* GIF fills the avatar circle when an emotion is active */
-.pill .avatar img {
-    width: 100%;
-    height: 100%;
-    border-radius: 50%;
-    object-fit: cover;
-    display: block;
-}
-
-/* Soft pulse on idle */
-.pill:not(.open) .avatar::after {
-    content: "";
-    position: absolute;
-    inset: -6px;
-    border-radius: 50%;
-    border: 2px solid rgba(232, 255, 58, 0.35);
-    animation: pill-pulse 1.8s ease-out infinite;
-    pointer-events: none;
-}
-
-@keyframes pill-pulse {
-    0%   { transform: scale(0.85); opacity: 0.9; }
-    100% { transform: scale(1.35); opacity: 0; }
-}
-
-/* Text body — fades + slides in on open */
-.pill .body {
+    z-index: 5;
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    min-height: 56px;
+    align-items: center;
+    padding: 8px 12px;
+}
+
+.overlay-shell--idle .overlay-shell__header { min-height: 58px; }
+
+.overlay-shell__drag {
+    display: flex;
     min-width: 0;
-    margin-left: 16px;
-    flex: 1 1 auto;
-    z-index: 3;
-    opacity: 0;
-    transform: translateX(-8px);
-    transition: opacity 220ms ease, transform 400ms cubic-bezier(.2, .9, .2, 1);
-    white-space: nowrap;
+    flex: 1;
+    align-items: center;
+    gap: 10px;
+    cursor: move;
+    -webkit-app-region: drag;
+}
+
+.overlay-shell__avatar {
+    display: grid;
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+    place-items: center;
     overflow: hidden;
+    border-radius: 50%;
+    color: #0a0a0a;
+    background: radial-gradient(circle at 30% 28%, #f6ff85, var(--overlay-accent) 55%, #b8cc1e);
+    font-size: 12px;
+    font-weight: 700;
 }
 
-.pill.open .body {
-    opacity: 1;
-    transform: translateX(0);
-    transition-delay: 180ms;
-}
+.overlay-shell__avatar img { width: 100%; height: 100%; object-fit: cover; }
 
-.pill.tagged:not(.open) .body {
-    opacity: 1;
-    transform: translateX(0);
-}
-
-.pill .name-row {
+.overlay-shell__identity {
     display: flex;
+    min-width: 0;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    min-width: 0;
 }
 
-.pill .name {
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+.overlay-shell__name {
+    color: var(--overlay-violet);
+    font-family: 'Geist Mono', monospace;
     font-size: 10px;
-    letter-spacing: 0.18em;
+    letter-spacing: .16em;
     text-transform: uppercase;
-    color: var(--pill-violet-soft);
 }
 
-.pill .agent-tag {
-    max-width: 112px;
+.overlay-shell__tag {
+    max-width: 116px;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    border: 1px solid rgba(232, 255, 58, 0.42);
+    border: 1px solid rgba(232, 255, 58, .42);
     border-radius: 999px;
     padding: 1px 6px;
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--overlay-accent);
+    background: rgba(232, 255, 58, .1);
+    font-family: 'Geist Mono', monospace;
     font-size: 9px;
-    letter-spacing: 0;
-    line-height: 1.2;
+    text-overflow: ellipsis;
     text-transform: uppercase;
-    color: var(--pill-accent);
-    background: rgba(232, 255, 58, 0.1);
-}
-
-.pill .msg {
-    font-size: 16px;
-    line-height: 1.3;
-    font-weight: 500;
-    letter-spacing: -0.01em;
-    color: var(--pill-ink);
-    overflow: hidden;
-    user-select: text;  /* let the user copy text from the pill */
-}
-
-.pill.tagged:not(.open) .msg {
-    display: none;
-}
-
-.pill.rich .body {
-    gap: 6px;
-    padding-top: 4px;
-    white-space: normal;
-}
-
-.pill.rich .msg {
-    display: block;
-    max-height: 36px;
-    font-size: 12px;
-    line-height: 1.35;
-    font-weight: 500;
-    color: rgba(243, 238, 251, 0.88);
-    white-space: normal;
-}
-
-.pill .rich-body {
-    width: 100%;
-    max-height: calc(var(--target-h, 180px) - 28px);
-    overflow: hidden;
-}
-
-.pill .ai-chat__baseline-progress--pill,
-.pill .ai-chat__plan--pill,
-.pill .ai-chat__range-todo--pill,
-.pill .ai-chat__map-card--pill,
-.pill .ai-chat__tool--pill,
-.pill .floating-pill-comparison {
-    width: 100%;
-    margin: 0;
-    border-radius: 14px;
-}
-
-.pill .floating-pill-comparison {
-    padding: 10px;
-    border: 1px solid rgba(112, 164, 207, 0.24);
-    background: rgba(7, 17, 31, 0.96);
-}
-
-.pill .ai-chat__baseline-progress--pill {
-    padding: 8px 10px;
-}
-
-.pill .ai-chat__baseline-progress--pill .ai-chat__baseline-progress-detail,
-.pill .ai-chat__plan--pill .ai-chat__plan-step-detail {
-    text-transform: none;
-    letter-spacing: 0;
-}
-
-.pill .ai-chat__plan--pill {
-    padding: 9px 10px;
-}
-
-.pill .ai-chat__plan--pill .ai-chat__plan-goal,
-.pill .ai-chat__range-todo--pill .ai-chat__range-todo-title {
-    font-size: 12px;
-}
-
-.pill .ai-chat__plan--pill .ai-chat__plan-list,
-.pill .ai-chat__range-todo--pill .ai-chat__range-todo-list {
-    gap: 5px;
-    margin-top: 8px;
-}
-
-.pill .ai-chat__plan--pill .ai-chat__plan-step,
-.pill .ai-chat__range-todo--pill .ai-chat__range-todo-item {
-    font-size: 11px;
-}
-
-.pill .ai-chat__range-todo--pill {
-    padding: 9px 10px;
-}
-
-.pill .ai-chat__range-todo--pill .ai-chat__range-todo-item-main {
-    grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.pill .ai-chat__range-todo--pill .ai-chat__range-todo-metrics {
-    grid-column: 1 / -1;
-}
-
-.pill .ai-chat__map-card--pill {
-    width: 100%;
-}
-
-.pill .ai-chat__map-card--pill .ai-chat__map-head,
-.pill .ai-chat__map-card--pill .ai-chat__map-foot {
-    padding: 7px 9px;
-    font-size: 10px;
-}
-
-.pill .ai-chat__map-card--pill .ai-chat__map-svg {
-    height: 132px;
-}
-
-.pill .ai-chat__tool-wrap--pill {
-    width: 100%;
-}
-
-.pill .ai-chat__tool--pill {
-    padding: 8px 10px;
-    font-size: 10px;
-}
-
-/* Inner ribbon — slides left so the latest typed character is always
- * visible. The transition makes the roll smooth between typewriter ticks;
- * it's tuned slightly above the type interval (28ms) so the motion looks
- * continuous rather than steppy. */
-.pill .msg-inner {
-    display: inline-block;
     white-space: nowrap;
-    will-change: transform;
-    transition: transform 120ms linear;
 }
 
-.pill.rich .msg-inner {
-    display: -webkit-box;
-    white-space: normal;
+.overlay-shell__idle-label {
+    color: rgba(243, 238, 251, .68);
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.overlay-shell__speaking {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 0 10px 12px 12px;
+}
+
+.overlay-shell__response { min-width: 0; flex: 1; }
+
+.overlay-display-list {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid rgba(167, 139, 250, .2);
+}
+
+.overlay-list-item {
+    position: relative;
+    min-width: 0;
+    border-bottom: 1px solid rgba(167, 139, 250, .16);
+    background: rgba(5, 3, 10, .16);
+}
+
+.overlay-list-item:last-child { border-bottom: 0; }
+.overlay-list-item--folded { background: rgba(5, 3, 10, .24); }
+
+.overlay-list-item__header {
+    display: flex;
+    min-height: 42px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 10px 7px 12px;
+}
+
+.overlay-list-item__summary {
+    min-width: 0;
     overflow: hidden;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    transform: none !important;
-    transition: none;
+    color: rgba(243, 238, 251, .82);
+    font-family: 'Geist Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: .04em;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
 }
 
-.pill .caret {
+.overlay-list-item__body { padding: 0 12px 12px; user-select: text; }
+
+.overlay-card__message {
+    padding: 2px 6px 4px;
+    font-size: 16px;
+    font-weight: 500;
+    line-height: 1.35;
+}
+
+.overlay-card__caret {
     display: inline-block;
     width: 7px;
     height: 1em;
     margin-left: 3px;
     vertical-align: -2px;
-    background: var(--pill-accent);
-    animation: pill-blink 0.9s steps(1) infinite;
+    background: var(--overlay-accent);
+    animation: overlay-blink .9s steps(1) infinite;
 }
 
-@keyframes pill-blink {
-    50% { opacity: 0; }
+@keyframes overlay-blink { 50% { opacity: 0; } }
+
+.overlay-shell .ai-chat__baseline-progress--pill,
+.overlay-shell .ai-chat__plan--pill,
+.overlay-shell .ai-chat__range-todo--pill,
+.overlay-shell .ai-chat__map-card--pill,
+.overlay-shell .ai-chat__tool--pill,
+.overlay-shell .floating-pill-comparison {
+    width: 100%;
+    margin: 0;
+    border-radius: 14px;
 }
 
-/* Hidden sizer for measuring target widths per message — mirrors .msg's font. */
-.sizer {
-    position: absolute;
-    visibility: hidden;
-    pointer-events: none;
-    white-space: nowrap;
-    font-family: 'Geist', system-ui, sans-serif;
-    font-size: 16px;
-    font-weight: 500;
-    letter-spacing: -0.01em;
+.overlay-shell .floating-pill-comparison {
+    padding: 10px;
+    border: 1px solid rgba(112, 164, 207, .24);
+    background: rgba(7, 17, 31, .96);
 }
+
+.overlay-shell .ai-chat__baseline-progress--pill { padding: 8px 10px; }
+.overlay-shell .ai-chat__plan--pill,
+.overlay-shell .ai-chat__range-todo--pill { padding: 9px 10px; }
+.overlay-shell .ai-chat__plan--pill .ai-chat__plan-goal,
+.overlay-shell .ai-chat__range-todo--pill .ai-chat__range-todo-title { font-size: 12px; }
+.overlay-shell .ai-chat__plan--pill .ai-chat__plan-list,
+.overlay-shell .ai-chat__range-todo--pill .ai-chat__range-todo-list { gap: 5px; margin-top: 8px; }
+.overlay-shell .ai-chat__plan--pill .ai-chat__plan-step,
+.overlay-shell .ai-chat__range-todo--pill .ai-chat__range-todo-item { font-size: 11px; }
+.overlay-shell .ai-chat__range-todo--pill .ai-chat__range-todo-item-main { grid-template-columns: minmax(0, 1fr) auto; }
+.overlay-shell .ai-chat__range-todo--pill .ai-chat__range-todo-metrics { grid-column: 1 / -1; }
+.overlay-shell .ai-chat__map-card--pill .ai-chat__map-head,
+.overlay-shell .ai-chat__map-card--pill .ai-chat__map-foot { padding: 7px 9px; font-size: 10px; }
+.overlay-shell .ai-chat__map-card--pill .ai-chat__map-svg { height: 132px; }
+.overlay-shell .ai-chat__tool-wrap--pill { width: 100%; }
+.overlay-shell .ai-chat__tool--pill { padding: 8px 10px; font-size: 10px; }

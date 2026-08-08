@@ -84,7 +84,39 @@ contextBridge.exposeInMainWorld('electronAPI', {
         };
     },
 
-    // Floating AI-chat overlay window (always-on-top, draggable, frameless)
+    // Session-scoped floating overlay and typed display broker.
+    createOverlaySession: (descriptor) => ipcRenderer.invoke('overlay-session-create', descriptor),
+    destroyOverlaySession: (presentationId) => ipcRenderer.invoke('overlay-session-destroy', presentationId),
+    setOverlayEnabled: (enabled) => ipcRenderer.invoke('overlay-session-set-enabled', Boolean(enabled)),
+    isOverlayEnabled: () => ipcRenderer.invoke('overlay-session-is-enabled'),
+    sendOverlayDisplayRequest: (request) => ipcRenderer.invoke('overlay-display-request', request),
+    onOverlayLifecycle: (callback) => {
+        const subscription = (_event, lifecycleEvent) => callback(lifecycleEvent);
+        ipcRenderer.on('overlay-lifecycle-event', subscription);
+        return () => ipcRenderer.off('overlay-lifecycle-event', subscription);
+    },
+    onOverlayDisplayCommand: (callback) => {
+        const subscription = (_event, request) => callback(request);
+        ipcRenderer.on('overlay-display-command', subscription);
+        return () => ipcRenderer.off('overlay-display-command', subscription);
+    },
+    acknowledgeOverlayDisplayRequest: (acknowledgement) => (
+        ipcRenderer.send('overlay-display-acknowledgement', acknowledgement)
+    ),
+    emitOverlayLifecycle: (event) => ipcRenderer.send('overlay-lifecycle-event', event),
+    reportOverlayReady: () => ipcRenderer.send('overlay-renderer-ready'),
+    onOverlayEnabledChange: (callback) => {
+        const subscription = (_event, enabled) => callback(Boolean(enabled));
+        ipcRenderer.on('overlay-enabled-changed', subscription);
+        return () => ipcRenderer.off('overlay-enabled-changed', subscription);
+    },
+    onOverlayPresentationChange: (callback) => {
+        const subscription = (_event, change) => callback(change);
+        ipcRenderer.on('overlay-presentation-changed', subscription);
+        return () => ipcRenderer.off('overlay-presentation-changed', subscription);
+    },
+
+    // Legacy names remain as enable-gate aliases for older renderer callers.
     openFloatingChat: () => ipcRenderer.invoke('open-floating-chat'),
     closeFloatingChat: () => ipcRenderer.invoke('close-floating-chat'),
     isFloatingChatOpen: () => ipcRenderer.invoke('is-floating-chat-open'),

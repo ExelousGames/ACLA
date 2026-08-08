@@ -9,15 +9,10 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
-    getDriverExpertReplayDurationMs,
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
 import type { DriverExpertComparisonData } from 'components/driver-expert-comparison';
-import {
-    FLOATING_PILL_COMPARISON_COMPLETION_PAUSE_MS,
-    FLOATING_PILL_RICH_CONTENT_HOLD_MS,
-    broadcastFloatingPillPayload,
-} from 'views/floating-chat/floating-pill-bridge';
+import { overlayDisplayClient } from 'views/floating-chat/overlay-display-client';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import type {
     JsonValue,
@@ -60,11 +55,11 @@ interface PendingComparisonQueue {
 const showComparisonPayloadForHold = (
     payload: ComparisonPillPayload,
     signal: AbortSignal,
+    presentationId: string | undefined,
 ): Promise<void> => new Promise((resolve) => {
     let firstFrame: number | null = null;
     let secondFrame: number | null = null;
     let fallbackTimer: number | null = null;
-    let holdTimer: number | null = null;
     let finished = false;
 
     const finish = () => {
@@ -73,29 +68,26 @@ const showComparisonPayloadForHold = (
         if (firstFrame !== null) window.cancelAnimationFrame(firstFrame);
         if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
         if (fallbackTimer !== null) window.clearTimeout(fallbackTimer);
-        if (holdTimer !== null) window.clearTimeout(holdTimer);
         signal.removeEventListener('abort', finish);
         resolve();
     };
-    const broadcast = () => {
+    const present = () => {
         firstFrame = null;
         secondFrame = null;
         fallbackTimer = null;
-        if (signal.aborted) {
+        if (signal.aborted || !presentationId) {
             finish();
             return;
         }
-        broadcastFloatingPillPayload({
-            kind: 'driver_expert_comparison',
-            text: payload.title,
-            data: payload,
-        });
-        const holdDurationMs = Math.max(
-            FLOATING_PILL_RICH_CONTENT_HOLD_MS,
-            getDriverExpertReplayDurationMs(payload.comparison)
-                + FLOATING_PILL_COMPARISON_COMPLETION_PAUSE_MS,
-        );
-        holdTimer = window.setTimeout(finish, holdDurationMs);
+        const scopedClient = overlayDisplayClient.forPresentation(presentationId);
+        void scopedClient
+            .upsert('driver_expert_comparison', payload)
+            .then((instanceId) => scopedClient.waitForLifecycle(
+                instanceId,
+                'exited',
+                { signal },
+            ))
+            .then(finish, finish);
     };
 
     signal.addEventListener('abort', finish, { once: true });
@@ -109,10 +101,10 @@ const showComparisonPayloadForHold = (
     if (typeof window.requestAnimationFrame === 'function') {
         firstFrame = window.requestAnimationFrame(() => {
             firstFrame = null;
-            secondFrame = window.requestAnimationFrame(broadcast);
+            secondFrame = window.requestAnimationFrame(present);
         });
     } else {
-        fallbackTimer = window.setTimeout(broadcast, 0);
+        fallbackTimer = window.setTimeout(present, 0);
     }
 });
 
@@ -236,18 +228,20 @@ const buildMostCommonMistakeQueuePlan = (
 
 const createMostCommonMistakeEvents = (
     plan: MostCommonMistakeQueuePlan,
-): LiveRangeTodoEventInput[] => plan.eligible.map(({ element, matchedLeadingLabels }) => {
-    const position = element.normalizedPositionRange!.start;
-    const comparison = element.comparison!;
-    const title = element.title || matchedLeadingLabels[0];
-    const context = {
-        section: element.section ?? null,
-        position,
-        source_result_id: element.id,
-        matched_leading_labels: matchedLeadingLabels,
-    };
+): LiveRangeTodoEventInput[] => {
+    const presentationId = overlayDisplayClient.currentPresentation()?.presentationId;
+    return plan.eligible.map(({ element, matchedLeadingLabels }) => {
+        const position = element.normalizedPositionRange!.start;
+        const comparison = element.comparison!;
+        const title = element.title || matchedLeadingLabels[0];
+        const context = {
+            section: element.section ?? null,
+            position,
+            source_result_id: element.id,
+            matched_leading_labels: matchedLeadingLabels,
+        };
 
-    return {
+        return {
         id: createQueuedComparisonEventId(),
         normalized_position: position,
         lead_time_seconds: 0,
@@ -261,9 +255,14 @@ const createMostCommonMistakeEvents = (
             comparison,
             context,
         } as unknown as JsonValue,
-        callback: ({ signal }) => showComparisonPayloadForHold({ title, comparison }, signal),
-    };
-});
+        callback: ({ signal }) => showComparisonPayloadForHold(
+            { title, comparison },
+            signal,
+            presentationId,
+        ),
+        };
+    });
+};
 
 export const getMistakeFrequencyGraphHeight = (categoryCount: number): number => (
     160 + (Math.max(1, categoryCount) * 36)

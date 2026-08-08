@@ -25,7 +25,8 @@ export interface DriverExpertTrajectoryPoint {
 export interface DriverExpertComparisonSample {
     driverTimeMs: number;
     expertTimeMs: number;
-    trackPosition?: number;
+    driverTrackPosition: number;
+    expertTrackPosition: number;
     driverTrajectory?: DriverExpertTrajectoryPoint;
     expertTrajectory?: DriverExpertTrajectoryPoint;
     driverGas?: number;
@@ -61,33 +62,39 @@ export interface DriverExpertComparisonGraphProps {
     layout?: DriverExpertComparisonLayout;
 }
 
-type OptionalScalarKey = Exclude<
-    keyof DriverExpertComparisonSample,
-    | 'driverTimeMs'
-    | 'expertTimeMs'
-    | 'trackPosition'
-    | 'driverTrajectory'
-    | 'expertTrajectory'
->;
-type ContinuousScalarKey = 'driverGas' | 'expertGas' | 'driverBrake' | 'expertBrake';
-type GearKey = 'driverGear' | 'expertGear';
-type TrajectoryKey = 'driverTrajectory' | 'expertTrajectory';
-type ReplayClockKey = 'driverTimeMs' | 'expertTimeMs';
+type ReplayContinuousKey = 'trackPosition' | 'gas' | 'brake';
+type OptionalSampleScalarKey = (
+    'driverGas'
+    | 'expertGas'
+    | 'driverBrake'
+    | 'expertBrake'
+    | 'driverGear'
+    | 'expertGear'
+);
 
 interface PlottingTrajectoryPoint {
     x: number;
     y: number;
 }
 
-interface PlottingComparisonSample extends Omit<
-    DriverExpertComparisonSample,
-    'driverTrajectory' | 'expertTrajectory'
-> {
-    driverTrajectory?: PlottingTrajectoryPoint;
-    expertTrajectory?: PlottingTrajectoryPoint;
+interface ReplayStreamPoint<TTrajectory = DriverExpertTrajectoryPoint> {
+    timeMs: number;
+    trackPosition: number;
+    trajectory?: TTrajectory;
+    gas?: number;
+    brake?: number;
+    gear?: number;
+}
+
+interface DriverExpertReplay<TTrajectory = DriverExpertTrajectoryPoint> {
+    driver: ReplayStreamPoint<TTrajectory>[];
+    expert: ReplayStreamPoint<TTrajectory>[];
+    durationMs: number;
 }
 
 interface ReplayFrame {
+    driverTrackPosition?: number;
+    expertTrackPosition?: number;
     driverGas?: number;
     expertGas?: number;
     driverBrake?: number;
@@ -121,6 +128,9 @@ const clamp = (value: number, minimum: number, maximum: number): number => (
     Math.min(maximum, Math.max(minimum, value))
 );
 
+const POSITION_EPSILON = 1e-9;
+const FINISH_LINE_BACKWARD_JUMP = 0.5;
+
 const normalizeSourceTrajectory = (value: unknown): DriverExpertTrajectoryPoint | undefined => {
     if (!isRecord(value)) return undefined;
     const x = finiteNumber(value.x);
@@ -143,21 +153,28 @@ const toPlottingTrajectory = (
     return source && vertical !== undefined ? { x: source.x, y: vertical } : undefined;
 };
 
-const selectPlottingSamples = (
-    samples: readonly DriverExpertComparisonSample[],
+const selectPlottingReplay = (
+    replay: DriverExpertReplay | undefined,
     detectedGame: DesktopGame | null,
-): PlottingComparisonSample[] => {
+): DriverExpertReplay<PlottingTrajectoryPoint> | undefined => {
+    if (!replay) return undefined;
     const driverVerticalAxis = detectedGame === 'acc' ? 'z' : 'y';
-    return samples.map((sample) => {
-        const { driverTrajectory, expertTrajectory, ...scalarSample } = sample;
-        const driverPoint = toPlottingTrajectory(driverTrajectory, driverVerticalAxis);
-        const expertPoint = toPlottingTrajectory(expertTrajectory, 'y');
+    const mapStream = (
+        stream: readonly ReplayStreamPoint[],
+        verticalAxis: 'y' | 'z',
+    ): ReplayStreamPoint<PlottingTrajectoryPoint>[] => stream.map((point) => {
+        const { trajectory, ...values } = point;
+        const plottingPoint = toPlottingTrajectory(trajectory, verticalAxis);
         return {
-            ...scalarSample,
-            ...(driverPoint ? { driverTrajectory: driverPoint } : {}),
-            ...(expertPoint ? { expertTrajectory: expertPoint } : {}),
+            ...values,
+            ...(plottingPoint ? { trajectory: plottingPoint } : {}),
         };
     });
+    return {
+        driver: mapStream(replay.driver, driverVerticalAxis),
+        expert: mapStream(replay.expert, 'y'),
+        durationMs: replay.durationMs,
+    };
 };
 
 export const normalizeDriverExpertComparisonData = (
@@ -184,17 +201,29 @@ export const normalizeDriverExpertComparisonData = (
         const normalized: DriverExpertComparisonSample = {
             driverTimeMs,
             expertTimeMs,
+            driverTrackPosition: 0,
+            expertTrackPosition: 0,
         };
-        const trackPosition = finiteNumber(sample.trackPosition);
-        if (trackPosition !== undefined) {
-            normalized.trackPosition = clamp(trackPosition, 0, 1);
+        const driverTrackPosition = finiteNumber(sample.driverTrackPosition);
+        const expertTrackPosition = finiteNumber(sample.expertTrackPosition);
+        if (
+            driverTrackPosition === undefined
+            || expertTrackPosition === undefined
+            || driverTrackPosition < 0
+            || driverTrackPosition > 1
+            || expertTrackPosition < 0
+            || expertTrackPosition > 1
+        ) {
+            return undefined;
         }
+        normalized.driverTrackPosition = driverTrackPosition;
+        normalized.expertTrackPosition = expertTrackPosition;
         const driverTrajectory = normalizeSourceTrajectory(sample.driverTrajectory);
         const expertTrajectory = normalizeSourceTrajectory(sample.expertTrajectory);
         if (driverTrajectory) normalized.driverTrajectory = driverTrajectory;
         if (expertTrajectory) normalized.expertTrajectory = expertTrajectory;
 
-        const scalarKeys: OptionalScalarKey[] = [
+        const scalarKeys: OptionalSampleScalarKey[] = [
             'driverGas',
             'expertGas',
             'driverBrake',
@@ -211,35 +240,263 @@ export const normalizeDriverExpertComparisonData = (
         previousExpertTimeMs = expertTimeMs;
     }
 
-    return { samples };
+    const data = { samples };
+    return buildDriverExpertReplay(data) ? data : undefined;
 };
 
-const hasScalarPair = (
+const buildUnwrappedReplayStream = (
     samples: readonly DriverExpertComparisonSample[],
-    driverKey: OptionalScalarKey,
-    expertKey: OptionalScalarKey,
-): boolean => samples.some((sample) => (
-    finiteNumber(sample[driverKey]) !== undefined
-    && finiteNumber(sample[expertKey]) !== undefined
-));
+    identity: 'driver' | 'expert',
+): ReplayStreamPoint[] | undefined => {
+    const points: ReplayStreamPoint[] = [];
+    let lapOffset = 0;
+    let previousNormalizedPosition: number | undefined;
+    let previousUnwrappedPosition: number | undefined;
+    let previousTimeMs: number | undefined;
+
+    for (const sample of samples) {
+        const timeMs = finiteNumber(
+            identity === 'driver' ? sample.driverTimeMs : sample.expertTimeMs,
+        );
+        const normalizedPosition = finiteNumber(
+            identity === 'driver'
+                ? sample.driverTrackPosition
+                : sample.expertTrackPosition,
+        );
+        if (
+            timeMs === undefined
+            || normalizedPosition === undefined
+            || normalizedPosition < 0
+            || normalizedPosition > 1
+            || (previousTimeMs !== undefined && timeMs <= previousTimeMs)
+        ) {
+            return undefined;
+        }
+
+        if (
+            previousNormalizedPosition !== undefined
+            && normalizedPosition < previousNormalizedPosition
+        ) {
+            const backwardJump = previousNormalizedPosition - normalizedPosition;
+            if (backwardJump <= FINISH_LINE_BACKWARD_JUMP) return undefined;
+            lapOffset += 1;
+        }
+
+        const trackPosition = normalizedPosition + lapOffset;
+        if (
+            previousUnwrappedPosition !== undefined
+            && trackPosition + POSITION_EPSILON < previousUnwrappedPosition
+        ) {
+            return undefined;
+        }
+
+        const trajectory = normalizeSourceTrajectory(
+            identity === 'driver' ? sample.driverTrajectory : sample.expertTrajectory,
+        );
+        const gas = finiteNumber(identity === 'driver' ? sample.driverGas : sample.expertGas);
+        const brake = finiteNumber(identity === 'driver' ? sample.driverBrake : sample.expertBrake);
+        const gear = finiteNumber(identity === 'driver' ? sample.driverGear : sample.expertGear);
+        points.push({
+            timeMs,
+            trackPosition,
+            ...(trajectory ? { trajectory } : {}),
+            ...(gas !== undefined ? { gas } : {}),
+            ...(brake !== undefined ? { brake } : {}),
+            ...(gear !== undefined ? { gear } : {}),
+        });
+        previousTimeMs = timeMs;
+        previousNormalizedPosition = normalizedPosition;
+        previousUnwrappedPosition = trackPosition;
+    }
+
+    return points.length ? points : undefined;
+};
+
+const shiftReplayStream = (
+    stream: readonly ReplayStreamPoint[],
+    lapOffset: number,
+): ReplayStreamPoint[] => stream.map((point) => ({
+    ...point,
+    trackPosition: point.trackPosition + lapOffset,
+}));
+
+const interpolateTrajectoryAtPosition = (
+    previous: DriverExpertTrajectoryPoint | undefined,
+    next: DriverExpertTrajectoryPoint | undefined,
+    ratio: number,
+): DriverExpertTrajectoryPoint | undefined => {
+    if (!previous || !next) return undefined;
+    const interpolateAxis = (axis: 'x' | 'y' | 'z'): number | undefined => {
+        const previousValue = finiteNumber(previous[axis]);
+        const nextValue = finiteNumber(next[axis]);
+        return previousValue !== undefined && nextValue !== undefined
+            ? previousValue + ((nextValue - previousValue) * ratio)
+            : undefined;
+    };
+    const x = interpolateAxis('x');
+    const y = interpolateAxis('y');
+    const z = interpolateAxis('z');
+    if (x === undefined || (y === undefined && z === undefined)) return undefined;
+    return {
+        x,
+        ...(y !== undefined ? { y } : {}),
+        ...(z !== undefined ? { z } : {}),
+    };
+};
+
+const interpolateValueAtPosition = (
+    previous: number | undefined,
+    next: number | undefined,
+    ratio: number,
+): number | undefined => (
+    previous !== undefined && next !== undefined
+        ? previous + ((next - previous) * ratio)
+        : undefined
+);
+
+const trimReplayStreamToPosition = (
+    stream: readonly ReplayStreamPoint[],
+    startPosition: number,
+): ReplayStreamPoint[] | undefined => {
+    const firstAtOrAfter = stream.findIndex((point) => (
+        point.trackPosition + POSITION_EPSILON >= startPosition
+    ));
+    if (firstAtOrAfter < 0) return undefined;
+
+    const exactPoint = stream[firstAtOrAfter];
+    if (Math.abs(exactPoint.trackPosition - startPosition) <= POSITION_EPSILON) {
+        return [
+            { ...exactPoint, trackPosition: startPosition },
+            ...stream.slice(firstAtOrAfter + 1),
+        ];
+    }
+    if (firstAtOrAfter === 0) return undefined;
+
+    const previous = stream[firstAtOrAfter - 1];
+    const next = stream[firstAtOrAfter];
+    const positionSpan = next.trackPosition - previous.trackPosition;
+    if (positionSpan <= 0) return undefined;
+    const ratio = (startPosition - previous.trackPosition) / positionSpan;
+    const gas = interpolateValueAtPosition(previous.gas, next.gas, ratio);
+    const brake = interpolateValueAtPosition(previous.brake, next.brake, ratio);
+    const trajectory = interpolateTrajectoryAtPosition(
+        previous.trajectory,
+        next.trajectory,
+        ratio,
+    );
+    let gearIndex = firstAtOrAfter - 1;
+    while (gearIndex >= 0 && finiteNumber(stream[gearIndex].gear) === undefined) {
+        gearIndex -= 1;
+    }
+    const gear = gearIndex >= 0 ? finiteNumber(stream[gearIndex].gear) : undefined;
+    return [{
+        timeMs: previous.timeMs + ((next.timeMs - previous.timeMs) * ratio),
+        trackPosition: startPosition,
+        ...(trajectory ? { trajectory } : {}),
+        ...(gas !== undefined ? { gas } : {}),
+        ...(brake !== undefined ? { brake } : {}),
+        ...(gear !== undefined ? { gear } : {}),
+    }, ...stream.slice(firstAtOrAfter)];
+};
+
+const chooseExpertLapOffset = (
+    driver: readonly ReplayStreamPoint[],
+    expert: readonly ReplayStreamPoint[],
+): number | undefined => {
+    const driverStart = driver[0].trackPosition;
+    const driverEnd = driver[driver.length - 1].trackPosition;
+    const expertStart = expert[0].trackPosition;
+    const expertEnd = expert[expert.length - 1].trackPosition;
+    const firstOffset = Math.ceil(driverStart - expertEnd - POSITION_EPSILON);
+    const lastOffset = Math.floor(driverEnd - expertStart + POSITION_EPSILON);
+    let best: { offset: number; overlap: number; initialGap: number } | undefined;
+
+    for (let offset = firstOffset; offset <= lastOffset; offset += 1) {
+        const shiftedStart = expertStart + offset;
+        const shiftedEnd = expertEnd + offset;
+        const overlapStart = Math.max(driverStart, shiftedStart);
+        const overlapEnd = Math.min(driverEnd, shiftedEnd);
+        if (overlapEnd + POSITION_EPSILON < overlapStart) continue;
+        const candidate = {
+            offset,
+            overlap: Math.max(0, overlapEnd - overlapStart),
+            initialGap: Math.abs(driverStart - shiftedStart),
+        };
+        if (
+            !best
+            || candidate.overlap > best.overlap + POSITION_EPSILON
+            || (
+                Math.abs(candidate.overlap - best.overlap) <= POSITION_EPSILON
+                && candidate.initialGap < best.initialGap - POSITION_EPSILON
+            )
+            || (
+                Math.abs(candidate.overlap - best.overlap) <= POSITION_EPSILON
+                && Math.abs(candidate.initialGap - best.initialGap) <= POSITION_EPSILON
+                && Math.abs(candidate.offset) < Math.abs(best.offset)
+            )
+        ) {
+            best = candidate;
+        }
+    }
+    return best?.offset;
+};
+
+const getReplayStreamDurationMs = (stream: readonly ReplayStreamPoint[]): number => (
+    stream.length <= 1 ? 0 : Math.max(0, stream[stream.length - 1].timeMs - stream[0].timeMs)
+);
+
+const buildDriverExpertReplay = (
+    data: DriverExpertComparisonData | null | undefined,
+): DriverExpertReplay | undefined => {
+    const samples = data && Array.isArray(data.samples) ? data.samples : [];
+    const driver = buildUnwrappedReplayStream(samples, 'driver');
+    const unshiftedExpert = buildUnwrappedReplayStream(samples, 'expert');
+    if (!driver || !unshiftedExpert) return undefined;
+
+    const expertLapOffset = chooseExpertLapOffset(driver, unshiftedExpert);
+    if (expertLapOffset === undefined) return undefined;
+    const expert = shiftReplayStream(unshiftedExpert, expertLapOffset);
+    const sharedStartPosition = Math.max(
+        driver[0].trackPosition,
+        expert[0].trackPosition,
+    );
+    const alignedDriver = trimReplayStreamToPosition(driver, sharedStartPosition);
+    const alignedExpert = trimReplayStreamToPosition(expert, sharedStartPosition);
+    if (!alignedDriver || !alignedExpert) return undefined;
+
+    return {
+        driver: alignedDriver,
+        expert: alignedExpert,
+        durationMs: Math.max(
+            getReplayStreamDurationMs(alignedDriver),
+            getReplayStreamDurationMs(alignedExpert),
+        ),
+    };
+};
+
+const streamHasValue = (
+    stream: readonly ReplayStreamPoint[],
+    key: 'gas' | 'brake' | 'gear',
+): boolean => stream.some((point) => finiteNumber(point[key]) !== undefined);
 
 export const getDriverExpertComparisonAvailability = (
     data: DriverExpertComparisonData | null | undefined,
     detectedGame: DesktopGame | null = null,
 ): DriverExpertComparisonAvailability => {
-    const samples = data && Array.isArray(data.samples) ? data.samples : [];
+    const replay = buildDriverExpertReplay(data);
+    if (!replay) return { trajectory: false, gas: false, brake: false, gear: false };
     const driverVerticalAxis = detectedGame === 'acc' ? 'z' : 'y';
-    const hasDriverTrajectory = samples.some((sample) => (
-        toPlottingTrajectory(sample.driverTrajectory, driverVerticalAxis) !== undefined
+    const hasDriverTrajectory = replay.driver.some((point) => (
+        toPlottingTrajectory(point.trajectory, driverVerticalAxis) !== undefined
     ));
-    const hasExpertTrajectory = samples.some((sample) => (
-        toPlottingTrajectory(sample.expertTrajectory, 'y') !== undefined
+    const hasExpertTrajectory = replay.expert.some((point) => (
+        toPlottingTrajectory(point.trajectory, 'y') !== undefined
     ));
     return {
         trajectory: hasDriverTrajectory && hasExpertTrajectory,
-        gas: hasScalarPair(samples, 'driverGas', 'expertGas'),
-        brake: hasScalarPair(samples, 'driverBrake', 'expertBrake'),
-        gear: hasScalarPair(samples, 'driverGear', 'expertGear'),
+        gas: streamHasValue(replay.driver, 'gas') && streamHasValue(replay.expert, 'gas'),
+        brake: streamHasValue(replay.driver, 'brake') && streamHasValue(replay.expert, 'brake'),
+        gear: streamHasValue(replay.driver, 'gear') && streamHasValue(replay.expert, 'gear'),
     };
 };
 
@@ -287,71 +544,51 @@ const prefersReducedMotion = (): boolean => (
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 );
 
-const getClockDurationMs = (
-    samples: readonly DriverExpertComparisonSample[],
-    clockKey: ReplayClockKey,
-): number => {
-    if (samples.length <= 1) return 0;
-    const firstTime = finiteNumber(samples[0][clockKey]);
-    const finalTime = finiteNumber(samples[samples.length - 1][clockKey]);
-    if (firstTime === undefined || finalTime === undefined) return 0;
-    return Math.max(0, finalTime - firstTime);
-};
-
 export const getDriverExpertReplayDurationMs = (
     data: DriverExpertComparisonData | null | undefined,
-): number => {
-    const samples = data && Array.isArray(data.samples) ? data.samples : [];
-    return Math.max(
-        getClockDurationMs(samples, 'driverTimeMs'),
-        getClockDurationMs(samples, 'expertTimeMs'),
-    );
-};
+): number => buildDriverExpertReplay(data)?.durationMs ?? 0;
 
 const normalizedSampleTime = (
-    samples: readonly PlottingComparisonSample[],
-    clockKey: ReplayClockKey,
+    stream: readonly ReplayStreamPoint<PlottingTrajectoryPoint>[],
     index: number,
-): number => samples[index][clockKey] - samples[0][clockKey];
+): number => stream[index].timeMs - stream[0].timeMs;
 
 const getFrameIndexes = (
-    samples: readonly PlottingComparisonSample[],
-    clockKey: ReplayClockKey,
+    stream: readonly ReplayStreamPoint<PlottingTrajectoryPoint>[],
     elapsedTimeMs: number,
 ): { lower: number; upper: number } => {
-    if (samples.length <= 1) return { lower: 0, upper: 0 };
+    if (stream.length <= 1) return { lower: 0, upper: 0 };
     let lower = 0;
     while (
-        lower + 1 < samples.length
-        && normalizedSampleTime(samples, clockKey, lower + 1) <= elapsedTimeMs
+        lower + 1 < stream.length
+        && normalizedSampleTime(stream, lower + 1) <= elapsedTimeMs
     ) {
         lower += 1;
     }
-    return { lower, upper: Math.min(samples.length - 1, lower + 1) };
+    return { lower, upper: Math.min(stream.length - 1, lower + 1) };
 };
 
 const interpolateScalar = (
-    samples: readonly PlottingComparisonSample[],
-    key: ContinuousScalarKey,
-    clockKey: ReplayClockKey,
+    stream: readonly ReplayStreamPoint<PlottingTrajectoryPoint>[],
+    key: ReplayContinuousKey,
     elapsedTimeMs: number,
     lower: number,
     upper: number,
 ): number | undefined => {
     let previousIndex = lower;
-    while (previousIndex >= 0 && finiteNumber(samples[previousIndex][key]) === undefined) {
+    while (previousIndex >= 0 && finiteNumber(stream[previousIndex][key]) === undefined) {
         previousIndex -= 1;
     }
     let nextIndex = upper;
-    while (nextIndex < samples.length && finiteNumber(samples[nextIndex][key]) === undefined) {
+    while (nextIndex < stream.length && finiteNumber(stream[nextIndex][key]) === undefined) {
         nextIndex += 1;
     }
-    const previous = previousIndex >= 0 ? finiteNumber(samples[previousIndex][key]) : undefined;
-    const next = nextIndex < samples.length ? finiteNumber(samples[nextIndex][key]) : undefined;
+    const previous = previousIndex >= 0 ? finiteNumber(stream[previousIndex][key]) : undefined;
+    const next = nextIndex < stream.length ? finiteNumber(stream[nextIndex][key]) : undefined;
     if (previous === undefined) return next;
     if (next === undefined) return previous;
-    const previousTime = normalizedSampleTime(samples, clockKey, previousIndex);
-    const nextTime = normalizedSampleTime(samples, clockKey, nextIndex);
+    const previousTime = normalizedSampleTime(stream, previousIndex);
+    const nextTime = normalizedSampleTime(stream, nextIndex);
     const span = nextTime - previousTime;
     if (span <= 0) return next;
     const ratio = clamp((elapsedTimeMs - previousTime) / span, 0, 1);
@@ -359,31 +596,29 @@ const interpolateScalar = (
 };
 
 const interpolateTrajectory = (
-    samples: readonly PlottingComparisonSample[],
-    key: TrajectoryKey,
-    clockKey: ReplayClockKey,
+    stream: readonly ReplayStreamPoint<PlottingTrajectoryPoint>[],
     elapsedTimeMs: number,
     lower: number,
     upper: number,
 ): PlottingTrajectoryPoint | undefined => {
     let previousIndex = lower;
-    while (previousIndex >= 0 && !samples[previousIndex][key]) {
+    while (previousIndex >= 0 && !stream[previousIndex].trajectory) {
         previousIndex -= 1;
     }
     let nextIndex = upper;
-    while (nextIndex < samples.length && !samples[nextIndex][key]) {
+    while (nextIndex < stream.length && !stream[nextIndex].trajectory) {
         nextIndex += 1;
     }
     const previous = previousIndex >= 0
-        ? samples[previousIndex][key]
+        ? stream[previousIndex].trajectory
         : undefined;
-    const next = nextIndex < samples.length
-        ? samples[nextIndex][key]
+    const next = nextIndex < stream.length
+        ? stream[nextIndex].trajectory
         : undefined;
     if (!previous) return next;
     if (!next) return previous;
-    const previousTime = normalizedSampleTime(samples, clockKey, previousIndex);
-    const nextTime = normalizedSampleTime(samples, clockKey, nextIndex);
+    const previousTime = normalizedSampleTime(stream, previousIndex);
+    const nextTime = normalizedSampleTime(stream, nextIndex);
     const span = nextTime - previousTime;
     if (span <= 0) return next;
     const ratio = clamp((elapsedTimeMs - previousTime) / span, 0, 1);
@@ -394,75 +629,80 @@ const interpolateTrajectory = (
 };
 
 const steppedGear = (
-    samples: readonly PlottingComparisonSample[],
-    key: GearKey,
+    stream: readonly ReplayStreamPoint<PlottingTrajectoryPoint>[],
     lower: number,
 ): number | undefined => {
     for (let index = lower; index >= 0; index -= 1) {
-        const value = finiteNumber(samples[index][key]);
+        const value = finiteNumber(stream[index].gear);
         if (value !== undefined) return value;
     }
-    for (let index = lower + 1; index < samples.length; index += 1) {
-        const value = finiteNumber(samples[index][key]);
+    for (let index = lower + 1; index < stream.length; index += 1) {
+        const value = finiteNumber(stream[index].gear);
         if (value !== undefined) return value;
     }
     return undefined;
 };
 
 const buildReplayFrame = (
-    samples: readonly PlottingComparisonSample[],
+    replay: DriverExpertReplay<PlottingTrajectoryPoint> | undefined,
     elapsedTimeMs: number,
 ): ReplayFrame => {
-    if (!samples.length) return {};
-    const driverIndexes = getFrameIndexes(samples, 'driverTimeMs', elapsedTimeMs);
-    const expertIndexes = getFrameIndexes(samples, 'expertTimeMs', elapsedTimeMs);
+    if (!replay) return {};
+    const driverIndexes = getFrameIndexes(replay.driver, elapsedTimeMs);
+    const expertIndexes = getFrameIndexes(replay.expert, elapsedTimeMs);
     return {
+        driverTrackPosition: interpolateScalar(
+            replay.driver,
+            'trackPosition',
+            elapsedTimeMs,
+            driverIndexes.lower,
+            driverIndexes.upper,
+        ),
+        expertTrackPosition: interpolateScalar(
+            replay.expert,
+            'trackPosition',
+            elapsedTimeMs,
+            expertIndexes.lower,
+            expertIndexes.upper,
+        ),
         driverGas: interpolateScalar(
-            samples,
-            'driverGas',
-            'driverTimeMs',
+            replay.driver,
+            'gas',
             elapsedTimeMs,
             driverIndexes.lower,
             driverIndexes.upper,
         ),
         expertGas: interpolateScalar(
-            samples,
-            'expertGas',
-            'expertTimeMs',
+            replay.expert,
+            'gas',
             elapsedTimeMs,
             expertIndexes.lower,
             expertIndexes.upper,
         ),
         driverBrake: interpolateScalar(
-            samples,
-            'driverBrake',
-            'driverTimeMs',
+            replay.driver,
+            'brake',
             elapsedTimeMs,
             driverIndexes.lower,
             driverIndexes.upper,
         ),
         expertBrake: interpolateScalar(
-            samples,
-            'expertBrake',
-            'expertTimeMs',
+            replay.expert,
+            'brake',
             elapsedTimeMs,
             expertIndexes.lower,
             expertIndexes.upper,
         ),
-        driverGear: steppedGear(samples, 'driverGear', driverIndexes.lower),
-        expertGear: steppedGear(samples, 'expertGear', expertIndexes.lower),
+        driverGear: steppedGear(replay.driver, driverIndexes.lower),
+        expertGear: steppedGear(replay.expert, expertIndexes.lower),
         driverTrajectory: interpolateTrajectory(
-            samples,
-            'driverTrajectory',
-            'driverTimeMs',
+            replay.driver,
             elapsedTimeMs,
             driverIndexes.lower,
             driverIndexes.upper,
         ),
         expertTrajectory: interpolateTrajectory(
-            samples,
-            'expertTrajectory',
-            'expertTimeMs',
+            replay.expert,
             elapsedTimeMs,
             expertIndexes.lower,
             expertIndexes.upper,
@@ -471,16 +711,16 @@ const buildReplayFrame = (
 };
 
 const useReplayElapsedTime = (
-    samples: readonly PlottingComparisonSample[],
+    replay: DriverExpertReplay<PlottingTrajectoryPoint> | undefined,
     durationMs: number,
 ): number => {
-    const shouldFinishImmediately = samples.length <= 1 || prefersReducedMotion();
+    const shouldFinishImmediately = !replay || durationMs <= 0 || prefersReducedMotion();
     const [elapsedTimeMs, setElapsedTimeMs] = React.useState(
         shouldFinishImmediately ? durationMs : 0,
     );
 
     React.useEffect(() => {
-        if (samples.length <= 1 || prefersReducedMotion()) {
+        if (!replay || durationMs <= 0 || prefersReducedMotion()) {
             setElapsedTimeMs(durationMs);
             return undefined;
         }
@@ -504,20 +744,20 @@ const useReplayElapsedTime = (
         return () => {
             if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
         };
-    }, [durationMs, samples]);
+    }, [durationMs, replay]);
 
     return elapsedTimeMs;
 };
 
 const createTrackGeometry = (
-    samples: readonly PlottingComparisonSample[],
+    replay: DriverExpertReplay<PlottingTrajectoryPoint> | undefined,
 ): TrackGeometry => {
-    const driverPoints = samples.flatMap((sample) => {
-        const point = sample.driverTrajectory;
+    const driverPoints = (replay?.driver ?? []).flatMap((sample) => {
+        const point = sample.trajectory;
         return point ? [point] : [];
     });
-    const expertPoints = samples.flatMap((sample) => {
-        const point = sample.expertTrajectory;
+    const expertPoints = (replay?.expert ?? []).flatMap((sample) => {
+        const point = sample.trajectory;
         return point ? [point] : [];
     });
     const allPoints = [...driverPoints, ...expertPoints];
@@ -771,6 +1011,9 @@ const TrackReplay: React.FC<{
                             data-testid="driver-position-marker"
                             data-x={formatNumber(driverMarker.x)}
                             data-y={formatNumber(driverMarker.y)}
+                            data-track-position={frame.driverTrackPosition === undefined
+                                ? undefined
+                                : formatNumber(frame.driverTrackPosition)}
                         >
                             <circle
                                 className={styles.markerHalo}
@@ -793,6 +1036,9 @@ const TrackReplay: React.FC<{
                             data-testid="expert-position-marker"
                             data-x={formatNumber(expertMarker.x)}
                             data-y={formatNumber(expertMarker.y)}
+                            data-track-position={frame.expertTrackPosition === undefined
+                                ? undefined
+                                : formatNumber(frame.expertTrackPosition)}
                         >
                             <circle
                                 className={styles.markerHalo}
@@ -837,9 +1083,13 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
         () => (Array.isArray(rawSamples) ? [...rawSamples] : []),
         [rawSamples],
     );
-    const samples = React.useMemo(
-        () => selectPlottingSamples(sourceSamples, detectedGame),
-        [detectedGame, sourceSamples],
+    const replay = React.useMemo(
+        () => buildDriverExpertReplay({ samples: sourceSamples }),
+        [sourceSamples],
+    );
+    const plottingReplay = React.useMemo(
+        () => selectPlottingReplay(replay, detectedGame),
+        [detectedGame, replay],
     );
     const availability = React.useMemo(
         () => getDriverExpertComparisonAvailability(data, detectedGame),
@@ -853,20 +1103,17 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
         width: toCssSize(width),
         '--driver-expert-min-column-width': toCssSize(layout?.minColumnWidth ?? 260),
     } as React.CSSProperties;
-    const replayDurationMs = React.useMemo(
-        () => getDriverExpertReplayDurationMs({ samples: sourceSamples }),
-        [sourceSamples],
-    );
-    const elapsedTimeMs = useReplayElapsedTime(samples, replayDurationMs);
+    const replayDurationMs = replay?.durationMs ?? 0;
+    const elapsedTimeMs = useReplayElapsedTime(plottingReplay, replayDurationMs);
     const frame = React.useMemo(
-        () => buildReplayFrame(samples, elapsedTimeMs),
-        [elapsedTimeMs, samples],
+        () => buildReplayFrame(plottingReplay, elapsedTimeMs),
+        [elapsedTimeMs, plottingReplay],
     );
-    const geometry = React.useMemo(() => createTrackGeometry(samples), [samples]);
+    const geometry = React.useMemo(() => createTrackGeometry(plottingReplay), [plottingReplay]);
     const reactId = React.useId();
     const filterId = React.useMemo(() => `driver-expert-${reactId.replace(/:/g, '')}`, [reactId]);
-    const isComplete = samples.length <= 1 || elapsedTimeMs >= replayDurationMs;
-    const replayStatus = !samples.length ? 'No data' : isComplete ? 'Replay complete' : 'Replaying';
+    const isComplete = !replay || replayDurationMs <= 0 || elapsedTimeMs >= replayDurationMs;
+    const replayStatus = !replay ? 'No data' : isComplete ? 'Replay complete' : 'Replaying';
 
     return (
         <section
