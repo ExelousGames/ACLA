@@ -5,7 +5,6 @@ import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
-import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { detectEnvironment } from 'utils/environment';
 import apiService from 'services/api.service';
 import {
@@ -50,12 +49,17 @@ import {
     type ToolOutputEnvelope,
 } from './ai-tool-base';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
-import { resolveAssistantRecordedSessionId } from 'views/lap-analysis/assistant-session-mode';
 import {
-    type AiChatScreenPillInfo,
-    useAiChatScreen,
-} from 'contexts/AiChatScreenContext';
-import AiChatScreenInfo from './AiChatScreenInfo';
+    resolveAssistantRecordedSessionId,
+    resolveRegisteredAssistantIdentity,
+} from 'views/lap-analysis/assistant-session-mode';
+import type { AssistantActiveScreen } from 'views/lap-analysis/assistant-session-mode';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    NamedAiToolComponentHandle,
+    useAiToolComponentRefs,
+    useRegisterAiToolComponentRef,
+} from 'contexts/AiToolComponentRefContext';
 import {
     overlayDisplayClient,
     overlaySessionClient,
@@ -67,8 +71,38 @@ import type {
     OverlaySnapshotByType,
     OverlayUpsertOptions,
 } from 'views/floating-chat/overlay-display-types';
+import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
+import {
+    asRecord,
+    buildPracticeTrackSummaryViews,
+} from 'views/user-summary/user-summary-model';
 
 type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
+type AiChatJsonPrimitive = string | number | boolean | null;
+type AiChatJsonValue =
+    | AiChatJsonPrimitive
+    | AiChatJsonValue[]
+    | { [key: string]: AiChatJsonValue };
+
+const toAiChatJsonValue = (value: unknown): AiChatJsonValue => {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+    if (Array.isArray(value)) return value.map(toAiChatJsonValue);
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(
+            Object.entries(value).flatMap(([key, item]) => (
+                typeof item === 'undefined' || typeof item === 'function' || typeof item === 'symbol'
+                    ? []
+                    : [[key, toAiChatJsonValue(item)]]
+            )),
+        );
+    }
+    return null;
+};
+
+const toAiChatJsonRecord = (
+    value: Record<string, unknown>,
+): Record<string, AiChatJsonValue> => toAiChatJsonValue(value) as Record<string, AiChatJsonValue>;
 
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
 type Emotion = typeof EMOTIONS[number];
@@ -138,9 +172,37 @@ interface Message {
 
 
 interface AiChatProps {
-    sessionId?: string;
-    sessionMode?: AiChatSessionMode;
-    title?: string;
+    name: string;
+    activeScreen: AssistantActiveScreen;
+}
+
+export interface AiChatHandle extends NamedAiToolComponentHandle {
+    getSessionMode(): AiChatSessionMode;
+    getRecordingState(): RecordingState | null;
+    startAgentSession(agentMode: AgentSessionMode, args?: Record<string, any>): AgentSessionStartResult;
+    stopAgentSession(agentSessionId?: string | null): AgentSessionStopResult;
+    startTrackGuide(): void;
+    setTrackGuideEnabled(enabled: boolean): void;
+    setLivePerformanceAnalystEnabled(enabled: boolean): void;
+    setBaselineCollectionEnabled(enabled: boolean): void;
+    restartBaselineCollection(): void;
+    advanceProcedurePlanStep(reason?: string): any;
+    getProcedurePlan(): ProcedurePlan | null;
+    clearProcedurePlan(): void;
+    setProcedurePlan(plan: ProcedurePlan | null): void;
+    getBaselineCollectionTag(): ReturnType<ReturnType<typeof useBaselineCollectionRuntime>['getTag']>;
+    getBaselineLapRecord(): ReturnType<ReturnType<typeof useBaselineCollectionRuntime>['getLapRecord']>;
+    getBaselineToolOutput(): ToolOutputEnvelope | null;
+    subscribeBaselineToolOutput(listener: (output: ToolOutputEnvelope) => void): () => void;
+    setAgentTagActive(tag: string, active: boolean): void;
+    getOpportunityTelemetryRows(): Record<string, any>[];
+    getOpportunityAgentState(): OpportunityAgentState;
+    getLivePerformanceAnalystState(): LivePerformanceAnalystState;
+    getLabelName(labelId: string): string | undefined;
+    getCategoryLabels(category: string): string[];
+    getCircuitMapById(id: string): ReturnType<ReturnType<typeof useCircuitMaps>['getCircuitMapById']>;
+    getCircuitMapByTrack: ReturnType<typeof useCircuitMaps>['getCircuitMapByTrack'];
+    displayMap(display: AiMapDisplayPayload): void;
 }
 
 const formatClock = (d: Date) =>
@@ -273,11 +335,16 @@ const extractCornerKnowledgeMessage = (raw: any): string | null => {
     return null;
 };
 
-const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title = "AI Assistant" }) => {
-    const { activeScreen } = useAiChatScreen();
-    const activeScreenRef = useRef(activeScreen);
-    activeScreenRef.current = activeScreen;
-    const getActiveScreen = useCallback(() => activeScreenRef.current, []);
+const AiChat: React.FC<AiChatProps> = ({
+    name,
+    activeScreen,
+}) => {
+    const {
+        sessionId,
+        sessionMode,
+        title,
+    } = resolveRegisteredAssistantIdentity(activeScreen);
+    const { directory: componentRefs } = useAiToolComponentRefs();
     const [mainMessages, setMainMessages] = useState<Message[]>([]);
     const [agentMessages, setAgentMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
@@ -341,6 +408,8 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     const {
         getLabelName,
         getCategoryLabels,
+        loading: labelsLoading,
+        error: labelsError,
     } = useAiLabels();
     const {
         getCircuitMapById,
@@ -854,37 +923,154 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     }, []);
 
     const resolvedSessionId = resolveAssistantRecordedSessionId(
-        activeScreen?.assistantMode ?? sessionMode,
-        activeScreen?.recordedSessionId
-            || sessionId
+        sessionMode,
+        sessionId
             || (analysisContext?.sessionSelected as Record<string, any> | null)?.SessionId,
     );
 
-    const registeredScreenContext = useMemo<Record<string, any>>(() => {
-        const context = activeScreen?.componentRef.current?.getAiContext();
-        if (context) return context;
-        return {
+    const activeScreenContext = useMemo<Record<string, any>>(() => {
+        if (sessionMode === 'live') {
+            const rawSnapshot = typeof liveSession.sessionIntelligence?.getLiveSessionSnapshot === 'function'
+                ? liveSession.sessionIntelligence.getLiveSessionSnapshot()
+                : {};
+            const snapshot = isRecord(rawSnapshot) ? rawSnapshot : {};
+            const track = snapshot.track
+                || liveSession.recordingMetadata?.mapName
+                || liveSession.staticData.track
+                || null;
+            const car = snapshot.car
+                || liveSession.recordingMetadata?.carName
+                || liveSession.staticData.car_model
+                || null;
+
+            return toAiChatJsonRecord({
+                screen_kind: 'live_session',
+                simulator: liveSession.sessionGame,
+                recording_state: liveSession.recordingState,
+                recording_name: liveSession.recordingMetadata?.sessionName || null,
+                track,
+                car,
+                current_lap: snapshot.current_lap || null,
+                completed_laps: snapshot.completed_laps || 0,
+                normalized_position: snapshot.normalized_position || 0,
+                sample_count: snapshot.sample_count || liveSession.recordedSampleCount,
+                latest_telemetry_present: Object.keys(liveSession.currentTelemetry).length > 0,
+                latest_telemetry_key_count: Object.keys(liveSession.currentTelemetry).length,
+                telemetry_status: liveSession.telemetryStatus,
+                session_intelligence: snapshot,
+                live_todo: liveSession.liveRangeTodoListSnapshot,
+                controls: {
+                    live_todo_available: Boolean(liveSession.liveRangeTodoListHandle),
+                    recorder_available: Boolean(liveSession.recorderControl),
+                },
+                visualization_capabilities: {
+                    telemetry: true,
+                    events: true,
+                    sections: true,
+                    live_todo: true,
+                },
+            });
+        }
+
+        if (sessionMode === 'recorded') {
+            const selectedSession = recordedAnalysisContext.sessionSelected;
+
+            return toAiChatJsonRecord({
+                screen_kind: 'recorded_session',
+                active_analysis_area: recordedAnalysisContext.activeTab,
+                selected_map_id: recordedAnalysisContext.mapSelected || selectedSession?.map || null,
+                selected_session: {
+                    id: selectedSession?.SessionId || null,
+                    name: selectedSession?.session_name || null,
+                    map: selectedSession?.map || recordedAnalysisContext.mapSelected || null,
+                    car: selectedSession?.car || null,
+                },
+                recorded_session: {
+                    ai_analysis: {
+                        status: recordedAnalysisContext.recordedAiAnalysis.status,
+                        message: recordedAnalysisContext.recordedAiAnalysis.message || null,
+                        session_id: recordedAnalysisContext.recordedAiAnalysis.sessionId,
+                        samples_analyzed: recordedAnalysisContext.recordedAiAnalysis.result?.samples_analyzed || 0,
+                        result_ready: Boolean(recordedAnalysisContext.recordedAiAnalysis.result),
+                    },
+                    playback: recordedAnalysisContext.recordedPlaybackSummary,
+                },
+                analysis_actions: {
+                    run_ai_analysis: true,
+                    read_ai_analysis: true,
+                    read_recorded_context: true,
+                },
+                visualization_controls: {
+                    active: recordedAnalysisContext.activeVisualizations.map(({ id, type }) => ({ id, type })),
+                },
+            });
+        }
+
+        if (sessionMode === 'user_summary') {
+            const trackSummaries = buildPracticeTrackSummaryViews(
+                asRecord(userSummary),
+                getLabelName,
+                getCategoryLabels,
+            );
+            const summaryState = userSummaryLoading || labelsLoading
+                ? 'loading'
+                : userSummaryError || labelsError
+                    ? 'error'
+                    : trackSummaries.length > 0
+                        ? 'ready'
+                        : 'empty';
+
+            return toAiChatJsonRecord({
+                screen_kind: 'user_summary',
+                summary_scope: 'Most recent 10 practice sessions by track section.',
+                summary_state: summaryState,
+                loading: userSummaryLoading || labelsLoading,
+                error: userSummaryError || labelsError || null,
+                track_count: trackSummaries.length,
+                normalized_summary: trackSummaries,
+                query_capabilities: {
+                    map_lookup: true,
+                    available_maps: true,
+                    search: true,
+                },
+            });
+        }
+
+        const isAnalysisScreen = activeScreen.componentName === AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS;
+        return toAiChatJsonRecord({
             screen_kind: 'front_desk',
-            active_analysis_area: 'mapLists',
-            selected_map_id: null,
+            active_analysis_area: isAnalysisScreen ? recordedAnalysisContext.activeTab : 'mapLists',
+            selected_map_id: isAnalysisScreen ? recordedAnalysisContext.mapSelected : null,
             assistance_scope: 'General navigation, onboarding, map selection, and session selection.',
             capabilities: {
                 screen_tools: false,
                 general_assistance: true,
             },
-        };
-    }, [activeScreen]);
+        });
+    }, [
+        activeScreen.componentName,
+        getCategoryLabels,
+        getLabelName,
+        labelsError,
+        labelsLoading,
+        liveSession,
+        recordedAnalysisContext,
+        sessionMode,
+        userSummary,
+        userSummaryError,
+        userSummaryLoading,
+    ]);
 
     const aiSessionContext = useMemo(() => {
-        const effectiveMode = activeScreen?.assistantMode ?? sessionMode;
-        const selectedSession = isRecord(registeredScreenContext.selected_session)
-            ? registeredScreenContext.selected_session
+        const effectiveMode = sessionMode;
+        const selectedSession = isRecord(activeScreenContext.selected_session)
+            ? activeScreenContext.selected_session
             : null;
-        const liveSnapshot = isRecord(registeredScreenContext.session_intelligence)
-            ? registeredScreenContext.session_intelligence
+        const liveSnapshot = isRecord(activeScreenContext.session_intelligence)
+            ? activeScreenContext.session_intelligence
             : null;
-        const recordedSession = isRecord(registeredScreenContext.recorded_session)
-            ? registeredScreenContext.recorded_session
+        const recordedSession = isRecord(activeScreenContext.recorded_session)
+            ? activeScreenContext.recorded_session
             : {};
         const recordedAiAnalysis = isRecord(recordedSession.ai_analysis)
             ? recordedSession.ai_analysis
@@ -892,11 +1078,11 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         const recordedPlaybackSummary = isRecord(recordedSession.playback)
             ? recordedSession.playback
             : {};
-        const summaryTrackCount = Number(registeredScreenContext.track_count) || 0;
-        const summaryState = String(registeredScreenContext.summary_state || 'empty');
-        const liveRecordingActive = registeredScreenContext.recording_state === RecordingState.RECORDING;
-        const latestTelemetryPresent = Boolean(registeredScreenContext.latest_telemetry_present);
-        const latestTelemetryKeyCount = Number(registeredScreenContext.latest_telemetry_key_count) || 0;
+        const summaryTrackCount = Number(activeScreenContext.track_count) || 0;
+        const summaryState = String(activeScreenContext.summary_state || 'empty');
+        const liveRecordingActive = activeScreenContext.recording_state === RecordingState.RECORDING;
+        const latestTelemetryPresent = Boolean(activeScreenContext.latest_telemetry_present);
+        const latestTelemetryKeyCount = Number(activeScreenContext.latest_telemetry_key_count) || 0;
         const activeAgentModes = [
             ...(TrackGuideEnabled ? ['track_guide'] : []),
             ...(opportunityAgentStateRef.current.intervalId ? ['overtake'] : []),
@@ -915,19 +1101,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 }
                 : null,
             context_kind: effectiveMode,
-            context_description: activeScreen?.getPillInfo().description || getContextDescription('front_desk'),
+            context_description: getContextDescription(effectiveMode),
             session_mode: effectiveMode,
             session_id: resolvedSessionId || null,
-            recording_state: registeredScreenContext.recording_state || null,
+            recording_state: activeScreenContext.recording_state || null,
             live_recording_active: liveRecordingActive,
-            active_tab: registeredScreenContext.active_analysis_area || null,
-            selected_map_id: registeredScreenContext.selected_map_id || selectedSession?.map || null,
+            active_tab: activeScreenContext.active_analysis_area || null,
+            selected_map_id: activeScreenContext.selected_map_id || selectedSession?.map || null,
             active_screen: {
-                screen_id: activeScreen?.screenId || 'front-desk',
+                screen_id: activeScreen.componentName || 'front-desk',
+                label: activeScreen.label,
                 assistant_mode: effectiveMode,
-                pill_label: activeScreen?.pillLabel || 'Front Desk',
-                recorded_session_id: activeScreen?.recordedSessionId || null,
-                context: registeredScreenContext,
+                recorded_session_id: resolvedSessionId || null,
+                context: activeScreenContext,
             },
             agent_modes: {
                 active: activeAgentModes,
@@ -941,18 +1127,18 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 }
                 : null,
             live_session_type: liveSnapshot?.live_session_type ?? 'unknown',
-            track: registeredScreenContext.track || selectedSession?.map || null,
-            car: registeredScreenContext.car || selectedSession?.car || null,
-            current_lap: registeredScreenContext.current_lap ?? liveSnapshot?.current_lap ?? null,
-            normalized_position: registeredScreenContext.normalized_position ?? liveSnapshot?.normalized_position ?? null,
-            completed_laps: registeredScreenContext.completed_laps ?? liveSnapshot?.completed_laps ?? null,
-            sample_count: registeredScreenContext.sample_count ?? liveSnapshot?.sample_count ?? 0,
+            track: activeScreenContext.track || selectedSession?.map || null,
+            car: activeScreenContext.car || selectedSession?.car || null,
+            current_lap: activeScreenContext.current_lap ?? liveSnapshot?.current_lap ?? null,
+            normalized_position: activeScreenContext.normalized_position ?? liveSnapshot?.normalized_position ?? null,
+            completed_laps: activeScreenContext.completed_laps ?? liveSnapshot?.completed_laps ?? null,
+            sample_count: activeScreenContext.sample_count ?? liveSnapshot?.sample_count ?? 0,
             capabilities: {
                 live_session: liveRecordingActive,
                 recorded_session: effectiveMode === 'recorded',
                 front_desk: effectiveMode === 'front_desk',
                 ...(effectiveMode === 'user_summary' ? { user_summary: summaryState === 'ready' } : {}),
-                active_screen_tools: Object.keys(activeScreen?.componentRef.current?.getToolHandlers() || {}),
+                active_screen_tools: [],
             },
             selected_session: selectedSession
                 ? {
@@ -966,7 +1152,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 live_available: liveRecordingActive,
                 latest_sample_present: latestTelemetryPresent,
                 latest_sample_key_count: latestTelemetryKeyCount,
-                live_status: registeredScreenContext.telemetry_status ?? null,
+                live_status: activeScreenContext.telemetry_status ?? null,
                 recorded_file_loaded: Number(recordedPlaybackSummary.sampleCount) > 0,
                 recorded_sample_count: recordedPlaybackSummary.sampleCount ?? 0,
             },
@@ -998,16 +1184,17 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
             user_summary: {
                 loaded: summaryState === 'ready',
                 loading: summaryState === 'loading',
-                error: registeredScreenContext.error || null,
+                error: activeScreenContext.error || null,
                 track_count: summaryTrackCount,
             },
         };
     }, [
-        activeScreen,
+        activeScreen.componentName,
+        activeScreen.label,
+        activeScreenContext,
         activeAgentSession,
         livePerformanceAnalystEnabled,
         procedurePlan,
-        registeredScreenContext,
         resolvedSessionId,
         sessionMode,
         TrackGuideEnabled,
@@ -1246,80 +1433,68 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
         };
     }, [endOverlaySession, resetAgentRuntimes, setAgentTag]);
 
-    const toolHandlers = useMemo(() => createAiCommandRegistry({
-        sessionId: resolvedSessionId,
-        sessionMode,
-        recordingState: analysisContext?.recordingState,
-        conversationRole: 'main',
-        activeAgentSession,
-        analysisContext,
-        sessionIntelligence: analysisContext?.sessionIntelligence,
-        opportunityAgentState: opportunityAgentStateRef.current,
-        livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
+    const aiChatHandle = useMemo<AiChatHandle>(() => ({
+        getComponentName: () => name,
+        getSessionMode: () => sessionMode,
+        getRecordingState: () => analysisContext?.recordingState ?? null,
+        startAgentSession,
+        stopAgentSession,
         startTrackGuide,
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
         setBaselineCollectionEnabled,
         restartBaselineCollection,
         advanceProcedurePlanStep,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
         getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
-        setAgentTagActive: setAgentTag,
-        startAgentSession,
-        stopAgentSession,
-        getOpportunityTelemetryRows,
-        userSummary,
-        userSummaryLoading,
-        userSummaryError,
-        getLabelName,
-        getCategoryLabels,
-        getCircuitMapById,
-        getCircuitMapByTrack,
-        setLiveRangeTodoList,
-        updateLiveRangeTodoList,
-        getLiveRangeTodoList,
-        displayMap: displayMapInChat,
-        getActiveScreen,
-    }), [
-        activeAgentSession,
-        advanceProcedurePlanStep,
-        analysisContext,
-        clearProcedurePlan,
-        displayMapInChat,
-        getCategoryLabels,
-        getCircuitMapById,
-        getCircuitMapByTrack,
-        getLiveRangeTodoList,
-        getActiveScreen,
-        getLabelName,
-        getOpportunityTelemetryRows,
         getBaselineCollectionTag,
         getBaselineLapRecord,
         getBaselineToolOutput,
         subscribeBaselineToolOutput,
+        setAgentTagActive: setAgentTag,
+        getOpportunityTelemetryRows,
+        getOpportunityAgentState: () => opportunityAgentStateRef.current,
+        getLivePerformanceAnalystState: () => livePerformanceAnalystStateRef.current,
+        getLabelName,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        displayMap: displayMapInChat,
+    }), [
+        advanceProcedurePlanStep,
+        analysisContext?.recordingState,
+        clearProcedurePlan,
+        displayMapInChat,
+        getBaselineCollectionTag,
+        getBaselineLapRecord,
+        getBaselineToolOutput,
+        getCategoryLabels,
+        getCircuitMapById,
+        getCircuitMapByTrack,
+        getLabelName,
+        getOpportunityTelemetryRows,
         getProcedurePlan,
+        name,
         restartBaselineCollection,
-        resolvedSessionId,
         sessionMode,
         setAgentTag,
         setBaselineCollectionEnabled,
-        setLiveRangeTodoList,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
         setTrackGuideAgentEnabled,
         startAgentSession,
         startTrackGuide,
         stopAgentSession,
-        updateLiveRangeTodoList,
-        userSummary,
-        userSummaryError,
-        userSummaryLoading,
+        subscribeBaselineToolOutput,
     ]);
+    useRegisterAiToolComponentRef(name, aiChatHandle);
+
+    const toolHandlers = useMemo(() => createAiCommandRegistry({
+        componentRefs,
+        sessionId: resolvedSessionId,
+        sessionMode,
+    }), [componentRefs, resolvedSessionId, sessionMode]);
 
     const selectedChatLlmModelOption = getChatLlmModelOption(selectedChatLlmModel);
     const voiceConversation = useVoiceConversation({
@@ -1351,77 +1526,10 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     ), [activeAgentSession, aiSessionContext]);
 
     const agentToolHandlers = useMemo(() => createAiCommandRegistry({
+        componentRefs,
         sessionId: resolvedSessionId,
         sessionMode,
-        recordingState: analysisContext?.recordingState,
-        conversationRole: 'agent',
-        activeAgentSession,
-        analysisContext,
-        sessionIntelligence: analysisContext?.sessionIntelligence,
-        opportunityAgentState: opportunityAgentStateRef.current,
-        livePerformanceAnalystState: livePerformanceAnalystStateRef.current,
-        startTrackGuide,
-        setTrackGuideEnabled: setTrackGuideAgentEnabled,
-        setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-        setBaselineCollectionEnabled,
-        restartBaselineCollection,
-        advanceProcedurePlanStep,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
-        getProcedurePlan,
-        clearProcedurePlan,
-        setProcedurePlan,
-        setAgentTagActive: setAgentTag,
-        stopAgentSession,
-        getOpportunityTelemetryRows,
-        userSummary,
-        userSummaryLoading,
-        userSummaryError,
-        getLabelName,
-        getCategoryLabels,
-        getCircuitMapById,
-        getCircuitMapByTrack,
-        setLiveRangeTodoList,
-        updateLiveRangeTodoList,
-        getLiveRangeTodoList,
-        displayMap: displayMapInChat,
-        getActiveScreen,
-    }), [
-        activeAgentSession,
-        advanceProcedurePlanStep,
-        analysisContext,
-        clearProcedurePlan,
-        displayMapInChat,
-        getCategoryLabels,
-        getCircuitMapById,
-        getCircuitMapByTrack,
-        getLiveRangeTodoList,
-        getActiveScreen,
-        getLabelName,
-        getOpportunityTelemetryRows,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
-        getProcedurePlan,
-        restartBaselineCollection,
-        resolvedSessionId,
-        sessionMode,
-        setAgentTag,
-        setBaselineCollectionEnabled,
-        setLiveRangeTodoList,
-        setLivePerformanceAnalystAgentEnabled,
-        setProcedurePlan,
-        setTrackGuideAgentEnabled,
-        startTrackGuide,
-        stopAgentSession,
-        updateLiveRangeTodoList,
-        userSummary,
-        userSummaryError,
-        userSummaryLoading,
-    ]);
+    }), [componentRefs, resolvedSessionId, sessionMode]);
 
     const agentVoiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
@@ -1954,17 +2062,21 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     // Auto-manage imitation guidance chart visibility
     useEffect(() => {
         if (!TrackGuideEnabled) {
-            const existingCharts = visualizationController.getCurrentInstances();
-            existingCharts.forEach(chart => {
+            const managerNames = [
+                AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+            ];
+            managerNames.forEach((managerName) => {
+                const manager = componentRefs.findComponentRef<VisualizationManagerHandle>(managerName)?.current;
+                const existingCharts = manager?.getCurrentVisualizations() ?? [];
+                existingCharts.forEach(chart => {
                 if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
-                    visualizationController.executeCommand({
-                        action: 'remove',
-                        id: chart.id
-                    });
-                }
+                        manager?.closeVisualization({ name: chart.name });
+                    }
+                });
             });
         }
-    }, [TrackGuideEnabled, sessionId]);
+    }, [TrackGuideEnabled, componentRefs, sessionId]);
 
     useEffect(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
@@ -1979,17 +2091,19 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                 analystAgent.intervalId = null;
             }
 
-            const existingCharts = visualizationController.getCurrentInstances();
-            existingCharts.forEach(chart => {
-                if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
-                    visualizationController.executeCommand({
-                        action: 'remove',
-                        id: chart.id
-                    });
-                }
+            [
+                AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+            ].forEach((managerName) => {
+                const manager = componentRefs.findComponentRef<VisualizationManagerHandle>(managerName)?.current;
+                manager?.getCurrentVisualizations().forEach((chart) => {
+                    if (chart.type === 'imitation-guidance-chart' && chart.data?.autoManaged) {
+                        manager.closeVisualization({ name: chart.name });
+                    }
+                });
             });
         };
-    }, []);
+    }, [componentRefs]);
 
     useEffect(() => {
         setEnvironment(detectEnvironment());
@@ -2039,24 +2153,7 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
     };
 
     // ── Voice state → mic panel display ─────────────────────────────
-    const screenMode = activeScreen?.assistantMode ?? sessionMode;
-    const screenModeLabel = activeScreen?.pillLabel
-        || (screenMode === 'front_desk'
-            ? 'Front Desk'
-            : screenMode === 'recorded'
-                ? 'Recorded Session'
-                : screenMode === 'user_summary'
-                    ? 'User Summary'
-                    : 'Live Session');
-    const screenPillInfo: AiChatScreenPillInfo = activeScreen?.getPillInfo() || {
-        title: 'Front Desk',
-        description: 'General help for navigation, maps, and choosing a recorded session.',
-        status: { label: 'General assistance', tone: 'info' },
-        facts: [
-            { label: 'Area', value: 'Circuit maps' },
-            { label: 'Selected map', value: 'None' },
-        ],
-    };
+    const screenMode = sessionMode;
     const transcriptLabel = activeAgentSession
         ? `${getAgentDisplayName(activeAgentSession.agentMode).toUpperCase()} TRANSCRIPT`
         : screenMode === 'front_desk'
@@ -2171,7 +2268,6 @@ const AiChat: React.FC<AiChatProps> = ({ sessionId, sessionMode = 'live', title 
                     {title}
                 </span>
                 <div className="ai-chat__header-meta">
-                    <AiChatScreenInfo label={screenModeLabel} info={screenPillInfo} />
                     <select
                         className="ai-chat__model-select"
                         value={selectedChatLlmModel}

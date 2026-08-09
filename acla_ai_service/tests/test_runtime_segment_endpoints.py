@@ -125,6 +125,7 @@ async def test_following_only_direct_analysis_succeeds_with_zero_segments(
     assert result["status"] == "success"
     assert result["parent_segment_count"] == 0
     assert result["segments"] == []
+    assert "expert_reference_data" not in result
     assert classified_ranges == [[]]
 
 

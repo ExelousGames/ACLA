@@ -74,6 +74,7 @@ export interface LiveRangeTodoListToolResult {
 }
 
 export interface LiveRangeTodoListHandle {
+    getComponentName(): string;
     addEvent: (event: LiveRangeTodoEventInput) => LiveRangeTodoListToolResult;
     replaceEvents: (events: readonly LiveRangeTodoEventInput[]) => LiveRangeTodoListToolResult;
     updateEvents: (updates: readonly LiveRangeTodoEventUpdate[]) => LiveRangeTodoListToolResult;

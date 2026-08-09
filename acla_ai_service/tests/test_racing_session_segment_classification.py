@@ -141,8 +141,81 @@ async def test_classifier_endpoints_return_one_parent_range_with_all_sub_labels(
     assert result["segments"][0]["end_index"] == 4
     assert [
         row["expert_optimal_time"]
-        for row in result["expert_reference_data"]
+        for row in result["segments"][0]["expert_reference_data"]
     ] == [90_000.0, 90_250.0, 90_500.0, 90_750.0]
+    assert "expert_reference_data" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint",
+    ["segment-classification", "live-baseline-analysis"],
+)
+async def test_classifier_endpoints_scope_sparse_expert_rows_to_each_segment(
+    endpoint,
+    monkeypatch,
+):
+    cleaned = [_expert_row(index) for index in range(4)]
+    raw_indices = [1, 4, 9, 12]
+    source = [{"source_index": index} for index in range(13)]
+    _configure_endpoint_services(monkeypatch, _predicted_segment())
+    monkeypatch.setattr(
+        racing_session,
+        "preprocess_inference_telemetry",
+        lambda records: InferenceTelemetryBatch(
+            records=cleaned,
+            raw_indices=raw_indices,
+        ),
+    )
+    monkeypatch.setattr(
+        racing_session,
+        "_classify_telemetry_segments",
+        lambda *args, **kwargs: [
+            {
+                "id": "segment-1",
+                "labels": ["EA"],
+                "start_index": 0,
+                "end_index": 2,
+            },
+            {
+                "id": "segment-2",
+                "labels": ["MSP"],
+                "start_index": 2,
+                "end_index": 4,
+            },
+            {
+                "id": "segment-without-rows",
+                "labels": ["MSR"],
+                "start_index": 6,
+                "end_index": 8,
+            },
+        ],
+    )
+
+    if endpoint == "segment-classification":
+        result = await racing_session.classify_session_segments(
+            racing_session.SegmentClassificationRequest(
+                session_id="session-1",
+                telemetry_data=source,
+            )
+        )
+    else:
+        result = await racing_session.analyze_live_baseline(
+            racing_session.LiveBaselineAnalysisRequest(records=source)
+        )
+
+    assert result["samples_analyzed"] == 13
+    assert [
+        (segment["start_index"], segment["end_index"])
+        for segment in result["segments"][:2]
+    ] == [(1, 5), (9, 13)]
+    assert [
+        [row["raw_index"] for row in segment["expert_reference_data"]]
+        for segment in result["segments"]
+    ] == [[1, 4], [9, 12], []]
+    assert "expert_reference_data" not in result
+    if endpoint == "live-baseline-analysis":
+        assert result["expert_time_available"] is True
 
 
 def test_main_label_without_subsegments_remains_a_single_label(monkeypatch):

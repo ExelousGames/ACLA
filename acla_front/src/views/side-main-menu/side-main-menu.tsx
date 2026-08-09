@@ -9,6 +9,7 @@ import CircuitMaps from "views/circuit-maps/circuit-maps";
 import LiveSessionView from "views/live-session/LiveSessionView";
 import { useEnvironment } from "contexts/EnvironmentContext";
 import { getDashboardTabs, getDefaultDashboardTab } from "views/dashboard/dashboard-navigation";
+import { AI_TOOL_COMPONENT_NAMES } from "contexts/AiToolComponentRefContext";
 
 type SideMainMenuProps = {
     activeTab?: string;
@@ -49,16 +50,16 @@ const SideMainMenu = ({ activeTab, onTabChange }: SideMainMenuProps) => {
         <Box className="Container">
             {environment === 'electron' ? (
                 <Tabs.Content className="TabsContent" value="liveSession">
-                    <LiveSessionView />
+                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </Tabs.Content>
             ) : null}
 
             <Tabs.Content className="TabsContent" value="analysis">
-                <SessionAnalysis></SessionAnalysis>
+                <SessionAnalysis name={AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS} />
             </Tabs.Content>
 
             <Tabs.Content className="TabsContent" value="userSummary">
-                <UserSummary />
+                <UserSummary name={AI_TOOL_COMPONENT_NAMES.USER_SUMMARY} />
             </Tabs.Content>
 
             <Tabs.Content className="TabsContent" value="circuitMaps">

@@ -1,12 +1,33 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { forwardRef, useState, useMemo, useEffect, useImperativeHandle } from 'react';
 import { Card, Text, Box, Grid, TextField, Button } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { VisualizationProps } from '../VisualizationRegistry';
+import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 
-const TelemetryOverview: React.FC<VisualizationProps> = ({ id, data, config, width = '100%', height = 200 }) => {
+export interface TelemetryOverviewHandle extends NamedAiToolComponentHandle {
+    updateTelemetry(data: any, config?: any): boolean;
+    disableTelemetry(): boolean;
+}
+
+const TelemetryOverview = forwardRef<TelemetryOverviewHandle, VisualizationProps>(({
+    name,
+    data,
+    width = '100%',
+    height = 200,
+    onUpdate,
+    onDisable,
+}, forwardedRef) => {
     const [searchTerm, setSearchTerm] = useState('');
     const [history, setHistory] = useState<any[]>([]);
     const [historyIndex, setHistoryIndex] = useState(0);
+
+    const handle = useMemo<TelemetryOverviewHandle>(() => ({
+        getComponentName: () => name,
+        updateTelemetry: (nextData, nextConfig) => onUpdate?.(nextData, nextConfig) ?? false,
+        disableTelemetry: () => onDisable?.() ?? false,
+    }), [name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    useRegisterAiToolComponentRef(name, handle);
 
     const telemetryData = data;
 
@@ -118,6 +139,8 @@ const TelemetryOverview: React.FC<VisualizationProps> = ({ id, data, config, wid
             )}
         </Card>
     );
-};
+});
+
+TelemetryOverview.displayName = 'TelemetryOverview';
 
 export default TelemetryOverview;

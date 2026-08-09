@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Badge, Box, Button, Card, Flex, Select, Slider, Text } from '@radix-ui/themes';
 import { PauseIcon, PlayIcon, ReloadIcon } from '@radix-ui/react-icons';
 import apiService from 'services/api.service';
@@ -7,6 +7,7 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { VisualizationProps } from '../VisualizationRegistry';
+import { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
 import {
     buildCircuitTrackLayout,
     buildSessionPointsTrackLayout,
@@ -152,7 +153,18 @@ const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout) =>
     };
 };
 
-const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height = '100%' }) => {
+export interface MapVisualizationHandle extends NamedAiToolComponentHandle {
+    updateMap(data: any, config?: any): boolean;
+    disableMap(): boolean;
+}
+
+const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(({
+    name,
+    width = '100%',
+    height = '100%',
+    onUpdate,
+    onDisable,
+}, forwardedRef) => {
     const analysisContext = useContext(AnalysisContext);
     const { runRecordedAiAnalysis, setRecordedPlaybackSummary } = analysisContext;
     const { getLabelName } = useAiLabels();
@@ -177,6 +189,12 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
     const [zoom, setZoom] = useState(DRIVER_FOCUS_ZOOM);
     const [axisFlip, setAxisFlip] = useState<AxisFlipState>({ x: false, y: false, z: false });
     const [circuitMap, setCircuitMap] = useState<CircuitMapDto | null>(null);
+    const handle = useMemo<MapVisualizationHandle>(() => ({
+        getComponentName: () => name,
+        updateMap: (data, config) => onUpdate?.(data, config) ?? false,
+        disableMap: () => onDisable?.() ?? false,
+    }), [name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
 
     const selectedSessionId = analysisContext.sessionSelected?.SessionId || '';
     const circuitSourceTrackKey = useMemo(() => getAccTelemetryTrackKey(
@@ -929,6 +947,8 @@ const MapVisualization: React.FC<VisualizationProps> = ({ width = '100%', height
             </Box>
         </Card>
     );
-};
+});
+
+MapVisualization.displayName = 'MapVisualization';
 
 export default MapVisualization;

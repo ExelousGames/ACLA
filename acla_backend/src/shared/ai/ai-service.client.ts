@@ -140,18 +140,10 @@ export interface LiveBaselineTimeGap {
     delta_ms: number;
 }
 
-export interface SegmentClassificationSegment {
-    id?: string;
-    labels: string[];
-    track_section?: string;
-    start_index: number;
-    end_index: number;
-    time_gap?: LiveBaselineTimeGap;
-}
-
 export interface ExpertReferenceRow {
     raw_index: number;
     expert_time_difference: number;
+    expert_optimal_time: number;
     expert_optimal_player_pos_x: number;
     expert_optimal_player_pos_y: number;
     expert_optimal_player_pos_z: number;
@@ -161,13 +153,22 @@ export interface ExpertReferenceRow {
     expert_optimal_gear: number;
 }
 
+export interface SegmentClassificationSegment {
+    id?: string;
+    labels: string[];
+    track_section?: string;
+    start_index: number;
+    end_index: number;
+    time_gap?: LiveBaselineTimeGap;
+    expert_reference_data: ExpertReferenceRow[];
+}
+
 export interface SegmentClassificationResponse {
     status: string;
     session_id: string;
     samples_analyzed: number;
     parent_segment_count: number;
     segments: SegmentClassificationSegment[];
-    expert_reference_data: ExpertReferenceRow[];
 }
 
 export interface LiveBaselineAnalysisRequest {

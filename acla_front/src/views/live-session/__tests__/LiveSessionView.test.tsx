@@ -4,10 +4,12 @@ import type { DesktopGame, DesktopGameContextValue } from 'contexts/DesktopGameC
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import { LiveSessionContext } from '../LiveSessionContext';
 import {
-    AiChatScreenProvider,
-    AiChatScreenRegistration,
-    useAiChatScreen,
-} from 'contexts/AiChatScreenContext';
+    AI_TOOL_COMPONENT_NAMES,
+    AiToolComponentRefDirectory,
+    AiToolComponentRefProvider,
+    useAiToolComponentRefDirectory,
+} from 'contexts/AiToolComponentRefContext';
+import type { LiveSessionHandle } from '../LiveSessionView';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: jest.fn(),
@@ -112,23 +114,23 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
 
 const renderView = (runtime = createRuntime()) => render(
     <LiveSessionContext.Provider value={runtime as any}>
-        <LiveSessionView />
+        <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
     </LiveSessionContext.Provider>,
 );
 
-let observedScreen: AiChatScreenRegistration | null = null;
+let componentDirectory: AiToolComponentRefDirectory | null = null;
 const RegistrationObserver = () => {
-    observedScreen = useAiChatScreen().activeScreen;
+    componentDirectory = useAiToolComponentRefDirectory();
     return null;
 };
 
 describe('LiveSessionView', () => {
     beforeEach(() => {
         mockedUseDesktopGame.mockReset();
-        observedScreen = null;
+        componentDirectory = null;
     });
 
-    it('registers current live context and live-owned tool capabilities', () => {
+    it('registers current live operations under the exact component name', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
         const runtime: any = createRuntime('acc');
         runtime.recordingState = RecordingState.RECORDING;
@@ -159,36 +161,24 @@ describe('LiveSessionView', () => {
         };
 
         render(
-            <AiChatScreenProvider>
+            <AiToolComponentRefProvider>
                 <LiveSessionContext.Provider value={runtime as any}>
-                    <LiveSessionView />
+                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
                 </LiveSessionContext.Provider>
                 <RegistrationObserver />
-            </AiChatScreenProvider>,
+            </AiToolComponentRefProvider>,
         );
 
-        expect(observedScreen).toMatchObject({
-            screenId: 'live-session',
-            assistantMode: 'live',
-            pillLabel: 'Live Session',
-        });
-        expect(observedScreen!.getPillInfo()).toMatchObject({
-            title: 'Monza Run',
-            status: { label: 'Recording', tone: 'success' },
-        });
-        expect(observedScreen!.componentRef.current!.getAiContext()).toMatchObject({
-            simulator: 'acc',
+        const handle = componentDirectory!.findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+        expect(handle.getComponentName()).toBe(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION);
+        expect(handle.getLiveSessionSnapshot()).toMatchObject({
             track: 'Monza',
             car: 'BMW M4 GT3',
             current_lap: 4,
             sample_count: 1250,
         });
-        expect(observedScreen!.componentRef.current!.getToolHandlers()).toEqual(expect.objectContaining({
-            query_telemetry_metric: expect.any(Function),
-            get_event_log: expect.any(Function),
-            set_live_range_todo_list: expect.any(Function),
-            open_visualization_chart: expect.any(Function),
-        }));
+        expect(handle.getRecordingState()).toBe(RecordingState.RECORDING);
+        expect(handle.getCurrentTelemetry()).toEqual({ Physics_speed_kmh: 210 });
     });
 
     it.each(detectionCases)('shows the $name detector state at the session gate', ({
@@ -240,7 +230,7 @@ describe('LiveSessionView', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: null, detectionStatus: 'error', error: 'tasklist failed' });
         view.rerender(
             <LiveSessionContext.Provider value={runtime as any}>
-                <LiveSessionView />
+                <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
             </LiveSessionContext.Provider>,
         );
 

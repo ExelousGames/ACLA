@@ -11,12 +11,9 @@ import {
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { useUserSummary } from 'contexts/UserSummaryContext';
 import {
-    AiChatScreenHandle,
-    USER_SUMMARY_SCREEN_TOOL_NAMES,
-    createAiChatScreenToolHandlers,
-    toAiChatJsonValue,
-    useAiChatScreenRegistration,
-} from 'contexts/AiChatScreenContext';
+    NamedAiToolComponentHandle,
+    useRegisterAiToolComponentRef,
+} from 'contexts/AiToolComponentRefContext';
 import AnalyzeAllSessionsControl from './AnalyzeAllSessionsControl';
 import {
     asRecord,
@@ -27,8 +24,17 @@ import {
     PracticeParentSegmentView
 } from './user-summary-model';
 import './user-summary.css';
+import {
+    getAvailableUserSummaryMaps,
+    getUserSummaryMapLevel,
+    searchUserSummaryMapLevel,
+} from './user-summary-ai-tools';
 
-const USER_SUMMARY_TOOL_HANDLERS = createAiChatScreenToolHandlers(USER_SUMMARY_SCREEN_TOOL_NAMES);
+export interface UserSummaryHandle extends NamedAiToolComponentHandle {
+    getUserSummaryMapLevel(args: Record<string, any>): any;
+    getAvailableUserSummaryMaps(): any;
+    searchUserSummaryMapLevel(args: Record<string, any>): any;
+}
 
 type SegmentGroupProps = {
     title: string;
@@ -73,7 +79,7 @@ const SegmentGroup = ({ title, emptyText, segments, variant }: SegmentGroupProps
     </section>
 );
 
-const UserSummary = () => {
+const UserSummary = ({ name }: { name: string }) => {
     const {
         userSummary,
         userSummaryLoading,
@@ -110,7 +116,8 @@ const UserSummary = () => {
         userSummaryError,
         labelsLoading,
         labelsError,
-        trackSummaries,
+        getLabelName,
+        getCategoryLabels,
     });
     screenStateRef.current = {
         userSummary,
@@ -118,66 +125,39 @@ const UserSummary = () => {
         userSummaryError,
         labelsLoading,
         labelsError,
-        trackSummaries,
+        getLabelName,
+        getCategoryLabels,
     };
-    const componentRef = useRef<AiChatScreenHandle | null>(null);
+    const componentRef = useRef<UserSummaryHandle | null>(null);
 
     if (componentRef.current === null) {
         componentRef.current = {
-            getAiContext: () => {
-                const current = screenStateRef.current;
-                const state = current.userSummaryLoading || current.labelsLoading
-                    ? 'loading'
-                    : current.userSummaryError || current.labelsError
-                        ? 'error'
-                        : current.trackSummaries.length > 0
-                            ? 'ready'
-                            : 'empty';
-
-                return {
-                    screen_kind: 'user_summary',
-                    summary_scope: 'Most recent 10 practice sessions by track section.',
-                    summary_state: state,
-                    loading: current.userSummaryLoading || current.labelsLoading,
-                    error: current.userSummaryError || current.labelsError || null,
-                    track_count: current.trackSummaries.length,
-                    normalized_summary: toAiChatJsonValue(current.trackSummaries),
-                    query_capabilities: {
-                        map_lookup: true,
-                        available_maps: true,
-                        search: true,
-                    },
-                };
-            },
-            getToolHandlers: () => USER_SUMMARY_TOOL_HANDLERS,
+            getComponentName: () => name,
+            getUserSummaryMapLevel: (args) => getUserSummaryMapLevel({
+                userSummary: screenStateRef.current.userSummary || undefined,
+                loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
+                error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
+                getLabelName: screenStateRef.current.getLabelName,
+                getCategoryLabels: screenStateRef.current.getCategoryLabels,
+            }, args),
+            getAvailableUserSummaryMaps: () => getAvailableUserSummaryMaps({
+                userSummary: screenStateRef.current.userSummary || undefined,
+                loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
+                error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
+                getLabelName: screenStateRef.current.getLabelName,
+                getCategoryLabels: screenStateRef.current.getCategoryLabels,
+            }),
+            searchUserSummaryMapLevel: (args) => searchUserSummaryMapLevel({
+                userSummary: screenStateRef.current.userSummary || undefined,
+                loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
+                error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
+                getLabelName: screenStateRef.current.getLabelName,
+                getCategoryLabels: screenStateRef.current.getCategoryLabels,
+            }, args),
         };
     }
+    useRegisterAiToolComponentRef(name, componentRef.current);
 
-    const summaryStatus = useMemo(() => (
-        userSummaryLoading || labelsLoading
-            ? { label: 'Loading', tone: 'info' as const }
-            : userSummaryError || labelsError
-                ? { label: 'Unavailable', tone: 'error' as const }
-                : trackSummaries.length > 0
-                    ? { label: 'Ready', tone: 'success' as const }
-                    : { label: 'No summary yet', tone: 'neutral' as const }
-    ), [labelsError, labelsLoading, trackSummaries.length, userSummaryError, userSummaryLoading]);
-    const registration = useMemo(() => ({
-        screenId: 'user-summary',
-        assistantMode: 'user_summary' as const,
-        pillLabel: 'User Summary',
-        componentRef,
-        getPillInfo: () => ({
-            title: 'User Summary',
-            description: 'Long-term practice patterns normalized across tracks and track sections.',
-            status: summaryStatus,
-            facts: [
-                { label: 'Scope', value: 'Most recent 10 practice sessions' },
-                { label: 'Tracks', value: trackSummaries.length.toLocaleString() },
-            ],
-        }),
-    }), [summaryStatus, trackSummaries.length]);
-    useAiChatScreenRegistration(registration);
 
     return (
         <Box className="user-summary-container">

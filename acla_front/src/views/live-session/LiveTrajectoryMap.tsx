@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Badge, Box, Button, Card, Flex, Text } from '@radix-ui/themes';
 import { ACC_STATUS } from 'data/live-analysis/live-map-data';
 import { useCircuitMaps } from 'contexts/CircuitMapsContext';
@@ -12,6 +12,7 @@ import {
 import { parseTelemetryFrame, TelemetryFrame, Vec3 } from 'views/lap-analysis/visualization/charts/mapTelemetry';
 import { LiveSessionContext } from './LiveSessionContext';
 import 'views/lap-analysis/visualization/charts/MapVisualization.css';
+import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 
 const LIVE_TRAIL_LIMIT = 900;
 const PLAYER_COLOR = '#00e676';
@@ -68,7 +69,22 @@ const drawPolyline = (
     context.stroke();
 };
 
-const LiveTrajectoryMap = ({ width = '100%', height = '100%' }: { width?: string | number; height?: string | number }) => {
+export interface LiveTrajectoryMapHandle extends NamedAiToolComponentHandle {
+    focusDriver(): void;
+    fitTrack(): void;
+}
+
+interface LiveTrajectoryMapProps {
+    name: string;
+    width?: string | number;
+    height?: string | number;
+}
+
+const LiveTrajectoryMap = forwardRef<LiveTrajectoryMapHandle, LiveTrajectoryMapProps>(({
+    name,
+    width = '100%',
+    height = '100%',
+}, forwardedRef) => {
     const liveSession = useContext(LiveSessionContext);
     const { getCircuitMapByTrack } = useCircuitMaps();
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -81,6 +97,19 @@ const LiveTrajectoryMap = ({ width = '100%', height = '100%' }: { width?: string
     const [zoom, setZoom] = useState(1);
     const [flipX, setFlipX] = useState(false);
     const [flipZ, setFlipZ] = useState(false);
+    const handle = useMemo<LiveTrajectoryMapHandle>(() => ({
+        getComponentName: () => name,
+        focusDriver: () => {
+            setCameraMode('driver');
+            setZoom(1);
+        },
+        fitTrack: () => {
+            setCameraMode('fit');
+            setZoom(1);
+        },
+    }), [name]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    useRegisterAiToolComponentRef(name, handle);
 
     const trackKey = useMemo(() => getAccTelemetryTrackKey(
         liveSession.currentTelemetry?.Static_track,
@@ -239,6 +268,8 @@ const LiveTrajectoryMap = ({ width = '100%', height = '100%' }: { width?: string
             </Box>
         </Card>
     );
-};
+});
+
+LiveTrajectoryMap.displayName = 'LiveTrajectoryMap';
 
 export default LiveTrajectoryMap;

@@ -173,18 +173,10 @@ export class LiveBaselineTimeGapDto {
     delta_ms: number;
 }
 
-export class SegmentClassificationSegmentDto {
-    id?: string;
-    labels: string[];
-    track_section?: string;
-    start_index: number;
-    end_index: number;
-    time_gap?: LiveBaselineTimeGapDto;
-}
-
 export class ExpertReferenceRowDto {
     raw_index: number;
     expert_time_difference: number;
+    expert_optimal_time: number;
     expert_optimal_player_pos_x: number;
     expert_optimal_player_pos_y: number;
     expert_optimal_player_pos_z: number;
@@ -194,13 +186,22 @@ export class ExpertReferenceRowDto {
     expert_optimal_gear: number;
 }
 
+export class SegmentClassificationSegmentDto {
+    id?: string;
+    labels: string[];
+    track_section?: string;
+    start_index: number;
+    end_index: number;
+    time_gap?: LiveBaselineTimeGapDto;
+    expert_reference_data: ExpertReferenceRowDto[];
+}
+
 export class SegmentClassificationResponseDto {
     status: string;
     session_id: string;
     samples_analyzed: number;
     parent_segment_count: number;
     segments: SegmentClassificationSegmentDto[];
-    expert_reference_data: ExpertReferenceRowDto[];
 }
 
 export class LiveBaselineAnalysisRequestDto {

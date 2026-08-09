@@ -22,7 +22,7 @@ const telemetry = (lap: number, position: number) => ({
 let runtime: LiveSessionRuntime;
 const Harness = () => {
     runtime = useContext(LiveSessionContext);
-    return <LiveRangeTodoList />;
+    return <LiveRangeTodoList name="live-range-todo-list" />;
 };
 
 const publishTelemetry = (lap: number, position: number, elapsedMs = 100) => {
@@ -275,7 +275,7 @@ describe('LiveRangeTodoList', () => {
         let capturedSignal: AbortSignal | undefined;
         const Wrapper = ({ show }: { show: boolean }) => {
             runtime = useContext(LiveSessionContext);
-            return show ? <LiveRangeTodoList /> : null;
+            return show ? <LiveRangeTodoList name="live-range-todo-list" /> : null;
         };
         const view = render(
             <LiveSessionProvider><Wrapper show /></LiveSessionProvider>,

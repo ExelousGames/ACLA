@@ -2,14 +2,15 @@ import React, { useState } from 'react';
 import './MainDashboard.css';
 import SideMainMenu from 'views/side-main-menu/side-main-menu';
 import HeaderMenu from 'views/header-menu/header-menu';
-import { SessionAnalysisAssistant, SessionAnalysisProvider } from 'views/lap-analysis/session-analysis';
+import { SessionAnalysisProvider } from 'views/lap-analysis/session-analysis';
 import { useEnvironment } from 'contexts/EnvironmentContext';
 import LiveAnalysisSessionRecording from 'views/lap-analysis/liveAnalysisSessionRecording';
 import LiveSessionDetectionManager from 'views/lap-analysis/LiveSessionDetectionManager';
 import { LiveSessionProvider } from 'views/live-session/LiveSessionContext';
 import { LIVE_SESSION_RECORDER_HOST_ID } from 'views/live-session/LiveSessionView';
 import { DASHBOARD_TABS, getDefaultDashboardTab } from './dashboard-navigation';
-import { AiChatScreenProvider } from 'contexts/AiChatScreenContext';
+import { AiToolComponentRefProvider } from 'contexts/AiToolComponentRefContext';
+import DashboardAssistant from './DashboardAssistant';
 
 const MainDashboard = ({ onTaskCreated }) => {
     const environment = useEnvironment();
@@ -21,7 +22,7 @@ const MainDashboard = ({ onTaskCreated }) => {
     return (
         <LiveSessionProvider ownerEmail={authenticatedOwnerEmail}>
             <SessionAnalysisProvider>
-                <AiChatScreenProvider>
+                <AiToolComponentRefProvider>
                     {environment === 'electron' ? <LiveSessionDetectionManager /> : null}
                     <div className="main-dashboard-container">
                         <div className="main-dashboard-header">
@@ -32,7 +33,7 @@ const MainDashboard = ({ onTaskCreated }) => {
                             <div className="main-dashboard-primary">
                                 <SideMainMenu activeTab={mainMenuTab} onTabChange={setMainMenuTab} />
                             </div>
-                            <SessionAnalysisAssistant />
+                            <DashboardAssistant activeDashboardTab={mainMenuTab} />
                             {environment === 'electron' ? (
                                 <LiveAnalysisSessionRecording
                                     recorderHostId={mainMenuTab === DASHBOARD_TABS.LIVE_SESSION ? LIVE_SESSION_RECORDER_HOST_ID : undefined}
@@ -40,7 +41,7 @@ const MainDashboard = ({ onTaskCreated }) => {
                             ) : null}
                         </div>
                     </div>
-                </AiChatScreenProvider>
+                </AiToolComponentRefProvider>
             </SessionAnalysisProvider>
         </LiveSessionProvider>
     );

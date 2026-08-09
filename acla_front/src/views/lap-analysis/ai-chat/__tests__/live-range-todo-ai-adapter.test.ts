@@ -20,6 +20,7 @@ const emptyResult: LiveRangeTodoListToolResult = {
 
 const createHandle = (): jest.Mocked<LiveRangeTodoListHandle> => {
     const handle: LiveRangeTodoListHandle = {
+        getComponentName: () => 'live-range-todo-list',
         addEvent: jest.fn((_event) => ({ ...emptyResult, status: 'ready' })),
         replaceEvents: jest.fn((_events) => ({ ...emptyResult, status: 'ready' })),
         updateEvents: jest.fn((_updates) => ({ ...emptyResult, status: 'ready' })),

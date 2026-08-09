@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from 'react';
+import React, { forwardRef, useImperativeHandle, useMemo, useState } from 'react';
 import { Badge, Box, Flex, Table, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { EventType, SessionEvent } from 'views/lap-analysis/session-intelligence/types';
+import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 
 const EVENT_COLORS: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
     CORNER: 'blue',
@@ -10,8 +11,32 @@ const EVENT_COLORS: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
     OVERTAKE: 'amber',
 };
 
-const LiveEventLog = ({ events }: { events: SessionEvent[] }) => {
+export interface LiveEventLogHandle extends NamedAiToolComponentHandle {
+    updateLiveEvents(events: SessionEvent[]): boolean;
+    disableLiveEventLog(): boolean;
+}
+
+interface LiveEventLogProps {
+    name: string;
+    events: SessionEvent[];
+    onUpdate?: (events: SessionEvent[]) => boolean;
+    onDisable?: () => boolean;
+}
+
+const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
+    name,
+    events,
+    onUpdate,
+    onDisable,
+}, forwardedRef) => {
     const [search, setSearch] = useState('');
+    const handle = useMemo<LiveEventLogHandle>(() => ({
+        getComponentName: () => name,
+        updateLiveEvents: (data) => onUpdate?.(data) ?? false,
+        disableLiveEventLog: () => onDisable?.() ?? false,
+    }), [name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    useRegisterAiToolComponentRef(name, handle);
     const filtered = useMemo(() => {
         const term = search.trim().toLowerCase();
         return events.filter((event) => !term || JSON.stringify(event).toLowerCase().includes(term)).slice().reverse();
@@ -43,6 +68,8 @@ const LiveEventLog = ({ events }: { events: SessionEvent[] }) => {
             </Box>
         </Box>
     );
-};
+});
+
+LiveEventLog.displayName = 'LiveEventLog';
 
 export default LiveEventLog;

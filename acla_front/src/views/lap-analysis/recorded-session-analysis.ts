@@ -20,8 +20,9 @@ export type SegmentClassificationResult = {
     session_id: string;
     samples_analyzed: number;
     parent_segment_count: number;
-    segments: SegmentClassificationSegment[];
-    expert_reference_data: ExpertReferenceRow[];
+    segments: Array<SegmentClassificationSegment & {
+        expert_reference_data: ExpertReferenceRow[];
+    }>;
     expert_time_available?: boolean;
 };
 
@@ -75,6 +76,9 @@ export const normalizeSegmentClassificationResult = (
             ...segment,
             labels: Array.isArray(segment.labels) ? segment.labels : [],
             track_section: typeof segment.track_section === 'string' ? segment.track_section : undefined,
+            expert_reference_data: Array.isArray(segment.expert_reference_data)
+                ? segment.expert_reference_data
+                : [],
         }))
         : [];
 
@@ -84,9 +88,6 @@ export const normalizeSegmentClassificationResult = (
         samples_analyzed: Number(result?.samples_analyzed) || 0,
         parent_segment_count: segments.length,
         segments,
-        expert_reference_data: result && Array.isArray(result.expert_reference_data)
-            ? result.expert_reference_data
-            : [],
         ...(typeof result?.expert_time_available === 'boolean'
             ? { expert_time_available: result.expert_time_available }
             : {}),

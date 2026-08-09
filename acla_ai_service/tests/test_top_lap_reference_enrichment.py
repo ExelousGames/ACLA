@@ -265,7 +265,7 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
     assert result["samples_analyzed"] == 3
     assert result["segments"][0]["start_index"] == 2
     assert result["segments"][0]["end_index"] == 3
-    assert result["expert_reference_data"] == [{
+    assert result["segments"][0]["expert_reference_data"] == [{
         "raw_index": 2,
         "expert_time_difference": 0.0,
         "expert_optimal_time": 90_000.0,
@@ -279,7 +279,7 @@ async def test_recorded_classifier_receives_enriched_copies(monkeypatch):
     }]
     assert tire_service.calls[0][0] is runtime.calls[0][3]
     assert classified[0] is tire_service.calls[0][1]
-    assert projected[0] is classified[0]
+    assert projected[0] == classified[0]
     assert len(runtime.calls) == 1
     assert source == [
         {"Graphics_normalized_car_position": 0.4, "source": "raw"},
@@ -365,7 +365,7 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
     assert result["segments"][0]["start_index"] == 1
     assert result["segments"][0]["end_index"] == 4
     assert result["samples_analyzed"] == 4
-    assert result["expert_reference_data"] == [
+    assert result["segments"][0]["expert_reference_data"] == [
         {
             "raw_index": 1,
             "expert_time_difference": 10.0,
@@ -395,7 +395,7 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
     assert classified[0][0]["driver_push_to_limit"] == 0.75
     assert tire_service.calls[0][0] is runtime.calls[0][3]
     assert classified[0] is tire_service.calls[0][1]
-    assert projected[0] is classified[0]
+    assert projected[0] == classified[0]
     assert len(runtime.calls) == 1
     assert source == [
         {"Graphics_normalized_car_position": 0.0},
@@ -407,7 +407,7 @@ async def test_live_gap_uses_the_same_enriched_rows_as_classifier(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("endpoint", ["recorded", "live"])
-async def test_empty_preprocessed_output_returns_empty_expert_references(
+async def test_empty_preprocessed_output_has_no_top_level_expert_references(
     endpoint,
     monkeypatch,
 ):
@@ -457,7 +457,8 @@ async def test_empty_preprocessed_output_returns_empty_expert_references(
             )
         )
 
-    assert result["expert_reference_data"] == []
+    assert "expert_reference_data" not in result
+    assert result["segments"] == []
     assert classified == [[]]
     assert len(runtime.calls) == 1
     assert source == [{"Graphics_normalized_car_position": 0.5}]

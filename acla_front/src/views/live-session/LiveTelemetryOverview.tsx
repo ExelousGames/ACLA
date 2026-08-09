@@ -1,10 +1,35 @@
-import React, { useMemo, useState } from 'react';
+import React, { forwardRef, useImperativeHandle, useMemo, useState } from 'react';
 import { Box, Grid, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { LiveTelemetry } from './live-session-types';
+import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 
-const LiveTelemetryOverview = ({ telemetry }: { telemetry: LiveTelemetry }) => {
+export interface LiveTelemetryOverviewHandle extends NamedAiToolComponentHandle {
+    updateLiveTelemetry(data: LiveTelemetry): boolean;
+    disableLiveTelemetry(): boolean;
+}
+
+interface LiveTelemetryOverviewProps {
+    name: string;
+    telemetry: LiveTelemetry;
+    onUpdate?: (data: LiveTelemetry) => boolean;
+    onDisable?: () => boolean;
+}
+
+const LiveTelemetryOverview = forwardRef<LiveTelemetryOverviewHandle, LiveTelemetryOverviewProps>(({
+    name,
+    telemetry,
+    onUpdate,
+    onDisable,
+}, forwardedRef) => {
     const [search, setSearch] = useState('');
+    const handle = useMemo<LiveTelemetryOverviewHandle>(() => ({
+        getComponentName: () => name,
+        updateLiveTelemetry: (data) => onUpdate?.(data) ?? false,
+        disableLiveTelemetry: () => onDisable?.() ?? false,
+    }), [name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    useRegisterAiToolComponentRef(name, handle);
     const entries = useMemo(() => {
         const term = search.trim().toLowerCase();
         return Object.entries(telemetry)
@@ -33,6 +58,8 @@ const LiveTelemetryOverview = ({ telemetry }: { telemetry: LiveTelemetry }) => {
             </Box>
         </Box>
     );
-};
+});
+
+LiveTelemetryOverview.displayName = 'LiveTelemetryOverview';
 
 export default LiveTelemetryOverview;

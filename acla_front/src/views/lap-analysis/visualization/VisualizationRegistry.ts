@@ -13,11 +13,14 @@ import {
 } from './charts/analysisResultsModel';
 
 export interface VisualizationProps {
+    name: string;
     id: string;
     data?: any;
     config?: any;
     width?: string | number;
     height?: string | number;
+    onUpdate?: (data?: any, config?: any) => boolean;
+    onDisable?: () => boolean;
 }
 
 export interface VisualizationAssistantControl {
@@ -53,6 +56,7 @@ export interface VisualizationComponent {
 }
 
 export interface VisualizationInstance {
+    name: string;
     id: string;
     type: string;
     data?: any;
@@ -198,7 +202,4 @@ export const initializeVisualizations = () => {
 
 // Initialize visualizations when this module is imported
 initializeVisualizations();
-
-export { visualizationController } from './VisualizationController';
-export type { VisualizationCommand } from './VisualizationController';
 

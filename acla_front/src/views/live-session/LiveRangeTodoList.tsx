@@ -1,4 +1,5 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 import { LiveSessionContext } from './LiveSessionContext';
 import type {
     JsonValue,
@@ -290,7 +291,7 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
     );
 };
 
-const LiveRangeTodoList: React.FC = () => {
+const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
     const {
         currentTelemetry,
         sessionIntelligence,
@@ -624,6 +625,7 @@ const LiveRangeTodoList: React.FC = () => {
     }, [finishEvent, sessionIntelligence]);
 
     const handle = useMemo<LiveRangeTodoListHandle>(() => ({
+        getComponentName: () => name,
         addEvent,
         replaceEvents,
         updateEvents,
@@ -631,7 +633,8 @@ const LiveRangeTodoList: React.FC = () => {
         resetEvents,
         clear,
         get: resultForCurrent,
-    }), [addEvent, clear, removeEvents, replaceEvents, resetEvents, resultForCurrent, updateEvents]);
+    }), [addEvent, clear, name, removeEvents, replaceEvents, resetEvents, resultForCurrent, updateEvents]);
+    useRegisterAiToolComponentRef(name, handle);
 
     useEffect(() => {
         mountedRef.current = true;

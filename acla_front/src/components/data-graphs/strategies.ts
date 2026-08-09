@@ -270,7 +270,12 @@ const makeBaseOption = (spec: GraphSpec): VendorGraphOption => ({
         right: 20,
         bottom: 18,
         left: 20,
-        containLabel: true,
+        outerBounds: {
+            top: 16,
+            right: 20,
+            bottom: 18,
+            left: 20,
+        },
     },
     tooltip: {
         trigger: 'axis',

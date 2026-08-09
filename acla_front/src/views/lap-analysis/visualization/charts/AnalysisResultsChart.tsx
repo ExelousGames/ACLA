@@ -3,7 +3,10 @@ import { Badge, Box, Card, Flex, HoverCard, ScrollArea, Text } from '@radix-ui/t
 import type { VisualizationProps } from '../VisualizationRegistry';
 import {
     AnalysisResultElement,
+    appendAnalysisResultElement,
     normalizeAnalysisResultsData,
+    removeAnalysisResultElement,
+    updateAnalysisResultElement,
 } from './analysisResultsModel';
 import { useAiLabels } from 'contexts/AiLabelsContext';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
@@ -13,17 +16,25 @@ import {
 } from 'components/driver-expert-comparison';
 import type { DriverExpertComparisonData } from 'components/driver-expert-comparison';
 import { overlayDisplayClient } from 'views/floating-chat/overlay-display-client';
-import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import type {
     JsonValue,
     LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
 } from 'views/live-session/live-range-todo-list-types';
 import styles from './AnalysisResultsChart.module.css';
+import {
+    AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
+    AI_TOOL_COMPONENT_NAMES,
+    NamedAiToolComponentHandle,
+    awaitNamedComponentHandle,
+    resolveNamedComponentHandle,
+    useOptionalAiToolComponentRefDirectory,
+    useRegisterAiToolComponentRef,
+} from 'contexts/AiToolComponentRefContext';
+import type { VisualizationManagerHandle } from '../VisualizationPanelManager';
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
 const LIVE_RANGE_TODO_LIST_TYPE = 'live-range-todo-list';
-const LIVE_RANGE_TODO_LIST_MOUNT_TIMEOUT_MS = 2000;
 
 let queuedComparisonEventSequence = 0;
 
@@ -137,6 +148,14 @@ const MAIN_LABEL_FILTER_OPTIONS: readonly MainLabelFilterOption[] = [
 
 interface AnalysisResultsChartProps extends VisualizationProps {
     showElementId?: boolean;
+}
+
+export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
+    replaceAnalysisResults(data: unknown): boolean;
+    appendAnalysisResult(element: unknown): ReturnType<typeof appendAnalysisResultElement>['result'];
+    updateAnalysisResult(id: unknown, changes: unknown): ReturnType<typeof updateAnalysisResultElement>['result'];
+    removeAnalysisResult(id: unknown): ReturnType<typeof removeAnalysisResultElement>['result'];
+    disableAnalysisResults(): boolean;
 }
 
 interface IndexedAnalysisResult {
@@ -468,24 +487,47 @@ const AnalysisResultCard: React.FC<{
     );
 };
 
-const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
+const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, AnalysisResultsChartProps>(({
+    name,
     id,
     data,
     width = '100%',
     height = '100%',
     showElementId = true,
-}) => {
+    onUpdate,
+    onDisable,
+}, forwardedRef) => {
     const [sortMode, setSortMode] = React.useState<AnalysisResultsSortMode>('original');
     const [mainLabelFilter, setMainLabelFilter] = React.useState<AnalysisResultsMainLabelFilter>('MSP');
-    const [pendingQueue, setPendingQueue] = React.useState<PendingComparisonQueue | null>(null);
     const [queueInProgress, setQueueInProgress] = React.useState(false);
     const [queueStatus, setQueueStatus] = React.useState('');
-    const liveSession = React.useContext(LiveSessionContext);
+    const componentRefs = useOptionalAiToolComponentRefDirectory();
     const pendingQueueRef = React.useRef<PendingComparisonQueue | null>(null);
-    const mountTimeoutRef = React.useRef<number | null>(null);
     const queueRequestSequenceRef = React.useRef(0);
     const { getCategoryLabels, getLabelName } = useAiLabels();
     const { elements } = React.useMemo(() => normalizeAnalysisResultsData(data), [data]);
+    const handle = React.useMemo<AnalysisResultsChartHandle>(() => ({
+        getComponentName: () => name,
+        replaceAnalysisResults: (nextData) => onUpdate?.(nextData) ?? false,
+        appendAnalysisResult: (element) => {
+            const mutation = appendAnalysisResultElement(data, element);
+            if (mutation.result.success) onUpdate?.(mutation.data);
+            return mutation.result;
+        },
+        updateAnalysisResult: (elementId, changes) => {
+            const mutation = updateAnalysisResultElement(data, elementId, changes);
+            if (mutation.result.success) onUpdate?.(mutation.data);
+            return mutation.result;
+        },
+        removeAnalysisResult: (elementId) => {
+            const mutation = removeAnalysisResultElement(data, elementId);
+            if (mutation.result.success) onUpdate?.(mutation.data);
+            return mutation.result;
+        },
+        disableAnalysisResults: () => onDisable?.() ?? false,
+    }), [data, name, onDisable, onUpdate]);
+    React.useImperativeHandle(forwardedRef, () => handle, [handle]);
+    useRegisterAiToolComponentRef(name, handle);
     const selectedFilter = MAIN_LABEL_FILTER_OPTIONS.find(({ value }) => value === mainLabelFilter)!;
     const recognizedParentLabels = React.useMemo(() => new Set([
         selectedFilter.value,
@@ -539,20 +581,11 @@ const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
         emptyStateText: `No recognized ${graphSubject.toLowerCase()} mistakes to graph.`,
     }), [graphSubject, mistakeFrequencyData]);
 
-    const clearMountTimeout = React.useCallback(() => {
-        if (mountTimeoutRef.current !== null) {
-            window.clearTimeout(mountTimeoutRef.current);
-            mountTimeoutRef.current = null;
-        }
-    }, []);
-
     const finishPendingQueue = React.useCallback((requestId: number) => {
         if (pendingQueueRef.current?.requestId !== requestId) return;
         pendingQueueRef.current = null;
-        clearMountTimeout();
-        setPendingQueue(null);
         setQueueInProgress(false);
-    }, [clearMountTimeout]);
+    }, []);
 
     const failPendingQueue = React.useCallback((requestId: number, message: string) => {
         if (pendingQueueRef.current?.requestId !== requestId) return;
@@ -581,15 +614,9 @@ const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
         setQueueStatus(`Queued: ${queuedCount}. Skipped: ${skippedCount}.`);
     }, [finishPendingQueue]);
 
-    React.useEffect(() => {
-        if (!pendingQueue || !liveSession.liveRangeTodoListHandle) return;
-        drainPendingQueue(pendingQueue, liveSession.liveRangeTodoListHandle);
-    }, [drainPendingQueue, liveSession.liveRangeTodoListHandle, pendingQueue]);
-
     React.useEffect(() => () => {
         pendingQueueRef.current = null;
-        clearMountTimeout();
-    }, [clearMountTimeout]);
+    }, []);
 
     React.useEffect(() => {
         if (!pendingQueueRef.current) setQueueStatus('');
@@ -604,43 +631,51 @@ const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
             skippedCount: mostCommonQueuePlan.skippedCount,
         };
         pendingQueueRef.current = prepared;
-        setPendingQueue(prepared);
         setQueueInProgress(true);
         setQueueStatus('Opening Live Range To-do List…');
 
-        mountTimeoutRef.current = window.setTimeout(() => {
-            failPendingQueue(
-                requestId,
-                'Live Range To-do List did not open within two seconds. Nothing was queued.',
-            );
-        }, LIVE_RANGE_TODO_LIST_MOUNT_TIMEOUT_MS);
+        if (!componentRefs) {
+            failPendingQueue(requestId, 'Live Range To-do List is unavailable. Nothing was queued.');
+            return;
+        }
 
-        // Even an already-mounted handle drains from the effect above, after
-        // the disabled state has rendered. The timeout also covers a handle
-        // disappearing while this click is being prepared.
-        if (liveSession.liveRangeTodoListHandle) return;
-
-        void import('../VisualizationController').then(({ visualizationController }) => {
-            if (pendingQueueRef.current?.requestId !== requestId) return;
-            const alreadyOpen = visualizationController.getCurrentInstances()
-                .some((instance) => instance.type === LIVE_RANGE_TODO_LIST_TYPE);
-            if (alreadyOpen) return;
-            const opened = visualizationController.openVisualization(LIVE_RANGE_TODO_LIST_TYPE);
-            if (!opened.success) {
+        void (async () => {
+            try {
+                let todoHandle = componentRefs
+                    .findComponentRef<LiveRangeTodoListHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
+                    ?.current ?? null;
+                if (!todoHandle) {
+                    const manager = resolveNamedComponentHandle<VisualizationManagerHandle>(
+                        componentRefs,
+                        AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                    );
+                    const opened = manager.requestVisualization({
+                        name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+                        type: LIVE_RANGE_TODO_LIST_TYPE,
+                    });
+                    if (!opened.success) throw new Error(opened.message);
+                    todoHandle = await awaitNamedComponentHandle<LiveRangeTodoListHandle>(
+                        componentRefs,
+                        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+                        AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
+                    );
+                }
+                if (pendingQueueRef.current?.requestId !== requestId) return;
+                if (todoHandle.getComponentName() !== AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST) {
+                    throw new Error('Live Range To-do List registered with an incorrect component name.');
+                }
+                drainPendingQueue(prepared, todoHandle);
+            } catch {
                 failPendingQueue(
                     requestId,
                     'Unable to open Live Range To-do List. Nothing was queued.',
                 );
             }
-        }).catch(() => {
-            failPendingQueue(
-                requestId,
-                'Unable to open Live Range To-do List. Nothing was queued.',
-            );
-        });
+        })();
     }, [
         failPendingQueue,
-        liveSession.liveRangeTodoListHandle,
+        componentRefs,
+        drainPendingQueue,
         mostCommonQueuePlan,
         queueInProgress,
     ]);
@@ -735,6 +770,8 @@ const AnalysisResultsChart: React.FC<AnalysisResultsChartProps> = ({
             </ScrollArea>
         </Card>
     );
-};
+});
+
+AnalysisResultsChart.displayName = 'AnalysisResultsChart';
 
 export default AnalysisResultsChart;

@@ -1,65 +1,38 @@
-import apiService from 'services/api.service';
-import { visualizationController } from 'views/lap-analysis/visualization/VisualizationRegistry';
 import { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
-import { getAccTelemetryTrackKey } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
 import { ToolHandlerContext } from 'views/lap-analysis/ai-chat/use-voice-conversation';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
-import { AiMapDisplayPayload, AiMapSectionSelection } from './AiMapToolDisplay';
-import {
-    SegmentClassificationResult,
-    RecordedAiAnalysisState,
-    normalizeSegmentClassificationResult,
-} from 'views/lap-analysis/recorded-session-analysis';
-import {
-    getSegmentLabelIds,
-    SegmentClassificationSegment,
-} from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
-import type { AnalysisResultElement } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
-import { adaptAnalysisResultsComparison } from 'views/lap-analysis/visualization/charts/analysisResultsComparisonAdapter';
+import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import {
     DEFAULT_ANALYST_COOLDOWN_MS,
     DEFAULT_ANALYST_MIN_DISTANCE,
     DEFAULT_ANALYST_MIN_LEAD_SECONDS,
     hasEnoughCoachingLead,
-    type LiveAnalystRecordedAnalysisError,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
-    buildProcedurePlan,
     type ProcedurePlan,
     type ProcedurePlanRequest,
 } from './ai-chat-plan';
-import {
-    PracticeParentSegmentView,
-    PracticeSectionSummaryView,
-    asRecord,
-    buildPracticeTrackSummaryViews,
-} from 'views/user-summary/user-summary-model';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
-    buildBaselineCollectionToolPayload,
     type BaselineLapRecord,
     type BaselineCollectionTag,
 } from './BaselineCollectionTracker';
 import {
     AiToolDefinition,
-    ToolOutputController,
     type ToolOutputEmitter,
     type ToolOutputEnvelope,
     executeAiToolDefinition,
 } from './ai-tool-base';
 import type { LiveRangeTodoListToolResult } from 'views/live-session/live-range-todo-list-types';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
+import type { AiToolComponentRefDirectory } from 'contexts/AiToolComponentRefContext';
 import {
-    LIVE_SCREEN_TOOL_NAMES,
-    RECORDED_SCREEN_TOOL_NAMES,
-    SCREEN_OWNED_TOOL_NAMES,
-    USER_SUMMARY_SCREEN_TOOL_NAMES,
-    type AiChatScreenRegistration,
-    type AiChatScreenToolHandlerContext,
-} from 'contexts/AiChatScreenContext';
+    createRefBasedAiCommandFunctions,
+    type RefAiCommandContext,
+} from './ai-command-ref-functions';
 
 type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
-export type AiCommandToolDefinition = AiToolDefinition<AiCommandRegistryContext, ToolHandlerContext>;
+export type AiCommandToolDefinition = AiToolDefinition<RefAiCommandContext, ToolHandlerContext>;
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
 export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
 export type AgentSessionRole = 'main' | 'agent';
@@ -91,6 +64,7 @@ export type AgentSessionStopResult = {
     message?: string;
 };
 export interface AiCommandRegistryContext {
+    componentRefs?: AiToolComponentRefDirectory;
     sessionId?: string;
     sessionMode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
     recordingState?: RecordingState | null;
@@ -144,7 +118,6 @@ export interface AiCommandRegistryContext {
     updateLiveRangeTodoList?: (args: Record<string, unknown>) => LiveRangeTodoListToolResult;
     getLiveRangeTodoList?: () => LiveRangeTodoListToolResult;
     displayMap?: (display: AiMapDisplayPayload) => void;
-    getActiveScreen?: () => AiChatScreenRegistration | null;
 }
 
 export interface OpportunityAgentState {
@@ -174,8 +147,6 @@ const OVERTAKE_AGENT_REPEAT_ALERT_MS = 20000;
 const DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS = 4;
 const LIVE_ANALYST_MIN_INTERVAL_SECONDS = 2;
 const LIVE_ANALYST_MAX_INTERVAL_SECONDS = 12;
-const LIVE_RECORDED_ANALYSIS_TIMEOUT_MS = 120000;
-const LIVE_RECORDED_ANALYSIS_ENDPOINT = '/racing-session/analyze-live-recorded-analysis';
 const toPositiveNumber = (value: unknown): number | undefined => {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
@@ -195,25 +166,9 @@ const getTacticalAlertKey = (result: any): string => {
     return `${result.event}:${opponent}:${section}`;
 };
 
-const hasSummaryContent = (summary: Record<string, any>): boolean => Object.keys(summary).length > 0;
 
-const normalizeSummarySearchText = (value: unknown): string => String(value ?? '')
-    .toLowerCase()
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 
-const getSearchLimit = (value: unknown): number => {
-    const parsed = Math.floor(Number(value));
-    if (!Number.isFinite(parsed) || parsed <= 0) return 5;
-    return Math.min(parsed, 10);
-};
 
-const getRecordedSegmentLimit = (value: unknown): number => {
-    const parsed = Math.floor(Number(value));
-    if (!Number.isFinite(parsed) || parsed <= 0) return 20;
-    return Math.min(parsed, 50);
-};
 
 const getLiveAnalystIntervalSeconds = (value: unknown): number => {
     const parsed = toPositiveNumber(value) ?? DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS;
@@ -233,647 +188,31 @@ const isLiveSessionContext = (context: AiCommandRegistryContext): boolean =>
     (!context.sessionMode || context.sessionMode === 'live')
     && isLiveSessionAiAvailable(context.recordingState);
 
-const isRecordedSessionContext = (context: AiCommandRegistryContext): boolean =>
-    context.sessionMode === 'recorded';
 
-const normalizeOptionalString = (value: unknown): string | undefined => (
-    typeof value === 'string' && value.trim() ? value.trim() : undefined
-);
 
-function stripTelemetryFieldToken(value: string): string {
-    let token = value.trim();
-    if (
-        (token.startsWith("'") && token.endsWith("'"))
-        || (token.startsWith('"') && token.endsWith('"'))
-    ) {
-        token = token.slice(1, -1).trim();
-    }
-    return token;
-}
 
-function parseTelemetryFieldString(value: string): string[] {
-    const trimmed = value.trim();
-    if (!trimmed) return [];
 
-    try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) {
-            return normalizeTelemetryFields(parsed);
-        }
-    } catch {
-        // Accept Python-style array strings emitted by some models/tools.
-    }
 
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-        const inner = trimmed.slice(1, -1).trim();
-        if (!inner) return [];
-        return inner
-            .split(',')
-            .map(stripTelemetryFieldToken)
-            .filter(Boolean);
-    }
 
-    if (trimmed.includes(',')) {
-        return trimmed
-            .split(',')
-            .map(stripTelemetryFieldToken)
-            .filter(Boolean);
-    }
 
-    return [stripTelemetryFieldToken(trimmed)];
-}
 
-function normalizeTelemetryFields(value: unknown): string[] {
-    if (Array.isArray(value)) {
-        return value.flatMap((field) => (
-            typeof field === 'string'
-                ? parseTelemetryFieldString(field)
-                : []
-        ));
-    }
-    if (typeof value === 'string') {
-        return parseTelemetryFieldString(value);
-    }
-    return [];
-}
 
-const clampNormalizedSectionValue = (value: unknown): number | undefined => {
-    const parsed = Number(value);
-    if (!Number.isFinite(parsed)) return undefined;
-    return Math.max(0, Math.min(1, parsed));
-};
 
-const buildMapSectionSelection = (args: Record<string, any>): AiMapSectionSelection | undefined => {
-    const start = clampNormalizedSectionValue(args.section_start ?? args.start);
-    const end = clampNormalizedSectionValue(args.section_end ?? args.end);
-    const label = normalizeOptionalString(args.section_label ?? args.label);
 
-    if (start === undefined && end === undefined && !label) return undefined;
 
-    return { start, end, label };
-};
 
-const getMapRequestCandidates = (
-    args: Record<string, any>,
-    context: AiCommandRegistryContext,
-): string[] => {
-    const selectedSession = context.analysisContext?.sessionSelected as Record<string, any> | null | undefined;
-    const liveData = context.analysisContext?.liveData as Record<string, any> | null | undefined;
-    return [
-        args.map_id,
-        args.source_track_key,
-        args.map_name,
-        context.analysisContext?.mapSelected,
-        selectedSession?.map,
-        liveData?.Static_track,
-        liveData?.Static?.track,
-        context.analysisContext?.recordedSessioStaticsData?.track,
-    ]
-        .map(normalizeOptionalString)
-        .filter((value): value is string => Boolean(value));
-};
 
-const buildUnavailableMapDisplay = (
-    args: Record<string, any>,
-    reason: string,
-    requestedMap?: string,
-): AiMapDisplayPayload => ({
-    status: 'unavailable',
-    requestedMap,
-    title: normalizeOptionalString(args.title) || 'Map',
-    note: normalizeOptionalString(args.message ?? args.note),
-    reason,
-    section: buildMapSectionSelection(args),
-});
 
-const summarizePracticeSegments = (segments: PracticeParentSegmentView[]) => segments
-    .filter((segment) => segment.count > 0)
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-    .slice(0, 5)
-    .map((segment) => ({
-        id: segment.id,
-        name: segment.name,
-        count: segment.count,
-        child_segments: segment.childSegments
-            .filter((child) => child.count > 0)
-            .slice(0, 5)
-            .map((child) => ({
-                id: child.id,
-                name: child.name,
-                count: child.count,
-                ...(child.startIndex !== undefined ? { start_index: child.startIndex } : {}),
-                ...(child.endIndex !== undefined ? { end_index: child.endIndex } : {}),
-            })),
-    }));
 
-const summarizePracticeSection = (section: PracticeSectionSummaryView) => ({
-    id: section.id,
-    name: section.name,
-    analyzed_time_count: section.analyzedTimeCount,
-    mistake_count: section.mistakeCount,
-    mistake_percent: section.mistakePercent,
-    expert_adherence_count: section.expertAdherenceCount,
-    expert_adherence_percent: section.expertAdherencePercent,
-    mistake_segments: summarizePracticeSegments(section.mistakeSegments),
-    expert_adherence_segments: summarizePracticeSegments(section.expertAdherenceSegments),
-    recovery_merge_segments: summarizePracticeSegments(section.recoveryMergeSegments),
-});
 
-const buildUserSummaryMapLevel = (
-    summary: Record<string, any>,
-    args: Record<string, any>,
-    context: AiCommandRegistryContext,
-) => {
-    const tracks = buildPracticeTrackSummaryViews(
-        summary,
-        context.getLabelName,
-        context.getCategoryLabels,
-    );
-    const requestedMapId = typeof args.map_id === 'string' && args.map_id.trim()
-        ? args.map_id.trim()
-        : undefined;
-    const filteredTracks = requestedMapId
-        ? tracks.filter((track) => (
-            track.id === requestedMapId
-            || track.name.toLowerCase() === requestedMapId.toLowerCase()
-        ))
-        : tracks;
 
-    return {
-        status: 'ready',
-        map_count: filteredTracks.length,
-        maps: filteredTracks.map((track) => {
-            const mistakeCount = track.sections.reduce((sum, section) => sum + section.mistakeCount, 0);
-            const expertAdherenceCount = track.sections.reduce((sum, section) => sum + section.expertAdherenceCount, 0);
-            const totalAnalyzedTimeCount = track.totalAnalyzedTimeCount
-                || track.sections.reduce((sum, section) => sum + section.analyzedTimeCount, 0);
 
-            return {
-                id: track.id,
-                name: track.name,
-                analyzed_session_count: track.analyzedSessionCount,
-                skipped_session_count: track.skippedSessionCount,
-                failed_session_count: track.failedSessionCount,
-                total_analyzed_time_count: totalAnalyzedTimeCount,
-                section_count: track.sections.length,
-                mistake_count: mistakeCount,
-                expert_adherence_count: expertAdherenceCount,
-                mistake_percent: totalAnalyzedTimeCount > 0
-                    ? (mistakeCount / totalAnalyzedTimeCount) * 100
-                    : 0,
-                expert_adherence_percent: totalAnalyzedTimeCount > 0
-                    ? (expertAdherenceCount / totalAnalyzedTimeCount) * 100
-                    : 0,
-                top_mistake_sections: track.sections
-                    .filter((section) => section.mistakeCount > 0)
-                    .sort((a, b) => b.mistakeCount - a.mistakeCount || a.name.localeCompare(b.name))
-                    .slice(0, 3)
-                    .map(summarizePracticeSection),
-                top_expert_adherence_sections: track.sections
-                    .filter((section) => section.expertAdherenceCount > 0)
-                    .sort((a, b) => b.expertAdherenceCount - a.expertAdherenceCount || a.name.localeCompare(b.name))
-                    .slice(0, 3)
-                    .map(summarizePracticeSection),
-                sections: requestedMapId
-                    ? track.sections.map(summarizePracticeSection)
-                    : undefined,
-            };
-        }),
-    };
-};
 
-type UserSummaryMapLevelResult = ReturnType<typeof buildUserSummaryMapLevel>;
-type UserSummaryMapRow = UserSummaryMapLevelResult['maps'][number];
 
-const buildAvailableUserSummaryMaps = (mapLevel: UserSummaryMapLevelResult) => {
-    const maps = mapLevel.maps.map((map) => ({
-        id: map.id,
-        name: map.name,
-        analyzed_session_count: map.analyzed_session_count,
-        total_analyzed_time_count: map.total_analyzed_time_count,
-        section_count: map.section_count,
-    }));
-    const mapOptions = maps.map((map) => (
-        `${map.name} (${map.id}) - ${map.analyzed_session_count} analyzed session${map.analyzed_session_count === 1 ? '' : 's'}`
-    ));
 
-    return {
-        status: 'ready',
-        map_count: mapLevel.map_count,
-        maps,
-        map_options: mapOptions,
-        response_text: mapOptions.length > 0
-            ? `Available maps in your summary:\n${mapOptions.map((option) => `- ${option}`).join('\n')}\nWhich map should I inspect?`
-            : 'I do not see any maps in your user summary yet.',
-    };
-};
 
-const getSelectedRecordedSession = (context: AiCommandRegistryContext): Record<string, any> | null => {
-    const selectedSession = context.analysisContext?.sessionSelected;
-    if (!selectedSession?.SessionId) return null;
-    return selectedSession;
-};
 
-const getAiLabelText = (
-    labelId: string | null | undefined,
-    context: AiCommandRegistryContext,
-): string | null => {
-    if (!labelId) return null;
-    return context.getLabelName?.(labelId) || labelId;
-};
 
-const summarizeRecordedSegment = (
-    segment: SegmentClassificationSegment,
-    context: AiCommandRegistryContext,
-) => ({
-    id: segment.id ?? null,
-    start_index: segment.start_index,
-    end_index: segment.end_index,
-    track_section: getAiLabelText(segment.track_section, context),
-    labels: getSegmentLabelIds(segment)
-        .map((labelId) => getAiLabelText(labelId, context))
-        .filter((label): label is string => Boolean(label)),
-    ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
-});
-
-const getBaselineRecordPosition = (
-    records: Record<string, any>[],
-    index: number,
-): number | null => {
-    if (records.length === 0 || !Number.isFinite(index)) return null;
-
-    const boundedIndex = Math.min(
-        records.length - 1,
-        Math.max(0, Math.trunc(index)),
-    );
-    const row = records[boundedIndex];
-    if (!row) return null;
-
-    const value = row.Graphics_normalized_car_position
-        ?? row.normalized_position
-        ?? row.normalizedPosition;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-};
-
-const summarizeLiveRecordedSegment = (
-    segment: SegmentClassificationSegment,
-    context: AiCommandRegistryContext,
-    records: Record<string, any>[],
-) => ({
-    id: segment.id ?? null,
-    start_position: getBaselineRecordPosition(records, segment.start_index),
-    end_position: getBaselineRecordPosition(records, segment.end_index),
-    track_section: getAiLabelText(segment.track_section, context),
-    labels: getSegmentLabelIds(segment)
-        .map((labelId) => getAiLabelText(labelId, context))
-        .filter((label): label is string => Boolean(label)),
-    ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
-});
-
-const MISTAKE_PARENT_LABEL_IDS = ['MSP', 'MSR'] as const;
-
-const shouldDisplayLiveAnalysisSegment = (
-    segment: SegmentClassificationSegment,
-    context: AiCommandRegistryContext,
-): boolean => {
-    const labelIds = getSegmentLabelIds(segment);
-    const mistakeParentIds = MISTAKE_PARENT_LABEL_IDS.filter((parentId) => (
-        labelIds.includes(parentId)
-    ));
-
-    return mistakeParentIds.every((parentId) => {
-        const taxonomyChildren = context.getCategoryLabels?.(parentId) ?? [];
-        if (taxonomyChildren.length > 0) {
-            const childIds = new Set(taxonomyChildren);
-            return labelIds.some((labelId) => childIds.has(labelId));
-        }
-
-        const parentIndex = labelIds.indexOf(parentId);
-        return parentIndex >= 0 && parentIndex < labelIds.length - 1;
-    });
-};
-
-const buildLiveAnalysisResultElements = (
-    result: SegmentClassificationResult,
-    baselineRecord: BaselineLapRecord,
-    context: AiCommandRegistryContext,
-): AnalysisResultElement[] => {
-    const usedIds = new Set<string>();
-    const visibleSegments = (Array.isArray(result.segments) ? result.segments : [])
-        .map((segment, index) => ({ segment, index }))
-        .filter(({ segment }) => shouldDisplayLiveAnalysisSegment(segment, context));
-
-    return visibleSegments.map(({ segment, index }) => {
-        const requestedId = typeof segment.id === 'string' && segment.id.trim()
-            ? segment.id.trim()
-            : `${result.session_id || baselineRecord.id}:segment:${index}`;
-        const id = usedIds.has(requestedId) ? `${requestedId}:${index}` : requestedId;
-        usedIds.add(id);
-
-        const start = getBaselineRecordPosition(baselineRecord.records, segment.start_index);
-        const end = getBaselineRecordPosition(baselineRecord.records, segment.end_index);
-        const section = getAiLabelText(segment.track_section, context);
-        const labels = getSegmentLabelIds(segment).map((labelId) => (
-            getAiLabelText(labelId, context) || labelId
-        ));
-        const timeGap = segment.time_gap
-            ? {
-                startMs: segment.time_gap.start_ms,
-                endMs: segment.time_gap.end_ms,
-                deltaMs: segment.time_gap.delta_ms,
-            }
-            : undefined;
-        const comparison = adaptAnalysisResultsComparison({
-            baselineRecords: baselineRecord.records,
-            expertReferenceData: result.expert_reference_data,
-            startIndex: segment.start_index,
-            endIndex: segment.end_index,
-        });
-
-        return {
-            id,
-            labels,
-            ...(section ? { section } : {}),
-            ...(start !== null && end !== null
-                ? { normalizedPositionRange: { start, end } }
-                : {}),
-            ...(timeGap ? { timeGap } : {}),
-            ...(comparison.samples.length > 0 ? { comparison } : {}),
-            metadata: {
-                source: 'live_classifier',
-                start_index: segment.start_index,
-                end_index: segment.end_index,
-            },
-        };
-    });
-};
-
-const buildRecordedAnalysisToolResult = (
-    state: RecordedAiAnalysisState | null | undefined,
-    context: AiCommandRegistryContext,
-    args: Record<string, any> = {},
-) => {
-    const selectedSession = getSelectedRecordedSession(context);
-    if (!selectedSession) {
-        return {
-            status: 'error',
-            error: 'no_recorded_session',
-            message: 'No recorded session is selected.',
-        };
-    }
-
-    const analysisState = state || context.analysisContext?.recordedAiAnalysis;
-    const result = analysisState?.result as SegmentClassificationResult | null | undefined;
-    const limit = getRecordedSegmentLimit(args.limit);
-    const segments = result && Array.isArray(result.segments) ? result.segments : [];
-    const summarizedSegments = segments
-        .slice(0, limit)
-        .map((segment) => summarizeRecordedSegment(segment, context));
-
-    return {
-        status: analysisState?.status || 'idle',
-        message: analysisState?.message || null,
-        session_id: selectedSession.SessionId,
-        session_name: selectedSession.session_name || null,
-        map: selectedSession.map || context.analysisContext?.mapSelected || null,
-        car: selectedSession.car || null,
-        analysis: result
-            ? {
-                status: result.status,
-                session_id: result.session_id,
-                samples_analyzed: result.samples_analyzed,
-                segments: summarizedSegments,
-            }
-            : null,
-    };
-};
-
-const buildLiveRecordedAnalysisToolResult = (
-    result: SegmentClassificationResult,
-    baselineRecord: BaselineLapRecord,
-    context: AiCommandRegistryContext,
-    args: Record<string, any> = {},
-) => {
-    const limit = getRecordedSegmentLimit(args.limit);
-    const segments = Array.isArray(result.segments) ? result.segments : [];
-    const summarizedSegments = segments
-        .slice(0, limit)
-        .map((segment) => summarizeLiveRecordedSegment(segment, context, baselineRecord.records));
-
-    return {
-        status: segments.length > 0 ? 'ready' : 'empty',
-        message: segments.length > 0
-            ? 'Live baseline lap analysis is ready.'
-            : 'Live baseline lap analysis found no classified segments.',
-        source: 'baseline_lap_record',
-        baseline: {
-            id: baselineRecord.id,
-            lap: baselineRecord.lap,
-            track: baselineRecord.track || context.sessionIntelligence?.getLiveSessionSnapshot?.().track || null,
-            car: baselineRecord.car || context.sessionIntelligence?.getLiveSessionSnapshot?.().car || null,
-            sample_count: baselineRecord.sample_count,
-            captured_at: baselineRecord.captured_at,
-        },
-        analysis: {
-            status: result.status,
-            session_id: result.session_id,
-            samples_analyzed: result.samples_analyzed,
-            ...(typeof result.expert_time_available === 'boolean'
-                ? { expert_time_available: result.expert_time_available }
-                : {}),
-            segments: summarizedSegments,
-        },
-    };
-};
-
-const buildRecordedSessionContext = (
-    context: AiCommandRegistryContext,
-    args: Record<string, any> = {},
-) => {
-    const selectedSession = getSelectedRecordedSession(context);
-    if (!selectedSession) {
-        return {
-            status: 'error',
-            error: 'no_recorded_session',
-            message: 'No recorded session is selected.',
-        };
-    }
-
-    const playback = context.analysisContext?.recordedPlaybackSummary;
-    return {
-        status: 'ready',
-        selected_session: {
-            id: selectedSession.SessionId,
-            name: selectedSession.session_name || null,
-            map: selectedSession.map || context.analysisContext?.mapSelected || null,
-            car: selectedSession.car || null,
-        },
-        recorded_telemetry: {
-            sample_count: playback?.sampleCount ?? context.analysisContext?.recordedTelemetryDataCount ?? 0,
-            duration_seconds: playback?.durationSeconds ?? 0,
-            playback_index: playback?.playbackIndex ?? 0,
-            playback_time_seconds: playback?.playbackTimeSeconds ?? 0,
-            active_segment: playback?.activeSegment ?? null,
-        },
-        ai_analysis: buildRecordedAnalysisToolResult(
-            context.analysisContext?.recordedAiAnalysis,
-            context,
-            args,
-        ),
-    };
-};
-
-const normalizeAgentSessionMode = (value: unknown): AgentSessionMode | null => (
-    value === 'track_guide'
-    || value === 'overtake'
-    || value === 'live_performance_analyst'
-        ? value
-        : null
-);
-
-const runRecordedAnalysisForLiveRequest = async (
-    context: AiCommandRegistryContext,
-    args: Record<string, any> = {},
-    baselineRecordOverride?: BaselineLapRecord | null,
-): Promise<
-    | {
-        status: 'ready';
-        analysis: ReturnType<typeof buildLiveRecordedAnalysisToolResult>;
-        result: SegmentClassificationResult;
-        baselineRecord: BaselineLapRecord;
-    }
-    | { status: 'error'; error: LiveAnalystRecordedAnalysisError; message: string }
-> => {
-    const baselineRecord = baselineRecordOverride ?? context.getBaselineLapRecord?.() ?? null;
-    if (!baselineRecord || baselineRecord.records.length === 0) {
-        return {
-            status: 'error',
-            error: 'baseline_lap_record_required',
-            message: 'Live performance analysis requires a recorded baseline lap before it can request classifier analysis.',
-        };
-    }
-
-    try {
-        const response = await apiService.post(LIVE_RECORDED_ANALYSIS_ENDPOINT, {
-            track: baselineRecord.track,
-            car: baselineRecord.car,
-            baseline_lap: baselineRecord.lap,
-            records: baselineRecord.records,
-        }, { timeout: LIVE_RECORDED_ANALYSIS_TIMEOUT_MS });
-        const result = normalizeSegmentClassificationResult(response.data as any, baselineRecord.id);
-        return {
-            status: 'ready',
-            analysis: buildLiveRecordedAnalysisToolResult(result, baselineRecord, context, { limit: 8, ...args }),
-            result,
-            baselineRecord,
-        };
-    } catch (error: any) {
-        return {
-            status: 'error',
-            error: 'recorded_analysis_failed',
-            message: error?.data?.message || error?.message || 'Failed to run live baseline analysis.',
-        };
-    }
-};
-
-const getCachedBaselineLapRecord = (
-    context: AiCommandRegistryContext,
-): BaselineLapRecord | null => {
-    const record = context.getBaselineLapRecord?.() ?? null;
-    return record?.records?.length ? record : null;
-};
-
-const searchUserSummaryMapLevel = (
-    mapLevel: UserSummaryMapLevelResult,
-    args: Record<string, any>,
-) => {
-    const query = normalizeSummarySearchText(args.query);
-    const terms = Array.from(new Set(query.split(' ').filter(Boolean)));
-    const limit = getSearchLimit(args.limit);
-
-    if (terms.length === 0) {
-        return {
-            status: 'invalid_query',
-            error: 'query_required',
-            query,
-            match_count: 0,
-            map_count: mapLevel.map_count,
-            maps: [],
-        };
-    }
-
-    const matches = mapLevel.maps
-        .map((map) => {
-            const searchFields: Array<{ name: string; value: unknown; weight: number }> = [
-                { name: 'map_name', value: map.name, weight: 8 },
-                { name: 'map_id', value: map.id, weight: 6 },
-            ];
-
-            map.top_mistake_sections.forEach((section) => {
-                searchFields.push({ name: 'top_mistake_section', value: section.name, weight: 5 });
-                searchFields.push({ name: 'top_mistake_section_id', value: section.id, weight: 3 });
-            });
-            map.top_expert_adherence_sections.forEach((section) => {
-                searchFields.push({ name: 'top_expert_adherence_section', value: section.name, weight: 4 });
-                searchFields.push({ name: 'top_expert_adherence_section_id', value: section.id, weight: 3 });
-            });
-            if (map.mistake_count > 0) {
-                searchFields.push({ name: 'aggregate_kind', value: 'mistake mistakes weakness weak section', weight: 2 });
-            }
-            if (map.expert_adherence_count > 0) {
-                searchFields.push({ name: 'aggregate_kind', value: 'expert adherence strength strong section', weight: 2 });
-            }
-
-            const matchedTerms = new Set<string>();
-            const matchedFields = new Set<string>();
-            let score = 0;
-
-            searchFields.forEach((field) => {
-                const value = normalizeSummarySearchText(field.value);
-                if (!value) return;
-
-                if (value.includes(query)) {
-                    score += field.weight * 2;
-                    matchedFields.add(field.name);
-                }
-
-                terms.forEach((term) => {
-                    if (value.includes(term)) {
-                        matchedTerms.add(term);
-                        matchedFields.add(field.name);
-                        score += field.weight;
-                    }
-                });
-            });
-
-            if (matchedTerms.size !== terms.length) return null;
-
-            return {
-                map,
-                search_score: score,
-                matched_fields: Array.from(matchedFields),
-            };
-        })
-        .filter((match): match is { map: UserSummaryMapRow; search_score: number; matched_fields: string[] } => Boolean(match))
-        .sort((a, b) => (
-            b.search_score - a.search_score
-            || b.map.analyzed_session_count - a.map.analyzed_session_count
-            || a.map.name.localeCompare(b.map.name)
-        ));
-
-    return {
-        status: 'ready',
-        query,
-        match_count: matches.length,
-        map_count: mapLevel.map_count,
-        maps: matches.slice(0, limit).map((match) => ({
-            ...match.map,
-            search_score: match.search_score,
-            matched_fields: match.matched_fields,
-        })),
-    };
-};
 
 const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext) => (
     !isLiveSessionContext(context)
@@ -947,81 +286,10 @@ const buildLiveFocusPayload = (context: AiCommandRegistryContext) => {
     };
 };
 
-const buildLiveAnalystPlanError = (
-    error: string,
-    message: string,
-    snapshot?: Record<string, any>,
-) => ({
-    status: 'error',
-    error,
-    agent_mode: 'live_performance_analyst',
-    ...(snapshot ? { snapshot } : {}),
-    message,
-});
 
-const getCurrentBaselineCollectionPayload = (context: AiCommandRegistryContext) => (
-    buildBaselineCollectionToolPayload(
-        context.getBaselineCollectionTag?.() ?? null,
-        getCachedBaselineLapRecord(context),
-    )
-);
 
-const collectBaselineLapFromTrackerOutput = (
-    context: AiCommandRegistryContext,
-    _args: Record<string, any>,
-    output: ToolOutputController,
-): ToolOutputEnvelope => {
-    const unavailable = buildLiveAnalystUnavailable(context);
-    if (unavailable) return output.error(unavailable.error || 'baseline_collection_unavailable', unavailable);
 
-    context.setLivePerformanceAnalystEnabled?.(true);
-    context.setBaselineCollectionEnabled?.(true);
-    context.setAgentTagActive?.('Live Analyst', true);
 
-    const initialPayload = getCurrentBaselineCollectionPayload(context);
-    if (initialPayload.status === 'complete') {
-        return output.final(initialPayload);
-    }
-
-    return output.progress({
-        ...initialPayload,
-        status: 'started',
-        message: 'Baseline collection started.',
-    });
-};
-
-const restartLiveBaselineCollection = (
-    context: AiCommandRegistryContext,
-    output: ToolOutputController,
-): ToolOutputEnvelope => {
-    const unavailable = buildLiveAnalystUnavailable(context);
-    if (unavailable) {
-        return output.error(unavailable.error || 'baseline_restart_unavailable', unavailable);
-    }
-
-    if (!context.restartBaselineCollection) {
-        return output.error('baseline_restart_unavailable', {
-            status: 'error',
-            error: 'baseline_restart_unavailable',
-            message: 'Baseline restart is not available in this view.',
-        });
-    }
-
-    context.restartBaselineCollection();
-    context.setBaselineCollectionEnabled?.(true);
-
-    const payload = {
-        status: 'complete',
-        progress_percent: 0,
-        message: 'Baseline collection restart completed.',
-    };
-    return output.final(payload, { message: payload.message });
-};
-
-const getSessionId = (args: Record<string, any>, context: AiCommandRegistryContext): string | undefined =>
-    args.session_id ||
-    context.sessionId ||
-    context.analysisContext?.sessionSelected?.SessionId;
 
 export const startAgentRuntime = async (
     agentMode: AgentSessionMode,
@@ -1190,651 +458,6 @@ export const startAgentRuntime = async (
     };
 };
 
-const createRawAiCommandRegistry = (context: AiCommandRegistryContext): Record<string, AiCommandHandler> => {
-    const registry: Record<string, AiCommandHandler> = {
-
-    // ── Session ───────────────────────────────────────────────────────────────
-
-    async start_agent_session(args) {
-        const agentMode = normalizeAgentSessionMode(args.agent_mode || args.agentMode);
-        if (!agentMode) {
-            return {
-                status: 'error',
-                error: 'unsupported_agent_mode',
-                message: 'Supported agent modes are track_guide, overtake, and live_performance_analyst.',
-            };
-        }
-        if (!isLiveSessionContext(context)) {
-            return {
-                status: 'error',
-                error: getLiveToolsUnavailableError(context),
-                message: 'Agent sessions are only available from live session context.',
-            };
-        }
-        if (!context.startAgentSession) {
-            return {
-                status: 'error',
-                error: 'agent_session_unavailable',
-                message: 'This UI cannot start child AI agent sessions.',
-            };
-        }
-        return context.startAgentSession(agentMode, args);
-    },
-
-    async stop_agent_session(args) {
-        if (!context.stopAgentSession) {
-            return {
-                status: 'error',
-                error: 'agent_session_unavailable',
-                message: 'This UI cannot stop child AI agent sessions.',
-            };
-        }
-        return context.stopAgentSession(normalizeOptionalString(args.agent_session_id ?? args.agentSessionId));
-    },
-
-    async get_session_analysis(args) {
-        return await apiService.post('/racing-session/detailed-info', { id: getSessionId(args, context) });
-    },
-
-    async run_recorded_ai_analysis(args) {
-        if (!isRecordedSessionContext(context)) {
-            return { status: 'error', error: 'not_recorded_mode' };
-        }
-        if (!getSelectedRecordedSession(context)) {
-            return {
-                status: 'error',
-                error: 'no_recorded_session',
-                message: 'No recorded session is selected.',
-            };
-        }
-        const runAnalysis = context.analysisContext?.runRecordedAiAnalysis;
-        if (typeof runAnalysis !== 'function') {
-            return {
-                status: 'error',
-                error: 'recorded_analysis_unavailable',
-                message: 'Recorded AI analysis is not available in this view.',
-            };
-        }
-
-        const state = await runAnalysis({ force: args.force === true });
-        return buildRecordedAnalysisToolResult(state, context, args);
-    },
-
-    async get_recorded_session_analysis(args) {
-        if (!isRecordedSessionContext(context)) {
-            return { status: 'error', error: 'not_recorded_mode' };
-        }
-        return buildRecordedAnalysisToolResult(
-            context.analysisContext?.recordedAiAnalysis,
-            context,
-            args,
-        );
-    },
-
-    async get_recorded_session_context(args) {
-        if (!isRecordedSessionContext(context)) {
-            return { status: 'error', error: 'not_recorded_mode' };
-        }
-        return buildRecordedSessionContext(context, args);
-    },
-
-    async get_performance_insights(args) {
-        return await apiService.post('/ai/performance-analysis', {
-            session_id:    getSessionId(args, context),
-            analysis_type: args.analysis_type || 'comprehensive',
-        });
-    },
-
-    async compare_lap_times(args) {
-        return await apiService.post('/racing-session/compare', {
-            session_ids: args.session_ids,
-            metrics:     args.metrics || ['lap_times'],
-        });
-    },
-
-    // ── Telemetry ─────────────────────────────────────────────────────────────
-
-    // Constrained-reduce variant. Clamp invalid reduce values to 'stats'
-    // so a bad tool call can't leak rows.
-    async query_telemetry_metric(args) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        const allowed = new Set(['avg', 'min', 'max', 'stats']);
-        const reduce = allowed.has(args.reduce) ? args.reduce : 'stats';
-        const fields = normalizeTelemetryFields(args.fields);
-        if (fields.length === 0) {
-            return { error: 'telemetry_fields_required' };
-        }
-        return si.query({ fields, scope: args.scope, reduce } as any);
-    },
-
-    // Server-internal: backs analyze_telemetry. Returns raw rows over the
-    // WS relay so the server-side classifier can consume them. NOT exposed
-    // to the LLM (absent from the backend tool registry) - rows must never
-    // enter the LLM context.
-    async _get_telemetry_for_scope(args) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        return { rows: si.getRowsForScope(args.scope) };
-    },
-
-    // ── Event log ─────────────────────────────────────────────────────────────
-
-    async get_event_log(args) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        return { events: si.findEvents(args as any) };
-    },
-
-    async get_user_summary_map_level(args) {
-        if (context.userSummaryLoading) {
-            return { status: 'loading', maps: [] };
-        }
-        if (context.userSummaryError) {
-            return { status: 'error', error: context.userSummaryError, maps: [] };
-        }
-
-        const summary = asRecord(context.userSummary);
-        if (!hasSummaryContent(summary)) {
-            return { status: 'empty', maps: [] };
-        }
-
-        return buildUserSummaryMapLevel(summary, args, context);
-    },
-
-    async get_available_user_summary_maps() {
-        if (context.userSummaryLoading) {
-            return { status: 'loading', maps: [] };
-        }
-        if (context.userSummaryError) {
-            return { status: 'error', error: context.userSummaryError, maps: [] };
-        }
-
-        const summary = asRecord(context.userSummary);
-        if (!hasSummaryContent(summary)) {
-            return { status: 'empty', maps: [] };
-        }
-
-        return buildAvailableUserSummaryMaps(
-            buildUserSummaryMapLevel(summary, {}, context),
-        );
-    },
-
-    async search_user_summary_map_level(args) {
-        if (context.userSummaryLoading) {
-            return { status: 'loading', maps: [] };
-        }
-        if (context.userSummaryError) {
-            return { status: 'error', error: context.userSummaryError, maps: [] };
-        }
-
-        const summary = asRecord(context.userSummary);
-        if (!hasSummaryContent(summary)) {
-            return { status: 'empty', maps: [] };
-        }
-
-        return searchUserSummaryMapLevel(
-            buildUserSummaryMapLevel(summary, {}, context),
-            args,
-        );
-    },
-
-    async get_next_corner() {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        return si.getNextCorner() ?? { error: 'no_corner_data' };
-    },
-
-    async get_live_focus_section() {
-        const unavailable = buildLiveAnalystUnavailable(context);
-        if (unavailable) return unavailable;
-
-        const snapshot = buildLiveAnalystSnapshot(context);
-        if (!getBaselineRecorderReadiness(context).ready) {
-            return buildLiveAnalystPlanError(
-                'baseline_collection_incomplete',
-                'Complete one clean baseline lap before reading a focus section.',
-                snapshot,
-            );
-        }
-
-        const focus = buildLiveFocusPayload(context);
-        if (!focus) {
-            return buildLiveAnalystPlanError(
-                'focus_section_not_ready',
-                'Analyze the completed baseline and select a focus section before reading it.',
-                snapshot,
-            );
-        }
-
-        return {
-            status: 'ready',
-            agent_mode: 'live_performance_analyst',
-            focus,
-        };
-    },
-
-    async get_live_section_history(args) {
-        const unavailable = buildLiveAnalystUnavailable(context);
-        if (unavailable) return unavailable;
-
-        const limit = getRecordedSegmentLimit(args.limit);
-        return {
-            status: 'ready',
-            agent_mode: 'live_performance_analyst',
-            history: context.sessionIntelligence!.getSectionHistory(limit),
-        };
-    },
-
-    async set_live_range_todo_list(args) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        if (!context.setLiveRangeTodoList) {
-            return {
-                status: 'error',
-                error: 'live_range_todo_list_unavailable',
-                message: 'Open the Live Range To-do List panel in Live Data Visualizations before using this tool.',
-            };
-        }
-        return context.setLiveRangeTodoList(args);
-    },
-
-    async update_live_range_todo_list(args) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        if (!context.updateLiveRangeTodoList) {
-            return {
-                status: 'error',
-                error: 'live_range_todo_list_unavailable',
-                message: 'Open the Live Range To-do List panel in Live Data Visualizations before using this tool.',
-            };
-        }
-        return context.updateLiveRangeTodoList(args);
-    },
-
-    async get_live_range_todo_list() {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        if (!context.getLiveRangeTodoList) {
-            return {
-                status: 'error',
-                error: 'live_range_todo_list_unavailable',
-                message: 'Open the Live Range To-do List panel in Live Data Visualizations before using this tool.',
-            };
-        }
-        return context.getLiveRangeTodoList();
-    },
-
-    async analyze_live_recorded_analysis(args) {
-        const unavailable = buildLiveAnalystUnavailable(context);
-        if (unavailable) return unavailable;
-
-        const baselineRecord = getCachedBaselineLapRecord(context);
-        if (!baselineRecord) {
-            const snapshot = buildLiveAnalystSnapshot(context);
-            const message = 'Live recorded analysis requires a recorded baseline lap before it can run.';
-            context.sessionIntelligence?.emitRecordedAnalysisError(
-                'baseline_lap_record_required',
-                message,
-                snapshot,
-            );
-            return buildLiveAnalystPlanError(
-                'baseline_lap_record_required',
-                message,
-                snapshot,
-            );
-        }
-
-        const analysisStatus = await runRecordedAnalysisForLiveRequest(
-            context,
-            args,
-            baselineRecord,
-        );
-        if (analysisStatus.status !== 'ready') {
-            context.sessionIntelligence?.emitRecordedAnalysisError(
-                analysisStatus.error,
-                analysisStatus.message,
-                buildLiveAnalystSnapshot(context),
-            );
-            return buildLiveAnalystPlanError(
-                analysisStatus.error,
-                analysisStatus.message,
-                buildLiveAnalystSnapshot(context),
-            );
-        }
-
-        const agent = getLiveAnalystState(context);
-        agent.analysisSessionId = analysisStatus.analysis.baseline.id;
-        const elements = buildLiveAnalysisResultElements(
-            analysisStatus.result,
-            analysisStatus.baselineRecord,
-            context,
-        );
-        const existingChart = (visualizationController.getCurrentInstances?.() ?? [])
-            .find((instance) => instance.type === 'analysis-results');
-        let chartId = existingChart?.id;
-        if (existingChart) {
-            visualizationController.executeCommand({
-                action: 'update',
-                id: existingChart.id,
-                data: { elements },
-            });
-        } else {
-            const opened = visualizationController.openVisualization(
-                'analysis-results',
-                { elements },
-            );
-            chartId = opened?.chartId;
-        }
-
-        return {
-            ...analysisStatus.analysis,
-            chartId: chartId ?? null,
-            totalResultCount: elements.length,
-        };
-    },
-
-    async set_procedure_plan(args) {
-        const plan = buildProcedurePlan({
-            ...args,
-            event: normalizeOptionalString(args.event) || 'procedure_plan_started',
-        });
-        if (!plan) {
-            return {
-                status: 'error',
-                error: 'invalid_procedure_plan_requests',
-                message: 'Provide a goal and at least one request with a title.',
-            };
-        }
-
-        context.setProcedurePlan?.(plan);
-        return {
-            status: 'ready',
-            goal: plan.goal,
-            request_count: plan.requests.length,
-            current_request: plan.currentStep,
-            request: plan.requests[plan.currentStep],
-        };
-    },
-
-    async advance_plan_step(args) {
-        return context.advanceProcedurePlanStep?.(normalizeOptionalString(args.reason)) || {
-            status: 'unavailable',
-            error: 'no_procedure_plan_ui',
-        };
-    },
-
-    async clear_procedure_plan(args) {
-        context.clearProcedurePlan?.();
-        return {
-            status: 'cleared',
-            reason: normalizeOptionalString(args.reason),
-        };
-    },
-
-    async _get_live_section_telemetry(args) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        const snapshot = buildLiveAnalystSnapshot(context);
-        if (!getBaselineRecorderReadiness(context).ready) {
-            return buildLiveAnalystPlanError(
-                'baseline_collection_incomplete',
-                'Complete one clean baseline lap before classifying live sections.',
-                snapshot,
-            );
-        }
-        return si.getSectionTelemetryWindow({
-            section_id: args.section_id || args.sectionId,
-            section_name: args.section_name || args.sectionName,
-            lap: args.lap,
-        });
-    },
-
-    async _record_live_section_classification(args) {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
-        const si = context.sessionIntelligence;
-        if (!si) return { error: 'no_live_session' };
-        const snapshot = buildLiveAnalystSnapshot(context);
-        if (!getBaselineRecorderReadiness(context).ready) {
-            return buildLiveAnalystPlanError(
-                'baseline_collection_incomplete',
-                'Complete one clean baseline lap before recording a live section classification.',
-                snapshot,
-            );
-        }
-
-        const classification = si.recordSectionClassification(args);
-        if (!classification) {
-            return { status: 'error', error: 'section_not_found' };
-        }
-
-        const focus = buildLiveFocusPayload(context);
-        const comparison = focus?.section.id === classification.sectionId
-            ? si.compareFocusedSection(classification)
-            : null;
-
-        return {
-            status: 'recorded',
-            agent_mode: 'live_performance_analyst',
-            classification,
-            focus,
-            comparison,
-        };
-    },
-
-    // ── Expert line ───────────────────────────────────────────────────────────
-
-    async follow_expert_line(args) {
-        return await apiService.post('/ai/expert-line-guidance', {
-            session_id: getSessionId(args, context),
-            data_types: args.data_types || ['speed', 'acceleration', 'braking', 'steering'],
-        });
-    },
-
-    async get_telemetry_data(args) {
-        return await apiService.post('/racing-session/telemetry', {
-            session_id: getSessionId(args, context),
-            data_types: args.data_types || ['speed', 'acceleration'],
-        });
-    },
-
-    // ── Visualizations ────────────────────────────────────────────────────────
-
-    async get_visualization_capabilities() {
-        return visualizationController.getVisualizationAssistantContext();
-    },
-
-    async show_map(args) {
-        const candidates = getMapRequestCandidates(args, context);
-        const requestedMap = candidates[0];
-        const section = buildMapSectionSelection(args);
-        const title = normalizeOptionalString(args.title) || 'Map';
-        const note = normalizeOptionalString(args.message ?? args.note);
-
-        let map: CircuitMapDto | null = null;
-        let resolvedBy: 'id' | 'track' | null = null;
-
-        if (context.getCircuitMapById) {
-            for (const candidate of candidates) {
-                map = await context.getCircuitMapById(candidate);
-                if (map) {
-                    resolvedBy = 'id';
-                    break;
-                }
-            }
-        }
-
-        if (!map && context.getCircuitMapByTrack) {
-            for (const candidate of candidates) {
-                const sourceTrackKey = getAccTelemetryTrackKey(candidate) || candidate;
-                map = await context.getCircuitMapByTrack('acc', sourceTrackKey);
-                if (map) {
-                    resolvedBy = 'track';
-                    break;
-                }
-            }
-        }
-
-        if (!map) {
-            const reason = requestedMap
-                ? `No circuit map is available for "${requestedMap}".`
-                : 'No circuit map is available for the current session.';
-            context.displayMap?.(buildUnavailableMapDisplay(args, reason, requestedMap));
-            return {
-                status: 'unavailable',
-                message: 'Map is not available',
-                requested_map: requestedMap ?? null,
-                reason,
-            };
-        }
-
-        const display: AiMapDisplayPayload = {
-            status: 'ready',
-            map,
-            requestedMap,
-            title,
-            note,
-            section,
-        };
-
-        context.displayMap?.(display);
-
-        return {
-            status: 'displayed',
-            map_id: map.id,
-            circuit_name: map.circuit_name,
-            source_track_key: map.source_track_key ?? null,
-            resolved_by: resolvedBy,
-            section: section ?? null,
-        };
-    },
-
-    async open_visualization_chart(args) {
-        return visualizationController.openVisualization(args.type, args.data, args.config);
-    },
-
-    async close_visualization_chart(args) {
-        return visualizationController.closeVisualization({ id: args.chartId, type: args.type, all: args.all === true });
-    },
-
-    async invoke_visualization_control(args) {
-        return await visualizationController.invokeVisualizationControl({
-            control: args.control,
-            id:      args.chartId,
-            type:    args.type,
-            args:    args.args,
-        });
-    },
-
-    async update_guidance_once(args) {
-        return await visualizationController.invokeVisualizationControl({
-            control: 'refresh_once',
-            id:      args.chartId,
-            type:    args.type || 'imitation-guidance-chart',
-            args:    args.args,
-        });
-    },
-
-    async add_imitation_guidance_chart(args) {
-        const result = visualizationController.openVisualization(
-            'imitation-guidance-chart',
-            { sessionId: getSessionId(args, context), manuallyAdded: true },
-            { title: args.title || 'AI Driving Guidance', autoUpdate: args.autoUpdate !== false },
-        );
-        return { ...result, chartType: 'imitation-guidance-chart' };
-    },
-
-    async remove_imitation_guidance_chart(args) {
-        const charts = visualizationController.getCurrentInstances()
-            .filter(c => c.type === 'imitation-guidance-chart');
-        let removed = 0;
-        if (args.chartId) {
-            if (visualizationController.closeVisualization({ id: args.chartId }).success) removed = 1;
-        } else {
-            charts.forEach(c => { if (visualizationController.closeVisualization({ id: c.id }).success) removed++; });
-        }
-        return { success: removed > 0, removedCount: removed };
-    },
-
-    async disable_ui_component(args) {
-        if (args.component === 'chart' && context.analysisContext) return { success: true };
-        return { success: false };
-    },
-    };
-
-    return registry;
-};
-
-const getScreenToolUnavailableResult = (
-    name: string,
-    context: AiCommandRegistryContext,
-) => {
-    if ((RECORDED_SCREEN_TOOL_NAMES as readonly string[]).includes(name)) {
-        return { status: 'error', error: 'not_recorded_mode' };
-    }
-    if ((LIVE_SCREEN_TOOL_NAMES as readonly string[]).includes(name)) {
-        return { error: getLiveToolsUnavailableError(context) };
-    }
-    if ((USER_SUMMARY_SCREEN_TOOL_NAMES as readonly string[]).includes(name)) {
-        return {
-            status: 'error',
-            error: 'user_summary_unavailable',
-            message: 'User summary tools are only available from the User Summary screen.',
-            maps: [],
-        };
-    }
-    return {
-        status: 'error',
-        error: 'active_screen_tool_unavailable',
-        message: 'This tool is not available from the active screen.',
-    };
-};
-
-const executeScreenOwnedTool = async (
-    name: string,
-    args: Record<string, any>,
-    context: AiCommandRegistryContext,
-    handlerContext: ToolHandlerContext,
-) => {
-    const activeScreen = context.getActiveScreen?.() ?? null;
-    const handle = activeScreen?.componentRef.current;
-    const handler = handle?.getToolHandlers()[name];
-    if (!handler) return getScreenToolUnavailableResult(name, {
-        ...context,
-        sessionMode: activeScreen?.assistantMode ?? context.sessionMode,
-    });
-
-    const currentContext: AiCommandRegistryContext = {
-        ...context,
-        sessionId: activeScreen?.recordedSessionId ?? context.sessionId,
-        sessionMode: activeScreen?.assistantMode ?? context.sessionMode,
-    };
-    const rawRegistry = createRawAiCommandRegistry(currentContext);
-    const screenHandlerContext: AiChatScreenToolHandlerContext = {
-        ...handlerContext,
-        executeCore: async (requestedName, requestedArgs) => {
-            if (requestedName !== name) {
-                return {
-                    status: 'error',
-                    error: 'screen_tool_mismatch',
-                    message: `Screen handler for ${name} cannot execute ${requestedName}.`,
-                };
-            }
-            const coreHandler = rawRegistry[name];
-            if (!coreHandler) {
-                return {
-                    status: 'error',
-                    error: 'tool_not_registered',
-                    message: `Tool ${name} is not registered.`,
-                };
-            }
-            return coreHandler(requestedArgs, handlerContext);
-        },
-    };
-    return handler(args, screenHandlerContext);
-};
 
 const ALL_AI_TOOL_NAMES = [
     'start_agent_session',
@@ -1865,6 +488,8 @@ const ALL_AI_TOOL_NAMES = [
     'clear_procedure_plan',
     '_get_live_section_telemetry',
     '_record_live_section_classification',
+    'analyze_telemetry',
+    'classify_live_section',
     'follow_expert_line',
     'get_telemetry_data',
     'get_visualization_capabilities',
@@ -2043,6 +668,21 @@ const buildToolAiOutput = (
                 }
                 : null;
             break;
+        case 'analyze_telemetry':
+            output.analysis = uiOutput.analysis ?? null;
+            output.telemetry_stats = uiOutput.telemetry_stats ?? null;
+            output.chartId = uiOutput.chartId ?? null;
+            output.component_name = uiOutput.component_name ?? null;
+            break;
+        case 'classify_live_section':
+            output.classification = uiOutput.classification ?? null;
+            output.focus = uiOutput.focus ?? null;
+            output.comparison = uiOutput.comparison ?? null;
+            output.analysis = uiOutput.analysis ?? null;
+            output.telemetry_stats = uiOutput.telemetry_stats ?? null;
+            output.chartId = uiOutput.chartId ?? null;
+            output.component_name = uiOutput.component_name ?? null;
+            break;
         default:
             break;
     }
@@ -2058,18 +698,7 @@ const createAiToolDefinition = (
         schema: { properties: {}, required: [] },
         required: [],
         execute: async (args, context, output, handlerContext) => {
-            if (name === 'collect_live_baseline') {
-                return collectBaselineLapFromTrackerOutput(context, args, output);
-            }
-            if (name === 'restart_live_baseline') {
-                return restartLiveBaselineCollection(context, output);
-            }
-            if (SCREEN_OWNED_TOOL_NAMES.has(name)) {
-                return executeScreenOwnedTool(name, args, context, handlerContext);
-            }
-
-            const rawRegistry = createRawAiCommandRegistry(context);
-            const handler = rawRegistry[name];
+            const handler = createRefBasedAiCommandFunctions(context)[name];
             if (!handler) {
                 return output.error('tool_not_registered', {
                     status: 'error',
@@ -2077,7 +706,7 @@ const createAiToolDefinition = (
                     message: `Tool ${name} is not registered.`,
                 });
             }
-            return handler(args, handlerContext);
+            return handler(args, handlerContext, output);
         },
         formatAiOutput: (uiOutput) => buildToolAiOutput(name, uiOutput),
     };
@@ -2087,7 +716,7 @@ export const frontendToolDefinitions: AiCommandToolDefinition[] = ALL_AI_TOOL_NA
     .map(createAiToolDefinition);
 
 export const createAiCommandRegistry = (
-    context: AiCommandRegistryContext,
+    context: RefAiCommandContext,
 ): Record<string, AiCommandHandler> => {
     const registry: Record<string, AiCommandHandler> = {};
 

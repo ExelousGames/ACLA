@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { forwardRef, useImperativeHandle, useMemo, useState } from 'react';
 import { Badge, Box, Card, Flex, ScrollArea, Table, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { EventType, SessionEvent } from '../../session-intelligence/types';
+import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 
 const TYPE_COLOR: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
     CORNER: 'blue',
@@ -34,9 +35,28 @@ const formatMetadata = (metadata?: Record<string, any>): string => {
         .join(', ');
 };
 
-const EventLogChart: React.FC<VisualizationProps> = ({ data, width = '100%', height = 320 }) => {
+export interface EventLogChartHandle extends NamedAiToolComponentHandle {
+    updateEvents(events: SessionEvent[]): boolean;
+    disableEventLog(): boolean;
+}
+
+const EventLogChart = forwardRef<EventLogChartHandle, VisualizationProps>(({
+    name,
+    data,
+    width = '100%',
+    height = 320,
+    onUpdate,
+    onDisable,
+}, forwardedRef) => {
     const [filter, setFilter] = useState<EventType | 'ALL'>('ALL');
     const [search, setSearch] = useState('');
+    const handle = useMemo<EventLogChartHandle>(() => ({
+        getComponentName: () => name,
+        updateEvents: (events) => onUpdate?.(events) ?? false,
+        disableEventLog: () => onDisable?.() ?? false,
+    }), [name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    useRegisterAiToolComponentRef(name, handle);
 
     const events: SessionEvent[] = useMemo(() => {
         return Array.isArray(data) ? data : [];
@@ -138,6 +158,8 @@ const EventLogChart: React.FC<VisualizationProps> = ({ data, width = '100%', hei
             )}
         </Card>
     );
-};
+});
+
+EventLogChart.displayName = 'EventLogChart';
 
 export default EventLogChart;

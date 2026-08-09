@@ -2,7 +2,11 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { RacingSessionController } from './racing-session.controller';
 import { RacingSessionService } from './racing-session.service';
 import { UserSessionAiModelService } from '../user-session-ai-model/user-session-ai-model.service';
-import { AiServiceClient } from 'src/shared/ai/ai-service.client';
+import {
+  AiServiceClient,
+  LiveBaselineAnalysisResponse,
+  SegmentClassificationResponse,
+} from 'src/shared/ai/ai-service.client';
 import { UserInfoService } from '../user-info/user-info.service';
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
 
@@ -115,7 +119,7 @@ describe('RacingSessionController', () => {
       carName: 'BMW',
       telemetryData: [{ speed: 120 }],
     });
-    aiServiceClient.classifySegments.mockResolvedValue({
+    const aiResponse: SegmentClassificationResponse = {
       status: 'success',
       session_id: 'session-1',
       samples_analyzed: 1,
@@ -126,19 +130,21 @@ describe('RacingSessionController', () => {
         track_section: 'brands_hatch2',
         start_index: 0,
         end_index: 1,
+        expert_reference_data: [{
+          raw_index: 4,
+          expert_time_difference: 12,
+          expert_optimal_time: 900,
+          expert_optimal_player_pos_x: 100,
+          expert_optimal_player_pos_y: 200,
+          expert_optimal_player_pos_z: 300,
+          Graphics_normalized_car_position: 0.4,
+          expert_optimal_throttle: 0.8,
+          expert_optimal_brake: 0.1,
+          expert_optimal_gear: 4,
+        }],
       }],
-      expert_reference_data: [{
-        raw_index: 4,
-        expert_time_difference: 12,
-        expert_optimal_player_pos_x: 100,
-        expert_optimal_player_pos_y: 200,
-        expert_optimal_player_pos_z: 300,
-        Graphics_normalized_car_position: 0.4,
-        expert_optimal_throttle: 0.8,
-        expert_optimal_brake: 0.1,
-        expert_optimal_gear: 4,
-      }],
-    });
+    };
+    aiServiceClient.classifySegments.mockResolvedValue(aiResponse);
 
     await expect(
       controller.classifySessionSegments(
@@ -156,17 +162,18 @@ describe('RacingSessionController', () => {
         track_section: 'brands_hatch2',
         start_index: 0,
         end_index: 1,
-      }],
-      expert_reference_data: [{
-        raw_index: 4,
-        expert_time_difference: 12,
-        expert_optimal_player_pos_x: 100,
-        expert_optimal_player_pos_y: 200,
-        expert_optimal_player_pos_z: 300,
-        Graphics_normalized_car_position: 0.4,
-        expert_optimal_throttle: 0.8,
-        expert_optimal_brake: 0.1,
-        expert_optimal_gear: 4,
+        expert_reference_data: [{
+          raw_index: 4,
+          expert_time_difference: 12,
+          expert_optimal_time: 900,
+          expert_optimal_player_pos_x: 100,
+          expert_optimal_player_pos_y: 200,
+          expert_optimal_player_pos_z: 300,
+          Graphics_normalized_car_position: 0.4,
+          expert_optimal_throttle: 0.8,
+          expert_optimal_brake: 0.1,
+          expert_optimal_gear: 4,
+        }],
       }],
     });
 
@@ -180,25 +187,32 @@ describe('RacingSessionController', () => {
   });
 
   it('forwards live baseline records for analysis', async () => {
-    aiServiceClient.analyzeLiveRecordedAnalysis.mockResolvedValue({
+    const aiResponse: LiveBaselineAnalysisResponse = {
       status: 'success',
       session_id: 'live-baseline-lap-2',
       samples_analyzed: 1,
-      parent_segment_count: 0,
-      segments: [],
-      expert_time_available: false,
-      expert_reference_data: [{
-        raw_index: 1,
-        expert_time_difference: 8,
-        expert_optimal_player_pos_x: 110,
-        expert_optimal_player_pos_y: 210,
-        expert_optimal_player_pos_z: 310,
-        Graphics_normalized_car_position: 0.5,
-        expert_optimal_throttle: 0.9,
-        expert_optimal_brake: 0,
-        expert_optimal_gear: 5,
+      parent_segment_count: 1,
+      segments: [{
+        id: 'live-segment-1',
+        labels: ['EA'],
+        start_index: 0,
+        end_index: 1,
+        expert_reference_data: [{
+          raw_index: 1,
+          expert_time_difference: 8,
+          expert_optimal_time: 950,
+          expert_optimal_player_pos_x: 110,
+          expert_optimal_player_pos_y: 210,
+          expert_optimal_player_pos_z: 310,
+          Graphics_normalized_car_position: 0.5,
+          expert_optimal_throttle: 0.9,
+          expert_optimal_brake: 0,
+          expert_optimal_gear: 5,
+        }],
       }],
-    });
+      expert_time_available: false,
+    };
+    aiServiceClient.analyzeLiveRecordedAnalysis.mockResolvedValue(aiResponse);
 
     await expect(
       controller.analyzeLiveRecordedAnalysis(
@@ -214,20 +228,26 @@ describe('RacingSessionController', () => {
       status: 'success',
       session_id: 'live-baseline-lap-2',
       samples_analyzed: 1,
-      parent_segment_count: 0,
-      segments: [],
-      expert_time_available: false,
-      expert_reference_data: [{
-        raw_index: 1,
-        expert_time_difference: 8,
-        expert_optimal_player_pos_x: 110,
-        expert_optimal_player_pos_y: 210,
-        expert_optimal_player_pos_z: 310,
-        Graphics_normalized_car_position: 0.5,
-        expert_optimal_throttle: 0.9,
-        expert_optimal_brake: 0,
-        expert_optimal_gear: 5,
+      parent_segment_count: 1,
+      segments: [{
+        id: 'live-segment-1',
+        labels: ['EA'],
+        start_index: 0,
+        end_index: 1,
+        expert_reference_data: [{
+          raw_index: 1,
+          expert_time_difference: 8,
+          expert_optimal_time: 950,
+          expert_optimal_player_pos_x: 110,
+          expert_optimal_player_pos_y: 210,
+          expert_optimal_player_pos_z: 310,
+          Graphics_normalized_car_position: 0.5,
+          expert_optimal_throttle: 0.9,
+          expert_optimal_brake: 0,
+          expert_optimal_gear: 5,
+        }],
       }],
+      expert_time_available: false,
     });
 
     expect(aiServiceClient.analyzeLiveRecordedAnalysis).toHaveBeenCalledWith({

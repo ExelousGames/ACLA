@@ -1,26 +1,19 @@
 import './session-analysis.css';
 
 import { Box, Tabs } from '@radix-ui/themes';
-import { ChatBubbleIcon, ChevronLeftIcon, ChevronRightIcon } from '@radix-ui/react-icons';
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { RacingSessionDetailedInfoDto } from 'data/live-analysis/live-analysis-type';
 import apiService from 'services/api.service';
 import {
-    AiChatScreenHandle,
-    RECORDED_SCREEN_TOOL_NAMES,
-    SCREEN_VISUALIZATION_TOOL_NAMES,
-    createAiChatScreenToolHandlers,
-    toAiChatJsonRecord,
-    toAiChatJsonValue,
-    useAiChatScreen,
-    useAiChatScreenRegistration,
-} from 'contexts/AiChatScreenContext';
+    AI_TOOL_COMPONENT_NAMES,
+    NamedAiToolComponentHandle,
+    useRegisterAiToolComponentRef,
+} from 'contexts/AiToolComponentRefContext';
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
 import { VisualizationInstance } from './visualization/VisualizationRegistry';
 import { AnalysisContext } from './analysis-context';
-import AiChat from './ai-chat/ai-chat';
 import {
     RecordedAiAnalysisState,
     createEmptyRecordedPlaybackSummary,
@@ -28,15 +21,20 @@ import {
     getRecordedAnalysisStateForResult,
     normalizeSegmentClassificationResult,
 } from './recorded-session-analysis';
-import {
-    resolveRegisteredAssistantIdentity,
-} from './assistant-session-mode';
 
 const RECORDED_AI_ANALYSIS_TIMEOUT_MS = 120000;
-const RECORDED_SESSION_TOOL_HANDLERS = createAiChatScreenToolHandlers([
-    ...RECORDED_SCREEN_TOOL_NAMES,
-    ...SCREEN_VISUALIZATION_TOOL_NAMES,
-]);
+export interface SessionAnalysisHandle extends NamedAiToolComponentHandle {
+    getSelectedSession(): RacingSessionDetailedInfoDto | null;
+    getMapSelected(): string | null;
+    getRecordedAiAnalysis(): RecordedAiAnalysisState;
+    getRecordedPlaybackSummary(): ReturnType<typeof createEmptyRecordedPlaybackSummary>;
+    runRecordedAiAnalysis(options?: { force?: boolean }): Promise<RecordedAiAnalysisState>;
+    requestSessionAnalysis(sessionId?: string): Promise<any>;
+    requestPerformanceInsights(sessionId: string | undefined, analysisType?: string): Promise<any>;
+    requestLapComparison(sessionIds: string[], metrics?: string[]): Promise<any>;
+    requestExpertLineGuidance(sessionId: string | undefined, dataTypes?: string[]): Promise<any>;
+    requestTelemetryData(sessionId: string | undefined, dataTypes?: string[]): Promise<any>;
+}
 
 export const SessionAnalysisProvider = ({ children }: { children: React.ReactNode }) => {
     const [mapSelected, setMap] = useState<string | null>(null);
@@ -154,153 +152,42 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
     return <AnalysisContext.Provider value={contextValue}>{children}</AnalysisContext.Provider>;
 };
 
-export const SessionAnalysisAssistant = () => {
-    const { activeScreen } = useAiChatScreen();
-    const [isOpen, setIsOpen] = useState(false);
-    const assistantIdentity = resolveRegisteredAssistantIdentity(activeScreen);
-    const assistantClassName = `main-dashboard-assistant${isOpen ? ' main-dashboard-assistant--open' : ' main-dashboard-assistant--folded'}`;
-
-    return (
-        <aside className={assistantClassName} aria-label="AI Assistant">
-            <button
-                type="button"
-                className="main-dashboard-assistant__toggle"
-                onClick={() => setIsOpen((open) => !open)}
-                aria-controls="main-dashboard-assistant-body"
-                aria-expanded={isOpen}
-                aria-label={isOpen ? 'Fold AI Assistant' : 'Open AI Assistant'}
-                title={isOpen ? 'Fold AI Assistant' : 'Open AI Assistant'}
-            >
-                {isOpen ? <ChevronRightIcon /> : <ChevronLeftIcon />}
-                <ChatBubbleIcon />
-            </button>
-            <div id="main-dashboard-assistant-body" className="main-dashboard-assistant__body" aria-hidden={!isOpen}>
-                <AiChat
-                    key={assistantIdentity.conversationKey}
-                    sessionId={assistantIdentity.sessionId}
-                    sessionMode={assistantIdentity.sessionMode}
-                    title={assistantIdentity.title}
-                />
-            </div>
-        </aside>
-    );
-};
-
-const SessionAnalysis = () => {
+const SessionAnalysis = ({ name }: { name: string }) => {
     const analysisContext = useContext(AnalysisContext);
     const analysisContextRef = useRef(analysisContext);
     analysisContextRef.current = analysisContext;
-    const componentRef = useRef<AiChatScreenHandle | null>(null);
+    const componentRef = useRef<SessionAnalysisHandle | null>(null);
 
     if (componentRef.current === null) {
         componentRef.current = {
-            getAiContext: () => {
-                const current = analysisContextRef.current;
-                const selectedSession = current.sessionSelected;
-                const recorded = current.activeTab === 'session' && Boolean(selectedSession?.SessionId);
-
-                if (!recorded) {
-                    return toAiChatJsonRecord({
-                        screen_kind: 'front_desk',
-                        active_analysis_area: current.activeTab,
-                        selected_map_id: current.mapSelected,
-                        assistance_scope: 'General navigation, onboarding, map selection, and session selection.',
-                        capabilities: {
-                            screen_tools: false,
-                            general_assistance: true,
-                        },
-                    });
-                }
-
-                return toAiChatJsonRecord({
-                    screen_kind: 'recorded_session',
-                    active_analysis_area: current.activeTab,
-                    selected_map_id: current.mapSelected || selectedSession?.map || null,
-                    selected_session: {
-                        id: selectedSession?.SessionId || null,
-                        name: selectedSession?.session_name || null,
-                        map: selectedSession?.map || current.mapSelected || null,
-                        car: selectedSession?.car || null,
-                    },
-                    recorded_session: {
-                        ai_analysis: {
-                            status: current.recordedAiAnalysis.status,
-                            message: current.recordedAiAnalysis.message || null,
-                            session_id: current.recordedAiAnalysis.sessionId,
-                            samples_analyzed: current.recordedAiAnalysis.result?.samples_analyzed || 0,
-                            result_ready: Boolean(current.recordedAiAnalysis.result),
-                        },
-                        playback: toAiChatJsonValue(current.recordedPlaybackSummary),
-                    },
-                    analysis_actions: {
-                        run_ai_analysis: true,
-                        read_ai_analysis: true,
-                        read_recorded_context: true,
-                    },
-                    visualization_controls: {
-                        active: current.activeVisualizations.map(({ id, type }) => ({ id, type })),
-                    },
-                });
-            },
-            getToolHandlers: () => {
-                const current = analysisContextRef.current;
-                return current.activeTab === 'session' && current.sessionSelected?.SessionId
-                    ? RECORDED_SESSION_TOOL_HANDLERS
-                    : {};
-            },
+            getComponentName: () => name,
+            getSelectedSession: () => analysisContextRef.current.sessionSelected,
+            getMapSelected: () => analysisContextRef.current.mapSelected,
+            getRecordedAiAnalysis: () => analysisContextRef.current.recordedAiAnalysis,
+            getRecordedPlaybackSummary: () => analysisContextRef.current.recordedPlaybackSummary,
+            runRecordedAiAnalysis: (options) => analysisContextRef.current.runRecordedAiAnalysis(options),
+            requestSessionAnalysis: (sessionId) => apiService.post('/racing-session/detailed-info', { id: sessionId }),
+            requestPerformanceInsights: (sessionId, analysisType = 'comprehensive') => apiService.post('/ai/performance-analysis', {
+                session_id: sessionId,
+                analysis_type: analysisType,
+            }),
+            requestLapComparison: (sessionIds, metrics = ['lap_times']) => apiService.post('/racing-session/compare', {
+                session_ids: sessionIds,
+                metrics,
+            }),
+            requestExpertLineGuidance: (sessionId, dataTypes = ['speed', 'acceleration', 'braking', 'steering']) => apiService.post('/ai/expert-line-guidance', {
+                session_id: sessionId,
+                data_types: dataTypes,
+            }),
+            requestTelemetryData: (sessionId, dataTypes = ['speed', 'acceleration']) => apiService.post('/racing-session/telemetry', {
+                session_id: sessionId,
+                data_types: dataTypes,
+            }),
         };
     }
+    useRegisterAiToolComponentRef(name, componentRef.current);
 
     const { activeTab, mapSelected, sessionSelected, setActiveTab } = analysisContext;
-    const isRecordedScreen = activeTab === 'session' && Boolean(sessionSelected?.SessionId);
-    const registration = useMemo(() => ({
-        screenId: isRecordedScreen ? 'recorded-session' : 'front-desk',
-        assistantMode: isRecordedScreen ? 'recorded' as const : 'front_desk' as const,
-        pillLabel: isRecordedScreen
-            ? sessionSelected?.session_name || 'Recorded Session'
-            : 'Front Desk',
-        ...(isRecordedScreen && sessionSelected?.SessionId
-            ? { recordedSessionId: sessionSelected.SessionId }
-            : {}),
-        componentRef,
-        getPillInfo: () => isRecordedScreen
-            ? {
-                title: sessionSelected?.session_name || 'Recorded Session',
-                description: 'Selected recording, playback, AI analysis, and visualization workspace.',
-                status: analysisContext.recordedAiAnalysis.status === 'error'
-                    ? { label: 'Analysis error', tone: 'error' as const }
-                    : analysisContext.recordedAiAnalysis.status === 'loading'
-                        ? { label: 'Analyzing', tone: 'info' as const }
-                        : { label: 'Ready', tone: 'success' as const },
-                facts: [
-                    { label: 'Track', value: sessionSelected?.map || mapSelected || '—' },
-                    { label: 'Car', value: sessionSelected?.car || '—' },
-                    { label: 'Samples', value: analysisContext.recordedPlaybackSummary.sampleCount.toLocaleString() },
-                    { label: 'Playback', value: `${analysisContext.recordedPlaybackSummary.playbackTimeSeconds.toFixed(1)}s` },
-                ],
-            }
-            : {
-                title: 'Front Desk',
-                description: 'General help for navigation, maps, and choosing a recorded session.',
-                status: { label: 'General assistance', tone: 'info' as const },
-                facts: [
-                    { label: 'Area', value: activeTab === 'sessionLists' ? 'Recorded sessions' : 'Circuit maps' },
-                    { label: 'Selected map', value: mapSelected || 'None' },
-                ],
-            },
-    }), [
-        activeTab,
-        analysisContext.recordedAiAnalysis.status,
-        analysisContext.recordedPlaybackSummary.playbackTimeSeconds,
-        analysisContext.recordedPlaybackSummary.sampleCount,
-        isRecordedScreen,
-        mapSelected,
-        sessionSelected?.SessionId,
-        sessionSelected?.car,
-        sessionSelected?.map,
-        sessionSelected?.session_name,
-    ]);
-    useAiChatScreenRegistration(registration);
 
     return (
         <Tabs.Root className="LiveAnalysisTabsRoot" defaultValue="mapLists" value={activeTab} onValueChange={setActiveTab}>

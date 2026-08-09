@@ -1,28 +1,22 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import {
-    AiChatScreenProvider,
-    AiChatScreenRegistration,
-    useAiChatScreen,
-} from 'contexts/AiChatScreenContext';
+    AI_TOOL_COMPONENT_NAMES,
+    AiToolComponentRefDirectory,
+    AiToolComponentRefProvider,
+    useAiToolComponentRefDirectory,
+} from 'contexts/AiToolComponentRefContext';
 import { AnalysisContext, AnalysisContextType } from '../analysis-context';
 import {
     createEmptyRecordedPlaybackSummary,
     createIdleRecordedAiAnalysis,
 } from '../recorded-session-analysis';
+import type { SessionAnalysisHandle } from '../session-analysis';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
     const Element = ({ children }: { children?: React.ReactNode }) => React.createElement('div', null, children);
-    return {
-        Box: Element,
-        Tabs: {
-            Root: Element,
-            List: Element,
-            Trigger: Element,
-            Content: Element,
-        },
-    };
+    return { Box: Element, Tabs: { Root: Element, List: Element, Trigger: Element, Content: Element } };
 });
 jest.mock('../map-list/map-list', () => () => <div>Maps</div>);
 jest.mock('../session-list/session-list', () => () => <div>Sessions</div>);
@@ -30,15 +24,13 @@ jest.mock('../sessionAnalysis/session-analysis-split', () => () => <div>Recorded
 
 import SessionAnalysis from '../session-analysis';
 
-let observedScreen: AiChatScreenRegistration | null = null;
-const RegistrationObserver = () => {
-    observedScreen = useAiChatScreen().activeScreen;
+let directory: AiToolComponentRefDirectory | null = null;
+const DirectoryObserver = () => {
+    directory = useAiToolComponentRefDirectory();
     return null;
 };
 
-const createAnalysisContext = (
-    overrides: Partial<AnalysisContextType> = {},
-): AnalysisContextType => ({
+const createAnalysisContext = (overrides: Partial<AnalysisContextType> = {}): AnalysisContextType => ({
     activeTab: 'mapLists',
     mapSelected: null,
     sessionSelected: null,
@@ -57,83 +49,42 @@ const createAnalysisContext = (
 });
 
 const Harness = ({ value }: { value: AnalysisContextType }) => (
-    <AiChatScreenProvider>
+    <AiToolComponentRefProvider>
         <AnalysisContext.Provider value={value}>
-            <SessionAnalysis />
+            <SessionAnalysis name={AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS} />
         </AnalysisContext.Provider>
-        <RegistrationObserver />
-    </AiChatScreenProvider>
+        <DirectoryObserver />
+    </AiToolComponentRefProvider>
 );
 
-describe('analysis screen registrations', () => {
-    beforeEach(() => {
-        observedScreen = null;
-    });
+describe('SessionAnalysis named component handle', () => {
+    it('keeps its exact name and exposes fresh recorded-session operations', () => {
+        const view = render(<Harness value={createAnalysisContext({ activeTab: 'sessionLists', mapSelected: 'Monza' })} />);
+        const ref = directory!.findComponentRef<SessionAnalysisHandle>(AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)!;
+        expect(ref.current!.getComponentName()).toBe(AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS);
+        expect(ref.current!.getMapSelected()).toBe('Monza');
+        expect(ref.current!.getSelectedSession()).toBeNull();
 
-    it('switches a stable handle from Front Desk to the selected recorded session', () => {
-        const frontDeskContext = createAnalysisContext({
-            activeTab: 'sessionLists',
-            mapSelected: 'Monza',
-        });
-        const view = render(<Harness value={frontDeskContext} />);
-        const componentRef = observedScreen!.componentRef;
-
-        expect(observedScreen).toMatchObject({
-            screenId: 'front-desk',
-            assistantMode: 'front_desk',
-            pillLabel: 'Front Desk',
-        });
-        expect(componentRef.current!.getAiContext()).toMatchObject({
-            active_analysis_area: 'sessionLists',
-            selected_map_id: 'Monza',
-        });
-        expect(componentRef.current!.getToolHandlers()).toEqual({});
-
-        const recordedContext = createAnalysisContext({
+        view.rerender(<Harness value={createAnalysisContext({
             activeTab: 'session',
             mapSelected: 'Monza',
-            sessionSelected: {
-                SessionId: 'session-17',
-                session_name: 'Sunday Race',
-                map: 'Monza',
-                car: 'BMW M4 GT3',
-            } as any,
+            sessionSelected: { SessionId: 'session-17', session_name: 'Sunday Race', map: 'Monza', car: 'BMW M4 GT3' } as any,
             recordedPlaybackSummary: {
-                sessionId: 'session-17',
-                sampleCount: 800,
-                durationSeconds: 92,
-                playbackIndex: 80,
-                playbackTimeSeconds: 12.5,
-                activeSegment: null,
+                sessionId: 'session-17', sampleCount: 800, durationSeconds: 92,
+                playbackIndex: 80, playbackTimeSeconds: 12.5, activeSegment: null,
             },
-        });
-        view.rerender(<Harness value={recordedContext} />);
+        })} />);
 
-        expect(observedScreen).toMatchObject({
-            screenId: 'recorded-session',
-            assistantMode: 'recorded',
-            pillLabel: 'Sunday Race',
-            recordedSessionId: 'session-17',
+        expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)).toBe(ref);
+        expect(ref.current!.getSelectedSession()).toMatchObject({
+            SessionId: 'session-17',
+            session_name: 'Sunday Race',
+            map: 'Monza',
+            car: 'BMW M4 GT3',
         });
-        expect(observedScreen!.componentRef).toBe(componentRef);
-        expect(componentRef.current!.getAiContext()).toMatchObject({
-            selected_session: {
-                id: 'session-17',
-                name: 'Sunday Race',
-                map: 'Monza',
-                car: 'BMW M4 GT3',
-            },
-            recorded_session: {
-                playback: {
-                    sampleCount: 800,
-                    playbackTimeSeconds: 12.5,
-                },
-            },
+        expect(ref.current!.getRecordedPlaybackSummary()).toMatchObject({
+            sampleCount: 800,
+            playbackTimeSeconds: 12.5,
         });
-        expect(componentRef.current!.getToolHandlers()).toEqual(expect.objectContaining({
-            run_recorded_ai_analysis: expect.any(Function),
-            get_recorded_session_context: expect.any(Function),
-            invoke_visualization_control: expect.any(Function),
-        }));
     });
 });

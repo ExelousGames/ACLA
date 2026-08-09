@@ -1,13 +1,10 @@
-import React, { useContext, useMemo, useRef } from 'react';
+import React, { useContext, useRef } from 'react';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import {
-    AiChatScreenHandle,
-    LIVE_SCREEN_TOOL_NAMES,
-    SCREEN_VISUALIZATION_TOOL_NAMES,
-    createAiChatScreenToolHandlers,
-    toAiChatJsonValue,
-    useAiChatScreenRegistration,
-} from 'contexts/AiChatScreenContext';
+    AI_TOOL_COMPONENT_NAMES,
+    NamedAiToolComponentHandle,
+    useRegisterAiToolComponentRef,
+} from 'contexts/AiToolComponentRefContext';
 import { LiveSessionContext } from './LiveSessionContext';
 import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGameStatus';
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
@@ -17,10 +14,19 @@ import './live-session.css';
 
 export const LIVE_SESSION_RECORDER_HOST_ID = 'live-session-recorder-host';
 
-const LIVE_SESSION_TOOL_HANDLERS = createAiChatScreenToolHandlers([
-    ...LIVE_SCREEN_TOOL_NAMES,
-    ...SCREEN_VISUALIZATION_TOOL_NAMES,
-]);
+export interface LiveSessionHandle extends NamedAiToolComponentHandle {
+    getRecordingState(): RecordingState;
+    getSessionIntelligence(): SessionIntelligence;
+    getCurrentTelemetry(): Record<string, any>;
+    queryTelemetryMetric(args: Record<string, any>): any;
+    getTelemetryForScope(scope: any): Record<string, any>[];
+    getEventLog(args: Record<string, any>): any[];
+    getNextCorner(): any;
+    getLiveSessionSnapshot(): LiveSessionSnapshot;
+    getLiveSectionHistory(limit: number): any[];
+    getLiveSectionTelemetry(args: Record<string, any>): any;
+    recordLiveSectionClassification(args: Record<string, any>): any;
+}
 
 type LiveSessionSnapshot = ReturnType<SessionIntelligence['getLiveSessionSnapshot']>;
 
@@ -49,14 +55,6 @@ const getLiveSnapshot = (
         : EMPTY_LIVE_SNAPSHOT
 );
 
-const getLiveStatus = (recordingState: string, restorationError: string | null) => {
-    if (restorationError) return { label: 'Needs attention', tone: 'error' as const };
-    if (recordingState === RecordingState.RECORDING) return { label: 'Recording', tone: 'success' as const };
-    if (recordingState === RecordingState.HOLDING) return { label: 'Paused', tone: 'warning' as const };
-    if (recordingState === RecordingState.UPLOAD_READY) return { label: 'Ready to upload', tone: 'info' as const };
-    return { label: 'Ready', tone: 'neutral' as const };
-};
-
 const LimitedLiveWorkspace = ({ game }: { game: Exclude<DesktopGame, 'acc'> }) => (
     <div
         className="live-session-limited-workspace"
@@ -73,84 +71,34 @@ const LimitedLiveWorkspace = ({ game }: { game: Exclude<DesktopGame, 'acc'> }) =
     </div>
 );
 
-const LiveSessionView = () => {
+const LiveSessionView = ({ name }: { name: string }) => {
     const liveSession = useContext(LiveSessionContext);
     const liveSessionRef = useRef(liveSession);
     liveSessionRef.current = liveSession;
-    const componentRef = useRef<AiChatScreenHandle | null>(null);
+    const componentRef = useRef<LiveSessionHandle | null>(null);
 
     if (componentRef.current === null) {
         componentRef.current = {
-            getAiContext: () => {
-                const current = liveSessionRef.current;
-                const snapshot = getLiveSnapshot(current.sessionIntelligence);
-                const track = snapshot.track || current.recordingMetadata?.mapName || current.staticData.track || null;
-                const car = snapshot.car || current.recordingMetadata?.carName || current.staticData.car_model || null;
-
-                return {
-                    screen_kind: 'live_session',
-                    simulator: current.sessionGame,
-                    recording_state: current.recordingState,
-                    recording_name: current.recordingMetadata?.sessionName || null,
-                    track,
-                    car,
-                    current_lap: snapshot.current_lap || null,
-                    completed_laps: snapshot.completed_laps || 0,
-                    normalized_position: snapshot.normalized_position || 0,
-                    sample_count: snapshot.sample_count || current.recordedSampleCount,
-                    latest_telemetry_present: Object.keys(current.currentTelemetry).length > 0,
-                    latest_telemetry_key_count: Object.keys(current.currentTelemetry).length,
-                    telemetry_status: current.telemetryStatus,
-                    session_intelligence: toAiChatJsonValue(snapshot),
-                    live_todo: toAiChatJsonValue(current.liveRangeTodoListSnapshot),
-                    controls: {
-                        live_todo_available: Boolean(current.liveRangeTodoListHandle),
-                        recorder_available: Boolean(current.recorderControl),
-                    },
-                    visualization_capabilities: {
-                        telemetry: true,
-                        events: true,
-                        sections: true,
-                        live_todo: true,
-                    },
-                };
-            },
-            getToolHandlers: () => LIVE_SESSION_TOOL_HANDLERS,
+            getComponentName: () => name,
+            getRecordingState: () => liveSessionRef.current.recordingState,
+            getSessionIntelligence: () => liveSessionRef.current.sessionIntelligence,
+            getCurrentTelemetry: () => liveSessionRef.current.currentTelemetry,
+            queryTelemetryMetric: (args) => liveSessionRef.current.sessionIntelligence.query(args as any),
+            getTelemetryForScope: (scope) => liveSessionRef.current.sessionIntelligence.getRowsForScope(scope),
+            getEventLog: (args) => liveSessionRef.current.sessionIntelligence.findEvents(args as any),
+            getNextCorner: () => liveSessionRef.current.sessionIntelligence.getNextCorner(),
+            getLiveSessionSnapshot: () => getLiveSnapshot(liveSessionRef.current.sessionIntelligence),
+            getLiveSectionHistory: (limit) => liveSessionRef.current.sessionIntelligence.getSectionHistory(limit),
+            getLiveSectionTelemetry: (args) => liveSessionRef.current.sessionIntelligence.getSectionTelemetryWindow({
+                section_id: args.section_id || args.sectionId,
+                section_name: args.section_name || args.sectionName,
+                lap: args.lap,
+            }),
+            recordLiveSectionClassification: (args) => liveSessionRef.current.sessionIntelligence.recordSectionClassification(args),
         };
     }
+    useRegisterAiToolComponentRef(name, componentRef.current);
 
-    const liveSnapshot = getLiveSnapshot(liveSession.sessionIntelligence);
-    const track = liveSnapshot.track || liveSession.recordingMetadata?.mapName || liveSession.staticData.track || '—';
-    const car = liveSnapshot.car || liveSession.recordingMetadata?.carName || liveSession.staticData.car_model || '—';
-    const registration = useMemo(() => ({
-        screenId: 'live-session',
-        assistantMode: 'live' as const,
-        pillLabel: 'Live Session',
-        componentRef,
-        getPillInfo: () => ({
-            title: liveSession.recordingMetadata?.sessionName || 'Live Session',
-            description: 'Current simulator, recording, telemetry, coaching, and visualization workspace.',
-            status: getLiveStatus(liveSession.recordingState, liveSession.restorationError),
-            facts: [
-                { label: 'Simulator', value: liveSession.sessionGame?.toUpperCase() || 'Not selected' },
-                { label: 'Track', value: String(track) },
-                { label: 'Car', value: String(car) },
-                { label: 'Lap', value: liveSnapshot.current_lap ? String(liveSnapshot.current_lap) : '—' },
-                { label: 'Samples', value: (liveSnapshot.sample_count || liveSession.recordedSampleCount).toLocaleString() },
-            ],
-        }),
-    }), [
-        car,
-        liveSession.recordedSampleCount,
-        liveSession.recordingMetadata?.sessionName,
-        liveSession.recordingState,
-        liveSession.restorationError,
-        liveSession.sessionGame,
-        liveSnapshot.current_lap,
-        liveSnapshot.sample_count,
-        track,
-    ]);
-    useAiChatScreenRegistration(registration);
 
     const { restorationError, sessionGame } = liveSession;
 
@@ -178,7 +126,7 @@ const LiveSessionView = () => {
                     )}
                     <div className="live-session-view__workspace">
                         {sessionGame === 'acc'
-                            ? <LiveTelemetryWorkspace />
+                            ? <LiveTelemetryWorkspace name={AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
                             : <LimitedLiveWorkspace game={sessionGame} />}
                     </div>
                     <div

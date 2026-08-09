@@ -21,10 +21,10 @@ jest.mock('views/side-main-menu/side-main-menu', () => ({
 ));
 jest.mock('views/lap-analysis/session-analysis', () => ({
     SessionAnalysisProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-    SessionAnalysisAssistant: (props: Record<string, unknown>) => (
-        <aside aria-label="AI Assistant" data-prop-count={Object.keys(props).length}>Assistant</aside>
-    ),
 }));
+jest.mock('./DashboardAssistant', () => ({ activeDashboardTab }: { activeDashboardTab: string }) => (
+        <aside aria-label="AI Assistant" data-active-tab={activeDashboardTab}>Assistant</aside>
+));
 jest.mock('views/live-session/LiveSessionContext', () => ({
     LiveSessionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -46,20 +46,24 @@ describe('MainDashboard desktop composition', () => {
 
         expect(screen.getByTestId('active-dashboard-tab')).toHaveTextContent('liveSession');
         expect(screen.getAllByLabelText('AI Assistant')).toHaveLength(1);
-        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-prop-count', '0');
+        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-active-tab', 'liveSession');
         expect(screen.getByTestId('recorder-runtime')).toHaveAttribute('data-host', 'live-session-recorder-host');
     });
 
-    it('does not derive assistant identity from dashboard tabs', () => {
+    it('tracks the active named owner without remounting the dashboard assistant', () => {
         render(<MainDashboard onTaskCreated={jest.fn()} />);
+        const assistant = screen.getByLabelText('AI Assistant');
 
         fireEvent.click(screen.getByRole('button', { name: 'Analysis' }));
-        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-prop-count', '0');
+        expect(screen.getByLabelText('AI Assistant')).toBe(assistant);
+        expect(assistant).toHaveAttribute('data-active-tab', 'analysis');
 
         fireEvent.click(screen.getByRole('button', { name: 'User Summary' }));
-        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-prop-count', '0');
+        expect(screen.getByLabelText('AI Assistant')).toBe(assistant);
+        expect(assistant).toHaveAttribute('data-active-tab', 'userSummary');
 
         fireEvent.click(screen.getByRole('button', { name: 'Live Session' }));
-        expect(screen.getByLabelText('AI Assistant')).toHaveAttribute('data-prop-count', '0');
+        expect(screen.getByLabelText('AI Assistant')).toBe(assistant);
+        expect(assistant).toHaveAttribute('data-active-tab', 'liveSession');
     });
 });

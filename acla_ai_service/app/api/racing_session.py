@@ -183,6 +183,37 @@ def _project_expert_reference_data(
     ]
 
 
+def _attach_expert_reference_data_to_segments(
+    segments: List[Dict[str, Any]],
+    enriched_rows: List[Dict[str, Any]],
+    raw_indices: List[int],
+) -> List[Dict[str, Any]]:
+    segments_with_references: List[Dict[str, Any]] = []
+
+    for segment in segments:
+        segment_with_references = dict(segment)
+        expert_reference_data: List[Dict[str, Any]] = []
+        try:
+            start = max(0, int(segment["start_index"]))
+            end_exclusive = min(
+                len(enriched_rows),
+                len(raw_indices),
+                int(segment["end_index"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            end_exclusive = start = 0
+
+        if end_exclusive > start:
+            expert_reference_data = _project_expert_reference_data(
+                enriched_rows[start:end_exclusive],
+                raw_indices[start:end_exclusive],
+            )
+        segment_with_references["expert_reference_data"] = expert_reference_data
+        segments_with_references.append(segment_with_references)
+
+    return segments_with_references
+
+
 def _build_time_gap(
     expert_rows: List[Dict[str, Any]],
     start_index: Any,
@@ -402,14 +433,15 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             car=request.car_name,
         )
         enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
-        expert_reference_data = _project_expert_reference_data(
-            enriched_rows,
-            preprocessed.raw_indices,
-        )
         segments = _classify_telemetry_segments(
             enriched_rows,
             splitter_result["circuit_id"],
             splitter_result=splitter_result,
+        )
+        segments = _attach_expert_reference_data_to_segments(
+            segments,
+            enriched_rows,
+            preprocessed.raw_indices,
         )
         segments = _translate_segment_ranges_to_raw_indices(
             segments,
@@ -422,7 +454,6 @@ async def classify_session_segments(request: SegmentClassificationRequest) -> Di
             "samples_analyzed": len(request.telemetry_data),
             "parent_segment_count": len(segments),
             "segments": segments,
-            "expert_reference_data": expert_reference_data,
         }
     except HTTPException:
         raise
@@ -453,10 +484,6 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             car=request.car,
         )
         enriched_rows = await get_tire_grip_analysis().enrich(enriched_rows)
-        expert_reference_data = _project_expert_reference_data(
-            enriched_rows,
-            preprocessed.raw_indices,
-        )
         segments = _classify_telemetry_segments(
             enriched_rows,
             splitter_result["circuit_id"],
@@ -464,6 +491,11 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             splitter_result=splitter_result,
         )
         segments = _annotate_segments_with_time_gaps(segments, enriched_rows)
+        segments = _attach_expert_reference_data_to_segments(
+            segments,
+            enriched_rows,
+            preprocessed.raw_indices,
+        )
         segments = _translate_segment_ranges_to_raw_indices(
             segments,
             preprocessed.raw_indices,
@@ -478,7 +510,6 @@ async def analyze_live_baseline(request: LiveBaselineAnalysisRequest) -> Dict[st
             "parent_segment_count": len(segments),
             "segments": segments,
             "expert_time_available": True,
-            "expert_reference_data": expert_reference_data,
         }
     except HTTPException:
         raise

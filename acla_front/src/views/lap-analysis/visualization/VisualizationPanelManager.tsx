@@ -1,13 +1,43 @@
 import React from 'react';
 import { Box, Button, DropdownMenu, Flex, IconButton, Text } from '@radix-ui/themes';
 import { Cross2Icon, DragHandleDots2Icon, PlusIcon } from '@radix-ui/react-icons';
-import { visualizationController } from './VisualizationController';
-import type { VisualizationInstance } from './VisualizationRegistry';
+import type { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
 import './DynamicVisualizationManager.css';
 
-interface ManagedVisualizationInstance {
+export interface ManagedVisualizationInstance {
+    name: string;
     id: string;
     type: string;
+    data?: any;
+    config?: any;
+}
+
+export interface VisualizationManagerResult {
+    success: boolean;
+    message: string;
+    componentName?: string;
+    chartId?: string;
+    chartType?: string;
+    reused?: boolean;
+    data?: any;
+}
+
+export interface VisualizationManagerHandle extends NamedAiToolComponentHandle {
+    getVisualizationCapabilities(): Record<string, any>;
+    getCurrentVisualizations(): ManagedVisualizationInstance[];
+    requestVisualization(options: {
+        name: string;
+        type: string;
+        data?: any;
+        config?: any;
+    }): VisualizationManagerResult;
+    updateVisualization(name: string, data?: any, config?: any): VisualizationManagerResult;
+    closeVisualization(options: {
+        name?: string;
+        id?: string;
+        type?: string;
+        all?: boolean;
+    }): VisualizationManagerResult;
 }
 
 interface VisualizationPanelManagerState<TInstance> {
@@ -30,9 +60,9 @@ interface ResizeState {
  * session-specific panel catalog, instance shape, map, and panel contents.
  */
 abstract class VisualizationPanelManager<
-    TProps,
+    TProps extends { name: string },
     TInstance extends ManagedVisualizationInstance,
-> extends React.Component<TProps, VisualizationPanelManagerState<TInstance>> {
+> extends React.Component<TProps, VisualizationPanelManagerState<TInstance>> implements VisualizationManagerHandle {
     protected static readonly MIN_PANEL_HEIGHT = 180;
     protected static readonly MAX_PANEL_HEIGHT = 900;
 
@@ -46,33 +76,19 @@ abstract class VisualizationPanelManager<
     private currentVisualizations: TInstance[] = [];
     private resizeState: ResizeState | null = null;
 
-    componentDidMount() {
-        visualizationController.setUpdateCallback(this.handleControllerUpdate);
-        this.synchronizeController(this.currentVisualizations);
-    }
-
-    componentDidUpdate(
-        _previousProps: TProps,
-        previousState: VisualizationPanelManagerState<TInstance>,
-    ) {
-        if (previousState.visualizations !== this.state.visualizations) {
-            this.synchronizeController(this.currentVisualizations);
-        }
-    }
-
-    componentWillUnmount() {
-        visualizationController.setUpdateCallback(() => { });
-    }
-
     protected abstract getManagerTitle(): React.ReactNode;
     protected abstract getStaticMapTitle(): React.ReactNode;
     protected abstract getPanelTypes(): string[];
     protected abstract getPanelName(type: string): string | undefined;
-    protected abstract createPanelInstance(type: string): TInstance | undefined;
+    protected abstract createPanelInstance(
+        type: string,
+        name: string,
+        data?: any,
+        config?: any,
+    ): TInstance | undefined;
+    protected abstract getDefaultComponentName(type: string): string;
     protected abstract getPanelHeight(instance: TInstance): number;
     protected abstract setPanelHeight(instance: TInstance, height: number): TInstance;
-    protected abstract deserializeControllerInstances(instances: VisualizationInstance[]): TInstance[];
-    protected abstract serializeControllerInstances(instances: TInstance[]): VisualizationInstance[];
     protected abstract renderStaticMap(): React.ReactNode;
     protected abstract renderPanelContent(instance: TInstance): React.ReactNode;
 
@@ -98,14 +114,6 @@ abstract class VisualizationPanelManager<
 
     protected notifyLayoutChange(_instances: TInstance[]): void { }
 
-    private handleControllerUpdate = (instances: VisualizationInstance[]) => {
-        this.applyVisualizations(this.deserializeControllerInstances(instances));
-    };
-
-    private synchronizeController(instances: TInstance[]) {
-        visualizationController.setCurrentInstances(this.serializeControllerInstances(instances));
-    }
-
     private applyVisualizations(next: TInstance[]) {
         this.currentVisualizations = next;
         this.setState({ visualizations: next });
@@ -119,16 +127,167 @@ abstract class VisualizationPanelManager<
     }
 
     private addVisualization = (type: string) => {
-        if (this.currentVisualizations.some((visualization) => visualization.type === type)) {
+        const name = this.getDefaultComponentName(type);
+        if (this.currentVisualizations.some((visualization) => visualization.name === name)) {
             return;
         }
 
-        const instance = this.createPanelInstance(type);
+        const instance = this.createPanelInstance(type, name);
         if (!instance) {
             return;
         }
 
         this.applyVisualizations([...this.currentVisualizations, instance]);
+    };
+
+    public getComponentName = (): string => this.props.name;
+
+    public getCurrentVisualizations = (): ManagedVisualizationInstance[] => (
+        this.currentVisualizations.map((instance) => ({ ...instance }))
+    );
+
+    public getVisualizationCapabilities = (): Record<string, any> => ({
+        availableCharts: this.getPanelTypes().map((type) => {
+            const openInstances = this.currentVisualizations.filter((instance) => instance.type === type);
+            return {
+                type,
+                name: this.getPanelName(type) ?? type,
+                openCount: openInstances.length,
+                canOpen: type === 'telemetry-overview' || openInstances.length === 0,
+            };
+        }),
+        openInstances: this.currentVisualizations.map(({ id, name, type }) => ({ id, name, type })),
+    });
+
+    public requestVisualization = ({
+        name,
+        type,
+        data,
+        config,
+    }: {
+        name: string;
+        type: string;
+        data?: any;
+        config?: any;
+    }): VisualizationManagerResult => {
+        const exact = this.currentVisualizations.find((instance) => instance.name === name);
+        if (exact) {
+            this.applyVisualizations(this.currentVisualizations.map((instance) => (
+                instance.name === name
+                    ? { ...instance, data: data ?? instance.data, config: config === undefined ? instance.config : { ...instance.config, ...config } }
+                    : instance
+            )));
+            return {
+                success: true,
+                message: `Reused chart '${name}'.`,
+                componentName: name,
+                chartId: exact.id,
+                chartType: exact.type,
+                reused: true,
+            };
+        }
+
+        if (type !== 'telemetry-overview') {
+            const singleton = this.currentVisualizations.find((instance) => instance.type === type);
+            if (singleton) {
+                this.applyVisualizations(this.currentVisualizations.map((instance) => (
+                    instance.name === singleton.name
+                        ? { ...instance, data: data ?? instance.data, config: config === undefined ? instance.config : { ...instance.config, ...config } }
+                        : instance
+                )));
+                return {
+                    success: true,
+                    message: `Reused chart '${singleton.name}'.`,
+                    componentName: singleton.name,
+                    chartId: singleton.id,
+                    chartType: singleton.type,
+                    reused: true,
+                };
+            }
+        }
+
+        const instance = this.createPanelInstance(type, name, data, config);
+        if (!instance) {
+            return {
+                success: false,
+                message: `Unable to open chart '${type}'.`,
+                componentName: name,
+                chartType: type,
+            };
+        }
+        this.applyVisualizations([...this.currentVisualizations, instance]);
+        return {
+            success: true,
+            message: `Opened chart '${type}'.`,
+            componentName: name,
+            chartId: instance.id,
+            chartType: type,
+            reused: false,
+        };
+    };
+
+    public updateVisualization = (
+        name: string,
+        data?: any,
+        config?: any,
+    ): VisualizationManagerResult => {
+        const existing = this.currentVisualizations.find((instance) => instance.name === name);
+        if (!existing) {
+            return { success: false, message: `Chart '${name}' is not open.`, componentName: name };
+        }
+        this.applyVisualizations(this.currentVisualizations.map((instance) => (
+            instance.name === name
+                ? {
+                    ...instance,
+                    data: data === undefined ? instance.data : data,
+                    config: config === undefined ? instance.config : { ...instance.config, ...config },
+                }
+                : instance
+        )));
+        return {
+            success: true,
+            message: `Updated chart '${name}'.`,
+            componentName: name,
+            chartId: existing.id,
+            chartType: existing.type,
+        };
+    };
+
+    public closeVisualization = (options: {
+        name?: string;
+        id?: string;
+        type?: string;
+        all?: boolean;
+    }): VisualizationManagerResult => {
+        const matches = this.currentVisualizations.filter((instance) => (
+            options.name ? instance.name === options.name
+                : options.id ? instance.id === options.id
+                    : options.type ? instance.type === options.type
+                        : false
+        ));
+        const closing = options.all ? matches : matches.slice(0, 1);
+        if (closing.length === 0) {
+            return {
+                success: false,
+                message: options.name
+                    ? `Chart '${options.name}' is not open.`
+                    : `No matching open chart was found.`,
+                componentName: options.name,
+                chartId: options.id,
+                chartType: options.type,
+                data: { removedCount: 0 },
+            };
+        }
+        const names = new Set(closing.map((instance) => instance.name));
+        this.applyVisualizations(this.currentVisualizations.filter((instance) => !names.has(instance.name)));
+        return {
+            success: true,
+            message: `Closed ${closing.length} chart(s).`,
+            componentName: closing[0].name,
+            chartId: closing[0].id,
+            chartType: closing[0].type,
+            data: { removedCount: closing.length },
+        };
     };
 
     private removeVisualization = (id: string) => {
@@ -259,7 +418,7 @@ abstract class VisualizationPanelManager<
         const { draggingId, dropTargetId, resizingId } = this.state;
         return (
             <Box
-                key={instance.id}
+                key={instance.name}
                 className={`visualization-container${draggingId === instance.id ? ' is-dragging' : ''}${dropTargetId === instance.id ? ' is-drop-target' : ''}${resizingId === instance.id ? ' is-resizing' : ''}`}
                 style={{ height: `${this.getPanelHeight(instance)}px` }}
                 onDragOver={(event) => this.handleDragOver(event, instance.id)}

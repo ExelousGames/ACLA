@@ -13,14 +13,8 @@ describe('assistant session mode resolution', () => {
     const createRegistration = (overrides: Record<string, unknown> = {}) => ({
         screenId: 'live-session',
         assistantMode: 'live' as const,
-        pillLabel: 'Live Session',
+        label: 'Live Session',
         componentRef: { current: null },
-        getPillInfo: () => ({
-            title: 'Live Session',
-            description: 'Live',
-            status: { label: 'Ready', tone: 'success' as const },
-            facts: [],
-        }),
         ...overrides,
     });
 
@@ -52,7 +46,7 @@ describe('assistant session mode resolution', () => {
         expect(resolveRegisteredAssistantIdentity(createRegistration({
             screenId: 'recorded-session',
             assistantMode: 'recorded',
-            pillLabel: 'Race 12',
+            label: 'Race 12',
             recordedSessionId: 'session-1',
         }) as any)).toMatchObject({
             sessionMode: 'recorded',

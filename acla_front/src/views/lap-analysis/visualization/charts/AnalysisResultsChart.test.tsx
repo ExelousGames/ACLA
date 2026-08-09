@@ -1,8 +1,7 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
-const mockOpenVisualization = jest.fn();
-const mockGetCurrentInstances = jest.fn();
+const mockRequestVisualization = jest.fn();
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: () => ({
@@ -10,13 +9,6 @@ jest.mock('contexts/DesktopGameContext', () => ({
         detectionStatus: 'not-detected',
         error: null,
     }),
-}));
-
-jest.mock('../VisualizationController', () => ({
-    visualizationController: {
-        getCurrentInstances: mockGetCurrentInstances,
-        openVisualization: mockOpenVisualization,
-    },
 }));
 
 jest.mock('@radix-ui/themes', () => {
@@ -116,7 +108,12 @@ jest.mock('components/data-graphs', () => ({
 
 import AnalysisResultsChart from './AnalysisResultsChart';
 import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
-import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    AiToolComponentRefProvider,
+    useRegisterAiToolComponentRef,
+} from 'contexts/AiToolComponentRefContext';
+import type { VisualizationManagerHandle } from '../VisualizationPanelManager';
 import type {
     LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
@@ -158,6 +155,7 @@ const comparableData = (driverGas: number, expertGas: number) => ({
 });
 
 const createQueueHandle = (events: LiveRangeTodoEventInput[]): LiveRangeTodoListHandle => ({
+    getComponentName: () => 'live-range-todo-list',
     addEvent: jest.fn((event: LiveRangeTodoEventInput) => {
         events.push(event);
         return { status: 'ready', todo_list: null };
@@ -170,21 +168,41 @@ const createQueueHandle = (events: LiveRangeTodoEventInput[]): LiveRangeTodoList
     get: jest.fn(),
 });
 
+const QueueRegistration = ({ handle }: { handle: LiveRangeTodoListHandle }) => {
+    useRegisterAiToolComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, handle);
+    return null;
+};
+
+const ManagerRegistration = () => {
+    const handle = React.useMemo<VisualizationManagerHandle>(() => ({
+        getComponentName: () => AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+        getVisualizationCapabilities: () => ({}),
+        getCurrentVisualizations: () => [],
+        requestVisualization: (options) => mockRequestVisualization(options),
+        updateVisualization: () => ({ success: false, message: 'not used' }),
+        closeVisualization: () => ({ success: false, message: 'not used' }),
+    }), []);
+    useRegisterAiToolComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER, handle);
+    return null;
+};
+
 const withQueueHandle = (
     chart: React.ReactElement,
     handle: LiveRangeTodoListHandle | null,
 ) => (
-    <LiveSessionContext.Provider value={{ liveRangeTodoListHandle: handle } as any}>
+    <AiToolComponentRefProvider>
+        <ManagerRegistration />
+        {handle && <QueueRegistration handle={handle} />}
         {chart}
-    </LiveSessionContext.Provider>
+    </AiToolComponentRefProvider>
 );
 
 describe('AnalysisResultsChart', () => {
     beforeEach(() => {
-        mockGetCurrentInstances.mockReset().mockReturnValue([]);
-        mockOpenVisualization.mockReset().mockReturnValue({
+        mockRequestVisualization.mockReset().mockReturnValue({
             success: true,
             message: 'Opened chart.',
+            componentName: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
         });
         localStorage.clear();
     });
@@ -194,8 +212,8 @@ describe('AnalysisResultsChart', () => {
     });
 
     it('renders arbitrary labels, context, and metadata safely', () => {
-        render(
-            <AnalysisResultsChart
+        render(withQueueHandle(
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="results"
                 data={{
                     elements: [{
@@ -215,7 +233,8 @@ describe('AnalysisResultsChart', () => {
                     }],
                 }}
             />,
-        );
+            null,
+        ));
 
         expect(screen.getByText('1 of 1 total')).toBeInTheDocument();
         expect(screen.getByText('Future category')).toBeInTheDocument();
@@ -230,7 +249,7 @@ describe('AnalysisResultsChart', () => {
 
     it('defaults to Training Mistake, recognizes parent IDs and names, and has no All option', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="default-filter"
                 data={{
                     elements: [
@@ -262,7 +281,7 @@ describe('AnalysisResultsChart', () => {
 
     it('shows a category-specific empty state when the selected label has no matches', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="empty"
                 data={{ elements: [{ id: 'practice', labels: ['MSP'] }] }}
             />,
@@ -279,7 +298,7 @@ describe('AnalysisResultsChart', () => {
 
     it('keeps filtered source order by default and exposes all sort modes', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="source-order"
                 data={{
                     elements: [
@@ -306,7 +325,7 @@ describe('AnalysisResultsChart', () => {
 
     it('uses category-specific sort wording without changing the selected sort value', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="dynamic-sort-name"
                 data={{
                     elements: [
@@ -337,7 +356,7 @@ describe('AnalysisResultsChart', () => {
 
     it('numbers visible results in display order when IDs are hidden', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="numbered-results"
                 showElementId={false}
                 data={{
@@ -367,7 +386,7 @@ describe('AnalysisResultsChart', () => {
 
     it('sorts only recognized training sub-labels with aliases, deduplication, and deterministic ties', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="frequency-order"
                 data={{
                     elements: [
@@ -418,7 +437,7 @@ describe('AnalysisResultsChart', () => {
 
     it('sorts only recognized racing sub-labels and leaves unranked results in source order', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="racing-frequency-order"
                 data={{
                     elements: [
@@ -455,7 +474,7 @@ describe('AnalysisResultsChart', () => {
 
     it('keeps aggregation independent from card sorting and sizes the graph by category count', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="independent-graph-order"
                 data={{
                     elements: [
@@ -483,7 +502,7 @@ describe('AnalysisResultsChart', () => {
 
     it('shows the graph empty state when matching cards have no recognized sub-labels', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="empty-frequency"
                 data={{ elements: [{ id: 'unknown', labels: ['MSP', 'Unknown mistake'] }] }}
             />,
@@ -502,7 +521,7 @@ describe('AnalysisResultsChart', () => {
 
     it('sorts numeric time losses descending and leaves invalid values last in source order', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="time-order"
                 data={{
                     elements: [
@@ -532,7 +551,7 @@ describe('AnalysisResultsChart', () => {
 
     it('retains the selected filter and recalculates sorting when live data changes', () => {
         const { rerender } = render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="live-ranking"
                 data={{
                     elements: [
@@ -548,7 +567,7 @@ describe('AnalysisResultsChart', () => {
         expect(renderedResultIds()).toEqual(['two', 'one']);
 
         rerender(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="live-ranking"
                 data={{
                     elements: [
@@ -581,7 +600,7 @@ describe('AnalysisResultsChart', () => {
         const queuedEvents = [existingEvent];
         const handle = createQueueHandle(queuedEvents);
         const chart = (
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="queue-leading"
                 data={{
                     elements: [
@@ -657,7 +676,7 @@ describe('AnalysisResultsChart', () => {
             data: event.data,
         })))).not.toThrow();
         expect(screen.getByRole('status')).toHaveTextContent('Queued: 3. Skipped: 2.');
-        expect(mockOpenVisualization).not.toHaveBeenCalled();
+        expect(mockRequestVisualization).not.toHaveBeenCalled();
 
         const firstClickIds = queuedEvents.slice(1).map((event) => event.id);
         fireEvent.click(button);
@@ -673,7 +692,7 @@ describe('AnalysisResultsChart', () => {
 
     it('disables the action when every leading occurrence lacks a usable position or comparison', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="queue-disabled"
                 data={{
                     elements: [
@@ -707,7 +726,7 @@ describe('AnalysisResultsChart', () => {
         const queuedEvents: LiveRangeTodoEventInput[] = [];
         const handle = createQueueHandle(queuedEvents);
         const chart = (
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="queue-deferred"
                 data={{ elements: [{
                     id: 'deferred-result',
@@ -721,7 +740,10 @@ describe('AnalysisResultsChart', () => {
 
         fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
         expect(screen.getByRole('button', { name: 'Sending…' })).toBeDisabled();
-        await waitFor(() => expect(mockOpenVisualization).toHaveBeenCalledWith('live-range-todo-list'));
+        await waitFor(() => expect(mockRequestVisualization).toHaveBeenCalledWith({
+            name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+            type: 'live-range-todo-list',
+        }));
         expect(queuedEvents).toHaveLength(0);
 
         view.rerender(withQueueHandle(chart, handle));
@@ -733,8 +755,8 @@ describe('AnalysisResultsChart', () => {
 
     it('reports an accessible error after the queue panel mount timeout', async () => {
         jest.useFakeTimers();
-        render(
-            <AnalysisResultsChart
+        render(withQueueHandle(
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="queue-timeout"
                 data={{ elements: [{
                     id: 'timeout-result',
@@ -743,29 +765,36 @@ describe('AnalysisResultsChart', () => {
                     comparison: comparableData(0.2, 0.4),
                 }] }}
             />,
-        );
+            null,
+        ));
 
         fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
         await act(async () => {
             await Promise.resolve();
             await Promise.resolve();
         });
-        expect(mockOpenVisualization).toHaveBeenCalledWith('live-range-todo-list');
-        act(() => jest.advanceTimersByTime(2000));
+        expect(mockRequestVisualization).toHaveBeenCalledWith({
+            name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+            type: 'live-range-todo-list',
+        });
+        await act(async () => {
+            jest.advanceTimersByTime(5000);
+            await Promise.resolve();
+        });
 
         expect(screen.getByRole('status')).toHaveTextContent(
-            'Live Range To-do List did not open within two seconds. Nothing was queued.',
+            'Unable to open Live Range To-do List. Nothing was queued.',
         );
         expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeEnabled();
     });
 
-    it('reports an accessible error when the visualization controller cannot open the queue', async () => {
-        mockOpenVisualization.mockReturnValue({
+    it('reports an accessible error when the named manager cannot open the queue', async () => {
+        mockRequestVisualization.mockReturnValue({
             success: false,
             message: 'Unable to open chart.',
         });
-        render(
-            <AnalysisResultsChart
+        render(withQueueHandle(
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="queue-open-failure"
                 data={{ elements: [{
                     id: 'open-failure-result',
@@ -774,7 +803,8 @@ describe('AnalysisResultsChart', () => {
                     comparison: comparableData(0.2, 0.4),
                 }] }}
             />,
-        );
+            null,
+        ));
 
         fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
 
@@ -824,7 +854,7 @@ describe('AnalysisResultsChart', () => {
         const comparison = comparableData(0.35, 0.7);
         const handle = createQueueHandle(queuedEvents);
         render(withQueueHandle(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="queue-callback"
                 data={{ elements: [{
                     id: 'callback-result',
@@ -886,7 +916,7 @@ describe('AnalysisResultsChart', () => {
 
     it('mounts a collision-aware comparison only while a capable card is hovered or focused', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="comparison-card"
                 data={{
                     elements: [{
@@ -935,7 +965,7 @@ describe('AnalysisResultsChart', () => {
 
     it('shows comparison unavailability without making an empty card interactive', () => {
         render(
-            <AnalysisResultsChart
+            <AnalysisResultsChart name="visualization:analysis-results"
                 id="unavailable-comparison-card"
                 data={{
                     elements: [{

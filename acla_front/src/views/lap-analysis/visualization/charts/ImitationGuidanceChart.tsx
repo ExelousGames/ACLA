@@ -1,10 +1,11 @@
-import React, { useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { forwardRef, useContext, useState, useEffect, useCallback, useImperativeHandle, useMemo, useRef } from 'react';
 import { Card, Text, Box, Flex, Button, TextField, Table, IconButton } from '@radix-ui/themes';
 import { Cross2Icon } from '@radix-ui/react-icons';
 import { AnalysisContext } from '../../analysis-context';
 import { VisualizationProps } from '../VisualizationRegistry';
 import apiService from 'services/api.service';
 import styles from './ImitationGuidanceChart.module.css';
+import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 
 const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
     if (!telemetry) return undefined;
@@ -30,17 +31,24 @@ const extractGuidanceText = (raw: any, guidanceResult: any): string | null => {
     return null;
 };
 
-const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
+export interface ImitationGuidanceChartHandle extends NamedAiToolComponentHandle {
+    updateGuidanceData(data: any, config?: any): boolean;
+    refreshGuidanceOnce(): Promise<{ success: boolean; message: string }>;
+    disableGuidance(): boolean;
+}
+
+const ImitationGuidanceChart = forwardRef<ImitationGuidanceChartHandle, VisualizationProps>((props, forwardedRef) => {
     const analysisContext = useContext(AnalysisContext);
+    const { name, data, config, onUpdate, onDisable } = props;
 
     const [pacebook, setPacebook] = useState<number[]>([0.1, 0.5, 0.8]);
     const [newValue, setNewValue] = useState<string>('');
     const [loading, setLoading] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
 
-    const liveData = (props.data?.telemetry ?? props.data ?? null) as Record<string, any> | null;
-    const trackName = props.config?.trackName || props.data?.trackName || 'Unknown Track';
-    const carName = props.config?.carName || props.data?.carName || 'Unknown Car';
+    const liveData = (data?.telemetry ?? data ?? null) as Record<string, any> | null;
+    const trackName = config?.trackName || data?.trackName || 'Unknown Track';
+    const carName = config?.carName || data?.carName || 'Unknown Car';
 
     const liveDataRef = useRef(liveData);
     const trackNameRef = useRef(trackName);
@@ -99,6 +107,18 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             requestInFlightRef.current = false;
         }
     }, [analysisContext]);
+
+    const handle = useMemo<ImitationGuidanceChartHandle>(() => ({
+        getComponentName: () => name,
+        updateGuidanceData: (nextData, nextConfig) => onUpdate?.(nextData, nextConfig) ?? false,
+        refreshGuidanceOnce: async () => {
+            await fetchGuidance();
+            return { success: true, message: `Refreshed guidance chart '${name}'.` };
+        },
+        disableGuidance: () => onDisable?.() ?? false,
+    }), [fetchGuidance, name, onDisable, onUpdate]);
+    useImperativeHandle(forwardedRef, () => handle, [handle]);
+    useRegisterAiToolComponentRef(name, handle);
 
     // Check crossing pacebook points
     useEffect(() => {
@@ -221,6 +241,8 @@ const ImitationGuidanceChart: React.FC<VisualizationProps> = (props) => {
             </Flex>
         </Card>
     );
-};
+});
+
+ImitationGuidanceChart.displayName = 'ImitationGuidanceChart';
 
 export default ImitationGuidanceChart;

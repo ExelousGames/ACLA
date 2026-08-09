@@ -1,7 +1,7 @@
 import { normalizeSegmentClassificationResult } from './recorded-session-analysis';
 
 describe('normalizeSegmentClassificationResult', () => {
-    it('preserves the complete expert reference array for recorded and live results', () => {
+    it('normalizes expert references on each segment and preserves live availability', () => {
         const expertReferenceData = [{
             raw_index: 7,
             expert_optimal_time: 1_250,
@@ -19,22 +19,40 @@ describe('normalizeSegmentClassificationResult', () => {
             status: 'success',
             session_id: 'session-1',
             samples_analyzed: 1,
-            parent_segment_count: 0,
-            segments: [],
-            expert_reference_data: expertReferenceData,
+            parent_segment_count: 2,
+            segments: [{
+                id: 'segment-1',
+                labels: ['EA'],
+                start_index: 7,
+                end_index: 8,
+                expert_reference_data: expertReferenceData,
+            }, {
+                id: 'segment-2',
+                labels: ['MSP'],
+                start_index: 12,
+                end_index: 13,
+            }],
             expert_time_available: true,
-        }, 'fallback-session');
+        } as any, 'fallback-session');
 
-        expect(normalized.expert_reference_data).toBe(expertReferenceData);
-        expect(normalized.expert_reference_data).toEqual(expertReferenceData);
+        expect(normalized.segments[0].expert_reference_data).toBe(expertReferenceData);
+        expect(normalized.segments[0].expert_reference_data).toEqual(expertReferenceData);
+        expect(normalized.segments[1].expert_reference_data).toEqual([]);
+        expect(normalized).not.toHaveProperty('expert_reference_data');
         expect(normalized.expert_time_available).toBe(true);
     });
 
-    it('defaults missing expert reference data to an empty array', () => {
+    it('does not use a removed top-level expert reference array as a fallback', () => {
         const normalized = normalizeSegmentClassificationResult({
-            segments: [],
-        }, 'session-1');
+            segments: [{
+                labels: [],
+                start_index: 0,
+                end_index: 1,
+            }],
+            expert_reference_data: [{ raw_index: 0 }],
+        } as any, 'session-1');
 
-        expect(normalized.expert_reference_data).toEqual([]);
+        expect(normalized.segments[0].expert_reference_data).toEqual([]);
+        expect(normalized).not.toHaveProperty('expert_reference_data');
     });
 });
