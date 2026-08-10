@@ -27,6 +27,7 @@ export interface OverlayDisplayInstance {
     createdAt: number;
     updatedAt: number;
     revision: number;
+    fullSizeRequestOrder: number | null;
     exitAt: number | null;
     foldAt: number | null;
 }
@@ -36,6 +37,7 @@ export interface OverlayPresentationState {
     instances: OverlayDisplayInstance[];
     enabled: boolean;
     eventSequence: number;
+    fullSizeRequestSequence: number;
 }
 
 export interface OverlayTransitionResult {
@@ -53,6 +55,7 @@ export const initialOverlayPresentationState: OverlayPresentationState = {
     instances: [],
     enabled: false,
     eventSequence: 0,
+    fullSizeRequestSequence: 0,
 };
 
 export const overlayPresentationReducer = (
@@ -158,7 +161,13 @@ const resolveTargetIndex = (
     state: OverlayPresentationState,
     target: OverlayTarget,
 ): { index?: number; error?: string } => {
+    if (!target || typeof target !== 'object' || Array.isArray(target)) {
+        return { error: 'Overlay command requires a target.' };
+    }
     if ('instanceId' in target) {
+        if (typeof target.instanceId !== 'string' || !target.instanceId.trim()) {
+            return { error: 'Overlay target requires an instanceId.' };
+        }
         const index = state.instances.findIndex((instance) => instance.instanceId === target.instanceId);
         return index >= 0 ? { index } : { error: `Overlay instance '${target.instanceId}' was not found.` };
     }
@@ -262,6 +271,7 @@ export const applyOverlayDisplayRequest = (
                 createdAt: now,
                 updatedAt: now,
                 revision: 0,
+                fullSizeRequestOrder: null,
                 ...deadlines,
             };
             state.instances.push(instance);
@@ -284,7 +294,11 @@ export const applyOverlayDisplayRequest = (
         };
     }
 
-    if (command.operation !== 'set_policy' && command.operation !== 'exit') {
+    if (
+        command.operation !== 'set_policy'
+        && command.operation !== 'request_full_size'
+        && command.operation !== 'exit'
+    ) {
         return rejectRequest(current, request.requestId, now, 'Unknown overlay operation.');
     }
     const resolved = resolveTargetIndex(state, command.target);
@@ -293,6 +307,32 @@ export const applyOverlayDisplayRequest = (
     }
     const instance = state.instances[resolved.index];
     const definition = definitionFor(instance.type)!;
+
+    if (command.operation === 'request_full_size') {
+        if (!definition.renderFullSize) {
+            return rejectRequest(
+                current,
+                request.requestId,
+                now,
+                `Overlay display '${instance.type}' does not support full size.`,
+            );
+        }
+        state.fullSizeRequestSequence += 1;
+        state.instances[resolved.index] = {
+            ...instance,
+            fullSizeRequestOrder: state.fullSizeRequestSequence,
+        };
+        return {
+            state,
+            events,
+            acknowledgement: {
+                presentationId: request.presentationId,
+                requestId: request.requestId,
+                accepted: true,
+                instanceId: instance.instanceId,
+            },
+        };
+    }
 
     if (command.operation === 'exit') {
         state.instances.splice(resolved.index, 1);
@@ -464,6 +504,20 @@ export const orderOverlayInstances = (
     if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
     return right.updatedAt - left.updatedAt || left.instanceId.localeCompare(right.instanceId);
 });
+
+export const getActiveFullSizeOverlayInstance = (
+    instances: readonly OverlayDisplayInstance[],
+): OverlayDisplayInstance | undefined => instances.reduce<OverlayDisplayInstance | undefined>(
+    (active, instance) => {
+        if (instance.folded || instance.fullSizeRequestOrder === null) return active;
+        const definition = definitionFor(instance.type);
+        if (!definition?.renderFullSize) return active;
+        return !active || instance.fullSizeRequestOrder > active.fullSizeRequestOrder!
+            ? instance
+            : active;
+    },
+    undefined,
+);
 
 export const getNextOverlayDeadline = (
     instances: readonly OverlayDisplayInstance[],

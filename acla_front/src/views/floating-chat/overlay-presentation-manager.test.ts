@@ -4,9 +4,11 @@ import {
     applyOverlayDisplayRequest,
     beginOverlayPresentation,
     endOverlayPresentation,
+    getActiveFullSizeOverlayInstance,
     initialOverlayPresentationState,
     orderOverlayInstances,
     setOverlayEnabled,
+    toggleOverlayFold,
 } from './overlay-presentation-manager';
 import type { OverlayDisplayRequest } from './overlay-display-types';
 
@@ -31,6 +33,18 @@ const baseline = (progress = 10) => ({
     car: null,
     current_lap: null,
     baseline_lap: null,
+});
+
+const comparison = (title: string) => ({
+    title,
+    comparison: {
+        samples: [{
+            driverTimeMs: 0,
+            expertTimeMs: 0,
+            driverTrackPosition: 0.2,
+            expertTrackPosition: 0.2,
+        }],
+    },
 });
 
 let requestSequence = 0;
@@ -168,6 +182,133 @@ describe('overlay presentation manager', () => {
         }, 4_000, result.state);
         expect(result.state.instances.some(({ instanceId }) => instanceId === planId)).toBe(false);
         expect(result.events[0]).toMatchObject({ kind: 'exited', reason: 'producer_exit' });
+    });
+
+    it('keeps monotonic full-size priority across upserts, folds, and exits', () => {
+        let result = request({
+            operation: 'upsert', type: 'driver_expert_comparison', snapshot: comparison('First'),
+        }, 1_000);
+        const firstId = result.acknowledgement!.instanceId!;
+        result = request({
+            operation: 'set_policy', target: { instanceId: firstId }, policy: 'visible_until_exit',
+        }, 1_010, result.state);
+        result = request({
+            operation: 'upsert', type: 'driver_expert_comparison', snapshot: comparison('Second'),
+        }, 1_020, result.state);
+        const secondId = result.acknowledgement!.instanceId!;
+        result = request({
+            operation: 'set_policy', target: { instanceId: secondId }, policy: 'visible_until_exit',
+        }, 1_030, result.state);
+
+        result = request({
+            operation: 'request_full_size', target: { instanceId: firstId },
+        }, 1_040, result.state);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(firstId);
+        const firstOrder = result.state.instances.find(({ instanceId }) => instanceId === firstId)
+            ?.fullSizeRequestOrder;
+
+        result = request({
+            operation: 'upsert',
+            type: 'driver_expert_comparison',
+            snapshot: comparison('First updated'),
+            options: { instanceId: firstId },
+        }, 1_050, result.state);
+        expect(result.state.instances.find(({ instanceId }) => instanceId === firstId)
+            ?.fullSizeRequestOrder).toBe(firstOrder);
+
+        result = request({
+            operation: 'request_full_size', target: { instanceId: secondId },
+        }, 1_060, result.state);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(secondId);
+        expect(result.state.instances).toHaveLength(2);
+
+        result = request({
+            operation: 'upsert',
+            type: 'driver_expert_comparison',
+            snapshot: comparison('First updated again'),
+            options: { instanceId: firstId },
+        }, 1_065, result.state);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(secondId);
+        expect(result.state.instances.find(({ instanceId }) => instanceId === firstId)
+            ?.fullSizeRequestOrder).toBe(firstOrder);
+
+        result = toggleOverlayFold(result.state, secondId, 1_070);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(firstId);
+        result = toggleOverlayFold(result.state, secondId, 1_080);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(secondId);
+
+        result = request({
+            operation: 'exit', target: { instanceId: secondId }, reason: 'producer_exit',
+        }, 1_090, result.state);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(firstId);
+        expect(result.state.instances.map(({ instanceId }) => instanceId)).toEqual([firstId]);
+    });
+
+    it('continues transient expiry for a requester hidden behind a newer full-size card', () => {
+        let result = request({
+            operation: 'upsert', type: 'driver_expert_comparison', snapshot: comparison('Older'),
+        }, 1_000);
+        const olderId = result.acknowledgement!.instanceId!;
+        result = request({
+            operation: 'request_full_size', target: { instanceId: olderId },
+        }, 1_010, result.state);
+        result = request({
+            operation: 'upsert', type: 'driver_expert_comparison', snapshot: comparison('Newer'),
+        }, 1_100, result.state);
+        const newerId = result.acknowledgement!.instanceId!;
+        result = request({
+            operation: 'request_full_size', target: { instanceId: newerId },
+        }, 1_110, result.state);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(newerId);
+
+        result = advanceOverlayTimers(result.state, 4_800);
+        expect(result.state.instances.some(({ instanceId }) => instanceId === olderId)).toBe(false);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(newerId);
+        expect(result.events).toContainEqual(expect.objectContaining({
+            instanceId: olderId,
+            kind: 'exited',
+            reason: 'transient_complete',
+        }));
+    });
+
+    it('rejects missing, unsupported, and ambiguous full-size targets without changing the active request', () => {
+        let result = request({
+            operation: 'upsert', type: 'driver_expert_comparison', snapshot: comparison('Active'),
+        }, 1_000);
+        const comparisonId = result.acknowledgement!.instanceId!;
+        result = request({
+            operation: 'request_full_size', target: { instanceId: comparisonId },
+        }, 1_010, result.state);
+        const activeOrder = result.state.instances[0].fullSizeRequestOrder;
+
+        result = request({
+            operation: 'request_full_size', target: { instanceId: 'missing' },
+        }, 1_020, result.state);
+        expect(result.acknowledgement?.accepted).toBe(false);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(comparisonId);
+
+        result = request({
+            operation: 'request_full_size',
+        } as any, 1_025, result.state);
+        expect(result.acknowledgement?.accepted).toBe(false);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(comparisonId);
+
+        result = request({
+            operation: 'upsert', type: 'baseline_progress', snapshot: baseline(30),
+        }, 1_030, result.state);
+        result = request({
+            operation: 'request_full_size', target: { type: 'baseline_progress' },
+        }, 1_040, result.state);
+        expect(result.acknowledgement?.accepted).toBe(false);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(comparisonId);
+        expect(result.state.instances.find(({ instanceId }) => instanceId === comparisonId)
+            ?.fullSizeRequestOrder).toBe(activeOrder);
+
+        result = request({
+            operation: 'request_full_size', target: { type: 'driver_expert_comparison' },
+        }, 1_050, result.state);
+        expect(result.acknowledgement?.accepted).toBe(false);
+        expect(getActiveFullSizeOverlayInstance(result.state.instances)?.instanceId).toBe(comparisonId);
     });
 
     it('preserves the presentation and its content while the global overlay setting is off', () => {

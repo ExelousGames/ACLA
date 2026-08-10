@@ -47,6 +47,13 @@ html, body, #root, .App {
     border-radius: 999px;
 }
 
+.overlay-shell--full-size {
+    display: flex;
+    max-width: 760px;
+    max-height: 500px;
+    flex-direction: column;
+}
+
 .overlay-shell__header {
     position: relative;
     z-index: 5;
@@ -137,6 +144,18 @@ html, body, #root, .App {
     border-top: 1px solid rgba(167, 139, 250, .2);
 }
 
+.overlay-shell--full-size .overlay-shell__header { flex: 0 0 auto; }
+.overlay-shell--full-size .overlay-shell__speaking {
+    min-height: 0;
+    flex: 0 1 auto;
+    overflow: auto;
+}
+.overlay-shell--full-size .overlay-display-list {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+}
+
 .overlay-list-item {
     position: relative;
     min-width: 0;
@@ -146,6 +165,19 @@ html, body, #root, .App {
 
 .overlay-list-item:last-child { border-bottom: 0; }
 .overlay-list-item--folded { background: rgba(5, 3, 10, .24); }
+.overlay-list-item--full-size-hidden { display: none; }
+.overlay-list-item--full-size-active {
+    min-height: 0;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+}
+.overlay-list-item--full-size-active .overlay-list-item__header { flex: 0 0 auto; }
+.overlay-list-item--full-size-active .overlay-list-item__body {
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+}
 
 .overlay-list-item__header {
     display: flex;
@@ -200,6 +232,8 @@ html, body, #root, .App {
     margin: 0;
     border-radius: 14px;
 }
+
+.overlay-shell .floating-pill-comparison--full-size { height: 100%; }
 
 .overlay-shell .floating-pill-comparison {
     padding: 10px;

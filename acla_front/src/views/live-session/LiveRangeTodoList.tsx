@@ -26,6 +26,7 @@ export interface LiveRangeTelemetrySample {
 
 interface RuntimeEvent extends LiveRangeTodoSnapshotEvent {
     callback: LiveRangeTodoEventCallback;
+    due?: boolean;
 }
 
 type RuntimeSnapshot = Omit<LiveRangeTodoListSnapshot, 'events'> & { events: RuntimeEvent[] };
@@ -170,7 +171,7 @@ export const crossedLiveRangeTodoPosition = (
 };
 
 const serializeEvent = (event: RuntimeEvent): LiveRangeTodoSnapshotEvent => {
-    const { callback: _callback, ...snapshotEvent } = event;
+    const { callback: _callback, due: _due, ...snapshotEvent } = event;
     return {
         ...snapshotEvent,
         content: {
@@ -311,7 +312,9 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
     ));
     const samplesRef = useRef<LiveRangeTelemetrySample[]>([]);
     const previousSampleRef = useRef<LiveRangeTelemetrySample | null>(null);
+    const latestTelemetryRef = useRef<Record<string, any> | null>(null);
     const activeRunsRef = useRef<Map<string, ActiveRun>>(new Map());
+    const runNextDueEventRef = useRef<() => void>(() => undefined);
     const mountedRef = useRef(false);
 
     const commit = useCallback((next: RuntimeSnapshot) => {
@@ -475,7 +478,12 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
             const existing = current.events.find((event) => event.id === id);
             if (!existing) return errorResult(`Live range to-do event '${id}' was not found.`);
 
-            let next: RuntimeEvent = { ...existing, status: 'pending', updated_at: now };
+            let next: RuntimeEvent = {
+                ...existing,
+                status: 'pending',
+                due: undefined,
+                updated_at: now,
+            };
             if (hasOwn(raw, 'content')) {
                 const parsedContent = parseContent(raw.content, true);
                 if (!parsedContent.content) return errorResult(`Event '${id}': ${parsedContent.error}`);
@@ -518,6 +526,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         abortEvents(affectedIds);
         const events = current.events.map((event) => updates.get(event.id) ?? event);
         const next = commit({ ...current, events, updated_at: now });
+        runNextDueEventRef.current();
         return { status: 'ready', todo_list: next, message: `Updated ${updates.size} event${updates.size === 1 ? '' : 's'}.` };
     }, [abortEvents, commit, errorResult]);
 
@@ -531,6 +540,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         const events = current.events.filter((event) => !ids.has(event.id));
         const removedCount = current.events.length - events.length;
         const next = commit({ ...current, events, updated_at: now });
+        runNextDueEventRef.current();
         return {
             status: events.length > 0 ? 'ready' : 'empty',
             todo_list: next,
@@ -550,6 +560,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         const events = current.events.map((event): RuntimeEvent => ids.has(event.id) ? {
             ...event,
             status: 'pending',
+            due: undefined,
             eta_seconds: current.current_position === null
                 ? null
                 : calculateLiveRangeEta(
@@ -562,6 +573,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
             lap: undefined,
         } : event);
         const next = commit({ ...current, events, updated_at: now });
+        runNextDueEventRef.current();
         return {
             status: events.length > 0 ? 'ready' : 'empty',
             todo_list: next,
@@ -592,37 +604,57 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
             events: current.events.filter((event) => event.id !== id),
             updated_at: Date.now(),
         });
+        runNextDueEventRef.current();
     }, [commit]);
 
-    const runEvent = useCallback((
-        id: string,
-        telemetry: Record<string, any>,
-        lap: number | undefined,
-        eta: number | null,
-    ) => {
-        const event = runtimeRef.current.events.find((candidate) => candidate.id === id);
-        if (!event || event.status !== 'running') return;
+    const runNextDueEvent = useCallback(() => {
+        if (!mountedRef.current || activeRunsRef.current.size > 0) return;
+
+        const current = runtimeRef.current;
+        const event = current.events.find((candidate) => (
+            candidate.status === 'pending' && candidate.due
+        ));
+        const telemetry = latestTelemetryRef.current;
+        if (!event || !telemetry) return;
 
         const controller = new AbortController();
-        const token = Symbol(id);
-        activeRunsRef.current.set(id, { controller, token });
+        const token = Symbol(event.id);
+        const now = Date.now();
+        const runningEvent: RuntimeEvent = {
+            ...event,
+            status: 'running',
+            due: undefined,
+            lap: current.lap,
+            started_at: now,
+            updated_at: now,
+        };
+        activeRunsRef.current.set(event.id, { controller, token });
+        commit({
+            ...current,
+            events: current.events.map((candidate) => (
+                candidate.id === event.id ? runningEvent : candidate
+            )),
+            updated_at: now,
+        });
+
         try {
-            Promise.resolve(event.callback({
-                event: serializeEvent(event),
-                data: cloneJson(event.data),
+            Promise.resolve(runningEvent.callback({
+                event: serializeEvent(runningEvent),
+                data: cloneJson(runningEvent.data),
                 telemetry,
-                lap,
-                eta_seconds: eta,
+                lap: current.lap,
+                eta_seconds: runningEvent.eta_seconds,
                 sessionIntelligence,
                 signal: controller.signal,
             })).then(
-                () => finishEvent(id, token),
-                (runError) => finishEvent(id, token, runError),
+                () => finishEvent(event.id, token),
+                (runError) => finishEvent(event.id, token, runError),
             );
         } catch (runError) {
-            finishEvent(id, token, runError);
+            finishEvent(event.id, token, runError);
         }
-    }, [finishEvent, sessionIntelligence]);
+    }, [commit, finishEvent, sessionIntelligence]);
+    runNextDueEventRef.current = runNextDueEvent;
 
     const handle = useMemo<LiveRangeTodoListHandle>(() => ({
         getComponentName: () => name,
@@ -645,6 +677,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
             abortEvents();
             samplesRef.current = [];
             previousSampleRef.current = null;
+            latestTelemetryRef.current = null;
             registerLiveRangeTodoListHandle(null);
             publishLiveRangeTodoListSnapshot(null);
         };
@@ -659,6 +692,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
             receivedAt: now,
             lap: getLiveRangeTelemetryLap(currentTelemetry),
         };
+        latestTelemetryRef.current = currentTelemetry;
         samplesRef.current = [
             ...samplesRef.current,
             currentSample,
@@ -668,7 +702,6 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         previousSampleRef.current = currentSample;
 
         const current = runtimeRef.current;
-        const dueEvents: Array<{ id: string; eta: number | null }> = [];
         const events = current.events.map((event): RuntimeEvent => {
             if (event.status !== 'pending') return event;
             const eta = calculateLiveRangeEta(position, event.normalized_position, rate);
@@ -676,14 +709,10 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
                 ? crossedLiveRangeTodoPosition(previousSample, currentSample, event.normalized_position)
                 : false;
             const due = crossed || (eta !== null && eta <= event.lead_time_seconds);
-            if (!due) return { ...event, eta_seconds: eta };
-            dueEvents.push({ id: event.id, eta });
             return {
                 ...event,
                 eta_seconds: eta,
-                status: 'running',
-                lap: currentSample.lap,
-                started_at: now,
+                due: event.due || due,
                 updated_at: now,
             };
         });
@@ -696,10 +725,8 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
             lap: currentSample.lap,
             updated_at: now,
         });
-        dueEvents.forEach(({ id, eta }) => {
-            runEvent(id, currentTelemetry, currentSample.lap, eta);
-        });
-    }, [commit, currentTelemetry, runEvent]);
+        runNextDueEvent();
+    }, [commit, currentTelemetry, runNextDueEvent]);
 
     return <LiveRangeTodoListDisplay snapshot={snapshot} surface="panel" />;
 };

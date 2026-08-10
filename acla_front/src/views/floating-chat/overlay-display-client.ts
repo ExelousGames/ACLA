@@ -99,6 +99,7 @@ export interface ScopedOverlayDisplayClient {
         options?: OverlayUpsertOptions,
     ): Promise<string>;
     setPolicy(target: OverlayTarget, policy: OverlayPolicy): Promise<void>;
+    requestFullSize(target: OverlayTarget): Promise<void>;
     exit(target: OverlayTarget, reason?: OverlayExitReason): Promise<void>;
     subscribeLifecycle(instanceId: string, listener: LifecycleListener): () => void;
     waitForLifecycle(
@@ -128,6 +129,10 @@ const createScopedClient = (presentationId: string): ScopedOverlayDisplayClient 
 
     async setPolicy(target: OverlayTarget, policy: OverlayPolicy): Promise<void> {
         await sendRequest(presentationId, { operation: 'set_policy', target, policy });
+    },
+
+    async requestFullSize(target: OverlayTarget): Promise<void> {
+        await sendRequest(presentationId, { operation: 'request_full_size', target });
     },
 
     async exit(target: OverlayTarget, reason: OverlayExitReason = 'producer_exit'): Promise<void> {
@@ -201,6 +206,10 @@ export const overlayDisplayClient = {
 
     setPolicy(target: OverlayTarget, policy: OverlayPolicy): Promise<void> {
         return createScopedClient(requireCurrentPresentation().presentationId).setPolicy(target, policy);
+    },
+
+    requestFullSize(target: OverlayTarget): Promise<void> {
+        return createScopedClient(requireCurrentPresentation().presentationId).requestFullSize(target);
     },
 
     exit(target: OverlayTarget, reason: OverlayExitReason = 'producer_exit'): Promise<void> {

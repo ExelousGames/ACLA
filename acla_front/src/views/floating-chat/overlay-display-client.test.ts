@@ -63,6 +63,30 @@ describe('overlay display client', () => {
         }));
     });
 
+    it('sends and acknowledges scoped and current-presentation full-size requests', async () => {
+        await overlayDisplayClient
+            .forPresentation(presentation.presentationId)
+            .requestFullSize({ instanceId: 'driver_expert_comparison:multiple:one' });
+        expect(sendOverlayDisplayRequest).toHaveBeenLastCalledWith(expect.objectContaining({
+            presentationId: presentation.presentationId,
+            command: {
+                operation: 'request_full_size',
+                target: { instanceId: 'driver_expert_comparison:multiple:one' },
+            },
+        }));
+
+        await overlaySessionClient.create(descriptor);
+        await overlayDisplayClient.requestFullSize({ instanceId: 'driver_expert_comparison:multiple:two' });
+        expect(sendOverlayDisplayRequest).toHaveBeenLastCalledWith(expect.objectContaining({
+            presentationId: presentation.presentationId,
+            command: {
+                operation: 'request_full_size',
+                target: { instanceId: 'driver_expert_comparison:multiple:two' },
+            },
+        }));
+        await overlaySessionClient.destroy(presentation.presentationId);
+    });
+
     it('correlates lifecycle listeners and removes the Electron subscription when idle', () => {
         const first = jest.fn();
         const second = jest.fn();

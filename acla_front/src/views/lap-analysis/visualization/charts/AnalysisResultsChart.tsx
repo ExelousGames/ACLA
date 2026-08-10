@@ -15,6 +15,7 @@ import {
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
 import type { DriverExpertComparisonData } from 'components/driver-expert-comparison';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { overlayDisplayClient } from 'views/floating-chat/overlay-display-client';
 import type {
     JsonValue,
@@ -45,6 +46,7 @@ const createQueuedComparisonEventId = (): string => (
 interface ComparisonPillPayload {
     title: string;
     comparison: DriverExpertComparisonData;
+    game?: DesktopGame | null;
 }
 
 interface LeadingMistakeOccurrence {
@@ -93,11 +95,10 @@ const showComparisonPayloadForHold = (
         const scopedClient = overlayDisplayClient.forPresentation(presentationId);
         void scopedClient
             .upsert('driver_expert_comparison', payload)
-            .then((instanceId) => scopedClient.waitForLifecycle(
-                instanceId,
-                'exited',
-                { signal },
-            ))
+            .then(async (instanceId) => {
+                await scopedClient.requestFullSize({ instanceId });
+                return scopedClient.waitForLifecycle(instanceId, 'exited', { signal });
+            })
             .then(finish, finish);
     };
 
@@ -148,6 +149,7 @@ const MAIN_LABEL_FILTER_OPTIONS: readonly MainLabelFilterOption[] = [
 
 interface AnalysisResultsChartProps extends VisualizationProps {
     showElementId?: boolean;
+    sessionGame?: DesktopGame | null;
 }
 
 export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
@@ -213,6 +215,7 @@ const buildMostCommonMistakeQueuePlan = (
     elements: readonly AnalysisResultElement[],
     recognizedSubLabels: RecognizedSubLabels,
     frequencyData: readonly GraphRecord[],
+    sessionGame: DesktopGame | null,
 ): MostCommonMistakeQueuePlan => {
     const leadingFrequency = frequencyData.reduce((highest, row) => {
         const occurrences = Number(row.occurrences);
@@ -236,7 +239,7 @@ const buildMostCommonMistakeQueuePlan = (
             && Number.isFinite(start)
             && start >= 0
             && start <= 1
-            && hasComparableDriverExpertData(element.comparison);
+            && hasComparableDriverExpertData(element.comparison, sessionGame);
     });
 
     return {
@@ -247,6 +250,7 @@ const buildMostCommonMistakeQueuePlan = (
 
 const createMostCommonMistakeEvents = (
     plan: MostCommonMistakeQueuePlan,
+    sessionGame: DesktopGame | null | undefined,
 ): LiveRangeTodoEventInput[] => {
     const presentationId = overlayDisplayClient.currentPresentation()?.presentationId;
     return plan.eligible.map(({ element, matchedLeadingLabels }) => {
@@ -275,7 +279,11 @@ const createMostCommonMistakeEvents = (
             context,
         } as unknown as JsonValue,
         callback: ({ signal }) => showComparisonPayloadForHold(
-            { title, comparison },
+            {
+                title,
+                comparison,
+                ...(sessionGame !== undefined ? { game: sessionGame } : {}),
+            },
             signal,
             presentationId,
         ),
@@ -385,11 +393,12 @@ const AnalysisResultCard: React.FC<{
     element: AnalysisResultElement;
     resultNumber: number;
     showElementId: boolean;
-}> = ({ element, resultNumber, showElementId }) => {
+    sessionGame?: DesktopGame | null;
+}> = ({ element, resultNumber, showElementId, sessionGame }) => {
     const [comparisonOpen, setComparisonOpen] = React.useState(false);
     const metadataEntries = Object.entries(element.metadata ?? {})
         .filter(([key]) => !HIDDEN_METADATA_KEYS.has(key));
-    const hasComparison = hasComparableDriverExpertData(element.comparison);
+    const hasComparison = hasComparableDriverExpertData(element.comparison, sessionGame ?? null);
 
     const card = (
         <Box
@@ -472,14 +481,11 @@ const AnalysisResultCard: React.FC<{
                 {comparisonOpen && (
                     <DriverExpertComparisonGraph
                         data={element.comparison}
+                        game={sessionGame}
                         title={element.title
                             ? `${element.title}: Driver vs Expert`
                             : 'Driver vs Expert'}
-                        layout={{
-                            chartHeight: 180,
-                            trajectoryHeight: 210,
-                            minColumnWidth: 300,
-                        }}
+                        layout={{ trajectoryHeight: 300 }}
                     />
                 )}
             </HoverCard.Content>
@@ -494,6 +500,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     width = '100%',
     height = '100%',
     showElementId = true,
+    sessionGame,
     onUpdate,
     onDisable,
 }, forwardedRef) => {
@@ -562,8 +569,9 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             filteredElements,
             recognizedSubLabels,
             mistakeFrequencyData,
+            sessionGame ?? null,
         ),
-        [filteredElements, mistakeFrequencyData, recognizedSubLabels],
+        [filteredElements, mistakeFrequencyData, recognizedSubLabels, sessionGame],
     );
     const graphSubject = mainLabelFilter === 'MSP' ? 'Training' : 'Racing';
     const mistakeFrequencySpec = React.useMemo<GraphSpec>(() => ({
@@ -627,7 +635,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         const requestId = ++queueRequestSequenceRef.current;
         const prepared: PendingComparisonQueue = {
             requestId,
-            events: createMostCommonMistakeEvents(mostCommonQueuePlan),
+            events: createMostCommonMistakeEvents(mostCommonQueuePlan, sessionGame),
             skippedCount: mostCommonQueuePlan.skippedCount,
         };
         pendingQueueRef.current = prepared;
@@ -678,6 +686,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         drainPendingQueue,
         mostCommonQueuePlan,
         queueInProgress,
+        sessionGame,
     ]);
 
     const queueButtonDisabled = queueInProgress || mostCommonQueuePlan.eligible.length === 0;
@@ -763,6 +772,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                                 key={element.id}
                                 resultNumber={index + 1}
                                 showElementId={showElementId}
+                                sessionGame={sessionGame}
                             />
                         ))}
                     </Box>

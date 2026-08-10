@@ -211,8 +211,6 @@ const buildAnalysisElements = (
         ? adaptAnalysisResultsComparison({
             baselineRecords: records,
             expertReferenceData: segment.expert_reference_data,
-            startIndex: segment.start_index,
-            endIndex: segment.end_index,
         })
         : undefined;
     return {
@@ -250,8 +248,24 @@ const ensureAnalysisResultsChart = async (
     context: RefAiCommandContext,
     elements: AnalysisResultElement[],
 ) => {
-    const manager = getManager(context);
+    const directory = getDirectory(context);
     const name = getSingletonVisualizationComponentName('analysis-results');
+    if (directory.findComponentRef<AnalysisResultsChartHandle>(name)?.current) {
+        const chart = resolveNamedComponentHandle<AnalysisResultsChartHandle>(directory, name);
+        chart.replaceAnalysisResults({ elements });
+        const instance = getManager(context).getCurrentVisualizations()
+            .find((visualization) => visualization.name === name);
+        return {
+            success: true,
+            message: `Reused chart '${name}'.`,
+            componentName: name,
+            chartId: instance?.id,
+            chartType: instance?.type || 'analysis-results',
+            reused: true,
+        };
+    }
+
+    const manager = getManager(context);
     const requested = manager.requestVisualization({
         name,
         type: 'analysis-results',
@@ -259,10 +273,8 @@ const ensureAnalysisResultsChart = async (
     });
     if (!requested.success) return requested;
     const mountedName = requested.componentName || name;
-    const chart = await awaitNamedComponentHandle<AnalysisResultsChartHandle>(
-        getDirectory(context),
-        mountedName,
-    );
+    await directory.awaitComponentRef<AnalysisResultsChartHandle>(mountedName);
+    const chart = resolveNamedComponentHandle<AnalysisResultsChartHandle>(directory, mountedName);
     chart.replaceAnalysisResults({ elements });
     return { ...requested, componentName: mountedName };
 };
@@ -633,6 +645,7 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         if (!baseline?.records?.length) {
             return { status: 'error', error: 'baseline_lap_record_required', message: 'Live recorded analysis requires a recorded baseline lap before it can run.' };
         }
+        let result: SegmentClassificationResult;
         try {
             const response = await apiService.post('/racing-session/analyze-live-recorded-analysis', {
                 track: baseline.track,
@@ -640,13 +653,13 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
                 baseline_lap: baseline.lap,
                 records: baseline.records,
             }, { timeout: 120000 });
-            const result = normalizeSegmentClassificationResult(response.data as any, baseline.id);
-            const compact = compactTelemetryAnalysis(result, chat, getLimit(args.limit, 8));
-            const chart = await ensureAnalysisResultsChart(context, buildAnalysisElements(result, chat, baseline.records));
-            return { ...compact, source: 'baseline_lap_record', baseline: { id: baseline.id, lap: baseline.lap, track: baseline.track, car: baseline.car, sample_count: baseline.sample_count, captured_at: baseline.captured_at }, chartId: chart.chartId ?? null, component_name: chart.componentName };
+            result = normalizeSegmentClassificationResult(response.data as any, baseline.id);
         } catch (error: any) {
             return { status: 'error', error: 'recorded_analysis_failed', message: error?.data?.message || error?.message || 'Failed to run live baseline analysis.' };
         }
+        const compact = compactTelemetryAnalysis(result, chat, getLimit(args.limit, 8));
+        const chart = await ensureAnalysisResultsChart(context, buildAnalysisElements(result, chat, baseline.records));
+        return { ...compact, source: 'baseline_lap_record', baseline: { id: baseline.id, lap: baseline.lap, track: baseline.track, car: baseline.car, sample_count: baseline.sample_count, captured_at: baseline.captured_at }, chartId: chart.chartId ?? null, component_name: chart.componentName };
     },
     async set_procedure_plan(args) {
         const plan = buildProcedurePlan({ ...args, event: normalizeOptionalString(args.event) || 'procedure_plan_started' });

@@ -11,10 +11,16 @@ const BRAKE_COLOR = '#ff4d62';
 const TRACK_VIEWBOX_WIDTH = 760;
 const TRACK_VIEWBOX_HEIGHT = 220;
 const TRACK_PADDING = 28;
+const TELEMETRY_POD_WIDTH = 184;
+const TELEMETRY_POD_HEIGHT = 102;
+const TELEMETRY_POD_GAP = 14;
+const DRIVER_MARKER_HALO_RADIUS = 11;
+const EXPERT_MARKER_HALO_RADIUS = 10;
 const PEDAL_START_ANGLE = -60;
 const PEDAL_SWEEP_ANGLE = 60;
 const PEDAL_CENTER = { x: 66, y: 58 };
 const PEDAL_RADIUS = 42;
+const PEDAL_GAUGE_SCALE = 0.62;
 
 export interface DriverExpertTrajectoryPoint {
     x: number;
@@ -49,8 +55,10 @@ export interface DriverExpertComparisonAvailability {
 }
 
 export interface DriverExpertComparisonLayout {
+    /** @deprecated Retained as a no-op for backwards compatibility. */
     chartHeight?: number | string;
     trajectoryHeight?: number | string;
+    /** @deprecated Retained as a no-op for backwards compatibility. */
     minColumnWidth?: number | string;
 }
 
@@ -60,6 +68,7 @@ export interface DriverExpertComparisonGraphProps {
     className?: string;
     width?: number | string;
     layout?: DriverExpertComparisonLayout;
+    game?: DesktopGame | null;
 }
 
 type ReplayContinuousKey = 'trackPosition' | 'gas' | 'brake';
@@ -116,6 +125,19 @@ interface TrackGeometry {
     project: (point: PlottingTrajectoryPoint | undefined) => PositionedTrajectoryPoint | undefined;
 }
 
+type ComparisonIdentity = 'driver' | 'expert';
+
+interface TelemetryPodPosition {
+    x: number;
+    y: number;
+}
+
+interface FollowedCompetitor {
+    marker: PositionedTrajectoryPoint;
+    pod: TelemetryPodPosition;
+    haloRadius: number;
+}
+
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 );
@@ -147,10 +169,13 @@ const normalizeSourceTrajectory = (value: unknown): DriverExpertTrajectoryPoint 
 const toPlottingTrajectory = (
     value: unknown,
     verticalAxis: 'y' | 'z',
+    flipVerticalAxis = false,
 ): PlottingTrajectoryPoint | undefined => {
     const source = normalizeSourceTrajectory(value);
     const vertical = source ? finiteNumber(source[verticalAxis]) : undefined;
-    return source && vertical !== undefined ? { x: source.x, y: vertical } : undefined;
+    return source && vertical !== undefined
+        ? { x: source.x, y: flipVerticalAxis ? -vertical : vertical }
+        : undefined;
 };
 
 const selectPlottingReplay = (
@@ -158,13 +183,18 @@ const selectPlottingReplay = (
     detectedGame: DesktopGame | null,
 ): DriverExpertReplay<PlottingTrajectoryPoint> | undefined => {
     if (!replay) return undefined;
-    const driverVerticalAxis = detectedGame === 'acc' ? 'z' : 'y';
+    const isAcc = detectedGame === 'acc';
+    const driverVerticalAxis = isAcc ? 'z' : 'y';
     const mapStream = (
         stream: readonly ReplayStreamPoint[],
         verticalAxis: 'y' | 'z',
     ): ReplayStreamPoint<PlottingTrajectoryPoint>[] => stream.map((point) => {
         const { trajectory, ...values } = point;
-        const plottingPoint = toPlottingTrajectory(trajectory, verticalAxis);
+        const plottingPoint = toPlottingTrajectory(
+            trajectory,
+            verticalAxis,
+            isAcc,
+        );
         return {
             ...values,
             ...(plottingPoint ? { trajectory: plottingPoint } : {}),
@@ -312,135 +342,6 @@ const buildUnwrappedReplayStream = (
     return points.length ? points : undefined;
 };
 
-const shiftReplayStream = (
-    stream: readonly ReplayStreamPoint[],
-    lapOffset: number,
-): ReplayStreamPoint[] => stream.map((point) => ({
-    ...point,
-    trackPosition: point.trackPosition + lapOffset,
-}));
-
-const interpolateTrajectoryAtPosition = (
-    previous: DriverExpertTrajectoryPoint | undefined,
-    next: DriverExpertTrajectoryPoint | undefined,
-    ratio: number,
-): DriverExpertTrajectoryPoint | undefined => {
-    if (!previous || !next) return undefined;
-    const interpolateAxis = (axis: 'x' | 'y' | 'z'): number | undefined => {
-        const previousValue = finiteNumber(previous[axis]);
-        const nextValue = finiteNumber(next[axis]);
-        return previousValue !== undefined && nextValue !== undefined
-            ? previousValue + ((nextValue - previousValue) * ratio)
-            : undefined;
-    };
-    const x = interpolateAxis('x');
-    const y = interpolateAxis('y');
-    const z = interpolateAxis('z');
-    if (x === undefined || (y === undefined && z === undefined)) return undefined;
-    return {
-        x,
-        ...(y !== undefined ? { y } : {}),
-        ...(z !== undefined ? { z } : {}),
-    };
-};
-
-const interpolateValueAtPosition = (
-    previous: number | undefined,
-    next: number | undefined,
-    ratio: number,
-): number | undefined => (
-    previous !== undefined && next !== undefined
-        ? previous + ((next - previous) * ratio)
-        : undefined
-);
-
-const trimReplayStreamToPosition = (
-    stream: readonly ReplayStreamPoint[],
-    startPosition: number,
-): ReplayStreamPoint[] | undefined => {
-    const firstAtOrAfter = stream.findIndex((point) => (
-        point.trackPosition + POSITION_EPSILON >= startPosition
-    ));
-    if (firstAtOrAfter < 0) return undefined;
-
-    const exactPoint = stream[firstAtOrAfter];
-    if (Math.abs(exactPoint.trackPosition - startPosition) <= POSITION_EPSILON) {
-        return [
-            { ...exactPoint, trackPosition: startPosition },
-            ...stream.slice(firstAtOrAfter + 1),
-        ];
-    }
-    if (firstAtOrAfter === 0) return undefined;
-
-    const previous = stream[firstAtOrAfter - 1];
-    const next = stream[firstAtOrAfter];
-    const positionSpan = next.trackPosition - previous.trackPosition;
-    if (positionSpan <= 0) return undefined;
-    const ratio = (startPosition - previous.trackPosition) / positionSpan;
-    const gas = interpolateValueAtPosition(previous.gas, next.gas, ratio);
-    const brake = interpolateValueAtPosition(previous.brake, next.brake, ratio);
-    const trajectory = interpolateTrajectoryAtPosition(
-        previous.trajectory,
-        next.trajectory,
-        ratio,
-    );
-    let gearIndex = firstAtOrAfter - 1;
-    while (gearIndex >= 0 && finiteNumber(stream[gearIndex].gear) === undefined) {
-        gearIndex -= 1;
-    }
-    const gear = gearIndex >= 0 ? finiteNumber(stream[gearIndex].gear) : undefined;
-    return [{
-        timeMs: previous.timeMs + ((next.timeMs - previous.timeMs) * ratio),
-        trackPosition: startPosition,
-        ...(trajectory ? { trajectory } : {}),
-        ...(gas !== undefined ? { gas } : {}),
-        ...(brake !== undefined ? { brake } : {}),
-        ...(gear !== undefined ? { gear } : {}),
-    }, ...stream.slice(firstAtOrAfter)];
-};
-
-const chooseExpertLapOffset = (
-    driver: readonly ReplayStreamPoint[],
-    expert: readonly ReplayStreamPoint[],
-): number | undefined => {
-    const driverStart = driver[0].trackPosition;
-    const driverEnd = driver[driver.length - 1].trackPosition;
-    const expertStart = expert[0].trackPosition;
-    const expertEnd = expert[expert.length - 1].trackPosition;
-    const firstOffset = Math.ceil(driverStart - expertEnd - POSITION_EPSILON);
-    const lastOffset = Math.floor(driverEnd - expertStart + POSITION_EPSILON);
-    let best: { offset: number; overlap: number; initialGap: number } | undefined;
-
-    for (let offset = firstOffset; offset <= lastOffset; offset += 1) {
-        const shiftedStart = expertStart + offset;
-        const shiftedEnd = expertEnd + offset;
-        const overlapStart = Math.max(driverStart, shiftedStart);
-        const overlapEnd = Math.min(driverEnd, shiftedEnd);
-        if (overlapEnd + POSITION_EPSILON < overlapStart) continue;
-        const candidate = {
-            offset,
-            overlap: Math.max(0, overlapEnd - overlapStart),
-            initialGap: Math.abs(driverStart - shiftedStart),
-        };
-        if (
-            !best
-            || candidate.overlap > best.overlap + POSITION_EPSILON
-            || (
-                Math.abs(candidate.overlap - best.overlap) <= POSITION_EPSILON
-                && candidate.initialGap < best.initialGap - POSITION_EPSILON
-            )
-            || (
-                Math.abs(candidate.overlap - best.overlap) <= POSITION_EPSILON
-                && Math.abs(candidate.initialGap - best.initialGap) <= POSITION_EPSILON
-                && Math.abs(candidate.offset) < Math.abs(best.offset)
-            )
-        ) {
-            best = candidate;
-        }
-    }
-    return best?.offset;
-};
-
 const getReplayStreamDurationMs = (stream: readonly ReplayStreamPoint[]): number => (
     stream.length <= 1 ? 0 : Math.max(0, stream[stream.length - 1].timeMs - stream[0].timeMs)
 );
@@ -450,26 +351,15 @@ const buildDriverExpertReplay = (
 ): DriverExpertReplay | undefined => {
     const samples = data && Array.isArray(data.samples) ? data.samples : [];
     const driver = buildUnwrappedReplayStream(samples, 'driver');
-    const unshiftedExpert = buildUnwrappedReplayStream(samples, 'expert');
-    if (!driver || !unshiftedExpert) return undefined;
-
-    const expertLapOffset = chooseExpertLapOffset(driver, unshiftedExpert);
-    if (expertLapOffset === undefined) return undefined;
-    const expert = shiftReplayStream(unshiftedExpert, expertLapOffset);
-    const sharedStartPosition = Math.max(
-        driver[0].trackPosition,
-        expert[0].trackPosition,
-    );
-    const alignedDriver = trimReplayStreamToPosition(driver, sharedStartPosition);
-    const alignedExpert = trimReplayStreamToPosition(expert, sharedStartPosition);
-    if (!alignedDriver || !alignedExpert) return undefined;
+    const expert = buildUnwrappedReplayStream(samples, 'expert');
+    if (!driver || !expert) return undefined;
 
     return {
-        driver: alignedDriver,
-        expert: alignedExpert,
+        driver,
+        expert,
         durationMs: Math.max(
-            getReplayStreamDurationMs(alignedDriver),
-            getReplayStreamDurationMs(alignedExpert),
+            getReplayStreamDurationMs(driver),
+            getReplayStreamDurationMs(expert),
         ),
     };
 };
@@ -806,146 +696,309 @@ const trajectoryPath = (points: readonly PositionedTrajectoryPoint[]): string =>
     ))
     .join(' ');
 
+const positionTelemetryPod = (
+    marker: PositionedTrajectoryPoint,
+    identity: ComparisonIdentity,
+): TelemetryPodPosition => (identity === 'driver' ? {
+    x: marker.svgX + TELEMETRY_POD_GAP,
+    y: marker.svgY - TELEMETRY_POD_HEIGHT - TELEMETRY_POD_GAP,
+} : {
+    x: marker.svgX - TELEMETRY_POD_WIDTH - TELEMETRY_POD_GAP,
+    y: marker.svgY + TELEMETRY_POD_GAP,
+});
+
+const getFollowCameraTransform = (
+    competitors: readonly FollowedCompetitor[],
+    viewportHeight: number,
+): string => {
+    if (!competitors.length) return 'matrix(1 0 0 1 0 0)';
+
+    const minX = Math.min(...competitors.flatMap(({ marker, pod, haloRadius }) => [
+        marker.svgX - haloRadius,
+        pod.x,
+    ]));
+    const maxX = Math.max(...competitors.flatMap(({ marker, pod, haloRadius }) => [
+        marker.svgX + haloRadius,
+        pod.x + TELEMETRY_POD_WIDTH,
+    ]));
+    const minY = Math.min(...competitors.flatMap(({ marker, pod, haloRadius }) => [
+        marker.svgY - haloRadius,
+        pod.y,
+    ]));
+    const maxY = Math.max(...competitors.flatMap(({ marker, pod, haloRadius }) => [
+        marker.svgY + haloRadius,
+        pod.y + TELEMETRY_POD_HEIGHT,
+    ]));
+    const usableWidth = TRACK_VIEWBOX_WIDTH - (TRACK_PADDING * 2);
+    const usableHeight = viewportHeight - (TRACK_PADDING * 2);
+    const scale = Math.min(usableWidth / (maxX - minX), usableHeight / (maxY - minY));
+    const translateX = (TRACK_VIEWBOX_WIDTH / 2) - (((minX + maxX) / 2) * scale);
+    const translateY = (viewportHeight / 2) - (((minY + maxY) / 2) * scale);
+    const cameraNumber = (value: number): string => Number(value.toFixed(6)).toString();
+
+    return `matrix(${cameraNumber(scale)} 0 0 ${cameraNumber(scale)} ${cameraNumber(translateX)} ${cameraNumber(translateY)})`;
+};
+
+const getTelemetryLeaderEnd = (
+    marker: PositionedTrajectoryPoint,
+    position: TelemetryPodPosition,
+): { x: number; y: number } => {
+    const markerX = marker.svgX - position.x;
+    const markerY = marker.svgY - position.y;
+    let x = clamp(markerX, 0, TELEMETRY_POD_WIDTH);
+    let y = clamp(markerY, 0, TELEMETRY_POD_HEIGHT);
+    if (
+        markerX >= 0
+        && markerX <= TELEMETRY_POD_WIDTH
+        && markerY >= 0
+        && markerY <= TELEMETRY_POD_HEIGHT
+    ) {
+        const edgeDistances = [markerX, TELEMETRY_POD_WIDTH - markerX, markerY,
+            TELEMETRY_POD_HEIGHT - markerY];
+        const nearestEdge = edgeDistances.indexOf(Math.min(...edgeDistances));
+        if (nearestEdge === 0) x = 0;
+        if (nearestEdge === 1) x = TELEMETRY_POD_WIDTH;
+        if (nearestEdge === 2) y = 0;
+        if (nearestEdge === 3) y = TELEMETRY_POD_HEIGHT;
+    }
+    return { x, y };
+};
+
 const PedalGauge: React.FC<{
     available: boolean;
-    identity: 'driver' | 'expert';
+    identity: ComparisonIdentity;
     label: 'Throttle' | 'Brake';
     value: number | undefined;
-}> = ({ available, identity, label, value }) => {
+    x: number;
+}> = ({ available, identity, label, value, x }) => {
     const normalizedValue = clamp(value ?? 0, 0, 1);
+    const percentage = Math.round(normalizedValue * 100);
     const angle = getPedalGaugeAngle(normalizedValue);
     const armEnd = polarPoint(angle, PEDAL_RADIUS - 4);
     const marker = polarPoint(angle);
     const color = label === 'Throttle' ? THROTTLE_COLOR : BRAKE_COLOR;
-    const testId = `${identity}-${label.toLowerCase()}-gauge`;
+    const channel = label.toLowerCase();
 
-    if (!available) {
-        return (
-            <div
-                className={[styles.gauge, styles.gaugeUnavailable].join(' ')}
-                data-testid={testId}
-                data-state="unavailable"
-                aria-label={`${identity} ${label} unavailable`}
-            >
-                <svg className={styles.gaugeSvg} viewBox="0 0 132 112" aria-hidden="true">
-                    <path className={styles.gaugeTrack} d={PEDAL_ARC_PATH} pathLength={100} />
-                </svg>
-                <span className={styles.gaugeLabel}>{label}</span>
-                <span className={styles.gaugeUnavailableValue}>N/A</span>
-            </div>
-        );
-    }
-
-    const percentage = Math.round(normalizedValue * 100);
     return (
-        <div
-            className={styles.gauge}
-            role="meter"
-            aria-label={`${identity} ${label}`}
-            aria-valuemin={0}
-            aria-valuemax={100}
-            aria-valuenow={percentage}
-            data-testid={testId}
-            data-value={formatNumber(normalizedValue)}
-            data-gauge-angle={formatNumber(angle)}
+        <g
+            className={!available ? styles.gaugeUnavailable : undefined}
+            transform={`translate(${x} 27) scale(${PEDAL_GAUGE_SCALE})`}
+            role={available ? 'meter' : undefined}
+            aria-label={available ? `${identity} ${label}` : `${identity} ${label} unavailable`}
+            aria-valuemin={available ? 0 : undefined}
+            aria-valuemax={available ? 100 : undefined}
+            aria-valuenow={available ? percentage : undefined}
+            data-testid={`${identity}-${channel}-gauge`}
+            data-state={available ? 'available' : 'unavailable'}
+            data-value={available ? formatNumber(normalizedValue) : undefined}
+            data-gauge-angle={available ? formatNumber(angle) : undefined}
         >
-            <svg className={styles.gaugeSvg} viewBox="0 0 132 112" aria-hidden="true">
-                <path className={styles.gaugeTrack} d={PEDAL_ARC_PATH} pathLength={100} />
-                <path
-                    className={styles.gaugeFill}
-                    d={PEDAL_ARC_PATH}
-                    pathLength={100}
-                    stroke={color}
-                    strokeDasharray={`${normalizedValue * 100} 100`}
-                />
-                <line
-                    className={styles.gaugeArm}
-                    x1={PEDAL_CENTER.x}
-                    y1={PEDAL_CENTER.y}
-                    x2={armEnd.x}
-                    y2={armEnd.y}
-                    stroke={color}
-                />
-                <circle cx={PEDAL_CENTER.x} cy={PEDAL_CENTER.y} r="4" fill={color} />
-                <circle
-                    className={styles.gaugeMarker}
-                    cx={marker.x}
-                    cy={marker.y}
-                    r="4.5"
-                    fill={color}
-                />
-            </svg>
-            <span className={styles.gaugeLabel}>{label}</span>
-            <span className={styles.gaugeValue}>{percentage}<small>%</small></span>
-        </div>
+            <path className={styles.gaugeTrack} d={PEDAL_ARC_PATH} pathLength={100} />
+            {available && (
+                <>
+                    <path
+                        className={styles.gaugeFill}
+                        d={PEDAL_ARC_PATH}
+                        pathLength={100}
+                        stroke={color}
+                        strokeDasharray={`${normalizedValue * 100} 100`}
+                    />
+                    <line
+                        className={styles.gaugeArm}
+                        x1={PEDAL_CENTER.x}
+                        y1={PEDAL_CENTER.y}
+                        x2={armEnd.x}
+                        y2={armEnd.y}
+                        stroke={color}
+                    />
+                    <circle cx={PEDAL_CENTER.x} cy={PEDAL_CENTER.y} r="4" fill={color} />
+                    <circle
+                        className={styles.gaugeMarker}
+                        cx={marker.x}
+                        cy={marker.y}
+                        r="4.5"
+                        fill={color}
+                    />
+                </>
+            )}
+            <text className={styles.gaugeLabel} x="8" y="102">
+                {label}
+            </text>
+            <text
+                className={available ? styles.gaugeValue : styles.gaugeUnavailableValue}
+                x="122"
+                y="102"
+                textAnchor="end"
+            >
+                {available ? `${percentage}%` : 'N/A'}
+            </text>
+        </g>
     );
 };
 
-const CompetitorPanel: React.FC<{
-    identity: 'driver' | 'expert';
+const TelemetryPod: React.FC<{
+    identity: ComparisonIdentity;
+    position: TelemetryPodPosition;
+    marker: PositionedTrajectoryPoint;
     gasAvailable: boolean;
     brakeAvailable: boolean;
     gearAvailable: boolean;
     gas: number | undefined;
     brake: number | undefined;
     gear: number | undefined;
-}> = ({ identity, gasAvailable, brakeAvailable, gearAvailable, gas, brake, gear }) => {
+}> = ({
+    identity,
+    position,
+    marker,
+    gasAvailable,
+    brakeAvailable,
+    gearAvailable,
+    gas,
+    brake,
+    gear,
+}) => {
     const isDriver = identity === 'driver';
     const label = isDriver ? 'Driver' : 'Expert';
     const color = isDriver ? DRIVER_COMPARISON_COLOR : EXPERT_COMPARISON_COLOR;
-    const gearValue = gearAvailable && gear !== undefined ? Math.round(gear) : '—';
+    const leaderEnd = getTelemetryLeaderEnd(marker, position);
+    const gearValue = gearAvailable && gear !== undefined ? Math.round(gear) : 'N/A';
+    const transform = `translate(${formatNumber(position.x)} ${formatNumber(position.y)})`;
 
     return (
-        <section
-            className={styles.competitorPanel}
-            aria-label={`${label} live pedal telemetry`}
+        <g
+            className={styles.telemetryPod}
+            transform={transform}
+            role="group"
+            aria-label={`${label} live telemetry`}
             style={{ '--identity-color': color } as React.CSSProperties}
-            data-testid={`${identity}-panel`}
+            data-testid={`${identity}-telemetry-pod`}
         >
-            <header className={styles.competitorHeader}>
-                <div className={styles.identity}>
-                    <span className={styles.identityMarker} />
-                    <span>{label}</span>
-                </div>
-                <div
-                    className={[styles.gear, gearAvailable ? '' : styles.gearUnavailable]
-                        .filter(Boolean).join(' ')}
-                    data-testid={`${identity}-gear`}
-                    data-state={gearAvailable ? 'available' : 'unavailable'}
-                >
-                    <span className={styles.gearLabel}>Gear</span>
-                    <strong>{gearValue}</strong>
-                </div>
-            </header>
-            <div className={styles.gaugeRow}>
-                <PedalGauge
-                    available={gasAvailable}
-                    identity={identity}
-                    label="Throttle"
-                    value={gas}
-                />
-                <PedalGauge
-                    available={brakeAvailable}
-                    identity={identity}
-                    label="Brake"
-                    value={brake}
-                />
-            </div>
-        </section>
+            <line
+                className={styles.telemetryLeader}
+                x1={marker.svgX - position.x}
+                y1={marker.svgY - position.y}
+                x2={leaderEnd.x}
+                y2={leaderEnd.y}
+                stroke={color}
+                data-testid={`${identity}-telemetry-leader`}
+            />
+            <rect
+                className={styles.telemetryPodBody}
+                width={TELEMETRY_POD_WIDTH}
+                height={TELEMETRY_POD_HEIGHT}
+                rx="7"
+            />
+            <rect width="3" height={TELEMETRY_POD_HEIGHT} rx="1.5" fill={color} />
+            <circle className={styles.telemetryIdentityDot} cx="13" cy="14" r="3" fill={color} />
+            <text className={styles.telemetryIdentity} x="22" y="17" fill={color}>{label}</text>
+            <g
+                className={!gearAvailable ? styles.telemetryGearUnavailable : undefined}
+                data-testid={`${identity}-gear`}
+                data-state={gearAvailable ? 'available' : 'unavailable'}
+            >
+                <text className={styles.telemetryGearLabel} x="129" y="17">Gear</text>
+                <text className={styles.telemetryGearValue} x="173" y="18" textAnchor="end">
+                    {gearValue}
+                </text>
+            </g>
+            <line className={styles.telemetryDivider} x1="10" y1="25" x2="174" y2="25" />
+            <PedalGauge
+                available={gasAvailable}
+                identity={identity}
+                label="Throttle"
+                value={gas}
+                x={4}
+            />
+            <PedalGauge
+                available={brakeAvailable}
+                identity={identity}
+                label="Brake"
+                value={brake}
+                x={98}
+            />
+        </g>
     );
 };
 
 const TrackReplay: React.FC<{
-    available: boolean;
+    availability: DriverExpertComparisonAvailability;
     frame: ReplayFrame;
     geometry: TrackGeometry;
     height: number | string;
     filterId: string;
-}> = ({ available, frame, geometry, height, filterId }) => {
+}> = ({ availability, frame, geometry, height, filterId }) => {
+    const svgRef = React.useRef<SVGSVGElement>(null);
+    const [viewportHeight, setViewportHeight] = React.useState(TRACK_VIEWBOX_HEIGHT);
+
+    React.useLayoutEffect(() => {
+        const svg = svgRef.current;
+        if (!svg) return undefined;
+
+        const updateViewportHeight = ({ width, height: renderedHeight }: {
+            width: number;
+            height: number;
+        }) => {
+            if (width <= 0 || renderedHeight <= 0) return;
+            const minimumHeight = (TRACK_PADDING * 2) + 1;
+            const nextHeight = Math.max(
+                minimumHeight,
+                (TRACK_VIEWBOX_WIDTH * renderedHeight) / width,
+            );
+            setViewportHeight((currentHeight) => (
+                Math.abs(currentHeight - nextHeight) < 0.01 ? currentHeight : nextHeight
+            ));
+        };
+
+        updateViewportHeight(svg.getBoundingClientRect());
+        if (typeof ResizeObserver === 'undefined') return undefined;
+
+        const observer = new ResizeObserver((entries) => {
+            const entry = entries[0];
+            if (entry) updateViewportHeight(entry.contentRect);
+        });
+        observer.observe(svg);
+        return () => observer.disconnect();
+    }, []);
+
     const driverMarker = geometry.project(frame.driverTrajectory);
     const expertMarker = geometry.project(frame.expertTrajectory);
     const driverPath = trajectoryPath(geometry.driver);
     const expertPath = trajectoryPath(geometry.expert);
+    const driverPod = driverMarker ? positionTelemetryPod(driverMarker, 'driver') : undefined;
+    const expertPod = expertMarker ? positionTelemetryPod(expertMarker, 'expert') : undefined;
+    const followedCompetitors: FollowedCompetitor[] = [
+        ...(driverMarker && driverPod ? [{
+            marker: driverMarker,
+            pod: driverPod,
+            haloRadius: DRIVER_MARKER_HALO_RADIUS,
+        }] : []),
+        ...(expertMarker && expertPod ? [{
+            marker: expertMarker,
+            pod: expertPod,
+            haloRadius: EXPERT_MARKER_HALO_RADIUS,
+        }] : []),
+    ];
+    const cameraTransform = getFollowCameraTransform(followedCompetitors, viewportHeight);
+    const hasTrajectory = Boolean(driverPath || expertPath);
+    const unavailableOffsetY = (viewportHeight - TRACK_VIEWBOX_HEIGHT) / 2;
+
+    const renderPod = (
+        identity: ComparisonIdentity,
+        position: TelemetryPodPosition,
+        marker: PositionedTrajectoryPoint,
+    ) => (
+        <TelemetryPod
+            identity={identity}
+            position={position}
+            marker={marker}
+            gasAvailable={availability.gas}
+            brakeAvailable={availability.brake}
+            gearAvailable={availability.gear}
+            gas={identity === 'driver' ? frame.driverGas : frame.expertGas}
+            brake={identity === 'driver' ? frame.driverBrake : frame.expertBrake}
+            gear={identity === 'driver' ? frame.driverGear : frame.expertGear}
+        />
+    );
 
     return (
         <section
@@ -960,112 +1013,139 @@ const TrackReplay: React.FC<{
                     <span style={{ color: EXPERT_COMPARISON_COLOR }}>Expert trace</span>
                 </div>
             </header>
-            {available ? (
-                <svg
-                    className={styles.trackSvg}
-                    viewBox={`0 0 ${TRACK_VIEWBOX_WIDTH} ${TRACK_VIEWBOX_HEIGHT}`}
-                    preserveAspectRatio="xMidYMid meet"
-                    role="img"
-                    aria-label="Track replay showing Driver and Expert trajectories"
-                    data-testid="comparison-track-map"
-                >
-                    <defs>
-                        <filter id={`${filterId}-driver-glow`} x="-40%" y="-40%" width="180%" height="180%">
-                            <feGaussianBlur stdDeviation="4" result="blur" />
-                            <feMerge>
-                                <feMergeNode in="blur" />
-                                <feMergeNode in="SourceGraphic" />
-                            </feMerge>
-                        </filter>
-                        <filter id={`${filterId}-expert-glow`} x="-40%" y="-40%" width="180%" height="180%">
-                            <feGaussianBlur stdDeviation="3" result="blur" />
-                            <feMerge>
-                                <feMergeNode in="blur" />
-                                <feMergeNode in="SourceGraphic" />
-                            </feMerge>
-                        </filter>
-                    </defs>
-                    <rect className={styles.trackViewport} width="760" height="220" rx="9" />
-                    {driverPath && (
-                        <>
-                            <path className={styles.trackShadow} d={driverPath} />
+            <svg
+                ref={svgRef}
+                className={styles.trackSvg}
+                viewBox={`0 0 ${TRACK_VIEWBOX_WIDTH} ${formatNumber(viewportHeight)}`}
+                preserveAspectRatio="xMidYMid meet"
+                role="img"
+                aria-label={hasTrajectory
+                    ? 'Track replay showing Driver and Expert trajectories'
+                    : 'Trajectory data unavailable'}
+                data-testid={hasTrajectory
+                    ? 'comparison-track-map'
+                    : 'comparison-trajectory-unavailable'}
+            >
+                <defs>
+                    <filter id={`${filterId}-driver-glow`} x="-40%" y="-40%" width="180%" height="180%">
+                        <feGaussianBlur stdDeviation="4" result="blur" />
+                        <feMerge>
+                            <feMergeNode in="blur" />
+                            <feMergeNode in="SourceGraphic" />
+                        </feMerge>
+                    </filter>
+                    <filter id={`${filterId}-expert-glow`} x="-40%" y="-40%" width="180%" height="180%">
+                        <feGaussianBlur stdDeviation="3" result="blur" />
+                        <feMerge>
+                            <feMergeNode in="blur" />
+                            <feMergeNode in="SourceGraphic" />
+                        </feMerge>
+                    </filter>
+                </defs>
+                <rect
+                    className={styles.trackViewport}
+                    width={TRACK_VIEWBOX_WIDTH}
+                    height={viewportHeight}
+                    rx="9"
+                />
+                {hasTrajectory ? (
+                    <g
+                        className={styles.cameraLayer}
+                        transform={cameraTransform}
+                        data-testid="comparison-camera-layer"
+                    >
+                        {driverPath && (
+                            <>
+                                <path className={styles.trackShadow} d={driverPath} />
+                                <path
+                                    className={styles.driverPath}
+                                    d={driverPath}
+                                    filter={`url(#${filterId}-driver-glow)`}
+                                    data-testid="driver-track-path"
+                                />
+                            </>
+                        )}
+                        {expertPath && (
                             <path
-                                className={styles.driverPath}
-                                d={driverPath}
-                                filter={`url(#${filterId}-driver-glow)`}
-                                data-testid="driver-track-path"
+                                className={styles.expertPath}
+                                d={expertPath}
+                                filter={`url(#${filterId}-expert-glow)`}
+                                data-testid="expert-track-path"
                             />
-                        </>
-                    )}
-                    {expertPath && (
+                        )}
+                        {driverMarker && driverPod
+                            && renderPod('driver', driverPod, driverMarker)}
+                        {expertMarker && expertPod
+                            && renderPod('expert', expertPod, expertMarker)}
+                        {driverMarker && (
+                            <g
+                                className={styles.positionMarker}
+                                data-testid="driver-position-marker"
+                                data-x={formatNumber(driverMarker.x)}
+                                data-y={formatNumber(driverMarker.y)}
+                                data-track-position={frame.driverTrackPosition === undefined
+                                    ? undefined
+                                    : formatNumber(frame.driverTrackPosition)}
+                            >
+                                <circle
+                                    className={styles.markerHalo}
+                                    cx={driverMarker.svgX}
+                                    cy={driverMarker.svgY}
+                                    r={DRIVER_MARKER_HALO_RADIUS}
+                                    fill={DRIVER_COMPARISON_COLOR}
+                                />
+                                <circle
+                                    cx={driverMarker.svgX}
+                                    cy={driverMarker.svgY}
+                                    r="5.5"
+                                    fill={DRIVER_COMPARISON_COLOR}
+                                />
+                            </g>
+                        )}
+                        {expertMarker && (
+                            <g
+                                className={styles.positionMarker}
+                                data-testid="expert-position-marker"
+                                data-x={formatNumber(expertMarker.x)}
+                                data-y={formatNumber(expertMarker.y)}
+                                data-track-position={frame.expertTrackPosition === undefined
+                                    ? undefined
+                                    : formatNumber(frame.expertTrackPosition)}
+                            >
+                                <circle
+                                    className={styles.markerHalo}
+                                    cx={expertMarker.svgX}
+                                    cy={expertMarker.svgY}
+                                    r={EXPERT_MARKER_HALO_RADIUS}
+                                    fill={EXPERT_COMPARISON_COLOR}
+                                />
+                                <circle
+                                    cx={expertMarker.svgX}
+                                    cy={expertMarker.svgY}
+                                    r="5"
+                                    fill={EXPERT_COMPARISON_COLOR}
+                                />
+                            </g>
+                        )}
+                    </g>
+                ) : (
+                    <g
+                        className={styles.trackUnavailable}
+                        transform={`translate(0 ${formatNumber(unavailableOffsetY)})`}
+                        role="status"
+                        data-testid="trajectory-unavailable"
+                    >
                         <path
-                            className={styles.expertPath}
-                            d={expertPath}
-                            filter={`url(#${filterId}-expert-glow)`}
-                            data-testid="expert-track-path"
+                            className={styles.placeholderTrack}
+                            d="M 310 87 C 337 68 411 68 446 87 C 467 99 452 113 410 111 C 367 109 333 119 306 104 C 296 98 297 92 310 87 Z"
+                            aria-hidden="true"
                         />
-                    )}
-                    {driverMarker && (
-                        <g
-                            className={styles.positionMarker}
-                            data-testid="driver-position-marker"
-                            data-x={formatNumber(driverMarker.x)}
-                            data-y={formatNumber(driverMarker.y)}
-                            data-track-position={frame.driverTrackPosition === undefined
-                                ? undefined
-                                : formatNumber(frame.driverTrackPosition)}
-                        >
-                            <circle
-                                className={styles.markerHalo}
-                                cx={driverMarker.svgX}
-                                cy={driverMarker.svgY}
-                                r="11"
-                                fill={DRIVER_COMPARISON_COLOR}
-                            />
-                            <circle
-                                cx={driverMarker.svgX}
-                                cy={driverMarker.svgY}
-                                r="5.5"
-                                fill={DRIVER_COMPARISON_COLOR}
-                            />
-                        </g>
-                    )}
-                    {expertMarker && (
-                        <g
-                            className={styles.positionMarker}
-                            data-testid="expert-position-marker"
-                            data-x={formatNumber(expertMarker.x)}
-                            data-y={formatNumber(expertMarker.y)}
-                            data-track-position={frame.expertTrackPosition === undefined
-                                ? undefined
-                                : formatNumber(frame.expertTrackPosition)}
-                        >
-                            <circle
-                                className={styles.markerHalo}
-                                cx={expertMarker.svgX}
-                                cy={expertMarker.svgY}
-                                r="10"
-                                fill={EXPERT_COMPARISON_COLOR}
-                            />
-                            <circle
-                                cx={expertMarker.svgX}
-                                cy={expertMarker.svgY}
-                                r="5"
-                                fill={EXPERT_COMPARISON_COLOR}
-                            />
-                        </g>
-                    )}
-                </svg>
-            ) : (
-                <div
-                    className={styles.trackUnavailable}
-                    role="status"
-                    data-testid="trajectory-unavailable"
-                >
-                    <span className={styles.placeholderTrack} aria-hidden="true" />
-                    <span>Track data unavailable</span>
-                </div>
-            )}
+                        <text x="380" y="58" textAnchor="middle">
+                            Trajectory data unavailable
+                        </text>
+                    </g>
+                )}
+            </svg>
         </section>
     );
 };
@@ -1076,8 +1156,10 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
     className,
     width = '100%',
     layout,
+    game,
 }) => {
     const { detectedGame } = useDesktopGame();
+    const comparisonGame = game === undefined ? detectedGame : game;
     const rawSamples = data?.samples;
     const sourceSamples = React.useMemo(
         () => (Array.isArray(rawSamples) ? [...rawSamples] : []),
@@ -1088,21 +1170,17 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
         [sourceSamples],
     );
     const plottingReplay = React.useMemo(
-        () => selectPlottingReplay(replay, detectedGame),
-        [detectedGame, replay],
+        () => selectPlottingReplay(replay, comparisonGame),
+        [comparisonGame, replay],
     );
     const availability = React.useMemo(
-        () => getDriverExpertComparisonAvailability(data, detectedGame),
-        [data, detectedGame],
+        () => getDriverExpertComparisonAvailability(data, comparisonGame),
+        [comparisonGame, data],
     );
     const hasAnyComparison = Object.values(availability).some(Boolean);
-    const chartHeight = layout?.chartHeight ?? 190;
-    const trajectoryHeight = layout?.trajectoryHeight ?? 220;
+    const trajectoryHeight = layout?.trajectoryHeight ?? 300;
     const rootClassName = [styles.root, className].filter(Boolean).join(' ');
-    const rootStyle = {
-        width: toCssSize(width),
-        '--driver-expert-min-column-width': toCssSize(layout?.minColumnWidth ?? 260),
-    } as React.CSSProperties;
+    const rootStyle = { width: toCssSize(width) } as React.CSSProperties;
     const replayDurationMs = replay?.durationMs ?? 0;
     const elapsedTimeMs = useReplayElapsedTime(plottingReplay, replayDurationMs);
     const frame = React.useMemo(
@@ -1119,13 +1197,13 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
         <section
             className={rootClassName}
             style={rootStyle}
-            aria-label={title ?? 'Driver and Expert comparison'}
+            aria-label={title ?? 'Segment comparison replay'}
             data-testid="driver-expert-comparison"
         >
             <header className={styles.header}>
                 <div className={styles.titleBlock}>
                     <span className={styles.eyebrow}>Driver / Expert</span>
-                    <h2 className={styles.title}>{title ?? 'Segment pedal replay'}</h2>
+                    <h2 className={styles.title}>{title ?? 'Segment comparison replay'}</h2>
                 </div>
                 <div className={styles.replayReadout}>
                     <span
@@ -1159,36 +1237,12 @@ export const DriverExpertComparisonGraph: React.FC<DriverExpertComparisonGraphPr
 
             <div className={styles.hud} data-testid="driver-expert-comparison-grid">
                 <TrackReplay
-                    available={availability.trajectory}
+                    availability={availability}
                     frame={frame}
                     geometry={geometry}
                     height={trajectoryHeight}
                     filterId={filterId}
                 />
-                <div
-                    className={styles.competitorGrid}
-                    style={{ minHeight: toCssSize(chartHeight) }}
-                    data-testid="pedal-panel-region"
-                >
-                    <CompetitorPanel
-                        identity="driver"
-                        gasAvailable={availability.gas}
-                        brakeAvailable={availability.brake}
-                        gearAvailable={availability.gear}
-                        gas={frame.driverGas}
-                        brake={frame.driverBrake}
-                        gear={frame.driverGear}
-                    />
-                    <CompetitorPanel
-                        identity="expert"
-                        gasAvailable={availability.gas}
-                        brakeAvailable={availability.brake}
-                        gearAvailable={availability.gear}
-                        gas={frame.expertGas}
-                        brake={frame.expertBrake}
-                        gear={frame.expertGear}
-                    />
-                </div>
             </div>
         </section>
     );

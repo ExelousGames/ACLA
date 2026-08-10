@@ -282,6 +282,73 @@ describe('FloatingChat overlay stack', () => {
         expect(container.querySelector('.overlay-shell')).toHaveStyle({ width: '760px' });
     });
 
+    it('fills the shell with the newest full-size requester while retaining headers and mounted siblings', () => {
+        const { container } = render(<FloatingChat />);
+        send({ operation: 'upsert', type: 'ai_message', snapshot: { text: 'Compare these laps' } });
+        const baselineAck = send({
+            operation: 'upsert',
+            type: 'baseline_progress',
+            snapshot: {
+                status: 'collecting', progress_percent: 40, detail: 'Still collecting',
+                track: null, car: null, current_lap: null, baseline_lap: null,
+            },
+        });
+        const first = send({
+            operation: 'upsert',
+            type: 'driver_expert_comparison',
+            snapshot: {
+                title: 'First replay',
+                comparison: { samples: [{
+                    driverTimeMs: 0,
+                    expertTimeMs: 0,
+                    driverTrackPosition: 0.2,
+                    expertTrackPosition: 0.2,
+                }] },
+            },
+        });
+        const firstGraph = screen.getByTestId('driver-expert-comparison');
+
+        expect(send({
+            operation: 'request_full_size', target: { instanceId: first.instanceId! },
+        }).accepted).toBe(true);
+
+        const shell = container.querySelector('.overlay-shell');
+        const baselineCard = container.querySelector(`[data-instance-id="${baselineAck.instanceId}"]`);
+        const firstCard = container.querySelector(`[data-instance-id="${first.instanceId}"]`);
+        expect(shell).toHaveClass('overlay-shell--full-size');
+        expect(shell).toHaveStyle({ width: '760px', height: '500px' });
+        expect(shell).toHaveAttribute('data-full-size-instance-id', first.instanceId);
+        expect(resizeFloatingChat).toHaveBeenLastCalledWith(760, 500);
+        expect(screen.getByText('Kestrel')).toBeInTheDocument();
+        expect(screen.getByTestId('overlay-ai-message')).toBeInTheDocument();
+        expect(screen.getByTestId('driver-expert-comparison')).toBe(firstGraph);
+        expect(firstGraph).toHaveClass('floating-pill-comparison--full-size');
+        expect(firstCard).toHaveClass('overlay-list-item--full-size-active');
+        expect(baselineCard).toHaveClass('overlay-list-item--full-size-hidden');
+        expect(baselineCard?.querySelector('[role="progressbar"]')).toBeInTheDocument();
+
+        const second = send({
+            operation: 'upsert',
+            type: 'driver_expert_comparison',
+            snapshot: {
+                title: 'Second replay',
+                comparison: { samples: [{
+                    driverTimeMs: 0,
+                    expertTimeMs: 0,
+                    driverTrackPosition: 0.4,
+                    expertTrackPosition: 0.4,
+                }] },
+            },
+        });
+        send({ operation: 'request_full_size', target: { instanceId: second.instanceId! } });
+        expect(shell).toHaveAttribute('data-full-size-instance-id', second.instanceId);
+        expect(firstCard).toHaveClass('overlay-list-item--full-size-hidden');
+
+        send({ operation: 'exit', target: { instanceId: second.instanceId! }, reason: 'producer_exit' });
+        expect(shell).toHaveAttribute('data-full-size-instance-id', first.instanceId);
+        expect(firstCard).toHaveClass('overlay-list-item--full-size-active');
+    });
+
     it('rejects malformed comparisons and does not render user item controls', () => {
         const { container } = render(<FloatingChat />);
         const rejected = send({

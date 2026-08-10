@@ -886,6 +886,13 @@ describe('AnalysisResultsChart', () => {
             },
             },
         }));
+        expect(sendOverlayDisplayRequest).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            presentationId: 'presentation-analysis',
+            command: {
+                operation: 'request_full_size',
+                target: { instanceId: 'driver_expert_comparison:multiple:test' },
+            },
+        }));
         expect(completed).toBe(false);
 
         act(() => lifecycleListener?.({
@@ -944,8 +951,12 @@ describe('AnalysisResultsChart', () => {
         fireEvent.mouseEnter(card);
 
         expect(screen.getByTestId('driver-expert-comparison')).toBeInTheDocument();
-        expect(screen.getByTestId('driver-throttle-gauge')).toHaveAttribute('data-value', '0.4');
-        expect(screen.getByTestId('trajectory-unavailable')).toHaveTextContent('Track data unavailable');
+        expect(screen.queryByTestId('driver-telemetry-pod')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('expert-telemetry-pod')).not.toBeInTheDocument();
+        expect(screen.queryAllByRole('meter')).toHaveLength(0);
+        expect(screen.getByTestId('trajectory-unavailable')).toHaveTextContent(
+            'Trajectory data unavailable',
+        );
         expect(screen.queryByTestId('comparison-graph-gas')).not.toBeInTheDocument();
         expect(screen.getByTestId('comparison-hover-content')).toHaveAttribute('data-side', 'right');
         expect(screen.getByTestId('comparison-hover-content')).toHaveAttribute(

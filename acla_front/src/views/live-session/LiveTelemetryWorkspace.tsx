@@ -142,6 +142,7 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
                 width="100%"
                 height="100%"
                 showElementId={false}
+                sessionGame={this.context.sessionGame}
                 onUpdate={(data, config) => this.updateVisualization(instance.name, data, config).success}
                 onDisable={() => this.closeVisualization({ name: instance.name }).success}
             />

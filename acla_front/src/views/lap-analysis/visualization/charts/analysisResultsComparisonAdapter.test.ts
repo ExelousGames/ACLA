@@ -1,13 +1,12 @@
 import { adaptAnalysisResultsComparison } from './analysisResultsComparisonAdapter';
 
 const driverRow = (
-    rawIndex: number,
     position: number,
-    player: { x: number; y: number; z: number },
+    timeMs: number,
+    player: { x: number; y?: number; z?: number },
     overrides: Record<string, unknown> = {},
 ) => ({
-    raw_index: rawIndex,
-    Graphics_current_time: rawIndex * 100,
+    Graphics_current_time: timeMs,
     Graphics_normalized_car_position: position,
     Graphics_car_id: [7, 42],
     Graphics_player_car_id: 42,
@@ -22,16 +21,15 @@ const driverRow = (
 });
 
 const expertRow = (
-    rawIndex: number,
     position: number,
+    timeMs: number,
     overrides: Record<string, unknown> = {},
 ) => ({
-    raw_index: rawIndex,
-    expert_optimal_time: rawIndex * 90,
+    expert_optimal_time: timeMs,
     Graphics_normalized_car_position: position,
-    expert_optimal_player_pos_x: rawIndex * 10,
-    expert_optimal_player_pos_y: rawIndex * 5,
-    expert_optimal_player_pos_z: rawIndex * -10,
+    expert_optimal_player_pos_x: timeMs / 10,
+    expert_optimal_player_pos_y: timeMs / 20,
+    expert_optimal_player_pos_z: timeMs / -10,
     expert_optimal_throttle: 0.6,
     expert_optimal_brake: 0.2,
     expert_optimal_gear: 4,
@@ -39,210 +37,252 @@ const expertRow = (
 });
 
 describe('adaptAnalysisResultsComparison', () => {
-    it('joins by raw index, filters the exact inclusive interval, and selects the player car', () => {
+    it('uses Expert source order and normalized positions when raw indexes differ or are absent', () => {
         const result = adaptAnalysisResultsComparison({
             baselineRecords: [
-                driverRow(10, 0.1, { x: 10, y: 11, z: 12 }),
-                driverRow(11, 0.2, { x: 20, y: 21, z: 22 }),
-                driverRow(12, 0.3, { x: 30, y: 31, z: 32 }),
+                driverRow(0.1, 100, { x: 10, y: 11, z: 12 }, { raw_index: 900 }),
+                driverRow(0.2, 200, { x: 20, y: 21, z: 22 }),
+                driverRow(0.3, 300, { x: 30, y: 31, z: 32 }, { raw_index: -1 }),
             ],
             expertReferenceData: [
-                expertRow(12, 0.32),
-                expertRow(9, 0.05),
-                expertRow(10, 0.12),
-                expertRow(11, 0.22),
-                expertRow(13, 0.4),
+                expertRow(0.1, 1_000, { raw_index: 80 }),
+                expertRow(0.2, 1_100),
+                expertRow(0.3, 1_200, { raw_index: 2 }),
             ],
-            startIndex: 10,
-            endIndex: 12,
         });
 
         expect(result.samples).toHaveLength(3);
+        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual([100, 200, 300]);
+        expect(result.samples.map((sample) => sample.expertTimeMs)).toEqual([1_000, 1_100, 1_200]);
         expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([0.1, 0.2, 0.3]);
-        expect(result.samples.map((sample) => sample.expertTrackPosition)).toEqual([0.12, 0.22, 0.32]);
+        expect(result.samples.map((sample) => sample.expertTrackPosition)).toEqual([0.1, 0.2, 0.3]);
         expect(result.samples[0]).toMatchObject({
-            driverTimeMs: 1_000,
-            expertTimeMs: 900,
-            driverTrackPosition: 0.1,
-            expertTrackPosition: 0.12,
             driverTrajectory: { x: 10, y: 11, z: 12 },
             expertTrajectory: { x: 100, y: 50, z: -100 },
             driverGas: 0.5,
             expertGas: 0.6,
         });
-        expect(result.samples[2]).toMatchObject({
-            driverTimeMs: 1_200,
-            expertTimeMs: 1_080,
-        });
     });
 
-    it('keeps timestamp mapping independent of distance through a finish-line crossing', () => {
+    it('interpolates the Driver at an Expert start between samples', () => {
         const result = adaptAnalysisResultsComparison({
             baselineRecords: [
-                driverRow(20, 0.98, { x: 1, y: 1, z: 1 }),
-                driverRow(21, 0.01, { x: 2, y: 2, z: 2 }),
-                driverRow(22, 0.04, { x: 3, y: 3, z: 3 }),
+                driverRow(0.1, 100, { x: 10, y: 20, z: 30 }, {
+                    Physics_gas: 0.2,
+                    Physics_brake: 0.1,
+                    Physics_gear: 2,
+                }),
+                driverRow(0.3, 300, { x: 30, y: 40, z: 50 }, {
+                    Physics_gas: 0.8,
+                    Physics_brake: 0.5,
+                    Physics_gear: 4,
+                }),
+            ],
+            expertReferenceData: [expertRow(0.2, 1_000)],
+        });
+
+        expect(result.samples).toEqual([expect.objectContaining({
+            expertTimeMs: 1_000,
+            driverTrackPosition: 0.2,
+            expertTrackPosition: 0.2,
+            driverTrajectory: { x: 20, y: 30, z: 40 },
+            driverGear: 2,
+        })]);
+        expect(result.samples[0].driverTimeMs).toBeCloseTo(200);
+        expect(result.samples[0].driverGas).toBeCloseTo(0.5);
+        expect(result.samples[0].driverBrake).toBeCloseTo(0.3);
+    });
+
+    it('preserves optional channels only when their interpolation inputs are available', () => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [
+                driverRow(0.1, 100, { x: 10, y: 20 }, {
+                    Physics_gas: undefined,
+                    Physics_brake: 0.1,
+                }),
+                driverRow(0.3, 300, { x: 30, y: 40 }, {
+                    Physics_gas: 0.8,
+                    Physics_brake: 0.5,
+                }),
+            ],
+            expertReferenceData: [expertRow(0.2, 1_000, {
+                expert_optimal_player_pos_x: 50,
+                expert_optimal_player_pos_y: 60,
+                expert_optimal_player_pos_z: undefined,
+                expert_optimal_throttle: Number.POSITIVE_INFINITY,
+                expert_optimal_brake: 0.8,
+            })],
+        });
+
+        expect(result.samples[0]).toMatchObject({
+            driverTrajectory: { x: 20, y: 30 },
+            expertTrajectory: { x: 50, y: 60 },
+            expertBrake: 0.8,
+        });
+        expect(result.samples[0].driverBrake).toBeCloseTo(0.3);
+        expect(result.samples[0]).not.toHaveProperty('driverGas');
+        expect(result.samples[0]).not.toHaveProperty('expertGas');
+    });
+
+    it('steps gear from the preceding Driver sample and advances repeated positions in source order', () => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [
+                driverRow(0.1, 100, { x: 10, y: 10, z: 10 }, {
+                    Physics_gas: 0,
+                    Physics_gear: 1,
+                }),
+                driverRow(0.2, 200, { x: 20, y: 20, z: 20 }, {
+                    Physics_gas: 0.2,
+                    Physics_gear: 2,
+                }),
+                driverRow(0.2, 250, { x: 25, y: 25, z: 25 }, {
+                    Physics_gas: 0.4,
+                    Physics_gear: 3,
+                }),
+                driverRow(0.3, 300, { x: 30, y: 30, z: 30 }, {
+                    Physics_gas: 0.6,
+                    Physics_gear: 4,
+                }),
             ],
             expertReferenceData: [
-                expertRow(20, 0.96),
-                expertRow(21, 0.99),
-                expertRow(22, 0.02),
+                expertRow(0.2, 1_000),
+                expertRow(0.2, 1_100),
+                expertRow(0.25, 1_200),
             ],
-            startIndex: 20,
-            endIndex: 22,
         });
 
-        expect(result.samples.map(({ driverTimeMs, expertTimeMs }) => ({
-            driverTimeMs,
-            expertTimeMs,
-        }))).toEqual([
-            { driverTimeMs: 2_000, expertTimeMs: 1_800 },
-            { driverTimeMs: 2_100, expertTimeMs: 1_890 },
-            { driverTimeMs: 2_200, expertTimeMs: 1_980 },
-        ]);
-        expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([0.98, 0.01, 0.04]);
-        expect(result.samples.map((sample) => sample.expertTrackPosition)).toEqual([0.96, 0.99, 0.02]);
+        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual([200, 250, 275]);
+        expect(result.samples.map((sample) => sample.driverGas)).toEqual([0.2, 0.4, 0.5]);
+        expect(result.samples.map((sample) => sample.driverGear)).toEqual([1, 2, 3]);
     });
 
-    it('retains each available source axis without synthesizing missing coordinates', () => {
+    it('unwraps finish-line crossings before interpolating both streams', () => {
         const result = adaptAnalysisResultsComparison({
-            baselineRecords: [driverRow(25, 0.4, { x: 1, y: 2, z: 3 }, {
-                Graphics_car_coordinates: [
-                    { x: -1, y: -2, z: -3 },
-                    { x: 10, y: 20 },
-                ],
-            })],
-            expertReferenceData: [expertRow(25, 0.4, {
-                expert_optimal_player_pos_x: 30,
-                expert_optimal_player_pos_y: 40,
-                expert_optimal_player_pos_z: undefined,
-            })],
-            startIndex: 25,
-            endIndex: 25,
+            baselineRecords: [
+                driverRow(0.95, 100, { x: 10, y: 10, z: 10 }),
+                driverRow(0.99, 200, { x: 20, y: 20, z: 20 }),
+                driverRow(0.01, 300, { x: 30, y: 30, z: 30 }),
+                driverRow(0.05, 400, { x: 40, y: 40, z: 40 }),
+            ],
+            expertReferenceData: [
+                expertRow(0.98, 1_000),
+                expertRow(0, 1_100),
+                expertRow(0.04, 1_200),
+            ],
         });
 
-        expect(result.samples[0].driverTrajectory).toEqual({ x: 10, y: 20 });
-        expect(result.samples[0].expertTrajectory).toEqual({ x: 30, y: 40 });
+        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual([175, 250, 375]);
+        expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([0.98, 0, 0.04]);
+        expect(result.samples.map((sample) => sample.expertTrackPosition)).toEqual([0.98, 0, 0.04]);
     });
 
-    it('omits non-finite values without losing other comparable channels', () => {
+    it('chooses the earliest complete Driver lap when more than one lap covers the range', () => {
         const result = adaptAnalysisResultsComparison({
-            baselineRecords: [driverRow(30, 0.5, { x: Infinity, y: 2, z: 3 }, {
-                Graphics_car_coordinates: [
-                    { x: Infinity, y: 1, z: 1 },
-                    { x: Infinity, y: 2, z: 3 },
-                ],
-                Physics_gas: Infinity,
-                Physics_brake: 0.3,
-                Physics_gear: Number.NaN,
-            })],
-            expertReferenceData: [expertRow(30, 0.5, {
-                expert_optimal_player_pos_x: Number.NaN,
-                expert_optimal_throttle: Number.NaN,
-                expert_optimal_brake: 0.4,
-                expert_optimal_gear: Infinity,
-            })],
-            startIndex: 30,
-            endIndex: 30,
+            baselineRecords: [
+                driverRow(0.1, 100, { x: 10, y: 10, z: 10 }),
+                driverRow(0.3, 200, { x: 20, y: 20, z: 20 }),
+                driverRow(0.9, 300, { x: 30, y: 30, z: 30 }),
+                driverRow(0.1, 400, { x: 40, y: 40, z: 40 }),
+                driverRow(0.3, 500, { x: 50, y: 50, z: 50 }),
+            ],
+            expertReferenceData: [
+                expertRow(0.15, 1_000),
+                expertRow(0.25, 1_100),
+            ],
         });
 
-        expect(result.samples).toEqual([{
-            driverTimeMs: 3_000,
-            expertTimeMs: 2_700,
-            driverTrackPosition: 0.5,
-            expertTrackPosition: 0.5,
-            driverBrake: 0.3,
-            expertBrake: 0.4,
-        }]);
-    });
-
-    it('falls back to baseline array indexes when rows have no explicit raw index', () => {
-        const records = [
-            driverRow(0, 0.1, { x: 1, y: 1, z: 1 }),
-            driverRow(1, 0.2, { x: 2, y: 2, z: 2 }),
-        ].map(({ raw_index: _rawIndex, ...row }) => row);
-        const result = adaptAnalysisResultsComparison({
-            baselineRecords: records,
-            expertReferenceData: [expertRow(1, 0.2)],
-            startIndex: 1,
-            endIndex: 1,
-        });
-
-        expect(result.samples).toHaveLength(1);
-        expect(result.samples[0].driverTrajectory).toEqual({ x: 2, y: 2, z: 2 });
+        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual([125, 175]);
     });
 
     it.each([
-        ['missing', { Graphics_current_time: undefined }, {}],
-        ['non-finite', {}, { expert_optimal_time: Number.POSITIVE_INFINITY }],
-    ])('rejects every joined sample when a timestamp is %s', (_case, driverOverrides, expertOverrides) => {
+        ['missing the start', [0.2, 0.4], [0.1, 0.3]],
+        ['missing the end', [0.1, 0.3], [0.2, 0.4]],
+    ])('rejects incomplete Driver coverage when %s of the Expert range', (
+        _case,
+        driverPositions,
+        expertPositions,
+    ) => {
         const result = adaptAnalysisResultsComparison({
-            baselineRecords: [driverRow(40, 0.1, { x: 1, y: 2, z: 3 }, driverOverrides)],
-            expertReferenceData: [expertRow(40, 0.1, expertOverrides)],
-            startIndex: 40,
-            endIndex: 40,
+            baselineRecords: driverPositions.map((position, index) => driverRow(
+                position,
+                100 + (index * 100),
+                { x: index + 1, y: index + 1, z: index + 1 },
+            )),
+            expertReferenceData: expertPositions.map((position, index) => expertRow(
+                position,
+                1_000 + (index * 100),
+            )),
         });
 
         expect(result.samples).toEqual([]);
     });
 
     it.each([
-        ['repeated driver clock', [100, 100], [500, 600]],
-        ['decreasing driver clock', [200, 100], [500, 600]],
-        ['repeated expert clock', [100, 200], [500, 500]],
-        ['decreasing expert clock', [100, 200], [600, 500]],
-    ])('rejects the complete comparison for a %s', (_case, driverTimes, expertTimes) => {
+        ['missing Driver position', [undefined, 0.3], [0.1, 0.2]],
+        ['out-of-range Driver position', [0.1, 1.1], [0.1, 0.2]],
+        ['small Driver reversal', [0.4, 0.3], [0.35, 0.4]],
+        ['missing Expert position', [0.1, 0.3], [undefined, 0.2]],
+        ['out-of-range Expert position', [0.1, 0.3], [0.1, 1.1]],
+        ['small Expert reversal', [0.1, 0.5], [0.4, 0.3]],
+        ['half-lap backward Expert jump', [0.1, 0.9], [0.75, 0.25]],
+    ])('rejects a comparison with a %s', (_case, driverPositions, expertPositions) => {
         const result = adaptAnalysisResultsComparison({
-            baselineRecords: [50, 51].map((rawIndex, index) => driverRow(
-                rawIndex,
-                index / 10,
-                { x: index, y: index, z: index },
-                { Graphics_current_time: driverTimes[index] },
+            baselineRecords: driverPositions.map((position, index) => driverRow(
+                position as number,
+                100 + (index * 100),
+                { x: index + 1, y: index + 1, z: index + 1 },
+                position === undefined ? { Graphics_normalized_car_position: undefined } : {},
             )),
-            expertReferenceData: [50, 51].map((rawIndex, index) => expertRow(
-                rawIndex,
-                index / 10,
-                { expert_optimal_time: expertTimes[index] },
+            expertReferenceData: expertPositions.map((position, index) => expertRow(
+                position as number,
+                1_000 + (index * 100),
+                position === undefined ? { Graphics_normalized_car_position: undefined } : {},
             )),
-            startIndex: 50,
-            endIndex: 51,
         });
 
         expect(result.samples).toEqual([]);
     });
 
     it.each([
-        ['missing driver position', { Graphics_normalized_car_position: undefined }, {}],
-        ['missing expert position', {}, { Graphics_normalized_car_position: undefined }],
-        ['non-finite driver position', { Graphics_normalized_car_position: Number.NaN }, {}],
-        ['out-of-range expert position', {}, { Graphics_normalized_car_position: 1.1 }],
-    ])('rejects the comparison for a %s', (_case, driverOverrides, expertOverrides) => {
+        ['missing Driver clock', [undefined, 200], [1_000, 1_100]],
+        ['repeated Driver clock', [100, 100], [1_000, 1_100]],
+        ['decreasing Driver clock', [200, 100], [1_000, 1_100]],
+        ['non-finite Driver clock', [100, Number.POSITIVE_INFINITY], [1_000, 1_100]],
+        ['missing Expert clock', [100, 200], [undefined, 1_100]],
+        ['repeated Expert clock', [100, 200], [1_000, 1_000]],
+        ['decreasing Expert clock', [100, 200], [1_100, 1_000]],
+        ['non-finite Expert clock', [100, 200], [1_000, Number.NaN]],
+    ])('rejects a comparison with a %s', (_case, driverTimes, expertTimes) => {
+        const driverPositions = [0.1, 0.3];
+        const expertPositions = [0.1, 0.3];
         const result = adaptAnalysisResultsComparison({
-            baselineRecords: [driverRow(60, 0.2, { x: 1, y: 2, z: 3 }, driverOverrides)],
-            expertReferenceData: [expertRow(60, 0.2, expertOverrides)],
-            startIndex: 60,
-            endIndex: 60,
+            baselineRecords: driverPositions.map((position, index) => driverRow(
+                position,
+                driverTimes[index] as number,
+                { x: index + 1, y: index + 1, z: index + 1 },
+                driverTimes[index] === undefined ? { Graphics_current_time: undefined } : {},
+            )),
+            expertReferenceData: expertPositions.map((position, index) => expertRow(
+                position,
+                expertTimes[index] as number,
+                expertTimes[index] === undefined ? { expert_optimal_time: undefined } : {},
+            )),
         });
 
         expect(result.samples).toEqual([]);
     });
 
     it.each([
-        ['directionally invalid', [0.4, 0.3], [0.4, 0.5]],
-        ['non-overlapping', [0.1, 0.2], [0.4, 0.5]],
-    ])('rejects %s position streams', (_case, driverPositions, expertPositions) => {
+        ['an empty reference sequence', []],
+        ['a non-object reference row', [expertRow(0.2, 1_000), null]],
+        ['an array reference row', [[0.2, 1_000]]],
+    ])('rejects %s', (_case, expertReferenceData) => {
         const result = adaptAnalysisResultsComparison({
-            baselineRecords: [70, 71].map((rawIndex, index) => driverRow(
-                rawIndex,
-                driverPositions[index],
-                { x: index, y: index, z: index },
-            )),
-            expertReferenceData: [70, 71].map((rawIndex, index) => expertRow(
-                rawIndex,
-                expertPositions[index],
-            )),
-            startIndex: 70,
-            endIndex: 71,
+            baselineRecords: [
+                driverRow(0.1, 100, { x: 1, y: 1, z: 1 }),
+                driverRow(0.3, 300, { x: 3, y: 3, z: 3 }),
+            ],
+            expertReferenceData,
         });
 
         expect(result.samples).toEqual([]);

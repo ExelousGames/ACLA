@@ -347,18 +347,137 @@ describe('named component-ref AI command registry', () => {
         expect(live.childHandles.get('visualization:analysis-results').replaceAnalysisResults).toHaveBeenCalled();
     });
 
+    it('refreshes a registered Analysis Results chart without requesting another visualization', async () => {
+        const h = createHarness('live');
+        const name = 'visualization:analysis-results';
+        const replaceAnalysisResults = jest.fn(() => true);
+        h.instances.push({ id: 'existing-chart', name, type: 'analysis-results' });
+        reserve(h.directory, name, { replaceAnalysisResults });
+
+        const result = await createAiCommandRegistry(h.context)
+            .analyze_live_recorded_analysis({}, handlerContext);
+
+        expect(replaceAnalysisResults).toHaveBeenCalledWith({
+            elements: [expect.objectContaining({ id: 'segment-1' })],
+        });
+        expect(h.manager.requestVisualization).not.toHaveBeenCalled();
+        expect(uiOutput(result)).toMatchObject({
+            chartId: 'existing-chart',
+            component_name: name,
+        });
+    });
+
+    it('reuses one Analysis Results panel and replaces its content across baseline analyses', async () => {
+        const h = createHarness('live');
+        const registry = createAiCommandRegistry(h.context);
+        const secondResult = {
+            ...analysisResult,
+            segments: [{
+                ...analysisResult.segments[0],
+                id: 'segment-2',
+                start_index: 1,
+                end_index: 1,
+            }],
+        };
+
+        const first = await registry.analyze_live_recorded_analysis({}, handlerContext);
+        mockPost.mockResolvedValueOnce({ data: secondResult });
+        const second = await registry.analyze_live_recorded_analysis({}, handlerContext);
+
+        const chart = h.childHandles.get('visualization:analysis-results');
+        expect(h.manager.requestVisualization).toHaveBeenCalledTimes(1);
+        expect(h.instances).toHaveLength(1);
+        expect(chart.replaceAnalysisResults).toHaveBeenCalledTimes(2);
+        expect(chart.replaceAnalysisResults).toHaveBeenLastCalledWith({
+            elements: [expect.objectContaining({ id: 'segment-2' })],
+        });
+        expect(uiOutput(first)).toMatchObject({
+            chartId: 'chart-1',
+            component_name: 'visualization:analysis-results',
+        });
+        expect(uiOutput(second)).toMatchObject({
+            chartId: 'chart-1',
+            component_name: 'visualization:analysis-results',
+        });
+    });
+
+    it('re-resolves the latest Analysis Results handle after mount registration replay', async () => {
+        const h = createHarness('live');
+        const name = 'visualization:analysis-results';
+        const staleRef = { current: null };
+        const latestReplace = jest.fn(() => true);
+        jest.spyOn(h.directory, 'awaitComponentRef').mockResolvedValue(staleRef as any);
+        h.manager.requestVisualization.mockImplementation((options: any) => {
+            h.instances.push({ id: 'strict-chart', ...options });
+            reserve(h.directory, name, { replaceAnalysisResults: latestReplace });
+            return {
+                success: true,
+                message: 'Opened chart.',
+                componentName: name,
+                chartId: 'strict-chart',
+                chartType: options.type,
+                reused: false,
+            };
+        });
+
+        const result = await createAiCommandRegistry(h.context)
+            .analyze_live_recorded_analysis({}, handlerContext);
+
+        expect(latestReplace).toHaveBeenCalledWith({
+            elements: [expect.objectContaining({ id: 'segment-1' })],
+        });
+        expect(uiOutput(result)).toMatchObject({
+            chartId: 'strict-chart',
+            component_name: name,
+        });
+    });
+
+    it('keeps baseline API failures classified while exposing genuine chart mount timeouts', async () => {
+        mockPost.mockRejectedValueOnce({ data: { message: 'classifier unavailable' } });
+        const apiFailureHarness = createHarness('live');
+        const apiFailure = await createAiCommandRegistry(apiFailureHarness.context)
+            .analyze_live_recorded_analysis({}, handlerContext);
+        expect(uiOutput(apiFailure)).toMatchObject({
+            error: 'recorded_analysis_failed',
+            message: 'classifier unavailable',
+        });
+
+        jest.useFakeTimers();
+        const timeoutHarness = createHarness('live');
+        timeoutHarness.manager.requestVisualization.mockImplementation((options: any) => ({
+            success: true,
+            message: 'requested',
+            componentName: options.name,
+            chartId: 'pending-analysis-chart',
+            chartType: options.type,
+            reused: false,
+        }));
+        const pending = createAiCommandRegistry(timeoutHarness.context)
+            .analyze_live_recorded_analysis({}, handlerContext);
+        for (let index = 0; index < 10
+            && timeoutHarness.manager.requestVisualization.mock.calls.length === 0; index += 1) {
+            await Promise.resolve();
+        }
+        expect(timeoutHarness.manager.requestVisualization).toHaveBeenCalledTimes(1);
+        jest.advanceTimersByTime(5000);
+        expect(uiOutput(await pending)).toMatchObject({
+            error: 'component_mount_timeout',
+            component_name: 'visualization:analysis-results',
+        });
+        jest.useRealTimers();
+    });
+
     it.each(['recorded', 'live'] as const)(
         'uses each segment expert reference array for %s analysis results',
         async (mode) => {
             const h = createHarness(mode);
             const records = [
                 {
-                    raw_index: 0,
+                    raw_index: 400,
                     Graphics_current_time: 1_000,
                     Graphics_normalized_car_position: 0.1,
                 },
                 {
-                    raw_index: 1,
                     Graphics_current_time: 1_100,
                     Graphics_normalized_car_position: 0.2,
                 },
@@ -373,7 +492,7 @@ describe('named component-ref AI command registry', () => {
                     start_index: 0,
                     end_index: 0,
                     expert_reference_data: [{
-                        raw_index: 0,
+                        raw_index: -30,
                         expert_optimal_time: 900,
                         Graphics_normalized_car_position: 0.1,
                         expert_optimal_throttle: 0.6,
@@ -385,7 +504,6 @@ describe('named component-ref AI command registry', () => {
                     start_index: 1,
                     end_index: 1,
                     expert_reference_data: [{
-                        raw_index: 1,
                         expert_optimal_time: 990,
                         Graphics_normalized_car_position: 0.2,
                         expert_optimal_throttle: 0.7,

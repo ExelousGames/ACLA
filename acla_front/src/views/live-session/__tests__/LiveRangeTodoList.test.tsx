@@ -199,6 +199,77 @@ describe('LiveRangeTodoList', () => {
         expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toHaveLength(0);
     });
 
+    it('waits for the running callback to settle before starting the next due event', async () => {
+        await renderQueue();
+        let finishFirst!: () => void;
+        const firstCallback = jest.fn(() => new Promise<void>((resolve) => {
+            finishFirst = resolve;
+        }));
+        const secondCallback = jest.fn(() => new Promise<void>(() => undefined));
+        callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+            makeEvent('first', firstCallback),
+            makeEvent('second', secondCallback),
+        ]));
+
+        publishTelemetry(2, 0.1);
+        publishTelemetry(2, 0.3);
+
+        expect(firstCallback).toHaveBeenCalledTimes(1);
+        expect(secondCallback).not.toHaveBeenCalled();
+        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toMatchObject([
+            { id: 'first', status: 'running' },
+            { id: 'second', status: 'pending' },
+        ]);
+        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events[1]).not.toHaveProperty('due');
+
+        await act(async () => {
+            finishFirst();
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(secondCallback).toHaveBeenCalledTimes(1);
+        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toMatchObject([
+            { id: 'second', status: 'running' },
+        ]);
+    });
+
+    it('queues an event that becomes due while another callback is running', async () => {
+        await renderQueue();
+        let finishFirst!: () => void;
+        const firstCallback = jest.fn(() => new Promise<void>((resolve) => {
+            finishFirst = resolve;
+        }));
+        const secondCallback = jest.fn(() => new Promise<void>(() => undefined));
+        callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+            makeEvent('first', firstCallback),
+            makeEvent('second', secondCallback, { normalized_position: 0.5 }),
+        ]));
+
+        publishTelemetry(2, 0.1);
+        publishTelemetry(2, 0.3);
+        expect(firstCallback).toHaveBeenCalledTimes(1);
+        expect(secondCallback).not.toHaveBeenCalled();
+
+        publishTelemetry(2, 0.6);
+        expect(secondCallback).not.toHaveBeenCalled();
+        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toMatchObject([
+            { id: 'first', status: 'running' },
+            { id: 'second', status: 'pending' },
+        ]);
+        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events[1]).not.toHaveProperty('due');
+
+        await act(async () => {
+            finishFirst();
+            await Promise.resolve();
+            await Promise.resolve();
+        });
+
+        expect(secondCallback).toHaveBeenCalledWith(expect.objectContaining({
+            telemetry: telemetry(2, 0.6),
+        }));
+    });
+
     it('passes event context, ignores callback results, removes settled events, and logs rejection', async () => {
         await renderQueue();
         const success = jest.fn(async () => ({ ignored: true }));
@@ -229,6 +300,33 @@ describe('LiveRangeTodoList', () => {
         expect(errorSpy).toHaveBeenCalledWith(
             "Live range to-do event 'failure' callback failed.",
             expect.objectContaining({ message: 'producer failed' }),
+        );
+    });
+
+    it('releases the queue when a callback throws synchronously', async () => {
+        await renderQueue();
+        const thrownError = new Error('synchronous producer failure');
+        const failure = jest.fn(() => {
+            throw thrownError;
+        });
+        const next = jest.fn(() => new Promise<void>(() => undefined));
+        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+        callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+            makeEvent('failure', failure),
+            makeEvent('next', next),
+        ]));
+
+        publishTelemetry(4, 0.1);
+        publishTelemetry(4, 0.3);
+
+        expect(failure).toHaveBeenCalledTimes(1);
+        expect(next).toHaveBeenCalledTimes(1);
+        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toMatchObject([
+            { id: 'next', status: 'running' },
+        ]);
+        expect(errorSpy).toHaveBeenCalledWith(
+            "Live range to-do event 'failure' callback failed.",
+            thrownError,
         );
     });
 

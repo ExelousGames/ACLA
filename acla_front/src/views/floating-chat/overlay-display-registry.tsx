@@ -59,6 +59,7 @@ export interface OverlayDisplayDefinition<TSnapshot = unknown> {
     pulseDurationMs?: number;
     transientDurationMs?: (snapshot: TSnapshot) => number | null;
     renderExpanded: (props: OverlayDisplayRenderProps<TSnapshot>) => React.ReactNode;
+    renderFullSize?: (props: OverlayDisplayRenderProps<TSnapshot>) => React.ReactNode;
     renderSummary: (snapshot: TSnapshot) => React.ReactNode;
     lifecycleReducer?: (
         snapshot: TSnapshot,
@@ -179,6 +180,13 @@ const registry: { [K in OverlayDisplayType]: OverlayDisplayDefinition<OverlaySna
             isRecord(snapshot)
             && isNonEmptyString(snapshot.title)
             && Boolean(normalizeDriverExpertComparisonData(snapshot.comparison))
+            && (
+                snapshot.game === undefined
+                || snapshot.game === null
+                || snapshot.game === 'ac'
+                || snapshot.game === 'acc'
+                || snapshot.game === 'iracing'
+            )
         ),
         initialPolicy: 'transient',
         permittedTransitions: transitionTable(),
@@ -193,8 +201,18 @@ const registry: { [K in OverlayDisplayType]: OverlayDisplayDefinition<OverlaySna
             <DriverExpertComparisonGraph
                 className="floating-pill-comparison"
                 data={snapshot.comparison}
+                game={snapshot.game}
                 title={snapshot.title}
-                layout={{ chartHeight: 150, trajectoryHeight: 180, minColumnWidth: 260 }}
+                layout={{ trajectoryHeight: 280 }}
+            />
+        ),
+        renderFullSize: ({ snapshot }) => (
+            <DriverExpertComparisonGraph
+                className="floating-pill-comparison floating-pill-comparison--full-size"
+                data={snapshot.comparison}
+                game={snapshot.game}
+                title={snapshot.title}
+                layout={{ trajectoryHeight: '100%' }}
             />
         ),
         renderSummary: (snapshot) => snapshot.title,

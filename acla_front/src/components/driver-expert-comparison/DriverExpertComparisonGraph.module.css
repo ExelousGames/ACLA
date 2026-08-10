@@ -16,6 +16,21 @@
     font-family: var(--lp-sans, 'Geist', system-ui, sans-serif);
 }
 
+.root:global(.floating-pill-comparison--full-size) {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.root:global(.floating-pill-comparison--full-size) .hud {
+    min-height: 0;
+    flex: 1 1 auto;
+}
+
+.root:global(.floating-pill-comparison--full-size) .trackPanel {
+    height: 100% !important;
+}
+
 .header {
     min-width: 0;
     margin-bottom: 10px;
@@ -33,8 +48,9 @@
 .replayStatus,
 .progressValue,
 .panelHeader,
-.identity,
-.gearLabel,
+.telemetryIdentity,
+.telemetryGearLabel,
+.telemetryGearValue,
 .gaugeLabel,
 .gaugeUnavailableValue {
     font-family: var(--lp-mono, 'Geist Mono', monospace);
@@ -127,8 +143,7 @@
     gap: 10px;
 }
 
-.trackPanel,
-.competitorPanel {
+.trackPanel {
     box-sizing: border-box;
     min-width: 0;
     overflow: hidden;
@@ -144,8 +159,7 @@
     flex-direction: column;
 }
 
-.panelHeader,
-.competitorHeader {
+.panelHeader {
     min-height: 30px;
     padding: 0 10px;
     border-bottom: 1px solid rgba(111, 155, 194, 0.13);
@@ -192,6 +206,10 @@
     fill: rgba(7, 19, 34, 0.35);
 }
 
+.cameraLayer {
+    transition: none;
+}
+
 .trackShadow,
 .driverPath,
 .expertPath {
@@ -226,14 +244,7 @@
 }
 
 .trackUnavailable {
-    min-height: 0;
-    flex: 1 1 auto;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 9px;
-    color: #526a80;
+    fill: #526a80;
     font-family: var(--lp-mono, 'Geist Mono', monospace);
     font-size: 8px;
     letter-spacing: 0.12em;
@@ -241,110 +252,58 @@
 }
 
 .placeholderTrack {
-    width: min(42%, 210px);
-    height: 30px;
-    border: 1px dashed rgba(98, 126, 151, 0.34);
-    border-radius: 48% 52% 43% 57%;
-    display: block;
-    transform: rotate(-4deg);
+    fill: none;
+    stroke: rgba(98, 126, 151, 0.34);
+    stroke-dasharray: 4 4;
+    stroke-width: 1.2;
 }
 
-.competitorGrid {
-    min-width: 0;
-    display: grid;
-    grid-template-columns: repeat(
-        auto-fit,
-        minmax(min(100%, var(--driver-expert-min-column-width, 260px)), 1fr)
-    );
-    gap: 10px;
+.telemetryPod {
+    pointer-events: none;
 }
 
-.competitorPanel {
-    min-height: 142px;
-    display: flex;
-    flex-direction: column;
-    position: relative;
+.telemetryPodBody {
+    fill: rgba(5, 15, 27, 0.96);
+    stroke: rgba(139, 177, 210, 0.32);
+    stroke-width: 1;
+    filter: drop-shadow(0 3px 7px rgba(0, 0, 0, 0.44));
 }
 
-.competitorPanel::before {
-    width: 2px;
-    position: absolute;
-    inset: 0 auto 0 0;
-    background: var(--identity-color);
-    box-shadow: 0 0 9px color-mix(in srgb, var(--identity-color) 55%, transparent);
-    content: '';
+.telemetryLeader {
+    opacity: 0.76;
+    stroke-linecap: round;
+    stroke-width: 1.5;
 }
 
-.competitorHeader {
-    padding-left: 11px;
+.telemetryIdentityDot {
+    filter: drop-shadow(0 0 4px var(--identity-color));
 }
 
-.identity {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    color: var(--identity-color);
-    font-size: 9px;
+.telemetryIdentity {
+    font-size: 8px;
     font-weight: 700;
 }
 
-.identityMarker {
-    width: 7px;
-    height: 7px;
-    border: 1px solid currentColor;
-    border-radius: 2px;
-    box-shadow: 0 0 7px currentColor;
-    transform: rotate(45deg);
+.telemetryGearLabel {
+    fill: #627c94;
+    font-size: 6px;
+    font-weight: 650;
 }
 
-.gear {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-}
-
-.gearLabel {
-    color: #657f98;
-    font-size: 7px;
+.telemetryGearValue {
+    fill: #f1f7ff;
+    font-size: 13px;
     font-weight: 600;
+    letter-spacing: 0.04em;
 }
 
-.gear strong {
-    min-width: 15px;
-    color: #f1f7ff;
-    font-family: var(--lp-mono, 'Geist Mono', monospace);
-    font-size: 18px;
-    font-weight: 500;
-    line-height: 1;
-    text-align: center;
+.telemetryGearUnavailable {
+    opacity: 0.48;
 }
 
-.gearUnavailable strong {
-    color: #41576b;
-}
-
-.gaugeRow {
-    min-height: 0;
-    padding: 4px 8px 6px;
-    flex: 1 1 auto;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: center;
-    gap: 5px;
-}
-
-.gauge {
-    min-width: 0;
-    min-height: 92px;
-    position: relative;
-}
-
-.gaugeSvg {
-    width: 100%;
-    height: 100%;
-    max-height: 106px;
-    display: block;
-    overflow: visible;
+.telemetryDivider {
+    stroke: rgba(139, 177, 210, 0.17);
+    stroke-width: 1;
 }
 
 .gaugeTrack,
@@ -373,42 +332,26 @@
 }
 
 .gaugeLabel {
-    position: absolute;
-    left: 8px;
-    bottom: 6px;
-    color: #627c94;
-    font-size: 7px;
+    fill: #627c94;
+    font-size: 8px;
     font-weight: 650;
 }
 
-.gaugeValue,
-.gaugeUnavailableValue {
-    position: absolute;
-    right: 9px;
-    bottom: 3px;
-}
-
 .gaugeValue {
-    color: #eaf5ff;
+    fill: #eaf5ff;
     font-family: var(--lp-mono, 'Geist Mono', monospace);
     font-size: 16px;
     font-variant-numeric: tabular-nums;
     line-height: 1;
 }
 
-.gaugeValue small {
-    margin-left: 1px;
-    color: #637d95;
+.gaugeUnavailableValue {
+    fill: #5a7186;
     font-size: 8px;
 }
 
 .gaugeUnavailable {
     opacity: 0.46;
-}
-
-.gaugeUnavailableValue {
-    color: #5a7186;
-    font-size: 8px;
 }
 
 @keyframes replayPulse {
@@ -429,10 +372,6 @@
     .replayReadout {
         width: 100%;
         justify-content: flex-end;
-    }
-
-    .competitorGrid {
-        grid-template-columns: minmax(0, 1fr);
     }
 
     .traceLabels {

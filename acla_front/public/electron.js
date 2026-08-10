@@ -567,7 +567,7 @@ function validateOverlayRequest(request) {
   if (typeof request.presentationId !== 'string' || !request.presentationId.trim()) return 'Overlay presentationId is required.';
   if (typeof request.requestId !== 'string' || !request.requestId.trim()) return 'Overlay requestId is required.';
   if (!request.command || typeof request.command !== 'object' || Array.isArray(request.command)) return 'Overlay command is required.';
-  if (!['upsert', 'set_policy', 'exit'].includes(request.command.operation)) return 'Unknown overlay operation.';
+  if (!['upsert', 'set_policy', 'request_full_size', 'exit'].includes(request.command.operation)) return 'Unknown overlay operation.';
   if (!isSerializableOverlayValue(request)) return 'Overlay request must be JSON-safe.';
   return null;
 }

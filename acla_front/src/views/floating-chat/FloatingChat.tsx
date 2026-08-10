@@ -8,6 +8,7 @@ import {
     applyOverlayDisplayRequest,
     beginOverlayPresentation,
     endOverlayPresentation,
+    getActiveFullSizeOverlayInstance,
     getNextOverlayDeadline,
     initialOverlayPresentationState,
     orderOverlayInstances,
@@ -28,6 +29,8 @@ import type {
 const EMOTION_GIFS_KEY = 'acla-emotion-gifs';
 const IDLE_WIDTH = 300;
 const SPEAKING_WIDTH = 420;
+const FULL_SIZE_WIDTH = 760;
+const FULL_SIZE_HEIGHT = 500;
 
 interface ElectronOverlayRendererApi {
     onOverlayDisplayCommand?: (listener: (request: OverlayDisplayRequest) => void) => (() => void);
@@ -111,18 +114,32 @@ const SpeakingContext: React.FC<{
 
 const GeneratedDisplayItem: React.FC<{
     instance: OverlayDisplayInstance;
+    fullSizeActive: boolean;
+    hiddenByFullSize: boolean;
     onComponentEvent: (instanceId: string, event: OverlayComponentEvent) => void;
-}> = ({ instance, onComponentEvent }) => {
+}> = ({ instance, fullSizeActive, hiddenByFullSize, onComponentEvent }) => {
     const definition = getOverlayDisplayDefinition(instance.type) as ReturnType<typeof getOverlayDisplayDefinition>;
     const emitComponentEvent = React.useCallback((event: OverlayComponentEvent) => {
         onComponentEvent(instance.instanceId, event);
     }, [instance.instanceId, onComponentEvent]);
+    const renderProps = {
+        snapshot: instance.snapshot as never,
+        revision: instance.revision,
+        emitComponentEvent,
+    };
     return (
         <article
-            className={`overlay-list-item${instance.folded ? ' overlay-list-item--folded' : ''}`}
+            className={[
+                'overlay-list-item',
+                instance.folded ? 'overlay-list-item--folded' : '',
+                fullSizeActive ? 'overlay-list-item--full-size-active' : '',
+                hiddenByFullSize ? 'overlay-list-item--full-size-hidden' : '',
+            ].filter(Boolean).join(' ')}
             data-instance-id={instance.instanceId}
             data-display-type={instance.type}
             data-policy={instance.policy}
+            data-full-size-active={fullSizeActive ? 'true' : undefined}
+            aria-hidden={hiddenByFullSize || undefined}
         >
             <header className="overlay-list-item__header">
                 <div className="overlay-list-item__summary">
@@ -131,11 +148,9 @@ const GeneratedDisplayItem: React.FC<{
             </header>
             {!instance.folded && (
                 <div className="overlay-list-item__body">
-                    {definition.renderExpanded({
-                        snapshot: instance.snapshot as never,
-                        revision: instance.revision,
-                        emitComponentEvent,
-                    })}
+                    {fullSizeActive && definition.renderFullSize
+                        ? definition.renderFullSize(renderProps)
+                        : definition.renderExpanded(renderProps)}
                 </div>
             )}
         </article>
@@ -201,9 +216,13 @@ const FloatingChat: React.FC = () => {
         () => orderOverlayInstances(state.instances.filter((instance) => instance.type !== 'ai_message')),
         [state.instances],
     );
+    const fullSizeInstance = React.useMemo(
+        () => getActiveFullSizeOverlayInstance(generatedDisplays),
+        [generatedDisplays],
+    );
     const idle = !speaking && generatedDisplays.length === 0;
     const identity = resolveIdentity(state.presentation?.displayIdentity, speaking);
-    const shellWidth = Math.max(
+    const shellWidth = fullSizeInstance ? FULL_SIZE_WIDTH : Math.max(
         idle ? IDLE_WIDTH : SPEAKING_WIDTH,
         ...generatedDisplays.map((instance) => {
             const definition = getOverlayDisplayDefinition(instance.type);
@@ -215,6 +234,10 @@ const FloatingChat: React.FC = () => {
         const shell = shellRef.current;
         if (!shell) return undefined;
         const resize = () => {
+            if (fullSizeInstance) {
+                getElectronApi()?.resizeFloatingChat?.(FULL_SIZE_WIDTH, FULL_SIZE_HEIGHT);
+                return;
+            }
             const bounds = shell.getBoundingClientRect();
             getElectronApi()?.resizeFloatingChat?.(
                 Math.ceil(bounds.width),
@@ -225,7 +248,7 @@ const FloatingChat: React.FC = () => {
         const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize);
         observer?.observe(shell);
         return () => observer?.disconnect();
-    }, [generatedDisplays, idle, speaking, shellWidth]);
+    }, [fullSizeInstance, generatedDisplays, idle, speaking, shellWidth]);
 
     const handleComponentEvent = React.useCallback((
         instanceId: string,
@@ -237,10 +260,18 @@ const FloatingChat: React.FC = () => {
     return (
         <main className="floating-overlay-stage" aria-live="polite">
             <section
-                className={`overlay-shell${idle ? ' overlay-shell--idle' : ''}`}
+                className={[
+                    'overlay-shell',
+                    idle ? 'overlay-shell--idle' : '',
+                    fullSizeInstance ? 'overlay-shell--full-size' : '',
+                ].filter(Boolean).join(' ')}
                 ref={shellRef}
-                style={{ width: shellWidth }}
+                style={{
+                    width: shellWidth,
+                    height: fullSizeInstance ? FULL_SIZE_HEIGHT : undefined,
+                }}
                 data-presentation-id={state.presentation?.presentationId || ''}
+                data-full-size-instance-id={fullSizeInstance?.instanceId}
             >
                 <header className="overlay-shell__header">
                     <OverlayIdentity identity={identity} emotionGifs={emotionGifs} idle={idle} />
@@ -257,6 +288,11 @@ const FloatingChat: React.FC = () => {
                             <GeneratedDisplayItem
                                 key={instance.instanceId}
                                 instance={instance}
+                                fullSizeActive={instance.instanceId === fullSizeInstance?.instanceId}
+                                hiddenByFullSize={Boolean(
+                                    fullSizeInstance
+                                    && instance.instanceId !== fullSizeInstance.instanceId
+                                )}
                                 onComponentEvent={handleComponentEvent}
                             />
                         ))}

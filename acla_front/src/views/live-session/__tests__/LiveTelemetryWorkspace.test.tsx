@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 import LiveTelemetryWorkspace from '../LiveTelemetryWorkspace';
-import { LiveSessionProvider } from '../LiveSessionContext';
+import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
@@ -12,7 +12,7 @@ jest.mock('@radix-ui/themes', () => {
         Badge: ({ children, ...props }: any) => <span {...props}>{children}</span>, Box: Div,
         Button: ({ children, size, variant, ...props }: any) => <button {...props}>{children}</button>, Card: Div,
         DropdownMenu: { Root: ({ children }: any) => <>{children}</>, Trigger: ({ children }: any) => <>{children}</>, Content: ({ children }: any) => <div role="menu">{children}</div>, Item: ({ children, ...props }: any) => <button role="menuitem" {...props}>{children}</button> },
-        Flex: Div, IconButton: ({ children, size, variant, ...props }: any) => <button {...props}>{children}</button>, ScrollArea: Div,
+        Flex: Div, HoverCard: { Root: ({ children }: any) => <>{children}</>, Trigger: ({ children }: any) => children, Content: () => null }, IconButton: ({ children, size, variant, ...props }: any) => <button {...props}>{children}</button>, ScrollArea: Div,
         Text: ({ children, as, ...props }: any) => { const Component = as === 'div' ? 'div' : 'span'; return <Component {...props}>{children}</Component>; },
     };
 });
@@ -48,6 +48,43 @@ describe('LiveTelemetryWorkspace named manager', () => {
         ]);
         act(() => { ref.current!.closeVisualization({ name: 'live-range-todo-list' }); });
         expect(screen.queryByTestId('live-range-todo-list-empty')).not.toBeInTheDocument();
+    });
+
+    it('uses the game captured by the live session for analysis comparisons', async () => {
+        const ref = React.createRef<VisualizationManagerHandle>();
+        const Harness = () => {
+            const liveSession = useContext(LiveSessionContext);
+            return (
+                <>
+                    <button onClick={() => liveSession.startLiveSession('acc')}>Capture ACC</button>
+                    <LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />
+                </>
+            );
+        };
+        render(<LiveSessionProvider><Harness /></LiveSessionProvider>);
+        await userEvent.click(screen.getByRole('button', { name: 'Capture ACC' }));
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Analysis Results' }));
+
+        act(() => {
+            ref.current!.updateVisualization('visualization:analysis-results', {
+                elements: [{
+                    id: 'acc-result',
+                    labels: ['MSP'],
+                    comparison: {
+                        samples: [{
+                            driverTimeMs: 0,
+                            expertTimeMs: 0,
+                            driverTrackPosition: 0.2,
+                            expertTrackPosition: 0.2,
+                            driverTrajectory: { x: 1, z: 2 },
+                            expertTrajectory: { x: 1, y: 2 },
+                        }],
+                    },
+                }],
+            });
+        });
+
+        expect(screen.getByTestId('analysis-result-acc-result')).toHaveAttribute('tabindex', '0');
     });
 
     it('supports separate speed and brake telemetry displays and same-name reuse', () => {

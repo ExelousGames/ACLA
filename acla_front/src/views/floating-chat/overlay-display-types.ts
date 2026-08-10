@@ -1,4 +1,5 @@
 import type { DriverExpertComparisonData } from 'components/driver-expert-comparison';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
 import type { LiveRangeTodoListSnapshot } from 'views/live-session/live-range-todo-list-types';
 import type { AiMapDisplayPayload } from 'views/lap-analysis/ai-chat/AiMapToolDisplay';
 import type { BaselineCollectionTag } from 'views/lap-analysis/ai-chat/BaselineCollectionTracker';
@@ -32,6 +33,7 @@ export interface AiMessageSnapshot {
 export interface DriverExpertComparisonSnapshot {
     title: string;
     comparison: DriverExpertComparisonData;
+    game?: DesktopGame | null;
 }
 
 export interface OverlaySnapshotByType {
@@ -130,6 +132,11 @@ export interface OverlaySetPolicyCommand {
     policy: OverlayPolicy;
 }
 
+export interface OverlayRequestFullSizeCommand {
+    operation: 'request_full_size';
+    target: OverlayTarget;
+}
+
 export interface OverlayExitCommand {
     operation: 'exit';
     target: OverlayTarget;
@@ -139,6 +146,7 @@ export interface OverlayExitCommand {
 export type OverlayDisplayCommand =
     | OverlayUpsertCommand
     | OverlaySetPolicyCommand
+    | OverlayRequestFullSizeCommand
     | OverlayExitCommand;
 
 export interface OverlayDisplayRequest {
