@@ -2,7 +2,7 @@ import type { DriverExpertComparisonData } from 'components/driver-expert-compar
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import type { LiveRangeTodoListSnapshot } from 'views/live-session/live-range-todo-list-types';
 import type { AiMapDisplayPayload } from 'views/lap-analysis/ai-chat/AiMapToolDisplay';
-import type { BaselineCollectionTag } from 'views/lap-analysis/ai-chat/BaselineCollectionTracker';
+import type { BaselineCollectionTag } from 'views/live-session/BaselineCollection';
 import type { ProcedurePlan } from 'views/lap-analysis/ai-chat/ai-chat-plan';
 import type { ToolMessageDisplayData } from 'views/lap-analysis/ai-chat/ToolMessageDisplay';
 

@@ -14,18 +14,16 @@ import {
 } from './ai-chat-plan';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
-    type BaselineLapRecord,
-    type BaselineCollectionTag,
-} from './BaselineCollectionTracker';
-import {
     AiToolDefinition,
-    type ToolOutputEmitter,
-    type ToolOutputEnvelope,
     executeAiToolDefinition,
 } from './ai-tool-base';
 import type { LiveRangeTodoListToolResult } from 'views/live-session/live-range-todo-list-types';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
-import type { AiToolComponentRefDirectory } from 'contexts/AiToolComponentRefContext';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    type AiToolComponentRefDirectory,
+} from 'contexts/AiToolComponentRefContext';
+import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
 import {
     createRefBasedAiCommandFunctions,
     type RefAiCommandContext,
@@ -78,8 +76,6 @@ export interface AiCommandRegistryContext {
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
-    setBaselineCollectionEnabled?: (enabled: boolean) => void;
-    restartBaselineCollection?: () => void;
     advanceProcedurePlanStep?: (reason?: string) => {
         status: string;
         current_request?: number;
@@ -91,10 +87,6 @@ export interface AiCommandRegistryContext {
     getProcedurePlan?: () => ProcedurePlan | null;
     clearProcedurePlan?: () => void;
     setProcedurePlan?: (plan: ProcedurePlan | null) => void;
-    getBaselineCollectionTag?: () => BaselineCollectionTag | null;
-    getBaselineLapRecord?: () => BaselineLapRecord | null;
-    getBaselineToolOutput?: () => ToolOutputEnvelope | null;
-    subscribeBaselineToolOutput?: (listener: ToolOutputEmitter) => () => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     startAgentSession?: (
         agentMode: AgentSessionMode,
@@ -235,8 +227,11 @@ const getLiveAnalystState = (context: AiCommandRegistryContext): LivePerformance
 };
 
 const getBaselineRecorderReadiness = (context: AiCommandRegistryContext) => {
-    const record = context.getBaselineLapRecord?.() ?? null;
-    const tag = context.getBaselineCollectionTag?.() ?? null;
+    const baseline = context.componentRefs
+        ?.findComponentRef<BaselineCollectionHandle>(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)
+        ?.current;
+    const record = baseline?.getLapRecord() ?? null;
+    const tag = baseline?.getTag() ?? null;
     const ready = Boolean(record?.records?.length);
 
     return { ready, record, tag };

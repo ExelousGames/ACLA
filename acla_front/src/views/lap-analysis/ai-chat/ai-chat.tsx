@@ -24,7 +24,6 @@ import type {
 import { useVoiceConversation, type ToolResultFrame, type VoiceEvent } from './use-voice-conversation';
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
-import BaselineProgressDisplay from './BaselineProgressDisplay';
 import ProcedurePlanDisplay from './ProcedurePlanDisplay';
 import {
     advanceProcedurePlan,
@@ -35,12 +34,12 @@ import {
     type ProcedurePlan,
     type ProcedurePlanRequest,
 } from './ai-chat-plan';
-import {
-    BaselineCollectionTracker,
-} from './BaselineCollectionTracker';
 import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
 import type { JsonValue, LiveRangeTodoEventCallbackContext } from 'views/live-session/live-range-todo-list-types';
-import { useBaselineCollectionRuntime } from './BaselineCollectionRuntime';
+import type {
+    BaselineCollectionHandle,
+    BaselineCollectionTag,
+} from 'views/live-session/BaselineCollection';
 import { createLiveRangeTodoAiAdapter } from './live-range-todo-ai-adapter';
 import {
     getToolEnvelopeError,
@@ -184,16 +183,10 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
     startTrackGuide(): void;
     setTrackGuideEnabled(enabled: boolean): void;
     setLivePerformanceAnalystEnabled(enabled: boolean): void;
-    setBaselineCollectionEnabled(enabled: boolean): void;
-    restartBaselineCollection(): void;
     advanceProcedurePlanStep(reason?: string): any;
     getProcedurePlan(): ProcedurePlan | null;
     clearProcedurePlan(): void;
     setProcedurePlan(plan: ProcedurePlan | null): void;
-    getBaselineCollectionTag(): ReturnType<ReturnType<typeof useBaselineCollectionRuntime>['getTag']>;
-    getBaselineLapRecord(): ReturnType<ReturnType<typeof useBaselineCollectionRuntime>['getLapRecord']>;
-    getBaselineToolOutput(): ToolOutputEnvelope | null;
-    subscribeBaselineToolOutput(listener: (output: ToolOutputEnvelope) => void): () => void;
     setAgentTagActive(tag: string, active: boolean): void;
     getOpportunityTelemetryRows(): Record<string, any>[];
     getOpportunityAgentState(): OpportunityAgentState;
@@ -344,7 +337,7 @@ const AiChat: React.FC<AiChatProps> = ({
         sessionMode,
         title,
     } = resolveRegisteredAssistantIdentity(activeScreen);
-    const { directory: componentRefs } = useAiToolComponentRefs();
+    const { directory: componentRefs, revision: componentRefRevision } = useAiToolComponentRefs();
     const [mainMessages, setMainMessages] = useState<Message[]>([]);
     const [agentMessages, setAgentMessages] = useState<Message[]>([]);
     const [inputValue, setInputValue] = useState('');
@@ -356,6 +349,7 @@ const AiChat: React.FC<AiChatProps> = ({
     const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
+    const [baselineCollectionTag, setBaselineCollectionTag] = useState<BaselineCollectionTag | null>(null);
     const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlan | null>(null);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
@@ -876,21 +870,32 @@ const AiChat: React.FC<AiChatProps> = ({
         }
     }, [advanceProcedurePlanStep, handleSessionVoiceEvent]);
 
-    const baselineCollectionRuntime = useBaselineCollectionRuntime({
-        onToolOutput: handleBaselineToolOutput,
-    });
-    const baselineCollectionEnabled = baselineCollectionRuntime.enabled;
-    const baselineCollectionTag = baselineCollectionRuntime.tag;
-    const setBaselineCollectionEnabled = baselineCollectionRuntime.setEnabled;
-    const getBaselineCollectionTag = baselineCollectionRuntime.getTag;
-    const getBaselineLapRecord = baselineCollectionRuntime.getLapRecord;
-    const getBaselineToolOutput = baselineCollectionRuntime.getToolOutput;
-    const subscribeBaselineToolOutput = baselineCollectionRuntime.subscribeToolOutput;
-    const restartBaselineCollection = baselineCollectionRuntime.restart;
+    useEffect(() => {
+        const baseline = componentRefs
+            .findComponentRef<BaselineCollectionHandle>(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)
+            ?.current;
+        if (!baseline) {
+            setBaselineCollectionTag(null);
+            return undefined;
+        }
+
+        setBaselineCollectionTag(baseline.getTag());
+        return baseline.subscribeToolOutput((envelope) => {
+            setBaselineCollectionTag(baseline.getTag());
+            handleBaselineToolOutput(envelope);
+        });
+    }, [componentRefRevision, componentRefs, handleBaselineToolOutput]);
+
+    useEffect(() => {
+        const baseline = componentRefs
+            .findComponentRef<BaselineCollectionHandle>(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)
+            ?.current;
+        setBaselineCollectionTag(baseline?.getTag() ?? null);
+    }, [analysisContext?.liveData, componentRefRevision, componentRefs]);
 
     useEffect(() => {
         if (!overlayPresentationId) return;
-        if (!baselineCollectionEnabled || !baselineCollectionTag) {
+        if (!baselineCollectionTag) {
             void overlayDisplayClient.forPresentation(overlayPresentationId).exit(
                 { type: 'baseline_progress' },
                 'producer_exit',
@@ -898,7 +903,7 @@ const AiChat: React.FC<AiChatProps> = ({
             return;
         }
         upsertOverlayDisplay('baseline_progress', baselineCollectionTag, {}, {}, overlayPresentationId);
-    }, [baselineCollectionEnabled, baselineCollectionTag, overlayAgentTags, overlayPresentationId, upsertOverlayDisplay]);
+    }, [baselineCollectionTag, overlayAgentTags, overlayPresentationId, upsertOverlayDisplay]);
 
     useEffect(() => {
         if (!overlayPresentationId) return;
@@ -1302,10 +1307,9 @@ const AiChat: React.FC<AiChatProps> = ({
         analystAgent.analysisSessionId = null;
         analysisContext?.sessionIntelligence?.clearFocusSection?.();
         setLivePerformanceAnalystAgentEnabled(false);
-        setBaselineCollectionEnabled(false);
         procedurePlanOptedOutRef.current = false;
         clearProcedurePlan();
-    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, setBaselineCollectionEnabled, setLivePerformanceAnalystAgentEnabled]);
+    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, setLivePerformanceAnalystAgentEnabled]);
 
     const resetOvertakeRuntime = useCallback(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
@@ -1442,16 +1446,10 @@ const AiChat: React.FC<AiChatProps> = ({
         startTrackGuide,
         setTrackGuideEnabled: setTrackGuideAgentEnabled,
         setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-        setBaselineCollectionEnabled,
-        restartBaselineCollection,
         advanceProcedurePlanStep,
         getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
         setAgentTagActive: setAgentTag,
         getOpportunityTelemetryRows,
         getOpportunityAgentState: () => opportunityAgentStateRef.current,
@@ -1466,9 +1464,6 @@ const AiChat: React.FC<AiChatProps> = ({
         analysisContext?.recordingState,
         clearProcedurePlan,
         displayMapInChat,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
         getCategoryLabels,
         getCircuitMapById,
         getCircuitMapByTrack,
@@ -1476,17 +1471,14 @@ const AiChat: React.FC<AiChatProps> = ({
         getOpportunityTelemetryRows,
         getProcedurePlan,
         name,
-        restartBaselineCollection,
         sessionMode,
         setAgentTag,
-        setBaselineCollectionEnabled,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
         setTrackGuideAgentEnabled,
         startAgentSession,
         startTrackGuide,
         stopAgentSession,
-        subscribeBaselineToolOutput,
     ]);
     useRegisterAiToolComponentRef(name, aiChatHandle);
 
@@ -1641,6 +1633,7 @@ const AiChat: React.FC<AiChatProps> = ({
             }
 
             void startAgentRuntime(current.agentMode, {
+                componentRefs,
                 sessionId: resolvedSessionId,
                 sessionMode,
                 recordingState: analysisContext?.recordingState,
@@ -1653,13 +1646,7 @@ const AiChat: React.FC<AiChatProps> = ({
                 startTrackGuide,
                 setTrackGuideEnabled: setTrackGuideAgentEnabled,
                 setLivePerformanceAnalystEnabled: setLivePerformanceAnalystAgentEnabled,
-                setBaselineCollectionEnabled,
-                restartBaselineCollection,
                 advanceProcedurePlanStep,
-                getBaselineCollectionTag,
-                getBaselineLapRecord,
-                getBaselineToolOutput,
-                subscribeBaselineToolOutput,
                 getProcedurePlan,
                 clearProcedurePlan,
                 setProcedurePlan,
@@ -1688,6 +1675,7 @@ const AiChat: React.FC<AiChatProps> = ({
         analysisContext,
         analysisContext?.recordingState,
         clearProcedurePlan,
+        componentRefs,
         displayMapInChat,
         agentVoiceConversation.state,
         agentVoiceConversation.sendToolStatus,
@@ -1697,16 +1685,10 @@ const AiChat: React.FC<AiChatProps> = ({
         getLiveRangeTodoList,
         getLabelName,
         getOpportunityTelemetryRows,
-        getBaselineCollectionTag,
-        getBaselineLapRecord,
-        getBaselineToolOutput,
-        subscribeBaselineToolOutput,
         getProcedurePlan,
-        restartBaselineCollection,
         resolvedSessionId,
         sessionMode,
         setAgentTag,
-        setBaselineCollectionEnabled,
         setLiveRangeTodoList,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
@@ -1876,13 +1858,12 @@ const AiChat: React.FC<AiChatProps> = ({
         analystAgent.lastToolStatusAt = 0;
         analystAgent.lastSpokenAt = 0;
         setLivePerformanceAnalystAgentEnabled(false);
-        setBaselineCollectionEnabled(false);
         procedurePlanOptedOutRef.current = false;
         clearProcedurePlan();
         setAgentTag('Track Guide', false);
         setAgentTag('Overtake', false);
         setAgentTag('Live Analyst', false);
-    }, [clearProcedurePlan, sessionMode, setAgentTag, setBaselineCollectionEnabled, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled, stopAgentSession]);
+    }, [clearProcedurePlan, sessionMode, setAgentTag, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled, stopAgentSession]);
 
     const toggleFloatingChat = useCallback(async () => {
         try {
@@ -2254,11 +2235,6 @@ const AiChat: React.FC<AiChatProps> = ({
 
     return (
         <div className="ai-chat">
-            <BaselineCollectionTracker
-                {...baselineCollectionRuntime.trackerProps}
-                liveData={analysisContext?.liveData as Record<string, any> | null}
-                sessionMode={sessionMode}
-            />
             <div className="ai-chat__grid-bg" aria-hidden="true" />
 
             {/* Header */}
@@ -2477,10 +2453,6 @@ const AiChat: React.FC<AiChatProps> = ({
                         </span>
                         <span className="ai-chat__transcript-time">{clock}</span>
                     </div>
-
-                    {baselineCollectionEnabled && baselineCollectionTag && (
-                        <BaselineProgressDisplay tag={baselineCollectionTag} />
-                    )}
 
                     <LiveRangeTodoListDisplay
                         snapshot={liveSession.liveRangeTodoListSnapshot}

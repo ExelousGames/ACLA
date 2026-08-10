@@ -232,3 +232,24 @@
     .live-session-game-status__action { padding: 0 11px; }
     .live-session-view__recorder { height: 108px; flex-basis: 108px; }
 }
+.baseline-collection {
+    height: 100%;
+    padding: 16px;
+}
+
+.baseline-collection__idle {
+    display: flex;
+    min-height: 112px;
+    flex-direction: column;
+    justify-content: center;
+    gap: 8px;
+    padding: 16px;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius-sm);
+    background: rgba(22, 22, 40, 0.62);
+    color: var(--lp-gray);
+}
+
+.baseline-collection__idle strong {
+    color: var(--lp-green);
+}

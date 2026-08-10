@@ -1,11 +1,11 @@
 import { render, screen } from '@testing-library/react';
-import BaselineProgressDisplay from '../BaselineProgressDisplay';
+import BaselineProgressDisplay from 'views/live-session/BaselineProgressDisplay';
 import ProcedurePlanDisplay from '../ProcedurePlanDisplay';
 import ToolMessageDisplay from '../ToolMessageDisplay';
 import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
 
 describe('appended AI display components', () => {
-    it('renders baseline progress on both chat and pill surfaces', () => {
+    it('renders baseline progress on the floating pill surface', () => {
         render(
             <BaselineProgressDisplay
                 surface="pill"

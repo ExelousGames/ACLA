@@ -38,8 +38,10 @@ import {
 import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import type { AnalysisResultElement } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
 import { adaptAnalysisResultsComparison } from 'views/lap-analysis/visualization/charts/analysisResultsComparisonAdapter';
-import type { BaselineLapRecord } from './BaselineCollectionTracker';
-import { buildBaselineCollectionToolPayload } from './BaselineCollectionTracker';
+import {
+    type BaselineCollectionHandle,
+    type BaselineLapRecord,
+} from 'views/live-session/BaselineCollection';
 import { buildProcedurePlan } from './ai-chat-plan';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { getAccTelemetryTrackKey } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
@@ -108,6 +110,45 @@ const getManager = (context: RefAiCommandContext) => resolveNamedComponentHandle
     getDirectory(context),
     getManagerName(context),
 );
+
+const baselineVisualizationRequired = () => ({
+    status: 'error' as const,
+    error: 'baseline_collection_visualization_required',
+    component_name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+    message: 'Baseline collection visualization required. Open Baseline Collection in Live Session and keep it open.',
+});
+
+const getBaseline = (
+    context: RefAiCommandContext,
+): BaselineCollectionHandle | ReturnType<typeof baselineVisualizationRequired> => {
+    const directory = getDirectory(context);
+    if (!directory.findComponentRef<BaselineCollectionHandle>(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)?.current) {
+        return baselineVisualizationRequired();
+    }
+    return resolveNamedComponentHandle<BaselineCollectionHandle>(
+        directory,
+        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+    );
+};
+
+const isBaselineRequiredError = (
+    value: BaselineCollectionHandle | ReturnType<typeof baselineVisualizationRequired>,
+): value is ReturnType<typeof baselineVisualizationRequired> => 'error' in value;
+
+const openBaselineVisualization = async (context: RefAiCommandContext) => {
+    const manager = getManager(context);
+    const requested = manager.requestVisualization({
+        name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+        type: 'baseline-collection',
+    });
+    if (!requested.success) return { requested, handle: null };
+
+    const handle = await awaitNamedComponentHandle<BaselineCollectionHandle>(
+        getDirectory(context),
+        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+    );
+    return { requested, handle };
+};
 
 const liveUnavailable = (context: RefAiCommandContext) => ({
     status: 'error',
@@ -329,8 +370,7 @@ const resolveMap = async (
     return { map, resolvedBy, requestedMap: candidates[0] };
 };
 
-const getFocusPayload = (live: LiveSessionHandle, chat: AiChatHandle) => {
-    if (!chat.getBaselineLapRecord()?.records?.length) return null;
+const getFocusPayload = (live: LiveSessionHandle) => {
     const intelligence = live.getSessionIntelligence();
     const focus = intelligence.getFocusSection();
     if (!focus) return null;
@@ -579,11 +619,12 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     async get_live_focus_section() {
         const live = requireLive(context);
         if (isLiveError(live)) return live;
-        const chat = getChat(context);
-        if (!chat.getBaselineLapRecord()?.records?.length) {
+        const baseline = getBaseline(context);
+        if (isBaselineRequiredError(baseline)) return baseline;
+        if (!baseline.getLapRecord()?.records?.length) {
             return { status: 'error', error: 'baseline_collection_incomplete', message: 'Complete one clean baseline lap before reading a focus section.' };
         }
-        const focus = getFocusPayload(live, chat);
+        const focus = getFocusPayload(live);
         return focus
             ? { status: 'ready', agent_mode: 'live_performance_analyst', focus }
             : { status: 'error', error: 'focus_section_not_ready', message: 'Analyze the completed baseline and select a focus section before reading it.' };
@@ -617,31 +658,46 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
         ).get();
     },
-    collect_live_baseline(_args, _handlerContext, output) {
+    async collect_live_baseline(_args, _handlerContext, output) {
         const live = requireLive(context);
         if (isLiveError(live)) return output.error(live.error, live);
+        const { requested, handle } = await openBaselineVisualization(context);
+        if (!handle) {
+            return output.error('baseline_collection_visualization_unavailable', {
+                status: 'error',
+                error: 'baseline_collection_visualization_unavailable',
+                message: requested.message,
+            });
+        }
         const chat = getChat(context);
         chat.setLivePerformanceAnalystEnabled(true);
-        chat.setBaselineCollectionEnabled(true);
         chat.setAgentTagActive('Live Analyst', true);
-        const payload = buildBaselineCollectionToolPayload(chat.getBaselineCollectionTag(), chat.getBaselineLapRecord());
+        const payload = handle.startCollection();
         return payload.status === 'complete'
             ? output.final(payload)
             : output.progress({ ...payload, status: 'started', message: 'Baseline collection started.' });
     },
-    restart_live_baseline(_args, _handlerContext, output) {
+    async restart_live_baseline(_args, _handlerContext, output) {
         const live = requireLive(context);
         if (isLiveError(live)) return output.error(live.error, live);
-        const chat = getChat(context);
-        chat.restartBaselineCollection();
-        chat.setBaselineCollectionEnabled(true);
+        const { requested, handle } = await openBaselineVisualization(context);
+        if (!handle) {
+            return output.error('baseline_collection_visualization_unavailable', {
+                status: 'error',
+                error: 'baseline_collection_visualization_unavailable',
+                message: requested.message,
+            });
+        }
+        handle.restartCollection();
         return output.final({ status: 'complete', progress_percent: 0, message: 'Baseline collection restart completed.' });
     },
     async analyze_live_recorded_analysis(args) {
         const live = requireLive(context);
         if (isLiveError(live)) return live;
+        const baselineComponent = getBaseline(context);
+        if (isBaselineRequiredError(baselineComponent)) return baselineComponent;
         const chat = getChat(context);
-        const baseline = chat.getBaselineLapRecord() as BaselineLapRecord | null;
+        const baseline = baselineComponent.getLapRecord() as BaselineLapRecord | null;
         if (!baseline?.records?.length) {
             return { status: 'error', error: 'baseline_lap_record_required', message: 'Live recorded analysis requires a recorded baseline lap before it can run.' };
         }
@@ -677,15 +733,20 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     async _get_live_section_telemetry(args) {
         const live = requireLive(context);
         if (isLiveError(live)) return live;
-        if (!getChat(context).getBaselineLapRecord()?.records?.length) return { status: 'error', error: 'baseline_collection_incomplete' };
+        const baseline = getBaseline(context);
+        if (isBaselineRequiredError(baseline)) return baseline;
+        if (!baseline.getLapRecord()?.records?.length) return { status: 'error', error: 'baseline_collection_incomplete' };
         return live.getLiveSectionTelemetry(args);
     },
     async _record_live_section_classification(args) {
         const live = requireLive(context);
         if (isLiveError(live)) return live;
+        const baseline = getBaseline(context);
+        if (isBaselineRequiredError(baseline)) return baseline;
+        if (!baseline.getLapRecord()?.records?.length) return { status: 'error', error: 'baseline_collection_incomplete' };
         const classification = live.recordLiveSectionClassification(args);
         if (!classification) return { status: 'error', error: 'section_not_found' };
-        const focus = getFocusPayload(live, getChat(context));
+        const focus = getFocusPayload(live);
         return { status: 'recorded', agent_mode: 'live_performance_analyst', classification, focus, comparison: live.getSessionIntelligence().compareFocusedSection(classification) };
     },
     async follow_expert_line(args) {
@@ -792,7 +853,9 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         const live = requireLive(context);
         if (isLiveError(live)) return live;
         const chat = getChat(context);
-        if (!chat.getBaselineLapRecord()?.records?.length) return { status: 'error', error: 'baseline_collection_incomplete' };
+        const baseline = getBaseline(context);
+        if (isBaselineRequiredError(baseline)) return baseline;
+        if (!baseline.getLapRecord()?.records?.length) return { status: 'error', error: 'baseline_collection_incomplete' };
         const window = live.getLiveSectionTelemetry(args);
         if (window.status !== 'ready' || !Array.isArray(window.rows) || window.rows.length === 0) {
             return { status: 'error', error: window.status || 'live_section_telemetry_unavailable', message: 'No telemetry is available for the selected live section.' };
@@ -828,7 +891,7 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             return {
                 status: 'recorded',
                 classification,
-                focus: getFocusPayload(live, chat),
+                focus: getFocusPayload(live),
                 comparison: live.getSessionIntelligence().compareFocusedSection(classification),
                 analysis: compactTelemetryAnalysis(result, chat, getLimit(args.limit)).analysis,
                 telemetry_stats: getTelemetryStats(window.rows),

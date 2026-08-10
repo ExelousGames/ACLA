@@ -52,12 +52,9 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
         startAgentSession: jest.fn(() => ({ status: 'started', conversation_role: 'agent', agent_mode: 'track_guide' })),
         stopAgentSession: jest.fn(() => ({ status: 'stopped', conversation_role: 'agent' })),
         startTrackGuide: jest.fn(), setTrackGuideEnabled: jest.fn(), setLivePerformanceAnalystEnabled: jest.fn(),
-        setBaselineCollectionEnabled: jest.fn(), restartBaselineCollection: jest.fn(),
         advanceProcedurePlanStep: jest.fn(() => ({ status: 'ready' })), getProcedurePlan: jest.fn(() => null),
         clearProcedurePlan: jest.fn(), setProcedurePlan: jest.fn(),
-        getBaselineCollectionTag: jest.fn(() => ({ status: 'complete', progressPercent: 100 })),
-        getBaselineLapRecord: jest.fn(() => baseline), getBaselineToolOutput: jest.fn(() => null),
-        subscribeBaselineToolOutput: jest.fn(() => jest.fn()), setAgentTagActive: jest.fn(),
+        setAgentTagActive: jest.fn(),
         getOpportunityTelemetryRows: jest.fn(() => rows), getOpportunityAgentState: jest.fn(() => ({})),
         getLivePerformanceAnalystState: jest.fn(() => ({})), getLabelName: jest.fn((id: string) => id),
         getCategoryLabels: jest.fn(() => []), getCircuitMapById: jest.fn(async () => null),
@@ -113,6 +110,18 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
             disableTelemetry: jest.fn(() => true), disableLiveTelemetry: jest.fn(() => true),
             disableEventLog: jest.fn(() => true), disableLiveEventLog: jest.fn(() => true), disableMap: jest.fn(() => true),
             disableAnalysisResults: jest.fn(() => true), disableGuidance: jest.fn(() => true),
+            startCollection: jest.fn(() => ({
+                status: 'complete', progress_percent: 100, car: baseline.car, track: baseline.track,
+                message: 'Baseline complete. Cached lap record is ready.',
+            })),
+            restartCollection: jest.fn(() => ({
+                status: 'waiting_for_start', progress_percent: 0, car: null, track: null,
+                message: 'Waiting for the next lap start',
+            })),
+            getTag: jest.fn(() => ({ status: 'complete', progress_percent: 100 })),
+            getLapRecord: jest.fn(() => baseline),
+            getToolOutput: jest.fn(() => null),
+            subscribeToolOutput: jest.fn(() => jest.fn()),
         };
         const owner = Symbol(name);
         childOwners.set(name, owner); childHandles.set(name, child);
@@ -137,6 +146,7 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
     reserve(directory, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS, recorded);
     reserve(directory, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY, summary);
     reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todo);
+    mountChild(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION, 'baseline-collection');
     reserve(directory, mode === 'live' ? AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER : AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER, manager);
 
     const context: AiCommandRegistryContext = {
@@ -144,7 +154,7 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
         opportunityAgentState: { intervalId: null, inFlight: false, lastAlertKey: null, lastAlertAt: 0 },
         startTrackGuide: jest.fn(), setTrackGuideEnabled: jest.fn(), getOpportunityTelemetryRows: jest.fn(() => rows),
     };
-    return { directory, context, chat, live, recorded, summary, todo, manager, instances, childHandles, rows, classification };
+    return { directory, context, chat, live, recorded, summary, todo, manager, instances, childOwners, childHandles, rows, classification };
 };
 
 describe('named component-ref AI command registry', () => {
@@ -160,8 +170,9 @@ describe('named component-ref AI command registry', () => {
         expect(names).toEqual(expect.arrayContaining(['analyze_telemetry', 'classify_live_section']));
     });
 
-    it('routes agent lifecycle, baseline, procedure-plan, and map operations only through AiChat', async () => {
+    it('opens and drives the baseline visualization while keeping assistant-owned operations on AiChat', async () => {
         const h = createHarness('live');
+        const awaitComponentRef = jest.spyOn(h.directory, 'awaitComponentRef');
         const registry = createAiCommandRegistry(h.context);
         await registry.start_agent_session({ agent_mode: 'track_guide' }, handlerContext);
         await registry.stop_agent_session({ agent_session_id: 'agent-1' }, handlerContext);
@@ -174,12 +185,40 @@ describe('named component-ref AI command registry', () => {
 
         expect(h.chat.startAgentSession).toHaveBeenCalled();
         expect(h.chat.stopAgentSession).toHaveBeenCalled();
-        expect(h.chat.setBaselineCollectionEnabled).toHaveBeenCalledWith(true);
-        expect(h.chat.restartBaselineCollection).toHaveBeenCalled();
+        expect(h.manager.requestVisualization).toHaveBeenCalledWith({
+            name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            type: 'baseline-collection',
+        });
+        expect(h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).startCollection).toHaveBeenCalled();
+        expect(h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).restartCollection).toHaveBeenCalled();
+        expect(awaitComponentRef).toHaveBeenCalledWith(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION, 5000);
         expect(h.chat.setProcedurePlan).toHaveBeenCalled();
         expect(h.chat.advanceProcedurePlanStep).toHaveBeenCalledWith('done');
         expect(h.chat.clearProcedurePlan).toHaveBeenCalled();
         expect(h.chat.displayMap).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready' }));
+    });
+
+    it('requires the mounted baseline visualization for baseline-dependent commands', async () => {
+        const h = createHarness('live');
+        h.directory.releaseComponentRef(
+            AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            h.childOwners.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)!,
+        );
+        const registry = createAiCommandRegistry(h.context);
+
+        for (const result of await Promise.all([
+            registry.get_live_focus_section({}, handlerContext),
+            registry.analyze_live_recorded_analysis({}, handlerContext),
+            registry._get_live_section_telemetry({ section_id: 'turn-1' }, handlerContext),
+            registry._record_live_section_classification({ section_id: 'turn-1' }, handlerContext),
+            registry.classify_live_section({ section_id: 'turn-1' }, handlerContext),
+        ])) {
+            expect(uiOutput(result)).toMatchObject({
+                error: 'baseline_collection_visualization_required',
+                component_name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                message: expect.stringContaining('Baseline collection visualization required'),
+            });
+        }
     });
 
     it('routes live telemetry, events, focus/history, and classifications through LiveSessionView', async () => {
@@ -531,7 +570,7 @@ describe('named component-ref AI command registry', () => {
                 });
                 await createAiCommandRegistry(h.context).analyze_telemetry({}, handlerContext);
             } else {
-                h.chat.getBaselineLapRecord.mockReturnValue({
+                h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).getLapRecord.mockReturnValue({
                     id: 'baseline-1',
                     lap: 2,
                     track: 'Monza',

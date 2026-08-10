@@ -2,6 +2,12 @@ import React, { useContext } from 'react';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    AiToolComponentRefProvider,
+    useAiToolComponentRefDirectory,
+    type AiToolComponentRefDirectory,
+} from 'contexts/AiToolComponentRefContext';
 import LiveTelemetryWorkspace from '../LiveTelemetryWorkspace';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
 
@@ -21,6 +27,12 @@ jest.mock('contexts/AiLabelsContext', () => ({ useAiLabels: () => ({ getCategory
 jest.mock('../LiveTrajectoryMap', () => () => <div>Live trajectory map</div>);
 jest.mock('../LiveTelemetryOverview', () => ({ name, telemetry }: any) => <div data-testid={name}>Live telemetry {telemetry?.label}</div>);
 jest.mock('../LiveEventLog', () => () => <div>Live event log</div>);
+
+let directory: AiToolComponentRefDirectory | null = null;
+const DirectoryObserver = () => {
+    directory = useAiToolComponentRefDirectory();
+    return null;
+};
 
 describe('LiveTelemetryWorkspace named manager', () => {
     it('offers Analysis Results manually and supports direct data updates', async () => {
@@ -107,5 +119,35 @@ describe('LiveTelemetryWorkspace named manager', () => {
                 .toMatchObject({ success: false });
         });
         expect(ref.current!.getCurrentVisualizations()).toEqual([]);
+    });
+
+    it('keeps Baseline Collection singleton and unregisters it when closed', () => {
+        const ref = React.createRef<VisualizationManagerHandle>();
+        render(
+            <AiToolComponentRefProvider>
+                <DirectoryObserver />
+                <LiveSessionProvider>
+                    <LiveTelemetryWorkspace ref={ref} name={AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER} />
+                </LiveSessionProvider>
+            </AiToolComponentRefProvider>,
+        );
+
+        act(() => {
+            expect(ref.current!.requestVisualization({ name: 'first-name', type: 'baseline-collection' }))
+                .toMatchObject({ success: true, reused: false, componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION });
+            expect(ref.current!.requestVisualization({ name: 'second-name', type: 'baseline-collection' }))
+                .toMatchObject({ success: true, reused: true, componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION });
+        });
+
+        expect(ref.current!.getCurrentVisualizations()).toEqual([
+            expect.objectContaining({
+                name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                type: 'baseline-collection',
+            }),
+        ]);
+        expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)?.current).not.toBeNull();
+
+        act(() => { ref.current!.closeVisualization({ type: 'baseline-collection' }); });
+        expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
     });
 });

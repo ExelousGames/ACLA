@@ -1,14 +1,15 @@
 import React from 'react';
-import type { BaselineCollectionTag } from './BaselineCollectionTracker';
+import type { BaselineCollectionTag } from './BaselineCollection';
+import './baseline-collection.css';
 
 type BaselineProgressDisplayProps = {
     tag: BaselineCollectionTag;
-    surface?: 'chat' | 'pill';
+    surface?: 'panel' | 'pill';
 };
 
 const BaselineProgressDisplay: React.FC<BaselineProgressDisplayProps> = ({
     tag,
-    surface = 'chat',
+    surface = 'panel',
 }) => {
     const progress = Math.max(0, Math.min(100, Math.round(tag.progress_percent)));
 

@@ -12,12 +12,14 @@ import LiveTrajectoryMap from './LiveTrajectoryMap';
 import LiveTelemetryOverview from './LiveTelemetryOverview';
 import LiveEventLog from './LiveEventLog';
 import LiveRangeTodoList from './LiveRangeTodoList';
+import BaselineCollection from './BaselineCollection';
 
 const OPTIONAL_VISUALIZATIONS = {
     'telemetry-overview': { name: 'Live Telemetry Overview' },
     'event-log': { name: 'Live Event Log' },
     'analysis-results': { name: 'Analysis Results' },
     'live-range-todo-list': { name: 'Live Range To-do List' },
+    'baseline-collection': { name: 'Baseline Collection' },
 } as const;
 
 export interface LiveTelemetryWorkspaceProps {
@@ -88,9 +90,9 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
     }
 
     protected getDefaultComponentName(type: string) {
-        return type === 'live-range-todo-list'
-            ? AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST
-            : getVisualizationComponentName(type);
+        if (type === 'live-range-todo-list') return AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST;
+        if (type === 'baseline-collection') return AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION;
+        return getVisualizationComponentName(type);
     }
 
     protected getPanelHeight(instance: LiveVisualizationInstance) {
@@ -133,6 +135,9 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
         if (instance.type === 'live-range-todo-list') {
             return <LiveRangeTodoList key={instance.name} name={instance.name} />;
         }
+        if (instance.type === 'baseline-collection') {
+            return <BaselineCollection key={instance.name} name={instance.name} />;
+        }
         return (
             <AnalysisResultsChart
                 key={instance.name}
@@ -167,7 +172,12 @@ const LiveTelemetryWorkspace = forwardRef<VisualizationManagerHandle, LiveTeleme
             openInstances: [],
         },
         getCurrentVisualizations: () => managerRef.current?.getCurrentVisualizations() ?? [],
-        requestVisualization: (options) => managerRef.current?.requestVisualization(options) ?? unavailable(name),
+        requestVisualization: (options) => managerRef.current?.requestVisualization({
+            ...options,
+            name: options.type === 'baseline-collection'
+                ? AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION
+                : options.name,
+        }) ?? unavailable(name),
         updateVisualization: (componentName, data, config) => (
             managerRef.current?.updateVisualization(componentName, data, config) ?? unavailable(name)
         ),

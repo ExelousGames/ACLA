@@ -6,7 +6,7 @@ import {
 } from 'components/driver-expert-comparison';
 import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
 import AiMapToolDisplay from 'views/lap-analysis/ai-chat/AiMapToolDisplay';
-import BaselineProgressDisplay from 'views/lap-analysis/ai-chat/BaselineProgressDisplay';
+import BaselineProgressDisplay from 'views/live-session/BaselineProgressDisplay';
 import ProcedurePlanDisplay from 'views/lap-analysis/ai-chat/ProcedurePlanDisplay';
 import ToolMessageDisplay from 'views/lap-analysis/ai-chat/ToolMessageDisplay';
 import {

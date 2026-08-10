@@ -53,7 +53,7 @@ export interface LocalTelemetryFileValidation {
 export interface LiveVisualizationInstance {
     name: string;
     id: string;
-    type: 'telemetry-overview' | 'event-log' | 'analysis-results' | 'live-range-todo-list';
+    type: 'telemetry-overview' | 'event-log' | 'analysis-results' | 'live-range-todo-list' | 'baseline-collection';
     height: number;
     data?: unknown;
     config?: Record<string, unknown>;
