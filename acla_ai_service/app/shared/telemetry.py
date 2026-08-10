@@ -1141,18 +1141,18 @@ class FeatureProcessor:
         df: pd.DataFrame,
         gap_between: float
     ) -> pd.DataFrame:
-        """Down-sample telemetry frames using a fixed time gap in milliseconds.
+        """Resample telemetry frames on a fixed time grid in milliseconds.
 
         Args:
             df: DataFrame containing telemetry data.
-            gap_between: Minimum spacing between retained samples (ms).
+            gap_between: Spacing between generated samples (ms).
 
         Returns:
-            DataFrame with rows removed so consecutive samples are at least
-            ``gap_between`` milliseconds apart.
+            DataFrame sampled from each uninterrupted lap run at its first
+            timestamp, each interval, and its final timestamp.
         """
 
-        if gap_between <= 0:
+        if not np.isfinite(gap_between) or gap_between <= 0:
             raise ValueError("gap_between must be a positive value in milliseconds")
 
         if df is None or df.empty:
@@ -1166,50 +1166,139 @@ class FeatureProcessor:
             working['Graphics_current_time'], errors='coerce'
         ).to_numpy(dtype=float)
 
-        valid_mask = ~np.isnan(time_values)
+        valid_mask = np.isfinite(time_values)
         working = working.iloc[valid_mask].copy()
         time_values = time_values[valid_mask]
 
         if time_values.size == 0:
             return df.iloc[0:0].copy()
 
-        # Create sequential groups maintaining chronological order & handling lap resets
-        group_ids = np.zeros(len(time_values), dtype=int)
-        current_group_id = 0
-        last_selected = None
+        run_starts = np.zeros(len(working), dtype=bool)
+        run_starts[0] = True
+        run_starts[1:] |= time_values[1:] < time_values[:-1]
 
-        for idx, current_time in enumerate(time_values):
-            if last_selected is None or current_time < last_selected:
-                current_group_id += 1
-                group_ids[idx] = current_group_id
-                last_selected = current_time
-            elif (current_time - last_selected) >= gap_between:
-                current_group_id += 1
-                group_ids[idx] = current_group_id
-                last_selected = current_time
+        if 'Graphics_completed_lap' in working.columns:
+            lap_values = working['Graphics_completed_lap'].reset_index(drop=True)
+            previous_laps = lap_values.shift(1)
+            same_lap = lap_values.eq(previous_laps) | (
+                lap_values.isna() & previous_laps.isna()
+            )
+            run_starts |= ~same_lap.fillna(False).to_numpy(dtype=bool)
+
+        if 'Graphics_normalized_car_position' in working.columns:
+            positions = pd.to_numeric(
+                working['Graphics_normalized_car_position'], errors='coerce'
+            ).to_numpy(dtype=float)
+            position_resets = (
+                np.isfinite(positions[1:])
+                & np.isfinite(positions[:-1])
+                & (positions[1:] < 0.1)
+                & (positions[:-1] > 0.9)
+            )
+            run_starts[1:] |= position_resets
+
+        discrete_features = set(
+            TelemetryFeatures.get_features_not_for_averaging()
+        )
+        discrete_features.discard('Graphics_normalized_car_position')
+        provenance_column = '__acla_raw_row_index'
+        run_boundaries = np.flatnonzero(run_starts).tolist() + [len(working)]
+        sampled_runs = []
+
+        for start, end in zip(run_boundaries[:-1], run_boundaries[1:]):
+            run = working.iloc[start:end].reset_index(drop=True)
+            run_times = time_values[start:end]
+
+            # A timestamp represents one instant, so keep its latest complete
+            # frame instead of combining duplicate frames field-by-field.
+            unique_time_mask = np.r_[run_times[1:] != run_times[:-1], True]
+            unique_run = run.iloc[unique_time_mask].reset_index(drop=True)
+            unique_times = run_times[unique_time_mask]
+
+            first_time = unique_times[0]
+            final_time = unique_times[-1]
+            interval_count = int(
+                np.floor((final_time - first_time) / gap_between)
+            )
+            sample_times = (
+                first_time
+                + np.arange(interval_count + 1, dtype=float) * gap_between
+            )
+            timestamp_tolerance = max(1e-9, abs(gap_between) * 1e-12)
+            if np.isclose(
+                sample_times[-1],
+                final_time,
+                rtol=0.0,
+                atol=timestamp_tolerance,
+            ):
+                sample_times[-1] = final_time
             else:
-                group_ids[idx] = current_group_id
+                sample_times = np.append(sample_times, final_time)
 
-        working['__temp_group_id'] = group_ids
+            forward_indices = np.searchsorted(
+                unique_times,
+                sample_times,
+                side='right',
+            ) - 1
+            forward_indices = np.clip(
+                forward_indices,
+                0,
+                len(unique_times) - 1,
+            )
 
-        features_not_for_avg = TelemetryFeatures.get_features_not_for_averaging()
+            nearest_indices = forward_indices.copy()
+            next_indices = np.minimum(
+                forward_indices + 1,
+                len(unique_times) - 1,
+            )
+            use_next = (
+                np.abs(unique_times[next_indices] - sample_times)
+                < np.abs(sample_times - unique_times[forward_indices])
+            )
+            nearest_indices[use_next] = next_indices[use_next]
 
-        aggs = {}
-        for col in working.columns:
-            if col == '__temp_group_id':
-                continue
-            elif col == 'Graphics_current_time':
-                aggs[col] = 'last'
-            elif col in features_not_for_avg:
-                aggs[col] = 'last'
-            elif pd.api.types.is_string_dtype(working[col]) or pd.api.types.is_object_dtype(working[col]):
-                aggs[col] = 'last'
-            else:
-                aggs[col] = 'mean'
+            sampled_columns = {}
+            for col in working.columns:
+                if col == 'Graphics_current_time':
+                    sampled_columns[col] = sample_times
+                    continue
 
-        # Group by the sequential group IDs to preserve order
-        stripped = working.groupby('__temp_group_id', sort=False).agg(aggs).reset_index(drop=True)
-        return stripped
+                if col == provenance_column:
+                    sampled_columns[col] = unique_run[col].to_numpy()[
+                        nearest_indices
+                    ]
+                    continue
+
+                is_continuous = (
+                    col not in discrete_features
+                    and pd.api.types.is_numeric_dtype(unique_run[col])
+                    and not pd.api.types.is_bool_dtype(unique_run[col])
+                )
+                if is_continuous:
+                    numeric_values = pd.to_numeric(
+                        unique_run[col], errors='coerce'
+                    ).to_numpy(dtype=float)
+                    finite_values = np.isfinite(numeric_values)
+                    if finite_values.any():
+                        sampled_columns[col] = np.interp(
+                            sample_times,
+                            unique_times[finite_values],
+                            numeric_values[finite_values],
+                        )
+                    else:
+                        sampled_columns[col] = np.full(
+                            len(sample_times),
+                            np.nan,
+                        )
+                else:
+                    carried_values = unique_run[col].ffill().to_numpy()
+                    sampled_columns[col] = carried_values[forward_indices]
+
+            sampled_runs.append(
+                pd.DataFrame(sampled_columns, columns=working.columns)
+            )
+
+        return pd.concat(sampled_runs, ignore_index=True)
 
     def flip_y_z_features(self) -> pd.DataFrame:
         """Swap values across *_y and *_z telemetry columns to align axis conventions."""

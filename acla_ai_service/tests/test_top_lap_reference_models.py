@@ -13,6 +13,7 @@ from app.top_laps.runtime import (
 from app.top_laps.service import TopLapReferenceModelService
 from app.ml import model_hub
 from app.shared.expert_features import ExpertFeatureCatalog
+from app.shared.telemetry import FeatureProcessor
 
 
 def _top_lap(track: str = "spa", car: str = "car-a", grip: int = 2):
@@ -149,6 +150,59 @@ def test_reference_service_loads_and_samples_serialized_model():
 
     assert result["optimal_actions"]["expert_optimal_speed"] == (
         pytest.approx(150.0)
+    )
+
+
+def test_resampled_lap_reference_aligns_start_middle_and_end():
+    source = pd.DataFrame(
+        {
+            "Static_track": ["spa"] * 4,
+            "Static_car_model": ["car-a"] * 4,
+            "Graphics_track_grip_status": [2] * 4,
+            "Graphics_completed_lap": [0] * 4,
+            "Graphics_current_time": [0.0, 400.0, 800.0, 1_200.0],
+            "Graphics_normalized_car_position": [0.0, 0.4, 0.8, 1.0],
+            "Graphics_player_pos_x": [0.0, 4.0, 8.0, 10.0],
+            "Graphics_player_pos_y": [0.0, 4.0, 2.0, 0.0],
+            "Graphics_player_pos_z": [0.0] * 4,
+            "Physics_velocity_x": [10.0] * 4,
+            "Physics_velocity_y": [0.0] * 4,
+            "Physics_velocity_z": [0.0] * 4,
+            "Physics_speed_kmh": [100.0, 140.0, 180.0, 200.0],
+            "Physics_steer_angle": [0.0, 0.2, -0.1, 0.0],
+            "Physics_gas": [1.0] * 4,
+            "Physics_brake": [0.0] * 4,
+            "Physics_gear": [2, 3, 4, 5],
+        }
+    )
+    resampled = FeatureProcessor(source).strip_dataframe_by_time_gap(source, 500)
+    selected = resampled.iloc[[0, 1, -1]].to_dict("records")
+
+    service = TopLapReferenceModelService()
+    service.top_lap_store.record_lap(resampled.to_dict("records"))
+    references = service.extract_reference_features(selected)
+
+    assert [row["Graphics_current_time"] for row in selected] == [0.0, 500.0, 1_200.0]
+    assert [row["Graphics_normalized_car_position"] for row in selected] == pytest.approx(
+        [0.0, 0.5, 1.0]
+    )
+    assert [row["Graphics_player_pos_x"] for row in selected] == pytest.approx(
+        [0.0, 5.0, 10.0]
+    )
+    assert [row["Graphics_player_pos_y"] for row in selected] == pytest.approx(
+        [0.0, 3.5, 0.0]
+    )
+    assert [row["expert_optimal_time"] for row in references] == pytest.approx(
+        [0.0, 500.0, 1_200.0]
+    )
+    assert [row["expert_optimal_player_pos_x"] for row in references] == pytest.approx(
+        [0.0, 5.0, 10.0]
+    )
+    assert [row["expert_optimal_player_pos_y"] for row in references] == pytest.approx(
+        [0.0, 3.5, 0.0]
+    )
+    assert [row["distance_to_expert_line"] for row in references] == pytest.approx(
+        [0.0, 0.0, 0.0]
     )
 
 
