@@ -11,7 +11,7 @@ import { LiveVisualizationInstance } from './live-session-types';
 import LiveTrajectoryMap from './LiveTrajectoryMap';
 import LiveTelemetryOverview from './LiveTelemetryOverview';
 import LiveEventLog from './LiveEventLog';
-import LiveRangeTodoList from './LiveRangeTodoList';
+import { LiveRangeTodoList } from 'components/ai-engineering-tools';
 import BaselineCollection from './BaselineCollection';
 
 const OPTIONAL_VISUALIZATIONS = {
@@ -148,7 +148,16 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
                 height="100%"
                 showElementId={false}
                 sessionGame={this.context.sessionGame}
-                onUpdate={(data, config) => this.updateVisualization(instance.name, data, config).success}
+                pagination={{
+                    pages: this.context.analysisResultPages,
+                    activePageId: this.context.activeAnalysisResultPageId,
+                    onSelectPage: this.context.selectAnalysisResultPage,
+                }}
+                onUpdate={(data, config) => (
+                    this.context.analysisResultPages.length > 0
+                        ? this.context.updateActiveAnalysisResultPage(data)
+                        : this.updateVisualization(instance.name, data, config).success
+                )}
                 onDisable={() => this.closeVisualization({ name: instance.name }).success}
             />
         );

@@ -12,8 +12,14 @@ import type { AiChatHandle } from './ai-chat';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
 import type { SessionAnalysisHandle } from 'views/lap-analysis/session-analysis';
 import type { UserSummaryHandle } from 'views/user-summary/user-summary';
-import type { LiveRangeTodoListHandle } from 'views/live-session/live-range-todo-list-types';
-import { createLiveRangeTodoAiAdapter } from './live-range-todo-ai-adapter';
+import {
+    buildProcedurePlan,
+    type LiveRangeTodoListHandle,
+} from 'components/ai-engineering-tools';
+import {
+    createLiveRangeTodoAiAdapter,
+    type LiveRangeTodoTaskStartFunctionFactory,
+} from './live-range-todo-ai-adapter';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 import type { TelemetryOverviewHandle } from 'views/lap-analysis/visualization/charts/TelemetryOverview';
 import type { LiveTelemetryOverviewHandle } from 'views/live-session/LiveTelemetryOverview';
@@ -40,9 +46,7 @@ import type { AnalysisResultElement } from 'views/lap-analysis/visualization/cha
 import { adaptAnalysisResultsComparison } from 'views/lap-analysis/visualization/charts/analysisResultsComparisonAdapter';
 import {
     type BaselineCollectionHandle,
-    type BaselineLapRecord,
 } from 'views/live-session/BaselineCollection';
-import { buildProcedurePlan } from './ai-chat-plan';
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { getAccTelemetryTrackKey } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
 import type { AiMapDisplayPayload, AiMapSectionSelection } from './AiMapToolDisplay';
@@ -171,6 +175,24 @@ const isLiveError = (value: LiveSessionHandle | ReturnType<typeof liveUnavailabl
 const normalizeOptionalString = (value: unknown): string | undefined => (
     typeof value === 'string' && value.trim() ? value.trim() : undefined
 );
+
+const createLiveRangeNotificationTaskStartFunctionFactory = (
+    handlerContext: ToolHandlerContext,
+): LiveRangeTodoTaskStartFunctionFactory => (event) => (signal) => {
+    if (signal.aborted) return;
+    const data = event.data && typeof event.data === 'object' && !Array.isArray(event.data)
+        ? event.data as Record<string, unknown>
+        : {};
+    handlerContext.sendToolStatus({
+        source: 'live_range_todo_list',
+        event: normalizeOptionalString(data.event) || 'live_range_todo_event_due',
+        event_id: event.id,
+        content: event.content,
+        normalized_position: event.normalized_position,
+        lead_time_seconds: event.lead_time_seconds ?? 2,
+        data: event.data,
+    });
+};
 
 const normalizeFields = (value: unknown): string[] => {
     if (Array.isArray(value)) return value.flatMap(normalizeFields);
@@ -638,17 +660,19 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         const live = requireLive(context);
         if (isLiveError(live)) return live;
         const todo = resolveNamedComponentHandle<LiveRangeTodoListHandle>(getDirectory(context), AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
-        return createLiveRangeTodoAiAdapter(todo, async (payload) => {
-                handlerContext.sendToolStatus(payload as unknown as Record<string, unknown>);
-        }).set(args);
+        return createLiveRangeTodoAiAdapter(
+            todo,
+            createLiveRangeNotificationTaskStartFunctionFactory(handlerContext),
+        ).set(args);
     },
     async update_live_range_todo_list(args, handlerContext) {
         const live = requireLive(context);
         if (isLiveError(live)) return live;
         const todo = resolveNamedComponentHandle<LiveRangeTodoListHandle>(getDirectory(context), AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
-        return createLiveRangeTodoAiAdapter(todo, async (payload) => {
-                handlerContext.sendToolStatus(payload as unknown as Record<string, unknown>);
-        }).update(args);
+        return createLiveRangeTodoAiAdapter(
+            todo,
+            createLiveRangeNotificationTaskStartFunctionFactory(handlerContext),
+        ).update(args);
     },
     async get_live_range_todo_list() {
         const live = requireLive(context);
@@ -694,33 +718,18 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     async analyze_live_recorded_analysis(args) {
         const live = requireLive(context);
         if (isLiveError(live)) return live;
-        const baselineComponent = getBaseline(context);
-        if (isBaselineRequiredError(baselineComponent)) return baselineComponent;
-        const chat = getChat(context);
-        const baseline = baselineComponent.getLapRecord() as BaselineLapRecord | null;
-        if (!baseline?.records?.length) {
-            return { status: 'error', error: 'baseline_lap_record_required', message: 'Live recorded analysis requires a recorded baseline lap before it can run.' };
-        }
-        let result: SegmentClassificationResult;
-        try {
-            const response = await apiService.post('/racing-session/analyze-live-recorded-analysis', {
-                track: baseline.track,
-                car: baseline.car,
-                baseline_lap: baseline.lap,
-                records: baseline.records,
-            }, { timeout: 120000 });
-            result = normalizeSegmentClassificationResult(response.data as any, baseline.id);
-        } catch (error: any) {
-            return { status: 'error', error: 'recorded_analysis_failed', message: error?.data?.message || error?.message || 'Failed to run live baseline analysis.' };
-        }
-        const compact = compactTelemetryAnalysis(result, chat, getLimit(args.limit, 8));
-        const chart = await ensureAnalysisResultsChart(context, buildAnalysisElements(result, chat, baseline.records));
-        return { ...compact, source: 'baseline_lap_record', baseline: { id: baseline.id, lap: baseline.lap, track: baseline.track, car: baseline.car, sample_count: baseline.sample_count, captured_at: baseline.captured_at }, chartId: chart.chartId ?? null, component_name: chart.componentName };
+        const baseline = getBaseline(context);
+        if (isBaselineRequiredError(baseline)) return baseline;
+        return baseline.requestAnalysis(args);
     },
     async set_procedure_plan(args) {
-        const plan = buildProcedurePlan({ ...args, event: normalizeOptionalString(args.event) || 'procedure_plan_started' });
+        const chat = getChat(context);
+        const plan = buildProcedurePlan(
+            { ...args, event: normalizeOptionalString(args.event) || 'procedure_plan_started' },
+            (request) => chat.selectTaskStartFunction(request),
+        );
         if (!plan) return { status: 'error', error: 'invalid_procedure_plan_requests', message: 'Provide a goal and at least one request with a title.' };
-        getChat(context).setProcedurePlan(plan);
+        chat.setProcedurePlan(plan);
         return { status: 'ready', goal: plan.goal, request_count: plan.requests.length, current_request: plan.currentStep, request: plan.requests[plan.currentStep] };
     },
     async advance_plan_step(args) {

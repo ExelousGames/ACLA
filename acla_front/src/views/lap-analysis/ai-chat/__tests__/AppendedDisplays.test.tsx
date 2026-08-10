@@ -1,8 +1,10 @@
 import { render, screen } from '@testing-library/react';
+import {
+    LiveRangeTodoListDisplay,
+    ProcedurePlan,
+} from 'components/ai-engineering-tools';
 import BaselineProgressDisplay from 'views/live-session/BaselineProgressDisplay';
-import ProcedurePlanDisplay from '../ProcedurePlanDisplay';
 import ToolMessageDisplay from '../ToolMessageDisplay';
-import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
 
 describe('appended AI display components', () => {
     it('renders baseline progress on the floating pill surface', () => {
@@ -27,7 +29,7 @@ describe('appended AI display components', () => {
 
     it('renders a compact procedure plan without the chat clear button', () => {
         render(
-            <ProcedurePlanDisplay
+            <ProcedurePlan
                 surface="pill"
                 plan={{
                     goal: 'Collect a clean baseline',

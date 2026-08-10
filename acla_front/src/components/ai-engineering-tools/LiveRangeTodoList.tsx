@@ -1,10 +1,9 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
-import { LiveSessionContext } from './LiveSessionContext';
+import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import type {
     JsonValue,
     LiveRangeTodoContent,
-    LiveRangeTodoEventCallback,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
@@ -12,6 +11,7 @@ import type {
     LiveRangeTodoListToolResult,
     LiveRangeTodoSnapshotEvent,
 } from './live-range-todo-list-types';
+import type { TaskStartFunction } from './task-start-function';
 
 const DEFAULT_LEAD_TIME_SECONDS = 2;
 const SAMPLE_WINDOW_MS = 2000;
@@ -25,7 +25,7 @@ export interface LiveRangeTelemetrySample {
 }
 
 interface RuntimeEvent extends LiveRangeTodoSnapshotEvent {
-    callback: LiveRangeTodoEventCallback;
+    taskStart: TaskStartFunction;
     due?: boolean;
 }
 
@@ -171,7 +171,7 @@ export const crossedLiveRangeTodoPosition = (
 };
 
 const serializeEvent = (event: RuntimeEvent): LiveRangeTodoSnapshotEvent => {
-    const { callback: _callback, due: _due, ...snapshotEvent } = event;
+    const { taskStart: _taskStart, due: _due, ...snapshotEvent } = event;
     return {
         ...snapshotEvent,
         content: {
@@ -295,7 +295,6 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
 const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
     const {
         currentTelemetry,
-        sessionIntelligence,
         registerLiveRangeTodoListHandle,
         publishLiveRangeTodoListSnapshot,
     } = useContext(LiveSessionContext);
@@ -312,7 +311,6 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
     ));
     const samplesRef = useRef<LiveRangeTelemetrySample[]>([]);
     const previousSampleRef = useRef<LiveRangeTelemetrySample | null>(null);
-    const latestTelemetryRef = useRef<Record<string, any> | null>(null);
     const activeRunsRef = useRef<Map<string, ActiveRun>>(new Map());
     const runNextDueEventRef = useRef<() => void>(() => undefined);
     const mountedRef = useRef(false);
@@ -372,8 +370,8 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         if (!isJsonSafe(value.data)) {
             return { error: `Event '${id}' requires JSON-safe data.` };
         }
-        if (typeof value.callback !== 'function') {
-            return { error: `Event '${id}' requires a callback.` };
+        if (typeof value.taskStart !== 'function') {
+            return { error: `Event '${id}' requires a task-start function.` };
         }
 
         return {
@@ -383,7 +381,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
                 lead_time_seconds: leadTime,
                 content: parsedContent.content as LiveRangeTodoContent,
                 data: cloneJson(value.data),
-                callback: value.callback as LiveRangeTodoEventCallback,
+                taskStart: value.taskStart as TaskStartFunction,
                 status: 'pending',
                 eta_seconds: null,
                 created_at: now,
@@ -503,9 +501,9 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
                 if (!isJsonSafe(raw.data)) return errorResult(`Event '${id}' data must be JSON-safe.`);
                 next.data = cloneJson(raw.data);
             }
-            if (hasOwn(raw, 'callback')) {
-                if (typeof raw.callback !== 'function') return errorResult(`Event '${id}' callback must be a function.`);
-                next.callback = raw.callback as LiveRangeTodoEventCallback;
+            if (hasOwn(raw, 'taskStart')) {
+                if (typeof raw.taskStart !== 'function') return errorResult(`Event '${id}' taskStart must be a function.`);
+                next.taskStart = raw.taskStart as TaskStartFunction;
             }
             next = {
                 ...next,
@@ -594,7 +592,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
         activeRunsRef.current.delete(id);
         if (error !== undefined) {
-            console.error(`Live range to-do event '${id}' callback failed.`, error);
+            console.error(`Live range to-do event '${id}' task failed.`, error);
         }
 
         const current = runtimeRef.current;
@@ -614,8 +612,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         const event = current.events.find((candidate) => (
             candidate.status === 'pending' && candidate.due
         ));
-        const telemetry = latestTelemetryRef.current;
-        if (!event || !telemetry) return;
+        if (!event) return;
 
         const controller = new AbortController();
         const token = Symbol(event.id);
@@ -638,22 +635,14 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         });
 
         try {
-            Promise.resolve(runningEvent.callback({
-                event: serializeEvent(runningEvent),
-                data: cloneJson(runningEvent.data),
-                telemetry,
-                lap: current.lap,
-                eta_seconds: runningEvent.eta_seconds,
-                sessionIntelligence,
-                signal: controller.signal,
-            })).then(
+            Promise.resolve(runningEvent.taskStart(controller.signal)).then(
                 () => finishEvent(event.id, token),
                 (runError) => finishEvent(event.id, token, runError),
             );
         } catch (runError) {
             finishEvent(event.id, token, runError);
         }
-    }, [commit, finishEvent, sessionIntelligence]);
+    }, [commit, finishEvent]);
     runNextDueEventRef.current = runNextDueEvent;
 
     const handle = useMemo<LiveRangeTodoListHandle>(() => ({
@@ -677,7 +666,6 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
             abortEvents();
             samplesRef.current = [];
             previousSampleRef.current = null;
-            latestTelemetryRef.current = null;
             registerLiveRangeTodoListHandle(null);
             publishLiveRangeTodoListSnapshot(null);
         };
@@ -692,7 +680,6 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
             receivedAt: now,
             lap: getLiveRangeTelemetryLap(currentTelemetry),
         };
-        latestTelemetryRef.current = currentTelemetry;
         samplesRef.current = [
             ...samplesRef.current,
             currentSample,

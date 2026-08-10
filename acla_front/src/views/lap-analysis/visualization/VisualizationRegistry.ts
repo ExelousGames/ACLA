@@ -4,7 +4,7 @@ import MapVisualization from './charts/MapVisualization';
 import ImitationGuidanceChart from './charts/ImitationGuidanceChart';
 import EventLogChart from './charts/EventLogChart';
 import AnalysisResultsChart from './charts/AnalysisResultsChart';
-import LiveRangeTodoList from 'views/live-session/LiveRangeTodoList';
+import { LiveRangeTodoList } from 'components/ai-engineering-tools';
 import {
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,

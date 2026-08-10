@@ -9,10 +9,12 @@ import { detectEnvironment } from 'utils/environment';
 import apiService from 'services/api.service';
 import {
     createAiCommandRegistry,
+    isAiCommandName,
     startAgentRuntime,
 } from './ai-command-registry';
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
 import type { CornerDefinition } from 'views/lap-analysis/session-intelligence/types';
+import { selectDriverExpertComparisonTaskStartFunction } from 'components/driver-expert-comparison';
 import type {
     AgentSessionInfo,
     AgentSessionMode,
@@ -21,26 +23,39 @@ import type {
     LivePerformanceAnalystState,
     OpportunityAgentState,
 } from './ai-command-registry';
-import { useVoiceConversation, type ToolResultFrame, type VoiceEvent } from './use-voice-conversation';
+import {
+    useVoiceConversation,
+    type SubscribedToolCall,
+    type ToolResultFrame,
+    type ToolSubscriptionResult,
+    type VoiceEvent,
+} from './use-voice-conversation';
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
-import ProcedurePlanDisplay from './ProcedurePlanDisplay';
 import {
     advanceProcedurePlan,
     buildProcedurePlan,
+    getProcedurePlanToolArguments,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
-    type ProcedurePlan,
-    type ProcedurePlanRequest,
-} from './ai-chat-plan';
-import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
-import type { JsonValue, LiveRangeTodoEventCallbackContext } from 'views/live-session/live-range-todo-list-types';
+    LiveRangeTodoListDisplay,
+    ProcedurePlan,
+    ProcedurePlanRunner,
+    serializeProcedurePlan,
+    type ProcedurePlanRequestSnapshot,
+    type ProcedurePlanState,
+    type TaskStartFunction,
+} from 'components/ai-engineering-tools';
+import type { JsonValue } from 'components/ai-engineering-tools';
 import type {
     BaselineCollectionHandle,
     BaselineCollectionTag,
 } from 'views/live-session/BaselineCollection';
-import { createLiveRangeTodoAiAdapter } from './live-range-todo-ai-adapter';
+import {
+    createLiveRangeTodoAiAdapter,
+    type LiveRangeTodoTaskStartFunctionFactory,
+} from './live-range-todo-ai-adapter';
 import {
     getToolEnvelopeError,
     getToolEnvelopeUiOutput,
@@ -184,9 +199,10 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
     setTrackGuideEnabled(enabled: boolean): void;
     setLivePerformanceAnalystEnabled(enabled: boolean): void;
     advanceProcedurePlanStep(reason?: string): any;
-    getProcedurePlan(): ProcedurePlan | null;
+    getProcedurePlan(): ProcedurePlanState | null;
     clearProcedurePlan(): void;
-    setProcedurePlan(plan: ProcedurePlan | null): void;
+    setProcedurePlan(plan: ProcedurePlanState | null): void;
+    selectTaskStartFunction(request: ProcedurePlanRequestSnapshot): TaskStartFunction | null;
     setAgentTagActive(tag: string, active: boolean): void;
     getOpportunityTelemetryRows(): Record<string, any>[];
     getOpportunityAgentState(): OpportunityAgentState;
@@ -282,19 +298,6 @@ const getBaselineToolEventResult = (envelope: ToolOutputEnvelope) => {
     };
 };
 
-const getPlanToolArguments = (request: ProcedurePlanRequest): Record<string, unknown> => {
-    if (!isRecord(request.payload)) return {};
-    const nested = request.payload.arguments || request.payload.args || request.payload.parameters;
-    return isRecord(nested)
-        ? nested
-        : request.payload;
-};
-
-const getPlanToolRunKey = (
-    plan: ProcedurePlan,
-    request: ProcedurePlanRequest,
-): string => `${plan.currentStep}:${request.name || ''}:${JSON.stringify(request.payload ?? null)}`;
-
 const getAgentDisplayName = (agentMode?: AgentSessionMode | null): string => {
     if (agentMode === 'track_guide') return 'Track Guide';
     if (agentMode === 'overtake') return 'Overtake';
@@ -350,7 +353,7 @@ const AiChat: React.FC<AiChatProps> = ({
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
     const [baselineCollectionTag, setBaselineCollectionTag] = useState<BaselineCollectionTag | null>(null);
-    const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlan | null>(null);
+    const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlanState | null>(null);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
@@ -444,9 +447,29 @@ const AiChat: React.FC<AiChatProps> = ({
     const overlayAiSessionByVoiceSessionRef = useRef<Map<string, string>>(new Map());
     const overlayStartByVoiceSessionRef = useRef<Map<string, Promise<OverlayPresentationSession | null>>>(new Map());
     const voiceSessionSeenActiveRef = useRef(false);
-    const procedurePlanRef = useRef<ProcedurePlan | null>(null);
+    const procedurePlanRef = useRef<ProcedurePlanState | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
-    const planToolRunsRef = useRef<Set<string>>(new Set());
+    const procedurePlanRunnerRef = useRef<ProcedurePlanRunner | null>(null);
+    const activeVoiceExecuteToolCallRef = useRef<(
+        call: SubscribedToolCall,
+    ) => Promise<ToolSubscriptionResult | null>>(async () => null);
+    if (procedurePlanRunnerRef.current === null) {
+        procedurePlanRunnerRef.current = new ProcedurePlanRunner(
+            (plan) => {
+                procedurePlanRef.current = plan;
+                setProcedurePlanState(plan);
+            },
+            (request, error) => {
+                console.error(`Procedure plan task '${request.title}' failed.`, error);
+                activeVoiceToolStatusRef.current({
+                    source: 'procedure_plan',
+                    event: 'procedure_plan_task_rejected',
+                    title: request.title,
+                    error: (error as Error)?.message || String(error),
+                });
+            },
+        );
+    }
     const lastBroadcastedLiveRangeTodoListKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
@@ -627,21 +650,54 @@ const AiChat: React.FC<AiChatProps> = ({
         setLivePerformanceAnalystEnabled(enabled);
     }, []);
 
-    const setProcedurePlan = useCallback((plan: ProcedurePlan | null) => {
-        if (!plan || isProcedurePlanStartEvent(plan.sourceEvent)) {
-            planToolRunsRef.current.clear();
-        }
-        procedurePlanRef.current = plan;
-        setProcedurePlanState(plan);
-        if (!plan) {
-            return;
-        }
+    const selectTaskStartFunction = useCallback((
+        request: ProcedurePlanRequestSnapshot,
+    ): TaskStartFunction | null => {
+        const args = getProcedurePlanToolArguments(request);
+        const comparisonTaskStart = selectDriverExpertComparisonTaskStartFunction(
+            request.name,
+            args,
+        );
+        if (comparisonTaskStart) return comparisonTaskStart;
+        if (request.type !== 'tool_call' || !request.name || !isAiCommandName(request.name)) return null;
+        const name = request.name;
+        const title = request.title;
+        return async (signal) => {
+            if (signal.aborted) return;
+            const result = await activeVoiceExecuteToolCallRef.current({
+                id: `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+                name,
+                title,
+                arguments: args,
+            });
+            if (signal.aborted) return;
+            if (!result) throw new Error('Start the active AI session before running this task.');
+            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
+            const envelopeError = envelope ? getToolEnvelopeError(envelope) : null;
+            if (!result.ok || envelopeError) {
+                throw new Error(result.error || envelopeError || `Task '${name}' failed.`);
+            }
+            if (!envelope) throw new Error(`Task '${name}' did not return a standard output envelope.`);
+            if (!envelope.final) {
+                throw new Error(envelope.message || `Task '${name}' did not report completion.`);
+            }
+        };
+    }, []);
+
+    const setProcedurePlan = useCallback((plan: ProcedurePlanState | null) => {
+        procedurePlanRunnerRef.current!.replace(plan);
     }, []);
 
     useEffect(() => {
         if (!overlayPresentationId) return;
         if (procedurePlan) {
-            upsertOverlayDisplay('procedure_plan', procedurePlan, {}, {}, overlayPresentationId);
+            upsertOverlayDisplay(
+                'procedure_plan',
+                serializeProcedurePlan(procedurePlan),
+                {},
+                {},
+                overlayPresentationId,
+            );
             return;
         }
         void overlayDisplayClient.forPresentation(overlayPresentationId).exit(
@@ -657,36 +713,13 @@ const AiChat: React.FC<AiChatProps> = ({
         }
 
         const result = advanceProcedurePlan(current, reason);
-        setProcedurePlan(result.plan);
+        setProcedurePlan(result.status === 'complete' ? null : result.plan);
 
         return result;
     }, [setProcedurePlan]);
 
     const clearProcedurePlan = useCallback(() => {
         setProcedurePlan(null);
-    }, [setProcedurePlan]);
-
-    const setProcedurePlanRequestStatus = useCallback((
-        index: number,
-        status: ProcedurePlanRequest['status'],
-        detail?: string,
-    ) => {
-        const current = procedurePlanRef.current;
-        if (!current || !current.requests[index]) return;
-
-        const next: ProcedurePlan = {
-            ...current,
-            requests: current.requests.map((request, requestIndex) => (
-                requestIndex === index
-                    ? {
-                        ...request,
-                        status,
-                        detail: detail ?? request.detail,
-                    }
-                    : request
-            )),
-        };
-        setProcedurePlan(next);
     }, [setProcedurePlan]);
 
     const optOutProcedurePlan = useCallback(() => {
@@ -751,7 +784,7 @@ const AiChat: React.FC<AiChatProps> = ({
                 clearProcedurePlan();
                 return;
             }
-            const plan = buildProcedurePlan(event.data);
+            const plan = buildProcedurePlan(event.data, selectTaskStartFunction);
             if (plan) {
                 if (isProcedurePlanStartEvent(plan.sourceEvent)) {
                     procedurePlanOptedOutRef.current = false;
@@ -822,6 +855,7 @@ const AiChat: React.FC<AiChatProps> = ({
         clearProcedurePlan,
         generateUniqueId,
         optOutProcedurePlan,
+        selectTaskStartFunction,
         setProcedurePlan,
         upsertOverlayDisplay,
     ]);
@@ -857,18 +891,7 @@ const AiChat: React.FC<AiChatProps> = ({
             result: envelope.output,
         });
 
-        const plan = procedurePlanRef.current;
-        const request = plan?.requests[plan.currentStep];
-        if (
-            envelope.final
-            && !envelopeError
-            && request?.type === 'tool_call'
-            && request.name === envelope.tool_name
-            && request.status !== 'complete'
-        ) {
-            advanceProcedurePlanStep(envelope.message || `tool ${envelope.tool_name} completed`);
-        }
-    }, [advanceProcedurePlanStep, handleSessionVoiceEvent]);
+    }, [handleSessionVoiceEvent]);
 
     useEffect(() => {
         const baseline = componentRefs
@@ -1126,7 +1149,7 @@ const AiChat: React.FC<AiChatProps> = ({
             procedure_plan: procedurePlan
                 ? {
                     goal: procedurePlan.goal,
-                    requests: procedurePlan.requests,
+                    requests: serializeProcedurePlan(procedurePlan).requests,
                     current_request: procedurePlan.currentStep,
                     current_request_text: procedurePlan.requests[procedurePlan.currentStep]?.title || null,
                 }
@@ -1208,81 +1231,76 @@ const AiChat: React.FC<AiChatProps> = ({
     const inactiveAgentToolHandlers = useMemo(() => ({}), []);
     const getProcedurePlan = useCallback(() => procedurePlanRef.current, []);
     const getOpportunityTelemetryRows = useCallback(() => opportunityForecastRowsRef.current, []);
-    const notifyAiForLiveRangeEvent = useCallback(async ({
-        event,
-        data,
-        lap,
-        eta_seconds: etaSeconds,
-        sessionIntelligence,
-        signal,
-    }: LiveRangeTodoEventCallbackContext) => {
-        if (signal.aborted) throw new Error('Live range to-do notification was aborted.');
-        const notificationOptions = isRecord(data) ? data : {};
-        const rangeRequest = isRecord(notificationOptions.telemetry_range_summary)
-            ? notificationOptions.telemetry_range_summary
-            : isRecord(notificationOptions.telemetry_range)
-                ? notificationOptions.telemetry_range
-                : null;
-        const includeRangeSummary = Boolean(rangeRequest)
-            || notificationOptions.include_telemetry_range_summary === true;
-        let telemetryRangeSummary: Record<string, JsonValue> | undefined;
+    const createAiLiveRangeTaskStartFunction = useCallback<LiveRangeTodoTaskStartFunctionFactory>((event) => {
+        const { data } = event;
+        const sessionIntelligence = liveSession.sessionIntelligence;
+        return async (signal) => {
+            if (signal.aborted) return;
+            const notificationOptions = isRecord(data) ? data : {};
+            const rangeRequest = isRecord(notificationOptions.telemetry_range_summary)
+                ? notificationOptions.telemetry_range_summary
+                : isRecord(notificationOptions.telemetry_range)
+                    ? notificationOptions.telemetry_range
+                    : null;
+            const includeRangeSummary = Boolean(rangeRequest)
+                || notificationOptions.include_telemetry_range_summary === true;
+            let telemetryRangeSummary: Record<string, JsonValue> | undefined;
 
-        if (includeRangeSummary) {
-            const startPosition = Number(
-                rangeRequest?.start_position ?? notificationOptions.range_start_position,
-            );
-            const endPosition = Number(
-                rangeRequest?.end_position ?? notificationOptions.range_end_position,
-            );
-            if (
-                !Number.isFinite(startPosition)
-                || startPosition < 0
-                || startPosition > 1
-                || !Number.isFinite(endPosition)
-                || endPosition < 0
-                || endPosition > 1
-            ) {
-                throw new Error('AI notification telemetry range summaries require start_position and end_position from 0 through 1.');
+            if (includeRangeSummary) {
+                const startPosition = Number(
+                    rangeRequest?.start_position ?? notificationOptions.range_start_position,
+                );
+                const endPosition = Number(
+                    rangeRequest?.end_position ?? notificationOptions.range_end_position,
+                );
+                if (
+                    !Number.isFinite(startPosition)
+                    || startPosition < 0
+                    || startPosition > 1
+                    || !Number.isFinite(endPosition)
+                    || endPosition < 0
+                    || endPosition > 1
+                ) {
+                    throw new Error('AI notification telemetry range summaries require start_position and end_position from 0 through 1.');
+                }
+                const requestedLap = rangeRequest?.lap;
+                const rangeWindow = sessionIntelligence.getTelemetryWindowForNormalizedRange({
+                    start_position: startPosition,
+                    end_position: endPosition,
+                    lap: requestedLap === 'current' || requestedLap === 'last' || typeof requestedLap === 'number'
+                        ? requestedLap
+                        : undefined,
+                });
+                telemetryRangeSummary = {
+                    status: rangeWindow.status,
+                    start_position: rangeWindow.startPosition,
+                    end_position: rangeWindow.endPosition,
+                    lap: rangeWindow.lap,
+                    start_sample_idx: rangeWindow.startSampleIdx ?? null,
+                    end_sample_idx: rangeWindow.endSampleIdx ?? null,
+                    telemetry_row_count: rangeWindow.rows.length,
+                };
             }
-            const requestedLap = rangeRequest?.lap;
-            const rangeWindow = sessionIntelligence.getTelemetryWindowForNormalizedRange({
-                start_position: startPosition,
-                end_position: endPosition,
-                lap: requestedLap === 'current' || requestedLap === 'last' || typeof requestedLap === 'number'
-                    ? requestedLap
-                    : lap,
-            });
-            telemetryRangeSummary = {
-                status: rangeWindow.status,
-                start_position: rangeWindow.startPosition,
-                end_position: rangeWindow.endPosition,
-                lap: rangeWindow.lap,
-                start_sample_idx: rangeWindow.startSampleIdx ?? null,
-                end_sample_idx: rangeWindow.endSampleIdx ?? null,
-                telemetry_row_count: rangeWindow.rows.length,
-            };
-        }
 
-        const payload = {
-            source: 'live_range_todo_list',
-            event: typeof notificationOptions.event === 'string' && notificationOptions.event.trim()
-                ? notificationOptions.event.trim()
-                : 'live_range_todo_event_due',
-            event_id: event.id,
-            content: event.content,
-            normalized_position: event.normalized_position,
-            lead_time_seconds: event.lead_time_seconds,
-            eta_seconds: etaSeconds,
-            lap: lap ?? null,
-            ...(telemetryRangeSummary ? { telemetry_range_summary: telemetryRangeSummary } : {}),
+            const payload = {
+                source: 'live_range_todo_list',
+                event: typeof notificationOptions.event === 'string' && notificationOptions.event.trim()
+                    ? notificationOptions.event.trim()
+                    : 'live_range_todo_event_due',
+                event_id: event.id,
+                content: event.content,
+                normalized_position: event.normalized_position,
+                lead_time_seconds: event.lead_time_seconds ?? 2,
+                ...(telemetryRangeSummary ? { telemetry_range_summary: telemetryRangeSummary } : {}),
+            };
+            const sent = activeVoiceToolStatusRef.current(payload);
+            if (!sent) throw new Error('AI session is not connected; the due notification could not be sent.');
         };
-        const sent = activeVoiceToolStatusRef.current(payload);
-        if (!sent) throw new Error('AI session is not connected; the due notification could not be sent.');
-    }, []);
+    }, [liveSession.sessionIntelligence]);
     const liveRangeTodoAiAdapter = useMemo(() => createLiveRangeTodoAiAdapter(
         liveSession.liveRangeTodoListHandle,
-        notifyAiForLiveRangeEvent,
-    ), [liveSession.liveRangeTodoListHandle, notifyAiForLiveRangeEvent]);
+        createAiLiveRangeTaskStartFunction,
+    ), [createAiLiveRangeTaskStartFunction, liveSession.liveRangeTodoListHandle]);
     const setLiveRangeTodoList = useCallback((args: Record<string, unknown>) => (
         liveRangeTodoAiAdapter.set(args)
     ), [liveRangeTodoAiAdapter]);
@@ -1450,6 +1468,7 @@ const AiChat: React.FC<AiChatProps> = ({
         getProcedurePlan,
         clearProcedurePlan,
         setProcedurePlan,
+        selectTaskStartFunction,
         setAgentTagActive: setAgentTag,
         getOpportunityTelemetryRows,
         getOpportunityAgentState: () => opportunityAgentStateRef.current,
@@ -1475,6 +1494,7 @@ const AiChat: React.FC<AiChatProps> = ({
         setAgentTag,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
+        selectTaskStartFunction,
         setTrackGuideAgentEnabled,
         startAgentSession,
         startTrackGuide,
@@ -1729,6 +1749,7 @@ const AiChat: React.FC<AiChatProps> = ({
     const micDisabled = activeVoiceConversation.micDisabled;
     const sendActiveVoiceToolStatus = activeVoiceConversation.sendToolStatus;
     const sendActiveVoiceToolResult = activeVoiceConversation.sendToolResult;
+    const executeActiveVoiceToolCall = activeVoiceConversation.executeToolCall;
     useEffect(() => {
         if (vState === 'connecting' || vState === 'listening' || vState === 'speaking') {
             voiceSessionSeenActiveRef.current = true;
@@ -1746,6 +1767,7 @@ const AiChat: React.FC<AiChatProps> = ({
     useEffect(() => {
         activeVoiceToolResultRef.current = sendActiveVoiceToolResult;
         activeVoiceToolStatusRef.current = sendActiveVoiceToolStatus;
+        activeVoiceExecuteToolCallRef.current = executeActiveVoiceToolCall;
         return () => {
             if (activeVoiceToolResultRef.current === sendActiveVoiceToolResult) {
                 activeVoiceToolResultRef.current = () => false;
@@ -1753,82 +1775,15 @@ const AiChat: React.FC<AiChatProps> = ({
             if (activeVoiceToolStatusRef.current === sendActiveVoiceToolStatus) {
                 activeVoiceToolStatusRef.current = () => false;
             }
+            if (activeVoiceExecuteToolCallRef.current === executeActiveVoiceToolCall) {
+                activeVoiceExecuteToolCallRef.current = async () => null;
+            }
         };
-    }, [sendActiveVoiceToolResult, sendActiveVoiceToolStatus]);
+    }, [executeActiveVoiceToolCall, sendActiveVoiceToolResult, sendActiveVoiceToolStatus]);
 
     const canOpenFloatingChat = overlaySessionClient.available();
 
-    useEffect(() => {
-        if (!procedurePlan) return;
-        const request = procedurePlan.requests[procedurePlan.currentStep];
-        if (!request || request.type !== 'tool_call' || !request.name) return;
-        if (request.status === 'complete' || request.status === 'failed' || request.status === 'skipped') return;
-        if (activeVoiceConversation.state !== 'listening' && activeVoiceConversation.state !== 'speaking') return;
-
-        const runKey = getPlanToolRunKey(procedurePlan, request);
-        if (planToolRunsRef.current.has(runKey)) return;
-        planToolRunsRef.current.add(runKey);
-
-        const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-        const requestIndex = procedurePlan.currentStep;
-        setProcedurePlanRequestStatus(requestIndex, 'running');
-
-        activeVoiceConversation.executeToolCall({
-            id: runId,
-            name: request.name,
-            title: request.title,
-            arguments: getPlanToolArguments(request),
-        }).then((result) => {
-            if (!result) {
-                planToolRunsRef.current.delete(runKey);
-                setProcedurePlanRequestStatus(
-                    requestIndex,
-                    'blocked',
-                    'Start the active AI session before running this tool.',
-                );
-                return;
-            }
-            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
-            if (!envelope) {
-                setProcedurePlanRequestStatus(
-                    requestIndex,
-                    'failed',
-                    'Tool did not return a standard output envelope.',
-                );
-                return;
-            }
-            const envelopeError = getToolEnvelopeError(envelope);
-            if (!result.ok || envelopeError) {
-                setProcedurePlanRequestStatus(
-                    requestIndex,
-                    'failed',
-                    result.error || envelopeError || 'Tool failed.',
-                );
-                return;
-            }
-            if (!envelope.final) {
-                setProcedurePlanRequestStatus(
-                    requestIndex,
-                    'running',
-                    envelope.message || 'Tool has not produced a final output yet.',
-                );
-                return;
-            }
-            advanceProcedurePlanStep(envelope.message || `tool ${request.name} completed`);
-        }).catch((error) => {
-            setProcedurePlanRequestStatus(
-                requestIndex,
-                'failed',
-                (error as Error)?.message || 'Tool failed.',
-            );
-        });
-    }, [
-        activeVoiceConversation,
-        activeVoiceConversation.state,
-        advanceProcedurePlanStep,
-        procedurePlan,
-        setProcedurePlanRequestStatus,
-    ]);
+    useEffect(() => () => procedurePlanRunnerRef.current?.abort(), []);
 
     useEffect(() => {
         if (sessionMode === 'live') {
@@ -2460,7 +2415,10 @@ const AiChat: React.FC<AiChatProps> = ({
                     />
 
                     {procedurePlan && (
-                        <ProcedurePlanDisplay plan={procedurePlan} onClear={clearProcedurePlan} />
+                        <ProcedurePlan
+                            plan={serializeProcedurePlan(procedurePlan)}
+                            onClear={clearProcedurePlan}
+                        />
                     )}
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>

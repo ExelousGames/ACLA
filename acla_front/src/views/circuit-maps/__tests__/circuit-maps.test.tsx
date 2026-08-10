@@ -81,6 +81,8 @@ const baseContext: LiveSessionRuntime = {
     liveRangeTodoListHandle: null,
     liveRangeTodoListSnapshot: null,
     recorderControl: null,
+    analysisResultPages: [],
+    activeAnalysisResultPageId: null,
     startLiveSession: jest.fn(),
     endLiveSession: jest.fn(),
     setCurrentTelemetry: jest.fn(),
@@ -95,6 +97,9 @@ const baseContext: LiveSessionRuntime = {
     registerLiveRangeTodoListHandle: jest.fn(),
     publishLiveRangeTodoListSnapshot: jest.fn(),
     registerRecorderControl: jest.fn(),
+    appendAnalysisResultPage: jest.fn(),
+    selectAnalysisResultPage: jest.fn(),
+    updateActiveAnalysisResultPage: jest.fn(),
 };
 
 const renderCircuitMaps = (context: Partial<LiveSessionRuntime> = {}) => (

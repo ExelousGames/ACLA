@@ -5,7 +5,12 @@ import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/Ses
 import type {
     LiveRangeTodoListHandle,
     LiveRangeTodoListSnapshot,
-} from './live-range-todo-list-types';
+} from 'components/ai-engineering-tools';
+import type {
+    AppendLiveSessionAnalysisResultPageInput,
+    AppendLiveSessionAnalysisResultPageResult,
+    LiveSessionAnalysisResultPage,
+} from './live-session-analysis-results';
 
 export type LiveTelemetry = Record<string, any>;
 
@@ -79,6 +84,8 @@ export interface LiveSessionRuntime {
     liveRangeTodoListHandle: LiveRangeTodoListHandle | null;
     liveRangeTodoListSnapshot: LiveRangeTodoListSnapshot | null;
     recorderControl: LiveSessionRecorderControl | null;
+    analysisResultPages: LiveSessionAnalysisResultPage[];
+    activeAnalysisResultPageId: string | null;
     startLiveSession: (game: DesktopGame) => void;
     endLiveSession: () => void;
     setCurrentTelemetry: (data: LiveTelemetry) => void;
@@ -95,4 +102,9 @@ export interface LiveSessionRuntime {
     registerLiveRangeTodoListHandle: (handle: LiveRangeTodoListHandle | null) => void;
     publishLiveRangeTodoListSnapshot: (snapshot: LiveRangeTodoListSnapshot | null) => void;
     registerRecorderControl: (control: LiveSessionRecorderControl | null) => void;
+    appendAnalysisResultPage: (
+        input: AppendLiveSessionAnalysisResultPageInput,
+    ) => AppendLiveSessionAnalysisResultPageResult;
+    selectAnalysisResultPage: (pageId: string) => boolean;
+    updateActiveAnalysisResultPage: (data: unknown) => boolean;
 }

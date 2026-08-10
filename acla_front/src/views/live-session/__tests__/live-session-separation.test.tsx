@@ -32,10 +32,39 @@ const SeparationHarness = () => {
                 live.transitionRecordingState({ type: 'sessionAvailable' });
             }}>Populate live state</button>
             <button onClick={live.endLiveSession}>Reset live recording</button>
+            <button onClick={() => {
+                const pageNumber = live.analysisResultPages.length + 1;
+                live.appendAnalysisResultPage({
+                    baseline: {
+                        id: `baseline-${pageNumber}`,
+                        lap: pageNumber,
+                        lap_time_ms: pageNumber * 90_000,
+                        captured_at: pageNumber,
+                        track: 'Monza',
+                        car: 'GT3',
+                        sample_count: pageNumber,
+                    },
+                    elements: [{ id: `result-${pageNumber}`, labels: ['MSP'] }],
+                });
+            }}>Append result page</button>
+            <button onClick={() => {
+                const lastPage = live.analysisResultPages[live.analysisResultPages.length - 1];
+                if (lastPage) live.selectAnalysisResultPage(lastPage.id);
+            }}>Select last page</button>
             <button onClick={() => setShowLivePanel((visible) => !visible)}>Toggle live panel</button>
             <output data-testid="recorded-map">{recorded.mapSelected || 'none'}</output>
             <output data-testid="session-game">{live.sessionGame || 'none'}</output>
-            {showLivePanel ? <output data-testid="live-session-name">{live.recordingMetadata?.sessionName || 'none'}</output> : null}
+            {showLivePanel ? (
+                <>
+                    <output data-testid="live-session-name">{live.recordingMetadata?.sessionName || 'none'}</output>
+                    <output data-testid="analysis-page-count">{live.analysisResultPages.length}</output>
+                    <output data-testid="active-analysis-result">{
+                        live.analysisResultPages
+                            .find((page) => page.id === live.activeAnalysisResultPageId)
+                            ?.elements[0]?.id ?? 'none'
+                    }</output>
+                </>
+            ) : null}
             <output data-testid="telemetry-speed">{live.currentTelemetry.speed || 'none'}</output>
             <output data-testid="static-track">{live.staticData.track || 'none'}</output>
             <output data-testid="todo-snapshot">{live.liveRangeTodoListSnapshot ? 'present' : 'none'}</output>
@@ -82,6 +111,36 @@ describe('live session state separation', () => {
         fireEvent.click(screen.getByText('Toggle live panel'));
         expect(screen.getByTestId('live-session-name')).toHaveTextContent('Live Run');
         expect(screen.getByTestId('session-game')).toHaveTextContent('acc');
+    });
+
+    it('appends pages chronologically, retains selection across remounts, and clears them on reset', () => {
+        render(
+            <LiveSessionProvider>
+                <RecordedSelectionProvider>
+                    <SeparationHarness />
+                </RecordedSelectionProvider>
+            </LiveSessionProvider>,
+        );
+
+        fireEvent.click(screen.getByText('Capture ACC'));
+        fireEvent.click(screen.getByText('Append result page'));
+        expect(screen.getByTestId('analysis-page-count')).toHaveTextContent('1');
+        expect(screen.getByTestId('active-analysis-result')).toHaveTextContent('result-1');
+
+        fireEvent.click(screen.getByText('Append result page'));
+        expect(screen.getByTestId('analysis-page-count')).toHaveTextContent('2');
+        expect(screen.getByTestId('active-analysis-result')).toHaveTextContent('result-1');
+
+        fireEvent.click(screen.getByText('Select last page'));
+        expect(screen.getByTestId('active-analysis-result')).toHaveTextContent('result-2');
+        fireEvent.click(screen.getByText('Toggle live panel'));
+        fireEvent.click(screen.getByText('Toggle live panel'));
+        expect(screen.getByTestId('analysis-page-count')).toHaveTextContent('2');
+        expect(screen.getByTestId('active-analysis-result')).toHaveTextContent('result-2');
+
+        fireEvent.click(screen.getByText('Reset live recording'));
+        expect(screen.getByTestId('analysis-page-count')).toHaveTextContent('0');
+        expect(screen.getByTestId('active-analysis-result')).toHaveTextContent('none');
     });
 
     it('does not let a later start action replace the captured game', () => {
@@ -136,7 +195,9 @@ describe('live session state separation', () => {
             </LiveSessionProvider>,
         );
         fireEvent.click(screen.getByText('Capture ACC'));
+        fireEvent.click(screen.getByText('Append result page'));
         expect(screen.getByTestId('session-game')).toHaveTextContent('acc');
+        expect(screen.getByTestId('analysis-page-count')).toHaveTextContent('1');
         first.unmount();
 
         render(
@@ -147,5 +208,6 @@ describe('live session state separation', () => {
             </LiveSessionProvider>,
         );
         expect(screen.getByTestId('session-game')).toHaveTextContent('none');
+        expect(screen.getByTestId('analysis-page-count')).toHaveTextContent('0');
     });
 });

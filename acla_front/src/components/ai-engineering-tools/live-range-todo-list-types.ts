@@ -1,4 +1,4 @@
-import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import type { TaskStartFunction } from './task-start-function';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -11,27 +11,13 @@ export interface LiveRangeTodoContent {
     metadata?: JsonValue;
 }
 
-export interface LiveRangeTodoEventCallbackContext {
-    event: LiveRangeTodoSnapshotEvent;
-    data: JsonValue;
-    telemetry: Record<string, any>;
-    lap?: number;
-    eta_seconds: number | null;
-    sessionIntelligence: SessionIntelligence;
-    signal: AbortSignal;
-}
-
-export type LiveRangeTodoEventCallback = (
-    context: LiveRangeTodoEventCallbackContext,
-) => unknown | Promise<unknown>;
-
 export interface LiveRangeTodoEventInput {
     id: string;
     normalized_position: number;
     lead_time_seconds?: number;
     content: LiveRangeTodoContent;
     data: JsonValue;
-    callback: LiveRangeTodoEventCallback;
+    taskStart: TaskStartFunction;
 }
 
 export interface LiveRangeTodoEventUpdate {
@@ -40,7 +26,7 @@ export interface LiveRangeTodoEventUpdate {
     lead_time_seconds?: number;
     content?: Partial<LiveRangeTodoContent>;
     data?: JsonValue;
-    callback?: LiveRangeTodoEventCallback;
+    taskStart?: TaskStartFunction;
 }
 
 export interface LiveRangeTodoSnapshotEvent {

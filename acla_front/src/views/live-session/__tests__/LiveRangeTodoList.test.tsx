@@ -5,14 +5,14 @@ import LiveRangeTodoList, {
     calculateLiveRangeEta,
     calculateRollingForwardRate,
     crossedLiveRangeTodoPosition,
-} from '../LiveRangeTodoList';
+} from 'components/ai-engineering-tools/LiveRangeTodoList';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
 import type { LiveSessionRuntime } from '../live-session-types';
 import type {
-    LiveRangeTodoEventCallback,
     LiveRangeTodoEventInput,
     LiveRangeTodoListToolResult,
-} from '../live-range-todo-list-types';
+    TaskStartFunction,
+} from 'components/ai-engineering-tools';
 
 const telemetry = (lap: number, position: number) => ({
     Graphics_completed_laps: lap,
@@ -42,7 +42,7 @@ const callHandle = (call: () => LiveRangeTodoListToolResult) => {
 
 const makeEvent = (
     id: string,
-    callback: LiveRangeTodoEventCallback = jest.fn(),
+    taskStart: TaskStartFunction = jest.fn(),
     overrides: Partial<LiveRangeTodoEventInput> = {},
 ): LiveRangeTodoEventInput => ({
     id,
@@ -50,7 +50,7 @@ const makeEvent = (
     lead_time_seconds: 0,
     content: { title: id },
     data: { producer: id },
-    callback,
+    taskStart,
     ...overrides,
 });
 
@@ -119,7 +119,7 @@ describe('LiveRangeTodoList', () => {
         return view;
     };
 
-    it('supports the typed event operations and keeps callbacks out of snapshots', async () => {
+    it('supports the typed event operations and keeps task functions out of snapshots', async () => {
         await renderQueue();
         expect(screen.getByTestId('live-range-todo-list-empty')).toBeInTheDocument();
         const firstCallback = jest.fn();
@@ -144,7 +144,7 @@ describe('LiveRangeTodoList', () => {
             content: { title: 'brake', detail: 'Use the 100 board' },
             data: { producer: 'component-a', priority: 1 },
         });
-        expect(events[0]).not.toHaveProperty('callback');
+        expect(events[0]).not.toHaveProperty('taskStart');
 
         callHandle(() => runtime.liveRangeTodoListHandle!.resetEvents(['brake']));
         callHandle(() => runtime.liveRangeTodoListHandle!.removeEvents(['exit']));
@@ -152,11 +152,11 @@ describe('LiveRangeTodoList', () => {
         expect(callHandle(() => runtime.liveRangeTodoListHandle!.clear()).status).toBe('empty');
     });
 
-    it('rejects callback-free events, invalid fields, and duplicate ids atomically', async () => {
+    it('rejects function-free events, invalid fields, and duplicate ids atomically', async () => {
         await renderQueue();
         const callback = jest.fn();
         const callbackFree = makeEvent('missing', callback) as Partial<LiveRangeTodoEventInput>;
-        delete callbackFree.callback;
+        delete callbackFree.taskStart;
 
         const results = [
             callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(callbackFree as LiveRangeTodoEventInput)),
@@ -179,7 +179,7 @@ describe('LiveRangeTodoList', () => {
         expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toHaveLength(0);
     });
 
-    it('lets multiple producers keep distinct callbacks and preserves them through updates', async () => {
+    it('lets multiple producers keep distinct task functions and preserves them through updates', async () => {
         await renderQueue();
         const componentACallback = jest.fn();
         const componentBCallback = jest.fn();
@@ -265,14 +265,12 @@ describe('LiveRangeTodoList', () => {
             await Promise.resolve();
         });
 
-        expect(secondCallback).toHaveBeenCalledWith(expect.objectContaining({
-            telemetry: telemetry(2, 0.6),
-        }));
+        expect(secondCallback).toHaveBeenCalledWith(expect.any(AbortSignal));
     });
 
-    it('passes event context, ignores callback results, removes settled events, and logs rejection', async () => {
+    it('passes only an abort signal, removes settled events, and logs rejection', async () => {
         await renderQueue();
-        const success = jest.fn(async () => ({ ignored: true }));
+        const success = jest.fn(async () => undefined);
         const failure = jest.fn(async () => {
             throw new Error('producer failed');
         });
@@ -286,19 +284,11 @@ describe('LiveRangeTodoList', () => {
         publishTelemetry(4, 0.3);
         await flushCallbacks();
 
-        expect(success).toHaveBeenCalledWith(expect.objectContaining({
-            event: expect.objectContaining({ id: 'success', data: { instruction: 'notify' } }),
-            data: { instruction: 'notify' },
-            telemetry: telemetry(4, 0.3),
-            lap: 4,
-            eta_seconds: expect.any(Number),
-            signal: expect.any(AbortSignal),
-            sessionIntelligence: runtime.sessionIntelligence,
-        }));
+        expect(success).toHaveBeenCalledWith(expect.any(AbortSignal));
         expect(failure).toHaveBeenCalledTimes(1);
         expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toHaveLength(0);
         expect(errorSpy).toHaveBeenCalledWith(
-            "Live range to-do event 'failure' callback failed.",
+            "Live range to-do event 'failure' task failed.",
             expect.objectContaining({ message: 'producer failed' }),
         );
     });
@@ -325,7 +315,7 @@ describe('LiveRangeTodoList', () => {
             { id: 'next', status: 'running' },
         ]);
         expect(errorSpy).toHaveBeenCalledWith(
-            "Live range to-do event 'failure' callback failed.",
+            "Live range to-do event 'failure' task failed.",
             thrownError,
         );
     });
@@ -339,7 +329,7 @@ describe('LiveRangeTodoList', () => {
     ])('aborts running callbacks during %s', async (_name, mutate) => {
         await renderQueue();
         let capturedSignal: AbortSignal | undefined;
-        const pending = jest.fn(({ signal }) => {
+        const pending = jest.fn((signal: AbortSignal) => {
             capturedSignal = signal;
             return new Promise<void>(() => undefined);
         });
@@ -352,14 +342,14 @@ describe('LiveRangeTodoList', () => {
         expect(capturedSignal?.aborted).toBe(true);
     });
 
-    it('allows an update to explicitly replace an event callback', async () => {
+    it('allows an update to explicitly replace an event task function', async () => {
         await renderQueue();
         const original = jest.fn();
         const replacement = jest.fn();
         callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('replace-callback', original)));
         callHandle(() => runtime.liveRangeTodoListHandle!.updateEvents([{
             id: 'replace-callback',
-            callback: replacement,
+            taskStart: replacement,
         }]));
 
         publishTelemetry(1, 0.1);
@@ -379,7 +369,7 @@ describe('LiveRangeTodoList', () => {
             <LiveSessionProvider><Wrapper show /></LiveSessionProvider>,
         );
         await waitFor(() => expect(runtime.liveRangeTodoListHandle).not.toBeNull());
-        callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('pending', ({ signal }) => {
+        callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('pending', (signal) => {
             capturedSignal = signal;
             return new Promise<void>(() => undefined);
         })));

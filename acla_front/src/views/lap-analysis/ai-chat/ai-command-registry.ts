@@ -9,15 +9,15 @@ import {
     hasEnoughCoachingLead,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
-    type ProcedurePlan,
     type ProcedurePlanRequest,
-} from './ai-chat-plan';
+    type ProcedurePlanState,
+} from 'components/ai-engineering-tools';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
     AiToolDefinition,
     executeAiToolDefinition,
 } from './ai-tool-base';
-import type { LiveRangeTodoListToolResult } from 'views/live-session/live-range-todo-list-types';
+import type { LiveRangeTodoListToolResult } from 'components/ai-engineering-tools';
 import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 import {
     AI_TOOL_COMPONENT_NAMES,
@@ -84,9 +84,9 @@ export interface AiCommandRegistryContext {
         step?: string;
         error?: string;
     };
-    getProcedurePlan?: () => ProcedurePlan | null;
+    getProcedurePlan?: () => ProcedurePlanState | null;
     clearProcedurePlan?: () => void;
-    setProcedurePlan?: (plan: ProcedurePlan | null) => void;
+    setProcedurePlan?: (plan: ProcedurePlanState | null) => void;
     setAgentTagActive?: (tag: string, active: boolean) => void;
     startAgentSession?: (
         agentMode: AgentSessionMode,
@@ -497,6 +497,10 @@ const ALL_AI_TOOL_NAMES = [
     'remove_imitation_guidance_chart',
     'disable_ui_component',
 ] as const;
+
+export const isAiCommandName = (name: string): boolean => (
+    (ALL_AI_TOOL_NAMES as readonly string[]).includes(name)
+);
 
 const getToolUiRecord = (uiOutput: unknown): Record<string, any> => (
     uiOutput && typeof uiOutput === 'object' && !Array.isArray(uiOutput)

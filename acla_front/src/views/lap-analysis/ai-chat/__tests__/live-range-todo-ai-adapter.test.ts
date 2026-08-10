@@ -2,10 +2,10 @@ import {
     createLiveRangeTodoAiAdapter,
 } from '../live-range-todo-ai-adapter';
 import type {
-    LiveRangeTodoEventCallback,
     LiveRangeTodoListHandle,
     LiveRangeTodoListToolResult,
-} from 'views/live-session/live-range-todo-list-types';
+    TaskStartFunction,
+} from 'components/ai-engineering-tools';
 
 const emptyResult: LiveRangeTodoListToolResult = {
     status: 'empty',
@@ -33,10 +33,11 @@ const createHandle = (): jest.Mocked<LiveRangeTodoListHandle> => {
 };
 
 describe('live range to-do AI adapter', () => {
-    it('attaches its notification callback only to AI set and add events', () => {
+    it('attaches the selected task function only to AI set and add events', () => {
         const handle = createHandle();
-        const notifyAi = jest.fn() as LiveRangeTodoEventCallback;
-        const adapter = createLiveRangeTodoAiAdapter(handle, notifyAi);
+        const taskStart = jest.fn() as TaskStartFunction;
+        const selectTaskStart = jest.fn(() => taskStart);
+        const adapter = createLiveRangeTodoAiAdapter(handle, selectTaskStart);
 
         adapter.set({
             events: [{
@@ -59,24 +60,25 @@ describe('live range to-do AI adapter', () => {
             expect.objectContaining({
                 id: 'set-event',
                 data: { event: 'custom_notification' },
-                callback: notifyAi,
+                taskStart,
             }),
         ]);
         expect(handle.addEvent).toHaveBeenCalledWith(expect.objectContaining({
             id: 'added-event',
             data: {},
-            callback: notifyAi,
+            taskStart,
         }));
+        expect(selectTaskStart).toHaveBeenCalledTimes(2);
     });
 
     it('forwards only serializable AI updates so stored non-AI callbacks are preserved', () => {
         const handle = createHandle();
-        const notifyAi = jest.fn() as LiveRangeTodoEventCallback;
-        const nonAiCallback = jest.fn() as LiveRangeTodoEventCallback;
-        const adapter = createLiveRangeTodoAiAdapter(handle, notifyAi);
-        let storedCallback = nonAiCallback;
+        const notifyAi = jest.fn() as TaskStartFunction;
+        const nonAiTaskStart = jest.fn() as TaskStartFunction;
+        const adapter = createLiveRangeTodoAiAdapter(handle, () => notifyAi);
+        let storedTaskStart = nonAiTaskStart;
         handle.updateEvents.mockImplementation((updates) => {
-            if (updates[0]?.callback) storedCallback = updates[0].callback;
+            if (updates[0]?.taskStart) storedTaskStart = updates[0].taskStart;
             return { ...emptyResult, status: 'ready' };
         });
 
@@ -86,7 +88,7 @@ describe('live range to-do AI adapter', () => {
                 id: 'component-event',
                 content: { detail: 'AI-updated detail' },
                 data: { note: 'serializable only' },
-                callback: notifyAi,
+                taskStart: notifyAi,
                 action: { name: 'notify_ai' },
             }],
         });
@@ -97,14 +99,14 @@ describe('live range to-do AI adapter', () => {
             data: { note: 'serializable only' },
         }]);
         const forwardedUpdate = handle.updateEvents.mock.calls[0][0][0];
-        expect(forwardedUpdate).not.toHaveProperty('callback');
+        expect(forwardedUpdate).not.toHaveProperty('taskStart');
         expect(forwardedUpdate).not.toHaveProperty('action');
-        expect(storedCallback).toBe(nonAiCallback);
+        expect(storedTaskStart).toBe(nonAiTaskStart);
     });
 
     it('maps remove, reset, clear, and get without registering callbacks', () => {
         const handle = createHandle();
-        const adapter = createLiveRangeTodoAiAdapter(handle, jest.fn());
+        const adapter = createLiveRangeTodoAiAdapter(handle, () => jest.fn());
 
         adapter.update({ action: 'remove_events', ids: ['one'] });
         adapter.update({ action: 'reset_events', ids: ['two'] });
@@ -120,7 +122,7 @@ describe('live range to-do AI adapter', () => {
     });
 
     it('returns the panel unavailable error while the queue is unmounted', () => {
-        const adapter = createLiveRangeTodoAiAdapter(null, jest.fn());
+        const adapter = createLiveRangeTodoAiAdapter(null, () => jest.fn());
 
         [
             adapter.set({ events: [] }),

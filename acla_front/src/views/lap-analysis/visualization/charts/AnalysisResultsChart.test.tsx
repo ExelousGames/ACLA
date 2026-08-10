@@ -91,22 +91,37 @@ jest.mock('contexts/AiLabelsContext', () => ({
 }));
 
 jest.mock('components/data-graphs', () => ({
-    DataGraph: ({ spec }: any) => (
-        <div
-            data-testid="mistake-frequency-graph"
-            data-graph-data={JSON.stringify(spec.data)}
-            data-graph-height={String(spec.height)}
-            data-graph-orientation={spec.orientation}
-            data-graph-value-axis-label={spec.xAxisLabel}
-            data-graph-colors={JSON.stringify(spec.colors)}
-        >
-            <span>{spec.title}</span>
-            {spec.data.length === 0 && <span role="status">{spec.emptyStateText}</span>}
-        </div>
-    ),
+    DataGraph: ({ spec }: any) => {
+        const seriesKey = spec.series?.[0]?.key;
+        const testId = spec.type === 'bar'
+            ? 'mistake-frequency-graph'
+            : seriesKey === 'lapTimeSeconds'
+                ? 'lap-time-trend-graph'
+                : seriesKey === 'totalCount'
+                ? 'overall-total-trend-graph'
+                : 'specific-mistake-trend-graph';
+        return (
+            <div
+                data-testid={testId}
+                data-graph-data={JSON.stringify(spec.data)}
+                data-graph-height={String(spec.height)}
+                data-graph-orientation={spec.orientation}
+                data-graph-value-axis-label={spec.xAxisLabel ?? spec.yAxisLabel}
+                data-graph-colors={JSON.stringify(spec.colors)}
+            >
+                <span>{spec.title}</span>
+                {spec.data.length === 0 && <span role="status">{spec.emptyStateText}</span>}
+            </div>
+        );
+    },
 }));
 
-import AnalysisResultsChart from './AnalysisResultsChart';
+import AnalysisResultsChart, {
+    buildLapTimeTrendData,
+    calculateLeastSquaresSlope,
+    formatRacingTime,
+    getMistakeTrendDirection,
+} from './AnalysisResultsChart';
 import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
 import {
     AI_TOOL_COMPONENT_NAMES,
@@ -117,7 +132,7 @@ import type { VisualizationManagerHandle } from '../VisualizationPanelManager';
 import type {
     LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
-} from 'views/live-session/live-range-todo-list-types';
+} from 'components/ai-engineering-tools';
 import {
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,
@@ -141,6 +156,14 @@ const selectMainLabel = (value: string): void => {
 
 const renderedFrequencyData = (): Array<{ label: string; occurrences: number }> => (
     JSON.parse(screen.getByTestId('mistake-frequency-graph').getAttribute('data-graph-data') ?? '[]')
+);
+
+const renderedTrendData = (testId: 'overall-total-trend-graph' | 'specific-mistake-trend-graph') => (
+    JSON.parse(screen.getByTestId(testId).getAttribute('data-graph-data') ?? '[]')
+);
+
+const renderedLapTimeTrendData = () => (
+    JSON.parse(screen.getByTestId('lap-time-trend-graph').getAttribute('data-graph-data') ?? '[]')
 );
 
 const comparableData = (driverGas: number, expertGas: number) => ({
@@ -209,6 +232,305 @@ describe('AnalysisResultsChart', () => {
 
     afterEach(() => {
         jest.useRealTimers();
+    });
+
+    it('opens on Overall Trend and navigates chronologically without synthetic callback IDs', () => {
+        const chartRef = React.createRef<any>();
+        const onUpdate = jest.fn(() => true);
+        const onSelectPage = jest.fn();
+        const pages = [{
+            id: 'page-2',
+            createdAt: 2,
+            baseline: { lap: 7, lap_time_ms: 98_000, track: 'Monza', car: 'GT4' },
+            elements: [{ id: 'second-page-result', labels: ['MSP', 'MSP2'], title: 'Second page mistake' }],
+        }, {
+            id: 'page-1',
+            createdAt: 1,
+            baseline: { lap: 4, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'first-page-result', labels: ['MSP', 'MSP1'], title: 'First page mistake' }],
+        }];
+
+        const PagingHarness = () => {
+            const [activePageId, setActivePageId] = React.useState('page-2');
+            const selectPage = (pageId: string) => {
+                onSelectPage(pageId);
+                setActivePageId(pageId);
+            };
+            return (
+                <AnalysisResultsChart
+                    ref={chartRef}
+                    name="visualization:analysis-results"
+                    id="paged-results"
+                    pagination={{ pages, activePageId, onSelectPage: selectPage }}
+                    onUpdate={onUpdate}
+                />
+            );
+        };
+
+        const { unmount } = render(<PagingHarness />);
+
+        expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
+        expect(screen.getByText('Overall Trends')).toBeInTheDocument();
+        expect(screen.getByText('Lap Time Improvement')).toBeInTheDocument();
+        expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
+        expect(screen.getByText(/Overall Trend.*2 analyzed laps/)).toBeInTheDocument();
+        expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+            { analysis: 'Analysis 1 · Lap 4', totalCount: 1 },
+            { analysis: 'Analysis 2 · Lap 7', totalCount: 1 },
+        ]);
+        expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSP1');
+        fireEvent.change(screen.getByRole('combobox', { name: 'Specific mistake' }), {
+            target: { value: 'MSP2' },
+        });
+        expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+        expect(screen.queryByTestId('analysis-result-first-page-result')).not.toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        expect(onSelectPage).toHaveBeenLastCalledWith('page-1');
+        expect(screen.getByText('Page 2 of 3')).toBeInTheDocument();
+        expect(screen.getByText(/Baseline: Spa.*GT3.*Lap 4/)).toBeInTheDocument();
+        expect(screen.getByTestId('analysis-result-first-page-result')).toHaveTextContent('First page mistake');
+        expect(screen.queryByTestId('analysis-result-second-page-result')).not.toBeInTheDocument();
+        expect(renderedFrequencyData()).toEqual([{ label: 'Late turn-in', occurrences: 1 }]);
+        expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
+        expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
+        expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSP2');
+        expect(onSelectPage).toHaveBeenCalledTimes(1);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+        expect(onSelectPage).toHaveBeenLastCalledWith('page-2');
+        expect(screen.getByText('Page 3 of 3')).toBeInTheDocument();
+        expect(screen.getByText(/Baseline: Monza.*GT4.*Lap 7/)).toBeInTheDocument();
+        expect(screen.getByTestId('analysis-result-second-page-result')).toHaveTextContent('Second page mistake');
+        expect(screen.queryByTestId('analysis-result-first-page-result')).not.toBeInTheDocument();
+        expect(renderedFrequencyData()).toEqual([{ label: 'Wheel lock', occurrences: 1 }]);
+        expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+
+        act(() => {
+            chartRef.current.appendAnalysisResult({ id: 'active-only', labels: ['MSP'] });
+        });
+        expect(onUpdate).toHaveBeenCalledWith({
+            elements: [
+                expect.objectContaining({ id: 'second-page-result' }),
+                expect.objectContaining({ id: 'active-only' }),
+            ],
+        });
+
+        unmount();
+        render(<PagingHarness />);
+        expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
+        expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
+    });
+
+    it.each([
+        { name: 'decreasing', values: [5, 4, 3, 2], direction: 'decreasing', slope: -1 },
+        { name: 'increasing', values: [1, 2, 4, 5], direction: 'increasing', slope: 1.4 },
+        { name: 'flat', values: [3, 3, 3], direction: 'stable', slope: 0 },
+        { name: 'noisy but level', values: [2, 5, 2], direction: 'stable', slope: 0 },
+        { name: 'single-page', values: [3], direction: 'insufficient', slope: null },
+        { name: 'empty', values: [], direction: 'insufficient', slope: null },
+    ])('calculates a $name best-fit trend', ({ values, direction, slope }) => {
+        expect(getMistakeTrendDirection(values)).toBe(direction);
+        if (slope === null) {
+            expect(calculateLeastSquaresSlope(values)).toBeNull();
+        } else {
+            expect(calculateLeastSquaresSlope(values)).toBeCloseTo(slope);
+        }
+    });
+
+    it('preserves noisy raw lap times and missing-page gaps while fitting the full chronology', () => {
+        const pages = [{
+            id: 'latest',
+            createdAt: 400,
+            baseline: { lap: 21, lap_time_ms: 95_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'latest-mistake', labels: ['MSP', 'MSP1'] }],
+        }, {
+            id: 'first',
+            createdAt: 100,
+            baseline: { lap: 3, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'first-mistake', labels: ['MSP', 'MSP1'] }],
+        }, {
+            id: 'missing',
+            createdAt: 300,
+            baseline: { lap: 14, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            elements: [],
+        }, {
+            id: 'slower',
+            createdAt: 200,
+            baseline: { lap: 9, lap_time_ms: 105_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'slower-mistake', labels: ['MSR', 'MSR1'] }],
+        }];
+        const model = buildLapTimeTrendData(pages);
+
+        expect(model.laps.map(({ pageId, lapTimeMs }) => ({ pageId, lapTimeMs }))).toEqual([
+            { pageId: 'first', lapTimeMs: 100_000 },
+            { pageId: 'slower', lapTimeMs: 105_000 },
+            { pageId: 'missing', lapTimeMs: null },
+            { pageId: 'latest', lapTimeMs: 95_000 },
+        ]);
+        expect(model.slopeMsPerAnalysis).toBeCloseTo(-2_142.857, 3);
+        expect(model.direction).toBe('improving');
+        expect(formatRacingTime(95_001)).toBe('1:35.001');
+
+        render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="lap-time-trend"
+                pagination={{ pages, activePageId: 'latest', onSelectPage: jest.fn() }}
+            />,
+        );
+
+        const graphData = renderedLapTimeTrendData();
+        expect(graphData.map(({ lapTimeSeconds }: any) => lapTimeSeconds)).toEqual([100, 105, null, 95]);
+        expect(graphData.every(({ bestFitSeconds }: any) => Number.isFinite(bestFitSeconds))).toBe(true);
+        expect(screen.getByText('Lap time by analyzed lap (lower is faster).')).toBeInTheDocument();
+        expect(screen.getByTestId('lap-time-trend-status')).toHaveTextContent(
+            'Latest lap time: 1:35.000. Versus previous timed lap: 0:10.000 faster. '
+            + 'Versus first timed lap: 0:05.000 faster. Overall direction: improving.',
+        );
+
+        const beforeFilterChange = renderedLapTimeTrendData();
+        selectMainLabel('MSR');
+        expect(renderedLapTimeTrendData()).toEqual(beforeFilterChange);
+    });
+
+    it('counts totals and deduplicated sub-label occurrences across zero-filled laps', () => {
+        const pages = [{
+            id: 'later-page',
+            createdAt: 200,
+            baseline: { lap: 12, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'b-wheel-1', labels: ['MSP', 'MSP2'] },
+                { id: 'b-wheel-2', labels: ['Mistake (Practice)', 'Wheel lock'] },
+                { id: 'b-racing', labels: ['MSR', 'MSR1'] },
+            ],
+        }, {
+            id: 'first-page',
+            createdAt: 100,
+            baseline: { lap: 8, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'a-late', labels: ['MSP', 'MSP1', 'Late turn-in', 'MSP1'] },
+                { id: 'a-wheel', labels: ['MSP', 'MSP2'] },
+                { id: 'a-parent-only', labels: ['Mistake (Practice)'] },
+                { id: 'a-child-without-parent', labels: ['MSP1'] },
+            ],
+        }, {
+            id: 'last-page',
+            createdAt: 300,
+            baseline: { lap: 15, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'c-wheel', labels: ['MSP', 'MSP2', 'Wheel lock'] },
+                { id: 'c-racing-1', labels: ['Mistake (Racing)', 'MSR1'] },
+                { id: 'c-racing-2', labels: ['MSR', 'Failed overtake attempt', 'MSR1'] },
+            ],
+        }];
+
+        render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="trend-counts"
+                pagination={{ pages, activePageId: 'later-page', onSelectPage: jest.fn() }}
+            />,
+        );
+
+        expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+            { analysis: 'Analysis 1 · Lap 8', totalCount: 3 },
+            { analysis: 'Analysis 2 · Lap 12', totalCount: 2 },
+            { analysis: 'Analysis 3 · Lap 15', totalCount: 1 },
+        ]);
+        expect(screen.getByTestId('overall-total-trend-status')).toHaveTextContent(
+            'Latest: 1 recognized mistake element. Trending downward — fewer mistakes.',
+        );
+        expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSP2');
+        expect(renderedTrendData('specific-mistake-trend-graph')).toEqual([
+            { analysis: 'Analysis 1 · Lap 8', specificCount: 1 },
+            { analysis: 'Analysis 2 · Lap 12', specificCount: 2 },
+            { analysis: 'Analysis 3 · Lap 15', specificCount: 1 },
+        ]);
+        expect(screen.getByTestId('specific-mistake-trend-status')).toHaveTextContent('Trend is stable.');
+
+        fireEvent.change(screen.getByRole('combobox', { name: 'Specific mistake' }), {
+            target: { value: 'MSP1' },
+        });
+        expect(renderedTrendData('specific-mistake-trend-graph')).toEqual([
+            { analysis: 'Analysis 1 · Lap 8', specificCount: 1 },
+            { analysis: 'Analysis 2 · Lap 12', specificCount: 0 },
+            { analysis: 'Analysis 3 · Lap 15', specificCount: 0 },
+        ]);
+
+        selectMainLabel('MSR');
+        expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSR1');
+        expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+            { analysis: 'Analysis 1 · Lap 8', totalCount: 0 },
+            { analysis: 'Analysis 2 · Lap 12', totalCount: 1 },
+            { analysis: 'Analysis 3 · Lap 15', totalCount: 2 },
+        ]);
+        expect(screen.getByTestId('overall-total-trend-status')).toHaveTextContent(
+            'Trending upward — more mistakes.',
+        );
+    });
+
+    it('shows clear empty and single-page trend guidance', () => {
+        const { rerender } = render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="empty-trend"
+                pagination={{ pages: [], activePageId: null, onSelectPage: jest.fn() }}
+            />,
+        );
+
+        expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+        expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent(
+            'No analyzed laps yet. Analyze at least two baseline laps to see a trend.',
+        );
+        expect(renderedLapTimeTrendData()).toEqual([]);
+        expect(screen.getByTestId('lap-time-trend-status')).toHaveTextContent(
+            'Latest lap time unavailable',
+        );
+        expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+        expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toBeDisabled();
+
+        rerender(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="empty-trend"
+                pagination={{
+                    pages: [{
+                        id: 'only-page',
+                        createdAt: 1,
+                        baseline: { lap: 6, lap_time_ms: 98_567, track: 'Spa', car: 'GT3' },
+                        elements: [{ id: 'only-result', labels: ['MSP', 'MSP1'] }],
+                    }],
+                    activePageId: 'only-page',
+                    onSelectPage: jest.fn(),
+                }}
+            />,
+        );
+
+        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent(
+            'Not enough analyzed laps to determine a trend.',
+        );
+        expect(screen.getByTestId('overall-total-trend-status')).toHaveTextContent(
+            'Latest: 1 recognized mistake element. Not enough analyzed laps to determine a trend.',
+        );
+        expect(renderedLapTimeTrendData()).toEqual([{
+            analysis: expect.any(String),
+            lapTimeSeconds: 98.567,
+            bestFitSeconds: null,
+        }]);
+        expect(screen.getByTestId('lap-time-trend-status')).toHaveTextContent(
+            'Latest lap time: 1:38.567. Versus previous timed lap: unavailable. '
+            + 'Versus first timed lap: unchanged. Overall direction: not enough timed laps.',
+        );
     });
 
     it('renders arbitrary labels, context, and metadata safely', () => {
@@ -595,7 +917,7 @@ describe('AnalysisResultsChart', () => {
             normalized_position: 0.05,
             content: { title: 'Existing reminder' },
             data: null,
-            callback: jest.fn(),
+            taskStart: jest.fn(),
         };
         const queuedEvents = [existingEvent];
         const handle = createQueueHandle(queuedEvents);
@@ -869,9 +1191,9 @@ describe('AnalysisResultsChart', () => {
         fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
         const controller = new AbortController();
         let completed = false;
-        const callbackPromise = Promise.resolve(queuedEvents[0].callback({
-            signal: controller.signal,
-        } as any)).then(() => { completed = true; });
+        const callbackPromise = Promise.resolve(queuedEvents[0].taskStart(
+            controller.signal,
+        )).then(() => { completed = true; });
 
         act(() => jest.advanceTimersByTime(1));
         act(() => jest.advanceTimersByTime(1));
@@ -907,9 +1229,9 @@ describe('AnalysisResultsChart', () => {
         expect(completed).toBe(true);
 
         const abortController = new AbortController();
-        const abortedPromise = Promise.resolve(queuedEvents[0].callback({
-            signal: abortController.signal,
-        } as any));
+        const abortedPromise = Promise.resolve(queuedEvents[0].taskStart(
+            abortController.signal,
+        ));
         act(() => jest.advanceTimersByTime(1));
         act(() => jest.advanceTimersByTime(1));
         await act(async () => Promise.resolve());

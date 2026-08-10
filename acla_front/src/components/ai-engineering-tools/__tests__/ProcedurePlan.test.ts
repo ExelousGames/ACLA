@@ -1,11 +1,174 @@
 import {
     advanceProcedurePlan,
-    buildProcedurePlan,
+    buildProcedurePlan as buildProcedurePlanWithTasks,
+    getProcedurePlanToolArguments,
+    getProcedurePlanToolRunKey,
     getProcedurePlanUpdateKey,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
-} from '../ai-chat-plan';
+    ProcedurePlanRunner,
+    serializeProcedurePlan,
+} from '../ProcedurePlan';
+import type { LiveRangeTodoEventInput } from '../live-range-todo-list-types';
+import type { TaskStartFunction } from '../task-start-function';
+
+const taskStart = jest.fn();
+const buildProcedurePlan = (data: Record<string, unknown>) => (
+    buildProcedurePlanWithTasks(data, () => taskStart)
+);
+
+const flushTaskStarts = async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+};
+
+describe('standard task-start functions', () => {
+    it('type-checks components with one and multiple implementations', () => {
+        const start: TaskStartFunction = () => undefined;
+        const startExpanded: TaskStartFunction = async () => undefined;
+        const singleImplementationComponent: { start: TaskStartFunction } = { start };
+        const multipleImplementationComponent: {
+            start: TaskStartFunction;
+            startExpanded: TaskStartFunction;
+        } = { start, startExpanded };
+
+        expect(singleImplementationComponent.start).toBe(start);
+        expect(multipleImplementationComponent).toEqual({ start, startExpanded });
+    });
+
+    it('passes the same selected function unchanged to procedure and live-range items', () => {
+        const selected: TaskStartFunction = jest.fn();
+        const plan = buildProcedurePlanWithTasks({
+            goal: 'Show one comparison.',
+            requests: [{ type: 'tool_call', title: 'Show comparison', name: 'show_comparison' }],
+        }, () => selected)!;
+        const liveRangeEvent: LiveRangeTodoEventInput = {
+            id: 'comparison',
+            normalized_position: 0.5,
+            content: { title: 'Show comparison' },
+            data: {},
+            taskStart: selected,
+        };
+
+        expect(plan.requests[0].taskStart).toBe(selected);
+        expect(liveRangeEvent.taskStart).toBe(selected);
+        expect(serializeProcedurePlan(plan).requests[0]).not.toHaveProperty('taskStart');
+        expect(JSON.stringify(serializeProcedurePlan(plan))).not.toContain('taskStart');
+    });
+
+    it('rejects plan creation when a component cannot supply a compatible function', () => {
+        expect(buildProcedurePlanWithTasks({
+            goal: 'Unsupported task.',
+            requests: [{ type: 'tool_call', title: 'Unsupported', name: 'unsupported' }],
+        }, () => null)).toBeNull();
+    });
+});
+
+describe('ProcedurePlanRunner', () => {
+    it('runs synchronous and asynchronous tasks in order and removes the empty plan', async () => {
+        let finishSecond!: () => void;
+        const first: TaskStartFunction = jest.fn();
+        const second: TaskStartFunction = jest.fn(() => new Promise<void>((resolve) => {
+            finishSecond = resolve;
+        }));
+        const changes: Array<ReturnType<ProcedurePlanRunner['get']>> = [];
+        const runner = new ProcedurePlanRunner((plan) => changes.push(plan));
+
+        runner.replace({
+            goal: 'Run both.',
+            currentStep: 0,
+            requests: [
+                { type: 'task', title: 'First', status: 'pending', taskStart: first },
+                { type: 'task', title: 'Second', status: 'pending', taskStart: second },
+            ],
+        });
+
+        expect(first).toHaveBeenCalledWith(expect.any(AbortSignal));
+        expect(runner.get()?.requests[0]).toMatchObject({ title: 'First', status: 'running' });
+        await flushTaskStarts();
+        expect(second).toHaveBeenCalledWith(expect.any(AbortSignal));
+        expect(runner.get()?.requests).toEqual([
+            expect.objectContaining({ title: 'Second', status: 'running' }),
+        ]);
+
+        finishSecond();
+        await flushTaskStarts();
+        expect(runner.get()).toBeNull();
+        expect(changes.at(-1)).toBeNull();
+    });
+
+    it('reports rejection before removing the failed task and continuing', async () => {
+        const order: string[] = [];
+        const next = jest.fn();
+        const runner = new ProcedurePlanRunner(
+            (plan) => {
+                if (plan === null) order.push('removed');
+            },
+            (_request, error) => order.push(`error:${(error as Error).message}`),
+        );
+        runner.replace({
+            goal: 'Continue after failure.',
+            currentStep: 0,
+            requests: [
+                { type: 'task', title: 'Failure', status: 'pending', taskStart: () => Promise.reject(new Error('failed')) },
+                { type: 'task', title: 'Next', status: 'pending', taskStart: next },
+            ],
+        });
+
+        await flushTaskStarts();
+        await flushTaskStarts();
+        expect(next).toHaveBeenCalledTimes(1);
+        expect(order).toEqual(['error:failed', 'removed']);
+    });
+
+    it('aborts the active function when cleared or replaced', () => {
+        let clearedSignal!: AbortSignal;
+        let replacedSignal!: AbortSignal;
+        const pending = (capture: (signal: AbortSignal) => void): TaskStartFunction => (signal) => {
+            capture(signal);
+            return new Promise<void>(() => undefined);
+        };
+        const runner = new ProcedurePlanRunner(() => undefined);
+        const planFor = (title: string, start: TaskStartFunction) => ({
+            goal: title,
+            currentStep: 0,
+            requests: [{ type: 'task', title, status: 'pending' as const, taskStart: start }],
+        });
+
+        runner.replace(planFor('Clear me', pending((signal) => { clearedSignal = signal; })));
+        runner.clear();
+        expect(clearedSignal.aborted).toBe(true);
+
+        runner.replace(planFor('Replace me', pending((signal) => { replacedSignal = signal; })));
+        runner.replace(planFor('Replacement', () => undefined));
+        expect(replacedSignal.aborted).toBe(true);
+    });
+});
+
+describe('procedure plan tool requests', () => {
+    const request = {
+        type: 'tool_call',
+        title: 'Show supporting context',
+        name: 'show_context',
+        status: 'pending' as const,
+        payload: {
+            arguments: { target_id: 'task-1' },
+        },
+    };
+
+    it('extracts nested tool arguments', () => {
+        expect(getProcedurePlanToolArguments(request)).toEqual({ target_id: 'task-1' });
+    });
+
+    it('builds a run key from the active step and request', () => {
+        expect(getProcedurePlanToolRunKey({
+            goal: 'Complete a delegated task.',
+            currentStep: 1,
+            requests: [request],
+        }, request)).toBe('1:show_context:{"arguments":{"target_id":"task-1"}}');
+    });
+});
 
 describe('buildProcedurePlan', () => {
     it('does not create a visible plan without AI-provided requests', () => {
@@ -89,7 +252,7 @@ describe('buildProcedurePlan', () => {
         });
     });
 
-    it('advances to the next request when the active request is already complete', () => {
+    it('forgets settled requests when creating the runtime plan', () => {
         expect(buildProcedurePlan({
             event: 'procedure_plan_started',
             goal: 'Run live analysis from a clean baseline.',
@@ -107,13 +270,8 @@ describe('buildProcedurePlan', () => {
                 },
             ],
         })).toMatchObject({
-            currentStep: 1,
+            currentStep: 0,
             requests: [
-                {
-                    title: 'Collect a clean baseline lap',
-                    name: 'collect_live_baseline',
-                    status: 'complete',
-                },
                 {
                     title: 'Request recorded-session classifier',
                     name: 'analyze_live_recorded_analysis',
@@ -123,7 +281,7 @@ describe('buildProcedurePlan', () => {
         });
     });
 
-    it('marks earlier requests complete when an tool status advances current_request', () => {
+    it('starts at the requested pending item without retaining earlier items', () => {
         expect(buildProcedurePlan({
             event: 'baseline_classifier_request_ready',
             goal: 'Run live analysis from a clean baseline.',
@@ -141,13 +299,8 @@ describe('buildProcedurePlan', () => {
                 },
             ],
         })).toMatchObject({
-            currentStep: 1,
+            currentStep: 0,
             requests: [
-                {
-                    title: 'Collect a clean baseline lap',
-                    name: 'collect_live_baseline',
-                    status: 'complete',
-                },
                 {
                     title: 'Request recorded-session classifier',
                     name: 'analyze_live_recorded_analysis',
@@ -266,75 +419,69 @@ describe('buildProcedurePlan', () => {
 });
 
 describe('advanceProcedurePlan', () => {
-    it('completes the active request and moves to the next pending request', () => {
+    it('removes the active request and moves to the next pending request', () => {
         const result = advanceProcedurePlan({
             goal: 'Complete a delegated task.',
             currentStep: 0,
             requests: [
-                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'pending' },
-                { type: 'tool_call', title: 'Analyze the baseline', status: 'pending' },
+                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'pending', taskStart },
+                { type: 'tool_call', title: 'Analyze the baseline', status: 'pending', taskStart },
             ],
         }, 'baseline complete');
 
         expect(result).toMatchObject({
             status: 'advanced',
-            current_request: 1,
+            current_request: 0,
             step: 'Analyze the baseline',
             reason: 'baseline complete',
             plan: {
-                currentStep: 1,
+                currentStep: 0,
                 requests: [
-                    { title: 'Collect a clean baseline lap', status: 'complete' },
                     { title: 'Analyze the baseline', status: 'pending' },
                 ],
             },
         });
     });
 
-    it('skips over already completed requests without marking the next pending request complete', () => {
+    it('forgets already settled requests while retaining the next task', () => {
         const result = advanceProcedurePlan({
             goal: 'Complete a delegated task.',
             currentStep: 0,
             requests: [
-                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'complete' },
-                { type: 'tool_call', title: 'Analyze the baseline', status: 'complete' },
-                { type: 'driver_action', title: 'Run the next lap', status: 'pending' },
+                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'complete', taskStart },
+                { type: 'tool_call', title: 'Analyze the baseline', status: 'complete', taskStart },
+                { type: 'driver_action', title: 'Run the next lap', status: 'pending', taskStart },
             ],
         });
 
         expect(result).toMatchObject({
             status: 'advanced',
-            current_request: 2,
+            current_request: 0,
             plan: {
-                currentStep: 2,
+                currentStep: 0,
                 requests: [
-                    { title: 'Collect a clean baseline lap', status: 'complete' },
-                    { title: 'Analyze the baseline', status: 'complete' },
                     { title: 'Run the next lap', status: 'pending' },
                 ],
             },
         });
     });
 
-    it('leaves the final request active when completing the last step', () => {
+    it('returns an empty completed plan after the final request settles', () => {
         const result = advanceProcedurePlan({
             goal: 'Complete a delegated task.',
             currentStep: 1,
             requests: [
-                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'complete' },
-                { type: 'driver_action', title: 'Run the next lap', status: 'pending' },
+                { type: 'tool_call', title: 'Collect a clean baseline lap', name: 'collect_live_baseline', status: 'complete', taskStart },
+                { type: 'driver_action', title: 'Run the next lap', status: 'pending', taskStart },
             ],
         });
 
         expect(result).toMatchObject({
             status: 'complete',
-            current_request: 1,
+            current_request: 0,
             plan: {
-                currentStep: 1,
-                requests: [
-                    { title: 'Collect a clean baseline lap', status: 'complete' },
-                    { title: 'Run the next lap', status: 'complete' },
-                ],
+                currentStep: 0,
+                requests: [],
             },
         });
     });

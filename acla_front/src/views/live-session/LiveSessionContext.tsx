@@ -24,7 +24,14 @@ import {
 import type {
     LiveRangeTodoListHandle,
     LiveRangeTodoListSnapshot,
-} from './live-range-todo-list-types';
+} from 'components/ai-engineering-tools';
+import {
+    AppendLiveSessionAnalysisResultPageInput,
+    AppendLiveSessionAnalysisResultPageResult,
+    createLiveSessionAnalysisResultPage,
+    LiveSessionAnalysisResultPage,
+} from './live-session-analysis-results';
+import { normalizeAnalysisResultsData } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
 
 const TELEMETRY_WRITE_TIMEOUT_MS = 6000;
 const LIVE_TELEMETRY_UI_UPDATE_MS = 100;
@@ -73,6 +80,8 @@ const defaultRuntime: LiveSessionRuntime = {
     liveRangeTodoListHandle: null,
     liveRangeTodoListSnapshot: null,
     recorderControl: null,
+    analysisResultPages: [],
+    activeAnalysisResultPageId: null,
     startLiveSession: missingProvider,
     endLiveSession: missingProvider,
     setCurrentTelemetry: missingProvider,
@@ -90,6 +99,18 @@ const defaultRuntime: LiveSessionRuntime = {
     registerLiveRangeTodoListHandle: missingProvider,
     publishLiveRangeTodoListSnapshot: missingProvider,
     registerRecorderControl: missingProvider,
+    appendAnalysisResultPage: () => {
+        missingProvider();
+        return { pageId: '', pageCount: 0 };
+    },
+    selectAnalysisResultPage: () => {
+        missingProvider();
+        return false;
+    },
+    updateActiveAnalysisResultPage: () => {
+        missingProvider();
+        return false;
+    },
 };
 
 export const LiveSessionContext = createContext<LiveSessionRuntime>(defaultRuntime);
@@ -118,6 +139,8 @@ export const LiveSessionProvider = ({
     const [liveRangeTodoListHandle, setLiveRangeTodoListHandle] = useState<LiveRangeTodoListHandle | null>(null);
     const [liveRangeTodoListSnapshot, setLiveRangeTodoListSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
     const [recorderControl, setRecorderControl] = useState<LiveSessionRecorderControl | null>(null);
+    const [analysisResultPages, setAnalysisResultPages] = useState<LiveSessionAnalysisResultPage[]>([]);
+    const [activeAnalysisResultPageId, setActiveAnalysisResultPageId] = useState<string | null>(null);
 
     const sessionIntelligenceRef = useRef(new SessionIntelligence());
     const sessionGameRef = useRef<DesktopGame | null>(null);
@@ -138,6 +161,8 @@ export const LiveSessionProvider = ({
     const sampleCountRef = useRef(0);
     const committedSampleCountRef = useRef(0);
     const sampleCountFlushTimeoutRef = useRef<number | null>(null);
+    const analysisResultPagesRef = useRef<LiveSessionAnalysisResultPage[]>([]);
+    const activeAnalysisResultPageIdRef = useRef<string | null>(null);
     const persistDraftRef = useRef<() => void>(() => undefined);
     const draftPersistenceSuppressedRef = useRef(false);
     const registerLiveRangeTodoListHandle = useCallback((handle: LiveRangeTodoListHandle | null) => {
@@ -150,6 +175,51 @@ export const LiveSessionProvider = ({
 
     const registerRecorderControl = useCallback((control: LiveSessionRecorderControl | null) => {
         setRecorderControl(control);
+    }, []);
+
+    const clearAnalysisResultPages = useCallback(() => {
+        analysisResultPagesRef.current = [];
+        activeAnalysisResultPageIdRef.current = null;
+        setAnalysisResultPages([]);
+        setActiveAnalysisResultPageId(null);
+    }, []);
+
+    const appendAnalysisResultPage = useCallback((
+        input: AppendLiveSessionAnalysisResultPageInput,
+    ): AppendLiveSessionAnalysisResultPageResult => {
+        const page = createLiveSessionAnalysisResultPage(input);
+        const nextPages = [...analysisResultPagesRef.current, page];
+        analysisResultPagesRef.current = nextPages;
+        setAnalysisResultPages(nextPages);
+
+        if (activeAnalysisResultPageIdRef.current === null) {
+            activeAnalysisResultPageIdRef.current = page.id;
+            setActiveAnalysisResultPageId(page.id);
+        }
+
+        return { pageId: page.id, pageCount: nextPages.length };
+    }, []);
+
+    const selectAnalysisResultPage = useCallback((pageId: string): boolean => {
+        if (!analysisResultPagesRef.current.some((page) => page.id === pageId)) return false;
+        activeAnalysisResultPageIdRef.current = pageId;
+        setActiveAnalysisResultPageId(pageId);
+        return true;
+    }, []);
+
+    const updateActiveAnalysisResultPage = useCallback((data: unknown): boolean => {
+        const activePageId = activeAnalysisResultPageIdRef.current;
+        if (
+            !activePageId
+            || !analysisResultPagesRef.current.some((page) => page.id === activePageId)
+        ) return false;
+        const normalized = normalizeAnalysisResultsData(data);
+        const nextPages = analysisResultPagesRef.current.map((page) => (
+            page.id === activePageId ? { ...page, elements: normalized.elements } : page
+        ));
+        analysisResultPagesRef.current = nextPages;
+        setAnalysisResultPages(nextPages);
+        return true;
     }, []);
 
     const persistCurrentDraft = useCallback(() => {
@@ -191,7 +261,8 @@ export const LiveSessionProvider = ({
         draftPersistenceSuppressedRef.current = true;
         const currentOwnerEmail = ownerEmailRef.current;
         if (currentOwnerEmail) removePersistedLiveSessionDraft(currentOwnerEmail);
-    }, []);
+        clearAnalysisResultPages();
+    }, [clearAnalysisResultPages]);
 
     const flushCurrentTelemetry = useCallback(() => {
         if (telemetryFlushTimeoutRef.current !== null) {
@@ -526,8 +597,9 @@ export const LiveSessionProvider = ({
         resetSampleCount();
         writeQueueRef.current = Promise.resolve();
         sessionIntelligenceRef.current.reset();
+        clearAnalysisResultPages();
         void disposeTelemetryWriter({ force: true });
-    }, [disposeTelemetryWriter, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
+    }, [clearAnalysisResultPages, disposeTelemetryWriter, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const resetLiveSession = useCallback((nextGame: DesktopGame | null) => {
         sessionGenerationRef.current += 1;
@@ -551,9 +623,10 @@ export const LiveSessionProvider = ({
         writeQueueRef.current = Promise.resolve();
         sessionIntelligenceRef.current.reset();
         setLiveRangeTodoListSnapshot(null);
+        clearAnalysisResultPages();
         setRestorationError(null);
         void disposeTelemetryWriter({ force: true });
-    }, [disposeTelemetryWriter, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
+    }, [clearAnalysisResultPages, disposeTelemetryWriter, resetSampleCount, setRecordingFileKey, setRecordingMetadata]);
 
     const startLiveSession = useCallback((game: DesktopGame) => {
         if (sessionGameRef.current !== null) return;
@@ -688,6 +761,8 @@ export const LiveSessionProvider = ({
         liveRangeTodoListHandle,
         liveRangeTodoListSnapshot,
         recorderControl,
+        analysisResultPages,
+        activeAnalysisResultPageId,
         startLiveSession,
         endLiveSession,
         setCurrentTelemetry,
@@ -702,6 +777,9 @@ export const LiveSessionProvider = ({
         registerLiveRangeTodoListHandle,
         publishLiveRangeTodoListSnapshot,
         registerRecorderControl,
+        appendAnalysisResultPage,
+        selectAnalysisResultPage,
+        updateActiveAnalysisResultPage,
     }), [
         appendTelemetrySample,
         clearRecordingSession,
@@ -717,6 +795,8 @@ export const LiveSessionProvider = ({
         liveRangeTodoListHandle,
         liveRangeTodoListSnapshot,
         recorderControl,
+        analysisResultPages,
+        activeAnalysisResultPageId,
         recordingFileKey,
         recordingMetadata,
         recordingState,
@@ -731,6 +811,9 @@ export const LiveSessionProvider = ({
         registerLiveRangeTodoListHandle,
         publishLiveRangeTodoListSnapshot,
         registerRecorderControl,
+        appendAnalysisResultPage,
+        selectAnalysisResultPage,
+        updateActiveAnalysisResultPage,
     ]);
 
     return <LiveSessionContext.Provider value={value}>{children}</LiveSessionContext.Provider>;

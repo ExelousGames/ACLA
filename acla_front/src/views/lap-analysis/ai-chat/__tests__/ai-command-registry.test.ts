@@ -54,6 +54,7 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
         startTrackGuide: jest.fn(), setTrackGuideEnabled: jest.fn(), setLivePerformanceAnalystEnabled: jest.fn(),
         advanceProcedurePlanStep: jest.fn(() => ({ status: 'ready' })), getProcedurePlan: jest.fn(() => null),
         clearProcedurePlan: jest.fn(), setProcedurePlan: jest.fn(),
+        selectTaskStartFunction: jest.fn(() => jest.fn()),
         setAgentTagActive: jest.fn(),
         getOpportunityTelemetryRows: jest.fn(() => rows), getOpportunityAgentState: jest.fn(() => ({})),
         getLivePerformanceAnalystState: jest.fn(() => ({})), getLabelName: jest.fn((id: string) => id),
@@ -117,6 +118,15 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
             restartCollection: jest.fn(() => ({
                 status: 'waiting_for_start', progress_percent: 0, car: null, track: null,
                 message: 'Waiting for the next lap start',
+            })),
+            requestAnalysis: jest.fn(async () => ({
+                status: 'ready',
+                message: 'Telemetry analysis is ready.',
+                analysis: analysisResult,
+                source: 'baseline_lap_record',
+                baseline,
+                chartId: 'chart-1',
+                component_name: 'visualization:analysis-results',
             })),
             getTag: jest.fn(() => ({ status: 'complete', progress_percent: 100 })),
             getLapRecord: jest.fn(() => baseline),
@@ -219,6 +229,58 @@ describe('named component-ref AI command registry', () => {
                 message: expect.stringContaining('Baseline collection visualization required'),
             });
         }
+    });
+
+    it('resolves Live Session before delegating baseline analysis without calling the API', async () => {
+        const h = createHarness('live');
+        const baseline = h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION);
+        const result = await createAiCommandRegistry(h.context)
+            .analyze_live_recorded_analysis({ limit: 3 }, handlerContext);
+
+        expect(h.live.getRecordingState).toHaveBeenCalled();
+        expect(baseline.requestAnalysis).toHaveBeenCalledWith({ limit: 3 });
+        expect(h.live.getRecordingState.mock.invocationCallOrder[0])
+            .toBeLessThan(baseline.requestAnalysis.mock.invocationCallOrder[0]);
+        expect(mockPost).not.toHaveBeenCalled();
+        expect(uiOutput(result)).toMatchObject({
+            status: 'ready',
+            chartId: 'chart-1',
+            component_name: 'visualization:analysis-results',
+        });
+    });
+
+    it('does not resolve Baseline Collection when Live Session is missing', async () => {
+        const h = createHarness('live');
+        const baseline = h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION);
+        h.directory.findComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current = null;
+
+        const result = await createAiCommandRegistry(h.context)
+            .analyze_live_recorded_analysis({}, handlerContext);
+
+        expect(uiOutput(result)).toMatchObject({
+            error: 'component_ref_unavailable',
+            component_name: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        });
+        expect(baseline.requestAnalysis).not.toHaveBeenCalled();
+    });
+
+    it('preserves the Baseline Collection incomplete-lap failure', async () => {
+        const h = createHarness('live');
+        const baseline = h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION);
+        baseline.requestAnalysis.mockResolvedValueOnce({
+            status: 'error',
+            error: 'baseline_lap_record_required',
+            message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
+        });
+
+        const result = await createAiCommandRegistry(h.context)
+            .analyze_live_recorded_analysis({}, handlerContext);
+
+        expect(uiOutput(result)).toMatchObject({
+            status: 'error',
+            error: 'baseline_lap_record_required',
+            message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
+        });
     });
 
     it('routes live telemetry, events, focus/history, and classifications through LiveSessionView', async () => {
@@ -369,7 +431,7 @@ describe('named component-ref AI command registry', () => {
         expect(JSON.stringify(section.output)).not.toContain('Physics_speed_kmh');
     });
 
-    it('routes recorded telemetry analysis and live baseline analysis through manager and mounted chart refs', async () => {
+    it('routes recorded telemetry analysis through manager and delegates live baseline analysis', async () => {
         const recorded = createHarness('recorded');
         const recordedResult = await createAiCommandRegistry(recorded.context).analyze_telemetry({}, handlerContext);
         expect(recorded.recorded.runRecordedAiAnalysis).toHaveBeenCalled();
@@ -378,138 +440,13 @@ describe('named component-ref AI command registry', () => {
 
         const live = createHarness('live');
         await createAiCommandRegistry(live.context).analyze_live_recorded_analysis({}, handlerContext);
-        expect(mockPost).toHaveBeenCalledWith(
-            '/racing-session/analyze-live-recorded-analysis',
-            expect.objectContaining({ records: live.rows }),
-            { timeout: 120000 },
-        );
-        expect(live.childHandles.get('visualization:analysis-results').replaceAnalysisResults).toHaveBeenCalled();
+        expect(live.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).requestAnalysis)
+            .toHaveBeenCalledWith({});
+        expect(mockPost).not.toHaveBeenCalled();
     });
 
-    it('refreshes a registered Analysis Results chart without requesting another visualization', async () => {
-        const h = createHarness('live');
-        const name = 'visualization:analysis-results';
-        const replaceAnalysisResults = jest.fn(() => true);
-        h.instances.push({ id: 'existing-chart', name, type: 'analysis-results' });
-        reserve(h.directory, name, { replaceAnalysisResults });
-
-        const result = await createAiCommandRegistry(h.context)
-            .analyze_live_recorded_analysis({}, handlerContext);
-
-        expect(replaceAnalysisResults).toHaveBeenCalledWith({
-            elements: [expect.objectContaining({ id: 'segment-1' })],
-        });
-        expect(h.manager.requestVisualization).not.toHaveBeenCalled();
-        expect(uiOutput(result)).toMatchObject({
-            chartId: 'existing-chart',
-            component_name: name,
-        });
-    });
-
-    it('reuses one Analysis Results panel and replaces its content across baseline analyses', async () => {
-        const h = createHarness('live');
-        const registry = createAiCommandRegistry(h.context);
-        const secondResult = {
-            ...analysisResult,
-            segments: [{
-                ...analysisResult.segments[0],
-                id: 'segment-2',
-                start_index: 1,
-                end_index: 1,
-            }],
-        };
-
-        const first = await registry.analyze_live_recorded_analysis({}, handlerContext);
-        mockPost.mockResolvedValueOnce({ data: secondResult });
-        const second = await registry.analyze_live_recorded_analysis({}, handlerContext);
-
-        const chart = h.childHandles.get('visualization:analysis-results');
-        expect(h.manager.requestVisualization).toHaveBeenCalledTimes(1);
-        expect(h.instances).toHaveLength(1);
-        expect(chart.replaceAnalysisResults).toHaveBeenCalledTimes(2);
-        expect(chart.replaceAnalysisResults).toHaveBeenLastCalledWith({
-            elements: [expect.objectContaining({ id: 'segment-2' })],
-        });
-        expect(uiOutput(first)).toMatchObject({
-            chartId: 'chart-1',
-            component_name: 'visualization:analysis-results',
-        });
-        expect(uiOutput(second)).toMatchObject({
-            chartId: 'chart-1',
-            component_name: 'visualization:analysis-results',
-        });
-    });
-
-    it('re-resolves the latest Analysis Results handle after mount registration replay', async () => {
-        const h = createHarness('live');
-        const name = 'visualization:analysis-results';
-        const staleRef = { current: null };
-        const latestReplace = jest.fn(() => true);
-        jest.spyOn(h.directory, 'awaitComponentRef').mockResolvedValue(staleRef as any);
-        h.manager.requestVisualization.mockImplementation((options: any) => {
-            h.instances.push({ id: 'strict-chart', ...options });
-            reserve(h.directory, name, { replaceAnalysisResults: latestReplace });
-            return {
-                success: true,
-                message: 'Opened chart.',
-                componentName: name,
-                chartId: 'strict-chart',
-                chartType: options.type,
-                reused: false,
-            };
-        });
-
-        const result = await createAiCommandRegistry(h.context)
-            .analyze_live_recorded_analysis({}, handlerContext);
-
-        expect(latestReplace).toHaveBeenCalledWith({
-            elements: [expect.objectContaining({ id: 'segment-1' })],
-        });
-        expect(uiOutput(result)).toMatchObject({
-            chartId: 'strict-chart',
-            component_name: name,
-        });
-    });
-
-    it('keeps baseline API failures classified while exposing genuine chart mount timeouts', async () => {
-        mockPost.mockRejectedValueOnce({ data: { message: 'classifier unavailable' } });
-        const apiFailureHarness = createHarness('live');
-        const apiFailure = await createAiCommandRegistry(apiFailureHarness.context)
-            .analyze_live_recorded_analysis({}, handlerContext);
-        expect(uiOutput(apiFailure)).toMatchObject({
-            error: 'recorded_analysis_failed',
-            message: 'classifier unavailable',
-        });
-
-        jest.useFakeTimers();
-        const timeoutHarness = createHarness('live');
-        timeoutHarness.manager.requestVisualization.mockImplementation((options: any) => ({
-            success: true,
-            message: 'requested',
-            componentName: options.name,
-            chartId: 'pending-analysis-chart',
-            chartType: options.type,
-            reused: false,
-        }));
-        const pending = createAiCommandRegistry(timeoutHarness.context)
-            .analyze_live_recorded_analysis({}, handlerContext);
-        for (let index = 0; index < 10
-            && timeoutHarness.manager.requestVisualization.mock.calls.length === 0; index += 1) {
-            await Promise.resolve();
-        }
-        expect(timeoutHarness.manager.requestVisualization).toHaveBeenCalledTimes(1);
-        jest.advanceTimersByTime(5000);
-        expect(uiOutput(await pending)).toMatchObject({
-            error: 'component_mount_timeout',
-            component_name: 'visualization:analysis-results',
-        });
-        jest.useRealTimers();
-    });
-
-    it.each(['recorded', 'live'] as const)(
-        'uses each segment expert reference array for %s analysis results',
-        async (mode) => {
-            const h = createHarness(mode);
+    it('uses each segment expert reference array for recorded analysis results', async () => {
+            const h = createHarness('recorded');
             const records = [
                 {
                     raw_index: 400,
@@ -555,33 +492,19 @@ describe('named component-ref AI command registry', () => {
                 }],
             };
 
-            if (mode === 'recorded') {
-                h.recorded.getSelectedSession.mockReturnValue({
-                    SessionId: 'session-1',
-                    session_name: 'Race',
-                    map: 'Monza',
-                    car: 'BMW',
-                    data: records,
-                } as any);
-                h.recorded.runRecordedAiAnalysis.mockResolvedValue({
-                    sessionId: 'session-1',
-                    status: 'ready',
-                    result: result as any,
-                });
-                await createAiCommandRegistry(h.context).analyze_telemetry({}, handlerContext);
-            } else {
-                h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).getLapRecord.mockReturnValue({
-                    id: 'baseline-1',
-                    lap: 2,
-                    track: 'Monza',
-                    car: 'BMW',
-                    sample_count: 2,
-                    captured_at: 'now',
-                    records,
-                } as any);
-                mockPost.mockResolvedValue({ data: result });
-                await createAiCommandRegistry(h.context).analyze_live_recorded_analysis({}, handlerContext);
-            }
+            h.recorded.getSelectedSession.mockReturnValue({
+                SessionId: 'session-1',
+                session_name: 'Race',
+                map: 'Monza',
+                car: 'BMW',
+                data: records,
+            } as any);
+            h.recorded.runRecordedAiAnalysis.mockResolvedValue({
+                sessionId: 'session-1',
+                status: 'ready',
+                result: result as any,
+            });
+            await createAiCommandRegistry(h.context).analyze_telemetry({}, handlerContext);
 
             expect(h.childHandles.get('visualization:analysis-results').replaceAnalysisResults)
                 .toHaveBeenCalledWith({
@@ -605,8 +528,7 @@ describe('named component-ref AI command registry', () => {
                         },
                     })],
                 });
-        },
-    );
+    });
 
     it('reports missing, stale-name, and five-second child mount failures with stable codes', async () => {
         const noDirectory = createHarness('live');

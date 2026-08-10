@@ -1,6 +1,8 @@
 import React from 'react';
+import type { TaskStartFunction } from 'components/ai-engineering-tools';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
+import { overlayDisplayClient } from 'views/floating-chat/overlay-display-client';
 import styles from './DriverExpertComparisonGraph.module.css';
 
 export const DRIVER_COMPARISON_COLOR = '#00e676';
@@ -46,6 +48,104 @@ export interface DriverExpertComparisonSample {
 export interface DriverExpertComparisonData {
     samples: readonly DriverExpertComparisonSample[];
 }
+
+export interface DriverExpertComparisonTaskPayload {
+    title: string;
+    comparison: DriverExpertComparisonData;
+    game?: DesktopGame | null;
+}
+
+export const DRIVER_EXPERT_COMPARISON_TASK_START_FUNCTION_NAME = 'startExpandedComparisonDisplay';
+
+export const createDriverExpertComparisonTaskStartFunction = (
+    payload: DriverExpertComparisonTaskPayload,
+    presentationId = overlayDisplayClient.currentPresentation()?.presentationId,
+): TaskStartFunction => (signal) => new Promise<void>((resolve, reject) => {
+    let firstFrame: number | null = null;
+    let secondFrame: number | null = null;
+    let fallbackTimer: number | null = null;
+    let activeInstanceId: string | null = null;
+    let scopedClient: ReturnType<typeof overlayDisplayClient.forPresentation> | null = null;
+    let finished = false;
+
+    const finish = (error?: unknown) => {
+        if (finished) return;
+        finished = true;
+        if (firstFrame !== null) window.cancelAnimationFrame(firstFrame);
+        if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
+        if (fallbackTimer !== null) window.clearTimeout(fallbackTimer);
+        signal.removeEventListener('abort', onAbort);
+        if (error !== undefined && !signal.aborted) reject(error);
+        else resolve();
+    };
+    const onAbort = () => {
+        if (scopedClient && activeInstanceId) {
+            void scopedClient.exit({ instanceId: activeInstanceId }, 'producer_exit')
+                .catch(() => undefined);
+        }
+        finish();
+    };
+    const present = () => {
+        firstFrame = null;
+        secondFrame = null;
+        fallbackTimer = null;
+        if (signal.aborted) {
+            finish();
+            return;
+        }
+        if (!presentationId) {
+            finish(new Error('No active overlay presentation is available for the comparison.'));
+            return;
+        }
+        const client = overlayDisplayClient.forPresentation(presentationId);
+        scopedClient = client;
+        void client
+            .upsert('driver_expert_comparison', payload)
+            .then(async (instanceId) => {
+                activeInstanceId = instanceId;
+                if (signal.aborted) {
+                    await client.exit({ instanceId }, 'producer_exit');
+                    return;
+                }
+                await client.requestFullSize({ instanceId });
+                return client.waitForLifecycle(instanceId, 'exited', { signal });
+            })
+            .then(() => finish(), finish);
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) {
+        finish();
+        return;
+    }
+
+    if (typeof window.requestAnimationFrame === 'function') {
+        firstFrame = window.requestAnimationFrame(() => {
+            firstFrame = null;
+            secondFrame = window.requestAnimationFrame(present);
+        });
+    } else {
+        fallbackTimer = window.setTimeout(present, 0);
+    }
+});
+
+export const selectDriverExpertComparisonTaskStartFunction = (
+    name: string | undefined,
+    values: unknown,
+): TaskStartFunction | null => {
+    if (name !== DRIVER_EXPERT_COMPARISON_TASK_START_FUNCTION_NAME) return null;
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return null;
+    const payload = values as Record<string, unknown>;
+    if (typeof payload.title !== 'string' || !payload.title.trim()) return null;
+    if (!payload.comparison || typeof payload.comparison !== 'object') return null;
+    return createDriverExpertComparisonTaskStartFunction({
+        title: payload.title.trim(),
+        comparison: payload.comparison as DriverExpertComparisonData,
+        ...(payload.game === null || payload.game === 'ac' || payload.game === 'acc' || payload.game === 'iracing'
+            ? { game: payload.game as DesktopGame | null }
+            : {}),
+    });
+};
 
 export interface DriverExpertComparisonAvailability {
     trajectory: boolean;

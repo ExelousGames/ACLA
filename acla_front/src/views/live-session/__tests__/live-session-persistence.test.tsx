@@ -73,6 +73,19 @@ const ClearDraftHarness = () => {
     return (
         <>
             <output data-testid="clear-restoration">{runtime.restorationStatus}</output>
+            <output data-testid="clear-page-count">{runtime.analysisResultPages.length}</output>
+            <button type="button" onClick={() => runtime.appendAnalysisResultPage({
+                baseline: {
+                    id: 'baseline-before-discard',
+                    lap: 1,
+                    lap_time_ms: null,
+                    captured_at: 1,
+                    track: 'Monza',
+                    car: 'GT3',
+                    sample_count: 1,
+                },
+                elements: [{ id: 'result-before-discard', labels: ['MSP'] }],
+            })}>Add page</button>
             <button type="button" onClick={runtime.clearPersistedDraft}>Clear draft</button>
         </>
     );
@@ -172,7 +185,10 @@ describe('live session draft persistence', () => {
         );
         await waitFor(() => expect(screen.getByTestId('clear-restoration')).toHaveTextContent('restored'));
 
+        fireEvent.click(screen.getByRole('button', { name: 'Add page' }));
+        expect(screen.getByTestId('clear-page-count')).toHaveTextContent('1');
         fireEvent.click(screen.getByRole('button', { name: 'Clear draft' }));
+        expect(screen.getByTestId('clear-page-count')).toHaveTextContent('0');
         view.unmount();
 
         expect(getPersistedLiveSessionDraft('driver@example.com')).toBeNull();

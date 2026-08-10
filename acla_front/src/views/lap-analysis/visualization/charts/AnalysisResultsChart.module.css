@@ -7,6 +7,146 @@
     color: var(--lp-white);
 }
 
+.pagination {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--lp-border);
+    flex-shrink: 0;
+}
+
+.pageNavigation {
+    min-width: 0;
+}
+
+.pageButton {
+    min-height: 26px;
+    padding: 3px 10px;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius-pill);
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.pageButton:hover:not(:disabled),
+.pageButton:focus-visible:not(:disabled) {
+    border-color: var(--lp-green);
+    color: var(--lp-green);
+    outline: none;
+}
+
+.pageButton:disabled {
+    color: var(--lp-gray);
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.pageCounter,
+.baselineContext {
+    font-family: var(--lp-mono);
+    white-space: nowrap;
+}
+
+.pageCounter {
+    color: var(--lp-green);
+}
+
+.baselineContext {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.trendContent {
+    flex: 1;
+    min-height: 0;
+    padding: 14px;
+}
+
+.mistakeTrendHeader,
+.specificTrendHeader {
+    min-width: 0;
+}
+
+.mistakeTrendHeader {
+    margin-top: 18px;
+}
+
+.trendHeading {
+    min-width: 0;
+    line-height: 1.45;
+}
+
+.trendGuidance {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--lp-border);
+    border-radius: var(--lp-radius);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.trendChartSection {
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid var(--lp-border);
+    border-radius: var(--lp-radius);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.trendStatus {
+    min-width: 0;
+    margin-bottom: 8px;
+    color: var(--lp-white);
+}
+
+.trendChartSection > .trendStatus {
+    margin-top: 8px;
+}
+
+.specificTrendHeader .trendStatus {
+    flex: 1 1 260px;
+}
+
+.specificMistakeControl {
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.specificMistakeSelect {
+    width: clamp(160px, 24vw, 260px);
+    min-width: 0;
+    max-width: 100%;
+    padding: 4px 24px 4px 8px;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius-pill);
+    background: rgba(22, 22, 40, 0.6);
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.specificMistakeSelect:hover:not(:disabled),
+.specificMistakeSelect:focus-visible:not(:disabled) {
+    border-color: var(--lp-green);
+    outline: none;
+}
+
+.specificMistakeSelect:disabled {
+    color: var(--lp-gray);
+    cursor: not-allowed;
+    opacity: 0.72;
+}
+
+.specificMistakeSelect option {
+    background: var(--lp-bg-panel);
+    color: var(--lp-white);
+}
+
 .summary {
     padding: 12px 14px;
     border-bottom: 1px solid var(--lp-border);
@@ -139,6 +279,15 @@
     .queueStatus {
         max-width: none;
         text-align: left;
+    }
+
+    .specificMistakeControl,
+    .specificMistakeSelect {
+        width: 100%;
+    }
+
+    .specificMistakeControl {
+        flex-wrap: wrap;
     }
 }
 

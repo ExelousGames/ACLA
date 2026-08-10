@@ -1,11 +1,11 @@
 import type {
     JsonValue,
-    LiveRangeTodoEventCallback,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
     LiveRangeTodoListToolResult,
-} from 'views/live-session/live-range-todo-list-types';
+    TaskStartFunction,
+} from 'components/ai-engineering-tools';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -32,12 +32,18 @@ const getInvalidResult = (
     message,
 });
 
-const attachAiCallback = (
+export type LiveRangeTodoTaskDescriptor = Omit<LiveRangeTodoEventInput, 'taskStart'>;
+
+export type LiveRangeTodoTaskStartFunctionFactory = (
+    event: LiveRangeTodoTaskDescriptor,
+) => TaskStartFunction;
+
+const attachTaskStartFunction = (
     value: unknown,
-    callback: LiveRangeTodoEventCallback,
+    createTaskStartFunction: LiveRangeTodoTaskStartFunctionFactory,
 ): LiveRangeTodoEventInput => {
     if (!isRecord(value)) return value as LiveRangeTodoEventInput;
-    return {
+    const event: LiveRangeTodoTaskDescriptor = {
         id: value.id as string,
         normalized_position: value.normalized_position as number,
         ...(hasOwn(value, 'lead_time_seconds')
@@ -45,8 +51,8 @@ const attachAiCallback = (
             : {}),
         content: value.content as LiveRangeTodoEventInput['content'],
         data: (value.data === undefined ? {} : value.data) as JsonValue,
-        callback,
     };
+    return { ...event, taskStart: createTaskStartFunction(event) };
 };
 
 const serializableUpdate = (value: unknown): LiveRangeTodoEventUpdate => {
@@ -74,7 +80,7 @@ export interface LiveRangeTodoAiAdapter {
 
 export const createLiveRangeTodoAiAdapter = (
     handle: LiveRangeTodoListHandle | null,
-    notificationCallback: LiveRangeTodoEventCallback,
+    createTaskStartFunction: LiveRangeTodoTaskStartFunctionFactory,
 ): LiveRangeTodoAiAdapter => ({
     set(args) {
         if (!handle) return getMissingLiveRangeTodoListResult();
@@ -82,7 +88,7 @@ export const createLiveRangeTodoAiAdapter = (
             return getInvalidResult(handle, 'Provide an events array.');
         }
         return handle.replaceEvents(args.events.map((event) => (
-            attachAiCallback(event, notificationCallback)
+            attachTaskStartFunction(event, createTaskStartFunction)
         )));
     },
 
@@ -95,7 +101,7 @@ export const createLiveRangeTodoAiAdapter = (
             }
             let result = handle.get();
             for (const event of args.events) {
-                result = handle.addEvent(attachAiCallback(event, notificationCallback));
+                result = handle.addEvent(attachTaskStartFunction(event, createTaskStartFunction));
                 if (result.status === 'error') return result;
             }
             return result;

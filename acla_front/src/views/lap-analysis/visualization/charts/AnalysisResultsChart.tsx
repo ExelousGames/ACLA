@@ -12,16 +12,15 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
+    createDriverExpertComparisonTaskStartFunction,
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
-import type { DriverExpertComparisonData } from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import { overlayDisplayClient } from 'views/floating-chat/overlay-display-client';
 import type {
     JsonValue,
     LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
-} from 'views/live-session/live-range-todo-list-types';
+} from 'components/ai-engineering-tools';
 import styles from './AnalysisResultsChart.module.css';
 import {
     AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
@@ -43,12 +42,6 @@ const createQueuedComparisonEventId = (): string => (
     `analysis-comparison-${Date.now().toString(36)}-${(++queuedComparisonEventSequence).toString(36)}`
 );
 
-interface ComparisonPillPayload {
-    title: string;
-    comparison: DriverExpertComparisonData;
-    game?: DesktopGame | null;
-}
-
 interface LeadingMistakeOccurrence {
     element: AnalysisResultElement;
     matchedLeadingLabels: string[];
@@ -64,61 +57,6 @@ interface PendingComparisonQueue {
     events: LiveRangeTodoEventInput[];
     skippedCount: number;
 }
-
-const showComparisonPayloadForHold = (
-    payload: ComparisonPillPayload,
-    signal: AbortSignal,
-    presentationId: string | undefined,
-): Promise<void> => new Promise((resolve) => {
-    let firstFrame: number | null = null;
-    let secondFrame: number | null = null;
-    let fallbackTimer: number | null = null;
-    let finished = false;
-
-    const finish = () => {
-        if (finished) return;
-        finished = true;
-        if (firstFrame !== null) window.cancelAnimationFrame(firstFrame);
-        if (secondFrame !== null) window.cancelAnimationFrame(secondFrame);
-        if (fallbackTimer !== null) window.clearTimeout(fallbackTimer);
-        signal.removeEventListener('abort', finish);
-        resolve();
-    };
-    const present = () => {
-        firstFrame = null;
-        secondFrame = null;
-        fallbackTimer = null;
-        if (signal.aborted || !presentationId) {
-            finish();
-            return;
-        }
-        const scopedClient = overlayDisplayClient.forPresentation(presentationId);
-        void scopedClient
-            .upsert('driver_expert_comparison', payload)
-            .then(async (instanceId) => {
-                await scopedClient.requestFullSize({ instanceId });
-                return scopedClient.waitForLifecycle(instanceId, 'exited', { signal });
-            })
-            .then(finish, finish);
-    };
-
-    signal.addEventListener('abort', finish, { once: true });
-    if (signal.aborted) {
-        finish();
-        return;
-    }
-
-    // The queue first commits its running state. Two paint frames let that
-    // list lifecycle render and broadcast before the richer comparison wins.
-    if (typeof window.requestAnimationFrame === 'function') {
-        firstFrame = window.requestAnimationFrame(() => {
-            firstFrame = null;
-            secondFrame = window.requestAnimationFrame(present);
-        });
-    } else {
-        fallbackTimer = window.setTimeout(present, 0);
-    }
-});
 
 const HIDDEN_METADATA_KEYS = new Set(['source', 'start_index', 'end_index']);
 
@@ -150,6 +88,25 @@ const MAIN_LABEL_FILTER_OPTIONS: readonly MainLabelFilterOption[] = [
 interface AnalysisResultsChartProps extends VisualizationProps {
     showElementId?: boolean;
     sessionGame?: DesktopGame | null;
+    pagination?: AnalysisResultsPagination;
+}
+
+export interface AnalysisResultsPaginationPage {
+    id: string;
+    createdAt: number;
+    baseline: {
+        lap: number;
+        lap_time_ms: number | null;
+        track: string;
+        car: string;
+    };
+    elements: AnalysisResultElement[];
+}
+
+export interface AnalysisResultsPagination {
+    pages: readonly AnalysisResultsPaginationPage[];
+    activePageId: string | null;
+    onSelectPage: (pageId: string) => void;
 }
 
 export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
@@ -165,12 +122,50 @@ interface IndexedAnalysisResult {
     originalIndex: number;
 }
 
-interface RecognizedSubLabel {
+export interface RecognizedSubLabel {
     id: string;
     label: string;
 }
 
-type RecognizedSubLabels = ReadonlyMap<string, RecognizedSubLabel>;
+export type RecognizedSubLabels = ReadonlyMap<string, RecognizedSubLabel>;
+
+export type MistakeTrendDirection = 'increasing' | 'decreasing' | 'stable' | 'insufficient';
+
+export interface MistakeTrendLapSummary {
+    pageId: string;
+    label: string;
+    totalCount: number;
+    categoryCounts: ReadonlyMap<string, number>;
+}
+
+export interface MistakeTrendCategory {
+    id: string;
+    label: string;
+    occurrences: number;
+}
+
+export interface MistakeTrendData {
+    laps: MistakeTrendLapSummary[];
+    categories: MistakeTrendCategory[];
+}
+
+export type LapTimeTrendDirection = 'improving' | 'regressing' | 'stable' | 'insufficient';
+
+export interface LapTimeTrendLapSummary {
+    pageId: string;
+    label: string;
+    lapTimeMs: number | null;
+    bestFitLapTimeMs: number | null;
+}
+
+export interface LapTimeTrendData {
+    laps: LapTimeTrendLapSummary[];
+    slopeMsPerAnalysis: number | null;
+    direction: LapTimeTrendDirection;
+}
+
+const EFFECTIVELY_ZERO_SLOPE = 1e-9;
+const INSUFFICIENT_TREND_MESSAGE = 'Not enough analyzed laps to determine a trend.';
 
 const compareLabelText = (left: string, right: string): number => (
     left.localeCompare(right, undefined, { sensitivity: 'base' }) || left.localeCompare(right)
@@ -186,6 +181,172 @@ const getSubLabels = (
         if (recognized) matches.set(recognized.id, recognized);
     });
     return Array.from(matches.values());
+};
+
+export const calculateLeastSquaresSlope = (values: readonly number[]): number | null => {
+    if (values.length < 2) return null;
+    const xMean = (values.length - 1) / 2;
+    const yMean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    let numerator = 0;
+    let denominator = 0;
+    values.forEach((value, index) => {
+        const xDelta = index - xMean;
+        numerator += xDelta * (value - yMean);
+        denominator += xDelta * xDelta;
+    });
+    return denominator === 0 ? null : numerator / denominator;
+};
+
+const calculateLeastSquaresRegression = (
+    points: readonly { x: number; y: number }[],
+): { slope: number; intercept: number } | null => {
+    if (points.length < 2) return null;
+    const xMean = points.reduce((sum, point) => sum + point.x, 0) / points.length;
+    const yMean = points.reduce((sum, point) => sum + point.y, 0) / points.length;
+    let numerator = 0;
+    let denominator = 0;
+    points.forEach((point) => {
+        const xDelta = point.x - xMean;
+        numerator += xDelta * (point.y - yMean);
+        denominator += xDelta * xDelta;
+    });
+    if (denominator === 0) return null;
+    const slope = numerator / denominator;
+    return { slope, intercept: yMean - slope * xMean };
+};
+
+export const getLapTimeTrendDirection = (slopeMsPerAnalysis: number | null): LapTimeTrendDirection => {
+    if (slopeMsPerAnalysis === null) return 'insufficient';
+    if (Math.abs(slopeMsPerAnalysis) <= EFFECTIVELY_ZERO_SLOPE) return 'stable';
+    return slopeMsPerAnalysis < 0 ? 'improving' : 'regressing';
+};
+
+export const buildLapTimeTrendData = (
+    pages: readonly AnalysisResultsPaginationPage[],
+): LapTimeTrendData => {
+    const orderedPages = pages
+        .map((page, originalIndex) => ({ page, originalIndex }))
+        .sort((left, right) => (
+            left.page.createdAt - right.page.createdAt
+            || left.originalIndex - right.originalIndex
+        ));
+    const laps = orderedPages.map(({ page }, index) => {
+        const parsedLapTime = Number(page.baseline.lap_time_ms);
+        return {
+            pageId: page.id,
+            label: `Analysis ${index + 1} \u00b7 Lap ${page.baseline.lap}`,
+            lapTimeMs: Number.isFinite(parsedLapTime) && parsedLapTime > 0 ? parsedLapTime : null,
+            bestFitLapTimeMs: null,
+        };
+    });
+    const timedPoints = laps.flatMap((lap, index) => (
+        lap.lapTimeMs === null ? [] : [{ x: index, y: lap.lapTimeMs }]
+    ));
+    const regression = calculateLeastSquaresRegression(timedPoints);
+    const firstTimedIndex = timedPoints[0]?.x ?? -1;
+    const lastTimedIndex = timedPoints[timedPoints.length - 1]?.x ?? -1;
+
+    return {
+        laps: laps.map((lap, index) => ({
+            ...lap,
+            bestFitLapTimeMs: regression && index >= firstTimedIndex && index <= lastTimedIndex
+                ? regression.intercept + regression.slope * index
+                : null,
+        })),
+        slopeMsPerAnalysis: regression?.slope ?? null,
+        direction: getLapTimeTrendDirection(regression?.slope ?? null),
+    };
+};
+
+export const formatRacingTime = (milliseconds: number): string => {
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return '--:--.---';
+    const roundedMilliseconds = Math.round(milliseconds);
+    const minutes = Math.floor(roundedMilliseconds / 60_000);
+    const remainder = roundedMilliseconds % 60_000;
+    const seconds = Math.floor(remainder / 1_000);
+    const millis = remainder % 1_000;
+    return `${minutes}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+};
+
+const describeLapTimeDelta = (latestMs: number, referenceMs: number): string => {
+    const deltaMs = latestMs - referenceMs;
+    if (Math.abs(deltaMs) <= EFFECTIVELY_ZERO_SLOPE) return 'unchanged';
+    return `${formatRacingTime(Math.abs(deltaMs))} ${deltaMs < 0 ? 'faster' : 'slower'}`;
+};
+
+export const describeLapTimeTrend = (trend: LapTimeTrendData): string => {
+    const timedLaps = trend.laps.filter((lap): lap is LapTimeTrendLapSummary & { lapTimeMs: number } => (
+        lap.lapTimeMs !== null
+    ));
+    if (timedLaps.length === 0) {
+        return 'Latest lap time unavailable. Versus previous timed lap: unavailable. '
+            + 'Versus first timed lap: unavailable. Overall direction: not enough timed laps.';
+    }
+
+    const latest = timedLaps[timedLaps.length - 1];
+    const previous = timedLaps[timedLaps.length - 2];
+    const first = timedLaps[0];
+    const previousDelta = previous ? describeLapTimeDelta(latest.lapTimeMs, previous.lapTimeMs) : 'unavailable';
+    const firstDelta = describeLapTimeDelta(latest.lapTimeMs, first.lapTimeMs);
+    const direction = trend.direction === 'insufficient'
+        ? 'not enough timed laps'
+        : trend.direction;
+    return `Latest lap time: ${formatRacingTime(latest.lapTimeMs)}. `
+        + `Versus previous timed lap: ${previousDelta}. `
+        + `Versus first timed lap: ${firstDelta}. Overall direction: ${direction}.`;
+};
+
+export const getMistakeTrendDirection = (
+    values: readonly number[],
+): MistakeTrendDirection => {
+    const slope = calculateLeastSquaresSlope(values);
+    if (slope === null) return 'insufficient';
+    if (Math.abs(slope) <= EFFECTIVELY_ZERO_SLOPE) return 'stable';
+    return slope < 0 ? 'decreasing' : 'increasing';
+};
+
+export const buildMistakeTrendData = (
+    pages: readonly AnalysisResultsPaginationPage[],
+    recognizedParentLabels: ReadonlySet<string>,
+    recognizedSubLabels: RecognizedSubLabels,
+): MistakeTrendData => {
+    const categoryTotals = new Map<string, MistakeTrendCategory>();
+    const orderedPages = pages
+        .map((page, originalIndex) => ({ page, originalIndex }))
+        .sort((left, right) => (
+            left.page.createdAt - right.page.createdAt
+            || left.originalIndex - right.originalIndex
+        ));
+    const laps = orderedPages.map(({ page }, index) => {
+        const filteredElements = page.elements.filter((element) => (
+            element.labels.some((label) => recognizedParentLabels.has(label))
+        ));
+        const categoryCounts = new Map<string, number>();
+        filteredElements.forEach((element) => {
+            getSubLabels(element, recognizedSubLabels).forEach((subLabel) => {
+                categoryCounts.set(subLabel.id, (categoryCounts.get(subLabel.id) ?? 0) + 1);
+                const aggregate = categoryTotals.get(subLabel.id);
+                categoryTotals.set(subLabel.id, {
+                    id: subLabel.id,
+                    label: subLabel.label,
+                    occurrences: (aggregate?.occurrences ?? 0) + 1,
+                });
+            });
+        });
+        return {
+            pageId: page.id,
+            label: `Analysis ${index + 1} · Lap ${page.baseline.lap}`,
+            totalCount: filteredElements.length,
+            categoryCounts,
+        };
+    });
+
+    return {
+        laps,
+        categories: Array.from(categoryTotals.values()).sort((left, right) => (
+            compareLabelText(left.label, right.label)
+        )),
+    };
 };
 
 export const buildMistakeFrequencyData = (
@@ -252,7 +413,6 @@ const createMostCommonMistakeEvents = (
     plan: MostCommonMistakeQueuePlan,
     sessionGame: DesktopGame | null | undefined,
 ): LiveRangeTodoEventInput[] => {
-    const presentationId = overlayDisplayClient.currentPresentation()?.presentationId;
     return plan.eligible.map(({ element, matchedLeadingLabels }) => {
         const position = element.normalizedPositionRange!.start;
         const comparison = element.comparison!;
@@ -278,14 +438,12 @@ const createMostCommonMistakeEvents = (
             comparison,
             context,
         } as unknown as JsonValue,
-        callback: ({ signal }) => showComparisonPayloadForHold(
+        taskStart: createDriverExpertComparisonTaskStartFunction(
             {
                 title,
                 comparison,
                 ...(sessionGame !== undefined ? { game: sessionGame } : {}),
             },
-            signal,
-            presentationId,
         ),
         };
     });
@@ -493,6 +651,234 @@ const AnalysisResultCard: React.FC<{
     );
 };
 
+const describeTrendDirection = (direction: MistakeTrendDirection): string => {
+    if (direction === 'decreasing') return 'Trending downward — fewer mistakes.';
+    if (direction === 'increasing') return 'Trending upward — more mistakes.';
+    if (direction === 'stable') return 'Trend is stable.';
+    return INSUFFICIENT_TREND_MESSAGE;
+};
+
+const describeLatestTrendCount = (
+    values: readonly number[],
+    singular: string,
+    plural: string,
+): string => {
+    if (values.length === 0) return `Latest count unavailable. ${INSUFFICIENT_TREND_MESSAGE}`;
+    const latest = values[values.length - 1];
+    const countLabel = latest === 1 ? singular : plural;
+    return `Latest: ${latest} ${countLabel}. ${describeTrendDirection(getMistakeTrendDirection(values))}`;
+};
+
+interface OverallMistakeTrendProps {
+    id: string;
+    lapTimeTrendData: LapTimeTrendData;
+    mainLabelFilter: AnalysisResultsMainLabelFilter;
+    onMainLabelFilterChange: (filter: AnalysisResultsMainLabelFilter) => void;
+    selectedFilter: MainLabelFilterOption;
+    graphSubject: string;
+    trendData: MistakeTrendData;
+    selectedCategory: MistakeTrendCategory | null;
+    onSelectedCategoryChange: (categoryId: string) => void;
+}
+
+const OverallMistakeTrend: React.FC<OverallMistakeTrendProps> = ({
+    id,
+    lapTimeTrendData,
+    mainLabelFilter,
+    onMainLabelFilterChange,
+    selectedFilter,
+    graphSubject,
+    trendData,
+    selectedCategory,
+    onSelectedCategoryChange,
+}) => {
+    const totalCounts = trendData.laps.map(({ totalCount }) => totalCount);
+    const specificCounts = selectedCategory
+        ? trendData.laps.map(({ categoryCounts }) => categoryCounts.get(selectedCategory.id) ?? 0)
+        : [];
+    const lapTimeTrendSpec = React.useMemo<GraphSpec>(() => ({
+        type: 'line',
+        data: lapTimeTrendData.laps.map((lap) => ({
+            analysis: lap.label,
+            lapTimeSeconds: lap.lapTimeMs === null ? null : lap.lapTimeMs / 1_000,
+            bestFitSeconds: lap.bestFitLapTimeMs === null ? null : lap.bestFitLapTimeMs / 1_000,
+        })),
+        xKey: 'analysis',
+        xAxisType: 'category',
+        series: [
+            { key: 'lapTimeSeconds', label: 'Actual lap time' },
+            { key: 'bestFitSeconds', label: 'Best-fit trend' },
+        ],
+        title: 'Lap time by analyzed lap (lower is faster).',
+        yAxisLabel: 'Lap time (seconds)',
+        showLegend: true,
+        showPoints: true,
+        colors: ['#00e676', '#62a8ff'],
+        accessibleLabel: 'Actual lap time and best-fit improvement trend by analyzed lap',
+        height: 260,
+        emptyStateText: 'No valid lap timing is available yet.',
+    }), [lapTimeTrendData.laps]);
+    const totalTrendSpec = React.useMemo<GraphSpec>(() => ({
+        type: 'line',
+        data: trendData.laps.map((lap) => ({
+            analysis: lap.label,
+            totalCount: lap.totalCount,
+        })),
+        xKey: 'analysis',
+        xAxisType: 'category',
+        series: [{ key: 'totalCount', label: 'Recognized mistake elements' }],
+        title: `Total ${graphSubject.toLowerCase()} mistakes by analyzed lap`,
+        yAxisLabel: 'Recognized mistake elements',
+        showLegend: false,
+        showPoints: true,
+        colors: ['#00e676'],
+        accessibleLabel: `Total recognized ${graphSubject.toLowerCase()} mistake elements per analyzed lap`,
+        height: 230,
+        emptyStateText: 'No analyzed laps are available yet.',
+    }), [graphSubject, trendData.laps]);
+    const specificTrendSpec = React.useMemo<GraphSpec>(() => ({
+        type: 'line',
+        data: selectedCategory ? trendData.laps.map((lap) => ({
+            analysis: lap.label,
+            specificCount: lap.categoryCounts.get(selectedCategory.id) ?? 0,
+        })) : [],
+        xKey: 'analysis',
+        xAxisType: 'category',
+        series: [{ key: 'specificCount', label: 'Occurrences' }],
+        title: selectedCategory
+            ? `${selectedCategory.label} occurrences by analyzed lap`
+            : `Specific ${graphSubject.toLowerCase()} mistake by analyzed lap`,
+        yAxisLabel: 'Occurrences',
+        showLegend: false,
+        showPoints: true,
+        colors: ['#62a8ff'],
+        accessibleLabel: selectedCategory
+            ? `${selectedCategory.label} occurrences per analyzed lap`
+            : `Specific ${graphSubject.toLowerCase()} mistake occurrences per analyzed lap`,
+        height: 230,
+        emptyStateText: `No recognized ${graphSubject.toLowerCase()} mistake categories have been observed.`,
+    }), [graphSubject, selectedCategory, trendData.laps]);
+
+    const guidance = trendData.laps.length === 0
+        ? 'No analyzed laps yet. Analyze at least two baseline laps to see a trend.'
+        : trendData.laps.length === 1
+            ? INSUFFICIENT_TREND_MESSAGE
+            : null;
+
+    return (
+        <ScrollArea type="hover" className={styles.trendContent}>
+            <Box className={styles.trendHeading}>
+                <Text size="3" weight="bold" as="div">Overall Trends</Text>
+                <Text size="1" color="gray" as="div">
+                    Trends follow analysis creation order across every retained baseline page.
+                </Text>
+            </Box>
+            <Box className={styles.trendChartSection}>
+                <Text size="3" weight="bold" as="div">Lap Time Improvement</Text>
+                <Text
+                    className={styles.trendStatus}
+                    data-testid="lap-time-trend-status"
+                    size="2"
+                    weight="medium"
+                    as="div"
+                    role="status"
+                >
+                    {describeLapTimeTrend(lapTimeTrendData)}
+                </Text>
+                <DataGraph spec={lapTimeTrendSpec} />
+            </Box>
+            <Flex className={styles.mistakeTrendHeader} justify="between" align="center" gap="2" wrap="wrap">
+                <Box className={styles.trendHeading}>
+                    <Text size="3" weight="bold" as="div">Overall Mistake Trend</Text>
+                    <Text size="1" color="gray" as="div">
+                        Counts follow analysis creation order across every retained baseline page.
+                    </Text>
+                </Box>
+                <label className={styles.filterControl}>
+                    <Text size="1" color="gray" as="span">Showing</Text>
+                    <select
+                        className={styles.filterSelect}
+                        value={mainLabelFilter}
+                        onChange={(event) => onMainLabelFilterChange(
+                            event.target.value as AnalysisResultsMainLabelFilter,
+                        )}
+                    >
+                        {MAIN_LABEL_FILTER_OPTIONS.map((option) => (
+                            <option value={option.value} key={option.value}>{option.label}</option>
+                        ))}
+                    </select>
+                </label>
+            </Flex>
+            {guidance && (
+                <Text
+                    className={styles.trendGuidance}
+                    data-testid="overall-trend-guidance"
+                    size="2"
+                    color="gray"
+                    as="div"
+                >
+                    {guidance}
+                </Text>
+            )}
+            <Box className={styles.trendChartSection}>
+                <Text
+                    className={styles.trendStatus}
+                    data-testid="overall-total-trend-status"
+                    size="2"
+                    weight="medium"
+                    as="div"
+                    role="status"
+                >
+                    {describeLatestTrendCount(
+                        totalCounts,
+                        'recognized mistake element',
+                        'recognized mistake elements',
+                    )}
+                </Text>
+                <DataGraph spec={totalTrendSpec} />
+            </Box>
+            <Box className={styles.trendChartSection}>
+                <Flex className={styles.specificTrendHeader} justify="between" align="center" gap="2" wrap="wrap">
+                    <Text
+                        className={styles.trendStatus}
+                        data-testid="specific-mistake-trend-status"
+                        size="2"
+                        weight="medium"
+                        as="div"
+                        role="status"
+                    >
+                        {selectedCategory
+                            ? `${selectedCategory.label}. ${describeLatestTrendCount(
+                                specificCounts,
+                                'occurrence',
+                                'occurrences',
+                            )}`
+                            : `No recognized ${selectedFilter.label.toLowerCase()} sub-labels have been observed yet.`}
+                    </Text>
+                    <label className={styles.specificMistakeControl}>
+                        <Text size="1" color="gray" as="span">Specific mistake</Text>
+                        <select
+                            id={`${id}-specific-mistake`}
+                            className={styles.specificMistakeSelect}
+                            value={selectedCategory?.id ?? ''}
+                            disabled={trendData.categories.length === 0}
+                            onChange={(event) => onSelectedCategoryChange(event.target.value)}
+                        >
+                            {trendData.categories.length === 0 && (
+                                <option value="">No observed categories</option>
+                            )}
+                            {trendData.categories.map((category) => (
+                                <option value={category.id} key={category.id}>{category.label}</option>
+                            ))}
+                        </select>
+                    </label>
+                </Flex>
+                <DataGraph spec={specificTrendSpec} />
+            </Box>
+        </ScrollArea>
+    );
+};
+
 const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, AnalysisResultsChartProps>(({
     name,
     id,
@@ -501,38 +887,59 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     height = '100%',
     showElementId = true,
     sessionGame,
+    pagination,
     onUpdate,
     onDisable,
 }, forwardedRef) => {
     const [sortMode, setSortMode] = React.useState<AnalysisResultsSortMode>('original');
     const [mainLabelFilter, setMainLabelFilter] = React.useState<AnalysisResultsMainLabelFilter>('MSP');
+    const [showOverallTrend, setShowOverallTrend] = React.useState(true);
+    const [selectedTrendSubLabelId, setSelectedTrendSubLabelId] = React.useState<string | null>(null);
     const [queueInProgress, setQueueInProgress] = React.useState(false);
     const [queueStatus, setQueueStatus] = React.useState('');
     const componentRefs = useOptionalAiToolComponentRefDirectory();
     const pendingQueueRef = React.useRef<PendingComparisonQueue | null>(null);
     const queueRequestSequenceRef = React.useRef(0);
     const { getCategoryLabels, getLabelName } = useAiLabels();
-    const { elements } = React.useMemo(() => normalizeAnalysisResultsData(data), [data]);
+    const chronologicalPages = React.useMemo(() => {
+        if (!pagination) return [];
+        return pagination.pages
+            .map((page, originalIndex) => ({ page, originalIndex }))
+            .sort((left, right) => (
+                left.page.createdAt - right.page.createdAt
+                || left.originalIndex - right.originalIndex
+            ))
+            .map(({ page }) => page);
+    }, [pagination]);
+    const activePageIndex = React.useMemo(() => {
+        if (!pagination || chronologicalPages.length === 0) return -1;
+        const selectedIndex = chronologicalPages.findIndex((page) => page.id === pagination.activePageId);
+        return selectedIndex >= 0 ? selectedIndex : 0;
+    }, [chronologicalPages, pagination]);
+    const activePage = activePageIndex >= 0 ? chronologicalPages[activePageIndex] : null;
+    const isOverallTrend = Boolean(pagination) && (showOverallTrend || !activePage);
+    const activeData = activePage ?? data;
+    const { elements } = React.useMemo(() => normalizeAnalysisResultsData(activeData), [activeData]);
     const handle = React.useMemo<AnalysisResultsChartHandle>(() => ({
         getComponentName: () => name,
         replaceAnalysisResults: (nextData) => onUpdate?.(nextData) ?? false,
         appendAnalysisResult: (element) => {
-            const mutation = appendAnalysisResultElement(data, element);
+            const mutation = appendAnalysisResultElement(activeData, element);
             if (mutation.result.success) onUpdate?.(mutation.data);
             return mutation.result;
         },
         updateAnalysisResult: (elementId, changes) => {
-            const mutation = updateAnalysisResultElement(data, elementId, changes);
+            const mutation = updateAnalysisResultElement(activeData, elementId, changes);
             if (mutation.result.success) onUpdate?.(mutation.data);
             return mutation.result;
         },
         removeAnalysisResult: (elementId) => {
-            const mutation = removeAnalysisResultElement(data, elementId);
+            const mutation = removeAnalysisResultElement(activeData, elementId);
             if (mutation.result.success) onUpdate?.(mutation.data);
             return mutation.result;
         },
         disableAnalysisResults: () => onDisable?.() ?? false,
-    }), [data, name, onDisable, onUpdate]);
+    }), [activeData, name, onDisable, onUpdate]);
     React.useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);
     const selectedFilter = MAIN_LABEL_FILTER_OPTIONS.find(({ value }) => value === mainLabelFilter)!;
@@ -556,6 +963,29 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         });
         return matches;
     }, [getCategoryLabels, getLabelName, mainLabelFilter]);
+    const trendData = React.useMemo(() => buildMistakeTrendData(
+        chronologicalPages,
+        recognizedParentLabels,
+        recognizedSubLabels,
+    ), [chronologicalPages, recognizedParentLabels, recognizedSubLabels]);
+    const lapTimeTrendData = React.useMemo(
+        () => buildLapTimeTrendData(chronologicalPages),
+        [chronologicalPages],
+    );
+    const selectedTrendCategory = React.useMemo(() => {
+        const retained = trendData.categories.find(({ id: categoryId }) => (
+            categoryId === selectedTrendSubLabelId
+        ));
+        if (retained) return retained;
+        return [...trendData.categories].sort((left, right) => (
+            right.occurrences - left.occurrences
+            || compareLabelText(left.label, right.label)
+        ))[0] ?? null;
+    }, [selectedTrendSubLabelId, trendData.categories]);
+    React.useEffect(() => {
+        const nextId = selectedTrendCategory?.id ?? null;
+        if (selectedTrendSubLabelId !== nextId) setSelectedTrendSubLabelId(nextId);
+    }, [selectedTrendCategory, selectedTrendSubLabelId]);
     const sortedElements = React.useMemo(
         () => sortAnalysisResults(filteredElements, sortMode, recognizedSubLabels),
         [filteredElements, recognizedSubLabels, sortMode],
@@ -691,10 +1121,84 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
 
     const queueButtonDisabled = queueInProgress || mostCommonQueuePlan.eligible.length === 0;
     const visibleQueueStatus = queueStatus;
+    const displayedPageIndex = isOverallTrend ? 0 : activePageIndex + 1;
+    const displayedPageCount = chronologicalPages.length + 1;
+
+    const handlePreviousPage = () => {
+        if (!pagination || isOverallTrend) return;
+        if (activePageIndex <= 0) {
+            setShowOverallTrend(true);
+            return;
+        }
+        pagination.onSelectPage(chronologicalPages[activePageIndex - 1].id);
+    };
+
+    const handleNextPage = () => {
+        if (!pagination) return;
+        if (isOverallTrend) {
+            const firstPage = chronologicalPages[0];
+            if (!firstPage) return;
+            pagination.onSelectPage(firstPage.id);
+            setShowOverallTrend(false);
+            return;
+        }
+        const nextPage = chronologicalPages[activePageIndex + 1];
+        if (nextPage) pagination.onSelectPage(nextPage.id);
+    };
 
     return (
         <Card className={styles.chart} style={{ width, height }}>
-            <Flex className={styles.summary} justify="between" align="center" gap="2" wrap="wrap">
+            {pagination && (
+                <Flex className={styles.pagination} justify="between" align="center" gap="2" wrap="wrap">
+                    <Flex className={styles.pageNavigation} align="center" gap="2">
+                        <button
+                            type="button"
+                            className={styles.pageButton}
+                            disabled={isOverallTrend}
+                            onClick={handlePreviousPage}
+                        >
+                            Previous
+                        </button>
+                        <Text
+                            className={styles.pageCounter}
+                            size="1"
+                            as="span"
+                            role="status"
+                            aria-live="polite"
+                        >
+                            Page {displayedPageIndex + 1} of {displayedPageCount}
+                        </Text>
+                        <button
+                            type="button"
+                            className={styles.pageButton}
+                            disabled={displayedPageIndex === displayedPageCount - 1}
+                            onClick={handleNextPage}
+                        >
+                            Next
+                        </button>
+                    </Flex>
+                    <Text className={styles.baselineContext} size="1" color="gray" as="span">
+                        {isOverallTrend
+                            ? `Overall Trends · ${chronologicalPages.length} analyzed ${chronologicalPages.length === 1 ? 'lap' : 'laps'}`
+                            : <>Baseline: {activePage!.baseline.track || 'Unknown track'} ·{' '}
+                                {activePage!.baseline.car || 'Unknown car'} · Lap {activePage!.baseline.lap}</>}
+                    </Text>
+                </Flex>
+            )}
+            {isOverallTrend ? (
+                <OverallMistakeTrend
+                    id={id}
+                    lapTimeTrendData={lapTimeTrendData}
+                    mainLabelFilter={mainLabelFilter}
+                    onMainLabelFilterChange={setMainLabelFilter}
+                    selectedFilter={selectedFilter}
+                    graphSubject={graphSubject}
+                    trendData={trendData}
+                    selectedCategory={selectedTrendCategory}
+                    onSelectedCategoryChange={setSelectedTrendSubLabelId}
+                />
+            ) : <>
+                <Flex className={styles.summary} justify="between" align="center" gap="2" wrap="wrap">
                 <Flex className={styles.summaryText} align="center" justify="between" gap="2">
                     <Text size="2" weight="medium">Labeled elements</Text>
                     <Text size="2" weight="bold" className={styles.count}>
@@ -755,8 +1259,8 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                         )}
                     </Box>
                 </Flex>
-            </Flex>
-            <ScrollArea type="hover" className={styles.list}>
+                </Flex>
+                <ScrollArea type="hover" className={styles.list}>
                 <Box className={styles.graph}>
                     <DataGraph spec={mistakeFrequencySpec} />
                 </Box>
@@ -777,7 +1281,8 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                         ))}
                     </Box>
                 )}
-            </ScrollArea>
+                </ScrollArea>
+            </>}
         </Card>
     );
 });

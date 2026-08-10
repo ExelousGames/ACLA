@@ -4,10 +4,12 @@ import {
     getDriverExpertReplayDurationMs,
     normalizeDriverExpertComparisonData,
 } from 'components/driver-expert-comparison';
-import { LiveRangeTodoListDisplay } from 'views/live-session/LiveRangeTodoList';
+import {
+    LiveRangeTodoListDisplay,
+    ProcedurePlan,
+} from 'components/ai-engineering-tools';
 import AiMapToolDisplay from 'views/lap-analysis/ai-chat/AiMapToolDisplay';
 import BaselineProgressDisplay from 'views/live-session/BaselineProgressDisplay';
-import ProcedurePlanDisplay from 'views/lap-analysis/ai-chat/ProcedurePlanDisplay';
 import ToolMessageDisplay from 'views/lap-analysis/ai-chat/ToolMessageDisplay';
 import {
     OVERLAY_COMPARISON_COMPLETION_PAUSE_MS,
@@ -250,7 +252,7 @@ const registry: { [K in OverlayDisplayType]: OverlayDisplayDefinition<OverlaySna
         permittedTransitions: transitionTable(),
         manualDismiss: true,
         dimensions: { expanded: { width: 420, height: 220 }, folded: { width: 320, height: 58 } },
-        renderExpanded: ({ snapshot }) => <ProcedurePlanDisplay plan={snapshot} surface="pill" />,
+        renderExpanded: ({ snapshot }) => <ProcedurePlan plan={snapshot} surface="pill" />,
         renderSummary: (snapshot) => snapshot.requests[snapshot.currentStep]?.title || snapshot.goal,
     },
     live_range_todo: {

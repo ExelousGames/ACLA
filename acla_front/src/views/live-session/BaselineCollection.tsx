@@ -7,9 +7,15 @@ import React, {
     useState,
 } from 'react';
 import {
+    AI_TOOL_COMPONENT_NAMES,
+    AiToolComponentRefDirectory,
     NamedAiToolComponentHandle,
+    resolveNamedComponentHandle,
+    useAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
+import apiService from 'services/api.service';
+import type { AiChatHandle } from 'views/lap-analysis/ai-chat/ai-chat';
 import {
     detectLiveSessionType,
     getTelemetryCar,
@@ -23,6 +29,16 @@ import {
     type ToolOutputEmitter,
     type ToolOutputEnvelope,
 } from 'views/lap-analysis/ai-chat/ai-tool-base';
+import {
+    normalizeSegmentClassificationResult,
+    type SegmentClassificationResult,
+} from 'views/lap-analysis/recorded-session-analysis';
+import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
+import type { AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
+import type { AnalysisResultElement } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
+import { adaptAnalysisResultsComparison } from 'views/lap-analysis/visualization/charts/analysisResultsComparisonAdapter';
+import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
+import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
 import { LiveSessionContext } from './LiveSessionContext';
 
@@ -39,6 +55,7 @@ export type BaselineCollectionTag = {
 export type BaselineLapRecord = {
     id: string;
     lap: number;
+    lap_time_ms: number | null;
     captured_at: number;
     track: string;
     car: string;
@@ -55,9 +72,31 @@ export type BaselineCollectionPayload = {
     message: string;
 };
 
+export type BaselineAnalysisPayload = {
+    status: 'ready' | 'empty';
+    message: string;
+    analysis: {
+        status: string;
+        session_id: string;
+        samples_analyzed: number;
+        segments: Record<string, any>[];
+    };
+    source: 'baseline_lap_record';
+    baseline: Omit<BaselineLapRecord, 'snapshot' | 'records'>;
+    chartId: string | null;
+    component_name: string;
+    pageId: string;
+    pageCount: number;
+} | {
+    status: 'error';
+    error: string;
+    message: string;
+};
+
 export interface BaselineCollectionHandle extends NamedAiToolComponentHandle {
     startCollection(): BaselineCollectionPayload;
     restartCollection(): BaselineCollectionPayload;
+    requestAnalysis(options?: { limit?: number }): Promise<BaselineAnalysisPayload>;
     getTag(): BaselineCollectionTag | null;
     getLapRecord(): BaselineLapRecord | null;
     getToolOutput(): ToolOutputEnvelope | null;
@@ -81,6 +120,8 @@ type BaselineRecorderState = {
 
 const BASELINE_START_POSITION_EPSILON = 0.005;
 const BASELINE_WRAP_THRESHOLD = 0.65;
+
+type BaselineAnalysisState = 'idle' | 'analyzing' | 'complete' | 'error';
 
 const cloneSample = (sample: Record<string, any>): Record<string, any> => ({ ...sample });
 
@@ -177,6 +218,123 @@ const toNullableFiniteNumber = (value: unknown): number | null => {
     return Number.isFinite(parsed) ? parsed : null;
 };
 
+const toPositiveFiniteNumber = (value: unknown): number | null => {
+    if (typeof value !== 'number' && typeof value !== 'string') return null;
+    const parsed = toNullableFiniteNumber(value);
+    return parsed !== null && parsed > 0 ? parsed : null;
+};
+
+export const getCompletedBaselineLapTimeMs = (
+    completionSample: Record<string, any>,
+    recordedSamples: readonly Record<string, any>[],
+): number | null => {
+    const exactLastLapTime = toPositiveFiniteNumber(completionSample.Graphics_last_time)
+        ?? toPositiveFiniteNumber(completionSample.Graphics?.last_time);
+    if (exactLastLapTime !== null) return exactLastLapTime;
+
+    return recordedSamples.reduce<number | null>((highest, sample) => {
+        const currentLapTime = toPositiveFiniteNumber(sample.Graphics_current_time)
+            ?? toPositiveFiniteNumber(sample.Graphics?.current_time);
+        if (currentLapTime === null) return highest;
+        return highest === null ? currentLapTime : Math.max(highest, currentLapTime);
+    }, null);
+};
+
+const getAnalysisLimit = (value: unknown): number => {
+    const parsed = Math.floor(Number(value));
+    return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 50) : 8;
+};
+
+const getLabelText = (chat: AiChatHandle, labelId?: string | null): string | null => (
+    labelId ? chat.getLabelName(labelId) || labelId : null
+);
+
+const compactSegment = (segment: any, chat: AiChatHandle) => ({
+    id: segment.id ?? null,
+    start_index: segment.start_index,
+    end_index: segment.end_index,
+    track_section: getLabelText(chat, segment.track_section),
+    labels: getSegmentLabelIds(segment)
+        .map((labelId) => getLabelText(chat, labelId))
+        .filter(Boolean),
+    ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
+});
+
+const getBaselinePosition = (records: Record<string, any>[], index: number): number | null => {
+    const row = records[Math.max(0, Math.min(records.length - 1, Math.trunc(index)))];
+    const parsed = Number(
+        row?.Graphics_normalized_car_position
+        ?? row?.normalized_position
+        ?? row?.normalizedPosition,
+    );
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const buildAnalysisElements = (
+    result: SegmentClassificationResult,
+    chat: AiChatHandle,
+    records: Record<string, any>[],
+): AnalysisResultElement[] => result.segments.map((segment, index) => {
+    const start = getBaselinePosition(records, segment.start_index);
+    const end = getBaselinePosition(records, segment.end_index);
+    const comparison = segment.expert_reference_data.length
+        ? adaptAnalysisResultsComparison({
+            baselineRecords: records,
+            expertReferenceData: segment.expert_reference_data,
+        })
+        : undefined;
+    return {
+        id: segment.id || `${result.session_id}:segment:${index}`,
+        labels: getSegmentLabelIds(segment)
+            .map((labelId) => chat.getLabelName(labelId) || labelId),
+        ...(segment.track_section ? {
+            section: chat.getLabelName(segment.track_section) || segment.track_section,
+        } : {}),
+        ...(start !== null && end !== null ? {
+            normalizedPositionRange: { start, end },
+        } : {}),
+        ...(comparison?.samples.length ? { comparison } : {}),
+        metadata: {
+            source: 'ai_classifier',
+            start_index: segment.start_index,
+            end_index: segment.end_index,
+        },
+    };
+});
+
+const ensureAnalysisResultsChart = async (
+    directory: AiToolComponentRefDirectory,
+) => {
+    const manager = resolveNamedComponentHandle<VisualizationManagerHandle>(
+        directory,
+        AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+    );
+    const name = getSingletonVisualizationComponentName('analysis-results');
+    if (directory.findComponentRef<AnalysisResultsChartHandle>(name)?.current) {
+        const instance = manager.getCurrentVisualizations()
+            .find((visualization) => visualization.name === name);
+        return { success: true as const, chartId: instance?.id ?? null, componentName: name };
+    }
+
+    const requested = manager.requestVisualization({
+        name,
+        type: 'analysis-results',
+    });
+    if (!requested.success) {
+        return {
+            success: false as const,
+            message: requested.message,
+        };
+    }
+    const mountedName = requested.componentName || name;
+    await directory.awaitComponentRef<AnalysisResultsChartHandle>(mountedName);
+    return {
+        success: true as const,
+        chartId: requested.chartId ?? null,
+        componentName: mountedName,
+    };
+};
+
 export const buildBaselineCollectionTag = (
     snapshot: Record<string, any>,
 ): BaselineCollectionTag => {
@@ -225,12 +383,14 @@ const createBaselineToolRunId = (): string =>
     `collect_live_baseline-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
 const BaselineCollection = ({ name }: { name: string }) => {
-    const { currentTelemetry } = useContext(LiveSessionContext);
+    const { currentTelemetry, appendAnalysisResultPage } = useContext(LiveSessionContext);
+    const componentRefs = useAiToolComponentRefDirectory();
     const currentTelemetryRef = useRef(currentTelemetry);
     currentTelemetryRef.current = currentTelemetry;
 
     const [enabled, setEnabled] = useState(false);
     const [tag, setTag] = useState<BaselineCollectionTag | null>(null);
+    const [analysisState, setAnalysisState] = useState<BaselineAnalysisState>('idle');
     const enabledRef = useRef(false);
     const tagRef = useRef<BaselineCollectionTag | null>(null);
     const lapRecordRef = useRef<BaselineLapRecord | null>(null);
@@ -239,6 +399,8 @@ const BaselineCollection = ({ name }: { name: string }) => {
     const toolOutputControllerRef = useRef<ToolOutputController | null>(null);
     const toolOutputListenersRef = useRef<Set<ToolOutputEmitter>>(new Set());
     const completionEmittedRef = useRef(false);
+    const analysisRequestRef = useRef<Promise<BaselineAnalysisPayload> | null>(null);
+    const collectionGenerationRef = useRef(0);
 
     const publishTag = useCallback((nextTag: BaselineCollectionTag | null) => {
         tagRef.current = nextTag;
@@ -246,6 +408,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
     }, []);
 
     const beginFreshCollection = useCallback(() => {
+        collectionGenerationRef.current += 1;
         const nextRecorder = createEmptyRecorderState(currentTelemetryRef.current);
         recorderRef.current = nextRecorder;
         enabledRef.current = true;
@@ -253,6 +416,8 @@ const BaselineCollection = ({ name }: { name: string }) => {
         toolOutputRef.current = null;
         toolOutputControllerRef.current = null;
         completionEmittedRef.current = false;
+        analysisRequestRef.current = null;
+        setAnalysisState('idle');
         const nextTag = buildBaselineCollectionTag(buildRecorderSnapshot(nextRecorder));
         publishTag(nextTag);
         setEnabled(true);
@@ -292,15 +457,145 @@ const BaselineCollection = ({ name }: { name: string }) => {
         toolOutputControllerRef.current.final(payload, { message: payload.message });
     }, []);
 
+    const requestAnalysis = useCallback((
+        options: { limit?: number } = {},
+    ): Promise<BaselineAnalysisPayload> => {
+        if (analysisRequestRef.current) return analysisRequestRef.current;
+
+        const baseline = lapRecordRef.current;
+        if (!baseline?.records?.length) {
+            return Promise.resolve({
+                status: 'error',
+                error: 'baseline_lap_record_required',
+                message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
+            });
+        }
+
+        const generation = collectionGenerationRef.current;
+        let request!: Promise<BaselineAnalysisPayload>;
+        request = (async () => {
+            try {
+                setAnalysisState('analyzing');
+                let result: SegmentClassificationResult;
+                try {
+                    const response = await apiService.post(
+                        '/racing-session/analyze-live-recorded-analysis',
+                        {
+                            track: baseline.track,
+                            car: baseline.car,
+                            baseline_lap: baseline.lap,
+                            records: baseline.records,
+                        },
+                        { timeout: 120000 },
+                    );
+                    result = normalizeSegmentClassificationResult(response.data as any, baseline.id);
+                } catch (error: any) {
+                    if (collectionGenerationRef.current === generation) setAnalysisState('error');
+                    return {
+                        status: 'error',
+                        error: 'recorded_analysis_failed',
+                        message: error?.data?.message
+                            || error?.message
+                            || 'Failed to run live baseline analysis.',
+                    };
+                }
+
+                if (collectionGenerationRef.current !== generation) {
+                    return {
+                        status: 'error',
+                        error: 'baseline_analysis_cancelled',
+                        message: 'Baseline analysis was cancelled because baseline collection restarted.',
+                    };
+                }
+
+                const chat = resolveNamedComponentHandle<AiChatHandle>(
+                    componentRefs,
+                    AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+                );
+                const elements = buildAnalysisElements(result, chat, baseline.records);
+                const chart = await ensureAnalysisResultsChart(componentRefs);
+                if (!chart.success) {
+                    if (collectionGenerationRef.current === generation) setAnalysisState('error');
+                    return {
+                        status: 'error',
+                        error: 'analysis_results_visualization_unavailable',
+                        message: chart.message,
+                    };
+                }
+                if (collectionGenerationRef.current !== generation) {
+                    return {
+                        status: 'error',
+                        error: 'baseline_analysis_cancelled',
+                        message: 'Baseline analysis was cancelled because baseline collection restarted.',
+                    };
+                }
+                const page = appendAnalysisResultPage({
+                    elements,
+                    baseline: {
+                        id: baseline.id,
+                        lap: baseline.lap,
+                        lap_time_ms: baseline.lap_time_ms,
+                        captured_at: baseline.captured_at,
+                        track: baseline.track,
+                        car: baseline.car,
+                        sample_count: baseline.sample_count,
+                    },
+                });
+                const payload: BaselineAnalysisPayload = {
+                    status: result.segments.length > 0 ? 'ready' : 'empty',
+                    message: result.segments.length > 0
+                        ? 'Telemetry analysis is ready.'
+                        : 'Telemetry analysis found no classified segments.',
+                    analysis: {
+                        status: result.status,
+                        session_id: result.session_id,
+                        samples_analyzed: result.samples_analyzed,
+                        segments: result.segments
+                            .slice(0, getAnalysisLimit(options.limit))
+                            .map((segment) => compactSegment(segment, chat)),
+                    },
+                    source: 'baseline_lap_record',
+                    baseline: {
+                        id: baseline.id,
+                        lap: baseline.lap,
+                        lap_time_ms: baseline.lap_time_ms,
+                        captured_at: baseline.captured_at,
+                        track: baseline.track,
+                        car: baseline.car,
+                        sample_count: baseline.sample_count,
+                    },
+                    chartId: chart.chartId,
+                    component_name: chart.componentName,
+                    pageId: page.pageId,
+                    pageCount: page.pageCount,
+                };
+                if (collectionGenerationRef.current === generation) setAnalysisState('complete');
+                return payload;
+            } catch (error) {
+                if (collectionGenerationRef.current === generation) setAnalysisState('error');
+                throw error;
+            } finally {
+                if (analysisRequestRef.current === request) analysisRequestRef.current = null;
+            }
+        })();
+        analysisRequestRef.current = request;
+        return request;
+    }, [appendAnalysisResultPage, componentRefs]);
+
+    const requestAnalysisFromButton = useCallback(() => {
+        void requestAnalysis().catch(() => undefined);
+    }, [requestAnalysis]);
+
     const handle = useMemo<BaselineCollectionHandle>(() => ({
         getComponentName: () => name,
         startCollection,
         restartCollection,
+        requestAnalysis,
         getTag: () => tagRef.current,
         getLapRecord: () => lapRecordRef.current,
         getToolOutput: () => toolOutputRef.current,
         subscribeToolOutput,
-    }), [name, restartCollection, startCollection, subscribeToolOutput]);
+    }), [name, requestAnalysis, restartCollection, startCollection, subscribeToolOutput]);
     useRegisterAiToolComponentRef(name, handle);
 
     useEffect(() => {
@@ -347,6 +642,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                         String(state.rows.length),
                     ].join(':'),
                     lap: state.startLap ?? 0,
+                    lap_time_ms: getCompletedBaselineLapTimeMs(currentTelemetry, state.rows),
                     captured_at: Date.now(),
                     track: state.track,
                     car: state.car,
@@ -379,16 +675,46 @@ const BaselineCollection = ({ name }: { name: string }) => {
         toolOutputControllerRef.current = null;
         toolOutputListenersRef.current.clear();
         completionEmittedRef.current = false;
+        analysisRequestRef.current = null;
+        collectionGenerationRef.current += 1;
     }, []);
+
+    const analysisButtonLabel = analysisState === 'analyzing'
+        ? 'Analyzing Baseline…'
+        : analysisState === 'complete'
+            ? 'Analysis Complete'
+            : analysisState === 'error'
+                ? 'Retry Analysis'
+                : 'Request Analysis';
 
     return (
         <div className="baseline-collection" data-testid="baseline-collection">
             {tag ? (
-                <BaselineProgressDisplay tag={tag} />
+                <>
+                    <BaselineProgressDisplay tag={tag} />
+                    {tag.status === 'complete' && lapRecordRef.current && (
+                        <button
+                            type="button"
+                            className="baseline-collection__start"
+                            onClick={requestAnalysisFromButton}
+                            disabled={analysisState === 'analyzing' || analysisState === 'complete'}
+                            aria-busy={analysisState === 'analyzing'}
+                        >
+                            {analysisButtonLabel}
+                        </button>
+                    )}
+                </>
             ) : (
                 <div className="baseline-collection__idle" role="status">
                     <strong>Ready for baseline collection</strong>
-                    <span>Ask the assistant to start. Keep this panel open until the lap is complete.</span>
+                    <span>Start collection, then keep this panel open until the lap is complete.</span>
+                    <button
+                        type="button"
+                        className="baseline-collection__start"
+                        onClick={startCollection}
+                    >
+                        Start Baseline Collection
+                    </button>
                 </div>
             )}
         </div>

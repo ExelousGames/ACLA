@@ -24,6 +24,9 @@ jest.mock('@radix-ui/themes', () => {
 });
 jest.mock('@radix-ui/react-icons', () => ({ Cross2Icon: () => <span>Close</span>, DragHandleDots2Icon: () => <span>Drag</span>, PlusIcon: () => <span>Add</span> }));
 jest.mock('contexts/AiLabelsContext', () => ({ useAiLabels: () => ({ getCategoryLabels: () => [], getLabelName: () => undefined }) }));
+jest.mock('components/data-graphs', () => ({
+    DataGraph: ({ spec }: any) => <div data-testid="data-graph">{spec.title}</div>,
+}));
 jest.mock('../LiveTrajectoryMap', () => () => <div>Live trajectory map</div>);
 jest.mock('../LiveTelemetryOverview', () => ({ name, telemetry }: any) => <div data-testid={name}>Live telemetry {telemetry?.label}</div>);
 jest.mock('../LiveEventLog', () => () => <div>Live event log</div>);
@@ -35,19 +38,54 @@ const DirectoryObserver = () => {
 };
 
 describe('LiveTelemetryWorkspace named manager', () => {
-    it('offers Analysis Results manually and supports direct data updates', async () => {
+    it('offers Analysis Results manually with empty-history trend guidance', async () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(<LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />);
         expect(ref.current!.getComponentName()).toBe('live-visualization-manager');
         await userEvent.click(screen.getByRole('menuitem', { name: 'Analysis Results' }));
-        expect(screen.getByTestId('analysis-results-empty-state')).toBeInTheDocument();
+        expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
+        expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent('No analyzed laps yet.');
+        expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+    });
 
+    it('returns to Overall Trend after the Analysis Results panel is reopened', async () => {
+        const ref = React.createRef<VisualizationManagerHandle>();
+        let runtime!: React.ContextType<typeof LiveSessionContext>;
+        const Harness = () => {
+            runtime = useContext(LiveSessionContext);
+            return <LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />;
+        };
+
+        render(<LiveSessionProvider><Harness /></LiveSessionProvider>);
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Analysis Results' }));
         act(() => {
-            ref.current!.updateVisualization('visualization:analysis-results', {
-                elements: [{ id: 'result', title: 'Updated result', labels: ['MSP', 'Late braking'] }],
+            runtime.appendAnalysisResultPage({
+                baseline: {
+                    id: 'baseline-1',
+                    lap: 3,
+                    lap_time_ms: null,
+                    captured_at: 1,
+                    track: 'Spa',
+                    car: 'GT3',
+                    sample_count: 2,
+                },
+                elements: [{ id: 'retained-result', title: 'Retained result', labels: ['MSP'] }],
             });
         });
-        expect(screen.getByTestId('analysis-result-result')).toHaveTextContent('Updated result');
+
+        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
+        expect(screen.queryByTestId('analysis-result-retained-result')).not.toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+        expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        expect(screen.getByTestId('analysis-result-retained-result')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: 'Remove Analysis Results' }));
+        expect(screen.queryByTestId('analysis-result-retained-result')).not.toBeInTheDocument();
+
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Analysis Results' }));
+        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
+        expect(screen.queryByTestId('analysis-result-retained-result')).not.toBeInTheDocument();
     });
 
     it('owns the already-open todo list and closes it through the same manager', async () => {
@@ -64,8 +102,10 @@ describe('LiveTelemetryWorkspace named manager', () => {
 
     it('uses the game captured by the live session for analysis comparisons', async () => {
         const ref = React.createRef<VisualizationManagerHandle>();
+        let runtime!: React.ContextType<typeof LiveSessionContext>;
         const Harness = () => {
             const liveSession = useContext(LiveSessionContext);
+            runtime = liveSession;
             return (
                 <>
                     <button onClick={() => liveSession.startLiveSession('acc')}>Capture ACC</button>
@@ -78,7 +118,16 @@ describe('LiveTelemetryWorkspace named manager', () => {
         await userEvent.click(screen.getByRole('menuitem', { name: 'Analysis Results' }));
 
         act(() => {
-            ref.current!.updateVisualization('visualization:analysis-results', {
+            runtime.appendAnalysisResultPage({
+                baseline: {
+                    id: 'acc-baseline',
+                    lap: 4,
+                    lap_time_ms: 98_000,
+                    captured_at: 1,
+                    track: 'Spa',
+                    car: 'GT3',
+                    sample_count: 1,
+                },
                 elements: [{
                     id: 'acc-result',
                     labels: ['MSP'],
@@ -96,6 +145,7 @@ describe('LiveTelemetryWorkspace named manager', () => {
             });
         });
 
+        await userEvent.click(screen.getByRole('button', { name: 'Next' }));
         expect(screen.getByTestId('analysis-result-acc-result')).toHaveAttribute('tabindex', '0');
     });
 
