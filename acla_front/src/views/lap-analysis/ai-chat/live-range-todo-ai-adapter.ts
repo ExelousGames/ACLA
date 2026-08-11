@@ -6,6 +6,7 @@ import type {
     LiveRangeTodoListToolResult,
     TaskStartFunction,
 } from 'components/ai-engineering-tools';
+import { AiToolError } from './ai-tool-base';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -15,22 +16,30 @@ const hasOwn = (value: Record<string, unknown>, key: string) => (
     Object.prototype.hasOwnProperty.call(value, key)
 );
 
-export const getMissingLiveRangeTodoListResult = (): LiveRangeTodoListToolResult => ({
-    status: 'error',
-    todo_list: null,
-    error: 'live_range_todo_list_unavailable',
-    message: 'The AI chat live range to-do runtime is unavailable.',
-});
+const missingLiveRangeTodoList = (): never => {
+    throw new AiToolError(
+        'live_range_todo_list_unavailable',
+        'The AI chat live range to-do runtime is unavailable.',
+    );
+};
 
-const getInvalidResult = (
-    handle: LiveRangeTodoListHandle,
+const invalidLiveRangeTodoList = (
     message: string,
-): LiveRangeTodoListToolResult => ({
-    status: 'error',
-    todo_list: handle.get().todo_list,
-    error: 'invalid_live_range_todo_list',
-    message,
-});
+): never => {
+    throw new AiToolError('invalid_live_range_todo_list', message);
+};
+
+const returnOrThrowResult = (
+    result: LiveRangeTodoListToolResult,
+): LiveRangeTodoListToolResult => {
+    if (result.status === 'error') {
+        throw new AiToolError(
+            result.error || 'invalid_live_range_todo_list',
+            result.message || 'The live range to-do list request is invalid.',
+        );
+    }
+    return result;
+};
 
 export type LiveRangeTodoTaskDescriptor = Omit<LiveRangeTodoEventInput, 'taskStart'>;
 
@@ -83,51 +92,52 @@ export const createLiveRangeTodoAiAdapter = (
     createTaskStartFunction: LiveRangeTodoTaskStartFunctionFactory,
 ): LiveRangeTodoAiAdapter => ({
     set(args) {
-        if (!handle) return getMissingLiveRangeTodoListResult();
+        if (!handle) return missingLiveRangeTodoList();
         if (!Array.isArray(args.events)) {
-            return getInvalidResult(handle, 'Provide an events array.');
+            return invalidLiveRangeTodoList('Provide an events array.');
         }
-        return handle.replaceEvents(args.events.map((event) => (
+        return returnOrThrowResult(handle.replaceEvents(args.events.map((event) => (
             attachTaskStartFunction(event, createTaskStartFunction)
-        )));
+        ))));
     },
 
     update(args) {
-        if (!handle) return getMissingLiveRangeTodoListResult();
+        if (!handle) return missingLiveRangeTodoList();
         const action = typeof args.action === 'string' ? args.action : '';
         if (action === 'add_events') {
             if (!Array.isArray(args.events) || args.events.length === 0) {
-                return getInvalidResult(handle, 'Provide at least one event to add.');
+                return invalidLiveRangeTodoList('Provide at least one event to add.');
             }
             let result = handle.get();
             for (const event of args.events) {
-                result = handle.addEvent(attachTaskStartFunction(event, createTaskStartFunction));
-                if (result.status === 'error') return result;
+                result = returnOrThrowResult(handle.addEvent(
+                    attachTaskStartFunction(event, createTaskStartFunction),
+                ));
             }
-            return result;
+            return returnOrThrowResult(result);
         }
         if (action === 'update_events') {
             if (!Array.isArray(args.events)) {
-                return getInvalidResult(handle, 'Provide an events array.');
+                return invalidLiveRangeTodoList('Provide an events array.');
             }
-            return handle.updateEvents(args.events.map(serializableUpdate));
+            return returnOrThrowResult(handle.updateEvents(args.events.map(serializableUpdate)));
         }
         if (action === 'remove_events') {
-            return handle.removeEvents(args.ids as readonly string[]);
+            return returnOrThrowResult(handle.removeEvents(args.ids as readonly string[]));
         }
         if (action === 'reset_events') {
-            return args.ids === undefined
+            return returnOrThrowResult(args.ids === undefined
                 ? handle.resetEvents()
-                : handle.resetEvents(args.ids as readonly string[]);
+                : handle.resetEvents(args.ids as readonly string[]));
         }
-        if (action === 'clear') return handle.clear();
-        return getInvalidResult(
-            handle,
+        if (action === 'clear') return returnOrThrowResult(handle.clear());
+        return invalidLiveRangeTodoList(
             `Unsupported live range to-do list action: ${action || '(missing)'}.`,
         );
     },
 
     get() {
-        return handle?.get() ?? getMissingLiveRangeTodoListResult();
+        if (!handle) return missingLiveRangeTodoList();
+        return returnOrThrowResult(handle.get());
     },
 });

@@ -696,10 +696,8 @@
   border-radius: 50%;
   background: rgba(232, 232, 240, 0.12);
 }
-.ai-chat__goal-step--running,
-.ai-chat__goal-step--retrying { color: var(--lp-white); }
-.ai-chat__goal-step--running .ai-chat__goal-step-dot,
-.ai-chat__goal-step--retrying .ai-chat__goal-step-dot {
+.ai-chat__goal-step--running { color: var(--lp-white); }
+.ai-chat__goal-step--running .ai-chat__goal-step-dot {
   border-color: var(--lp-amber);
   background: var(--lp-amber);
   box-shadow: 0 0 10px rgba(255, 183, 77, 0.4);

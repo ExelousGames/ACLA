@@ -3,7 +3,7 @@ import {
     executeSubscribedFrontendTool,
     extractInlineFunctionCalls,
 } from '../use-voice-conversation';
-import { createToolOutputController } from '../ai-tool-base';
+import { AiToolError, createToolOutputController } from '../ai-tool-base';
 
 describe('buildVoiceSessionMetadata', () => {
     it('defaults to a main conversation session', () => {
@@ -146,18 +146,93 @@ describe('executeSubscribedFrontendTool', () => {
             emitEvent: (event) => events.push(event),
         });
 
-        expect(result).toEqual({ id: 'tool-2', name: 'explode', ok: false, error: 'boom' });
+        expect(result).toEqual({
+            id: 'tool-2',
+            name: 'explode',
+            ok: false,
+            code: 'tool_execution_failed',
+            message: 'boom',
+        });
         expect(events).toMatchObject([
             { kind: 'tool_call', runId: 'tool-2', name: 'explode', status: 'started' },
-            { kind: 'tool_call', runId: 'tool-2', name: 'explode', status: 'completed', ok: false, error: 'boom' },
+            {
+                kind: 'tool_call', runId: 'tool-2', name: 'explode',
+                status: 'completed', ok: false, code: 'tool_execution_failed', message: 'boom',
+            },
         ]);
         expect(frames).toContainEqual(expect.objectContaining({
             type: 'tool_result',
             id: 'tool-2',
             name: 'explode',
-            result: { ok: false, error: 'boom' },
+            result: { ok: false, code: 'tool_execution_failed', message: 'boom' },
         }));
+        expect(frames).toHaveLength(1);
         expect((frames[0] as any).messages).toBeUndefined();
+    });
+
+    it('preserves a typed failure code and safe details in one failed tool_result', async () => {
+        const frames: object[] = [];
+
+        const result = await executeSubscribedFrontendTool({
+            call: { id: 'tool-known', name: 'known_failure' },
+            handlers: {
+                known_failure: async () => {
+                    throw new AiToolError(
+                        'baseline_lap_record_required',
+                        'Complete a baseline lap first.',
+                        { details: { component_name: 'baseline-collection' } },
+                    );
+                },
+            },
+            baseContext: { sendToolStatus: jest.fn() },
+            sendText: (payload) => frames.push(payload),
+        });
+
+        expect(result).toEqual({
+            id: 'tool-known',
+            name: 'known_failure',
+            ok: false,
+            code: 'baseline_lap_record_required',
+            message: 'Complete a baseline lap first.',
+            details: { component_name: 'baseline-collection' },
+        });
+        expect(frames).toEqual([expect.objectContaining({
+            type: 'tool_result',
+            id: 'tool-known',
+            name: 'known_failure',
+            result: {
+                ok: false,
+                code: 'baseline_lap_record_required',
+                message: 'Complete a baseline lap first.',
+                details: { component_name: 'baseline-collection' },
+            },
+        })]);
+    });
+
+    it('reports a missing handler with a stable code in one failed tool_result', async () => {
+        const frames: object[] = [];
+
+        const result = await executeSubscribedFrontendTool({
+            call: { id: 'tool-missing', name: 'missing_tool' },
+            handlers: {},
+            baseContext: { sendToolStatus: jest.fn() },
+            sendText: (payload) => frames.push(payload),
+        });
+
+        expect(result).toMatchObject({
+            ok: false,
+            code: 'tool_not_registered',
+            message: "No handler is registered for 'missing_tool'.",
+            details: { tool_name: 'missing_tool' },
+        });
+        expect(frames).toHaveLength(1);
+        expect(frames[0]).toMatchObject({
+            type: 'tool_result',
+            result: expect.objectContaining({
+                ok: false,
+                code: 'tool_not_registered',
+            }),
+        });
     });
 
     it('does not expose a secondary tool output callback', async () => {

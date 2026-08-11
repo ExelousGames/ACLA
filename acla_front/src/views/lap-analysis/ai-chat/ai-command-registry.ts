@@ -14,7 +14,10 @@ import {
 } from 'components/ai-engineering-tools';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
+    AiToolError,
     AiToolDefinition,
+    type AiToolExecutionOutput,
+    type ToolOutputEnvelope,
     executeAiToolDefinition,
 } from './ai-tool-base';
 import type { LiveRangeTodoListToolResult } from 'components/ai-engineering-tools';
@@ -29,7 +32,10 @@ import {
     type RefAiCommandContext,
 } from './ai-command-ref-functions';
 
-type AiCommandHandler = (args: Record<string, any>, ctx: ToolHandlerContext) => Promise<any>;
+type AiCommandHandler = (
+    args: Record<string, any>,
+    ctx: ToolHandlerContext,
+) => Promise<ToolOutputEnvelope>;
 export type AiCommandToolDefinition = AiToolDefinition<RefAiCommandContext, ToolHandlerContext>;
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
 export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
@@ -206,11 +212,17 @@ const isLiveSessionContext = (context: AiCommandRegistryContext): boolean =>
 
 
 
-const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext) => (
+const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext): AiToolError | null => (
     !isLiveSessionContext(context)
-        ? { status: 'error', error: getLiveToolsUnavailableError(context) }
+        ? new AiToolError(
+            getLiveToolsUnavailableError(context),
+            'Live performance analysis requires an active live recording.',
+        )
         : !context.sessionIntelligence
-            ? { status: 'error', error: 'no_live_session' }
+            ? new AiToolError(
+                'no_live_session',
+                'Live session intelligence is unavailable.',
+            )
             : null
 );
 
@@ -289,21 +301,34 @@ const buildLiveFocusPayload = (context: AiCommandRegistryContext) => {
 export const startAgentRuntime = async (
     agentMode: AgentSessionMode,
     context: AiCommandRegistryContext,
-    args: Record<string, any>,
+    args: Record<string, unknown>,
     ctx: ToolHandlerContext,
-): Promise<any> => {
+): Promise<AiToolExecutionOutput> => {
     if (agentMode === 'track_guide') {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        if (!isLiveSessionContext(context)) {
+            throw new AiToolError(
+                getLiveToolsUnavailableError(context),
+                'Track guidance requires an active live recording.',
+            );
+        }
         context.startTrackGuide();
         context.setAgentTagActive?.('Track Guide', true);
         return { status: 'started', agent_mode: 'track_guide', enabled: true };
     }
 
     if (agentMode === 'overtake') {
-        if (!isLiveSessionContext(context)) return { error: getLiveToolsUnavailableError(context) };
+        if (!isLiveSessionContext(context)) {
+            throw new AiToolError(
+                getLiveToolsUnavailableError(context),
+                'Overtake analysis requires an active live recording.',
+            );
+        }
         const telemetryRows = context.getOpportunityTelemetryRows();
         if (telemetryRows.length === 0) {
-            return { error: 'no_live_telemetry' };
+            throw new AiToolError(
+                'no_live_telemetry',
+                'No live telemetry is available for overtake analysis.',
+            );
         }
 
         const agent = context.opportunityAgentState;
@@ -369,7 +394,7 @@ export const startAgentRuntime = async (
     }
 
     const unavailable = buildLiveAnalystUnavailable(context);
-    if (unavailable) return unavailable;
+    if (unavailable) throw unavailable;
 
     const si = context.sessionIntelligence!;
     const agent = getLiveAnalystState(context);
@@ -480,6 +505,7 @@ const ALL_AI_TOOL_NAMES = [
     'analyze_live_recorded_analysis',
     'get_live_analysis_mistake_count',
     'create_goal',
+    'retry_goal_task',
     'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
@@ -541,6 +567,7 @@ export const isGoalStepAvailableForContext = (
         || context.conversationRole !== 'agent'
         || context.agentMode !== 'live_performance_analyst'
         || name === 'create_goal'
+        || name === 'retry_goal_task'
     ) {
         return false;
     }
@@ -561,9 +588,7 @@ const getToolUiRecord = (uiOutput: unknown): Record<string, any> => (
 const getToolAiStatus = (uiOutput: Record<string, any>): string => (
     typeof uiOutput.status === 'string'
         ? uiOutput.status
-        : uiOutput.error
-            ? 'error'
-            : 'complete'
+        : 'complete'
 );
 
 const getToolAiMessage = (uiOutput: Record<string, any>, fallback: string): string => (
@@ -610,18 +635,14 @@ const buildToolAiOutput = (
 ): Record<string, unknown> => {
     const uiOutput = getToolUiRecord(uiOutputValue);
     const status = getToolAiStatus(uiOutput);
-    const error = typeof uiOutput.error === 'string' ? uiOutput.error : undefined;
     const output: Record<string, unknown> = {
         name,
         status,
         message: getToolAiMessage(
             uiOutput,
-            error || `${name} ${status}.`,
+            `${name} ${status}.`,
         ),
     };
-    if (error) {
-        output.error = error;
-    }
 
     switch (name) {
         case 'query_telemetry_metric':
@@ -717,6 +738,7 @@ const buildToolAiOutput = (
             if (typeof uiOutput.car === 'string') output.car = uiOutput.car;
             break;
         case 'create_goal':
+        case 'retry_goal_task':
             output.goal = uiOutput.goal ?? null;
             output.target = typeof uiOutput.target === 'number' ? uiOutput.target : null;
             output.actual = typeof uiOutput.actual === 'number' ? uiOutput.actual : null;
@@ -725,6 +747,9 @@ const buildToolAiOutput = (
                 : [];
             output.comparison = uiOutput.comparison ?? null;
             output.source_result = uiOutput.source_result ?? null;
+            output.task_results = Array.isArray(uiOutput.task_results)
+                ? uiOutput.task_results
+                : [];
             if (typeof uiOutput.failed_step === 'string') output.failed_step = uiOutput.failed_step;
             break;
         case '_get_live_section_telemetry':
@@ -777,11 +802,11 @@ const createAiToolDefinition = (
         execute: async (args, context, output, handlerContext) => {
             const handler = createRefBasedAiCommandFunctions(context)[name];
             if (!handler) {
-                return output.error('tool_not_registered', {
-                    status: 'error',
-                    error: 'tool_not_registered',
-                    message: `Tool ${name} is not registered.`,
-                });
+                throw new AiToolError(
+                    'tool_not_registered',
+                    `Tool ${name} is not registered.`,
+                    { details: { tool_name: name } },
+                );
             }
             return handler(args, handlerContext, output);
         },

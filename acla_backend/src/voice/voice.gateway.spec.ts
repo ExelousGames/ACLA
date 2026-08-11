@@ -187,6 +187,7 @@ describe('VoiceGateway', () => {
             'analyze_live_recorded_analysis',
             'get_live_analysis_mistake_count',
             'create_goal',
+            'retry_goal_task',
             'set_live_range_todo_list',
             'update_live_range_todo_list',
             'get_live_range_todo_list',
@@ -207,10 +208,15 @@ describe('VoiceGateway', () => {
         expect(payload.tool_metadata.get_live_analysis_mistake_count.title)
             .toBe('Counting live analysis mistakes');
         expect(payload.tool_metadata.create_goal.title).toBe('Creating goal');
+        expect(payload.tool_metadata.retry_goal_task.title).toBe('Retrying failed goal task');
         const createGoal = payload.tools.find((tool: { name: string }) => tool.name === 'create_goal');
         expect(createGoal.properties.steps.items.properties.name.enum).toEqual(
-            toolNames.filter((name: string) => name !== 'create_goal'),
+            toolNames.filter((name: string) => (
+                name !== 'create_goal' && name !== 'retry_goal_task'
+            )),
         );
+        expect(createGoal.properties.steps.items.properties.name.enum)
+            .not.toContain('retry_goal_task');
     });
 
     it('keeps live analysis mistake counting out of non-analyst child frames', () => {
@@ -228,6 +234,8 @@ describe('VoiceGateway', () => {
                 .not.toContain('get_live_analysis_mistake_count');
             expect(payload.tools.map((tool: { name: string }) => tool.name))
                 .not.toContain('create_goal');
+            expect(payload.tools.map((tool: { name: string }) => tool.name))
+                .not.toContain('retry_goal_task');
         }
     });
 

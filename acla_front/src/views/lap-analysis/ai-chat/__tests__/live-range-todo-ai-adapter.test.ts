@@ -121,20 +121,34 @@ describe('live range to-do AI adapter', () => {
         expect(handle.get).toHaveBeenCalled();
     });
 
-    it('returns the runtime unavailable error while the queue is unmounted', () => {
+    it('throws the runtime unavailable error while the queue is unmounted', () => {
         const adapter = createLiveRangeTodoAiAdapter(null, () => jest.fn());
 
         [
-            adapter.set({ events: [] }),
-            adapter.update({ action: 'clear' }),
-            adapter.get(),
-        ].forEach((result) => {
-            expect(result).toMatchObject({
-                status: 'error',
-                error: 'live_range_todo_list_unavailable',
-                todo_list: null,
+            () => adapter.set({ events: [] }),
+            () => adapter.update({ action: 'clear' }),
+            () => adapter.get(),
+        ].forEach((run) => {
+            expect(run).toThrow(expect.objectContaining({
+                code: 'live_range_todo_list_unavailable',
                 message: 'The AI chat live range to-do runtime is unavailable.',
-            });
+            }));
         });
+    });
+
+    it('converts component error results to exceptions at the AI boundary', () => {
+        const handle = createHandle();
+        handle.replaceEvents.mockReturnValue({
+            status: 'error',
+            todo_list: null,
+            error: 'invalid_live_range_todo_list',
+            message: 'Duplicate event id.',
+        });
+        const adapter = createLiveRangeTodoAiAdapter(handle, () => jest.fn());
+
+        expect(() => adapter.set({ events: [] })).toThrow(expect.objectContaining({
+            code: 'invalid_live_range_todo_list',
+            message: 'Duplicate event id.',
+        }));
     });
 });

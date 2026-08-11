@@ -4,6 +4,7 @@ import {
     asRecord,
     buildPracticeTrackSummaryViews,
 } from './user-summary-model';
+import { AiToolError } from 'views/lap-analysis/ai-chat/ai-tool-base';
 
 export interface UserSummaryAiSource {
     userSummary?: Record<string, any>;
@@ -62,7 +63,9 @@ export const getUserSummaryMapLevel = (
     args: Record<string, any>,
 ) => {
     if (source.loading) return { status: 'loading', maps: [] };
-    if (source.error) return { status: 'error', error: source.error, maps: [] };
+    if (source.error) {
+        throw new AiToolError('user_summary_unavailable', source.error);
+    }
     const summary = asRecord(source.userSummary);
     if (Object.keys(summary).length === 0) return { status: 'empty', maps: [] };
 
@@ -147,7 +150,7 @@ export const searchUserSummaryMapLevel = (
     const query = normalizeSearchText(args.query);
     const terms = Array.from(new Set(query.split(' ').filter(Boolean)));
     if (terms.length === 0) {
-        return { status: 'invalid_query', error: 'query_required', query, match_count: 0, map_count: mapLevel.map_count, maps: [] };
+        throw new AiToolError('query_required', 'Provide a user-summary search query.');
     }
     const matches = mapLevel.maps.map((map) => {
         const fields: Array<{ name: string; value: unknown; weight: number }> = [

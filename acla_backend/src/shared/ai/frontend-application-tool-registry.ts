@@ -418,7 +418,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
             steps: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered frontend tool calls. Every id must be unique and create_goal cannot be nested.',
+                description: 'Ordered frontend tool calls. Every id must be unique; create_goal and retry_goal_task cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
@@ -445,6 +445,12 @@ export const FRONTEND_APPLICATION_TOOLS = [
             },
         },
         required: ['goal', 'steps', 'comparison'],
+    },
+    {
+        name: 'retry_goal_task',
+        description: 'Retry the currently failed goal task once with its stored arguments, then continue the remaining goal workflow after success. Available only when the visible goal is in an error state with a failed task.',
+        properties: {},
+        required: [],
     },
     {
         name: 'advance_plan_step',
@@ -712,6 +718,7 @@ const FRONTEND_APPLICATION_TOOL_TITLES: Record<FrontendApplicationToolName, stri
     analyze_live_recorded_analysis: 'Analyzing baseline lap',
     get_live_analysis_mistake_count: 'Counting live analysis mistakes',
     create_goal: 'Creating goal',
+    retry_goal_task: 'Retrying failed goal task',
     advance_plan_step: 'Advancing plan',
     clear_procedure_plan: 'Clearing procedure plan',
     set_procedure_plan: 'Setting procedure plan',
@@ -766,6 +773,7 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
 const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: FrontendApplicationToolName[] = [
     'get_live_analysis_mistake_count',
     'create_goal',
+    'retry_goal_task',
 ];
 
 const USER_SUMMARY_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
@@ -847,7 +855,7 @@ export const getFrontendApplicationToolsForSessionContext = (
     const tools = FRONTEND_APPLICATION_TOOLS.filter((tool) => allowedToolNames.has(tool.name));
     const nestedToolNames = tools
         .map((tool) => tool.name)
-        .filter((name) => name !== 'create_goal');
+        .filter((name) => name !== 'create_goal' && name !== 'retry_goal_task');
 
     return tools.map((tool) => {
         if (tool.name !== 'create_goal') return tool;

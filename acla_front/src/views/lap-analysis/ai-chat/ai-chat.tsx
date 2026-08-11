@@ -64,7 +64,6 @@ import {
     type LiveRangeTodoTaskStartFunctionFactory,
 } from './live-range-todo-ai-adapter';
 import {
-    getToolEnvelopeError,
     getToolEnvelopeUiOutput,
     isToolOutputEnvelope,
     type ToolOutputEnvelope,
@@ -689,17 +688,12 @@ const AiChat: React.FC<AiChatProps> = ({
             });
             if (signal.aborted) return;
             if (!result) throw new Error('Start the active AI session before running this goal task.');
-            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
-            if (!envelope) {
-                throw new Error(result.error || `Goal task '${toolName}' did not return a standard output envelope.`);
+            if (!result.ok) {
+                throw new Error(result.message || `Goal task '${toolName}' failed.`);
             }
-            const goal = componentRefs
-                .findComponentRef<GoalHandle>(AI_TOOL_COMPONENT_NAMES.GOAL)
-                ?.current;
-            if (!goal) throw new Error('The goal runtime is unavailable.');
-            goal.acceptToolOutput(envelope);
+            return result.result;
         };
-    }, [componentRefs, sessionMode]);
+    }, [sessionMode]);
 
     const selectTaskStartFunction = useCallback((
         request: ProcedurePlanRequestSnapshot,
@@ -723,11 +717,10 @@ const AiChat: React.FC<AiChatProps> = ({
             });
             if (signal.aborted) return;
             if (!result) throw new Error('Start the active AI session before running this task.');
-            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
-            const envelopeError = envelope ? getToolEnvelopeError(envelope) : null;
-            if (!result.ok || envelopeError) {
-                throw new Error(result.error || envelopeError || `Task '${name}' failed.`);
+            if (!result.ok) {
+                throw new Error(result.message || `Task '${name}' failed.`);
             }
+            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
             if (!envelope) throw new Error(`Task '${name}' did not return a standard output envelope.`);
             if (!envelope.final) {
                 throw new Error(envelope.message || `Task '${name}' did not report completion.`);
@@ -867,7 +860,7 @@ const AiChat: React.FC<AiChatProps> = ({
                     title: event.title,
                     status: event.status,
                     ok: event.ok,
-                    error: event.error ?? null,
+                    error: event.message ?? null,
                     result: event.result,
                 }, {}, { key: event.runId }, presentationId);
             }
@@ -887,7 +880,7 @@ const AiChat: React.FC<AiChatProps> = ({
                                 title: event.title,
                                 status: event.status,
                                 ok: event.ok,
-                                error: event.error ?? null,
+                                error: event.message ?? null,
                                 result: event.result,
                             },
                         };
@@ -906,7 +899,7 @@ const AiChat: React.FC<AiChatProps> = ({
                         title: event.title,
                         status: event.status,
                         ok: event.ok,
-                        error: event.error ?? null,
+                        error: event.message ?? null,
                         result: event.result,
                     },
                 });
@@ -935,8 +928,7 @@ const AiChat: React.FC<AiChatProps> = ({
         componentRefs.findComponentRef<GoalHandle>(AI_TOOL_COMPONENT_NAMES.GOAL)
             ?.current
             ?.acceptToolOutput(envelope);
-        const envelopeError = getToolEnvelopeError(envelope);
-        if (!envelope.final && !envelopeError) {
+        if (!envelope.final) {
             return;
         }
 
@@ -947,8 +939,7 @@ const AiChat: React.FC<AiChatProps> = ({
             title: envelope.message || 'Collect live baseline',
             status: envelope.final ? 'completed' : 'started',
             result: getBaselineToolEventResult(envelope),
-            ok: !envelopeError,
-            error: envelopeError,
+            ok: true,
         }, activeAgentSessionRef.current ? 'agent' : 'main');
 
         activeVoiceToolResultRef.current({
@@ -1761,6 +1752,12 @@ const AiChat: React.FC<AiChatProps> = ({
                 displayMap: displayMapInChat,
             }, {}, {
                 sendToolStatus: agentVoiceConversation.sendToolStatus,
+            }).catch((error) => {
+                console.error(`Failed to start ${current.agentMode} runtime.`, error);
+                if (activeAgentSessionRef.current?.clientSessionId !== current.clientSessionId) return;
+                setActiveAgentSession((session) => session
+                    ? { ...session, status: 'error' }
+                    : session);
             });
         }, 0);
     }, [

@@ -109,6 +109,10 @@ describe('Goal request and comparison helpers', () => {
         }, selectTaskStart)).toMatchObject({ error: 'recursive_goal_step' });
         expect(buildGoalRequest({
             ...goalRequest(),
+            steps: [{ id: 'recursive', title: 'Recursive', name: 'retry_goal_task' }],
+        }, selectTaskStart)).toMatchObject({ error: 'recursive_goal_step' });
+        expect(buildGoalRequest({
+            ...goalRequest(),
             steps: [{ id: 'unknown', title: 'Unknown', name: 'unknown_tool' }],
         }, selectTaskStart)).toMatchObject({ error: 'goal_step_task_unavailable' });
         expect(buildGoalRequest({
@@ -173,8 +177,51 @@ describe('Goal workflow runner', () => {
                 status: 'complete',
                 final: true,
             },
+            task_results: [
+                expect.objectContaining({ step_id: 'collect', attempt: 1, status: 'completed', value: {} }),
+                expect.objectContaining({ step_id: 'analyze', attempt: 1, status: 'completed', value: {} }),
+                expect.objectContaining({
+                    step_id: 'mistake_count',
+                    attempt: 1,
+                    status: 'completed',
+                    value: { mistake_count: 0, page_id: 'newest' },
+                    source_result: expect.objectContaining({ run_id: 'run-3' }),
+                }),
+            ],
         });
         expect(screen.getByText(/GOAL · achieved/i)).toBeInTheDocument();
+    });
+
+    it('normalizes synchronous and asynchronous immediate task return values', async () => {
+        const getHandle = renderGoal();
+        const request: GoalRequest = {
+            goal: 'Immediate values',
+            steps: [{
+                id: 'prepare',
+                title: 'Prepare',
+                name: 'query_telemetry_metric',
+                taskStart: () => undefined,
+            }, {
+                id: 'count',
+                title: 'Count',
+                name: 'get_live_analysis_mistake_count',
+                taskStart: async () => ({ mistake_count: 0 }),
+            }],
+            comparison: {
+                step_id: 'count', result_path: 'mistake_count', operator: 'eq', target: 0, metric_label: 'Mistakes',
+            },
+        };
+
+        let result: Awaited<ReturnType<GoalHandle['createGoal']>> | undefined;
+        await act(async () => { result = await getHandle().createGoal(request); });
+
+        expect(result).toMatchObject({
+            status: 'achieved',
+            task_results: [
+                expect.objectContaining({ step_id: 'prepare', value: null }),
+                expect.objectContaining({ step_id: 'count', value: { mistake_count: 0 } }),
+            ],
+        });
     });
 
     it('restarts from the first step when the first goal attempt is missed', async () => {
@@ -235,11 +282,25 @@ describe('Goal workflow runner', () => {
         });
         await act(async () => { jest.advanceTimersByTime(1000); });
 
-        await expect(pending).resolves.toMatchObject({ status: 'missed', actual: 2 });
+        await expect(pending).resolves.toMatchObject({
+            status: 'missed',
+            actual: 2,
+            task_results: [
+                expect.objectContaining({ step_id: 'collect', attempt: 1 }),
+                expect.objectContaining({ step_id: 'analyze', attempt: 1 }),
+                expect.objectContaining({ step_id: 'mistake_count', attempt: 1 }),
+                expect.objectContaining({ step_id: 'collect', attempt: 2 }),
+                expect.objectContaining({ step_id: 'analyze', attempt: 2 }),
+                expect.objectContaining({ step_id: 'mistake_count', attempt: 2 }),
+            ],
+        });
         expect(calls).toEqual([
             'collect', 'analyze', 'mistake_count',
             'collect', 'analyze', 'mistake_count',
         ]);
+        const snapshot = getHandle().getSnapshot();
+        expect(snapshot).not.toHaveProperty('failed_step');
+        expect(snapshot).not.toHaveProperty('error');
         jest.useRealTimers();
     });
 
@@ -284,10 +345,9 @@ describe('Goal workflow runner', () => {
         expect(result?.status).toBe('achieved');
     });
 
-    it('retries once with identical arguments and retains the failed card after the second failure', async () => {
-        jest.useFakeTimers();
+    it('does not automatically retry thrown task errors and retains the failed arguments', async () => {
         const taskStart = jest.fn<ReturnType<TaskStartFunction>, Parameters<TaskStartFunction>>(
-            async () => { throw new Error('offline'); },
+            () => { throw new Error('offline'); },
         );
         const getHandle = renderGoal();
         const request: GoalRequest = {
@@ -303,21 +363,25 @@ describe('Goal workflow runner', () => {
                 step_id: 'count', result_path: 'mistake_count', operator: 'eq', target: 0, metric_label: 'Mistakes',
             },
         };
-        let pending!: ReturnType<GoalHandle['createGoal']>;
-        await act(async () => {
-            pending = getHandle().createGoal(request);
-            await Promise.resolve();
-        });
-        expect(screen.getByText(/retrying/i)).toBeInTheDocument();
-        await act(async () => { jest.advanceTimersByTime(1000); });
-        let result: Awaited<typeof pending> | undefined;
-        await act(async () => { result = await pending; });
+        let result: Awaited<ReturnType<GoalHandle['createGoal']>> | undefined;
+        await act(async () => { result = await getHandle().createGoal(request); });
 
-        expect(taskStart).toHaveBeenCalledTimes(2);
+        expect(taskStart).toHaveBeenCalledTimes(1);
         expect(getHandle().getSnapshot()?.steps[0].arguments).toEqual({ limit: 1 });
-        expect(result).toMatchObject({ status: 'error', failed_step: 'count', error: 'offline' });
+        expect(result).toMatchObject({
+            status: 'error',
+            failed_step: 'count',
+            error: 'offline',
+            task_results: [{
+                step_id: 'count',
+                tool_name: 'get_live_analysis_mistake_count',
+                attempt: 1,
+                status: 'error',
+                value: null,
+                error: 'offline',
+            }],
+        });
         expect(screen.getByText(/GOAL · error/i)).toBeInTheDocument();
-        jest.useRealTimers();
     });
 
     it.each([
@@ -325,16 +389,13 @@ describe('Goal workflow runner', () => {
         ['missing', {}],
         ['string', { mistake_count: '0' }],
         ['malformed', { mistake_count: [] }],
-    ])('retries and fails %s comparison results', async (_label, output) => {
-        jest.useFakeTimers();
+    ])('fails %s comparison results without an automatic task retry', async (_label, output) => {
         const getHandle = renderGoal();
-        const taskStart: TaskStartFunction = async () => {
-            getHandle().acceptToolOutput(envelope(
-                'get_live_analysis_mistake_count',
-                'comparison-run',
-                output,
-            ));
-        };
+        const taskStart = jest.fn(() => envelope(
+            'get_live_analysis_mistake_count',
+            'comparison-run',
+            output,
+        ));
         const request: GoalRequest = {
             goal: 'Comparison validation',
             steps: [{
@@ -347,18 +408,178 @@ describe('Goal workflow runner', () => {
                 step_id: 'count', result_path: 'mistake_count', operator: 'eq', target: 0, metric_label: 'Mistakes',
             },
         };
+        let result: Awaited<ReturnType<GoalHandle['createGoal']>> | undefined;
+        await act(async () => { result = await getHandle().createGoal(request); });
+        expect(result).toMatchObject({
+            status: 'error',
+            failed_step: 'count',
+            error: 'goal_comparison_value_not_numeric',
+            task_results: [expect.objectContaining({
+                attempt: 1,
+                status: 'error',
+                value: output,
+                error: 'goal_comparison_value_not_numeric',
+                source_result: expect.objectContaining({ run_id: 'comparison-run' }),
+            })],
+        });
+        expect(taskStart).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not infer failure from properties on an ordinary task output', async () => {
+        const getHandle = renderGoal();
+        const taskStart = jest.fn(() => ({
+            error: 'descriptive_metadata',
+            mistake_count: 0,
+        }));
+        const request = withTaskStarts(goalRequest(), () => taskStart);
+        request.steps = [request.steps[2]];
+
+        let result: Awaited<ReturnType<GoalHandle['createGoal']>> | undefined;
+        await act(async () => { result = await getHandle().createGoal(request); });
+
+        expect(taskStart).toHaveBeenCalledTimes(1);
+        expect(result).toMatchObject({
+            status: 'achieved',
+            task_results: [expect.objectContaining({
+                status: 'completed',
+                value: { error: 'descriptive_metadata', mistake_count: 0 },
+            })],
+        });
+    });
+
+    it('explicitly retries only the failed task, then continues later tasks', async () => {
+        const getHandle = renderGoal();
+        const calls: string[] = [];
+        let analyzeAttempts = 0;
+        const request = withTaskStarts(goalRequest(), (step) => () => {
+            calls.push(step.id);
+            if (step.id === 'analyze') {
+                analyzeAttempts += 1;
+                if (analyzeAttempts === 1) throw new Error('analysis_offline');
+            }
+            return step.id === 'mistake_count' ? { mistake_count: 0 } : { status: 'ready' };
+        });
+
+        let first: Awaited<ReturnType<GoalHandle['createGoal']>> | undefined;
+        await act(async () => { first = await getHandle().createGoal(request); });
+        expect(first).toMatchObject({ status: 'error', failed_step: 'analyze' });
+        expect(calls).toEqual(['collect', 'analyze']);
+
+        let retried: Awaited<ReturnType<GoalHandle['retryFailedTask']>> | undefined;
+        await act(async () => { retried = await getHandle().retryFailedTask(); });
+
+        expect(calls).toEqual(['collect', 'analyze', 'analyze', 'mistake_count']);
+        expect(retried).toMatchObject({
+            status: 'achieved',
+            completed_steps: ['collect', 'analyze', 'mistake_count'],
+            task_results: [
+                expect.objectContaining({ step_id: 'collect', attempt: 1, status: 'completed' }),
+                expect.objectContaining({ step_id: 'analyze', attempt: 1, status: 'error' }),
+                expect.objectContaining({ step_id: 'analyze', attempt: 2, status: 'completed' }),
+                expect.objectContaining({ step_id: 'mistake_count', attempt: 1, status: 'completed' }),
+            ],
+        });
+    });
+
+    it('allows repeated explicit retries without a fixed task retry limit', async () => {
+        const getHandle = renderGoal();
+        let calls = 0;
+        const request = withTaskStarts({
+            ...goalRequest('Keep retrying'),
+            steps: [goalRequest().steps[2]],
+        }, () => () => {
+            calls += 1;
+            if (calls < 4) throw new Error(`offline-${calls}`);
+            return { mistake_count: 0 };
+        });
+
+        await act(async () => { await getHandle().createGoal(request); });
+        await act(async () => { await getHandle().retryFailedTask(); });
+        await act(async () => { await getHandle().retryFailedTask(); });
+        let result: Awaited<ReturnType<GoalHandle['retryFailedTask']>> | undefined;
+        await act(async () => { result = await getHandle().retryFailedTask(); });
+
+        expect(calls).toBe(4);
+        expect(result).toMatchObject({
+            status: 'achieved',
+            task_results: [
+                expect.objectContaining({ attempt: 1, status: 'error' }),
+                expect.objectContaining({ attempt: 2, status: 'error' }),
+                expect.objectContaining({ attempt: 3, status: 'error' }),
+                expect.objectContaining({ attempt: 4, status: 'completed' }),
+            ],
+        });
+    });
+
+    it('rejects explicit task retry for a missed goal', async () => {
+        jest.useFakeTimers();
+        const getHandle = renderGoal();
+        const taskStart = jest.fn(() => ({ mistake_count: 2 }));
+        const request = withTaskStarts({
+            ...goalRequest('Missed goal'),
+            steps: [goalRequest().steps[2]],
+        }, () => taskStart);
         let pending!: ReturnType<GoalHandle['createGoal']>;
         await act(async () => {
             pending = getHandle().createGoal(request);
             await Promise.resolve();
         });
         await act(async () => { jest.advanceTimersByTime(1000); });
-        await expect(pending).resolves.toMatchObject({
+        await expect(pending).resolves.toMatchObject({ status: 'missed' });
+
+        await expect(getHandle().retryFailedTask()).resolves.toMatchObject({
             status: 'error',
-            failed_step: 'count',
-            error: 'goal_comparison_value_not_numeric',
+            error: 'goal_task_retry_unavailable',
         });
+        expect(taskStart).toHaveBeenCalledTimes(2);
         jest.useRealTimers();
+    });
+
+    it('rejects explicit task retry while running and after achieved, validation-error, or clear', async () => {
+        const runningHandle = renderGoal();
+        const runningRequest = withTaskStarts({
+            ...goalRequest('Running goal'),
+            steps: [goalRequest().steps[2]],
+        }, () => () => envelope(
+            'get_live_analysis_mistake_count',
+            'pending-run',
+            { progress: 20 },
+            false,
+        ));
+        let running!: ReturnType<GoalHandle['createGoal']>;
+        await act(async () => {
+            running = runningHandle().createGoal(runningRequest);
+            await Promise.resolve();
+        });
+        await expect(runningHandle().retryFailedTask()).resolves.toMatchObject({
+            error: 'goal_task_retry_unavailable',
+        });
+        act(() => runningHandle().clear());
+        await expect(running).resolves.toMatchObject({ error: 'goal_replaced' });
+        await expect(runningHandle().retryFailedTask()).resolves.toMatchObject({
+            error: 'goal_task_retry_unavailable',
+        });
+
+        const achievedHandle = renderGoal();
+        const achievedRequest = withTaskStarts({
+            ...goalRequest('Achieved goal'),
+            steps: [goalRequest().steps[2]],
+        }, () => () => ({ mistake_count: 0 }));
+        await act(async () => { await achievedHandle().createGoal(achievedRequest); });
+        await expect(achievedHandle().retryFailedTask()).resolves.toMatchObject({
+            error: 'goal_task_retry_unavailable',
+        });
+
+        const invalidHandle = renderGoal();
+        await act(async () => {
+            await invalidHandle().createGoal({
+                ...achievedRequest,
+                steps: [],
+            });
+        });
+        await expect(invalidHandle().retryFailedTask()).resolves.toMatchObject({
+            error: 'goal_task_retry_unavailable',
+        });
     });
 
     it('invalidates the previous runner when a second goal replaces it', async () => {
@@ -402,7 +623,7 @@ describe('GoalDisplay', () => {
     const snapshot = (status: GoalSnapshot['status'], stepStatus: GoalSnapshot['steps'][number]['status']): GoalSnapshot => ({
         goal: 'Visible goal',
         status,
-        steps: [{ id: 'one', title: 'Visible step', name: 'tool', status: stepStatus, attempts: stepStatus === 'retrying' ? 2 : 1 }],
+        steps: [{ id: 'one', title: 'Visible step', name: 'tool', status: stepStatus, attempts: 1 }],
         comparison: { step_id: 'one', result_path: 'value', operator: 'eq', target: 0, metric_label: 'Value' },
         target: 0,
         actual: status === 'running' ? null : 1,
@@ -413,7 +634,6 @@ describe('GoalDisplay', () => {
 
     it.each([
         ['running', 'running'],
-        ['running', 'retrying'],
         ['achieved', 'completed'],
         ['missed', 'completed'],
         ['error', 'error'],

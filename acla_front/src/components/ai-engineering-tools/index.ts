@@ -68,6 +68,7 @@ export type {
     GoalStepDescriptor,
     GoalStepSnapshot,
     GoalStepStatus,
+    GoalTaskResult,
     GoalTaskStartFunctionSelector,
     GoalToolOutputEnvelope,
 } from './Goal';

@@ -165,13 +165,14 @@ describe('create_goal tool', () => {
         const nestedNames = createGoal.properties.steps.items.properties.name.enum;
         expect(nestedNames).toEqual(analystTools
             .map(({ name }) => name)
-            .filter((name) => name !== 'create_goal'));
+            .filter((name) => name !== 'create_goal' && name !== 'retry_goal_task'));
         expect(nestedNames).toEqual(expect.arrayContaining([
             'collect_live_baseline',
             'analyze_live_recorded_analysis',
             'get_live_analysis_mistake_count',
         ]));
         expect(nestedNames).not.toContain('create_goal');
+        expect(nestedNames).not.toContain('retry_goal_task');
 
         const metadata = getAiToolMetadataForSessionContext({
             session_mode: 'live',
@@ -179,5 +180,41 @@ describe('create_goal tool', () => {
             agent_mode: 'live_performance_analyst',
         });
         expect(metadata.create_goal.title).toBe('Creating goal');
+    });
+});
+
+describe('retry_goal_task tool', () => {
+    it('defines a no-argument schema and is exposed only to the Live Performance Analyst', () => {
+        const namesFor = (context: Record<string, unknown>) => (
+            getFrontendApplicationToolsForSessionContext(context).map(({ name }) => name)
+        );
+        const tool = FRONTEND_APPLICATION_TOOLS.find(({ name }) => (
+            name === 'retry_goal_task'
+        ));
+        expect(tool).toMatchObject({ properties: {}, required: [] });
+
+        expect(namesFor({ session_mode: 'live' })).not.toContain('retry_goal_task');
+        expect(namesFor({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'track_guide',
+        })).not.toContain('retry_goal_task');
+        expect(namesFor({
+            session_mode: 'recorded',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        })).not.toContain('retry_goal_task');
+        expect(namesFor({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        })).toContain('retry_goal_task');
+
+        const metadata = getAiToolMetadataForSessionContext({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        });
+        expect(metadata.retry_goal_task.title).toBe('Retrying failed goal task');
     });
 });

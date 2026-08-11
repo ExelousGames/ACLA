@@ -1,3 +1,3 @@
 export interface TaskStartFunction {
-    (signal: AbortSignal): void | Promise<void>;
+    (signal: AbortSignal): unknown | Promise<unknown>;
 }

@@ -14,7 +14,7 @@ export const GOAL_COMPARISON_OPERATORS = [
 
 export type GoalComparisonOperator = typeof GOAL_COMPARISON_OPERATORS[number];
 export type GoalStatus = 'running' | 'achieved' | 'missed' | 'error';
-export type GoalStepStatus = 'pending' | 'running' | 'retrying' | 'completed' | 'error';
+export type GoalStepStatus = 'pending' | 'running' | 'completed' | 'error';
 
 export type GoalStep = {
     id: string;
@@ -50,6 +50,16 @@ export type GoalSourceResultMetadata = {
     final: true;
 };
 
+export type GoalTaskResult = {
+    step_id: string;
+    tool_name: string;
+    attempt: number;
+    status: 'completed' | 'error';
+    value: unknown;
+    error?: string;
+    source_result?: GoalSourceResultMetadata;
+};
+
 export type GoalSnapshot = {
     goal: string;
     status: GoalStatus;
@@ -70,7 +80,6 @@ export type GoalToolOutputEnvelope = {
     output: unknown;
     final: boolean;
     message?: string;
-    error?: string;
 };
 
 export type GoalRunResult = Pick<
@@ -85,10 +94,12 @@ export type GoalRunResult = Pick<
     | 'error'
 > & {
     comparison: GoalComparison | null;
+    task_results: GoalTaskResult[];
 };
 
 export interface GoalHandle extends NamedAiToolComponentHandle {
     createGoal(input: GoalRequest): Promise<GoalRunResult>;
+    retryFailedTask(): Promise<GoalRunResult>;
     acceptToolOutput(envelope: GoalToolOutputEnvelope): void;
     getSnapshot(): GoalSnapshot | null;
     clear(): void;
@@ -130,6 +141,38 @@ const RESULT_PATH_SEGMENT_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*|0|[1-9][0-9]*)$/;
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 );
+
+const isGoalToolOutputEnvelope = (value: unknown): value is GoalToolOutputEnvelope => (
+    isRecord(value)
+    && typeof value.tool_name === 'string'
+    && typeof value.run_id === 'string'
+    && typeof value.status === 'string'
+    && typeof value.final === 'boolean'
+    && Object.prototype.hasOwnProperty.call(value, 'output')
+);
+
+const normalizeTaskValue = (value: unknown): unknown => (
+    value === undefined ? null : value
+);
+
+const normalizeTaskError = (value: unknown, fallback = 'goal_step_failed'): string => {
+    if (value instanceof Error && value.message.trim()) return value.message.trim();
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (isRecord(value)) {
+        if (typeof value.error === 'string' && value.error.trim()) return value.error.trim();
+        if (typeof value.message === 'string' && value.message.trim()) return value.message.trim();
+    }
+    if (value !== null && value !== undefined) {
+        if (typeof value !== 'object') return String(value);
+        try {
+            const serialized = JSON.stringify(value);
+            if (serialized && serialized !== '{}') return serialized;
+        } catch {
+            // Fall through to the stable generic error.
+        }
+    }
+    return fallback;
+};
 
 const toNonEmptyString = (value: unknown): string | null => {
     if (typeof value !== 'string') return null;
@@ -217,7 +260,9 @@ export const validateGoalRequest = (
     for (const step of parsedSteps) {
         if (ids.has(step.id)) return { error: 'duplicate_goal_step_id', goal };
         ids.add(step.id);
-        if (step.name === 'create_goal') return { error: 'recursive_goal_step', goal };
+        if (step.name === 'create_goal' || step.name === 'retry_goal_task') {
+            return { error: 'recursive_goal_step', goal };
+        }
     }
     const comparison = parseGoalComparison(input.comparison);
     if (!comparison) return { error: 'invalid_goal_comparison', goal };
@@ -245,7 +290,9 @@ export const buildGoalRequest = (
     for (const rawStep of input.steps) {
         const descriptor = parseGoalStepDescriptor(rawStep);
         if (!descriptor) return { error: 'invalid_goal_steps', goal };
-        if (descriptor.name === 'create_goal') return { error: 'recursive_goal_step', goal };
+        if (descriptor.name === 'create_goal' || descriptor.name === 'retry_goal_task') {
+            return { error: 'recursive_goal_step', goal };
+        }
         const taskStart = selectTaskStartFunction(descriptor);
         if (typeof taskStart !== 'function') {
             return { error: 'goal_step_task_unavailable', goal };
@@ -301,7 +348,17 @@ const cloneSnapshot = (snapshot: GoalSnapshot): GoalSnapshot => ({
     source_result: snapshot.source_result ? { ...snapshot.source_result } : null,
 });
 
-const toRunResult = (snapshot: GoalSnapshot): GoalRunResult => ({
+const cloneTaskResults = (taskResults: GoalTaskResult[]): GoalTaskResult[] => (
+    taskResults.map((result) => ({
+        ...result,
+        ...(result.source_result ? { source_result: { ...result.source_result } } : {}),
+    }))
+);
+
+const toRunResult = (
+    snapshot: GoalSnapshot,
+    taskResults: GoalTaskResult[],
+): GoalRunResult => ({
     goal: snapshot.goal,
     status: snapshot.status,
     comparison: snapshot.comparison ? { ...snapshot.comparison } : null,
@@ -309,15 +366,27 @@ const toRunResult = (snapshot: GoalSnapshot): GoalRunResult => ({
     actual: snapshot.actual,
     completed_steps: [...snapshot.completed_steps],
     source_result: snapshot.source_result ? { ...snapshot.source_result } : null,
+    task_results: cloneTaskResults(taskResults),
     ...(snapshot.failed_step ? { failed_step: snapshot.failed_step } : {}),
     ...(snapshot.error ? { error: snapshot.error } : {}),
 });
+
+type StepExecutionResult = {
+    value: unknown;
+    error?: string;
+    source_result?: GoalSourceResultMetadata;
+};
 
 class GoalRunner {
     private snapshot: GoalSnapshot | null = null;
     private controller: AbortController | null = null;
     private generation = 0;
     private finalWaiter: FinalWaiter | null = null;
+    private request: GoalRequest | null = null;
+    private failedStepIndex: number | null = null;
+    private stepAttempts: number[] = [];
+    private taskResults: GoalTaskResult[] = [];
+    private goalAttempt = 1;
 
     constructor(
         private readonly onChange: (snapshot: GoalSnapshot | null) => void,
@@ -340,6 +409,11 @@ class GoalRunner {
     async create(input: GoalRequest): Promise<GoalRunResult> {
         this.cancelActive('goal_replaced');
         const generation = ++this.generation;
+        this.request = null;
+        this.failedStepIndex = null;
+        this.stepAttempts = [];
+        this.taskResults = [];
+        this.goalAttempt = 1;
         const validation = validateGoalRequest(input);
         if ('error' in validation) {
             const invalidSnapshot: GoalSnapshot = {
@@ -354,98 +428,137 @@ class GoalRunner {
                 error: validation.error,
             };
             this.publish(invalidSnapshot);
-            return toRunResult(invalidSnapshot);
+            return toRunResult(invalidSnapshot, this.taskResults);
         }
 
         const request = validation.request;
+        this.request = request;
+        this.stepAttempts = request.steps.map(() => 0);
         const controller = new AbortController();
         this.controller = controller;
+        this.publish(this.createRunningSnapshot(request));
+
+        return this.runSteps(request, generation, controller, 0);
+    }
+
+    async retryFailedTask(): Promise<GoalRunResult> {
+        const request = this.request;
+        const failedStepIndex = this.failedStepIndex;
+        if (
+            !request
+            || !this.snapshot
+            || this.snapshot.status !== 'error'
+            || failedStepIndex === null
+            || this.snapshot.failed_step !== request.steps[failedStepIndex]?.id
+        ) {
+            return this.retryUnavailableResult();
+        }
+
+        const generation = ++this.generation;
+        const controller = new AbortController();
+        this.controller = controller;
+        this.failedStepIndex = null;
+        const {
+            failed_step: _failedStep,
+            error: _error,
+            ...retrySnapshot
+        } = this.snapshot;
         this.publish({
-            goal: request.goal,
+            ...retrySnapshot,
             status: 'running',
-            steps: request.steps.map((step) => ({
-                id: step.id,
-                title: step.title,
-                name: step.name,
-                ...(step.arguments ? { arguments: { ...step.arguments } } : {}),
-                status: 'pending',
-                attempts: 0,
-            })),
-            comparison: request.comparison,
-            target: request.comparison.target,
             actual: null,
-            completed_steps: [],
             source_result: null,
         });
 
-        let goalAttempt = 1;
-        for (let index = 0; index < request.steps.length; index += 1) {
+        return this.runSteps(request, generation, controller, failedStepIndex);
+    }
+
+    clear(): void {
+        this.cancelActive('goal_cleared');
+        this.generation += 1;
+        this.snapshot = null;
+        this.request = null;
+        this.failedStepIndex = null;
+        this.stepAttempts = [];
+        this.taskResults = [];
+        this.onChange(null);
+    }
+
+    dispose(): void {
+        this.cancelActive('goal_disposed');
+        this.snapshot = null;
+        this.request = null;
+        this.failedStepIndex = null;
+    }
+
+    private async runSteps(
+        request: GoalRequest,
+        generation: number,
+        controller: AbortController,
+        startIndex: number,
+    ): Promise<GoalRunResult> {
+        for (let index = startIndex; index < request.steps.length; index += 1) {
             const step = request.steps[index];
-            let finalEnvelope: GoalToolOutputEnvelope | null = null;
-            let lastSourceEnvelope: GoalToolOutputEnvelope | null = null;
-            let lastError = 'goal_step_failed';
+            if (!this.isCurrent(generation, controller)) {
+                return this.cancelledResult(request, 'goal_replaced');
+            }
 
-            for (let attempt = 1; attempt <= 2; attempt += 1) {
-                if (!this.isCurrent(generation, controller)) {
-                    return this.cancelledResult(request, 'goal_replaced');
-                }
-                this.updateStep(index, {
-                    status: attempt === 1 ? 'running' : 'retrying',
-                    attempts: attempt,
-                    error: undefined,
-                });
-                try {
-                    finalEnvelope = await this.executeStep(step, controller.signal);
-                    lastSourceEnvelope = finalEnvelope;
-                    const envelopeError = finalEnvelope.error
-                        || (finalEnvelope.status === 'error' ? finalEnvelope.message || 'goal_step_failed' : null);
-                    if (envelopeError) throw new Error(envelopeError);
+            const attempt = (this.stepAttempts[index] ?? 0) + 1;
+            this.stepAttempts[index] = attempt;
+            this.updateStep(index, {
+                status: 'running',
+                attempts: attempt,
+                error: undefined,
+            });
 
-                    if (step.id === request.comparison.step_id) {
-                        const actual = extractGoalResultPath(
-                            finalEnvelope.output,
-                            request.comparison.result_path,
-                        );
-                        if (typeof actual !== 'number' || !Number.isFinite(actual)) {
-                            throw new Error('goal_comparison_value_not_numeric');
-                        }
-                    }
-                    break;
-                } catch (error) {
-                    if (!this.isCurrent(generation, controller)) {
-                        return this.cancelledResult(request, 'goal_replaced');
-                    }
-                    lastError = (error as Error)?.message || String(error);
-                    finalEnvelope = null;
-                    if (attempt === 1) {
-                        this.updateStep(index, { status: 'retrying', error: lastError });
-                        try {
-                            await this.retryDelay(controller.signal);
-                        } catch {
-                            return this.cancelledResult(request, 'goal_replaced');
-                        }
-                    }
+            const execution = await this.executeStep(step, controller.signal);
+            if (!this.isCurrent(generation, controller)) {
+                return this.cancelledResult(request, 'goal_replaced');
+            }
+
+            let error = execution.error;
+            let actual: number | null = null;
+            if (!error && step.id === request.comparison.step_id) {
+                const comparisonValue = extractGoalResultPath(
+                    execution.value,
+                    request.comparison.result_path,
+                );
+                if (typeof comparisonValue !== 'number' || !Number.isFinite(comparisonValue)) {
+                    error = 'goal_comparison_value_not_numeric';
+                } else {
+                    actual = comparisonValue;
                 }
             }
 
-            if (!finalEnvelope) {
-                this.updateStep(index, { status: 'error', error: lastError });
-                const errorSnapshot = {
+            const taskResult: GoalTaskResult = {
+                step_id: step.id,
+                tool_name: step.name,
+                attempt,
+                status: error ? 'error' : 'completed',
+                value: execution.value,
+                ...(error ? { error } : {}),
+                ...(execution.source_result
+                    ? { source_result: { ...execution.source_result } }
+                    : {}),
+            };
+            this.taskResults.push(taskResult);
+
+            if (error) {
+                this.updateStep(index, { status: 'error', error });
+                this.failedStepIndex = index;
+                const errorSnapshot: GoalSnapshot = {
                     ...this.snapshot!,
-                    status: 'error' as const,
-                    source_result: lastSourceEnvelope ? {
-                        step_id: step.id,
-                        tool_name: lastSourceEnvelope.tool_name,
-                        run_id: lastSourceEnvelope.run_id,
-                        status: lastSourceEnvelope.status,
-                        final: true as const,
-                    } : null,
+                    status: 'error',
+                    actual: null,
+                    source_result: execution.source_result
+                        ? { ...execution.source_result }
+                        : null,
                     failed_step: step.id,
-                    error: lastError,
+                    error,
                 };
                 this.publish(errorSnapshot);
                 this.controller = null;
-                return toRunResult(errorSnapshot);
+                return toRunResult(errorSnapshot, this.taskResults);
             }
 
             this.updateStep(index, { status: 'completed', error: undefined });
@@ -455,57 +568,40 @@ class GoalRunner {
             this.publish({ ...this.snapshot!, completed_steps: completed });
 
             if (step.id === request.comparison.step_id) {
-                const actual = extractGoalResultPath(
-                    finalEnvelope.output,
-                    request.comparison.result_path,
-                ) as number;
                 const achieved = compareGoalValues(
-                    actual,
+                    actual!,
                     request.comparison.operator,
                     request.comparison.target,
                 );
-                const sourceResult: GoalSourceResultMetadata = {
-                    step_id: step.id,
-                    tool_name: finalEnvelope.tool_name,
-                    run_id: finalEnvelope.run_id,
-                    status: finalEnvelope.status,
-                    final: true,
-                };
+                const {
+                    failed_step: _failedStep,
+                    error: _error,
+                    ...completedSnapshot
+                } = this.snapshot!;
                 const finalSnapshot: GoalSnapshot = {
-                    ...this.snapshot!,
+                    ...completedSnapshot,
                     status: achieved ? 'achieved' : 'missed',
                     actual,
                     completed_steps: completed,
-                    source_result: sourceResult,
+                    source_result: execution.source_result
+                        ? { ...execution.source_result }
+                        : null,
                 };
                 this.publish(finalSnapshot);
-                if (achieved || goalAttempt === MAX_GOAL_ATTEMPTS) {
+                if (achieved || this.goalAttempt === MAX_GOAL_ATTEMPTS) {
                     this.controller = null;
-                    return toRunResult(finalSnapshot);
+                    return toRunResult(finalSnapshot, this.taskResults);
                 }
                 try {
                     await this.retryDelay(controller.signal);
                 } catch {
                     return this.cancelledResult(request, 'goal_replaced');
                 }
-                goalAttempt += 1;
-                this.publish({
-                    goal: request.goal,
-                    status: 'running',
-                    steps: request.steps.map((goalStep) => ({
-                        id: goalStep.id,
-                        title: goalStep.title,
-                        name: goalStep.name,
-                        ...(goalStep.arguments ? { arguments: { ...goalStep.arguments } } : {}),
-                        status: 'pending',
-                        attempts: 0,
-                    })),
-                    comparison: request.comparison,
-                    target: request.comparison.target,
-                    actual: null,
-                    completed_steps: [],
-                    source_result: null,
-                });
+                if (!this.isCurrent(generation, controller)) {
+                    return this.cancelledResult(request, 'goal_replaced');
+                }
+                this.goalAttempt += 1;
+                this.publish(this.createRunningSnapshot(request));
                 index = -1;
             }
         }
@@ -517,19 +613,27 @@ class GoalRunner {
         };
         this.publish(invalidFinalSnapshot);
         this.controller = null;
-        return toRunResult(invalidFinalSnapshot);
+        return toRunResult(invalidFinalSnapshot, this.taskResults);
     }
 
-    clear(): void {
-        this.cancelActive('goal_cleared');
-        this.generation += 1;
-        this.snapshot = null;
-        this.onChange(null);
-    }
-
-    dispose(): void {
-        this.cancelActive('goal_disposed');
-        this.snapshot = null;
+    private createRunningSnapshot(request: GoalRequest): GoalSnapshot {
+        return {
+            goal: request.goal,
+            status: 'running',
+            steps: request.steps.map((step, index) => ({
+                id: step.id,
+                title: step.title,
+                name: step.name,
+                ...(step.arguments ? { arguments: { ...step.arguments } } : {}),
+                status: 'pending',
+                attempts: this.stepAttempts[index] ?? 0,
+            })),
+            comparison: request.comparison,
+            target: request.comparison.target,
+            actual: null,
+            completed_steps: [],
+            source_result: null,
+        };
     }
 
     private publish(snapshot: GoalSnapshot): void {
@@ -572,33 +676,99 @@ class GoalRunner {
             actual: null,
             completed_steps: this.snapshot?.completed_steps ?? [],
             source_result: null,
+            task_results: cloneTaskResults(this.taskResults),
             error,
+        };
+    }
+
+    private retryUnavailableResult(): GoalRunResult {
+        return {
+            goal: this.snapshot?.goal ?? 'Goal',
+            status: 'error',
+            comparison: this.snapshot?.comparison
+                ? { ...this.snapshot.comparison }
+                : null,
+            target: this.snapshot?.target ?? null,
+            actual: this.snapshot?.actual ?? null,
+            completed_steps: [...(this.snapshot?.completed_steps ?? [])],
+            source_result: this.snapshot?.source_result
+                ? { ...this.snapshot.source_result }
+                : null,
+            task_results: cloneTaskResults(this.taskResults),
+            error: 'goal_task_retry_unavailable',
         };
     }
 
     private async executeStep(
         step: GoalStep,
         signal: AbortSignal,
-    ): Promise<GoalToolOutputEnvelope> {
+    ): Promise<StepExecutionResult> {
+        let deliveredEnvelope: GoalToolOutputEnvelope | null = null;
+        let waiter!: FinalWaiter;
         const finalPromise = new Promise<GoalToolOutputEnvelope>((resolve, reject) => {
-            this.finalWaiter = { toolName: step.name, runId: null, resolve, reject };
+            waiter = {
+                toolName: step.name,
+                runId: null,
+                resolve: (envelope) => {
+                    deliveredEnvelope = envelope;
+                    resolve(envelope);
+                },
+                reject,
+            };
+            this.finalWaiter = waiter;
         });
         void finalPromise.catch(() => undefined);
         const abortFinalWait = () => {
-            const waiter = this.finalWaiter;
-            if (!waiter) return;
+            if (this.finalWaiter !== waiter) return;
             this.finalWaiter = null;
             waiter.reject(new Error('goal_cancelled'));
         };
         signal.addEventListener('abort', abortFinalWait, { once: true });
 
         try {
-            await step.taskStart(signal);
-            return await finalPromise;
+            const returned = await step.taskStart(signal);
+            if (deliveredEnvelope) {
+                return this.executionFromEnvelope(step, deliveredEnvelope);
+            }
+            if (isGoalToolOutputEnvelope(returned)) {
+                if (returned.tool_name !== step.name) {
+                    return {
+                        value: normalizeTaskValue(returned.output),
+                        error: 'goal_step_output_tool_mismatch',
+                    };
+                }
+                if (returned.final) return this.executionFromEnvelope(step, returned);
+                waiter.runId = returned.run_id;
+                return this.executionFromEnvelope(step, await finalPromise);
+            }
+            if (returned === undefined && waiter.runId) {
+                return this.executionFromEnvelope(step, await finalPromise);
+            }
+
+            return { value: normalizeTaskValue(returned) };
+        } catch (error) {
+            return { value: null, error: normalizeTaskError(error) };
         } finally {
             signal.removeEventListener('abort', abortFinalWait);
-            if (this.finalWaiter?.toolName === step.name) this.finalWaiter = null;
+            if (this.finalWaiter === waiter) this.finalWaiter = null;
         }
+    }
+
+    private executionFromEnvelope(
+        step: GoalStep,
+        envelope: GoalToolOutputEnvelope,
+    ): StepExecutionResult {
+        const sourceResult: GoalSourceResultMetadata = {
+            step_id: step.id,
+            tool_name: envelope.tool_name,
+            run_id: envelope.run_id,
+            status: envelope.status,
+            final: true,
+        };
+        return {
+            value: normalizeTaskValue(envelope.output),
+            source_result: sourceResult,
+        };
     }
 
     private retryDelay(signal: AbortSignal): Promise<void> {
@@ -675,6 +845,7 @@ const Goal: React.FC<GoalProps> = ({
     const handle = useMemo<GoalHandle>(() => ({
         getComponentName: () => name,
         createGoal: (input) => runnerRef.current!.create(input),
+        retryFailedTask: () => runnerRef.current!.retryFailedTask(),
         acceptToolOutput: (envelope) => runnerRef.current!.acceptToolOutput(envelope),
         getSnapshot: () => runnerRef.current!.getSnapshot(),
         clear: () => runnerRef.current!.clear(),

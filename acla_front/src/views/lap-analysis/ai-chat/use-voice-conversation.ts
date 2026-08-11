@@ -16,7 +16,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import apiService from 'services/api.service';
 import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
-import { getToolEnvelopeError, getToolEnvelopeUiOutput, isToolOutputEnvelope } from './ai-tool-base';
+import {
+    AiToolError,
+    type AiToolExecutionOutput,
+    getToolEnvelopeUiOutput,
+    isToolOutputEnvelope,
+    normalizeAiToolError,
+} from './ai-tool-base';
 import { getAiToolResult } from './ai-tool-result-boundary';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
@@ -42,7 +48,7 @@ export interface ToolHandlerContext {
 export type FrontendToolHandler = (
     args: Record<string, unknown>,
     ctx: ToolHandlerContext,
-) => Promise<unknown> | unknown;
+) => Promise<AiToolExecutionOutput> | AiToolExecutionOutput;
 
 export type AiSessionContext = Record<string, unknown>;
 export type ConversationRole = 'main' | 'agent';
@@ -62,7 +68,8 @@ type VoiceEventPayload =
         arguments?: Record<string, unknown>;
         result?: unknown;
         ok?: boolean;
-        error?: string | null;
+        code?: string | null;
+        message?: string | null;
     };
 
 export type VoiceEvent = VoiceEventPayload & { clientSessionId?: string };
@@ -142,13 +149,20 @@ export interface SubscribedToolCall {
     arguments?: Record<string, unknown>;
 }
 
-export interface ToolSubscriptionResult {
+interface ToolSubscriptionResultBase {
     id: string;
     name: string;
-    ok: boolean;
-    result?: unknown;
-    error?: string;
 }
+
+export type ToolSubscriptionResult = ToolSubscriptionResultBase & (
+    | { ok: true; result: AiToolExecutionOutput }
+    | {
+        ok: false;
+        code: string;
+        message: string;
+        details?: Record<string, unknown>;
+    }
+);
 
 type ToolFrameSender = (payload: object) => void;
 type ToolEventEmitter = (event: VoiceEvent) => void;
@@ -227,6 +241,13 @@ const buildToolResultFrame = (
     };
 };
 
+const buildFailedToolResult = (error: AiToolError) => ({
+    ok: false as const,
+    code: error.code,
+    message: error.message,
+    ...(error.details ? { details: error.details } : {}),
+});
+
 const getAiToolLogSummary = (payload: object): string => {
     const frame = payload as Record<string, unknown>;
     const parts = [frame.type, frame.name, frame.id]
@@ -260,9 +281,13 @@ export const executeSubscribedFrontendTool = async ({
         : {};
 
     if (!name) {
-        const error = 'tool call missing name';
-        sendText(buildToolResultFrame(id, name, { ok: false, error }));
-        return { id, name, ok: false, error };
+        const error = new AiToolError(
+            'invalid_tool_call',
+            'Tool call is missing a name.',
+        );
+        const failure = buildFailedToolResult(error);
+        sendText(buildToolResultFrame(id, name, failure));
+        return { id, name, ...failure };
     }
 
     emitEvent?.({
@@ -283,13 +308,15 @@ export const executeSubscribedFrontendTool = async ({
 
     try {
         if (!handler) {
-            throw new Error(`no handler for '${name}'`);
+            throw new AiToolError(
+                'tool_not_registered',
+                `No handler is registered for '${name}'.`,
+                { details: { tool_name: name } },
+            );
         }
 
         const result = await handler(args, scopedContext);
-        const envelopeError = isToolOutputEnvelope(result)
-            ? getToolEnvelopeError(result)
-            : null;
+        if (result instanceof Error) throw result;
         sendText(buildToolResultFrame(id, name, getToolResultForAi(result)));
         const envelopeComplete = isToolOutputEnvelope(result) ? result.final : true;
         emitEvent?.({
@@ -299,15 +326,13 @@ export const executeSubscribedFrontendTool = async ({
             title,
             status: envelopeComplete ? 'completed' : 'started',
             result: getToolResultForUi(result),
-            ok: !envelopeError,
-            error: envelopeError,
+            ok: true,
         });
-        return envelopeError
-            ? { id, name, ok: false, result, error: envelopeError }
-            : { id, name, ok: true, result };
+        return { id, name, ok: true, result };
     } catch (err) {
-        const error = (err as Error)?.message || String(err);
-        sendText(buildToolResultFrame(id, name, { ok: false, error }));
+        const error = normalizeAiToolError(err);
+        const failure = buildFailedToolResult(error);
+        sendText(buildToolResultFrame(id, name, failure));
         emitEvent?.({
             kind: 'tool_call',
             runId: id,
@@ -315,9 +340,10 @@ export const executeSubscribedFrontendTool = async ({
             title,
             status: 'completed',
             ok: false,
-            error,
+            code: error.code,
+            message: error.message,
         });
-        return { id, name, ok: false, error };
+        return { id, name, ...failure };
     }
 };
 
