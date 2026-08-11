@@ -140,10 +140,7 @@ describe('Goal request and comparison helpers', () => {
 });
 
 describe('Goal workflow runner', () => {
-    it.each([
-        [0, 'achieved'],
-        [3, 'missed'],
-    ] as const)('executes ordered steps and maps mistake count %s to %s', async (actual, status) => {
+    it('executes ordered steps and maps a matching mistake count to achieved', async () => {
         const calls: string[] = [];
         const getHandle = renderGoal();
         let run = 0;
@@ -154,7 +151,7 @@ describe('Goal workflow runner', () => {
             getHandle().acceptToolOutput(envelope(
                 step.name,
                 `run-${run}`,
-                step.id === 'mistake_count' ? { mistake_count: actual, page_id: 'newest' } : {},
+                step.id === 'mistake_count' ? { mistake_count: 0, page_id: 'newest' } : {},
             ));
         });
         let result: Awaited<ReturnType<GoalHandle['createGoal']>> | undefined;
@@ -166,9 +163,9 @@ describe('Goal workflow runner', () => {
             'get_live_analysis_mistake_count',
         ]);
         expect(result).toMatchObject({
-            status,
+            status: 'achieved',
             target: 0,
-            actual,
+            actual: 0,
             completed_steps: ['collect', 'analyze', 'mistake_count'],
             source_result: {
                 step_id: 'mistake_count',
@@ -177,7 +174,73 @@ describe('Goal workflow runner', () => {
                 final: true,
             },
         });
-        expect(screen.getByText(new RegExp(`GOAL · ${status}`, 'i'))).toBeInTheDocument();
+        expect(screen.getByText(/GOAL · achieved/i)).toBeInTheDocument();
+    });
+
+    it('restarts from the first step when the first goal attempt is missed', async () => {
+        jest.useFakeTimers();
+        const calls: string[] = [];
+        const getHandle = renderGoal();
+        let comparisonAttempt = 0;
+        const request = withTaskStarts(goalRequest(), (step) => async () => {
+            calls.push(step.id);
+            if (step.id === 'mistake_count') comparisonAttempt += 1;
+            getHandle().acceptToolOutput(envelope(
+                step.name,
+                `${step.id}-run-${comparisonAttempt}`,
+                step.id === 'mistake_count'
+                    ? { mistake_count: comparisonAttempt === 1 ? 3 : 0 }
+                    : {},
+            ));
+        });
+        let pending!: ReturnType<GoalHandle['createGoal']>;
+        await act(async () => {
+            pending = getHandle().createGoal(request);
+            await Promise.resolve();
+        });
+
+        expect(calls).toEqual(['collect', 'analyze', 'mistake_count']);
+        expect(getHandle().getSnapshot()).toMatchObject({ status: 'missed', actual: 3 });
+
+        let result: Awaited<typeof pending> | undefined;
+        await act(async () => {
+            jest.advanceTimersByTime(1000);
+            result = await pending;
+        });
+
+        expect(calls).toEqual([
+            'collect', 'analyze', 'mistake_count',
+            'collect', 'analyze', 'mistake_count',
+        ]);
+        expect(result).toMatchObject({ status: 'achieved', actual: 0 });
+        jest.useRealTimers();
+    });
+
+    it('returns missed after the full-workflow retry also misses', async () => {
+        jest.useFakeTimers();
+        const calls: string[] = [];
+        const getHandle = renderGoal();
+        const request = withTaskStarts(goalRequest(), (step) => async () => {
+            calls.push(step.id);
+            getHandle().acceptToolOutput(envelope(
+                step.name,
+                `${step.id}-run-${calls.length}`,
+                step.id === 'mistake_count' ? { mistake_count: 2 } : {},
+            ));
+        });
+        let pending!: ReturnType<GoalHandle['createGoal']>;
+        await act(async () => {
+            pending = getHandle().createGoal(request);
+            await Promise.resolve();
+        });
+        await act(async () => { jest.advanceTimersByTime(1000); });
+
+        await expect(pending).resolves.toMatchObject({ status: 'missed', actual: 2 });
+        expect(calls).toEqual([
+            'collect', 'analyze', 'mistake_count',
+            'collect', 'analyze', 'mistake_count',
+        ]);
+        jest.useRealTimers();
     });
 
     it('waits for a matching final envelope before advancing', async () => {

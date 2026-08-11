@@ -282,6 +282,33 @@ def test_resumed_context_has_fresh_root_before_stored_history(monkeypatch):
     assert history_length == len(history)
 
 
+def test_startup_prompt_keeps_neutral_procedure_plan_guidance():
+    prompt = pipecat_pipeline._build_system_prompt({"session_mode": "front_desk"})
+
+    assert "Procedure plan mode:" in prompt
+    assert (
+        "The application owns visible plan state and subscribed request execution."
+        in prompt
+    )
+    assert "Tool calls are fire-and-forget." in prompt
+    assert "advance_plan_step" not in prompt
+
+
+def test_active_plan_prompt_does_not_direct_result_triggered_advancement():
+    prompt = pipecat_pipeline._format_procedure_plan_for_prompt({
+        "goal": "Review braking",
+        "current_request": 0,
+        "active_request": {"type": "tool_call", "name": "analyze_braking"},
+        "requests": [{"type": "tool_call", "name": "analyze_braking"}],
+    })
+
+    assert "Procedure plan mode is active." in prompt
+    assert '"goal": "Review braking"' in prompt
+    assert "the application owns visible plan state" in prompt
+    assert "Tool calls are fire-and-forget" in prompt
+    assert "advance_plan_step" not in prompt
+
+
 @pytest.mark.asyncio
 async def test_tool_relay_routes_by_chat_session_after_rebinding():
     relay = ToolRelay()

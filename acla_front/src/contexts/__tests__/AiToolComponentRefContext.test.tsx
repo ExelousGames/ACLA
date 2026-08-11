@@ -3,6 +3,7 @@ import { act, render } from '@testing-library/react';
 import {
     AiToolComponentRefError,
     AiToolComponentRefProvider,
+    awaitNamedComponentHandle,
     createAiToolComponentRefDirectory,
     useAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
@@ -81,6 +82,31 @@ const Observer = ({ onDirectory }: { onDirectory: (directory: ReturnType<typeof 
 };
 
 describe('AiToolComponentRefProvider', () => {
+    it('returns the current handle when awaiting a first Strict Mode mount replay', async () => {
+        let directory: ReturnType<typeof useAiToolComponentRefDirectory> | null = null;
+        const view = render(
+            <StrictMode>
+                <AiToolComponentRefProvider>
+                    <Observer onDirectory={(value) => { directory = value; }} />
+                </AiToolComponentRefProvider>
+            </StrictMode>,
+        );
+        const awaiting = awaitNamedComponentHandle<any>(directory!, 'strict-mount');
+
+        view.rerender(
+            <StrictMode>
+                <AiToolComponentRefProvider>
+                    <Registered name="strict-mount" value={7} />
+                    <Observer onDirectory={(value) => { directory = value; }} />
+                </AiToolComponentRefProvider>
+            </StrictMode>,
+        );
+
+        const currentHandle = directory!.findComponentRef('strict-mount')!.current;
+        await expect(awaiting).resolves.toBe(currentHandle);
+        expect((currentHandle as any).getValue()).toBe(7);
+    });
+
     it('does not enter an update loop when a component refreshes its handle on render', () => {
         expect(() => render(
             <AiToolComponentRefProvider>

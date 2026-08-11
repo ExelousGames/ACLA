@@ -283,8 +283,8 @@ export const awaitNamedComponentHandle = async <THandle extends NamedAiToolCompo
     name: string,
     timeoutMs = AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
 ): Promise<THandle> => {
-    const ref = await directory.awaitComponentRef<THandle>(name, timeoutMs);
-    const handle = ref.current;
+    await directory.awaitComponentRef<THandle>(name, timeoutMs);
+    const handle = directory.findComponentRef<THandle>(name)?.current;
     if (!handle) {
         throw new AiToolComponentRefError(
             'component_ref_unavailable',

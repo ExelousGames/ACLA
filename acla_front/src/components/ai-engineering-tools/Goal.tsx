@@ -123,6 +123,7 @@ type FinalWaiter = {
 };
 
 const RETRY_DELAY_MS = 1000;
+const MAX_GOAL_ATTEMPTS = 2;
 const UNSAFE_RESULT_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 const RESULT_PATH_SEGMENT_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*|0|[1-9][0-9]*)$/;
 
@@ -377,6 +378,7 @@ class GoalRunner {
             source_result: null,
         });
 
+        let goalAttempt = 1;
         for (let index = 0; index < request.steps.length; index += 1) {
             const step = request.steps[index];
             let finalEnvelope: GoalToolOutputEnvelope | null = null;
@@ -457,6 +459,11 @@ class GoalRunner {
                     finalEnvelope.output,
                     request.comparison.result_path,
                 ) as number;
+                const achieved = compareGoalValues(
+                    actual,
+                    request.comparison.operator,
+                    request.comparison.target,
+                );
                 const sourceResult: GoalSourceResultMetadata = {
                     step_id: step.id,
                     tool_name: finalEnvelope.tool_name,
@@ -466,16 +473,40 @@ class GoalRunner {
                 };
                 const finalSnapshot: GoalSnapshot = {
                     ...this.snapshot!,
-                    status: compareGoalValues(actual, request.comparison.operator, request.comparison.target)
-                        ? 'achieved'
-                        : 'missed',
+                    status: achieved ? 'achieved' : 'missed',
                     actual,
                     completed_steps: completed,
                     source_result: sourceResult,
                 };
                 this.publish(finalSnapshot);
-                this.controller = null;
-                return toRunResult(finalSnapshot);
+                if (achieved || goalAttempt === MAX_GOAL_ATTEMPTS) {
+                    this.controller = null;
+                    return toRunResult(finalSnapshot);
+                }
+                try {
+                    await this.retryDelay(controller.signal);
+                } catch {
+                    return this.cancelledResult(request, 'goal_replaced');
+                }
+                goalAttempt += 1;
+                this.publish({
+                    goal: request.goal,
+                    status: 'running',
+                    steps: request.steps.map((goalStep) => ({
+                        id: goalStep.id,
+                        title: goalStep.title,
+                        name: goalStep.name,
+                        ...(goalStep.arguments ? { arguments: { ...goalStep.arguments } } : {}),
+                        status: 'pending',
+                        attempts: 0,
+                    })),
+                    comparison: request.comparison,
+                    target: request.comparison.target,
+                    actual: null,
+                    completed_steps: [],
+                    source_result: null,
+                });
+                index = -1;
             }
         }
 

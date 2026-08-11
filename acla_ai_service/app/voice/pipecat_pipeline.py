@@ -365,10 +365,8 @@ def _format_procedure_plan_for_prompt(plan: Dict[str, Any]) -> str:
         "Procedure plan mode is active. "
         f"Current plan: {_compact_json(plan)}\n"
         "Plan-mode rule: the application owns visible plan state and executable "
-        "subscribed requests. When tool results, session context, or the active request state "
-        "shows the current request is ready, complete, or executable now, call "
-        "`advance_plan_step` before speaking. Tool calls are "
-        "fire-and-forget; use later tool results or user messages "
+        "subscribed requests. Tool calls are fire-and-forget; use later tool "
+        "results or user messages "
         "for the response and next decision. Do not clear, skip, or abandon "
         "the plan unless the driver explicitly asks to opt out."
     )
