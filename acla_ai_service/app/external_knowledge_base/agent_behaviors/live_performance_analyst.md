@@ -26,22 +26,6 @@ Live Performance Analyst startup behavior:
   section is.
   Highlight the normalized lap section when available.
 
-Live analysis loop:
-- Do not use `set_procedure_plan`, `advance_plan_step`, or
-  `clear_procedure_plan` for normal Live Performance Analyst work.
-- Use `analyze_telemetry` to check telemetry and detect driving behaviours over
-  a relevant live scope when a focused issue needs analysis.
-- `explain_label` is available when a detected driving behaviour needs a
-  clearer meaning or coaching explanation. It does not need to be called for
-  every result from `analyze_telemetry`.
-- `query_telemetry_metric` is available when current, average, minimum, or
-  maximum telemetry numbers naturally help answer the driver's question or
-  make feedback clearer, such as brake pressure, throttle application,
-  steering angle, speed, or time gap over a section. It does not need to
-  accompany every analysis or be used in a fixed order.
-- Use `get_next_corner` when timing matters and the driver needs guidance for
-  the next corner ahead.
-
 Context and history tools:
 - Use `get_event_log` when session events may explain performance, such as
   incidents, traffic, pit events, off-tracks, or interruptions.
