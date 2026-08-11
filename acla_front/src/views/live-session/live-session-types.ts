@@ -3,10 +3,6 @@ import type { DesktopGame } from 'contexts/DesktopGameContext';
 import { RecordingEvent, RecordingState } from 'views/lap-analysis/recording-state';
 import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import type {
-    LiveRangeTodoListHandle,
-    LiveRangeTodoListSnapshot,
-} from 'components/ai-engineering-tools';
-import type {
     AppendLiveSessionAnalysisResultPageInput,
     AppendLiveSessionAnalysisResultPageResult,
     LiveSessionAnalysisResultPage,
@@ -58,7 +54,7 @@ export interface LocalTelemetryFileValidation {
 export interface LiveVisualizationInstance {
     name: string;
     id: string;
-    type: 'telemetry-overview' | 'event-log' | 'analysis-results' | 'live-range-todo-list' | 'baseline-collection';
+    type: 'telemetry-overview' | 'event-log' | 'analysis-results' | 'baseline-collection';
     height: number;
     data?: unknown;
     config?: Record<string, unknown>;
@@ -81,8 +77,6 @@ export interface LiveSessionRuntime {
     restorationError: string | null;
     recordingFileValidation: LocalTelemetryFileValidation | null;
     sessionIntelligence: SessionIntelligence;
-    liveRangeTodoListHandle: LiveRangeTodoListHandle | null;
-    liveRangeTodoListSnapshot: LiveRangeTodoListSnapshot | null;
     recorderControl: LiveSessionRecorderControl | null;
     analysisResultPages: LiveSessionAnalysisResultPage[];
     activeAnalysisResultPageId: string | null;
@@ -99,8 +93,6 @@ export interface LiveSessionRuntime {
     finalizeRecordingWrites: () => Promise<void>;
     clearRecordingSession: () => void;
     clearPersistedDraft: () => void;
-    registerLiveRangeTodoListHandle: (handle: LiveRangeTodoListHandle | null) => void;
-    publishLiveRangeTodoListSnapshot: (snapshot: LiveRangeTodoListSnapshot | null) => void;
     registerRecorderControl: (control: LiveSessionRecorderControl | null) => void;
     appendAnalysisResultPage: (
         input: AppendLiveSessionAnalysisResultPageInput,

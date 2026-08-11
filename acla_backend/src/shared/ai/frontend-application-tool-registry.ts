@@ -402,6 +402,51 @@ export const FRONTEND_APPLICATION_TOOLS = [
         required: [],
     },
     {
+        name: 'get_live_analysis_mistake_count',
+        description: 'Count practice and racing mistake result elements in the newest stored live-analysis page without rerunning telemetry analysis.',
+        properties: {},
+        required: [],
+    },
+    {
+        name: 'create_goal',
+        description: 'Create one visible goal and execute its ordered frontend tool calls sequentially. Wait for the final achieved, missed, or error result before giving follow-up coaching.',
+        properties: {
+            goal: {
+                type: 'string',
+                description: 'Short title displayed on the goal card.',
+            },
+            steps: {
+                type: 'array',
+                minItems: 1,
+                description: 'Ordered frontend tool calls. Every id must be unique and create_goal cannot be nested.',
+                items: {
+                    type: 'object',
+                    properties: {
+                        id: { type: 'string', description: 'Unique stable step id.' },
+                        title: { type: 'string', description: 'Short step label displayed to the user.' },
+                        name: { type: 'string', description: 'Available frontend tool to execute.' },
+                        arguments: { type: 'object', description: 'Arguments passed unchanged to the nested tool.' },
+                    },
+                    required: ['id', 'title', 'name'],
+                },
+            },
+            comparison: {
+                type: 'object',
+                description: 'Numeric comparison evaluated from the final step AI-facing output.',
+                properties: {
+                    step_id: { type: 'string', description: 'Id of the final ordered step.' },
+                    result_path: { type: 'string', description: 'Safe dot-separated path in the final step AI-facing output.' },
+                    operator: { type: 'string', enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
+                    target: { type: 'number' },
+                    metric_label: { type: 'string' },
+                    unit: { type: 'string' },
+                },
+                required: ['step_id', 'result_path', 'operator', 'target', 'metric_label'],
+            },
+        },
+        required: ['goal', 'steps', 'comparison'],
+    },
+    {
         name: 'advance_plan_step',
         description: 'Report that the current visible procedure plan request is complete so the UI can move to the next request.',
         properties: {
@@ -665,6 +710,8 @@ const FRONTEND_APPLICATION_TOOL_TITLES: Record<FrontendApplicationToolName, stri
     collect_live_baseline: 'Collecting baseline lap',
     restart_live_baseline: 'Restarting baseline lap',
     analyze_live_recorded_analysis: 'Analyzing baseline lap',
+    get_live_analysis_mistake_count: 'Counting live analysis mistakes',
+    create_goal: 'Creating goal',
     advance_plan_step: 'Advancing plan',
     clear_procedure_plan: 'Clearing procedure plan',
     set_procedure_plan: 'Setting procedure plan',
@@ -716,6 +763,11 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
     'classify_live_section',
 ];
 
+const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: FrontendApplicationToolName[] = [
+    'get_live_analysis_mistake_count',
+    'create_goal',
+];
+
 const USER_SUMMARY_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
     'get_user_summary_map_level',
     'get_available_user_summary_maps',
@@ -738,12 +790,16 @@ const isFrontendApplicationSessionMode = (
 const getAllowedToolNames = (
     sessionMode: FrontendApplicationSessionMode,
     conversationRole?: unknown,
+    agentMode?: unknown,
 ) => {
     if (conversationRole === 'agent') {
         return new Set<FrontendApplicationToolName>([
             ...COMMON_TOOL_NAMES,
             ...LIVE_AGENT_SESSION_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,
+            ...(sessionMode === 'live' && agentMode === 'live_performance_analyst'
+                ? LIVE_PERFORMANCE_ANALYST_TOOL_NAMES
+                : []),
         ]);
     }
 
@@ -785,9 +841,37 @@ export const getFrontendApplicationToolsForSessionContext = (
     const allowedToolNames = getAllowedToolNames(
         sessionMode,
         sessionContext?.conversation_role,
+        sessionContext?.agent_mode,
     );
 
-    return FRONTEND_APPLICATION_TOOLS.filter((tool) => allowedToolNames.has(tool.name));
+    const tools = FRONTEND_APPLICATION_TOOLS.filter((tool) => allowedToolNames.has(tool.name));
+    const nestedToolNames = tools
+        .map((tool) => tool.name)
+        .filter((name) => name !== 'create_goal');
+
+    return tools.map((tool) => {
+        if (tool.name !== 'create_goal') return tool;
+        const steps = tool.properties.steps;
+        return {
+            ...tool,
+            properties: {
+                ...tool.properties,
+                steps: {
+                    ...steps,
+                    items: {
+                        ...steps.items,
+                        properties: {
+                            ...steps.items.properties,
+                            name: {
+                                ...steps.items.properties.name,
+                                enum: nestedToolNames,
+                            },
+                        },
+                    },
+                },
+            },
+        };
+    });
 };
 
 const getDescriptionFromProperty = (property: unknown): string => {

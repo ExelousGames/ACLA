@@ -18,6 +18,7 @@ export const AI_TOOL_COMPONENT_NAMES = Object.freeze({
     LIVE_VISUALIZATION_MANAGER: 'live-visualization-manager',
     RECORDED_VISUALIZATION_MANAGER: 'recorded-visualization-manager',
     LIVE_RANGE_TODO_LIST: 'live-range-todo-list',
+    GOAL: 'goal',
     BASELINE_COLLECTION: 'baseline-collection',
 });
 

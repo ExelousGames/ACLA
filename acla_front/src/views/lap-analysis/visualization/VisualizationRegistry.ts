@@ -4,7 +4,6 @@ import MapVisualization from './charts/MapVisualization';
 import ImitationGuidanceChart from './charts/ImitationGuidanceChart';
 import EventLogChart from './charts/EventLogChart';
 import AnalysisResultsChart from './charts/AnalysisResultsChart';
-import { LiveRangeTodoList } from 'components/ai-engineering-tools';
 import {
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,
@@ -188,16 +187,6 @@ export const initializeVisualizations = () => {
         preferredAspectRatio: 4 / 3,
     });
 
-    visualizationRegistry.register('live-range-todo-list', {
-        component: LiveRangeTodoList,
-        name: 'Live Range To-do List',
-        description: 'Schedules display items and registered actions at predicted normalized track positions. The panel must remain open.',
-        availableInRecordedWorkspace: false,
-        defaultConfig: {},
-        minWidth: 320,
-        minHeight: 260,
-        preferredAspectRatio: 4 / 3,
-    });
 };
 
 // Initialize visualizations when this module is imported

@@ -223,6 +223,7 @@ html, body, #root, .App {
 @keyframes overlay-blink { 50% { opacity: 0; } }
 
 .overlay-shell .ai-chat__baseline-progress--pill,
+.overlay-shell .ai-chat__goal--pill,
 .overlay-shell .ai-chat__plan--pill,
 .overlay-shell .ai-chat__range-todo--pill,
 .overlay-shell .ai-chat__map-card--pill,
@@ -242,6 +243,7 @@ html, body, #root, .App {
 }
 
 .overlay-shell .ai-chat__baseline-progress--pill { padding: 8px 10px; }
+.overlay-shell .ai-chat__goal--pill,
 .overlay-shell .ai-chat__plan--pill,
 .overlay-shell .ai-chat__range-todo--pill { padding: 9px 10px; }
 .overlay-shell .ai-chat__plan--pill .ai-chat__plan-goal,

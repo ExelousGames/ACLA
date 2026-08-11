@@ -121,7 +121,7 @@ describe('live range to-do AI adapter', () => {
         expect(handle.get).toHaveBeenCalled();
     });
 
-    it('returns the panel unavailable error while the queue is unmounted', () => {
+    it('returns the runtime unavailable error while the queue is unmounted', () => {
         const adapter = createLiveRangeTodoAiAdapter(null, () => jest.fn());
 
         [
@@ -133,6 +133,7 @@ describe('live range to-do AI adapter', () => {
                 status: 'error',
                 error: 'live_range_todo_list_unavailable',
                 todo_list: null,
+                message: 'The AI chat live range to-do runtime is unavailable.',
             });
         });
     });

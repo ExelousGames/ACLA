@@ -55,6 +55,7 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
         advanceProcedurePlanStep: jest.fn(() => ({ status: 'ready' })), getProcedurePlan: jest.fn(() => null),
         clearProcedurePlan: jest.fn(), setProcedurePlan: jest.fn(),
         selectTaskStartFunction: jest.fn(() => jest.fn()),
+        selectGoalTaskStartFunction: jest.fn(() => jest.fn()),
         setAgentTagActive: jest.fn(),
         getOpportunityTelemetryRows: jest.fn(() => rows), getOpportunityAgentState: jest.fn(() => ({})),
         getLivePerformanceAnalystState: jest.fn(() => ({})), getLabelName: jest.fn((id: string) => id),
@@ -76,6 +77,7 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
         getLiveSectionHistory: jest.fn(() => [classification]),
         getLiveSectionTelemetry: jest.fn(() => ({ status: 'ready', section: { id: 'turn-1', name: 'Turn 1' }, lap: 3, startSampleIdx: 0, endSampleIdx: 1, rows })),
         recordLiveSectionClassification: jest.fn(() => classification),
+        getLatestAnalysisResultPage: jest.fn<any, []>(() => null),
     };
     const recordedState = { sessionId: 'session-1', status: 'ready', result: analysisResult };
     const recorded = {
@@ -95,6 +97,20 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
         addEvent: jest.fn(), replaceEvents: jest.fn(() => ({ status: 'ready', todo_list: { events: [] } })),
         updateEvents: jest.fn(() => ({ status: 'ready', todo_list: { events: [] } })), removeEvents: jest.fn(),
         resetEvents: jest.fn(), clear: jest.fn(), get: jest.fn(() => ({ status: 'ready', todo_list: { events: [] } })),
+    };
+    const goal = {
+        createGoal: jest.fn(async () => ({
+            goal: 'No mistakes',
+            status: 'achieved',
+            comparison: { step_id: 'count', result_path: 'mistake_count', operator: 'eq', target: 0, metric_label: 'Mistakes' },
+            target: 0,
+            actual: 0,
+            completed_steps: ['collect', 'analyze', 'count'],
+            source_result: { step_id: 'count', tool_name: 'get_live_analysis_mistake_count', run_id: 'nested-3', status: 'complete', final: true },
+        })),
+        acceptToolOutput: jest.fn(),
+        getSnapshot: jest.fn(() => null),
+        clear: jest.fn(),
     };
     const childOwners = new Map<string, symbol>();
     const childHandles = new Map<string, any>();
@@ -156,6 +172,7 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
     reserve(directory, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS, recorded);
     reserve(directory, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY, summary);
     reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todo);
+    reserve(directory, AI_TOOL_COMPONENT_NAMES.GOAL, goal);
     mountChild(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION, 'baseline-collection');
     reserve(directory, mode === 'live' ? AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER : AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER, manager);
 
@@ -164,7 +181,7 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
         opportunityAgentState: { intervalId: null, inFlight: false, lastAlertKey: null, lastAlertAt: 0 },
         startTrackGuide: jest.fn(), setTrackGuideEnabled: jest.fn(), getOpportunityTelemetryRows: jest.fn(() => rows),
     };
-    return { directory, context, chat, live, recorded, summary, todo, manager, instances, childOwners, childHandles, rows, classification };
+    return { directory, context, chat, live, recorded, summary, todo, goal, manager, instances, childOwners, childHandles, rows, classification };
 };
 
 describe('named component-ref AI command registry', () => {
@@ -173,11 +190,141 @@ describe('named component-ref AI command registry', () => {
         handlerContext.sendToolStatus.mockReset();
     });
 
-    it('publishes the unchanged static frontend map with all 41 handlers', () => {
+    it('publishes the static frontend map with all 43 handlers', () => {
         const names = frontendToolDefinitions.map((definition) => definition.name);
-        expect(names).toHaveLength(41);
-        expect(new Set(names).size).toBe(41);
-        expect(names).toEqual(expect.arrayContaining(['analyze_telemetry', 'classify_live_section']));
+        expect(names).toHaveLength(43);
+        expect(new Set(names).size).toBe(43);
+        expect(names).toEqual(expect.arrayContaining([
+            'analyze_telemetry',
+            'classify_live_section',
+            'get_live_analysis_mistake_count',
+            'create_goal',
+        ]));
+    });
+
+    it('routes create_goal only through the Live Performance Analyst goal component', async () => {
+        const h = createHarness('live');
+        const args = {
+            goal: 'No mistakes',
+            steps: [{ id: 'count', title: 'Count', name: 'get_live_analysis_mistake_count' }],
+            comparison: { step_id: 'count', result_path: 'mistake_count', operator: 'eq', target: 0, metric_label: 'Mistakes' },
+        };
+        const analyst = createAiCommandRegistry({
+            ...h.context,
+            conversationRole: 'agent',
+            agentMode: 'live_performance_analyst',
+        });
+        const result = await analyst.create_goal(args, handlerContext);
+
+        expect(h.goal.createGoal).toHaveBeenCalledWith({
+            ...args,
+            steps: [expect.objectContaining({
+                ...args.steps[0],
+                taskStart: expect.any(Function),
+            })],
+        });
+        expect(uiOutput(result)).toMatchObject({ status: 'achieved', target: 0, actual: 0 });
+        expect(result.output).toMatchObject({
+            status: 'achieved',
+            target: 0,
+            actual: 0,
+            completed_steps: ['collect', 'analyze', 'count'],
+            source_result: { tool_name: 'get_live_analysis_mistake_count' },
+        });
+
+        const unavailable = await createAiCommandRegistry({
+            ...h.context,
+            conversationRole: 'agent',
+            agentMode: 'track_guide',
+        }).create_goal(args, handlerContext);
+        expect(uiOutput(unavailable)).toMatchObject({ error: 'create_goal_tool_unavailable' });
+        expect(h.goal.createGoal).toHaveBeenCalledTimes(1);
+    });
+
+    it('routes mistake counting through the newest stored page and preserves counts for AI output', async () => {
+        const h = createHarness('live');
+        h.chat.getLabelName.mockImplementation((id: string) => (
+            id === 'MSP' ? 'Training Error' : id === 'MSR' ? 'Race Error' : id
+        ));
+        h.live.getLatestAnalysisResultPage.mockReturnValue({
+            id: 'latest-page',
+            createdAt: 2,
+            baseline: {
+                id: 'baseline-2', lap: 4, lap_time_ms: 90_000, captured_at: 1,
+                track: 'Monza', car: 'BMW', sample_count: 2,
+            },
+            elements: [
+                { id: 'practice', labels: ['Training Error', 'Training Error'] },
+                { id: 'racing', labels: ['Mistake (Racing)'] },
+                { id: 'combined', labels: ['MSP', 'MSR'] },
+                { id: 'unrelated', labels: ['MSP1', 'Telemetry'] },
+            ],
+        });
+        const registry = createAiCommandRegistry({
+            ...h.context,
+            conversationRole: 'agent',
+            agentMode: 'live_performance_analyst',
+        });
+
+        const result = await registry.get_live_analysis_mistake_count({}, handlerContext);
+
+        expect(uiOutput(result)).toEqual({
+            status: 'ready',
+            mistake_count: 3,
+            practice_mistake_count: 2,
+            racing_mistake_count: 2,
+            page_id: 'latest-page',
+            baseline_lap: 4,
+            track: 'Monza',
+            car: 'BMW',
+        });
+        expect(result.output).toMatchObject({
+            mistake_count: 3,
+            practice_mistake_count: 2,
+            racing_mistake_count: 2,
+            baseline_lap: 4,
+        });
+        expect(mockPost).not.toHaveBeenCalled();
+    });
+
+    it('returns zero for an empty analyzed page and an explicit error when no page is stored', async () => {
+        const h = createHarness('live');
+        const registry = createAiCommandRegistry({
+            ...h.context,
+            conversationRole: 'agent',
+            agentMode: 'live_performance_analyst',
+        });
+        h.live.getLatestAnalysisResultPage.mockReturnValue({
+            id: 'empty-page',
+            createdAt: 2,
+            baseline: {
+                id: 'baseline-2', lap: 4, lap_time_ms: null, captured_at: 1,
+                track: 'Monza', car: 'BMW', sample_count: 2,
+            },
+            elements: [],
+        });
+
+        expect(uiOutput(await registry.get_live_analysis_mistake_count({}, handlerContext)))
+            .toMatchObject({ status: 'ready', mistake_count: 0 });
+        h.live.getLatestAnalysisResultPage.mockReturnValue(null);
+        expect(uiOutput(await registry.get_live_analysis_mistake_count({}, handlerContext)))
+            .toEqual({ status: 'error', error: 'live_analysis_result_unavailable' });
+    });
+
+    it('rejects mistake counting outside the Live Performance Analyst agent', async () => {
+        const h = createHarness('live');
+        const main = createAiCommandRegistry({ ...h.context, conversationRole: 'main' });
+        const trackGuide = createAiCommandRegistry({
+            ...h.context,
+            conversationRole: 'agent',
+            agentMode: 'track_guide',
+        });
+
+        expect(uiOutput(await main.get_live_analysis_mistake_count({}, handlerContext)))
+            .toMatchObject({ error: 'live_performance_analyst_tool_unavailable' });
+        expect(uiOutput(await trackGuide.get_live_analysis_mistake_count({}, handlerContext)))
+            .toMatchObject({ error: 'live_performance_analyst_tool_unavailable' });
+        expect(h.live.getLatestAnalysisResultPage).not.toHaveBeenCalled();
     });
 
     it('opens and drives the baseline visualization while keeping assistant-owned operations on AiChat', async () => {
@@ -200,6 +347,8 @@ describe('named component-ref AI command registry', () => {
             type: 'baseline-collection',
         });
         expect(h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).startCollection).toHaveBeenCalled();
+        expect(h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).startCollection)
+            .toHaveBeenCalledWith('run-1');
         expect(h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).restartCollection).toHaveBeenCalled();
         expect(awaitComponentRef).toHaveBeenCalledWith(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION, 5000);
         expect(h.chat.setProcedurePlan).toHaveBeenCalled();
@@ -330,7 +479,7 @@ describe('named component-ref AI command registry', () => {
         expect(h.summary.searchUserSummaryMapLevel).toHaveBeenCalled();
     });
 
-    it('requires the mounted todo panel and routes set/update/read to its exact ref', async () => {
+    it('requires the AI chat-owned todo runtime and routes set/update/read to its exact ref', async () => {
         const h = createHarness('live');
         const registry = createAiCommandRegistry(h.context);
         await registry.set_live_range_todo_list({ events: [] }, handlerContext);

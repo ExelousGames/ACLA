@@ -94,7 +94,7 @@ export type BaselineAnalysisPayload = {
 };
 
 export interface BaselineCollectionHandle extends NamedAiToolComponentHandle {
-    startCollection(): BaselineCollectionPayload;
+    startCollection(runId?: string): BaselineCollectionPayload;
     restartCollection(): BaselineCollectionPayload;
     requestAnalysis(options?: { limit?: number }): Promise<BaselineAnalysisPayload>;
     getTag(): BaselineCollectionTag | null;
@@ -424,13 +424,6 @@ const BaselineCollection = ({ name }: { name: string }) => {
         return buildBaselineCollectionToolPayload(nextTag, null);
     }, [publishTag]);
 
-    const startCollection = useCallback(() => {
-        if (enabledRef.current) {
-            return buildBaselineCollectionToolPayload(tagRef.current, lapRecordRef.current);
-        }
-        return beginFreshCollection();
-    }, [beginFreshCollection]);
-
     const restartCollection = useCallback(() => beginFreshCollection(), [beginFreshCollection]);
 
     const subscribeToolOutput = useCallback((listener: ToolOutputEmitter) => {
@@ -440,22 +433,32 @@ const BaselineCollection = ({ name }: { name: string }) => {
         };
     }, []);
 
+    const prepareToolOutput = useCallback((runId: string) => {
+        toolOutputControllerRef.current = createToolOutputController(
+            'collect_live_baseline',
+            runId,
+            (envelope, options) => {
+                toolOutputRef.current = envelope;
+                toolOutputListenersRef.current.forEach((listener) => listener(envelope, options));
+            },
+        );
+    }, []);
+
+    const startCollection = useCallback((runId?: string) => {
+        const payload = enabledRef.current
+            ? buildBaselineCollectionToolPayload(tagRef.current, lapRecordRef.current)
+            : beginFreshCollection();
+        if (payload.status !== 'complete' && runId) prepareToolOutput(runId);
+        return payload;
+    }, [beginFreshCollection, prepareToolOutput]);
+
     const emitCompletion = useCallback((record: BaselineLapRecord) => {
         if (completionEmittedRef.current) return;
         completionEmittedRef.current = true;
         const payload = buildBaselineCollectionToolPayload(null, record);
-        if (!toolOutputControllerRef.current) {
-            toolOutputControllerRef.current = createToolOutputController(
-                'collect_live_baseline',
-                createBaselineToolRunId(),
-                (envelope, options) => {
-                    toolOutputRef.current = envelope;
-                    toolOutputListenersRef.current.forEach((listener) => listener(envelope, options));
-                },
-            );
-        }
-        toolOutputControllerRef.current.final(payload, { message: payload.message });
-    }, []);
+        if (!toolOutputControllerRef.current) prepareToolOutput(createBaselineToolRunId());
+        toolOutputControllerRef.current!.final(payload, { message: payload.message });
+    }, [prepareToolOutput]);
 
     const requestAnalysis = useCallback((
         options: { limit?: number } = {},
@@ -711,7 +714,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     <button
                         type="button"
                         className="baseline-collection__start"
-                        onClick={startCollection}
+                        onClick={() => startCollection()}
                     >
                         Start Baseline Collection
                     </button>

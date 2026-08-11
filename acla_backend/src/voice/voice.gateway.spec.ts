@@ -185,6 +185,8 @@ describe('VoiceGateway', () => {
             'collect_live_baseline',
             'restart_live_baseline',
             'analyze_live_recorded_analysis',
+            'get_live_analysis_mistake_count',
+            'create_goal',
             'set_live_range_todo_list',
             'update_live_range_todo_list',
             'get_live_range_todo_list',
@@ -202,6 +204,31 @@ describe('VoiceGateway', () => {
             .toContain('panel must already be open');
         expect(payload.tool_metadata.set_live_range_todo_list.description)
             .toContain('AI adapter attaches its notification callback');
+        expect(payload.tool_metadata.get_live_analysis_mistake_count.title)
+            .toBe('Counting live analysis mistakes');
+        expect(payload.tool_metadata.create_goal.title).toBe('Creating goal');
+        const createGoal = payload.tools.find((tool: { name: string }) => tool.name === 'create_goal');
+        expect(createGoal.properties.steps.items.properties.name.enum).toEqual(
+            toolNames.filter((name: string) => name !== 'create_goal'),
+        );
+    });
+
+    it('keeps live analysis mistake counting out of non-analyst child frames', () => {
+        for (const agentMode of ['track_guide', 'overtake']) {
+            const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
+                type: 'frontend_info',
+                session_context: {
+                    session_mode: 'live',
+                    conversation_role: 'agent',
+                    agent_mode: agentMode,
+                },
+            })), false);
+            const payload = JSON.parse(frame.data.toString());
+            expect(payload.tools.map((tool: { name: string }) => tool.name))
+                .not.toContain('get_live_analysis_mistake_count');
+            expect(payload.tools.map((tool: { name: string }) => tool.name))
+                .not.toContain('create_goal');
+        }
     });
 
     it('advertises query_telemetry_metric field guidance in live frontend_info frames', () => {

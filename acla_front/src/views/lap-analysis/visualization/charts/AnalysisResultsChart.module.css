@@ -208,51 +208,6 @@
     color: var(--lp-white);
 }
 
-.queueAction {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 4px;
-}
-
-.queueButton {
-    min-height: 28px;
-    padding: 4px 10px;
-    border: 1px solid var(--lp-green);
-    border-radius: var(--lp-radius-pill);
-    background: var(--lp-green-dim);
-    color: var(--lp-green);
-    font-family: var(--lp-mono);
-    font-size: 10px;
-    font-weight: 700;
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-.queueButton:hover:not(:disabled),
-.queueButton:focus-visible:not(:disabled) {
-    background: rgba(0, 230, 118, 0.2);
-    outline: none;
-}
-
-.queueButton:disabled {
-    border-color: var(--lp-border-strong);
-    background: rgba(255, 255, 255, 0.035);
-    color: var(--lp-gray);
-    cursor: not-allowed;
-    opacity: 0.72;
-}
-
-.queueStatus {
-    max-width: 260px;
-    color: var(--lp-gray);
-    font-family: var(--lp-mono);
-    font-size: 10px;
-    line-height: 1.35;
-    text-align: right;
-}
-
 @media (max-width: 640px) {
     .controls {
         width: 100%;
@@ -269,16 +224,6 @@
     .filterSelect,
     .sortSelect {
         width: 100%;
-    }
-
-    .queueAction {
-        grid-column: 1 / -1;
-        align-items: stretch;
-    }
-
-    .queueStatus {
-        max-width: none;
-        text-align: left;
     }
 
     .specificMistakeControl,

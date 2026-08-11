@@ -40,8 +40,6 @@ const createRuntime = () => ({
     recordingFileKey: null,
     recordedSampleCount: 0,
     sessionIntelligence: {},
-    liveRangeTodoListHandle: null,
-    liveRangeTodoListSnapshot: null,
     recorderControl: null,
     startLiveSession: jest.fn(),
     endLiveSession: jest.fn(),
@@ -53,8 +51,6 @@ const createRuntime = () => ({
     readRecordedTelemetry: jest.fn(),
     finalizeRecordingWrites: jest.fn(),
     clearRecordingSession: jest.fn(),
-    registerLiveRangeTodoListHandle: jest.fn(),
-    publishLiveRangeTodoListSnapshot: jest.fn(),
     registerRecorderControl: jest.fn(),
 });
 

@@ -8,8 +8,17 @@ import LiveRangeTodoList, {
 } from 'components/ai-engineering-tools/LiveRangeTodoList';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
 import type { LiveSessionRuntime } from '../live-session-types';
+import {
+    AI_TOOL_COMPONENT_NAMES,
+    AiToolComponentRefProvider,
+    resolveNamedComponentHandle,
+    useAiToolComponentRefDirectory,
+    type AiToolComponentRefDirectory,
+} from 'contexts/AiToolComponentRefContext';
 import type {
     LiveRangeTodoEventInput,
+    LiveRangeTodoListHandle,
+    LiveRangeTodoListSnapshot,
     LiveRangeTodoListToolResult,
     TaskStartFunction,
 } from 'components/ai-engineering-tools';
@@ -20,10 +29,27 @@ const telemetry = (lap: number, position: number) => ({
 });
 
 let runtime: LiveSessionRuntime;
-const Harness = () => {
-    runtime = useContext(LiveSessionContext);
-    return <LiveRangeTodoList name="live-range-todo-list" />;
+let directory: AiToolComponentRefDirectory;
+let latestSnapshot: LiveRangeTodoListSnapshot | null = null;
+const handleSnapshotChange = (snapshot: LiveRangeTodoListSnapshot | null) => {
+    latestSnapshot = snapshot;
 };
+const Harness = ({ show = true }: { show?: boolean }) => {
+    runtime = useContext(LiveSessionContext);
+    directory = useAiToolComponentRefDirectory();
+    return show ? (
+        <LiveRangeTodoList
+            name={AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST}
+            onSnapshotChange={handleSnapshotChange}
+            surface="chat"
+        />
+    ) : null;
+};
+
+const getHandle = (): LiveRangeTodoListHandle => resolveNamedComponentHandle<LiveRangeTodoListHandle>(
+    directory,
+    AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+);
 
 const publishTelemetry = (lap: number, position: number, elapsedMs = 100) => {
     act(() => {
@@ -114,30 +140,36 @@ describe('LiveRangeTodoList', () => {
     });
 
     const renderQueue = async () => {
-        const view = render(<LiveSessionProvider><Harness /></LiveSessionProvider>);
-        await waitFor(() => expect(runtime.liveRangeTodoListHandle).not.toBeNull());
+        latestSnapshot = null;
+        const view = render(
+            <AiToolComponentRefProvider>
+                <LiveSessionProvider><Harness /></LiveSessionProvider>
+            </AiToolComponentRefProvider>,
+        );
+        await waitFor(() => expect(directory
+            .findComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)?.current).not.toBeNull());
         return view;
     };
 
     it('supports the typed event operations and keeps task functions out of snapshots', async () => {
         await renderQueue();
-        expect(screen.getByTestId('live-range-todo-list-empty')).toBeInTheDocument();
+        expect(screen.queryByTestId('live-range-todo-list-empty')).not.toBeInTheDocument();
         const firstCallback = jest.fn();
         const secondCallback = jest.fn();
 
-        expect(callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+        expect(callHandle(() => getHandle().replaceEvents([
             makeEvent('brake', firstCallback),
         ])).status).toBe('ready');
-        callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('exit', secondCallback, {
+        callHandle(() => getHandle().addEvent(makeEvent('exit', secondCallback, {
             normalized_position: 0.5,
         })));
-        callHandle(() => runtime.liveRangeTodoListHandle!.updateEvents([{
+        callHandle(() => getHandle().updateEvents([{
             id: 'brake',
             content: { detail: 'Use the 100 board' },
             data: { producer: 'component-a', priority: 1 },
         }]));
 
-        const events = runtime.liveRangeTodoListHandle!.get().todo_list!.events;
+        const events = getHandle().get().todo_list!.events;
         expect(events).toHaveLength(2);
         expect(events[0]).toMatchObject({
             id: 'brake',
@@ -145,11 +177,15 @@ describe('LiveRangeTodoList', () => {
             data: { producer: 'component-a', priority: 1 },
         });
         expect(events[0]).not.toHaveProperty('taskStart');
+        expect(latestSnapshot?.events).toHaveLength(2);
+        expect(screen.getByText('brake')).toBeInTheDocument();
 
-        callHandle(() => runtime.liveRangeTodoListHandle!.resetEvents(['brake']));
-        callHandle(() => runtime.liveRangeTodoListHandle!.removeEvents(['exit']));
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toHaveLength(1);
-        expect(callHandle(() => runtime.liveRangeTodoListHandle!.clear()).status).toBe('empty');
+        callHandle(() => getHandle().resetEvents(['brake']));
+        callHandle(() => getHandle().removeEvents(['exit']));
+        expect(getHandle().get().todo_list!.events).toHaveLength(1);
+        expect(callHandle(() => getHandle().clear()).status).toBe('empty');
+        expect(latestSnapshot).toBeNull();
+        expect(screen.queryByLabelText('Live range to-do list')).not.toBeInTheDocument();
     });
 
     it('rejects function-free events, invalid fields, and duplicate ids atomically', async () => {
@@ -159,15 +195,15 @@ describe('LiveRangeTodoList', () => {
         delete callbackFree.taskStart;
 
         const results = [
-            callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(callbackFree as LiveRangeTodoEventInput)),
-            callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([callbackFree as LiveRangeTodoEventInput])),
-            callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+            callHandle(() => getHandle().addEvent(callbackFree as LiveRangeTodoEventInput)),
+            callHandle(() => getHandle().replaceEvents([callbackFree as LiveRangeTodoEventInput])),
+            callHandle(() => getHandle().replaceEvents([
                 makeEvent('bad-position', callback, { normalized_position: 1.1 }),
             ])),
-            callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+            callHandle(() => getHandle().replaceEvents([
                 makeEvent('bad-lead', callback, { lead_time_seconds: -1 }),
             ])),
-            callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+            callHandle(() => getHandle().replaceEvents([
                 makeEvent('same', callback),
                 makeEvent('same', callback, { normalized_position: 0.5 }),
             ])),
@@ -176,16 +212,16 @@ describe('LiveRangeTodoList', () => {
         results.forEach((result) => {
             expect(result).toMatchObject({ status: 'error', error: 'invalid_live_range_todo_list' });
         });
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toHaveLength(0);
+        expect(getHandle().get().todo_list!.events).toHaveLength(0);
     });
 
     it('lets multiple producers keep distinct task functions and preserves them through updates', async () => {
         await renderQueue();
         const componentACallback = jest.fn();
         const componentBCallback = jest.fn();
-        callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('component-a', componentACallback)));
-        callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('component-b', componentBCallback)));
-        callHandle(() => runtime.liveRangeTodoListHandle!.updateEvents([
+        callHandle(() => getHandle().addEvent(makeEvent('component-a', componentACallback)));
+        callHandle(() => getHandle().addEvent(makeEvent('component-b', componentBCallback)));
+        callHandle(() => getHandle().updateEvents([
             { id: 'component-a', content: { detail: 'Updated by AI-compatible data' } },
             { id: 'component-b', data: { producer: 'component-b', updated: true } },
         ]));
@@ -196,7 +232,7 @@ describe('LiveRangeTodoList', () => {
 
         expect(componentACallback).toHaveBeenCalledTimes(1);
         expect(componentBCallback).toHaveBeenCalledTimes(1);
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toHaveLength(0);
+        expect(getHandle().get().todo_list!.events).toHaveLength(0);
     });
 
     it('waits for the running callback to settle before starting the next due event', async () => {
@@ -206,7 +242,7 @@ describe('LiveRangeTodoList', () => {
             finishFirst = resolve;
         }));
         const secondCallback = jest.fn(() => new Promise<void>(() => undefined));
-        callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+        callHandle(() => getHandle().replaceEvents([
             makeEvent('first', firstCallback),
             makeEvent('second', secondCallback),
         ]));
@@ -216,11 +252,11 @@ describe('LiveRangeTodoList', () => {
 
         expect(firstCallback).toHaveBeenCalledTimes(1);
         expect(secondCallback).not.toHaveBeenCalled();
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toMatchObject([
+        expect(getHandle().get().todo_list!.events).toMatchObject([
             { id: 'first', status: 'running' },
             { id: 'second', status: 'pending' },
         ]);
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events[1]).not.toHaveProperty('due');
+        expect(getHandle().get().todo_list!.events[1]).not.toHaveProperty('due');
 
         await act(async () => {
             finishFirst();
@@ -229,7 +265,7 @@ describe('LiveRangeTodoList', () => {
         });
 
         expect(secondCallback).toHaveBeenCalledTimes(1);
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toMatchObject([
+        expect(getHandle().get().todo_list!.events).toMatchObject([
             { id: 'second', status: 'running' },
         ]);
     });
@@ -241,7 +277,7 @@ describe('LiveRangeTodoList', () => {
             finishFirst = resolve;
         }));
         const secondCallback = jest.fn(() => new Promise<void>(() => undefined));
-        callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+        callHandle(() => getHandle().replaceEvents([
             makeEvent('first', firstCallback),
             makeEvent('second', secondCallback, { normalized_position: 0.5 }),
         ]));
@@ -253,11 +289,11 @@ describe('LiveRangeTodoList', () => {
 
         publishTelemetry(2, 0.6);
         expect(secondCallback).not.toHaveBeenCalled();
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toMatchObject([
+        expect(getHandle().get().todo_list!.events).toMatchObject([
             { id: 'first', status: 'running' },
             { id: 'second', status: 'pending' },
         ]);
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events[1]).not.toHaveProperty('due');
+        expect(getHandle().get().todo_list!.events[1]).not.toHaveProperty('due');
 
         await act(async () => {
             finishFirst();
@@ -275,7 +311,7 @@ describe('LiveRangeTodoList', () => {
             throw new Error('producer failed');
         });
         const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-        callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+        callHandle(() => getHandle().replaceEvents([
             makeEvent('success', success, { data: { instruction: 'notify' } }),
             makeEvent('failure', failure),
         ]));
@@ -286,7 +322,7 @@ describe('LiveRangeTodoList', () => {
 
         expect(success).toHaveBeenCalledWith(expect.any(AbortSignal));
         expect(failure).toHaveBeenCalledTimes(1);
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toHaveLength(0);
+        expect(getHandle().get().todo_list!.events).toHaveLength(0);
         expect(errorSpy).toHaveBeenCalledWith(
             "Live range to-do event 'failure' task failed.",
             expect.objectContaining({ message: 'producer failed' }),
@@ -301,7 +337,7 @@ describe('LiveRangeTodoList', () => {
         });
         const next = jest.fn(() => new Promise<void>(() => undefined));
         const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
-        callHandle(() => runtime.liveRangeTodoListHandle!.replaceEvents([
+        callHandle(() => getHandle().replaceEvents([
             makeEvent('failure', failure),
             makeEvent('next', next),
         ]));
@@ -311,7 +347,7 @@ describe('LiveRangeTodoList', () => {
 
         expect(failure).toHaveBeenCalledTimes(1);
         expect(next).toHaveBeenCalledTimes(1);
-        expect(runtime.liveRangeTodoListHandle!.get().todo_list!.events).toMatchObject([
+        expect(getHandle().get().todo_list!.events).toMatchObject([
             { id: 'next', status: 'running' },
         ]);
         expect(errorSpy).toHaveBeenCalledWith(
@@ -321,11 +357,11 @@ describe('LiveRangeTodoList', () => {
     });
 
     it.each([
-        ['update', (id: string) => runtime.liveRangeTodoListHandle!.updateEvents([{ id, content: { detail: 'changed' } }])],
-        ['remove', (id: string) => runtime.liveRangeTodoListHandle!.removeEvents([id])],
-        ['reset', (id: string) => runtime.liveRangeTodoListHandle!.resetEvents([id])],
-        ['clear', () => runtime.liveRangeTodoListHandle!.clear()],
-        ['replace', () => runtime.liveRangeTodoListHandle!.replaceEvents([makeEvent('replacement')])],
+        ['update', (id: string) => getHandle().updateEvents([{ id, content: { detail: 'changed' } }])],
+        ['remove', (id: string) => getHandle().removeEvents([id])],
+        ['reset', (id: string) => getHandle().resetEvents([id])],
+        ['clear', () => getHandle().clear()],
+        ['replace', () => getHandle().replaceEvents([makeEvent('replacement')])],
     ])('aborts running callbacks during %s', async (_name, mutate) => {
         await renderQueue();
         let capturedSignal: AbortSignal | undefined;
@@ -333,7 +369,7 @@ describe('LiveRangeTodoList', () => {
             capturedSignal = signal;
             return new Promise<void>(() => undefined);
         });
-        callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('pending', pending)));
+        callHandle(() => getHandle().addEvent(makeEvent('pending', pending)));
         publishTelemetry(0, 0.1);
         publishTelemetry(0, 0.3);
         expect(capturedSignal?.aborted).toBe(false);
@@ -346,8 +382,8 @@ describe('LiveRangeTodoList', () => {
         await renderQueue();
         const original = jest.fn();
         const replacement = jest.fn();
-        callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('replace-callback', original)));
-        callHandle(() => runtime.liveRangeTodoListHandle!.updateEvents([{
+        callHandle(() => getHandle().addEvent(makeEvent('replace-callback', original)));
+        callHandle(() => getHandle().updateEvents([{
             id: 'replace-callback',
             taskStart: replacement,
         }]));
@@ -359,17 +395,52 @@ describe('LiveRangeTodoList', () => {
         expect(replacement).toHaveBeenCalledTimes(1);
     });
 
-    it('clears the handle and snapshot and aborts running work when the panel unmounts', async () => {
-        let capturedSignal: AbortSignal | undefined;
-        const Wrapper = ({ show }: { show: boolean }) => {
-            runtime = useContext(LiveSessionContext);
-            return show ? <LiveRangeTodoList name="live-range-todo-list" /> : null;
-        };
-        const view = render(
-            <LiveSessionProvider><Wrapper show /></LiveSessionProvider>,
+    it('survives persistent-parent rerenders and clears tasks plus telemetry history for a new session', async () => {
+        const view = await renderQueue();
+        const staleCrossingCallback = jest.fn();
+        act(() => runtime.startLiveSession('acc'));
+        publishTelemetry(1, 0.8);
+        publishTelemetry(1, 0.9);
+        callHandle(() => getHandle().addEvent(makeEvent('previous-session', jest.fn(), {
+            normalized_position: 0.5,
+        })));
+
+        view.rerender(
+            <AiToolComponentRefProvider>
+                <LiveSessionProvider><Harness /></LiveSessionProvider>
+            </AiToolComponentRefProvider>,
         );
-        await waitFor(() => expect(runtime.liveRangeTodoListHandle).not.toBeNull());
-        callHandle(() => runtime.liveRangeTodoListHandle!.addEvent(makeEvent('pending', (signal) => {
+        expect(getHandle().get().todo_list!.events).toHaveLength(1);
+        expect(latestSnapshot?.events).toHaveLength(1);
+
+        act(() => runtime.endLiveSession());
+        expect(getHandle().get().todo_list!.events).toHaveLength(1);
+        act(() => runtime.startLiveSession('acc'));
+        expect(getHandle().get().todo_list!.events).toHaveLength(0);
+        expect(latestSnapshot).toBeNull();
+
+        callHandle(() => getHandle().addEvent(makeEvent('new-session', staleCrossingCallback, {
+            normalized_position: 0.1,
+        })));
+        publishTelemetry(0, 0.2);
+        await flushCallbacks();
+        expect(staleCrossingCallback).not.toHaveBeenCalled();
+    });
+
+    it('clears the component ref and snapshot callback and aborts running work when the runtime unmounts', async () => {
+        let capturedSignal: AbortSignal | undefined;
+        latestSnapshot = null;
+        const app = (show: boolean) => (
+            <AiToolComponentRefProvider>
+                <LiveSessionProvider><Harness show={show} /></LiveSessionProvider>
+            </AiToolComponentRefProvider>
+        );
+        const view = render(
+            app(true),
+        );
+        await waitFor(() => expect(directory
+            .findComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)?.current).not.toBeNull());
+        callHandle(() => getHandle().addEvent(makeEvent('pending', (signal) => {
             capturedSignal = signal;
             return new Promise<void>(() => undefined);
         })));
@@ -377,9 +448,10 @@ describe('LiveRangeTodoList', () => {
         publishTelemetry(0, 0.3);
         expect(capturedSignal?.aborted).toBe(false);
 
-        view.rerender(<LiveSessionProvider><Wrapper show={false} /></LiveSessionProvider>);
-        await waitFor(() => expect(runtime.liveRangeTodoListHandle).toBeNull());
-        expect(runtime.liveRangeTodoListSnapshot).toBeNull();
+        view.rerender(app(false));
+        await waitFor(() => expect(directory
+            .findComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)).toBeNull());
+        expect(latestSnapshot).toBeNull();
         expect(capturedSignal?.aborted).toBe(true);
     });
 });

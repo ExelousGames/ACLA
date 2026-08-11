@@ -10,6 +10,7 @@ import apiService from 'services/api.service';
 import {
     createAiCommandRegistry,
     isAiCommandName,
+    isGoalStepAvailableForContext,
     startAgentRuntime,
 } from './ai-command-registry';
 import { getCornersForTrack } from 'views/lap-analysis/session-intelligence/track-corners';
@@ -39,12 +40,18 @@ import {
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
-    LiveRangeTodoListDisplay,
+    Goal,
+    LiveRangeTodoList,
     ProcedurePlan,
     ProcedurePlanRunner,
     serializeProcedurePlan,
     type ProcedurePlanRequestSnapshot,
     type ProcedurePlanState,
+    type GoalHandle,
+    type GoalSnapshot,
+    type GoalStepDescriptor,
+    type LiveRangeTodoListHandle,
+    type LiveRangeTodoListSnapshot,
     type TaskStartFunction,
 } from 'components/ai-engineering-tools';
 import type { JsonValue } from 'components/ai-engineering-tools';
@@ -203,6 +210,7 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
     clearProcedurePlan(): void;
     setProcedurePlan(plan: ProcedurePlanState | null): void;
     selectTaskStartFunction(request: ProcedurePlanRequestSnapshot): TaskStartFunction | null;
+    selectGoalTaskStartFunction(step: GoalStepDescriptor): TaskStartFunction | null;
     setAgentTagActive(tag: string, active: boolean): void;
     getOpportunityTelemetryRows(): Record<string, any>[];
     getOpportunityAgentState(): OpportunityAgentState;
@@ -354,6 +362,14 @@ const AiChat: React.FC<AiChatProps> = ({
     const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
     const [baselineCollectionTag, setBaselineCollectionTag] = useState<BaselineCollectionTag | null>(null);
     const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlanState | null>(null);
+    const [goalSnapshot, setGoalSnapshot] = useState<GoalSnapshot | null>(null);
+    const [liveRangeTodoListSnapshot, setLiveRangeTodoListSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
+    const handleLiveRangeTodoListSnapshotChange = useCallback((snapshot: LiveRangeTodoListSnapshot | null) => {
+        setLiveRangeTodoListSnapshot(snapshot && snapshot.events.length > 0 ? snapshot : null);
+    }, []);
+    const liveRangeTodoListHandle = componentRefs
+        .findComponentRef<LiveRangeTodoListHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
+        ?.current ?? null;
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
     const [floatingChatOpen, setFloatingChatOpen] = useState(false);
@@ -453,6 +469,7 @@ const AiChat: React.FC<AiChatProps> = ({
     const activeVoiceExecuteToolCallRef = useRef<(
         call: SubscribedToolCall,
     ) => Promise<ToolSubscriptionResult | null>>(async () => null);
+
     if (procedurePlanRunnerRef.current === null) {
         procedurePlanRunnerRef.current = new ProcedurePlanRunner(
             (plan) => {
@@ -650,6 +667,40 @@ const AiChat: React.FC<AiChatProps> = ({
         setLivePerformanceAnalystEnabled(enabled);
     }, []);
 
+    const selectGoalTaskStartFunction = useCallback((
+        step: GoalStepDescriptor,
+    ): TaskStartFunction | null => {
+        const agent = activeAgentSessionRef.current;
+        if (!isGoalStepAvailableForContext({
+            sessionMode,
+            conversationRole: agent ? 'agent' : 'main',
+            agentMode: agent?.agentMode,
+        }, step.name)) {
+            return null;
+        }
+        const { name: toolName, title, arguments: args } = step;
+        return async (signal) => {
+            if (signal.aborted) return;
+            const result = await activeVoiceExecuteToolCallRef.current({
+                id: `goal-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+                name: toolName,
+                title,
+                arguments: args,
+            });
+            if (signal.aborted) return;
+            if (!result) throw new Error('Start the active AI session before running this goal task.');
+            const envelope = isToolOutputEnvelope(result.result) ? result.result : null;
+            if (!envelope) {
+                throw new Error(result.error || `Goal task '${toolName}' did not return a standard output envelope.`);
+            }
+            const goal = componentRefs
+                .findComponentRef<GoalHandle>(AI_TOOL_COMPONENT_NAMES.GOAL)
+                ?.current;
+            if (!goal) throw new Error('The goal runtime is unavailable.');
+            goal.acceptToolOutput(envelope);
+        };
+    }, [componentRefs, sessionMode]);
+
     const selectTaskStartFunction = useCallback((
         request: ProcedurePlanRequestSnapshot,
     ): TaskStartFunction | null => {
@@ -705,6 +756,18 @@ const AiChat: React.FC<AiChatProps> = ({
             'producer_exit',
         ).catch(() => undefined);
     }, [overlayAgentTags, overlayPresentationId, procedurePlan, upsertOverlayDisplay]);
+
+    useEffect(() => {
+        if (!overlayPresentationId) return;
+        if (goalSnapshot) {
+            upsertOverlayDisplay('goal', goalSnapshot, {}, {}, overlayPresentationId);
+            return;
+        }
+        void overlayDisplayClient.forPresentation(overlayPresentationId).exit(
+            { type: 'goal' },
+            'producer_exit',
+        ).catch(() => undefined);
+    }, [goalSnapshot, overlayAgentTags, overlayPresentationId, upsertOverlayDisplay]);
 
     const advanceProcedurePlanStep = useCallback((reason?: string) => {
         const current = procedurePlanRef.current;
@@ -869,6 +932,9 @@ const AiChat: React.FC<AiChatProps> = ({
     }, [handleSessionVoiceEvent]);
 
     const handleBaselineToolOutput = useCallback((envelope: ToolOutputEnvelope) => {
+        componentRefs.findComponentRef<GoalHandle>(AI_TOOL_COMPONENT_NAMES.GOAL)
+            ?.current
+            ?.acceptToolOutput(envelope);
         const envelopeError = getToolEnvelopeError(envelope);
         if (!envelope.final && !envelopeError) {
             return;
@@ -891,7 +957,7 @@ const AiChat: React.FC<AiChatProps> = ({
             result: envelope.output,
         });
 
-    }, [handleSessionVoiceEvent]);
+    }, [componentRefs, handleSessionVoiceEvent]);
 
     useEffect(() => {
         const baseline = componentRefs
@@ -930,7 +996,7 @@ const AiChat: React.FC<AiChatProps> = ({
 
     useEffect(() => {
         if (!overlayPresentationId) return;
-        const todoList = liveSession.liveRangeTodoListSnapshot;
+        const todoList = liveRangeTodoListSnapshot;
         if (!todoList || todoList.events.length === 0) {
             lastBroadcastedLiveRangeTodoListKeyRef.current = null;
             void overlayDisplayClient.forPresentation(overlayPresentationId).exit(
@@ -943,7 +1009,7 @@ const AiChat: React.FC<AiChatProps> = ({
         if (lifecycleKey === lastBroadcastedLiveRangeTodoListKeyRef.current) return;
         lastBroadcastedLiveRangeTodoListKeyRef.current = lifecycleKey;
         upsertOverlayDisplay('live_range_todo', todoList, {}, {}, overlayPresentationId);
-    }, [liveSession.liveRangeTodoListSnapshot, overlayAgentTags, overlayPresentationId, upsertOverlayDisplay]);
+    }, [liveRangeTodoListSnapshot, overlayAgentTags, overlayPresentationId, upsertOverlayDisplay]);
 
     const startTrackGuide = useCallback(() => {
         trackGuideRunTokenRef.current += 1;
@@ -986,16 +1052,15 @@ const AiChat: React.FC<AiChatProps> = ({
                 latest_telemetry_key_count: Object.keys(liveSession.currentTelemetry).length,
                 telemetry_status: liveSession.telemetryStatus,
                 session_intelligence: snapshot,
-                live_todo: liveSession.liveRangeTodoListSnapshot,
+                live_todo: liveRangeTodoListSnapshot,
                 controls: {
-                    live_todo_available: Boolean(liveSession.liveRangeTodoListHandle),
+                    live_todo_available: Boolean(liveRangeTodoListHandle),
                     recorder_available: Boolean(liveSession.recorderControl),
                 },
                 visualization_capabilities: {
                     telemetry: true,
                     events: true,
                     sections: true,
-                    live_todo: true,
                 },
             });
         }
@@ -1082,6 +1147,8 @@ const AiChat: React.FC<AiChatProps> = ({
         labelsError,
         labelsLoading,
         liveSession,
+        liveRangeTodoListSnapshot,
+        liveRangeTodoListHandle,
         recordedAnalysisContext,
         sessionMode,
         userSummary,
@@ -1298,9 +1365,9 @@ const AiChat: React.FC<AiChatProps> = ({
         };
     }, [liveSession.sessionIntelligence]);
     const liveRangeTodoAiAdapter = useMemo(() => createLiveRangeTodoAiAdapter(
-        liveSession.liveRangeTodoListHandle,
+        liveRangeTodoListHandle,
         createAiLiveRangeTaskStartFunction,
-    ), [createAiLiveRangeTaskStartFunction, liveSession.liveRangeTodoListHandle]);
+    ), [createAiLiveRangeTaskStartFunction, liveRangeTodoListHandle]);
     const setLiveRangeTodoList = useCallback((args: Record<string, unknown>) => (
         liveRangeTodoAiAdapter.set(args)
     ), [liveRangeTodoAiAdapter]);
@@ -1327,7 +1394,10 @@ const AiChat: React.FC<AiChatProps> = ({
         setLivePerformanceAnalystAgentEnabled(false);
         procedurePlanOptedOutRef.current = false;
         clearProcedurePlan();
-    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, setLivePerformanceAnalystAgentEnabled]);
+        componentRefs.findComponentRef<GoalHandle>(AI_TOOL_COMPONENT_NAMES.GOAL)
+            ?.current
+            ?.clear();
+    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, componentRefs, setLivePerformanceAnalystAgentEnabled]);
 
     const resetOvertakeRuntime = useCallback(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
@@ -1469,6 +1539,7 @@ const AiChat: React.FC<AiChatProps> = ({
         clearProcedurePlan,
         setProcedurePlan,
         selectTaskStartFunction,
+        selectGoalTaskStartFunction,
         setAgentTagActive: setAgentTag,
         getOpportunityTelemetryRows,
         getOpportunityAgentState: () => opportunityAgentStateRef.current,
@@ -1494,6 +1565,7 @@ const AiChat: React.FC<AiChatProps> = ({
         setAgentTag,
         setLivePerformanceAnalystAgentEnabled,
         setProcedurePlan,
+        selectGoalTaskStartFunction,
         selectTaskStartFunction,
         setTrackGuideAgentEnabled,
         startAgentSession,
@@ -1506,6 +1578,7 @@ const AiChat: React.FC<AiChatProps> = ({
         componentRefs,
         sessionId: resolvedSessionId,
         sessionMode,
+        conversationRole: 'main',
     }), [componentRefs, resolvedSessionId, sessionMode]);
 
     const selectedChatLlmModelOption = getChatLlmModelOption(selectedChatLlmModel);
@@ -1541,7 +1614,9 @@ const AiChat: React.FC<AiChatProps> = ({
         componentRefs,
         sessionId: resolvedSessionId,
         sessionMode,
-    }), [componentRefs, resolvedSessionId, sessionMode]);
+        conversationRole: 'agent',
+        agentMode: activeAgentSession?.agentMode,
+    }), [activeAgentSession?.agentMode, componentRefs, resolvedSessionId, sessionMode]);
 
     const agentVoiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
@@ -2409,8 +2484,15 @@ const AiChat: React.FC<AiChatProps> = ({
                         <span className="ai-chat__transcript-time">{clock}</span>
                     </div>
 
-                    <LiveRangeTodoListDisplay
-                        snapshot={liveSession.liveRangeTodoListSnapshot}
+                    <LiveRangeTodoList
+                        name={AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST}
+                        onSnapshotChange={handleLiveRangeTodoListSnapshotChange}
+                        surface="chat"
+                    />
+
+                    <Goal
+                        name={AI_TOOL_COMPONENT_NAMES.GOAL}
+                        onSnapshotChange={setGoalSnapshot}
                         surface="chat"
                     />
 

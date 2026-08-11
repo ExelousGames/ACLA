@@ -13,7 +13,9 @@ import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
 import type { SessionAnalysisHandle } from 'views/lap-analysis/session-analysis';
 import type { UserSummaryHandle } from 'views/user-summary/user-summary';
 import {
+    buildGoalRequest,
     buildProcedurePlan,
+    type GoalHandle,
     type LiveRangeTodoListHandle,
 } from 'components/ai-engineering-tools';
 import {
@@ -50,11 +52,14 @@ import {
 import type { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { getAccTelemetryTrackKey } from 'views/lap-analysis/visualization/charts/circuitTrackLayout';
 import type { AiMapDisplayPayload, AiMapSectionSelection } from './AiMapToolDisplay';
+import { getLiveAnalysisMistakeCount } from 'views/live-session/live-session-analysis-results';
 
 export interface RefAiCommandContext {
     componentRefs?: AiToolComponentRefDirectory;
     sessionMode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
     sessionId?: string;
+    conversationRole?: 'main' | 'agent';
+    agentMode?: 'track_guide' | 'overtake' | 'live_performance_analyst';
 }
 
 type RefAiCommandHandler = (
@@ -174,6 +179,11 @@ const isLiveError = (value: LiveSessionHandle | ReturnType<typeof liveUnavailabl
 
 const normalizeOptionalString = (value: unknown): string | undefined => (
     typeof value === 'string' && value.trim() ? value.trim() : undefined
+);
+
+const getGoal = (context: RefAiCommandContext) => resolveNamedComponentHandle<GoalHandle>(
+    getDirectory(context),
+    AI_TOOL_COMPONENT_NAMES.GOAL,
 );
 
 const createLiveRangeNotificationTaskStartFunctionFactory = (
@@ -682,7 +692,7 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
         ).get();
     },
-    async collect_live_baseline(_args, _handlerContext, output) {
+    async collect_live_baseline(_args, handlerContext, output) {
         const live = requireLive(context);
         if (isLiveError(live)) return output.error(live.error, live);
         const { requested, handle } = await openBaselineVisualization(context);
@@ -696,7 +706,7 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         const chat = getChat(context);
         chat.setLivePerformanceAnalystEnabled(true);
         chat.setAgentTagActive('Live Analyst', true);
-        const payload = handle.startCollection();
+        const payload = handle.startCollection(handlerContext.toolRunId);
         return payload.status === 'complete'
             ? output.final(payload)
             : output.progress({ ...payload, status: 'started', message: 'Baseline collection started.' });
@@ -721,6 +731,38 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         const baseline = getBaseline(context);
         if (isBaselineRequiredError(baseline)) return baseline;
         return baseline.requestAnalysis(args);
+    },
+    async get_live_analysis_mistake_count() {
+        if (
+            context.conversationRole !== 'agent'
+            || context.agentMode !== 'live_performance_analyst'
+        ) {
+            return { status: 'error', error: 'live_performance_analyst_tool_unavailable' };
+        }
+        const live = requireLive(context);
+        if (isLiveError(live)) return live;
+        return getLiveAnalysisMistakeCount(
+            live.getLatestAnalysisResultPage(),
+            getChat(context).getLabelName,
+        );
+    },
+    async create_goal(args) {
+        if (
+            context.sessionMode !== 'live'
+            || context.conversationRole !== 'agent'
+            || context.agentMode !== 'live_performance_analyst'
+        ) {
+            return { status: 'error', error: 'create_goal_tool_unavailable' };
+        }
+        const chat = getChat(context);
+        const built = buildGoalRequest(
+            args,
+            (step) => chat.selectGoalTaskStartFunction(step),
+        );
+        if ('error' in built) {
+            return { status: 'error', error: built.error };
+        }
+        return getGoal(context).createGoal(built.request);
     },
     async set_procedure_plan(args) {
         const chat = getChat(context);

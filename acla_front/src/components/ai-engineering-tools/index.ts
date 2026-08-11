@@ -29,7 +29,7 @@ export {
     default as LiveRangeTodoList,
     LiveRangeTodoListDisplay,
 } from './LiveRangeTodoList';
-export type { LiveRangeTelemetrySample } from './LiveRangeTodoList';
+export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from './LiveRangeTodoList';
 export type { TaskStartFunction } from './task-start-function';
 export type {
     JsonPrimitive,
@@ -43,3 +43,31 @@ export type {
     LiveRangeTodoSnapshotEvent,
     LiveRangeTodoStatus,
 } from './live-range-todo-list-types';
+export {
+    default as Goal,
+    GOAL_COMPARISON_OPERATORS,
+    GoalDisplay,
+    buildGoalRequest,
+    compareGoalValues,
+    extractGoalResultPath,
+    isSafeGoalResultPath,
+    validateGoalRequest,
+} from './Goal';
+export type {
+    GoalComparison,
+    GoalComparisonOperator,
+    GoalDisplayProps,
+    GoalHandle,
+    GoalProps,
+    GoalRunResult,
+    GoalRequest,
+    GoalSnapshot,
+    GoalSourceResultMetadata,
+    GoalStatus,
+    GoalStep,
+    GoalStepDescriptor,
+    GoalStepSnapshot,
+    GoalStepStatus,
+    GoalTaskStartFunctionSelector,
+    GoalToolOutputEnvelope,
+} from './Goal';

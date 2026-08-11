@@ -205,7 +205,7 @@ describe('BaselineCollection visualization', () => {
         handle.subscribeToolOutput((output) => outputs.push(output));
 
         act(() => {
-            expect(handle.startCollection()).toMatchObject({
+            expect(handle.startCollection('goal-baseline-run')).toMatchObject({
                 status: 'waiting_for_start',
                 progress_percent: 0,
             });
@@ -235,6 +235,11 @@ describe('BaselineCollection visualization', () => {
         expect(handle.getTag()).toMatchObject({ status: 'complete', progress_percent: 100 });
         expect(screen.getByRole('button', { name: 'Request Analysis' })).toBeEnabled();
         expect(outputs).toHaveLength(1);
+        expect(outputs[0]).toMatchObject({
+            tool_name: 'collect_live_baseline',
+            run_id: 'goal-baseline-run',
+            final: true,
+        });
         expect(getToolEnvelopeUiOutput(outputs[0])).toEqual({
             progress_percent: 100,
             status: 'complete',

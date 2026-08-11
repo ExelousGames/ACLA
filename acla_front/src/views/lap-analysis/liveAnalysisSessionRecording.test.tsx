@@ -64,8 +64,6 @@ const createRuntime = (overrides: Record<string, unknown> = {}) => ({
     restorationError: null,
     recordingFileValidation: null,
     sessionIntelligence: {},
-    liveRangeTodoListHandle: null,
-    liveRangeTodoListSnapshot: null,
     recorderControl: null,
     startLiveSession: jest.fn(),
     endLiveSession: jest.fn(),
@@ -78,8 +76,6 @@ const createRuntime = (overrides: Record<string, unknown> = {}) => ({
     finalizeRecordingWrites: jest.fn().mockResolvedValue(undefined),
     clearRecordingSession: jest.fn(),
     clearPersistedDraft: jest.fn(),
-    registerLiveRangeTodoListHandle: jest.fn(),
-    publishLiveRangeTodoListSnapshot: jest.fn(),
     registerRecorderControl: jest.fn(),
     ...overrides,
 });

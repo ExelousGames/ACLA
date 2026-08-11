@@ -5,6 +5,7 @@ import {
     normalizeDriverExpertComparisonData,
 } from 'components/driver-expert-comparison';
 import {
+    GoalDisplay,
     LiveRangeTodoListDisplay,
     ProcedurePlan,
 } from 'components/ai-engineering-tools';
@@ -236,6 +237,27 @@ const registry: { [K in OverlayDisplayType]: OverlayDisplayDefinition<OverlaySna
         pulseDurationMs: OVERLAY_HOLD_MS,
         renderExpanded: ({ snapshot }) => <BaselineProgressDisplay tag={snapshot} surface="pill" />,
         renderSummary: (snapshot) => `Baseline ${Math.round(snapshot.progress_percent)}% - ${snapshot.detail}`,
+    },
+    goal: {
+        type: 'goal',
+        cardinality: 'singleton',
+        validateSnapshot: (snapshot): snapshot is OverlaySnapshotByType['goal'] => (
+            isRecord(snapshot)
+            && isNonEmptyString(snapshot.goal)
+            && ['running', 'achieved', 'missed', 'error'].includes(String(snapshot.status))
+            && Array.isArray(snapshot.steps)
+            && typeof snapshot.target === 'number'
+            && Number.isFinite(snapshot.target)
+            && (snapshot.actual === null || (
+                typeof snapshot.actual === 'number' && Number.isFinite(snapshot.actual)
+            ))
+        ),
+        initialPolicy: 'visible_until_exit',
+        permittedTransitions: transitionTable(),
+        manualDismiss: true,
+        dimensions: { expanded: { width: 420, height: 230 }, folded: { width: 340, height: 58 } },
+        renderExpanded: ({ snapshot }) => <GoalDisplay snapshot={snapshot} surface="pill" />,
+        renderSummary: (snapshot) => `${snapshot.status}: ${snapshot.goal}`,
     },
     procedure_plan: {
         type: 'procedure_plan',

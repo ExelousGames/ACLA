@@ -69,3 +69,115 @@ describe('frontend application live range to-do tools', () => {
         expect(metadata.set_live_range_todo_list.description).toContain('AI adapter attaches its notification callback');
     });
 });
+
+describe('live analysis mistake count tool', () => {
+    it('defines the no-argument schema and requested metadata', () => {
+        const tool = FRONTEND_APPLICATION_TOOLS.find(({ name }) => (
+            name === 'get_live_analysis_mistake_count'
+        ));
+        expect(tool).toMatchObject({
+            properties: {},
+            required: [],
+        });
+
+        const metadata = getAiToolMetadataForSessionContext({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        });
+        expect(metadata.get_live_analysis_mistake_count.title)
+            .toBe('Counting live analysis mistakes');
+    });
+
+    it('exposes the tool only to a Live Performance Analyst child session', () => {
+        const namesFor = (context: Record<string, unknown>) => (
+            getFrontendApplicationToolsForSessionContext(context).map(({ name }) => name)
+        );
+
+        expect(namesFor({ session_mode: 'live' }))
+            .not.toContain('get_live_analysis_mistake_count');
+        expect(namesFor({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'track_guide',
+        })).not.toContain('get_live_analysis_mistake_count');
+        expect(namesFor({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'overtake',
+        })).not.toContain('get_live_analysis_mistake_count');
+        expect(namesFor({
+            session_mode: 'recorded',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        })).not.toContain('get_live_analysis_mistake_count');
+        expect(namesFor({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        })).toContain('get_live_analysis_mistake_count');
+    });
+});
+
+describe('create_goal tool', () => {
+    it('defines the ordered workflow and numeric comparison schema', () => {
+        const tools = getFrontendApplicationToolsForSessionContext({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        });
+        const tool = tools.find(({ name }) => name === 'create_goal') as any;
+        expect(tool).toMatchObject({
+            required: ['goal', 'steps', 'comparison'],
+            properties: {
+                steps: {
+                    minItems: 1,
+                    items: { required: ['id', 'title', 'name'] },
+                },
+                comparison: {
+                    required: ['step_id', 'result_path', 'operator', 'target', 'metric_label'],
+                    properties: {
+                        operator: { enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
+                        target: { type: 'number' },
+                    },
+                },
+            },
+        });
+    });
+
+    it('exposes create_goal only to the Live Performance Analyst and constrains nested tools by session', () => {
+        const namesFor = (context: Record<string, unknown>) => (
+            getFrontendApplicationToolsForSessionContext(context).map(({ name }) => name)
+        );
+        expect(namesFor({ session_mode: 'live' })).not.toContain('create_goal');
+        expect(namesFor({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'track_guide',
+        })).not.toContain('create_goal');
+
+        const analystTools = getFrontendApplicationToolsForSessionContext({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        });
+        const createGoal = analystTools.find(({ name }) => name === 'create_goal') as any;
+        const nestedNames = createGoal.properties.steps.items.properties.name.enum;
+        expect(nestedNames).toEqual(analystTools
+            .map(({ name }) => name)
+            .filter((name) => name !== 'create_goal'));
+        expect(nestedNames).toEqual(expect.arrayContaining([
+            'collect_live_baseline',
+            'analyze_live_recorded_analysis',
+            'get_live_analysis_mistake_count',
+        ]));
+        expect(nestedNames).not.toContain('create_goal');
+
+        const metadata = getAiToolMetadataForSessionContext({
+            session_mode: 'live',
+            conversation_role: 'agent',
+            agent_mode: 'live_performance_analyst',
+        });
+        expect(metadata.create_goal.title).toBe('Creating goal');
+    });
+});

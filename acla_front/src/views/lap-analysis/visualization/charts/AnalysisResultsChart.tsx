@@ -12,51 +12,16 @@ import { useAiLabels } from 'contexts/AiLabelsContext';
 import { DataGraph, GraphRecord, GraphSpec } from 'components/data-graphs';
 import {
     DriverExpertComparisonGraph,
-    createDriverExpertComparisonTaskStartFunction,
     hasComparableDriverExpertData,
 } from 'components/driver-expert-comparison';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
-import type {
-    JsonValue,
-    LiveRangeTodoEventInput,
-    LiveRangeTodoListHandle,
-} from 'components/ai-engineering-tools';
 import styles from './AnalysisResultsChart.module.css';
 import {
-    AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
-    AI_TOOL_COMPONENT_NAMES,
     NamedAiToolComponentHandle,
-    awaitNamedComponentHandle,
-    resolveNamedComponentHandle,
-    useOptionalAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
-import type { VisualizationManagerHandle } from '../VisualizationPanelManager';
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
-const LIVE_RANGE_TODO_LIST_TYPE = 'live-range-todo-list';
-
-let queuedComparisonEventSequence = 0;
-
-const createQueuedComparisonEventId = (): string => (
-    `analysis-comparison-${Date.now().toString(36)}-${(++queuedComparisonEventSequence).toString(36)}`
-);
-
-interface LeadingMistakeOccurrence {
-    element: AnalysisResultElement;
-    matchedLeadingLabels: string[];
-}
-
-interface MostCommonMistakeQueuePlan {
-    eligible: LeadingMistakeOccurrence[];
-    skippedCount: number;
-}
-
-interface PendingComparisonQueue {
-    requestId: number;
-    events: LiveRangeTodoEventInput[];
-    skippedCount: number;
-}
 
 const HIDDEN_METADATA_KEYS = new Set(['source', 'start_index', 'end_index']);
 
@@ -370,83 +335,6 @@ export const buildMistakeFrequencyData = (
             right.occurrences - left.occurrences
             || compareLabelText(left.label, right.label)
         ));
-};
-
-const buildMostCommonMistakeQueuePlan = (
-    elements: readonly AnalysisResultElement[],
-    recognizedSubLabels: RecognizedSubLabels,
-    frequencyData: readonly GraphRecord[],
-    sessionGame: DesktopGame | null,
-): MostCommonMistakeQueuePlan => {
-    const leadingFrequency = frequencyData.reduce((highest, row) => {
-        const occurrences = Number(row.occurrences);
-        return Number.isFinite(occurrences) ? Math.max(highest, occurrences) : highest;
-    }, 0);
-    if (leadingFrequency <= 0) return { eligible: [], skippedCount: 0 };
-
-    const leadingLabels = new Set(frequencyData
-        .filter((row) => Number(row.occurrences) === leadingFrequency)
-        .map((row) => String(row.label)));
-    const occurrences: LeadingMistakeOccurrence[] = elements.flatMap((element) => {
-        const matchedLeadingLabels = getSubLabels(element, recognizedSubLabels)
-            .map(({ label }) => label)
-            .filter((label) => leadingLabels.has(label))
-            .sort(compareLabelText);
-        return matchedLeadingLabels.length > 0 ? [{ element, matchedLeadingLabels }] : [];
-    });
-    const eligible = occurrences.filter(({ element }) => {
-        const start = element.normalizedPositionRange?.start;
-        return typeof start === 'number'
-            && Number.isFinite(start)
-            && start >= 0
-            && start <= 1
-            && hasComparableDriverExpertData(element.comparison, sessionGame);
-    });
-
-    return {
-        eligible,
-        skippedCount: occurrences.length - eligible.length,
-    };
-};
-
-const createMostCommonMistakeEvents = (
-    plan: MostCommonMistakeQueuePlan,
-    sessionGame: DesktopGame | null | undefined,
-): LiveRangeTodoEventInput[] => {
-    return plan.eligible.map(({ element, matchedLeadingLabels }) => {
-        const position = element.normalizedPositionRange!.start;
-        const comparison = element.comparison!;
-        const title = element.title || matchedLeadingLabels[0];
-        const context = {
-            section: element.section ?? null,
-            position,
-            source_result_id: element.id,
-            matched_leading_labels: matchedLeadingLabels,
-        };
-
-        return {
-        id: createQueuedComparisonEventId(),
-        normalized_position: position,
-        lead_time_seconds: 0,
-        content: {
-            title,
-            detail: `${element.section || 'Unknown section'} · ${formatPosition(position)}`,
-            metadata: context as JsonValue,
-        },
-        data: {
-            title,
-            comparison,
-            context,
-        } as unknown as JsonValue,
-        taskStart: createDriverExpertComparisonTaskStartFunction(
-            {
-                title,
-                comparison,
-                ...(sessionGame !== undefined ? { game: sessionGame } : {}),
-            },
-        ),
-        };
-    });
 };
 
 export const getMistakeFrequencyGraphHeight = (categoryCount: number): number => (
@@ -895,11 +783,6 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const [mainLabelFilter, setMainLabelFilter] = React.useState<AnalysisResultsMainLabelFilter>('MSP');
     const [showOverallTrend, setShowOverallTrend] = React.useState(true);
     const [selectedTrendSubLabelId, setSelectedTrendSubLabelId] = React.useState<string | null>(null);
-    const [queueInProgress, setQueueInProgress] = React.useState(false);
-    const [queueStatus, setQueueStatus] = React.useState('');
-    const componentRefs = useOptionalAiToolComponentRefDirectory();
-    const pendingQueueRef = React.useRef<PendingComparisonQueue | null>(null);
-    const queueRequestSequenceRef = React.useRef(0);
     const { getCategoryLabels, getLabelName } = useAiLabels();
     const chronologicalPages = React.useMemo(() => {
         if (!pagination) return [];
@@ -994,15 +877,6 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         () => buildMistakeFrequencyData(filteredElements, recognizedSubLabels),
         [filteredElements, recognizedSubLabels],
     );
-    const mostCommonQueuePlan = React.useMemo(
-        () => buildMostCommonMistakeQueuePlan(
-            filteredElements,
-            recognizedSubLabels,
-            mistakeFrequencyData,
-            sessionGame ?? null,
-        ),
-        [filteredElements, mistakeFrequencyData, recognizedSubLabels, sessionGame],
-    );
     const graphSubject = mainLabelFilter === 'MSP' ? 'Training' : 'Racing';
     const mistakeFrequencySpec = React.useMemo<GraphSpec>(() => ({
         type: 'bar',
@@ -1019,108 +893,6 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         emptyStateText: `No recognized ${graphSubject.toLowerCase()} mistakes to graph.`,
     }), [graphSubject, mistakeFrequencyData]);
 
-    const finishPendingQueue = React.useCallback((requestId: number) => {
-        if (pendingQueueRef.current?.requestId !== requestId) return;
-        pendingQueueRef.current = null;
-        setQueueInProgress(false);
-    }, []);
-
-    const failPendingQueue = React.useCallback((requestId: number, message: string) => {
-        if (pendingQueueRef.current?.requestId !== requestId) return;
-        finishPendingQueue(requestId);
-        setQueueStatus(message);
-    }, [finishPendingQueue]);
-
-    const drainPendingQueue = React.useCallback((
-        prepared: PendingComparisonQueue,
-        handle: LiveRangeTodoListHandle,
-    ) => {
-        if (pendingQueueRef.current?.requestId !== prepared.requestId) return;
-        let queuedCount = 0;
-        let failedCount = 0;
-        prepared.events.forEach((event) => {
-            try {
-                const result = handle.addEvent(event);
-                if (result.status === 'error') failedCount += 1;
-                else queuedCount += 1;
-            } catch {
-                failedCount += 1;
-            }
-        });
-        finishPendingQueue(prepared.requestId);
-        const skippedCount = prepared.skippedCount + failedCount;
-        setQueueStatus(`Queued: ${queuedCount}. Skipped: ${skippedCount}.`);
-    }, [finishPendingQueue]);
-
-    React.useEffect(() => () => {
-        pendingQueueRef.current = null;
-    }, []);
-
-    React.useEffect(() => {
-        if (!pendingQueueRef.current) setQueueStatus('');
-    }, [elements, mainLabelFilter]);
-
-    const handleQueueMostCommonMistakes = React.useCallback(() => {
-        if (queueInProgress || mostCommonQueuePlan.eligible.length === 0) return;
-        const requestId = ++queueRequestSequenceRef.current;
-        const prepared: PendingComparisonQueue = {
-            requestId,
-            events: createMostCommonMistakeEvents(mostCommonQueuePlan, sessionGame),
-            skippedCount: mostCommonQueuePlan.skippedCount,
-        };
-        pendingQueueRef.current = prepared;
-        setQueueInProgress(true);
-        setQueueStatus('Opening Live Range To-do List…');
-
-        if (!componentRefs) {
-            failPendingQueue(requestId, 'Live Range To-do List is unavailable. Nothing was queued.');
-            return;
-        }
-
-        void (async () => {
-            try {
-                let todoHandle = componentRefs
-                    .findComponentRef<LiveRangeTodoListHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
-                    ?.current ?? null;
-                if (!todoHandle) {
-                    const manager = resolveNamedComponentHandle<VisualizationManagerHandle>(
-                        componentRefs,
-                        AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
-                    );
-                    const opened = manager.requestVisualization({
-                        name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-                        type: LIVE_RANGE_TODO_LIST_TYPE,
-                    });
-                    if (!opened.success) throw new Error(opened.message);
-                    todoHandle = await awaitNamedComponentHandle<LiveRangeTodoListHandle>(
-                        componentRefs,
-                        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-                        AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
-                    );
-                }
-                if (pendingQueueRef.current?.requestId !== requestId) return;
-                if (todoHandle.getComponentName() !== AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST) {
-                    throw new Error('Live Range To-do List registered with an incorrect component name.');
-                }
-                drainPendingQueue(prepared, todoHandle);
-            } catch {
-                failPendingQueue(
-                    requestId,
-                    'Unable to open Live Range To-do List. Nothing was queued.',
-                );
-            }
-        })();
-    }, [
-        failPendingQueue,
-        componentRefs,
-        drainPendingQueue,
-        mostCommonQueuePlan,
-        queueInProgress,
-        sessionGame,
-    ]);
-
-    const queueButtonDisabled = queueInProgress || mostCommonQueuePlan.eligible.length === 0;
-    const visibleQueueStatus = queueStatus;
     const displayedPageIndex = isOverallTrend ? 0 : activePageIndex + 1;
     const displayedPageCount = chronologicalPages.length + 1;
 
@@ -1232,32 +1004,6 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                             <option value="most-time-lost">Most time lost</option>
                         </select>
                     </label>
-                    <Box className={styles.queueAction}>
-                        <button
-                            type="button"
-                            className={styles.queueButton}
-                            disabled={queueButtonDisabled}
-                            onClick={handleQueueMostCommonMistakes}
-                            aria-describedby={visibleQueueStatus ? `${id}-queue-status` : undefined}
-                            title={mostCommonQueuePlan.eligible.length === 0
-                                ? 'No leading-category result has both a valid position and comparison.'
-                                : undefined}
-                        >
-                            {queueInProgress ? 'Sending…' : 'Send most common mistakes'}
-                        </button>
-                        {visibleQueueStatus && (
-                            <Text
-                                id={`${id}-queue-status`}
-                                className={styles.queueStatus}
-                                size="1"
-                                as="span"
-                                role="status"
-                                aria-live="polite"
-                            >
-                                {visibleQueueStatus}
-                            </Text>
-                        )}
-                    </Box>
                 </Flex>
                 </Flex>
                 <ScrollArea type="hover" className={styles.list}>

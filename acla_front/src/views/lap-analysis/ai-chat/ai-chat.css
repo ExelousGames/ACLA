@@ -625,6 +625,110 @@
   background: rgba(41, 182, 246, 0.14);
 }
 
+.ai-chat__goal {
+  border: 1px solid rgba(255, 183, 77, 0.5);
+  border-radius: var(--lp-radius-sm);
+  background: rgba(30, 23, 12, 0.68);
+  padding: 12px 14px;
+}
+.ai-chat__goal--achieved {
+  border-color: rgba(0, 230, 118, 0.56);
+  background: rgba(8, 28, 20, 0.68);
+}
+.ai-chat__goal--missed,
+.ai-chat__goal--error {
+  border-color: rgba(255, 82, 82, 0.56);
+  background: rgba(34, 12, 16, 0.68);
+}
+.ai-chat__goal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ai-chat__goal-kicker,
+.ai-chat__goal-metric,
+.ai-chat__goal-step-copy > span:nth-child(2) {
+  font-family: var(--lp-mono);
+  font-size: 9px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+}
+.ai-chat__goal-kicker { color: var(--lp-amber); }
+.ai-chat__goal--achieved .ai-chat__goal-kicker { color: var(--lp-green); }
+.ai-chat__goal--missed .ai-chat__goal-kicker,
+.ai-chat__goal--error .ai-chat__goal-kicker { color: var(--lp-red); }
+.ai-chat__goal-title {
+  margin-top: 4px;
+  color: var(--lp-white);
+  font-size: 14px;
+  line-height: 1.35;
+  font-weight: 700;
+}
+.ai-chat__goal-metric {
+  max-width: 48%;
+  color: var(--lp-gray);
+  line-height: 1.5;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ai-chat__goal-steps {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.ai-chat__goal-step {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 9px;
+  color: var(--lp-gray);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.ai-chat__goal-step-dot {
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  border: 1px solid var(--lp-border-strong);
+  border-radius: 50%;
+  background: rgba(232, 232, 240, 0.12);
+}
+.ai-chat__goal-step--running,
+.ai-chat__goal-step--retrying { color: var(--lp-white); }
+.ai-chat__goal-step--running .ai-chat__goal-step-dot,
+.ai-chat__goal-step--retrying .ai-chat__goal-step-dot {
+  border-color: var(--lp-amber);
+  background: var(--lp-amber);
+  box-shadow: 0 0 10px rgba(255, 183, 77, 0.4);
+}
+.ai-chat__goal-step--completed .ai-chat__goal-step-dot {
+  border-color: var(--lp-green);
+  background: var(--lp-green);
+}
+.ai-chat__goal-step--error .ai-chat__goal-step-dot {
+  border-color: var(--lp-red);
+  background: var(--lp-red);
+}
+.ai-chat__goal-step-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ai-chat__goal-step-copy > span:nth-child(2) { color: var(--lp-gray-dim); }
+.ai-chat__goal-error {
+  margin-top: 4px;
+  color: var(--lp-red);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+.ai-chat__goal--pill .ai-chat__goal-title { font-size: 12px; }
+.ai-chat__goal--pill .ai-chat__goal-steps { gap: 5px; margin-top: 8px; }
+.ai-chat__goal--pill .ai-chat__goal-step { font-size: 11px; }
+
 .ai-chat__range-todo {
   border: 1px solid rgba(0, 230, 118, 0.36);
   border-radius: var(--lp-radius-sm);

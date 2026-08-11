@@ -54,6 +54,7 @@ describe('DashboardAssistant', () => {
 
     it('keeps fold state in the dashboard component while the active screen changes', () => {
         const view = render(<DashboardAssistant activeDashboardTab={DASHBOARD_TABS.LIVE_SESSION} />);
+        const chat = screen.getByTestId('dashboard-ai-chat');
 
         fireEvent.click(screen.getByRole('button', { name: 'Open AI Assistant' }));
         expect(screen.getByLabelText('AI Assistant')).toHaveClass('main-dashboard-assistant--open');
@@ -61,6 +62,10 @@ describe('DashboardAssistant', () => {
         view.rerender(<DashboardAssistant activeDashboardTab={DASHBOARD_TABS.USER_SUMMARY} />);
 
         expect(screen.getByLabelText('AI Assistant')).toHaveClass('main-dashboard-assistant--open');
+        expect(screen.getByTestId('dashboard-ai-chat')).toBe(chat);
         expect(screen.getByTestId('dashboard-ai-chat')).toHaveAttribute('data-session-mode', 'user_summary');
+
+        fireEvent.click(screen.getByRole('button', { name: 'Fold AI Assistant' }));
+        expect(screen.getByTestId('dashboard-ai-chat')).toBe(chat);
     });
 });

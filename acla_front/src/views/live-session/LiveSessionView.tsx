@@ -10,6 +10,7 @@ import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGa
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
+import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
 import './live-session.css';
 
 export const LIVE_SESSION_RECORDER_HOST_ID = 'live-session-recorder-host';
@@ -26,6 +27,7 @@ export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     getLiveSectionHistory(limit: number): any[];
     getLiveSectionTelemetry(args: Record<string, any>): any;
     recordLiveSectionClassification(args: Record<string, any>): any;
+    getLatestAnalysisResultPage(): LiveSessionAnalysisResultPage | null;
 }
 
 type LiveSessionSnapshot = ReturnType<SessionIntelligence['getLiveSessionSnapshot']>;
@@ -95,6 +97,10 @@ const LiveSessionView = ({ name }: { name: string }) => {
                 lap: args.lap,
             }),
             recordLiveSectionClassification: (args) => liveSessionRef.current.sessionIntelligence.recordSectionClassification(args),
+            getLatestAnalysisResultPage: () => {
+                const pages = liveSessionRef.current.analysisResultPages;
+                return pages[pages.length - 1] ?? null;
+            },
         };
     }
     useRegisterAiToolComponentRef(name, componentRef.current);

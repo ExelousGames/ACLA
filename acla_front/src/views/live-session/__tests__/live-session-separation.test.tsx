@@ -28,7 +28,6 @@ const SeparationHarness = () => {
                 live.setCurrentTelemetry({ Graphics_status: ACC_STATUS.ACC_LIVE, speed: 120 });
                 live.setStaticData({ track: 'Monza', car_model: 'GT3' });
                 live.setRecordingMetadata({ sessionName: 'Live Run', mapName: 'Monza', carName: 'GT3', gameRecordedFrom: 'acc' });
-                live.publishLiveRangeTodoListSnapshot({ items: [{ id: 'todo-1' }] } as any);
                 live.transitionRecordingState({ type: 'sessionAvailable' });
             }}>Populate live state</button>
             <button onClick={live.endLiveSession}>Reset live recording</button>
@@ -67,7 +66,6 @@ const SeparationHarness = () => {
             ) : null}
             <output data-testid="telemetry-speed">{live.currentTelemetry.speed || 'none'}</output>
             <output data-testid="static-track">{live.staticData.track || 'none'}</output>
-            <output data-testid="todo-snapshot">{live.liveRangeTodoListSnapshot ? 'present' : 'none'}</output>
             <output data-testid="recording-state">{live.recordingState}</output>
         </>
     );
@@ -158,7 +156,7 @@ describe('live session state separation', () => {
         expect(screen.getByTestId('session-game')).toHaveTextContent('acc');
     });
 
-    it('clears telemetry, static data, metadata, UI snapshots, and recording state on full reset', () => {
+    it('clears telemetry, static data, metadata, and recording state on full reset', () => {
         jest.useFakeTimers();
         render(
             <LiveSessionProvider>
@@ -173,7 +171,6 @@ describe('live session state separation', () => {
         act(() => jest.advanceTimersByTime(150));
         expect(screen.getByTestId('telemetry-speed')).toHaveTextContent('120');
         expect(screen.getByTestId('static-track')).toHaveTextContent('Monza');
-        expect(screen.getByTestId('todo-snapshot')).toHaveTextContent('present');
 
         fireEvent.click(screen.getByText('Reset live recording'));
 
@@ -181,7 +178,6 @@ describe('live session state separation', () => {
         expect(screen.getByTestId('live-session-name')).toHaveTextContent('none');
         expect(screen.getByTestId('telemetry-speed')).toHaveTextContent('none');
         expect(screen.getByTestId('static-track')).toHaveTextContent('none');
-        expect(screen.getByTestId('todo-snapshot')).toHaveTextContent('none');
         expect(screen.getByTestId('recording-state')).toHaveTextContent('CHECKING');
         jest.useRealTimers();
     });

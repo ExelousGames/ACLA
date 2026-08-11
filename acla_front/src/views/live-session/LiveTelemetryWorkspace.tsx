@@ -11,14 +11,12 @@ import { LiveVisualizationInstance } from './live-session-types';
 import LiveTrajectoryMap from './LiveTrajectoryMap';
 import LiveTelemetryOverview from './LiveTelemetryOverview';
 import LiveEventLog from './LiveEventLog';
-import { LiveRangeTodoList } from 'components/ai-engineering-tools';
 import BaselineCollection from './BaselineCollection';
 
 const OPTIONAL_VISUALIZATIONS = {
     'telemetry-overview': { name: 'Live Telemetry Overview' },
     'event-log': { name: 'Live Event Log' },
     'analysis-results': { name: 'Analysis Results' },
-    'live-range-todo-list': { name: 'Live Range To-do List' },
     'baseline-collection': { name: 'Baseline Collection' },
 } as const;
 
@@ -90,7 +88,6 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
     }
 
     protected getDefaultComponentName(type: string) {
-        if (type === 'live-range-todo-list') return AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST;
         if (type === 'baseline-collection') return AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION;
         return getVisualizationComponentName(type);
     }
@@ -131,9 +128,6 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
                     onDisable={() => this.closeVisualization({ name: instance.name }).success}
                 />
             );
-        }
-        if (instance.type === 'live-range-todo-list') {
-            return <LiveRangeTodoList key={instance.name} name={instance.name} />;
         }
         if (instance.type === 'baseline-collection') {
             return <BaselineCollection key={instance.name} name={instance.name} />;

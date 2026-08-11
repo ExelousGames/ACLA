@@ -19,7 +19,7 @@ export const getMissingLiveRangeTodoListResult = (): LiveRangeTodoListToolResult
     status: 'error',
     todo_list: null,
     error: 'live_range_todo_list_unavailable',
-    message: 'Open the Live Range To-do List panel in Live Data Visualizations before using this tool.',
+    message: 'The AI chat live range to-do runtime is unavailable.',
 });
 
 const getInvalidResult = (

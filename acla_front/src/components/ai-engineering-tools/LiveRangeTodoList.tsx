@@ -292,12 +292,18 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
     );
 };
 
-const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
-    const {
-        currentTelemetry,
-        registerLiveRangeTodoListHandle,
-        publishLiveRangeTodoListSnapshot,
-    } = useContext(LiveSessionContext);
+export interface LiveRangeTodoListProps {
+    name: string;
+    onSnapshotChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
+    surface?: 'panel' | 'chat' | 'pill';
+}
+
+const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
+    name,
+    onSnapshotChange,
+    surface = 'chat',
+}) => {
+    const { currentTelemetry, sessionGame } = useContext(LiveSessionContext);
     const initialNowRef = useRef(Date.now());
     const runtimeRef = useRef<RuntimeSnapshot>({
         events: [],
@@ -306,11 +312,12 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         created_at: initialNowRef.current,
         updated_at: initialNowRef.current,
     });
-    const [snapshot, setSnapshot] = useState<LiveRangeTodoListSnapshot>(() => (
-        serializeSnapshot(runtimeRef.current)
-    ));
+    const [snapshot, setSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
+    const snapshotChangeRef = useRef(onSnapshotChange);
+    snapshotChangeRef.current = onSnapshotChange;
     const samplesRef = useRef<LiveRangeTelemetrySample[]>([]);
     const previousSampleRef = useRef<LiveRangeTelemetrySample | null>(null);
+    const previousSessionGameRef = useRef(sessionGame);
     const activeRunsRef = useRef<Map<string, ActiveRun>>(new Map());
     const runNextDueEventRef = useRef<() => void>(() => undefined);
     const mountedRef = useRef(false);
@@ -318,10 +325,11 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
     const commit = useCallback((next: RuntimeSnapshot) => {
         runtimeRef.current = next;
         const nextSnapshot = serializeSnapshot(next);
-        setSnapshot(nextSnapshot);
-        publishLiveRangeTodoListSnapshot(nextSnapshot);
+        const visibleSnapshot = nextSnapshot.events.length > 0 ? nextSnapshot : null;
+        setSnapshot(visibleSnapshot);
+        snapshotChangeRef.current?.(visibleSnapshot);
         return nextSnapshot;
-    }, [publishLiveRangeTodoListSnapshot]);
+    }, []);
 
     const resultForCurrent = useCallback((): LiveRangeTodoListToolResult => {
         const current = serializeSnapshot(runtimeRef.current);
@@ -659,17 +667,36 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
 
     useEffect(() => {
         mountedRef.current = true;
-        registerLiveRangeTodoListHandle(handle);
-        publishLiveRangeTodoListSnapshot(serializeSnapshot(runtimeRef.current));
+        const current = serializeSnapshot(runtimeRef.current);
+        snapshotChangeRef.current?.(current.events.length > 0 ? current : null);
         return () => {
             mountedRef.current = false;
             abortEvents();
             samplesRef.current = [];
             previousSampleRef.current = null;
-            registerLiveRangeTodoListHandle(null);
-            publishLiveRangeTodoListSnapshot(null);
+            snapshotChangeRef.current?.(null);
         };
-    }, [abortEvents, handle, publishLiveRangeTodoListSnapshot, registerLiveRangeTodoListHandle]);
+    }, [abortEvents]);
+
+    useEffect(() => {
+        const previousSessionGame = previousSessionGameRef.current;
+        previousSessionGameRef.current = sessionGame;
+        if (previousSessionGame === sessionGame) return;
+
+        samplesRef.current = [];
+        previousSampleRef.current = null;
+        if (sessionGame === null) return;
+
+        abortEvents();
+        const now = Date.now();
+        commit({
+            events: [],
+            current_position: null,
+            rolling_rate: null,
+            created_at: now,
+            updated_at: now,
+        });
+    }, [abortEvents, commit, sessionGame]);
 
     useEffect(() => {
         const position = getLiveRangeNormalizedPosition(currentTelemetry);
@@ -715,7 +742,7 @@ const LiveRangeTodoList: React.FC<{ name: string }> = ({ name }) => {
         runNextDueEvent();
     }, [commit, currentTelemetry, runNextDueEvent]);
 
-    return <LiveRangeTodoListDisplay snapshot={snapshot} surface="panel" />;
+    return <LiveRangeTodoListDisplay snapshot={snapshot} surface={surface} />;
 };
 
 export default LiveRangeTodoList;

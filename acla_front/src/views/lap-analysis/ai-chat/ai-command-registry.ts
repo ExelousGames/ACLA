@@ -478,6 +478,8 @@ const ALL_AI_TOOL_NAMES = [
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
+    'get_live_analysis_mistake_count',
+    'create_goal',
     'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
@@ -501,6 +503,54 @@ const ALL_AI_TOOL_NAMES = [
 export const isAiCommandName = (name: string): boolean => (
     (ALL_AI_TOOL_NAMES as readonly string[]).includes(name)
 );
+
+const COMMON_SESSION_TOOL_NAMES = [
+    'show_map',
+    'set_procedure_plan',
+    'advance_plan_step',
+    'clear_procedure_plan',
+    'stop_agent_session',
+] as const;
+
+const LIVE_AGENT_SESSION_TOOL_NAMES = [
+    'analyze_telemetry',
+    'get_next_corner',
+    'query_telemetry_metric',
+    'get_event_log',
+    'set_live_range_todo_list',
+    'update_live_range_todo_list',
+    'get_live_range_todo_list',
+    'collect_live_baseline',
+    'restart_live_baseline',
+    'analyze_live_recorded_analysis',
+    'classify_live_section',
+] as const;
+
+const USER_SUMMARY_SESSION_TOOL_NAMES = [
+    'get_user_summary_map_level',
+    'get_available_user_summary_maps',
+    'search_user_summary_map_level',
+] as const;
+
+export const isGoalStepAvailableForContext = (
+    context: Pick<RefAiCommandContext, 'sessionMode' | 'conversationRole' | 'agentMode'>,
+    name: string,
+): boolean => {
+    if (
+        context.sessionMode !== 'live'
+        || context.conversationRole !== 'agent'
+        || context.agentMode !== 'live_performance_analyst'
+        || name === 'create_goal'
+    ) {
+        return false;
+    }
+    return new Set<string>([
+        ...COMMON_SESSION_TOOL_NAMES,
+        ...LIVE_AGENT_SESSION_TOOL_NAMES,
+        ...USER_SUMMARY_SESSION_TOOL_NAMES,
+        'get_live_analysis_mistake_count',
+    ]).has(name);
+};
 
 const getToolUiRecord = (uiOutput: unknown): Record<string, any> => (
     uiOutput && typeof uiOutput === 'object' && !Array.isArray(uiOutput)
@@ -648,6 +698,34 @@ const buildToolAiOutput = (
             break;
         case 'get_live_section_history':
             output.history_count = Array.isArray(uiOutput.history) ? uiOutput.history.length : 0;
+            break;
+        case 'get_live_analysis_mistake_count':
+            if (typeof uiOutput.mistake_count === 'number') {
+                output.mistake_count = uiOutput.mistake_count;
+            }
+            if (typeof uiOutput.practice_mistake_count === 'number') {
+                output.practice_mistake_count = uiOutput.practice_mistake_count;
+            }
+            if (typeof uiOutput.racing_mistake_count === 'number') {
+                output.racing_mistake_count = uiOutput.racing_mistake_count;
+            }
+            if (typeof uiOutput.baseline_lap === 'number') {
+                output.baseline_lap = uiOutput.baseline_lap;
+            }
+            if (typeof uiOutput.page_id === 'string') output.page_id = uiOutput.page_id;
+            if (typeof uiOutput.track === 'string') output.track = uiOutput.track;
+            if (typeof uiOutput.car === 'string') output.car = uiOutput.car;
+            break;
+        case 'create_goal':
+            output.goal = uiOutput.goal ?? null;
+            output.target = typeof uiOutput.target === 'number' ? uiOutput.target : null;
+            output.actual = typeof uiOutput.actual === 'number' ? uiOutput.actual : null;
+            output.completed_steps = Array.isArray(uiOutput.completed_steps)
+                ? uiOutput.completed_steps
+                : [];
+            output.comparison = uiOutput.comparison ?? null;
+            output.source_result = uiOutput.source_result ?? null;
+            if (typeof uiOutput.failed_step === 'string') output.failed_step = uiOutput.failed_step;
             break;
         case '_get_live_section_telemetry':
             output.section = uiOutput.section

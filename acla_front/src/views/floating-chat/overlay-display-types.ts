@@ -1,5 +1,5 @@
 import type { DriverExpertComparisonData } from 'components/driver-expert-comparison';
-import type { LiveRangeTodoListSnapshot, ProcedurePlanSnapshot } from 'components/ai-engineering-tools';
+import type { GoalSnapshot, LiveRangeTodoListSnapshot, ProcedurePlanSnapshot } from 'components/ai-engineering-tools';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import type { AiMapDisplayPayload } from 'views/lap-analysis/ai-chat/AiMapToolDisplay';
 import type { BaselineCollectionTag } from 'views/live-session/BaselineCollection';
@@ -22,6 +22,7 @@ export type OverlayDisplayType =
     | 'map'
     | 'driver_expert_comparison'
     | 'baseline_progress'
+    | 'goal'
     | 'procedure_plan'
     | 'live_range_todo';
 
@@ -41,6 +42,7 @@ export interface OverlaySnapshotByType {
     map: AiMapDisplayPayload;
     driver_expert_comparison: DriverExpertComparisonSnapshot;
     baseline_progress: BaselineCollectionTag;
+    goal: GoalSnapshot;
     procedure_plan: ProcedurePlanSnapshot;
     live_range_todo: LiveRangeTodoListSnapshot;
 }

@@ -1,7 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-
-const mockRequestVisualization = jest.fn();
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: () => ({
@@ -122,17 +120,6 @@ import AnalysisResultsChart, {
     formatRacingTime,
     getMistakeTrendDirection,
 } from './AnalysisResultsChart';
-import { overlaySessionClient } from 'views/floating-chat/overlay-display-client';
-import {
-    AI_TOOL_COMPONENT_NAMES,
-    AiToolComponentRefProvider,
-    useRegisterAiToolComponentRef,
-} from 'contexts/AiToolComponentRefContext';
-import type { VisualizationManagerHandle } from '../VisualizationPanelManager';
-import type {
-    LiveRangeTodoEventInput,
-    LiveRangeTodoListHandle,
-} from 'components/ai-engineering-tools';
 import {
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,
@@ -177,63 +164,7 @@ const comparableData = (driverGas: number, expertGas: number) => ({
     }],
 });
 
-const createQueueHandle = (events: LiveRangeTodoEventInput[]): LiveRangeTodoListHandle => ({
-    getComponentName: () => 'live-range-todo-list',
-    addEvent: jest.fn((event: LiveRangeTodoEventInput) => {
-        events.push(event);
-        return { status: 'ready', todo_list: null };
-    }),
-    replaceEvents: jest.fn(),
-    updateEvents: jest.fn(),
-    removeEvents: jest.fn(),
-    resetEvents: jest.fn(),
-    clear: jest.fn(),
-    get: jest.fn(),
-});
-
-const QueueRegistration = ({ handle }: { handle: LiveRangeTodoListHandle }) => {
-    useRegisterAiToolComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, handle);
-    return null;
-};
-
-const ManagerRegistration = () => {
-    const handle = React.useMemo<VisualizationManagerHandle>(() => ({
-        getComponentName: () => AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
-        getVisualizationCapabilities: () => ({}),
-        getCurrentVisualizations: () => [],
-        requestVisualization: (options) => mockRequestVisualization(options),
-        updateVisualization: () => ({ success: false, message: 'not used' }),
-        closeVisualization: () => ({ success: false, message: 'not used' }),
-    }), []);
-    useRegisterAiToolComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER, handle);
-    return null;
-};
-
-const withQueueHandle = (
-    chart: React.ReactElement,
-    handle: LiveRangeTodoListHandle | null,
-) => (
-    <AiToolComponentRefProvider>
-        <ManagerRegistration />
-        {handle && <QueueRegistration handle={handle} />}
-        {chart}
-    </AiToolComponentRefProvider>
-);
-
 describe('AnalysisResultsChart', () => {
-    beforeEach(() => {
-        mockRequestVisualization.mockReset().mockReturnValue({
-            success: true,
-            message: 'Opened chart.',
-            componentName: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-        });
-        localStorage.clear();
-    });
-
-    afterEach(() => {
-        jest.useRealTimers();
-    });
-
     it('opens on Overall Trend and navigates chronologically without synthetic callback IDs', () => {
         const chartRef = React.createRef<any>();
         const onUpdate = jest.fn(() => true);
@@ -534,7 +465,7 @@ describe('AnalysisResultsChart', () => {
     });
 
     it('renders arbitrary labels, context, and metadata safely', () => {
-        render(withQueueHandle(
+        render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="results"
                 data={{
@@ -555,8 +486,7 @@ describe('AnalysisResultsChart', () => {
                     }],
                 }}
             />,
-            null,
-        ));
+        );
 
         expect(screen.getByText('1 of 1 total')).toBeInTheDocument();
         expect(screen.getByText('Future category')).toBeInTheDocument();
@@ -911,338 +841,22 @@ describe('AnalysisResultsChart', () => {
         ]);
     });
 
-    it('appends tied leading occurrences once with fresh IDs, source context, and current-view filtering', () => {
-        const existingEvent: LiveRangeTodoEventInput = {
-            id: 'existing',
-            normalized_position: 0.05,
-            content: { title: 'Existing reminder' },
-            data: null,
-            taskStart: jest.fn(),
-        };
-        const queuedEvents = [existingEvent];
-        const handle = createQueueHandle(queuedEvents);
-        const chart = (
-            <AnalysisResultsChart name="visualization:analysis-results"
-                id="queue-leading"
-                data={{
-                    elements: [
-                        {
-                            id: 'both-leading',
-                            labels: ['MSP', 'MSP1', 'MSP2'],
-                            title: 'Use a cleaner entry',
-                            section: 'Turn 1',
-                            normalizedPositionRange: { start: 0.1, end: 0.2 },
-                            comparison: comparableData(0.2, 0.4),
-                            timeGap: { deltaMs: 5 },
-                        },
-                        {
-                            id: 'late-fallback',
-                            labels: ['MSP', 'Late turn-in'],
-                            section: 'Turn 2',
-                            normalizedPositionRange: { start: 0.2, end: 0.3 },
-                            comparison: comparableData(0.3, 0.5),
-                            timeGap: { deltaMs: 50 },
-                        },
-                        {
-                            id: 'late-no-comparison',
-                            labels: ['MSP', 'MSP1'],
-                            normalizedPositionRange: { start: 0.3, end: 0.4 },
-                        },
-                        {
-                            id: 'wheel-no-position',
-                            labels: ['MSP', 'MSP2'],
-                            comparison: comparableData(0.4, 0.6),
-                        },
-                        {
-                            id: 'wheel-valid',
-                            labels: ['MSP', 'Wheel lock'],
-                            title: 'Ease off the brake',
-                            normalizedPositionRange: { start: 0.5, end: 0.6 },
-                            comparison: comparableData(0.5, 0.7),
-                            timeGap: { deltaMs: 20 },
-                        },
-                        {
-                            id: 'racing-valid',
-                            labels: ['MSR', 'MSR1'],
-                            normalizedPositionRange: { start: 0.7, end: 0.8 },
-                            comparison: comparableData(0.6, 0.8),
-                        },
-                    ],
-                }}
-            />
-        );
-        render(withQueueHandle(chart, handle));
-        selectSortMode('most-time-lost');
-
-        const button = screen.getByRole('button', { name: 'Send most common mistakes' });
-        fireEvent.click(button);
-
-        expect(queuedEvents[0]).toBe(existingEvent);
-        expect(queuedEvents.slice(1).map((event) => (
-            (event.data as any).context.source_result_id
-        ))).toEqual(['both-leading', 'late-fallback', 'wheel-valid']);
-        expect(queuedEvents.slice(1).every((event) => event.lead_time_seconds === 0)).toBe(true);
-        expect(queuedEvents.slice(1).map((event) => event.normalized_position)).toEqual([0.1, 0.2, 0.5]);
-        expect(queuedEvents[1].content).toMatchObject({
-            title: 'Use a cleaner entry',
-            metadata: {
-                section: 'Turn 1',
-                position: 0.1,
-                source_result_id: 'both-leading',
-                matched_leading_labels: ['Late turn-in', 'Wheel lock'],
-            },
-        });
-        expect(queuedEvents[2].content.title).toBe('Late turn-in');
-        expect(() => JSON.stringify(queuedEvents.slice(1).map((event) => ({
-            content: event.content,
-            data: event.data,
-        })))).not.toThrow();
-        expect(screen.getByRole('status')).toHaveTextContent('Queued: 3. Skipped: 2.');
-        expect(mockRequestVisualization).not.toHaveBeenCalled();
-
-        const firstClickIds = queuedEvents.slice(1).map((event) => event.id);
-        fireEvent.click(button);
-        const secondClickIds = queuedEvents.slice(4).map((event) => event.id);
-        expect(secondClickIds).toHaveLength(3);
-        expect(new Set([...firstClickIds, ...secondClickIds])).toHaveProperty('size', 6);
-
-        selectMainLabel('MSR');
-        fireEvent.click(button);
-        expect((queuedEvents[7].data as any).context.source_result_id).toBe('racing-valid');
-        expect(screen.getByRole('status')).toHaveTextContent('Queued: 1. Skipped: 0.');
-    });
-
-    it('disables the action when every leading occurrence lacks a usable position or comparison', () => {
+    it('does not expose the removed most-common-mistakes queue action', () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
-                id="queue-disabled"
-                data={{
-                    elements: [
-                        {
-                            id: 'invalid-position',
-                            labels: ['MSP', 'MSP1'],
-                            normalizedPositionRange: { start: -0.1, end: 0.1 },
-                            comparison: comparableData(0.2, 0.4),
-                        },
-                        {
-                            id: 'invalid-comparison',
-                            labels: ['MSP', 'Late turn-in'],
-                            normalizedPositionRange: { start: 0.2, end: 0.3 },
-                            comparison: { samples: [{
-                                driverTimeMs: 0,
-                                expertTimeMs: 0,
-                                driverTrackPosition: 0.2,
-                                driverGas: 0.2,
-                                expertGas: 0.4,
-                            }] },
-                        },
-                    ],
-                }}
-            />,
-        );
-
-        expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeDisabled();
-    });
-
-    it('opens a closed queue, retains prepared events, and drains them when the handle registers', async () => {
-        const queuedEvents: LiveRangeTodoEventInput[] = [];
-        const handle = createQueueHandle(queuedEvents);
-        const chart = (
-            <AnalysisResultsChart name="visualization:analysis-results"
-                id="queue-deferred"
+                id="analysis-without-queue-action"
                 data={{ elements: [{
-                    id: 'deferred-result',
-                    labels: ['MSP', 'MSP1'],
-                    normalizedPositionRange: { start: 0.25, end: 0.3 },
-                    comparison: comparableData(0.2, 0.4),
-                }] }}
-            />
-        );
-        const view = render(withQueueHandle(chart, null));
-
-        fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
-        expect(screen.getByRole('button', { name: 'Sending…' })).toBeDisabled();
-        await waitFor(() => expect(mockRequestVisualization).toHaveBeenCalledWith({
-            name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-            type: 'live-range-todo-list',
-        }));
-        expect(queuedEvents).toHaveLength(0);
-
-        view.rerender(withQueueHandle(chart, handle));
-        await waitFor(() => expect(queuedEvents).toHaveLength(1));
-        expect((queuedEvents[0].data as any).context.source_result_id).toBe('deferred-result');
-        expect(screen.getByRole('status')).toHaveTextContent('Queued: 1. Skipped: 0.');
-        expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeEnabled();
-    });
-
-    it('reports an accessible error after the queue panel mount timeout', async () => {
-        jest.useFakeTimers();
-        render(withQueueHandle(
-            <AnalysisResultsChart name="visualization:analysis-results"
-                id="queue-timeout"
-                data={{ elements: [{
-                    id: 'timeout-result',
+                    id: 'common-mistake',
                     labels: ['MSP', 'MSP1'],
                     normalizedPositionRange: { start: 0.25, end: 0.3 },
                     comparison: comparableData(0.2, 0.4),
                 }] }}
             />,
-            null,
-        ));
-
-        fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
-        await act(async () => {
-            await Promise.resolve();
-            await Promise.resolve();
-        });
-        expect(mockRequestVisualization).toHaveBeenCalledWith({
-            name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-            type: 'live-range-todo-list',
-        });
-        await act(async () => {
-            jest.advanceTimersByTime(5000);
-            await Promise.resolve();
-        });
-
-        expect(screen.getByRole('status')).toHaveTextContent(
-            'Unable to open Live Range To-do List. Nothing was queued.',
         );
-        expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeEnabled();
+
+        expect(screen.queryByRole('button', { name: 'Send most common mistakes' })).not.toBeInTheDocument();
+        expect(screen.queryByText(/Queued:|Skipped:|Live Range To-do List/)).not.toBeInTheDocument();
     });
-
-    it('reports an accessible error when the named manager cannot open the queue', async () => {
-        mockRequestVisualization.mockReturnValue({
-            success: false,
-            message: 'Unable to open chart.',
-        });
-        render(withQueueHandle(
-            <AnalysisResultsChart name="visualization:analysis-results"
-                id="queue-open-failure"
-                data={{ elements: [{
-                    id: 'open-failure-result',
-                    labels: ['MSP', 'MSP1'],
-                    normalizedPositionRange: { start: 0.25, end: 0.3 },
-                    comparison: comparableData(0.2, 0.4),
-                }] }}
-            />,
-            null,
-        ));
-
-        fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
-
-        await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(
-            'Unable to open Live Range To-do List. Nothing was queued.',
-        ));
-        expect(screen.getByRole('button', { name: 'Send most common mistakes' })).toBeEnabled();
-    });
-
-    it('defers an exact comparison snapshot and observes its overlay lifecycle with abort cleanup', async () => {
-        jest.useFakeTimers();
-        const originalRequestAnimationFrame = window.requestAnimationFrame;
-        const originalCancelAnimationFrame = window.cancelAnimationFrame;
-        window.requestAnimationFrame = (callback: FrameRequestCallback) => (
-            window.setTimeout(() => callback(0), 0)
-        );
-        window.cancelAnimationFrame = (frameId: number) => window.clearTimeout(frameId);
-        let lifecycleListener: ((event: any) => void) | null = null;
-        const sendOverlayDisplayRequest = jest.fn(async (request: any) => ({
-            presentationId: request.presentationId,
-            requestId: request.requestId,
-            accepted: true,
-            instanceId: 'driver_expert_comparison:multiple:test',
-        }));
-        Object.defineProperty(window, 'electronAPI', {
-            configurable: true,
-            value: {
-                createOverlaySession: jest.fn(async (descriptor: any) => ({
-                    success: true,
-                    presentation: { ...descriptor, presentationId: 'presentation-analysis' },
-                })),
-                destroyOverlaySession: jest.fn(async () => ({ success: true, ended: true })),
-                setOverlayEnabled: jest.fn(async () => ({ success: true })),
-                sendOverlayDisplayRequest,
-                onOverlayLifecycle: (listener: (event: any) => void) => {
-                    lifecycleListener = listener;
-                    return () => { lifecycleListener = null; };
-                },
-            },
-        });
-        await overlaySessionClient.create({
-            aiSessionId: 'ai-analysis',
-            mode: 'recorded',
-            displayIdentity: { name: 'Kestrel', agentTags: ['Recorded'] },
-        });
-        const queuedEvents: LiveRangeTodoEventInput[] = [];
-        const comparison = comparableData(0.35, 0.7);
-        const handle = createQueueHandle(queuedEvents);
-        render(withQueueHandle(
-            <AnalysisResultsChart name="visualization:analysis-results"
-                id="queue-callback"
-                data={{ elements: [{
-                    id: 'callback-result',
-                    labels: ['MSP', 'MSP1'],
-                    title: 'Exact crossing graph',
-                    normalizedPositionRange: { start: 0.4, end: 0.5 },
-                    comparison,
-                }] }}
-            />,
-            handle,
-        ));
-        fireEvent.click(screen.getByRole('button', { name: 'Send most common mistakes' }));
-        const controller = new AbortController();
-        let completed = false;
-        const callbackPromise = Promise.resolve(queuedEvents[0].taskStart(
-            controller.signal,
-        )).then(() => { completed = true; });
-
-        act(() => jest.advanceTimersByTime(1));
-        act(() => jest.advanceTimersByTime(1));
-        await act(async () => Promise.resolve());
-        expect(sendOverlayDisplayRequest).toHaveBeenCalledWith(expect.objectContaining({
-            command: {
-                operation: 'upsert',
-                type: 'driver_expert_comparison',
-                snapshot: {
-                title: 'Exact crossing graph',
-                comparison,
-            },
-            },
-        }));
-        expect(sendOverlayDisplayRequest).toHaveBeenNthCalledWith(2, expect.objectContaining({
-            presentationId: 'presentation-analysis',
-            command: {
-                operation: 'request_full_size',
-                target: { instanceId: 'driver_expert_comparison:multiple:test' },
-            },
-        }));
-        expect(completed).toBe(false);
-
-        act(() => lifecycleListener?.({
-            eventId: 'event-1',
-            presentationId: 'presentation-analysis',
-            instanceId: 'driver_expert_comparison:multiple:test',
-            kind: 'exited',
-            at: Date.now(),
-            reason: 'transient_complete',
-        }));
-        await act(async () => callbackPromise);
-        expect(completed).toBe(true);
-
-        const abortController = new AbortController();
-        const abortedPromise = Promise.resolve(queuedEvents[0].taskStart(
-            abortController.signal,
-        ));
-        act(() => jest.advanceTimersByTime(1));
-        act(() => jest.advanceTimersByTime(1));
-        await act(async () => Promise.resolve());
-        act(() => abortController.abort());
-        await act(async () => abortedPromise);
-        await overlaySessionClient.destroy('presentation-analysis');
-
-        window.requestAnimationFrame = originalRequestAnimationFrame;
-        window.cancelAnimationFrame = originalCancelAnimationFrame;
-    });
-
     it('mounts a collision-aware comparison only while a capable card is hovered or focused', () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"

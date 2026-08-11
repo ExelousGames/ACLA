@@ -93,8 +93,8 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
     restorationError: null,
     recordingFileValidation: null,
     sessionIntelligence: {},
-    liveRangeTodoListHandle: null,
-    liveRangeTodoListSnapshot: null,
+    analysisResultPages: [],
+    activeAnalysisResultPageId: null,
     recorderControl: { openUploadFlow: jest.fn() },
     startLiveSession: jest.fn(),
     endLiveSession: jest.fn(),
@@ -107,8 +107,6 @@ const createRuntime = (sessionGame: DesktopGame | null = null) => ({
     finalizeRecordingWrites: jest.fn(),
     clearRecordingSession: jest.fn(),
     clearPersistedDraft: jest.fn(),
-    registerLiveRangeTodoListHandle: jest.fn(),
-    publishLiveRangeTodoListSnapshot: jest.fn(),
     registerRecorderControl: jest.fn(),
 });
 
@@ -179,6 +177,29 @@ describe('LiveSessionView', () => {
         });
         expect(handle.getRecordingState()).toBe(RecordingState.RECORDING);
         expect(handle.getCurrentTelemetry()).toEqual({ Physics_speed_kmh: 210 });
+    });
+
+    it('reads the most recently appended analysis page regardless of the displayed page', () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const runtime: any = createRuntime('acc');
+        runtime.analysisResultPages = [
+            { id: 'older-page', elements: [], baseline: { lap: 1 } },
+            { id: 'latest-page', elements: [], baseline: { lap: 2 } },
+        ];
+        runtime.activeAnalysisResultPageId = 'older-page';
+
+        render(
+            <AiToolComponentRefProvider>
+                <LiveSessionContext.Provider value={runtime}>
+                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                </LiveSessionContext.Provider>
+                <RegistrationObserver />
+            </AiToolComponentRefProvider>,
+        );
+
+        const handle = componentDirectory!
+            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+        expect(handle.getLatestAnalysisResultPage()).toMatchObject({ id: 'latest-page' });
     });
 
     it.each(detectionCases)('shows the $name detector state at the session gate', ({

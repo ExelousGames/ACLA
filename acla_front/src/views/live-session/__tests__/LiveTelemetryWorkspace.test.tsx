@@ -88,16 +88,18 @@ describe('LiveTelemetryWorkspace named manager', () => {
         expect(screen.queryByTestId('analysis-result-retained-result')).not.toBeInTheDocument();
     });
 
-    it('owns the already-open todo list and closes it through the same manager', async () => {
+    it('does not expose or open the live range to-do runtime as a visualization', () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(<LiveSessionProvider><LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" /></LiveSessionProvider>);
-        await userEvent.click(screen.getByRole('menuitem', { name: 'Live Range To-do List' }));
-        expect(screen.getByTestId('live-range-todo-list-empty')).toBeInTheDocument();
-        expect(ref.current!.getCurrentVisualizations()).toEqual([
-            expect.objectContaining({ name: 'live-range-todo-list', type: 'live-range-todo-list' }),
-        ]);
-        act(() => { ref.current!.closeVisualization({ name: 'live-range-todo-list' }); });
-        expect(screen.queryByTestId('live-range-todo-list-empty')).not.toBeInTheDocument();
+        expect(screen.queryByRole('menuitem', { name: 'Live Range To-do List' })).not.toBeInTheDocument();
+        expect(ref.current!.getVisualizationCapabilities().availableCharts).not.toContainEqual(
+            expect.objectContaining({ type: 'live-range-todo-list' }),
+        );
+        expect(ref.current!.requestVisualization({
+            name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+            type: 'live-range-todo-list',
+        })).toMatchObject({ success: false });
+        expect(ref.current!.getCurrentVisualizations()).toEqual([]);
     });
 
     it('uses the game captured by the live session for analysis comparisons', async () => {

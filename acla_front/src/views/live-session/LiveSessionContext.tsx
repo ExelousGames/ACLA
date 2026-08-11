@@ -21,10 +21,6 @@ import {
     removePersistedLiveSessionDraft,
     savePersistedLiveSessionDraft,
 } from './live-session-draft-storage';
-import type {
-    LiveRangeTodoListHandle,
-    LiveRangeTodoListSnapshot,
-} from 'components/ai-engineering-tools';
 import {
     AppendLiveSessionAnalysisResultPageInput,
     AppendLiveSessionAnalysisResultPageResult,
@@ -77,8 +73,6 @@ const defaultRuntime: LiveSessionRuntime = {
     restorationError: null,
     recordingFileValidation: null,
     sessionIntelligence: new SessionIntelligence(),
-    liveRangeTodoListHandle: null,
-    liveRangeTodoListSnapshot: null,
     recorderControl: null,
     analysisResultPages: [],
     activeAnalysisResultPageId: null,
@@ -96,8 +90,6 @@ const defaultRuntime: LiveSessionRuntime = {
     finalizeRecordingWrites: async () => missingProvider(),
     clearRecordingSession: missingProvider,
     clearPersistedDraft: missingProvider,
-    registerLiveRangeTodoListHandle: missingProvider,
-    publishLiveRangeTodoListSnapshot: missingProvider,
     registerRecorderControl: missingProvider,
     appendAnalysisResultPage: () => {
         missingProvider();
@@ -136,8 +128,6 @@ export const LiveSessionProvider = ({
     );
     const [restorationError, setRestorationError] = useState<string | null>(null);
     const [recordingFileValidation, setRecordingFileValidation] = useState<LocalTelemetryFileValidation | null>(null);
-    const [liveRangeTodoListHandle, setLiveRangeTodoListHandle] = useState<LiveRangeTodoListHandle | null>(null);
-    const [liveRangeTodoListSnapshot, setLiveRangeTodoListSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
     const [recorderControl, setRecorderControl] = useState<LiveSessionRecorderControl | null>(null);
     const [analysisResultPages, setAnalysisResultPages] = useState<LiveSessionAnalysisResultPage[]>([]);
     const [activeAnalysisResultPageId, setActiveAnalysisResultPageId] = useState<string | null>(null);
@@ -165,14 +155,6 @@ export const LiveSessionProvider = ({
     const activeAnalysisResultPageIdRef = useRef<string | null>(null);
     const persistDraftRef = useRef<() => void>(() => undefined);
     const draftPersistenceSuppressedRef = useRef(false);
-    const registerLiveRangeTodoListHandle = useCallback((handle: LiveRangeTodoListHandle | null) => {
-        setLiveRangeTodoListHandle(handle);
-    }, []);
-
-    const publishLiveRangeTodoListSnapshot = useCallback((snapshot: LiveRangeTodoListSnapshot | null) => {
-        setLiveRangeTodoListSnapshot(snapshot);
-    }, []);
-
     const registerRecorderControl = useCallback((control: LiveSessionRecorderControl | null) => {
         setRecorderControl(control);
     }, []);
@@ -622,7 +604,6 @@ export const LiveSessionProvider = ({
         resetSampleCount();
         writeQueueRef.current = Promise.resolve();
         sessionIntelligenceRef.current.reset();
-        setLiveRangeTodoListSnapshot(null);
         clearAnalysisResultPages();
         setRestorationError(null);
         void disposeTelemetryWriter({ force: true });
@@ -758,8 +739,6 @@ export const LiveSessionProvider = ({
         restorationError,
         recordingFileValidation,
         sessionIntelligence: sessionIntelligenceRef.current,
-        liveRangeTodoListHandle,
-        liveRangeTodoListSnapshot,
         recorderControl,
         analysisResultPages,
         activeAnalysisResultPageId,
@@ -774,8 +753,6 @@ export const LiveSessionProvider = ({
         finalizeRecordingWrites,
         clearRecordingSession,
         clearPersistedDraft,
-        registerLiveRangeTodoListHandle,
-        publishLiveRangeTodoListSnapshot,
         registerRecorderControl,
         appendAnalysisResultPage,
         selectAnalysisResultPage,
@@ -792,8 +769,6 @@ export const LiveSessionProvider = ({
         restorationStatus,
         restorationError,
         recordingFileValidation,
-        liveRangeTodoListHandle,
-        liveRangeTodoListSnapshot,
         recorderControl,
         analysisResultPages,
         activeAnalysisResultPageId,
@@ -808,8 +783,6 @@ export const LiveSessionProvider = ({
         staticData,
         telemetryStatus,
         transitionRecordingState,
-        registerLiveRangeTodoListHandle,
-        publishLiveRangeTodoListSnapshot,
         registerRecorderControl,
         appendAnalysisResultPage,
         selectAnalysisResultPage,
