@@ -18,10 +18,14 @@ import apiService from 'services/api.service';
 import { buildFormattedToolResultFrame } from './voice-tool-result-formatter';
 import {
     AiToolError,
+    InvalidToolCallError,
+    ToolNotRegisteredError,
     type AiToolExecutionOutput,
+    type SerializedErrorCause,
     getToolEnvelopeUiOutput,
     isToolOutputEnvelope,
     normalizeAiToolError,
+    serializeErrorCause,
 } from './ai-tool-base';
 import { getAiToolResult } from './ai-tool-result-boundary';
 
@@ -68,7 +72,7 @@ type VoiceEventPayload =
         arguments?: Record<string, unknown>;
         result?: unknown;
         ok?: boolean;
-        code?: string | null;
+        errorName?: string | null;
         message?: string | null;
     };
 
@@ -158,9 +162,9 @@ export type ToolSubscriptionResult = ToolSubscriptionResultBase & (
     | { ok: true; result: AiToolExecutionOutput }
     | {
         ok: false;
-        code: string;
+        errorName: string;
         message: string;
-        details?: Record<string, unknown>;
+        cause?: SerializedErrorCause;
     }
 );
 
@@ -243,9 +247,22 @@ const buildToolResultFrame = (
 
 const buildFailedToolResult = (error: AiToolError) => ({
     ok: false as const,
-    code: error.code,
+    name: error.name,
     message: error.message,
-    ...(error.details ? { details: error.details } : {}),
+    ...(error.cause !== undefined ? { cause: serializeErrorCause(error.cause) } : {}),
+});
+
+const buildFailedToolSubscriptionResult = (
+    id: string,
+    toolName: string,
+    error: AiToolError,
+): ToolSubscriptionResult => ({
+    id,
+    name: toolName,
+    ok: false,
+    errorName: error.name,
+    message: error.message,
+    ...(error.cause !== undefined ? { cause: serializeErrorCause(error.cause) } : {}),
 });
 
 const getAiToolLogSummary = (payload: object): string => {
@@ -281,13 +298,12 @@ export const executeSubscribedFrontendTool = async ({
         : {};
 
     if (!name) {
-        const error = new AiToolError(
-            'invalid_tool_call',
+        const error = new InvalidToolCallError(
             'Tool call is missing a name.',
         );
         const failure = buildFailedToolResult(error);
         sendText(buildToolResultFrame(id, name, failure));
-        return { id, name, ...failure };
+        return buildFailedToolSubscriptionResult(id, name, error);
     }
 
     emitEvent?.({
@@ -308,10 +324,8 @@ export const executeSubscribedFrontendTool = async ({
 
     try {
         if (!handler) {
-            throw new AiToolError(
-                'tool_not_registered',
+            throw new ToolNotRegisteredError(
                 `No handler is registered for '${name}'.`,
-                { details: { tool_name: name } },
             );
         }
 
@@ -340,10 +354,10 @@ export const executeSubscribedFrontendTool = async ({
             title,
             status: 'completed',
             ok: false,
-            code: error.code,
+            errorName: error.name,
             message: error.message,
         });
-        return { id, name, ...failure };
+        return buildFailedToolSubscriptionResult(id, name, error);
     }
 };
 

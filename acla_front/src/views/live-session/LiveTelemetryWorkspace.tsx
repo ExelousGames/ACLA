@@ -1,8 +1,8 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
 import { AI_TOOL_COMPONENT_NAMES, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { VisualizationManagerUnavailableError } from 'contexts/AiToolComponentError';
 import VisualizationPanelManager, {
     VisualizationManagerHandle,
-    VisualizationManagerResult,
 } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 import AnalysisResultsChart from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
 import { getVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
@@ -158,10 +158,12 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
     }
 }
 
-const unavailable = (name: string): VisualizationManagerResult => ({
-    success: false,
-    message: `Visualization manager '${name}' is not mounted.`,
-});
+const unavailable = (name: string): never => {
+    throw new VisualizationManagerUnavailableError(
+        name,
+        `Visualization manager '${name}' is not mounted.`,
+    );
+};
 
 const LiveTelemetryWorkspace = forwardRef<VisualizationManagerHandle, LiveTelemetryWorkspaceProps>((
     { name },
@@ -170,11 +172,8 @@ const LiveTelemetryWorkspace = forwardRef<VisualizationManagerHandle, LiveTeleme
     const managerRef = useRef<LiveTelemetryWorkspaceImpl | null>(null);
     const handle = useMemo<VisualizationManagerHandle>(() => ({
         getComponentName: () => name,
-        getVisualizationCapabilities: () => managerRef.current?.getVisualizationCapabilities() ?? {
-            availableCharts: [],
-            openInstances: [],
-        },
-        getCurrentVisualizations: () => managerRef.current?.getCurrentVisualizations() ?? [],
+        getVisualizationCapabilities: () => managerRef.current?.getVisualizationCapabilities() ?? unavailable(name),
+        getCurrentVisualizations: () => managerRef.current?.getCurrentVisualizations() ?? unavailable(name),
         requestVisualization: (options) => managerRef.current?.requestVisualization({
             ...options,
             name: options.type === 'baseline-collection'

@@ -3,7 +3,8 @@ import {
     executeSubscribedFrontendTool,
     extractInlineFunctionCalls,
 } from '../use-voice-conversation';
-import { AiToolError, createToolOutputController } from '../ai-tool-base';
+import { createToolOutputController, ToolExecutionError } from '../ai-tool-base';
+import { BaselineLapRecordRequiredError } from 'contexts/AiToolComponentError';
 
 describe('buildVoiceSessionMetadata', () => {
     it('defaults to a main conversation session', () => {
@@ -150,37 +151,44 @@ describe('executeSubscribedFrontendTool', () => {
             id: 'tool-2',
             name: 'explode',
             ok: false,
-            code: 'tool_execution_failed',
+            errorName: 'ToolExecutionError',
             message: 'boom',
+            cause: { name: 'Error', message: 'boom' },
         });
         expect(events).toMatchObject([
             { kind: 'tool_call', runId: 'tool-2', name: 'explode', status: 'started' },
             {
                 kind: 'tool_call', runId: 'tool-2', name: 'explode',
-                status: 'completed', ok: false, code: 'tool_execution_failed', message: 'boom',
+                status: 'completed', ok: false, errorName: 'ToolExecutionError', message: 'boom',
             },
         ]);
         expect(frames).toContainEqual(expect.objectContaining({
             type: 'tool_result',
             id: 'tool-2',
             name: 'explode',
-            result: { ok: false, code: 'tool_execution_failed', message: 'boom' },
+            result: {
+                ok: false,
+                name: 'ToolExecutionError',
+                message: 'boom',
+                cause: { name: 'Error', message: 'boom' },
+            },
         }));
         expect(frames).toHaveLength(1);
         expect((frames[0] as any).messages).toBeUndefined();
     });
 
-    it('preserves a typed failure code and safe details in one failed tool_result', async () => {
+    it('preserves a concrete failure name and recursive cause in one failed tool_result', async () => {
         const frames: object[] = [];
+        const cause = new Error('baseline source failed');
 
         const result = await executeSubscribedFrontendTool({
             call: { id: 'tool-known', name: 'known_failure' },
             handlers: {
                 known_failure: async () => {
-                    throw new AiToolError(
-                        'baseline_lap_record_required',
+                    throw new BaselineLapRecordRequiredError(
+                        'baseline-collection',
                         'Complete a baseline lap first.',
-                        { details: { component_name: 'baseline-collection' } },
+                        { cause },
                     );
                 },
             },
@@ -192,9 +200,9 @@ describe('executeSubscribedFrontendTool', () => {
             id: 'tool-known',
             name: 'known_failure',
             ok: false,
-            code: 'baseline_lap_record_required',
+            errorName: 'BaselineLapRecordRequiredError',
             message: 'Complete a baseline lap first.',
-            details: { component_name: 'baseline-collection' },
+            cause: { name: 'Error', message: 'baseline source failed' },
         });
         expect(frames).toEqual([expect.objectContaining({
             type: 'tool_result',
@@ -202,14 +210,14 @@ describe('executeSubscribedFrontendTool', () => {
             name: 'known_failure',
             result: {
                 ok: false,
-                code: 'baseline_lap_record_required',
+                name: 'BaselineLapRecordRequiredError',
                 message: 'Complete a baseline lap first.',
-                details: { component_name: 'baseline-collection' },
+                cause: { name: 'Error', message: 'baseline source failed' },
             },
         })]);
     });
 
-    it('reports a missing handler with a stable code in one failed tool_result', async () => {
+    it('reports a missing handler with a stable exception name in one failed tool_result', async () => {
         const frames: object[] = [];
 
         const result = await executeSubscribedFrontendTool({
@@ -221,18 +229,67 @@ describe('executeSubscribedFrontendTool', () => {
 
         expect(result).toMatchObject({
             ok: false,
-            code: 'tool_not_registered',
+            errorName: 'ToolNotRegisteredError',
             message: "No handler is registered for 'missing_tool'.",
-            details: { tool_name: 'missing_tool' },
         });
         expect(frames).toHaveLength(1);
         expect(frames[0]).toMatchObject({
             type: 'tool_result',
             result: expect.objectContaining({
                 ok: false,
-                code: 'tool_not_registered',
+                name: 'ToolNotRegisteredError',
             }),
         });
+    });
+
+    it('serializes nested, primitive, circular, and truncated causes safely', async () => {
+        const execute = async (id: string, cause: unknown) => {
+            const frames: object[] = [];
+            await executeSubscribedFrontendTool({
+                call: { id, name: 'fail' },
+                handlers: {
+                    fail: () => { throw new ToolExecutionError('failed', { cause }); },
+                },
+                baseContext: { sendToolStatus: jest.fn() },
+                sendText: (payload) => frames.push(payload),
+            });
+            return (frames[0] as any).result;
+        };
+
+        const leaf = new Error('leaf');
+        const middle = new Error('middle', { cause: leaf });
+        await expect(execute('nested', middle)).resolves.toEqual({
+            ok: false,
+            name: 'ToolExecutionError',
+            message: 'failed',
+            cause: {
+                name: 'Error',
+                message: 'middle',
+                cause: { name: 'Error', message: 'leaf' },
+            },
+        });
+        await expect(execute('primitive', 42)).resolves.toMatchObject({ cause: 42 });
+        await expect(execute('object', { reason: 'offline' })).resolves.toMatchObject({
+            cause: '[object Object]',
+        });
+
+        const circular = new Error('circular') as Error & { cause?: unknown };
+        circular.cause = circular;
+        await expect(execute('circular', circular)).resolves.toMatchObject({
+            cause: {
+                name: 'Error',
+                message: 'circular',
+                cause: '[Circular cause]',
+            },
+        });
+
+        let deep: Error = new Error('level-6');
+        for (let level = 5; level >= 1; level -= 1) {
+            deep = new Error(`level-${level}`, { cause: deep });
+        }
+        const truncated = await execute('truncated', deep);
+        expect(JSON.stringify(truncated)).toContain('[Cause chain truncated]');
+        expect(JSON.stringify(truncated)).not.toContain('level-6');
     });
 
     it('does not expose a secondary tool output callback', async () => {

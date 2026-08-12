@@ -12,6 +12,7 @@ import {
 } from '../ProcedurePlan';
 import type { LiveRangeTodoEventInput } from '../live-range-todo-list-types';
 import type { TaskStartFunction } from '../task-start-function';
+import { createAiToolComponentRefDirectory } from 'contexts/AiToolComponentRefContext';
 
 const taskStart = jest.fn();
 const buildProcedurePlan = (data: Record<string, unknown>) => (
@@ -120,6 +121,30 @@ describe('ProcedurePlanRunner', () => {
         await flushTaskStarts();
         expect(next).toHaveBeenCalledTimes(1);
         expect(order).toEqual(['error:failed', 'removed']);
+    });
+
+    it('deletes its registered reference after the last failed request settles', async () => {
+        const directory = createAiToolComponentRefDirectory();
+        const onError = jest.fn();
+        const runner = new ProcedurePlanRunner('procedure-plan', undefined, onError);
+        runner.addComponentRef(directory);
+        runner.replace({
+            goal: 'Fail once.',
+            currentStep: 0,
+            requests: [{
+                type: 'task',
+                title: 'Failure',
+                status: 'pending',
+                taskStart: () => Promise.reject(new Error('failed')),
+            }],
+        });
+
+        await flushTaskStarts();
+        expect(onError).toHaveBeenCalledWith(
+            expect.objectContaining({ title: 'Failure', status: 'running' }),
+            expect.objectContaining({ message: 'failed' }),
+        );
+        expect(directory.findBaseComponentRef()).toBeNull();
     });
 
     it('aborts the active function when cleared or replaced', () => {

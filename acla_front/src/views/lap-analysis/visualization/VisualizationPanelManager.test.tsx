@@ -2,6 +2,7 @@ import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import VisualizationPanelManager, { ManagedVisualizationInstance } from './VisualizationPanelManager';
+import { VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
@@ -85,5 +86,20 @@ describe('VisualizationPanelManager concrete ref state', () => {
             ref.current!.requestVisualization({ name: 'telemetry:brake', type: 'telemetry-overview' });
         });
         expect(ref.current!.getCurrentVisualizations().map((item) => item.name)).toEqual(['visualization:alpha', 'telemetry:speed', 'telemetry:brake']);
+    });
+
+    it('throws operation-specific component errors for missing updates and closes', () => {
+        const ref = React.createRef<TestVisualizationPanelManager>();
+        render(<TestVisualizationPanelManager ref={ref} name="test-manager" />);
+
+        expect(() => ref.current!.updateVisualization('missing')).toThrow(VisualizationUpdateFailedError);
+        expect(() => ref.current!.updateVisualization('missing')).toThrow(expect.objectContaining({
+            name: 'VisualizationUpdateFailedError',
+            componentName: 'test-manager',
+        }));
+        expect(() => ref.current!.closeVisualization({ name: 'missing' })).toThrow(expect.objectContaining({
+            name: 'VisualizationCloseFailedError',
+            componentName: 'test-manager',
+        }));
     });
 });

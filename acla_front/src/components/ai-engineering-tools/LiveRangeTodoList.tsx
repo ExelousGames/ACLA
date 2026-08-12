@@ -1,6 +1,8 @@
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { InvalidLiveRangeTodoListError } from 'contexts/AiToolComponentError';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
+import { AiToolComponentBase } from './AiToolComponentBase';
 import type {
     JsonValue,
     LiveRangeTodoContent,
@@ -298,89 +300,325 @@ export interface LiveRangeTodoListProps {
     surface?: 'panel' | 'chat' | 'pill';
 }
 
-const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
-    name,
-    onSnapshotChange,
-    surface = 'chat',
-}) => {
-    const { currentTelemetry, sessionGame } = useContext(LiveSessionContext);
-    const initialNowRef = useRef(Date.now());
-    const runtimeRef = useRef<RuntimeSnapshot>({
-        events: [],
-        current_position: null,
-        rolling_rate: null,
-        created_at: initialNowRef.current,
-        updated_at: initialNowRef.current,
-    });
-    const [snapshot, setSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
-    const snapshotChangeRef = useRef(onSnapshotChange);
-    snapshotChangeRef.current = onSnapshotChange;
-    const samplesRef = useRef<LiveRangeTelemetrySample[]>([]);
-    const previousSampleRef = useRef<LiveRangeTelemetrySample | null>(null);
-    const previousSessionGameRef = useRef(sessionGame);
-    const activeRunsRef = useRef<Map<string, ActiveRun>>(new Map());
-    const runNextDueEventRef = useRef<() => void>(() => undefined);
-    const mountedRef = useRef(false);
+export class LiveRangeTodoListRunner
+extends AiToolComponentBase<LiveRangeTodoListSnapshot | null>
+implements LiveRangeTodoListHandle {
+    private runtime: RuntimeSnapshot;
+    private samples: LiveRangeTelemetrySample[] = [];
+    private previousSample: LiveRangeTelemetrySample | null = null;
+    private readonly activeRuns = new Map<string, ActiveRun>();
+    private readonly onChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
 
-    const commit = useCallback((next: RuntimeSnapshot) => {
-        runtimeRef.current = next;
-        const nextSnapshot = serializeSnapshot(next);
-        const visibleSnapshot = nextSnapshot.events.length > 0 ? nextSnapshot : null;
-        setSnapshot(visibleSnapshot);
-        snapshotChangeRef.current?.(visibleSnapshot);
-        return nextSnapshot;
-    }, []);
+    constructor(
+        componentName: string,
+        onChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void,
+    ) {
+        super(componentName, null);
+        const now = Date.now();
+        this.runtime = {
+            events: [],
+            current_position: null,
+            rolling_rate: null,
+            created_at: now,
+            updated_at: now,
+        };
+        this.onChange = onChange;
+    }
 
-    const resultForCurrent = useCallback((): LiveRangeTodoListToolResult => {
-        const current = serializeSnapshot(runtimeRef.current);
+    addEvent(eventInput: LiveRangeTodoEventInput): LiveRangeTodoListToolResult {
+        const now = Date.now();
+        const parsed = this.parseNewEvent(eventInput, now);
+        if (!parsed.event) return this.invalidList(parsed.error || 'Invalid live range to-do event.');
+        if (this.runtime.events.some((event) => event.id === parsed.event!.id)) {
+            return this.invalidList(`Duplicate live range to-do event id: ${parsed.event.id}.`);
+        }
+        const event = {
+            ...parsed.event,
+            eta_seconds: this.runtime.current_position === null
+                ? null
+                : calculateLiveRangeEta(
+                    this.runtime.current_position,
+                    parsed.event.normalized_position,
+                    this.runtime.rolling_rate,
+                ),
+        };
+        const next = this.commit({
+            ...this.runtime,
+            events: [...this.runtime.events, event],
+            updated_at: now,
+        });
+        return { status: 'ready', todo_list: next, message: `Added event '${event.id}'.` };
+    }
+
+    replaceEvents(eventInputs: readonly LiveRangeTodoEventInput[]): LiveRangeTodoListToolResult {
+        if (!Array.isArray(eventInputs)) return this.invalidList('Provide an events array.');
+        const now = Date.now();
+        const parsed = eventInputs.map((event) => this.parseNewEvent(event, now));
+        const invalid = parsed.find((entry) => !entry.event);
+        if (invalid) return this.invalidList(invalid.error || 'Invalid live range to-do event.');
+        const events = parsed.map((entry) => entry.event!);
+        const ids = new Set<string>();
+        for (const event of events) {
+            if (ids.has(event.id)) return this.invalidList(`Duplicate live range to-do event id: ${event.id}.`);
+            ids.add(event.id);
+        }
+
+        this.abortEvents();
+        this.previousSample = null;
+        const eventsWithEta = events.map((event) => ({
+            ...event,
+            eta_seconds: this.runtime.current_position === null
+                ? null
+                : calculateLiveRangeEta(
+                    this.runtime.current_position,
+                    event.normalized_position,
+                    this.runtime.rolling_rate,
+                ),
+        }));
+        const next = this.commit({
+            events: eventsWithEta,
+            current_position: this.runtime.current_position,
+            rolling_rate: this.runtime.rolling_rate,
+            lap: this.runtime.lap,
+            created_at: now,
+            updated_at: now,
+        });
+        return {
+            status: eventsWithEta.length > 0 ? 'ready' : 'empty',
+            todo_list: next,
+            message: eventsWithEta.length > 0
+                ? `Replaced the queue with ${eventsWithEta.length} event${eventsWithEta.length === 1 ? '' : 's'}.`
+                : 'The live range to-do list is empty.',
+        };
+    }
+
+    updateEvents(eventUpdates: readonly LiveRangeTodoEventUpdate[]): LiveRangeTodoListToolResult {
+        if (!Array.isArray(eventUpdates) || eventUpdates.length === 0) {
+            return this.invalidList('Provide at least one event update.');
+        }
+        const now = Date.now();
+        const updates = new Map<string, RuntimeEvent>();
+
+        for (const raw of eventUpdates) {
+            if (!isRecord(raw) || typeof raw.id !== 'string' || !raw.id.trim()) {
+                return this.invalidList('Each event update requires a non-empty id.');
+            }
+            const id = raw.id.trim();
+            if (updates.has(id)) return this.invalidList(`Duplicate live range to-do event id: ${id}.`);
+            const existing = this.runtime.events.find((event) => event.id === id);
+            if (!existing) return this.invalidList(`Live range to-do event '${id}' was not found.`);
+
+            let next: RuntimeEvent = {
+                ...existing,
+                status: 'pending',
+                due: undefined,
+                updated_at: now,
+            };
+            if (hasOwn(raw, 'content')) {
+                const parsedContent = parseContent(raw.content, true);
+                if (!parsedContent.content) return this.invalidList(`Event '${id}': ${parsedContent.error}`);
+                next.content = { ...existing.content, ...parsedContent.content };
+            }
+            if (hasOwn(raw, 'normalized_position')) {
+                const position = parsePosition(raw.normalized_position);
+                if (position === null) return this.invalidList(`Event '${id}' normalized_position must be between 0 and 1.`);
+                next.normalized_position = position;
+            }
+            if (hasOwn(raw, 'lead_time_seconds')) {
+                const leadTime = parseLeadTime(raw.lead_time_seconds);
+                if (leadTime === null) return this.invalidList(`Event '${id}' lead_time_seconds must be zero or greater.`);
+                next.lead_time_seconds = leadTime;
+            }
+            if (hasOwn(raw, 'data')) {
+                if (!isJsonSafe(raw.data)) return this.invalidList(`Event '${id}' data must be JSON-safe.`);
+                next.data = cloneJson(raw.data);
+            }
+            if (hasOwn(raw, 'taskStart')) {
+                if (typeof raw.taskStart !== 'function') return this.invalidList(`Event '${id}' taskStart must be a function.`);
+                next.taskStart = raw.taskStart as TaskStartFunction;
+            }
+            next = {
+                ...next,
+                eta_seconds: this.runtime.current_position === null
+                    ? null
+                    : calculateLiveRangeEta(
+                        this.runtime.current_position,
+                        next.normalized_position,
+                        this.runtime.rolling_rate,
+                    ),
+                started_at: undefined,
+                lap: undefined,
+            };
+            updates.set(id, next);
+        }
+
+        const affectedIds = new Set(updates.keys());
+        this.abortEvents(affectedIds);
+        const next = this.commit({
+            ...this.runtime,
+            events: this.runtime.events.map((event) => updates.get(event.id) ?? event),
+            updated_at: now,
+        });
+        this.runNextDueEvent();
+        return { status: 'ready', todo_list: next, message: `Updated ${updates.size} event${updates.size === 1 ? '' : 's'}.` };
+    }
+
+    removeEvents(idsInput: readonly string[]): LiveRangeTodoListToolResult {
+        const parsed = parseIds(idsInput);
+        if (!parsed.ids || parsed.ids.length === 0) return this.invalidList(parsed.error || 'Provide event ids to remove.');
+        const ids = new Set(parsed.ids);
+        this.abortEvents(ids);
+        const events = this.runtime.events.filter((event) => !ids.has(event.id));
+        const removedCount = this.runtime.events.length - events.length;
+        const next = this.commit({ ...this.runtime, events, updated_at: Date.now() });
+        this.runNextDueEvent();
+        return {
+            status: events.length > 0 ? 'ready' : 'empty',
+            todo_list: next,
+            message: `Removed ${removedCount} event${removedCount === 1 ? '' : 's'}.`,
+        };
+    }
+
+    resetEvents(idsInput?: readonly string[]): LiveRangeTodoListToolResult {
+        const parsed = idsInput === undefined
+            ? { ids: this.runtime.events.map((event) => event.id) }
+            : parseIds(idsInput);
+        if (!parsed.ids) return this.invalidList(parsed.error || 'Provide valid event ids to reset.');
+        const now = Date.now();
+        const ids = new Set(parsed.ids);
+        this.abortEvents(ids);
+        const events = this.runtime.events.map((event): RuntimeEvent => ids.has(event.id) ? {
+            ...event,
+            status: 'pending',
+            due: undefined,
+            eta_seconds: this.runtime.current_position === null
+                ? null
+                : calculateLiveRangeEta(
+                    this.runtime.current_position,
+                    event.normalized_position,
+                    this.runtime.rolling_rate,
+                ),
+            updated_at: now,
+            started_at: undefined,
+            lap: undefined,
+        } : event);
+        const next = this.commit({ ...this.runtime, events, updated_at: now });
+        this.runNextDueEvent();
+        return {
+            status: events.length > 0 ? 'ready' : 'empty',
+            todo_list: next,
+            message: `Reset ${ids.size} event${ids.size === 1 ? '' : 's'}.`,
+        };
+    }
+
+    clear(): LiveRangeTodoListToolResult {
+        this.abortEvents();
+        const next = this.commit({ ...this.runtime, events: [], updated_at: Date.now() });
+        return { status: 'empty', todo_list: next, message: 'Cleared the live range to-do list.' };
+    }
+
+    get(): LiveRangeTodoListToolResult {
+        const current = serializeSnapshot(this.runtime);
         return {
             status: current.events.length > 0 ? 'ready' : 'empty',
             todo_list: current,
             ...(current.events.length === 0 ? { message: 'The live range to-do list is empty.' } : {}),
         };
-    }, []);
+    }
 
-    const errorResult = useCallback((message: string): LiveRangeTodoListToolResult => ({
-        status: 'error',
-        todo_list: serializeSnapshot(runtimeRef.current),
-        error: 'invalid_live_range_todo_list',
-        message,
-    }), []);
-
-    const abortEvents = useCallback((ids?: Set<string>) => {
-        Array.from(activeRunsRef.current.entries()).forEach(([id, run]) => {
-            if (!ids || ids.has(id)) {
-                activeRunsRef.current.delete(id);
-                run.controller.abort();
-            }
+    acceptTelemetry(telemetry: Record<string, any> | null | undefined): void {
+        if (this.isDisposed()) return;
+        const position = getLiveRangeNormalizedPosition(telemetry);
+        if (position === undefined) return;
+        const now = Date.now();
+        const currentSample: LiveRangeTelemetrySample = {
+            position,
+            receivedAt: now,
+            lap: getLiveRangeTelemetryLap(telemetry),
+        };
+        this.samples = [...this.samples, currentSample]
+            .filter((sample) => sample.receivedAt >= now - SAMPLE_WINDOW_MS);
+        const rate = calculateRollingForwardRate(this.samples);
+        const previousSample = this.previousSample;
+        this.previousSample = currentSample;
+        const events = this.runtime.events.map((event): RuntimeEvent => {
+            if (event.status !== 'pending') return event;
+            const eta = calculateLiveRangeEta(position, event.normalized_position, rate);
+            const crossed = previousSample
+                ? crossedLiveRangeTodoPosition(previousSample, currentSample, event.normalized_position)
+                : false;
+            return {
+                ...event,
+                eta_seconds: eta,
+                due: event.due || crossed || (eta !== null && eta <= event.lead_time_seconds),
+                updated_at: now,
+            };
         });
-    }, []);
+        this.commit({
+            ...this.runtime,
+            events,
+            current_position: position,
+            rolling_rate: rate,
+            lap: currentSample.lap,
+            updated_at: now,
+        });
+        this.runNextDueEvent();
+    }
 
-    const parseNewEvent = useCallback((
+    reset(): void {
+        this.abortEvents();
+        this.samples = [];
+        this.previousSample = null;
+        const now = Date.now();
+        this.commit({
+            events: [],
+            current_position: null,
+            rolling_rate: null,
+            created_at: now,
+            updated_at: now,
+        });
+    }
+
+    protected onDispose(): void {
+        this.abortEvents();
+        this.samples = [];
+        this.previousSample = null;
+    }
+
+    private commit(next: RuntimeSnapshot): LiveRangeTodoListSnapshot {
+        this.runtime = next;
+        const snapshot = serializeSnapshot(next);
+        const visibleSnapshot = snapshot.events.length > 0 ? snapshot : null;
+        this.publishSnapshot(visibleSnapshot);
+        this.onChange?.(visibleSnapshot);
+        if (snapshot.events.length === 0) this.deleteComponentRef();
+        return snapshot;
+    }
+
+    private invalidList(message: string): never {
+        throw new InvalidLiveRangeTodoListError(
+            this.getComponentName(),
+            message,
+        );
+    }
+
+    private parseNewEvent(
         value: unknown,
         now: number,
-    ): { event?: RuntimeEvent; error?: string } => {
+    ): { event?: RuntimeEvent; error?: string } {
         if (!isRecord(value)) return { error: 'Each event must be an object.' };
         const id = typeof value.id === 'string' ? value.id.trim() : '';
         if (!id) return { error: 'Each event requires a non-empty id.' };
         const position = parsePosition(value.normalized_position);
-        if (position === null) {
-            return { error: `Event '${id}' normalized_position must be between 0 and 1.` };
-        }
+        if (position === null) return { error: `Event '${id}' normalized_position must be between 0 and 1.` };
         const leadTime = value.lead_time_seconds === undefined
             ? DEFAULT_LEAD_TIME_SECONDS
             : parseLeadTime(value.lead_time_seconds);
-        if (leadTime === null) {
-            return { error: `Event '${id}' lead_time_seconds must be zero or greater.` };
-        }
+        if (leadTime === null) return { error: `Event '${id}' lead_time_seconds must be zero or greater.` };
         const parsedContent = parseContent(value.content);
         if (!parsedContent.content) return { error: `Event '${id}': ${parsedContent.error}` };
-        if (!isJsonSafe(value.data)) {
-            return { error: `Event '${id}' requires JSON-safe data.` };
-        }
-        if (typeof value.taskStart !== 'function') {
-            return { error: `Event '${id}' requires a task-start function.` };
-        }
+        if (!isJsonSafe(value.data)) return { error: `Event '${id}' requires JSON-safe data.` };
+        if (typeof value.taskStart !== 'function') return { error: `Event '${id}' requires a task-start function.` };
 
         return {
             event: {
@@ -396,228 +634,20 @@ const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
                 updated_at: now,
             },
         };
-    }, []);
+    }
 
-    const addEvent = useCallback((eventInput: LiveRangeTodoEventInput): LiveRangeTodoListToolResult => {
-        const now = Date.now();
-        const parsed = parseNewEvent(eventInput, now);
-        if (!parsed.event) return errorResult(parsed.error || 'Invalid live range to-do event.');
-        const current = runtimeRef.current;
-        if (current.events.some((event) => event.id === parsed.event!.id)) {
-            return errorResult(`Duplicate live range to-do event id: ${parsed.event.id}.`);
-        }
-        const event = {
-            ...parsed.event,
-            eta_seconds: current.current_position === null
-                ? null
-                : calculateLiveRangeEta(
-                    current.current_position,
-                    parsed.event.normalized_position,
-                    current.rolling_rate,
-                ),
-        };
-        const next = commit({ ...current, events: [...current.events, event], updated_at: now });
-        return { status: 'ready', todo_list: next, message: `Added event '${event.id}'.` };
-    }, [commit, errorResult, parseNewEvent]);
-
-    const replaceEvents = useCallback((
-        eventInputs: readonly LiveRangeTodoEventInput[],
-    ): LiveRangeTodoListToolResult => {
-        if (!Array.isArray(eventInputs)) return errorResult('Provide an events array.');
-        const now = Date.now();
-        const parsed = eventInputs.map((event) => parseNewEvent(event, now));
-        const invalid = parsed.find((entry) => !entry.event);
-        if (invalid) return errorResult(invalid.error || 'Invalid live range to-do event.');
-        const events = parsed.map((entry) => entry.event!);
-        const ids = new Set<string>();
-        for (const event of events) {
-            if (ids.has(event.id)) return errorResult(`Duplicate live range to-do event id: ${event.id}.`);
-            ids.add(event.id);
-        }
-
-        abortEvents();
-        previousSampleRef.current = null;
-        const current = runtimeRef.current;
-        const eventsWithEta = events.map((event) => ({
-            ...event,
-            eta_seconds: current.current_position === null
-                ? null
-                : calculateLiveRangeEta(
-                    current.current_position,
-                    event.normalized_position,
-                    current.rolling_rate,
-                ),
-        }));
-        const next = commit({
-            events: eventsWithEta,
-            current_position: current.current_position,
-            rolling_rate: current.rolling_rate,
-            lap: current.lap,
-            created_at: now,
-            updated_at: now,
+    private abortEvents(ids?: Set<string>): void {
+        Array.from(this.activeRuns.entries()).forEach(([id, run]) => {
+            if (!ids || ids.has(id)) {
+                this.activeRuns.delete(id);
+                run.controller.abort();
+            }
         });
-        return {
-            status: eventsWithEta.length > 0 ? 'ready' : 'empty',
-            todo_list: next,
-            message: eventsWithEta.length > 0
-                ? `Replaced the queue with ${eventsWithEta.length} event${eventsWithEta.length === 1 ? '' : 's'}.`
-                : 'The live range to-do list is empty.',
-        };
-    }, [abortEvents, commit, errorResult, parseNewEvent]);
+    }
 
-    const updateEvents = useCallback((
-        eventUpdates: readonly LiveRangeTodoEventUpdate[],
-    ): LiveRangeTodoListToolResult => {
-        if (!Array.isArray(eventUpdates) || eventUpdates.length === 0) {
-            return errorResult('Provide at least one event update.');
-        }
-        const current = runtimeRef.current;
-        const now = Date.now();
-        const updates = new Map<string, RuntimeEvent>();
-
-        for (const raw of eventUpdates) {
-            if (!isRecord(raw) || typeof raw.id !== 'string' || !raw.id.trim()) {
-                return errorResult('Each event update requires a non-empty id.');
-            }
-            const id = raw.id.trim();
-            if (updates.has(id)) return errorResult(`Duplicate live range to-do event id: ${id}.`);
-            const existing = current.events.find((event) => event.id === id);
-            if (!existing) return errorResult(`Live range to-do event '${id}' was not found.`);
-
-            let next: RuntimeEvent = {
-                ...existing,
-                status: 'pending',
-                due: undefined,
-                updated_at: now,
-            };
-            if (hasOwn(raw, 'content')) {
-                const parsedContent = parseContent(raw.content, true);
-                if (!parsedContent.content) return errorResult(`Event '${id}': ${parsedContent.error}`);
-                next.content = { ...existing.content, ...parsedContent.content };
-            }
-            if (hasOwn(raw, 'normalized_position')) {
-                const position = parsePosition(raw.normalized_position);
-                if (position === null) return errorResult(`Event '${id}' normalized_position must be between 0 and 1.`);
-                next.normalized_position = position;
-            }
-            if (hasOwn(raw, 'lead_time_seconds')) {
-                const leadTime = parseLeadTime(raw.lead_time_seconds);
-                if (leadTime === null) return errorResult(`Event '${id}' lead_time_seconds must be zero or greater.`);
-                next.lead_time_seconds = leadTime;
-            }
-            if (hasOwn(raw, 'data')) {
-                if (!isJsonSafe(raw.data)) return errorResult(`Event '${id}' data must be JSON-safe.`);
-                next.data = cloneJson(raw.data);
-            }
-            if (hasOwn(raw, 'taskStart')) {
-                if (typeof raw.taskStart !== 'function') return errorResult(`Event '${id}' taskStart must be a function.`);
-                next.taskStart = raw.taskStart as TaskStartFunction;
-            }
-            next = {
-                ...next,
-                eta_seconds: current.current_position === null
-                    ? null
-                    : calculateLiveRangeEta(
-                        current.current_position,
-                        next.normalized_position,
-                        current.rolling_rate,
-                    ),
-                started_at: undefined,
-                lap: undefined,
-            };
-            updates.set(id, next);
-        }
-
-        const affectedIds = new Set(updates.keys());
-        abortEvents(affectedIds);
-        const events = current.events.map((event) => updates.get(event.id) ?? event);
-        const next = commit({ ...current, events, updated_at: now });
-        runNextDueEventRef.current();
-        return { status: 'ready', todo_list: next, message: `Updated ${updates.size} event${updates.size === 1 ? '' : 's'}.` };
-    }, [abortEvents, commit, errorResult]);
-
-    const removeEvents = useCallback((idsInput: readonly string[]): LiveRangeTodoListToolResult => {
-        const parsed = parseIds(idsInput);
-        if (!parsed.ids || parsed.ids.length === 0) return errorResult(parsed.error || 'Provide event ids to remove.');
-        const current = runtimeRef.current;
-        const now = Date.now();
-        const ids = new Set(parsed.ids);
-        abortEvents(ids);
-        const events = current.events.filter((event) => !ids.has(event.id));
-        const removedCount = current.events.length - events.length;
-        const next = commit({ ...current, events, updated_at: now });
-        runNextDueEventRef.current();
-        return {
-            status: events.length > 0 ? 'ready' : 'empty',
-            todo_list: next,
-            message: `Removed ${removedCount} event${removedCount === 1 ? '' : 's'}.`,
-        };
-    }, [abortEvents, commit, errorResult]);
-
-    const resetEvents = useCallback((idsInput?: readonly string[]): LiveRangeTodoListToolResult => {
-        const current = runtimeRef.current;
-        const parsed = idsInput === undefined
-            ? { ids: current.events.map((event) => event.id) }
-            : parseIds(idsInput);
-        if (!parsed.ids) return errorResult(parsed.error || 'Provide valid event ids to reset.');
-        const now = Date.now();
-        const ids = new Set(parsed.ids);
-        abortEvents(ids);
-        const events = current.events.map((event): RuntimeEvent => ids.has(event.id) ? {
-            ...event,
-            status: 'pending',
-            due: undefined,
-            eta_seconds: current.current_position === null
-                ? null
-                : calculateLiveRangeEta(
-                    current.current_position,
-                    event.normalized_position,
-                    current.rolling_rate,
-                ),
-            updated_at: now,
-            started_at: undefined,
-            lap: undefined,
-        } : event);
-        const next = commit({ ...current, events, updated_at: now });
-        runNextDueEventRef.current();
-        return {
-            status: events.length > 0 ? 'ready' : 'empty',
-            todo_list: next,
-            message: `Reset ${ids.size} event${ids.size === 1 ? '' : 's'}.`,
-        };
-    }, [abortEvents, commit, errorResult]);
-
-    const clear = useCallback((): LiveRangeTodoListToolResult => {
-        abortEvents();
-        const current = runtimeRef.current;
-        const next = commit({ ...current, events: [], updated_at: Date.now() });
-        return { status: 'empty', todo_list: next, message: 'Cleared the live range to-do list.' };
-    }, [abortEvents, commit]);
-
-    const finishEvent = useCallback((id: string, token: symbol, error?: unknown) => {
-        if (!mountedRef.current) return;
-        const activeRun = activeRunsRef.current.get(id);
-        if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
-        activeRunsRef.current.delete(id);
-        if (error !== undefined) {
-            console.error(`Live range to-do event '${id}' task failed.`, error);
-        }
-
-        const current = runtimeRef.current;
-        if (!current.events.some((event) => event.id === id)) return;
-        commit({
-            ...current,
-            events: current.events.filter((event) => event.id !== id),
-            updated_at: Date.now(),
-        });
-        runNextDueEventRef.current();
-    }, [commit]);
-
-    const runNextDueEvent = useCallback(() => {
-        if (!mountedRef.current || activeRunsRef.current.size > 0) return;
-
-        const current = runtimeRef.current;
-        const event = current.events.find((candidate) => (
+    private runNextDueEvent(): void {
+        if (this.isDisposed() || this.activeRuns.size > 0) return;
+        const event = this.runtime.events.find((candidate) => (
             candidate.status === 'pending' && candidate.due
         ));
         if (!event) return;
@@ -629,14 +659,14 @@ const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
             ...event,
             status: 'running',
             due: undefined,
-            lap: current.lap,
+            lap: this.runtime.lap,
             started_at: now,
             updated_at: now,
         };
-        activeRunsRef.current.set(event.id, { controller, token });
-        commit({
-            ...current,
-            events: current.events.map((candidate) => (
+        this.activeRuns.set(event.id, { controller, token });
+        this.commit({
+            ...this.runtime,
+            events: this.runtime.events.map((candidate) => (
                 candidate.id === event.id ? runningEvent : candidate
             )),
             updated_at: now,
@@ -644,103 +674,76 @@ const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
 
         try {
             Promise.resolve(runningEvent.taskStart(controller.signal)).then(
-                () => finishEvent(event.id, token),
-                (runError) => finishEvent(event.id, token, runError),
+                () => this.finishEvent(event.id, token),
+                (error) => this.finishEvent(event.id, token, error),
             );
-        } catch (runError) {
-            finishEvent(event.id, token, runError);
+        } catch (error) {
+            this.finishEvent(event.id, token, error);
         }
-    }, [commit, finishEvent]);
-    runNextDueEventRef.current = runNextDueEvent;
+    }
+
+    private finishEvent(id: string, token: symbol, error?: unknown): void {
+        if (this.isDisposed()) return;
+        const activeRun = this.activeRuns.get(id);
+        if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
+        this.activeRuns.delete(id);
+        if (error !== undefined) console.error(`Live range to-do event '${id}' task failed.`, error);
+        if (!this.runtime.events.some((event) => event.id === id)) return;
+        this.commit({
+            ...this.runtime,
+            events: this.runtime.events.filter((event) => event.id !== id),
+            updated_at: Date.now(),
+        });
+        this.runNextDueEvent();
+    }
+}
+
+const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
+    name,
+    onSnapshotChange,
+    surface = 'chat',
+}) => {
+    const { currentTelemetry, sessionGame } = useContext(LiveSessionContext);
+    const [snapshot, setSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
+    const snapshotChangeRef = useRef(onSnapshotChange);
+    snapshotChangeRef.current = onSnapshotChange;
+    const previousSessionGameRef = useRef(sessionGame);
+    const runnerRef = useRef<LiveRangeTodoListRunner | null>(null);
+    if (!runnerRef.current) {
+        runnerRef.current = new LiveRangeTodoListRunner(name, (next) => {
+            setSnapshot(next);
+            snapshotChangeRef.current?.(next);
+        });
+    }
 
     const handle = useMemo<LiveRangeTodoListHandle>(() => ({
         getComponentName: () => name,
-        addEvent,
-        replaceEvents,
-        updateEvents,
-        removeEvents,
-        resetEvents,
-        clear,
-        get: resultForCurrent,
-    }), [addEvent, clear, name, removeEvents, replaceEvents, resetEvents, resultForCurrent, updateEvents]);
+        addEvent: (event) => runnerRef.current!.addEvent(event),
+        replaceEvents: (events) => runnerRef.current!.replaceEvents(events),
+        updateEvents: (updates) => runnerRef.current!.updateEvents(updates),
+        removeEvents: (ids) => runnerRef.current!.removeEvents(ids),
+        resetEvents: (ids) => runnerRef.current!.resetEvents(ids),
+        clear: () => runnerRef.current!.clear(),
+        get: () => runnerRef.current!.get(),
+    }), [name]);
     useRegisterAiToolComponentRef(name, handle);
 
-    useEffect(() => {
-        mountedRef.current = true;
-        const current = serializeSnapshot(runtimeRef.current);
-        snapshotChangeRef.current?.(current.events.length > 0 ? current : null);
-        return () => {
-            mountedRef.current = false;
-            abortEvents();
-            samplesRef.current = [];
-            previousSampleRef.current = null;
-            snapshotChangeRef.current?.(null);
-        };
-    }, [abortEvents]);
+    useEffect(() => () => {
+        runnerRef.current?.dispose();
+        snapshotChangeRef.current?.(null);
+    }, []);
 
     useEffect(() => {
         const previousSessionGame = previousSessionGameRef.current;
         previousSessionGameRef.current = sessionGame;
         if (previousSessionGame === sessionGame) return;
-
-        samplesRef.current = [];
-        previousSampleRef.current = null;
         if (sessionGame === null) return;
-
-        abortEvents();
-        const now = Date.now();
-        commit({
-            events: [],
-            current_position: null,
-            rolling_rate: null,
-            created_at: now,
-            updated_at: now,
-        });
-    }, [abortEvents, commit, sessionGame]);
+        runnerRef.current?.reset();
+    }, [sessionGame]);
 
     useEffect(() => {
-        const position = getLiveRangeNormalizedPosition(currentTelemetry);
-        if (position === undefined) return;
-        const now = Date.now();
-        const currentSample: LiveRangeTelemetrySample = {
-            position,
-            receivedAt: now,
-            lap: getLiveRangeTelemetryLap(currentTelemetry),
-        };
-        samplesRef.current = [
-            ...samplesRef.current,
-            currentSample,
-        ].filter((sample) => sample.receivedAt >= now - SAMPLE_WINDOW_MS);
-        const rate = calculateRollingForwardRate(samplesRef.current);
-        const previousSample = previousSampleRef.current;
-        previousSampleRef.current = currentSample;
-
-        const current = runtimeRef.current;
-        const events = current.events.map((event): RuntimeEvent => {
-            if (event.status !== 'pending') return event;
-            const eta = calculateLiveRangeEta(position, event.normalized_position, rate);
-            const crossed = previousSample
-                ? crossedLiveRangeTodoPosition(previousSample, currentSample, event.normalized_position)
-                : false;
-            const due = crossed || (eta !== null && eta <= event.lead_time_seconds);
-            return {
-                ...event,
-                eta_seconds: eta,
-                due: event.due || due,
-                updated_at: now,
-            };
-        });
-
-        commit({
-            ...current,
-            events,
-            current_position: position,
-            rolling_rate: rate,
-            lap: currentSample.lap,
-            updated_at: now,
-        });
-        runNextDueEvent();
-    }, [commit, currentTelemetry, runNextDueEvent]);
+        runnerRef.current?.acceptTelemetry(currentTelemetry);
+    }, [currentTelemetry]);
 
     return <LiveRangeTodoListDisplay snapshot={snapshot} surface={surface} />;
 };

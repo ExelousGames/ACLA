@@ -1,5 +1,6 @@
-import React from 'react';
-import { render } from '@testing-library/react';
+import React, { useContext } from 'react';
+import { act, render } from '@testing-library/react';
+import apiService from 'services/api.service';
 import {
     AI_TOOL_COMPONENT_NAMES,
     AiToolComponentRefDirectory,
@@ -21,8 +22,22 @@ jest.mock('@radix-ui/themes', () => {
 jest.mock('../map-list/map-list', () => () => <div>Maps</div>);
 jest.mock('../session-list/session-list', () => () => <div>Sessions</div>);
 jest.mock('../sessionAnalysis/session-analysis-split', () => () => <div>Recorded workspace</div>);
+jest.mock('services/api.service', () => ({
+    __esModule: true,
+    default: { post: jest.fn() },
+}));
 
-import SessionAnalysis from '../session-analysis';
+import SessionAnalysis, { SessionAnalysisProvider } from '../session-analysis';
+import {
+    ExpertLineGuidanceFailedError,
+    LapComparisonFailedError,
+    PerformanceInsightsFailedError,
+    RecordedAnalysisFailedError,
+    SessionAnalysisFailedError,
+    TelemetryDataFailedError,
+} from 'contexts/AiToolComponentError';
+
+const mockPost = apiService.post as jest.Mock;
 
 let directory: AiToolComponentRefDirectory | null = null;
 const DirectoryObserver = () => {
@@ -58,6 +73,11 @@ const Harness = ({ value }: { value: AnalysisContextType }) => (
 );
 
 describe('SessionAnalysis named component handle', () => {
+    beforeEach(() => {
+        directory = null;
+        mockPost.mockReset();
+    });
+
     it('keeps its exact name and exposes fresh recorded-session operations', () => {
         const view = render(<Harness value={createAnalysisContext({ activeTab: 'sessionLists', mapSelected: 'Monza' })} />);
         const ref = directory!.findComponentRef<SessionAnalysisHandle>(AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)!;
@@ -85,6 +105,84 @@ describe('SessionAnalysis named component handle', () => {
         expect(ref.current!.getRecordedPlaybackSummary()).toMatchObject({
             sampleCount: 800,
             playbackTimeSeconds: 12.5,
+        });
+    });
+
+    it.each([
+        ['requestSessionAnalysis', ['session-17'], SessionAnalysisFailedError],
+        ['requestPerformanceInsights', ['session-17'], PerformanceInsightsFailedError],
+        ['requestLapComparison', [['session-17', 'session-18']], LapComparisonFailedError],
+        ['requestExpertLineGuidance', ['session-17'], ExpertLineGuidanceFailedError],
+        ['requestTelemetryData', ['session-17'], TelemetryDataFailedError],
+    ] as const)('wraps %s transport failures with its concrete exception', async (method, args, ErrorType) => {
+        render(<Harness value={createAnalysisContext()} />);
+        const handle = directory!.findComponentRef<SessionAnalysisHandle>(
+            AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+        )!.current!;
+        const cause = { response: { data: { message: 'Transport unavailable.' } } };
+        mockPost.mockRejectedValueOnce(cause);
+
+        let thrown: unknown;
+        try {
+            await (handle[method] as (...values: any[]) => Promise<any>)(...args);
+        } catch (error) {
+            thrown = error;
+        }
+
+        expect(thrown).toBeInstanceOf(ErrorType);
+        expect(thrown).toMatchObject({
+            name: ErrorType.name,
+            componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            message: 'Transport unavailable.',
+            cause,
+        });
+    });
+});
+
+describe('SessionAnalysisProvider recorded analysis failures', () => {
+    let providerContext: AnalysisContextType;
+    const ContextObserver = () => {
+        providerContext = useContext(AnalysisContext);
+        return null;
+    };
+
+    beforeEach(() => {
+        mockPost.mockReset();
+    });
+
+    it('publishes the recorded error state before rejecting', async () => {
+        render(
+            <SessionAnalysisProvider>
+                <ContextObserver />
+            </SessionAnalysisProvider>,
+        );
+        act(() => providerContext.setSession({
+            SessionId: 'session-17',
+            session_name: 'Sunday Race',
+        } as any));
+        const cause = new Error('Classifier unavailable.');
+        mockPost.mockRejectedValueOnce(cause);
+
+        let thrown: unknown;
+        await act(async () => {
+            try {
+                await providerContext.runRecordedAiAnalysis();
+            } catch (error) {
+                thrown = error;
+            }
+        });
+
+        expect(thrown).toBeInstanceOf(RecordedAnalysisFailedError);
+        expect(thrown).toMatchObject({
+            name: 'RecordedAnalysisFailedError',
+            componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            message: 'Classifier unavailable.',
+            cause,
+        });
+        expect(providerContext.recordedAiAnalysis).toMatchObject({
+            sessionId: 'session-17',
+            status: 'error',
+            message: 'Classifier unavailable.',
         });
     });
 });

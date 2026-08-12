@@ -22,6 +22,7 @@ import type {
     LiveRangeTodoListToolResult,
     TaskStartFunction,
 } from 'components/ai-engineering-tools';
+import { InvalidLiveRangeTodoListError } from 'contexts/AiToolComponentError';
 
 const telemetry = (lap: number, position: number) => ({
     Graphics_completed_laps: lap,
@@ -194,23 +195,27 @@ describe('LiveRangeTodoList', () => {
         const callbackFree = makeEvent('missing', callback) as Partial<LiveRangeTodoEventInput>;
         delete callbackFree.taskStart;
 
-        const results = [
-            callHandle(() => getHandle().addEvent(callbackFree as LiveRangeTodoEventInput)),
-            callHandle(() => getHandle().replaceEvents([callbackFree as LiveRangeTodoEventInput])),
-            callHandle(() => getHandle().replaceEvents([
+        const invalidMutations = [
+            () => getHandle().addEvent(callbackFree as LiveRangeTodoEventInput),
+            () => getHandle().replaceEvents([callbackFree as LiveRangeTodoEventInput]),
+            () => getHandle().replaceEvents([
                 makeEvent('bad-position', callback, { normalized_position: 1.1 }),
-            ])),
-            callHandle(() => getHandle().replaceEvents([
+            ]),
+            () => getHandle().replaceEvents([
                 makeEvent('bad-lead', callback, { lead_time_seconds: -1 }),
-            ])),
-            callHandle(() => getHandle().replaceEvents([
+            ]),
+            () => getHandle().replaceEvents([
                 makeEvent('same', callback),
                 makeEvent('same', callback, { normalized_position: 0.5 }),
-            ])),
+            ]),
         ];
 
-        results.forEach((result) => {
-            expect(result).toMatchObject({ status: 'error', error: 'invalid_live_range_todo_list' });
+        invalidMutations.forEach((mutate) => {
+            expect(mutate).toThrow(InvalidLiveRangeTodoListError);
+            expect(mutate).toThrow(expect.objectContaining({
+                name: 'InvalidLiveRangeTodoListError',
+                componentName: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+            }));
         });
         expect(getHandle().get().todo_list!.events).toHaveLength(0);
     });

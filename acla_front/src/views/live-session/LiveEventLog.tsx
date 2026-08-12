@@ -3,6 +3,8 @@ import { Badge, Box, Flex, Table, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { EventType, SessionEvent } from 'views/lap-analysis/session-intelligence/types';
 import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { runVisualizationBooleanCallback } from 'views/lap-analysis/visualization/visualization-component-callbacks';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
 
 const EVENT_COLORS: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
     CORNER: 'blue',
@@ -12,8 +14,8 @@ const EVENT_COLORS: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
 };
 
 export interface LiveEventLogHandle extends NamedAiToolComponentHandle {
-    updateLiveEvents(events: SessionEvent[]): boolean;
-    disableLiveEventLog(): boolean;
+    updateLiveEvents(events: SessionEvent[]): true;
+    disableLiveEventLog(): true;
 }
 
 interface LiveEventLogProps {
@@ -32,8 +34,18 @@ const LiveEventLog = forwardRef<LiveEventLogHandle, LiveEventLogProps>(({
     const [search, setSearch] = useState('');
     const handle = useMemo<LiveEventLogHandle>(() => ({
         getComponentName: () => name,
-        updateLiveEvents: (data) => onUpdate?.(data) ?? false,
-        disableLiveEventLog: () => onDisable?.() ?? false,
+        updateLiveEvents: (data) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(data) : undefined,
+        ),
+        disableLiveEventLog: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);

@@ -34,23 +34,22 @@ import {
 import { AiMapDisplayPayload } from './AiMapToolDisplay';
 import AiMessageDisplay, { type AiChatDisplayMessage } from './AiMessageDisplay';
 import {
-    advanceProcedurePlan,
+    AiWorkflowRunnerHost,
     buildProcedurePlan,
     getProcedurePlanToolArguments,
     isProcedurePlanClearEvent,
     isProcedurePlanOptOutRequest,
     isProcedurePlanStartEvent,
-    Goal,
-    LiveRangeTodoList,
-    ProcedurePlan,
+    LiveRangeTodoListRunner,
     ProcedurePlanRunner,
     serializeProcedurePlan,
+    type AiWorkflowRunnerSnapshot,
+    type ProcedurePlanAdvanceResult,
     type ProcedurePlanRequestSnapshot,
     type ProcedurePlanState,
     type GoalHandle,
     type GoalSnapshot,
-    type GoalStepDescriptor,
-    type LiveRangeTodoListHandle,
+    type GoalTaskDescriptor,
     type LiveRangeTodoListSnapshot,
     type TaskStartFunction,
 } from 'components/ai-engineering-tools';
@@ -80,6 +79,11 @@ import {
     useAiToolComponentRefs,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
+import {
+    NoProcedurePlanError,
+    NonLiveContextLiveToolsUnavailableError,
+    ProcedurePlanAdvanceFailedError,
+} from 'contexts/AiToolComponentError';
 import {
     overlayDisplayClient,
     overlaySessionClient,
@@ -204,12 +208,12 @@ export interface AiChatHandle extends NamedAiToolComponentHandle {
     startTrackGuide(): void;
     setTrackGuideEnabled(enabled: boolean): void;
     setLivePerformanceAnalystEnabled(enabled: boolean): void;
-    advanceProcedurePlanStep(reason?: string): any;
+    advanceProcedurePlanStep(reason?: string): ProcedurePlanAdvanceResult;
     getProcedurePlan(): ProcedurePlanState | null;
     clearProcedurePlan(): void;
     setProcedurePlan(plan: ProcedurePlanState | null): void;
     selectTaskStartFunction(request: ProcedurePlanRequestSnapshot): TaskStartFunction | null;
-    selectGoalTaskStartFunction(step: GoalStepDescriptor): TaskStartFunction | null;
+    selectGoalTaskStartFunction(task: GoalTaskDescriptor): TaskStartFunction | null;
     setAgentTagActive(tag: string, active: boolean): void;
     getOpportunityTelemetryRows(): Record<string, any>[];
     getOpportunityAgentState(): OpportunityAgentState;
@@ -363,11 +367,8 @@ const AiChat: React.FC<AiChatProps> = ({
     const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlanState | null>(null);
     const [goalSnapshot, setGoalSnapshot] = useState<GoalSnapshot | null>(null);
     const [liveRangeTodoListSnapshot, setLiveRangeTodoListSnapshot] = useState<LiveRangeTodoListSnapshot | null>(null);
-    const handleLiveRangeTodoListSnapshotChange = useCallback((snapshot: LiveRangeTodoListSnapshot | null) => {
-        setLiveRangeTodoListSnapshot(snapshot && snapshot.events.length > 0 ? snapshot : null);
-    }, []);
     const liveRangeTodoListHandle = componentRefs
-        .findComponentRef<LiveRangeTodoListHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
+        .findComponentRef<LiveRangeTodoListRunner>(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
         ?.current ?? null;
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
@@ -464,28 +465,21 @@ const AiChat: React.FC<AiChatProps> = ({
     const voiceSessionSeenActiveRef = useRef(false);
     const procedurePlanRef = useRef<ProcedurePlanState | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
-    const procedurePlanRunnerRef = useRef<ProcedurePlanRunner | null>(null);
     const activeVoiceExecuteToolCallRef = useRef<(
         call: SubscribedToolCall,
     ) => Promise<ToolSubscriptionResult | null>>(async () => null);
 
-    if (procedurePlanRunnerRef.current === null) {
-        procedurePlanRunnerRef.current = new ProcedurePlanRunner(
-            (plan) => {
-                procedurePlanRef.current = plan;
-                setProcedurePlanState(plan);
-            },
-            (request, error) => {
-                console.error(`Procedure plan task '${request.title}' failed.`, error);
-                activeVoiceToolStatusRef.current({
-                    source: 'procedure_plan',
-                    event: 'procedure_plan_task_rejected',
-                    title: request.title,
-                    error: (error as Error)?.message || String(error),
-                });
-            },
+    const handleWorkflowRunnerSnapshot = useCallback((active: AiWorkflowRunnerSnapshot) => {
+        setGoalSnapshot(active?.kind === 'goal' ? active.snapshot : null);
+        setLiveRangeTodoListSnapshot(
+            active?.kind === 'live_range_todo' && active.snapshot?.events.length
+                ? active.snapshot
+                : null,
         );
-    }
+        const nextPlan = active?.kind === 'procedure_plan' ? active.runner.get() : null;
+        procedurePlanRef.current = nextPlan;
+        setProcedurePlanState(nextPlan);
+    }, []);
     const lastBroadcastedLiveRangeTodoListKeyRef = useRef<string | null>(null);
 
     useEffect(() => {
@@ -667,17 +661,17 @@ const AiChat: React.FC<AiChatProps> = ({
     }, []);
 
     const selectGoalTaskStartFunction = useCallback((
-        step: GoalStepDescriptor,
+        task: GoalTaskDescriptor,
     ): TaskStartFunction | null => {
         const agent = activeAgentSessionRef.current;
         if (!isGoalStepAvailableForContext({
             sessionMode,
             conversationRole: agent ? 'agent' : 'main',
             agentMode: agent?.agentMode,
-        }, step.name)) {
+        }, task.name)) {
             return null;
         }
-        const { name: toolName, title, arguments: args } = step;
+        const { name: toolName, title, arguments: args } = task;
         return async (signal) => {
             if (signal.aborted) return;
             const result = await activeVoiceExecuteToolCallRef.current({
@@ -729,8 +723,41 @@ const AiChat: React.FC<AiChatProps> = ({
     }, []);
 
     const setProcedurePlan = useCallback((plan: ProcedurePlanState | null) => {
-        procedurePlanRunnerRef.current!.replace(plan);
-    }, []);
+        const existing = componentRefs
+            .findComponentRef<ProcedurePlanRunner>(AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
+            ?.current ?? null;
+        if (!plan) {
+            existing?.clear();
+            procedurePlanRef.current = null;
+            setProcedurePlanState(null);
+            return;
+        }
+        if (!isProcedurePlanStartEvent(plan.sourceEvent)) {
+            existing?.replace(plan);
+            return;
+        }
+
+        const runner = new ProcedurePlanRunner(
+            AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
+            undefined,
+            (request, error) => {
+                console.error(`Procedure plan task '${request.title}' failed.`, error);
+                activeVoiceToolStatusRef.current({
+                    source: 'procedure_plan',
+                    event: 'procedure_plan_task_rejected',
+                    title: request.title,
+                    error: (error as Error)?.message || String(error),
+                });
+            },
+        );
+        try {
+            runner.addComponentRef(componentRefs);
+            runner.replace(plan);
+        } catch (error) {
+            runner.dispose();
+            throw error;
+        }
+    }, [componentRefs]);
 
     useEffect(() => {
         if (!overlayPresentationId) return;
@@ -763,20 +790,39 @@ const AiChat: React.FC<AiChatProps> = ({
     }, [goalSnapshot, overlayAgentTags, overlayPresentationId, upsertOverlayDisplay]);
 
     const advanceProcedurePlanStep = useCallback((reason?: string) => {
-        const current = procedurePlanRef.current;
-        if (!current) {
-            return { status: 'unavailable', error: 'no_procedure_plan' };
+        const runner = componentRefs
+            .findComponentRef<ProcedurePlanRunner>(AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
+            ?.current;
+        if (!runner) {
+            throw new NoProcedurePlanError(
+                name,
+                'The procedure plan could not be advanced.',
+            );
         }
 
-        const result = advanceProcedurePlan(current, reason);
-        setProcedurePlan(result.status === 'complete' ? null : result.plan);
-
+        let result: ProcedurePlanAdvanceResult;
+        try {
+            result = runner.advance(reason);
+        } catch (error) {
+            throw new ProcedurePlanAdvanceFailedError(
+                name,
+                error instanceof Error && error.message
+                    ? error.message
+                    : 'The procedure plan could not be advanced.',
+                { cause: error },
+            );
+        }
         return result;
-    }, [setProcedurePlan]);
+    }, [componentRefs, name]);
 
     const clearProcedurePlan = useCallback(() => {
-        setProcedurePlan(null);
-    }, [setProcedurePlan]);
+        const runner = componentRefs
+            .findComponentRef<ProcedurePlanRunner>(AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
+            ?.current;
+        runner?.clear();
+        procedurePlanRef.current = null;
+        setProcedurePlanState(null);
+    }, [componentRefs]);
 
     const optOutProcedurePlan = useCallback(() => {
         procedurePlanOptedOutRef.current = true;
@@ -1355,19 +1401,31 @@ const AiChat: React.FC<AiChatProps> = ({
             if (!sent) throw new Error('AI session is not connected; the due notification could not be sent.');
         };
     }, [liveSession.sessionIntelligence]);
-    const liveRangeTodoAiAdapter = useMemo(() => createLiveRangeTodoAiAdapter(
-        liveRangeTodoListHandle,
-        createAiLiveRangeTaskStartFunction,
-    ), [createAiLiveRangeTaskStartFunction, liveRangeTodoListHandle]);
-    const setLiveRangeTodoList = useCallback((args: Record<string, unknown>) => (
-        liveRangeTodoAiAdapter.set(args)
-    ), [liveRangeTodoAiAdapter]);
+    const setLiveRangeTodoList = useCallback((args: Record<string, unknown>) => {
+        const runner = new LiveRangeTodoListRunner(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
+        try {
+            runner.addComponentRef(componentRefs);
+            return createLiveRangeTodoAiAdapter(
+                runner,
+                createAiLiveRangeTaskStartFunction,
+            ).set(args);
+        } catch (error) {
+            runner.dispose();
+            throw error;
+        }
+    }, [componentRefs, createAiLiveRangeTaskStartFunction]);
     const updateLiveRangeTodoList = useCallback((args: Record<string, unknown>) => (
-        liveRangeTodoAiAdapter.update(args)
-    ), [liveRangeTodoAiAdapter]);
+        createLiveRangeTodoAiAdapter(
+            liveRangeTodoListHandle,
+            createAiLiveRangeTaskStartFunction,
+        ).update(args)
+    ), [createAiLiveRangeTaskStartFunction, liveRangeTodoListHandle]);
     const getLiveRangeTodoList = useCallback(() => (
-        liveRangeTodoAiAdapter.get()
-    ), [liveRangeTodoAiAdapter]);
+        createLiveRangeTodoAiAdapter(
+            liveRangeTodoListHandle,
+            createAiLiveRangeTaskStartFunction,
+        ).get()
+    ), [createAiLiveRangeTaskStartFunction, liveRangeTodoListHandle]);
 
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
@@ -1384,11 +1442,10 @@ const AiChat: React.FC<AiChatProps> = ({
         analysisContext?.sessionIntelligence?.clearFocusSection?.();
         setLivePerformanceAnalystAgentEnabled(false);
         procedurePlanOptedOutRef.current = false;
-        clearProcedurePlan();
-        componentRefs.findComponentRef<GoalHandle>(AI_TOOL_COMPONENT_NAMES.GOAL)
-            ?.current
-            ?.clear();
-    }, [analysisContext?.sessionIntelligence, clearProcedurePlan, componentRefs, setLivePerformanceAnalystAgentEnabled]);
+        componentRefs.findBaseComponentRef()?.current?.dispose();
+        procedurePlanRef.current = null;
+        setProcedurePlanState(null);
+    }, [analysisContext?.sessionIntelligence, componentRefs, setLivePerformanceAnalystAgentEnabled]);
 
     const resetOvertakeRuntime = useCallback(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
@@ -1416,13 +1473,10 @@ const AiChat: React.FC<AiChatProps> = ({
         args: Record<string, any> = {},
     ): AgentSessionStartResult => {
         if (sessionMode !== 'live' || !isLiveSessionAiAvailable(analysisContext?.recordingState)) {
-            return {
-                status: 'error',
-                conversation_role: 'agent',
-                agent_mode: agentMode,
-                error: 'non_live_context_live_tools_unavailable',
-                message: 'Agent sessions are only available in live session mode.',
-            };
+            throw new NonLiveContextLiveToolsUnavailableError(
+                name,
+                'Agent sessions are only available in live session mode.',
+            );
         }
 
         const existing = activeAgentSessionRef.current;
@@ -1478,6 +1532,7 @@ const AiChat: React.FC<AiChatProps> = ({
         resetAgentRuntimes,
         analysisContext?.recordingState,
         beginOverlaySession,
+        name,
         sessionMode,
         setAgentTag,
     ]);
@@ -1854,8 +1909,6 @@ const AiChat: React.FC<AiChatProps> = ({
     }, [executeActiveVoiceToolCall, sendActiveVoiceToolResult, sendActiveVoiceToolStatus]);
 
     const canOpenFloatingChat = overlaySessionClient.available();
-
-    useEffect(() => () => procedurePlanRunnerRef.current?.abort(), []);
 
     useEffect(() => {
         if (sessionMode === 'live') {
@@ -2481,24 +2534,11 @@ const AiChat: React.FC<AiChatProps> = ({
                         <span className="ai-chat__transcript-time">{clock}</span>
                     </div>
 
-                    <LiveRangeTodoList
-                        name={AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST}
-                        onSnapshotChange={handleLiveRangeTodoListSnapshotChange}
+                    <AiWorkflowRunnerHost
+                        telemetry={liveSession.currentTelemetry}
+                        onSnapshotChange={handleWorkflowRunnerSnapshot}
                         surface="chat"
                     />
-
-                    <Goal
-                        name={AI_TOOL_COMPONENT_NAMES.GOAL}
-                        onSnapshotChange={setGoalSnapshot}
-                        surface="chat"
-                    />
-
-                    {procedurePlan && (
-                        <ProcedurePlan
-                            plan={serializeProcedurePlan(procedurePlan)}
-                            onClear={clearProcedurePlan}
-                        />
-                    )}
 
                     <div className="ai-chat__msgs" ref={messagesScrollRef} onScroll={handleMessagesScroll}>
                         {liveSessionEnded && (

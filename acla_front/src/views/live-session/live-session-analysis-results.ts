@@ -2,6 +2,8 @@ import {
     AnalysisResultElement,
     normalizeAnalysisResultsData,
 } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
+import { LiveAnalysisResultUnavailableError } from 'contexts/AiToolComponentError';
+import { AI_TOOL_COMPONENT_NAMES } from 'contexts/AiToolComponentRefContext';
 
 export interface LiveSessionBaselineMetadata {
     id: string;
@@ -39,9 +41,6 @@ export type LiveAnalysisMistakeCountResult = {
     baseline_lap: number;
     track: string;
     car: string;
-} | {
-    status: 'error';
-    error: 'live_analysis_result_unavailable';
 };
 
 export type LiveAnalysisLabelResolver = (labelId: string) => string | undefined;
@@ -61,7 +60,10 @@ export const getLiveAnalysisMistakeCount = (
     resolveLabel?: LiveAnalysisLabelResolver,
 ): LiveAnalysisMistakeCountResult => {
     if (!page) {
-        return { status: 'error', error: 'live_analysis_result_unavailable' };
+        throw new LiveAnalysisResultUnavailableError(
+            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            'No completed live analysis result is available.',
+        );
     }
 
     const practiceLabels = getParentLabelNames('MSP', 'Mistake (Practice)', resolveLabel);

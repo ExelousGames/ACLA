@@ -4,6 +4,8 @@ import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { EventType, SessionEvent } from '../../session-intelligence/types';
 import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
 
 const TYPE_COLOR: Record<EventType, 'blue' | 'green' | 'red' | 'amber'> = {
     CORNER: 'blue',
@@ -36,8 +38,8 @@ const formatMetadata = (metadata?: Record<string, any>): string => {
 };
 
 export interface EventLogChartHandle extends NamedAiToolComponentHandle {
-    updateEvents(events: SessionEvent[]): boolean;
-    disableEventLog(): boolean;
+    updateEvents(events: SessionEvent[]): true;
+    disableEventLog(): true;
 }
 
 const EventLogChart = forwardRef<EventLogChartHandle, VisualizationProps>(({
@@ -52,8 +54,18 @@ const EventLogChart = forwardRef<EventLogChartHandle, VisualizationProps>(({
     const [search, setSearch] = useState('');
     const handle = useMemo<EventLogChartHandle>(() => ({
         getComponentName: () => name,
-        updateEvents: (events) => onUpdate?.(events) ?? false,
-        disableEventLog: () => onDisable?.() ?? false,
+        updateEvents: (events) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(events) : undefined,
+        ),
+        disableEventLog: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);

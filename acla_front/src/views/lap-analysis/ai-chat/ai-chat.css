@@ -717,6 +717,35 @@
   min-width: 0;
 }
 .ai-chat__goal-step-copy > span:nth-child(2) { color: var(--lp-gray-dim); }
+.ai-chat__goal-determination {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr);
+  gap: 9px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--lp-border);
+  color: var(--lp-gray);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.ai-chat__goal-determination--running { color: var(--lp-white); }
+.ai-chat__goal-determination--running .ai-chat__goal-step-dot {
+  border-color: var(--lp-amber);
+  background: var(--lp-amber);
+  box-shadow: 0 0 10px rgba(255, 183, 77, 0.4);
+}
+.ai-chat__goal-determination--completed .ai-chat__goal-step-dot {
+  border-color: var(--lp-green);
+  background: var(--lp-green);
+}
+.ai-chat__goal-determination--error .ai-chat__goal-step-dot {
+  border-color: var(--lp-red);
+  background: var(--lp-red);
+}
+.ai-chat__goal-determination .ai-chat__goal-metric {
+  max-width: none;
+  text-align: left;
+}
 .ai-chat__goal-error {
   margin-top: 4px;
   color: var(--lp-red);
@@ -726,6 +755,11 @@
 .ai-chat__goal--pill .ai-chat__goal-title { font-size: 12px; }
 .ai-chat__goal--pill .ai-chat__goal-steps { gap: 5px; margin-top: 8px; }
 .ai-chat__goal--pill .ai-chat__goal-step { font-size: 11px; }
+.ai-chat__goal--pill .ai-chat__goal-determination {
+  margin-top: 8px;
+  padding-top: 7px;
+  font-size: 11px;
+}
 
 .ai-chat__range-todo {
   border: 1px solid rgba(0, 230, 118, 0.36);

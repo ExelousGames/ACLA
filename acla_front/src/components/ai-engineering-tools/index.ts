@@ -1,3 +1,10 @@
+export { AiToolComponentBase } from './AiToolComponentBase';
+export type { AiToolComponentSnapshotListener } from './AiToolComponentBase';
+export { default as AiWorkflowRunnerHost } from './AiWorkflowRunnerHost';
+export type {
+    AiWorkflowRunnerHostProps,
+    AiWorkflowRunnerSnapshot,
+} from './AiWorkflowRunnerHost';
 export {
     default as ProcedurePlan,
     PROCEDURE_PLAN_STEP_STATUSES,
@@ -28,6 +35,7 @@ export type {
 export {
     default as LiveRangeTodoList,
     LiveRangeTodoListDisplay,
+    LiveRangeTodoListRunner,
 } from './LiveRangeTodoList';
 export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from './LiveRangeTodoList';
 export type { TaskStartFunction } from './task-start-function';
@@ -47,6 +55,7 @@ export {
     default as Goal,
     GOAL_COMPARISON_OPERATORS,
     GoalDisplay,
+    GoalRunner,
     buildGoalRequest,
     compareGoalValues,
     extractGoalResultPath,
@@ -54,9 +63,14 @@ export {
     validateGoalRequest,
 } from './Goal';
 export type {
-    GoalComparison,
     GoalComparisonOperator,
+    GoalDetermination,
+    GoalDeterminationResult,
+    GoalDeterminationStatus,
+    GoalDeterminationTool,
     GoalDisplayProps,
+    GoalExecutableDetermination,
+    GoalExecutableRequest,
     GoalHandle,
     GoalProps,
     GoalRunResult,
@@ -67,7 +81,9 @@ export type {
     GoalStep,
     GoalStepDescriptor,
     GoalStepSnapshot,
+    GoalStepSourceResultMetadata,
     GoalStepStatus,
+    GoalTaskDescriptor,
     GoalTaskResult,
     GoalTaskStartFunctionSelector,
     GoalToolOutputEnvelope,

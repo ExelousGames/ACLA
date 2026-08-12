@@ -1,5 +1,6 @@
 import React from 'react';
 import type { TaskStartFunction } from './task-start-function';
+import { AiToolComponentBase } from './AiToolComponentBase';
 
 export const PROCEDURE_PLAN_STEP_STATUSES = [
     'pending',
@@ -50,20 +51,38 @@ export type ProcedurePlanTaskErrorHandler = (
     error: unknown,
 ) => void;
 
-export class ProcedurePlanRunner {
+type ProcedurePlanChangeHandler = (plan: ProcedurePlanState | null) => void;
+
+const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request, error) => {
+    console.error(`Procedure plan task '${request.title}' failed.`, error);
+};
+
+export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapshot | null> {
     private plan: ProcedurePlanState | null = null;
     private activeRun: {
         controller: AbortController;
         token: symbol;
         taskStart: TaskStartFunction;
     } | null = null;
+    private readonly onChange: ProcedurePlanChangeHandler;
+    private readonly onError: ProcedurePlanTaskErrorHandler;
 
+    constructor(componentName: string, onChange?: ProcedurePlanChangeHandler, onError?: ProcedurePlanTaskErrorHandler);
+    constructor(onChange: ProcedurePlanChangeHandler, onError?: ProcedurePlanTaskErrorHandler);
     constructor(
-        private readonly onChange: (plan: ProcedurePlanState | null) => void,
-        private readonly onError: ProcedurePlanTaskErrorHandler = (request, error) => {
-            console.error(`Procedure plan task '${request.title}' failed.`, error);
-        },
-    ) {}
+        componentNameOrOnChange: string | ProcedurePlanChangeHandler,
+        onChangeOrError?: ProcedurePlanChangeHandler | ProcedurePlanTaskErrorHandler,
+        onError: ProcedurePlanTaskErrorHandler = defaultProcedurePlanErrorHandler,
+    ) {
+        const legacySignature = typeof componentNameOrOnChange === 'function';
+        super(legacySignature ? 'procedure-plan' : componentNameOrOnChange, null);
+        this.onChange = legacySignature
+            ? componentNameOrOnChange
+            : (onChangeOrError as ProcedurePlanChangeHandler | undefined) ?? (() => undefined);
+        this.onError = legacySignature
+            ? (onChangeOrError as ProcedurePlanTaskErrorHandler | undefined) ?? defaultProcedurePlanErrorHandler
+            : onError;
+    }
 
     get(): ProcedurePlanState | null {
         return this.plan;
@@ -79,15 +98,29 @@ export class ProcedurePlanRunner {
         this.replace(null);
     }
 
+    advance(reason?: string): ProcedurePlanAdvanceResult {
+        if (!this.plan) throw new Error('Cannot advance an empty procedure plan.');
+        const result = advanceProcedurePlan(this.plan, reason);
+        this.replace(result.status === 'complete' ? null : result.plan);
+        return result;
+    }
+
     abort(): void {
         const activeRun = this.activeRun;
         this.activeRun = null;
         activeRun?.controller.abort();
     }
 
+    protected onDispose(): void {
+        this.abort();
+        this.plan = null;
+    }
+
     private publish(plan: ProcedurePlanState | null): void {
         this.plan = plan;
+        this.publishSnapshot(plan ? serializeProcedurePlan(plan) : null);
         this.onChange(plan);
+        if (!plan) this.deleteComponentRef();
     }
 
     private settle(token: symbol, error?: unknown): void {
@@ -100,7 +133,13 @@ export class ProcedurePlanRunner {
         const requestIndex = current.currentStep;
         const request = current.requests[requestIndex];
         if (!request || request.taskStart !== activeRun.taskStart) return;
-        if (error !== undefined) this.onError(serializeProcedurePlanRequest(request), error);
+        if (error !== undefined) {
+            try {
+                this.onError(serializeProcedurePlanRequest(request), error);
+            } catch (handlerError) {
+                console.error('Procedure plan task error handler failed.', handlerError);
+            }
+        }
 
         const requests = current.requests.filter((_item, index) => index !== requestIndex);
         this.publish(requests.length > 0 ? {

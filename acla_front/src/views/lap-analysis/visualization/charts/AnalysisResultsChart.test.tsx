@@ -119,7 +119,11 @@ import AnalysisResultsChart, {
     calculateLeastSquaresSlope,
     formatRacingTime,
     getMistakeTrendDirection,
+    type AnalysisResultsChartHandle,
 } from './AnalysisResultsChart';
+import {
+    VisualizationControlFailedError,
+} from 'contexts/AiToolComponentError';
 import {
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,
@@ -165,6 +169,98 @@ const comparableData = (driverGas: number, expertGas: number) => ({
 });
 
 describe('AnalysisResultsChart', () => {
+    it('keeps page readiness pending until the requested page is committed', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const emptyPagination = {
+            pages: [],
+            activePageId: null,
+            onSelectPage: jest.fn(),
+        };
+        const view = render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="readiness-results"
+                pagination={emptyPagination}
+            />,
+        );
+
+        let resolved = false;
+        const readiness = chartRef.current!.waitForAnalysisResultPage('requested-page');
+        void readiness.then(() => { resolved = true; });
+        await act(async () => undefined);
+        expect(resolved).toBe(false);
+
+        view.rerender(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="readiness-results"
+                pagination={{
+                    ...emptyPagination,
+                    pages: [{
+                        id: 'requested-page',
+                        createdAt: 1,
+                        baseline: {
+                            lap: 1,
+                            lap_time_ms: 100_000,
+                            track: 'Spa',
+                            car: 'GT3',
+                        },
+                        elements: [],
+                    }],
+                }}
+            />,
+        );
+
+        await act(async () => { await readiness; });
+        expect(resolved).toBe(true);
+    });
+
+    it('rejects pending page readiness when the chart unmounts', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const view = render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="unmount-readiness-results"
+                pagination={{ pages: [], activePageId: null, onSelectPage: jest.fn() }}
+            />,
+        );
+        const readiness = chartRef.current!.waitForAnalysisResultPage('missing-page');
+        const rejection = expect(readiness).rejects.toMatchObject({
+            name: 'AnalysisResultsVisualizationNotReadyError',
+            componentName: 'visualization:analysis-results',
+            message: expect.stringContaining('unmounted'),
+        });
+
+        view.unmount();
+        await rejection;
+    });
+
+    it('rejects pending page readiness after the component timeout', async () => {
+        jest.useFakeTimers();
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="timeout-readiness-results"
+                pagination={{ pages: [], activePageId: null, onSelectPage: jest.fn() }}
+            />,
+        );
+        const readiness = chartRef.current!.waitForAnalysisResultPage('missing-page');
+        const rejection = expect(readiness).rejects.toMatchObject({
+            name: 'AnalysisResultsVisualizationNotReadyError',
+            componentName: 'visualization:analysis-results',
+            message: expect.stringContaining('5000ms'),
+        });
+
+        act(() => { jest.advanceTimersByTime(5000); });
+        await rejection;
+        jest.useRealTimers();
+    });
+
     it('opens on Overall Trend and navigates chronologically without synthetic callback IDs', () => {
         const chartRef = React.createRef<any>();
         const onUpdate = jest.fn(() => true);
@@ -939,6 +1035,35 @@ describe('AnalysisResultsChart', () => {
 });
 
 describe('analysis results mutations', () => {
+    it('throws typed component errors for invalid controls and failed callbacks', () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="analysis-results-test"
+                id="analysis-results-test"
+                data={{ elements: [] }}
+                onUpdate={() => false}
+            />,
+        );
+
+        expect(() => chartRef.current!.appendAnalysisResult(null)).toThrow(expect.objectContaining({
+            name: 'VisualizationControlFailedError',
+            componentName: 'analysis-results-test',
+            message: 'append_element requires an element object.',
+        }));
+        expect(() => chartRef.current!.appendAnalysisResult({ id: 'one', labels: [] }))
+            .toThrow(VisualizationControlFailedError);
+        expect(() => chartRef.current!.replaceAnalysisResults({ elements: [] })).toThrow(expect.objectContaining({
+            name: 'VisualizationUpdateFailedError',
+            componentName: 'analysis-results-test',
+        }));
+        expect(() => chartRef.current!.disableAnalysisResults()).toThrow(expect.objectContaining({
+            name: 'ComponentDisableFailedError',
+            componentName: 'analysis-results-test',
+        }));
+    });
+
     it('normalizes aliases and generates IDs for appended elements', () => {
         const mutation = appendAnalysisResultElement({ elements: [] }, {
             labels: [' Unknown label '],

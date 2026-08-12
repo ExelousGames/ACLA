@@ -3,10 +3,12 @@ import { Box, Grid, Text, TextField } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { LiveTelemetry } from './live-session-types';
 import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { runVisualizationBooleanCallback } from 'views/lap-analysis/visualization/visualization-component-callbacks';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
 
 export interface LiveTelemetryOverviewHandle extends NamedAiToolComponentHandle {
-    updateLiveTelemetry(data: LiveTelemetry): boolean;
-    disableLiveTelemetry(): boolean;
+    updateLiveTelemetry(data: LiveTelemetry): true;
+    disableLiveTelemetry(): true;
 }
 
 interface LiveTelemetryOverviewProps {
@@ -25,8 +27,18 @@ const LiveTelemetryOverview = forwardRef<LiveTelemetryOverviewHandle, LiveTeleme
     const [search, setSearch] = useState('');
     const handle = useMemo<LiveTelemetryOverviewHandle>(() => ({
         getComponentName: () => name,
-        updateLiveTelemetry: (data) => onUpdate?.(data) ?? false,
-        disableLiveTelemetry: () => onDisable?.() ?? false,
+        updateLiveTelemetry: (data) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(data) : undefined,
+        ),
+        disableLiveTelemetry: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);

@@ -2,13 +2,39 @@ import apiService from 'services/api.service';
 import {
     AI_TOOL_COMPONENT_NAMES,
     AiToolComponentRefDirectory,
-    AiToolComponentRefError,
     awaitNamedComponentHandle,
     resolveNamedComponentHandle,
 } from 'contexts/AiToolComponentRefContext';
+import {
+    BaselineCollectionIncompleteError,
+    BaselineCollectionVisualizationRequiredError,
+    ComponentDisableFailedError,
+    ComponentRefUnavailableError,
+    NoRecordedSessionError,
+    NonLiveContextLiveToolsUnavailableError,
+    RecordedAnalysisFailedError,
+    RecordedSessionLiveToolsUnavailableError,
+} from 'contexts/AiToolComponentError';
 import type { ToolHandlerContext } from './use-voice-conversation';
 import {
     AiToolError,
+    AmbiguousComponentTargetError,
+    CircuitMapLookupFailedError,
+    CreateGoalToolUnavailableError,
+    FocusSectionNotReadyError,
+    InvalidProcedurePlanRequestsError,
+    LivePerformanceAnalystToolUnavailableError,
+    LiveSectionClassificationFailedError,
+    LiveSectionTelemetryUnavailableError,
+    NoCornerDataError,
+    NoTelemetryForScopeError,
+    NotRecordedModeError,
+    RetryGoalTaskToolUnavailableError,
+    SectionNotFoundError,
+    TelemetryAnalysisFailedError,
+    TelemetryFieldsRequiredError,
+    UnsupportedAgentModeError,
+    VisualizationControlUnavailableError,
     type AiToolExecutionOutput,
     type ToolOutputController,
 } from './ai-tool-base';
@@ -19,8 +45,9 @@ import type { UserSummaryHandle } from 'views/user-summary/user-summary';
 import {
     buildGoalRequest,
     buildProcedurePlan,
-    type GoalHandle,
-    type LiveRangeTodoListHandle,
+    GoalRunner,
+    LiveRangeTodoListRunner,
+    ProcedurePlanRunner,
 } from 'components/ai-engineering-tools';
 import {
     createLiveRangeTodoAiAdapter,
@@ -72,39 +99,8 @@ type RefAiCommandHandler = (
     output: ToolOutputController,
 ) => Promise<AiToolExecutionOutput> | AiToolExecutionOutput;
 
-function componentError(error: unknown): never {
-    if (error instanceof AiToolComponentRefError) {
-        throw new AiToolError(error.code, error.message, {
-            details: { component_name: error.componentName },
-            cause: error,
-        });
-    }
-    throw error;
-}
-
-function throwToolError(
-    code: string,
-    message: string,
-    details?: Record<string, unknown>,
-    cause?: unknown,
-): never {
-    throw new AiToolError(code, message, { details, cause });
-}
-
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-);
-
-const getResultMessage = (value: unknown, fallback: string): string => (
-    isRecord(value) && typeof value.message === 'string' && value.message.trim()
-        ? value.message
-        : fallback
-);
-
-const getResultCode = (value: unknown, fallback: string): string => (
-    isRecord(value) && typeof value.error === 'string' && value.error.trim()
-        ? value.error
-        : fallback
 );
 
 const getFailureMessage = (error: unknown, fallback: string): string => {
@@ -118,47 +114,9 @@ const getFailureMessage = (error: unknown, fallback: string): string => {
     return typeof message === 'string' && message.trim() ? message : fallback;
 };
 
-const executeApiRequest = async <T,>(
-    request: () => Promise<T>,
-    code: string,
-    fallbackMessage: string,
-): Promise<T> => {
-    try {
-        return await request();
-    } catch (error) {
-        if (error instanceof AiToolError) throw error;
-        throwToolError(code, getFailureMessage(error, fallbackMessage), undefined, error);
-    }
-};
-
-const throwErrorResult = (
-    value: unknown,
-    fallbackCode: string,
-    fallbackMessage: string,
-): never => throwToolError(
-    getResultCode(value, fallbackCode),
-    getResultMessage(value, fallbackMessage),
-);
-
-const returnOrThrowErrorResult = <T,>(
-    value: T,
-    fallbackCode: string,
-    fallbackMessage: string,
-): T => {
-    if (isRecord(value) && (
-        value.status === 'error'
-        || value.status === 'invalid_query'
-        || typeof value.error === 'string'
-    )) {
-        throwErrorResult(value, fallbackCode, fallbackMessage);
-    }
-    return value;
-};
-
 const getDirectory = (context: RefAiCommandContext): AiToolComponentRefDirectory => {
     if (context.componentRefs) return context.componentRefs;
-    throw new AiToolComponentRefError(
-        'component_ref_unavailable',
+    throw new ComponentRefUnavailableError(
         'dashboard',
         'The active dashboard component-ref directory is unavailable.',
     );
@@ -200,10 +158,9 @@ const getBaseline = (
 ): BaselineCollectionHandle => {
     const directory = getDirectory(context);
     if (!directory.findComponentRef<BaselineCollectionHandle>(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)?.current) {
-        throwToolError(
-            'baseline_collection_visualization_required',
+        throw new BaselineCollectionVisualizationRequiredError(
+            AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
             'Baseline collection visualization required. Open Baseline Collection in Live Session and keep it open.',
-            { component_name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION },
         );
     }
     return resolveNamedComponentHandle<BaselineCollectionHandle>(
@@ -218,7 +175,6 @@ const openBaselineVisualization = async (context: RefAiCommandContext) => {
         name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
         type: 'baseline-collection',
     });
-    if (!requested.success) return { requested, handle: null };
 
     const handle = await awaitNamedComponentHandle<BaselineCollectionHandle>(
         getDirectory(context),
@@ -228,15 +184,21 @@ const openBaselineVisualization = async (context: RefAiCommandContext) => {
 };
 
 const requireLive = (context: RefAiCommandContext): LiveSessionHandle => {
-    const code = context.sessionMode === 'recorded'
-        ? 'recorded_session_live_tools_unavailable'
-        : 'non_live_context_live_tools_unavailable';
+    const ErrorType = context.sessionMode === 'recorded'
+        ? RecordedSessionLiveToolsUnavailableError
+        : NonLiveContextLiveToolsUnavailableError;
     if (context.sessionMode && context.sessionMode !== 'live') {
-        throwToolError(code, 'Live-session AI tools are unavailable in the current session mode.');
+        throw new ErrorType(
+            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            'Live-session AI tools are unavailable in the current session mode.',
+        );
     }
     const live = getLive(context);
     if (!isLiveSessionAiAvailable(live.getRecordingState())) {
-        throwToolError(code, 'Live-session AI tools require an active live recording.');
+        throw new ErrorType(
+            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            'Live-session AI tools require an active live recording.',
+        );
     }
     return live;
 };
@@ -245,9 +207,23 @@ const normalizeOptionalString = (value: unknown): string | undefined => (
     typeof value === 'string' && value.trim() ? value.trim() : undefined
 );
 
-const getGoal = (context: RefAiCommandContext) => resolveNamedComponentHandle<GoalHandle>(
+const getGoal = (context: RefAiCommandContext) => resolveNamedComponentHandle<GoalRunner>(
     getDirectory(context),
     AI_TOOL_COMPONENT_NAMES.GOAL,
+);
+
+const getLiveRangeTodoListRunner = (
+    context: RefAiCommandContext,
+): LiveRangeTodoListRunner => resolveNamedComponentHandle<LiveRangeTodoListRunner>(
+    getDirectory(context),
+    AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+);
+
+const getProcedurePlanRunner = (
+    context: RefAiCommandContext,
+): ProcedurePlanRunner => resolveNamedComponentHandle<ProcedurePlanRunner>(
+    getDirectory(context),
+    AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
 );
 
 const createLiveRangeNotificationTaskStartFunctionFactory = (
@@ -312,11 +288,14 @@ const compactRecordedAnalysis = (
 ) => {
     const selected = recorded.getSelectedSession();
     if (!selected?.SessionId) {
-        throwToolError('no_recorded_session', 'No recorded session is selected.');
+        throw new NoRecordedSessionError(
+            AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            'No recorded session is selected.',
+        );
     }
     if (state.status === 'error') {
-        throwToolError(
-            'recorded_analysis_failed',
+        throw new RecordedAnalysisFailedError(
+            AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
             state.message || 'Recorded-session analysis failed.',
         );
     }
@@ -414,13 +393,6 @@ const ensureAnalysisResultsChart = async (
         type: 'analysis-results',
         data: { elements },
     });
-    if (!requested.success) {
-        throwErrorResult(
-            requested,
-            'analysis_results_visualization_unavailable',
-            'The analysis-results visualization could not be opened.',
-        );
-    }
     const mountedName = requested.componentName || name;
     await directory.awaitComponentRef<AnalysisResultsChartHandle>(mountedName);
     const chart = resolveNamedComponentHandle<AnalysisResultsChartHandle>(directory, mountedName);
@@ -508,10 +480,9 @@ const getVisualizationTarget = (
     if (byId) {
         const match = instances.find((instance) => instance.id === byId);
         if (!match) {
-            throwToolError(
-                'component_ref_unavailable',
+            throw new ComponentRefUnavailableError(
+                byId,
                 `Chart '${byId}' is not open.`,
-                { component_name: byId },
             );
         }
         return { name: match.name };
@@ -524,10 +495,8 @@ const getVisualizationTarget = (
     if (families.length > 0) return { name: getTelemetryComponentName(families) };
     const candidates = instances.map((instance) => instance.name).filter(isTelemetryComponentName).sort();
     if (candidates.length > 1) {
-        throwToolError(
-            'ambiguous_component_target',
+        throw new AmbiguousComponentTargetError(
             'Choose a telemetry metric family and retry the same tool.',
-            { semantic_candidates: candidates },
         );
     }
     return { name: candidates[0] || getTelemetryComponentName([]) };
@@ -582,13 +551,6 @@ const openVisualization = async (context: RefAiCommandContext, args: Record<stri
         data: args.data,
         config: args.config,
     });
-    if (!requested.success) {
-        throwErrorResult(
-            requested,
-            'visualization_request_failed',
-            `Could not open chart '${target.name}'.`,
-        );
-    }
     const mountedName = requested.componentName || target.name!;
     const child = await awaitNamedComponentHandle<any>(directory, mountedName);
     updateMountedVisualization(type, child, args.data, args.config);
@@ -613,21 +575,12 @@ const invokeVisualizationControl = async (context: RefAiCommandContext, args: Re
         result = await (child as ImitationGuidanceChartHandle).refreshGuidanceOnce();
     }
     if (!result) {
-        throwToolError(
-            'visualization_control_unavailable',
+        throw new VisualizationControlUnavailableError(
             `Control '${String(control)}' is not available for chart '${name}'.`,
-            { component_name: name, chart_type: type, control },
-        );
-    }
-    if (result.success === false) {
-        throwErrorResult(
-            result,
-            'visualization_control_failed',
-            `Control '${String(control)}' failed for chart '${name}'.`,
         );
     }
     return {
-        success: result.success !== false,
+        success: true,
         message: result.message || `Executed '${control}' on chart '${name}'.`,
         componentName: name,
         chartType: type,
@@ -646,49 +599,37 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         const chat = getChat(context);
         const mode = args.agent_mode ?? args.agentMode;
         if (!['track_guide', 'overtake', 'live_performance_analyst'].includes(mode)) {
-            throwToolError(
-                'unsupported_agent_mode',
+            throw new UnsupportedAgentModeError(
                 'Supported agent modes are track_guide, overtake, and live_performance_analyst.',
             );
         }
         if (!isLiveSessionAiAvailable(chat.getRecordingState())) {
-            throwToolError(
-                context.sessionMode === 'recorded'
-                    ? 'recorded_session_live_tools_unavailable'
-                    : 'non_live_context_live_tools_unavailable',
+            const ErrorType = context.sessionMode === 'recorded'
+                ? RecordedSessionLiveToolsUnavailableError
+                : NonLiveContextLiveToolsUnavailableError;
+            throw new ErrorType(
+                AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
                 'Agent sessions require an active live recording.',
             );
         }
         const result = await chat.startAgentSession(mode, args);
-        return returnOrThrowErrorResult(
-            result,
-            'agent_session_start_failed',
-            'The agent session could not be started.',
-        );
+        return result;
     },
     async stop_agent_session(args) {
         const result = await getChat(context).stopAgentSession(
             normalizeOptionalString(args.agent_session_id ?? args.agentSessionId),
         );
-        return returnOrThrowErrorResult(
-            result,
-            'agent_session_stop_failed',
-            'The agent session could not be stopped.',
-        );
+        return result;
     },
     async get_session_analysis(args) {
         const recorded = getRecorded(context);
-        return executeApiRequest(
-            () => recorded.requestSessionAnalysis(
-                args.session_id || context.sessionId || recorded.getSelectedSession()?.SessionId,
-            ),
-            'session_analysis_failed',
-            'Failed to load the session analysis.',
+        return recorded.requestSessionAnalysis(
+            args.session_id || context.sessionId || recorded.getSelectedSession()?.SessionId,
         );
     },
     async run_recorded_ai_analysis(args) {
         if (context.sessionMode !== 'recorded') {
-            throwToolError('not_recorded_mode', 'This tool requires recorded-session mode.');
+            throw new NotRecordedModeError('This tool requires recorded-session mode.');
         }
         const recorded = getRecorded(context);
         const chat = getChat(context);
@@ -702,18 +643,21 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     },
     async get_recorded_session_analysis(args) {
         if (context.sessionMode !== 'recorded') {
-            throwToolError('not_recorded_mode', 'This tool requires recorded-session mode.');
+            throw new NotRecordedModeError('This tool requires recorded-session mode.');
         }
         return compactRecordedAnalysis(getRecorded(context), getChat(context), undefined, getLimit(args.limit));
     },
     async get_recorded_session_context(args) {
         if (context.sessionMode !== 'recorded') {
-            throwToolError('not_recorded_mode', 'This tool requires recorded-session mode.');
+            throw new NotRecordedModeError('This tool requires recorded-session mode.');
         }
         const recorded = getRecorded(context);
         const selected = recorded.getSelectedSession();
         if (!selected?.SessionId) {
-            throwToolError('no_recorded_session', 'No recorded session is selected.');
+            throw new NoRecordedSessionError(
+                AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+                'No recorded session is selected.',
+            );
         }
         const playback = recorded.getRecordedPlaybackSummary();
         return {
@@ -731,27 +675,19 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     },
     async get_performance_insights(args) {
         const recorded = getRecorded(context);
-        return executeApiRequest(
-            () => recorded.requestPerformanceInsights(
-                args.session_id || context.sessionId || recorded.getSelectedSession()?.SessionId,
-                args.analysis_type,
-            ),
-            'performance_insights_failed',
-            'Failed to load performance insights.',
+        return recorded.requestPerformanceInsights(
+            args.session_id || context.sessionId || recorded.getSelectedSession()?.SessionId,
+            args.analysis_type,
         );
     },
     async compare_lap_times(args) {
-        return executeApiRequest(
-            () => getRecorded(context).requestLapComparison(args.session_ids, args.metrics),
-            'lap_comparison_failed',
-            'Failed to compare lap times.',
-        );
+        return getRecorded(context).requestLapComparison(args.session_ids, args.metrics);
     },
     async query_telemetry_metric(args) {
         const live = requireLive(context);
         const fields = normalizeFields(args.fields);
         if (fields.length === 0) {
-            throwToolError('telemetry_fields_required', 'Provide at least one telemetry field.');
+            throw new TelemetryFieldsRequiredError('Provide at least one telemetry field.');
         }
         const reduce = ['avg', 'min', 'max', 'stats'].includes(args.reduce) ? args.reduce : 'stats';
         return live.queryTelemetryMetric({ fields, scope: args.scope, reduce });
@@ -765,45 +701,32 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         return { events: live.getEventLog(args) };
     },
     async get_user_summary_map_level(args) {
-        return returnOrThrowErrorResult(
-            getSummary(context).getUserSummaryMapLevel(args),
-            'user_summary_unavailable',
-            'The user summary is unavailable.',
-        );
+        return getSummary(context).getUserSummaryMapLevel(args);
     },
     async get_available_user_summary_maps() {
-        return returnOrThrowErrorResult(
-            getSummary(context).getAvailableUserSummaryMaps(),
-            'user_summary_unavailable',
-            'The user summary is unavailable.',
-        );
+        return getSummary(context).getAvailableUserSummaryMaps();
     },
     async search_user_summary_map_level(args) {
-        return returnOrThrowErrorResult(
-            getSummary(context).searchUserSummaryMapLevel(args),
-            'user_summary_search_failed',
-            'The user-summary search could not be completed.',
-        );
+        return getSummary(context).searchUserSummaryMapLevel(args);
     },
     async get_next_corner() {
         const live = requireLive(context);
         const corner = live.getNextCorner();
-        if (!corner) throwToolError('no_corner_data', 'No upcoming corner data is available.');
+        if (!corner) throw new NoCornerDataError('No upcoming corner data is available.');
         return corner;
     },
     async get_live_focus_section() {
         const live = requireLive(context);
         const baseline = getBaseline(context);
         if (!baseline.getLapRecord()?.records?.length) {
-            throwToolError(
-                'baseline_collection_incomplete',
+            throw new BaselineCollectionIncompleteError(
+                AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 'Complete one clean baseline lap before reading a focus section.',
             );
         }
         const focus = getFocusPayload(live);
         if (!focus) {
-            throwToolError(
-                'focus_section_not_ready',
+            throw new FocusSectionNotReadyError(
                 'Analyze the completed baseline and select a focus section before reading it.',
             );
         }
@@ -815,15 +738,21 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     },
     async set_live_range_todo_list(args, handlerContext) {
         requireLive(context);
-        const todo = resolveNamedComponentHandle<LiveRangeTodoListHandle>(getDirectory(context), AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
-        return createLiveRangeTodoAiAdapter(
-            todo,
-            createLiveRangeNotificationTaskStartFunctionFactory(handlerContext),
-        ).set(args);
+        const todo = new LiveRangeTodoListRunner(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
+        try {
+            todo.addComponentRef(getDirectory(context));
+            return createLiveRangeTodoAiAdapter(
+                todo,
+                createLiveRangeNotificationTaskStartFunctionFactory(handlerContext),
+            ).set(args);
+        } catch (error) {
+            todo.dispose();
+            throw error;
+        }
     },
     async update_live_range_todo_list(args, handlerContext) {
         requireLive(context);
-        const todo = resolveNamedComponentHandle<LiveRangeTodoListHandle>(getDirectory(context), AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST);
+        const todo = getLiveRangeTodoListRunner(context);
         return createLiveRangeTodoAiAdapter(
             todo,
             createLiveRangeNotificationTaskStartFunctionFactory(handlerContext),
@@ -831,25 +760,11 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     },
     async get_live_range_todo_list() {
         requireLive(context);
-        const result = resolveNamedComponentHandle<LiveRangeTodoListHandle>(
-            getDirectory(context),
-            AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-        ).get();
-        return returnOrThrowErrorResult(
-            result,
-            'live_range_todo_list_unavailable',
-            'The live range to-do list is unavailable.',
-        );
+        return getLiveRangeTodoListRunner(context).get();
     },
     async collect_live_baseline(_args, handlerContext, output) {
         requireLive(context);
-        const { requested, handle } = await openBaselineVisualization(context);
-        if (!handle) {
-            throwToolError(
-                'baseline_collection_visualization_unavailable',
-                requested.message || 'The baseline collection visualization is unavailable.',
-            );
-        }
+        const { handle } = await openBaselineVisualization(context);
         const chat = getChat(context);
         chat.setLivePerformanceAnalystEnabled(true);
         chat.setAgentTagActive('Live Analyst', true);
@@ -860,45 +775,28 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     },
     async restart_live_baseline(_args, _handlerContext, output) {
         requireLive(context);
-        const { requested, handle } = await openBaselineVisualization(context);
-        if (!handle) {
-            throwToolError(
-                'baseline_collection_visualization_unavailable',
-                requested.message || 'The baseline collection visualization is unavailable.',
-            );
-        }
+        const { handle } = await openBaselineVisualization(context);
         handle.restartCollection();
         return output.final({ status: 'complete', progress_percent: 0, message: 'Baseline collection restart completed.' });
     },
     async analyze_live_recorded_analysis(args) {
         requireLive(context);
         const baseline = getBaseline(context);
-        const result = await baseline.requestAnalysis(args);
-        return returnOrThrowErrorResult(
-            result,
-            'recorded_analysis_failed',
-            'The live baseline analysis could not be completed.',
-        );
+        return baseline.requestAnalysis(args);
     },
     async get_live_analysis_mistake_count() {
         if (
             context.conversationRole !== 'agent'
             || context.agentMode !== 'live_performance_analyst'
         ) {
-            throwToolError(
-                'live_performance_analyst_tool_unavailable',
+            throw new LivePerformanceAnalystToolUnavailableError(
                 'This tool is available only to the live performance analyst.',
             );
         }
         const live = requireLive(context);
-        const result = getLiveAnalysisMistakeCount(
+        return getLiveAnalysisMistakeCount(
             live.getLatestAnalysisResultPage(),
             getChat(context).getLabelName,
-        );
-        return returnOrThrowErrorResult(
-            result,
-            'live_analysis_result_unavailable',
-            'No completed live analysis result is available.',
         );
     },
     async create_goal(args) {
@@ -907,8 +805,7 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             || context.conversationRole !== 'agent'
             || context.agentMode !== 'live_performance_analyst'
         ) {
-            throwToolError(
-                'create_goal_tool_unavailable',
+            throw new CreateGoalToolUnavailableError(
                 'Goal creation is available only to the live performance analyst.',
             );
         }
@@ -918,14 +815,16 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             (step) => chat.selectGoalTaskStartFunction(step),
         );
         if ('error' in built) {
-            throwToolError(built.error, 'The goal request is invalid.');
+            throw built.error;
         }
-        const result = await getGoal(context).createGoal(built.request);
-        return returnOrThrowErrorResult(
-            result,
-            'goal_execution_failed',
-            'The goal could not be completed.',
-        );
+        const goal = new GoalRunner(AI_TOOL_COMPONENT_NAMES.GOAL);
+        try {
+            goal.addComponentRef(getDirectory(context));
+            return await goal.create(built.request);
+        } catch (error) {
+            if (!goal.getSnapshot()) goal.dispose();
+            throw error;
+        }
     },
     async retry_goal_task() {
         if (
@@ -933,53 +832,57 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             || context.conversationRole !== 'agent'
             || context.agentMode !== 'live_performance_analyst'
         ) {
-            throwToolError(
-                'retry_goal_task_tool_unavailable',
+            throw new RetryGoalTaskToolUnavailableError(
                 'Goal task retry is available only to the live performance analyst.',
             );
         }
-        const result = await getGoal(context).retryFailedTask();
-        return returnOrThrowErrorResult(
-            result,
-            'goal_task_retry_failed',
-            'The failed goal task could not be retried.',
-        );
+        return getGoal(context).retryFailedTask();
     },
-    async set_procedure_plan(args) {
+    async set_procedure_plan(args, handlerContext) {
         const chat = getChat(context);
         const plan = buildProcedurePlan(
             { ...args, event: normalizeOptionalString(args.event) || 'procedure_plan_started' },
             (request) => chat.selectTaskStartFunction(request),
         );
         if (!plan) {
-            throwToolError(
-                'invalid_procedure_plan_requests',
+            throw new InvalidProcedurePlanRequestsError(
                 'Provide a goal and at least one request with a title.',
             );
         }
-        chat.setProcedurePlan(plan);
+        const runner = new ProcedurePlanRunner(
+            AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
+            undefined,
+            (request, error) => {
+                handlerContext.sendToolStatus({
+                    source: 'procedure_plan',
+                    event: 'procedure_plan_task_rejected',
+                    title: request.title,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            },
+        );
+        try {
+            runner.addComponentRef(getDirectory(context));
+            runner.replace(plan);
+        } catch (error) {
+            runner.dispose();
+            throw error;
+        }
         return { status: 'ready', goal: plan.goal, request_count: plan.requests.length, current_request: plan.currentStep, request: plan.requests[plan.currentStep] };
     },
     async advance_plan_step(args) {
-        const result = getChat(context).advanceProcedurePlanStep(
-            normalizeOptionalString(args.reason),
-        );
-        return returnOrThrowErrorResult(
-            result,
-            'procedure_plan_advance_failed',
-            'The procedure plan could not be advanced.',
-        );
+        return getProcedurePlanRunner(context).advance(normalizeOptionalString(args.reason));
     },
     async clear_procedure_plan(args) {
-        getChat(context).clearProcedurePlan();
+        getProcedurePlanRunner(context).clear();
         return { status: 'cleared', reason: normalizeOptionalString(args.reason) };
     },
     async _get_live_section_telemetry(args) {
         const live = requireLive(context);
         const baseline = getBaseline(context);
         if (!baseline.getLapRecord()?.records?.length) {
-            throwToolError(
-                'baseline_collection_incomplete',
+            throw new BaselineCollectionIncompleteError(
+                AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 'Complete baseline collection before reading live-section telemetry.',
             );
         }
@@ -989,38 +892,30 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         const live = requireLive(context);
         const baseline = getBaseline(context);
         if (!baseline.getLapRecord()?.records?.length) {
-            throwToolError(
-                'baseline_collection_incomplete',
+            throw new BaselineCollectionIncompleteError(
+                AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 'Complete baseline collection before recording a live-section classification.',
             );
         }
         const classification = live.recordLiveSectionClassification(args);
         if (!classification) {
-            throwToolError('section_not_found', 'The requested live section was not found.');
+            throw new SectionNotFoundError('The requested live section was not found.');
         }
         const focus = getFocusPayload(live);
         return { status: 'recorded', agent_mode: 'live_performance_analyst', classification, focus, comparison: live.getSessionIntelligence().compareFocusedSection(classification) };
     },
     async follow_expert_line(args) {
         const recorded = getRecorded(context);
-        return executeApiRequest(
-            () => recorded.requestExpertLineGuidance(
-                args.session_id || context.sessionId || recorded.getSelectedSession()?.SessionId,
-                args.data_types,
-            ),
-            'expert_line_guidance_failed',
-            'Failed to load expert-line guidance.',
+        return recorded.requestExpertLineGuidance(
+            args.session_id || context.sessionId || recorded.getSelectedSession()?.SessionId,
+            args.data_types,
         );
     },
     async get_telemetry_data(args) {
         const recorded = getRecorded(context);
-        return executeApiRequest(
-            () => recorded.requestTelemetryData(
-                args.session_id || context.sessionId || recorded.getSelectedSession()?.SessionId,
-                args.data_types,
-            ),
-            'telemetry_data_failed',
-            'Failed to load telemetry data.',
+        return recorded.requestTelemetryData(
+            args.session_id || context.sessionId || recorded.getSelectedSession()?.SessionId,
+            args.data_types,
         );
     },
     async get_visualization_capabilities() {
@@ -1028,11 +923,16 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
     },
     async show_map(args) {
         const chat = getChat(context);
-        const { map, resolvedBy, requestedMap } = await executeApiRequest(
-            () => resolveMap(chat, args, context),
-            'circuit_map_lookup_failed',
-            'Failed to look up the requested circuit map.',
-        );
+        let resolved: Awaited<ReturnType<typeof resolveMap>>;
+        try {
+            resolved = await resolveMap(chat, args, context);
+        } catch (error) {
+            throw new CircuitMapLookupFailedError(
+                getFailureMessage(error, 'Failed to look up the requested circuit map.'),
+                { cause: error },
+            );
+        }
+        const { map, resolvedBy, requestedMap } = resolved;
         const section = getMapSection(args);
         const title = normalizeOptionalString(args.title) || 'Map';
         const note = normalizeOptionalString(args.message ?? args.note);
@@ -1056,13 +956,6 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             type: args.type,
             all: args.all === true,
         });
-        if (isRecord(result) && result.success === false) {
-            throwErrorResult(
-                result,
-                'visualization_close_failed',
-                `Could not close chart '${target.name}'.`,
-            );
-        }
         return result;
     },
     async invoke_visualization_control(args) {
@@ -1086,13 +979,6 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             type: 'imitation-guidance-chart',
             all: !args.chartId && !args.component_name,
         });
-        if (isRecord(result) && result.success === false) {
-            throwErrorResult(
-                result,
-                'visualization_close_failed',
-                'Could not close the imitation-guidance chart.',
-            );
-        }
         return result;
     },
     async disable_ui_component(args) {
@@ -1107,10 +993,9 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         else if (type === 'imitation-guidance-chart') success = child.disableGuidance();
         else if (type === 'map-visualization') success = child.disableMap();
         if (!success) {
-            throwToolError(
-                'component_disable_failed',
+            throw new ComponentDisableFailedError(
+                target.name,
                 `Component '${target.name}' could not be disabled.`,
-                { component_name: target.name },
             );
         }
         return { success, component_name: target.name };
@@ -1128,8 +1013,7 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         const live = requireLive(context);
         const rows = live.getTelemetryForScope(args.scope);
         if (rows.length === 0) {
-            throwToolError(
-                'no_telemetry_for_scope',
+            throw new NoTelemetryForScopeError(
                 'No telemetry rows matched the requested scope.',
             );
         }
@@ -1146,11 +1030,9 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             return { ...compactTelemetryAnalysis(result, chat, getLimit(args.limit)), telemetry_stats: getTelemetryStats(rows), chartId: chart.chartId ?? null, component_name: chart.componentName };
         } catch (error: any) {
             if (error instanceof AiToolError) throw error;
-            throwToolError(
-                'telemetry_analysis_failed',
+            throw new TelemetryAnalysisFailedError(
                 getFailureMessage(error, 'Failed to analyze telemetry.'),
-                undefined,
-                error,
+                { cause: error },
             );
         }
     },
@@ -1159,15 +1041,14 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
         const chat = getChat(context);
         const baseline = getBaseline(context);
         if (!baseline.getLapRecord()?.records?.length) {
-            throwToolError(
-                'baseline_collection_incomplete',
+            throw new BaselineCollectionIncompleteError(
+                AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 'Complete baseline collection before classifying a live section.',
             );
         }
         const window = live.getLiveSectionTelemetry(args);
         if (window.status !== 'ready' || !Array.isArray(window.rows) || window.rows.length === 0) {
-            throwToolError(
-                window.status || 'live_section_telemetry_unavailable',
+            throw new LiveSectionTelemetryUnavailableError(
                 'No telemetry is available for the selected live section.',
             );
         }
@@ -1197,7 +1078,7 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
                 telemetry_stats: getTelemetryStats(window.rows),
             });
             if (!classification) {
-                throwToolError('section_not_found', 'The requested live section was not found.');
+                throw new SectionNotFoundError('The requested live section was not found.');
             }
             const elements = buildAnalysisElements(result, chat, window.rows);
             const chart = await ensureAnalysisResultsChart(context, elements);
@@ -1213,11 +1094,9 @@ const createHandlers = (context: RefAiCommandContext): Record<string, RefAiComma
             };
         } catch (error: any) {
             if (error instanceof AiToolError) throw error;
-            throwToolError(
-                'live_section_classification_failed',
+            throw new LiveSectionClassificationFailedError(
                 getFailureMessage(error, 'Failed to classify the live section.'),
-                undefined,
-                error,
+                { cause: error },
             );
         }
     },
@@ -1227,14 +1106,5 @@ export const createRefBasedAiCommandFunctions = (
     context: RefAiCommandContext,
 ): Record<string, RefAiCommandHandler> => {
     const handlers = createHandlers(context);
-    return Object.fromEntries(Object.entries(handlers).map(([name, handler]) => [
-        name,
-        async (args: Record<string, any>, handlerContext: ToolHandlerContext, output: ToolOutputController) => {
-            try {
-                return await handler(args, handlerContext, output);
-            } catch (error) {
-                return componentError(error);
-            }
-        },
-    ]));
+    return { ...handlers };
 };

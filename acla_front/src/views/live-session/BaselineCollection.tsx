@@ -10,10 +10,17 @@ import {
     AI_TOOL_COMPONENT_NAMES,
     AiToolComponentRefDirectory,
     NamedAiToolComponentHandle,
+    awaitNamedComponentHandle,
     resolveNamedComponentHandle,
     useAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
+import {
+    AnalysisResultsVisualizationUnavailableError,
+    BaselineAnalysisCancelledError,
+    BaselineLapRecordRequiredError,
+    RecordedAnalysisFailedError,
+} from 'contexts/AiToolComponentError';
 import apiService from 'services/api.service';
 import type { AiChatHandle } from 'views/lap-analysis/ai-chat/ai-chat';
 import {
@@ -87,10 +94,6 @@ export type BaselineAnalysisPayload = {
     component_name: string;
     pageId: string;
     pageCount: number;
-} | {
-    status: 'error';
-    error: string;
-    message: string;
 };
 
 export interface BaselineCollectionHandle extends NamedAiToolComponentHandle {
@@ -310,28 +313,29 @@ const ensureAnalysisResultsChart = async (
         AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
     );
     const name = getSingletonVisualizationComponentName('analysis-results');
-    if (directory.findComponentRef<AnalysisResultsChartHandle>(name)?.current) {
+    const mountedHandle = directory.findComponentRef<AnalysisResultsChartHandle>(name)?.current;
+    if (mountedHandle) {
         const instance = manager.getCurrentVisualizations()
             .find((visualization) => visualization.name === name);
-        return { success: true as const, chartId: instance?.id ?? null, componentName: name };
+        return {
+            success: true as const,
+            chartId: instance?.id ?? null,
+            componentName: name,
+            handle: mountedHandle,
+        };
     }
 
     const requested = manager.requestVisualization({
         name,
         type: 'analysis-results',
     });
-    if (!requested.success) {
-        return {
-            success: false as const,
-            message: requested.message,
-        };
-    }
     const mountedName = requested.componentName || name;
-    await directory.awaitComponentRef<AnalysisResultsChartHandle>(mountedName);
+    const handle = await awaitNamedComponentHandle<AnalysisResultsChartHandle>(directory, mountedName);
     return {
         success: true as const,
         chartId: requested.chartId ?? null,
         componentName: mountedName,
+        handle,
     };
 };
 
@@ -467,11 +471,11 @@ const BaselineCollection = ({ name }: { name: string }) => {
 
         const baseline = lapRecordRef.current;
         if (!baseline?.records?.length) {
-            return Promise.resolve({
-                status: 'error',
-                error: 'baseline_lap_record_required',
-                message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
-            });
+            setAnalysisState('error');
+            return Promise.reject(new BaselineLapRecordRequiredError(
+                name,
+                'Live recorded analysis requires a recorded baseline lap before it can run.',
+            ));
         }
 
         const generation = collectionGenerationRef.current;
@@ -494,21 +498,20 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     result = normalizeSegmentClassificationResult(response.data as any, baseline.id);
                 } catch (error: any) {
                     if (collectionGenerationRef.current === generation) setAnalysisState('error');
-                    return {
-                        status: 'error',
-                        error: 'recorded_analysis_failed',
-                        message: error?.data?.message
+                    throw new RecordedAnalysisFailedError(
+                        name,
+                        error?.data?.message
                             || error?.message
                             || 'Failed to run live baseline analysis.',
-                    };
+                        { cause: error },
+                    );
                 }
 
                 if (collectionGenerationRef.current !== generation) {
-                    return {
-                        status: 'error',
-                        error: 'baseline_analysis_cancelled',
-                        message: 'Baseline analysis was cancelled because baseline collection restarted.',
-                    };
+                    throw new BaselineAnalysisCancelledError(
+                        name,
+                        'Baseline analysis was cancelled because baseline collection restarted.',
+                    );
                 }
 
                 const chat = resolveNamedComponentHandle<AiChatHandle>(
@@ -516,21 +519,24 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
                 );
                 const elements = buildAnalysisElements(result, chat, baseline.records);
-                const chart = await ensureAnalysisResultsChart(componentRefs);
-                if (!chart.success) {
+                let chart: Awaited<ReturnType<typeof ensureAnalysisResultsChart>>;
+                try {
+                    chart = await ensureAnalysisResultsChart(componentRefs);
+                } catch (error) {
                     if (collectionGenerationRef.current === generation) setAnalysisState('error');
-                    return {
-                        status: 'error',
-                        error: 'analysis_results_visualization_unavailable',
-                        message: chart.message,
-                    };
+                    throw new AnalysisResultsVisualizationUnavailableError(
+                        name,
+                        error instanceof Error && error.message
+                            ? error.message
+                            : 'The analysis-results visualization is unavailable.',
+                        { cause: error },
+                    );
                 }
                 if (collectionGenerationRef.current !== generation) {
-                    return {
-                        status: 'error',
-                        error: 'baseline_analysis_cancelled',
-                        message: 'Baseline analysis was cancelled because baseline collection restarted.',
-                    };
+                    throw new BaselineAnalysisCancelledError(
+                        name,
+                        'Baseline analysis was cancelled because baseline collection restarted.',
+                    );
                 }
                 const page = appendAnalysisResultPage({
                     elements,
@@ -544,6 +550,13 @@ const BaselineCollection = ({ name }: { name: string }) => {
                         sample_count: baseline.sample_count,
                     },
                 });
+                await chart.handle.waitForAnalysisResultPage(page.pageId);
+                if (collectionGenerationRef.current !== generation) {
+                    throw new BaselineAnalysisCancelledError(
+                        name,
+                        'Baseline analysis was cancelled because baseline collection restarted.',
+                    );
+                }
                 const payload: BaselineAnalysisPayload = {
                     status: result.segments.length > 0 ? 'ready' : 'empty',
                     message: result.segments.length > 0
@@ -583,7 +596,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         })();
         analysisRequestRef.current = request;
         return request;
-    }, [appendAnalysisResultPage, componentRefs]);
+    }, [appendAnalysisResultPage, componentRefs, name]);
 
     const requestAnalysisFromButton = useCallback(() => {
         void requestAnalysis().catch(() => undefined);

@@ -3,37 +3,38 @@ export type ToolOutputStatus = string;
 export type AiToolNormalOutput = object;
 export type AiToolExecutionOutput = AiToolNormalOutput | Error;
 
-export type AiToolErrorOptions = {
-    details?: Record<string, unknown>;
-    cause?: unknown;
-};
-
-export class AiToolError extends Error {
-    readonly code: string;
-    readonly details?: Record<string, unknown>;
-    readonly cause?: unknown;
-
-    constructor(code: string, message: string, options: AiToolErrorOptions = {}) {
-        super(message);
-        this.name = 'AiToolError';
-        this.code = code;
-        this.details = options.details;
-        this.cause = options.cause;
-    }
-}
-
-export const normalizeAiToolError = (
-    error: unknown,
-    fallbackCode = 'tool_execution_failed',
-): AiToolError => {
-    if (error instanceof AiToolError) return error;
-    const message = error instanceof Error && error.message.trim()
-        ? error.message
-        : typeof error === 'string' && error.trim()
-            ? error
-            : 'Tool execution failed.';
-    return new AiToolError(fallbackCode, message, { cause: error });
-};
+export {
+    AiToolError,
+    AmbiguousComponentTargetError,
+    CircuitMapLookupFailedError,
+    CreateGoalToolUnavailableError,
+    FocusSectionNotReadyError,
+    InvalidProcedurePlanRequestsError,
+    InvalidToolCallError,
+    LivePerformanceAnalystToolUnavailableError,
+    LiveSectionClassificationFailedError,
+    LiveSectionTelemetryUnavailableError,
+    NoCornerDataError,
+    NoLiveSessionError,
+    NoLiveTelemetryError,
+    NoTelemetryForScopeError,
+    NotRecordedModeError,
+    RetryGoalTaskToolUnavailableError,
+    SectionNotFoundError,
+    TelemetryAnalysisFailedError,
+    TelemetryFieldsRequiredError,
+    ToolExecutionError,
+    ToolNotRegisteredError,
+    UnsupportedAgentModeError,
+    VisualizationControlUnavailableError,
+    normalizeAiToolError,
+    serializeErrorCause,
+} from 'errors/AiToolError';
+export type {
+    AiToolErrorOptions,
+    SerializedError,
+    SerializedErrorCause,
+} from 'errors/AiToolError';
 
 export type ToolOutputEnvelope = {
     tool_name: string;

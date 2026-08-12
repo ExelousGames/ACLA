@@ -9,6 +9,17 @@ import {
     NamedAiToolComponentHandle,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
+import {
+    AiToolComponentErrorConstructor,
+    ExpertLineGuidanceFailedError,
+    LapComparisonFailedError,
+    NoRecordedSessionError,
+    PerformanceInsightsFailedError,
+    RecordedAnalysisFailedError,
+    SessionAnalysisFailedError,
+    SessionAnalysisComponentError,
+    TelemetryDataFailedError,
+} from 'contexts/AiToolComponentError';
 import SessionList from './session-list/session-list';
 import MapList from './map-list/map-list';
 import SessionAnalysisSplit from './sessionAnalysis/session-analysis-split';
@@ -23,6 +34,33 @@ import {
 } from './recorded-session-analysis';
 
 const RECORDED_AI_ANALYSIS_TIMEOUT_MS = 120000;
+
+const getRequestFailureMessage = (error: unknown, fallback: string): string => {
+    const value = error as any;
+    return value?.response?.data?.message
+        || value?.data?.message
+        || value?.message
+        || fallback;
+};
+
+const requestSessionAnalysisOperation = async <T,>(
+    componentName: string,
+    ErrorType: AiToolComponentErrorConstructor<SessionAnalysisComponentError>,
+    fallbackMessage: string,
+    request: () => Promise<T>,
+): Promise<T> => {
+    try {
+        return await request();
+    } catch (error) {
+        if (error instanceof SessionAnalysisComponentError) throw error;
+        throw new ErrorType(
+            componentName,
+            getRequestFailureMessage(error, fallbackMessage),
+            { cause: error },
+        );
+    }
+};
+
 export interface SessionAnalysisHandle extends NamedAiToolComponentHandle {
     getSelectedSession(): RacingSessionDetailedInfoDto | null;
     getMapSelected(): string | null;
@@ -55,7 +93,10 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
                 message: 'No recorded session is selected.',
             };
             setRecordedAiAnalysis(nextState);
-            return nextState;
+            throw new NoRecordedSessionError(
+                AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+                nextState.message!,
+            );
         }
 
         const cached = recordedAiAnalysisCacheRef.current.get(sessionId);
@@ -92,7 +133,11 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
                 result: cached?.result ?? null,
             };
             setRecordedAiAnalysis(nextState);
-            return nextState;
+            throw new RecordedAnalysisFailedError(
+                AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+                nextState.message!,
+                { cause: error },
+            );
         }
     }, [sessionSelected?.SessionId]);
 
@@ -166,23 +211,48 @@ const SessionAnalysis = ({ name }: { name: string }) => {
             getRecordedAiAnalysis: () => analysisContextRef.current.recordedAiAnalysis,
             getRecordedPlaybackSummary: () => analysisContextRef.current.recordedPlaybackSummary,
             runRecordedAiAnalysis: (options) => analysisContextRef.current.runRecordedAiAnalysis(options),
-            requestSessionAnalysis: (sessionId) => apiService.post('/racing-session/detailed-info', { id: sessionId }),
-            requestPerformanceInsights: (sessionId, analysisType = 'comprehensive') => apiService.post('/ai/performance-analysis', {
-                session_id: sessionId,
-                analysis_type: analysisType,
-            }),
-            requestLapComparison: (sessionIds, metrics = ['lap_times']) => apiService.post('/racing-session/compare', {
-                session_ids: sessionIds,
-                metrics,
-            }),
-            requestExpertLineGuidance: (sessionId, dataTypes = ['speed', 'acceleration', 'braking', 'steering']) => apiService.post('/ai/expert-line-guidance', {
-                session_id: sessionId,
-                data_types: dataTypes,
-            }),
-            requestTelemetryData: (sessionId, dataTypes = ['speed', 'acceleration']) => apiService.post('/racing-session/telemetry', {
-                session_id: sessionId,
-                data_types: dataTypes,
-            }),
+            requestSessionAnalysis: (sessionId) => requestSessionAnalysisOperation(
+                name,
+                SessionAnalysisFailedError,
+                'Failed to load the session analysis.',
+                () => apiService.post('/racing-session/detailed-info', { id: sessionId }),
+            ),
+            requestPerformanceInsights: (sessionId, analysisType = 'comprehensive') => requestSessionAnalysisOperation(
+                name,
+                PerformanceInsightsFailedError,
+                'Failed to load performance insights.',
+                () => apiService.post('/ai/performance-analysis', {
+                    session_id: sessionId,
+                    analysis_type: analysisType,
+                }),
+            ),
+            requestLapComparison: (sessionIds, metrics = ['lap_times']) => requestSessionAnalysisOperation(
+                name,
+                LapComparisonFailedError,
+                'Failed to compare lap times.',
+                () => apiService.post('/racing-session/compare', {
+                    session_ids: sessionIds,
+                    metrics,
+                }),
+            ),
+            requestExpertLineGuidance: (sessionId, dataTypes = ['speed', 'acceleration', 'braking', 'steering']) => requestSessionAnalysisOperation(
+                name,
+                ExpertLineGuidanceFailedError,
+                'Failed to load expert-line guidance.',
+                () => apiService.post('/ai/expert-line-guidance', {
+                    session_id: sessionId,
+                    data_types: dataTypes,
+                }),
+            ),
+            requestTelemetryData: (sessionId, dataTypes = ['speed', 'acceleration']) => requestSessionAnalysisOperation(
+                name,
+                TelemetryDataFailedError,
+                'Failed to load telemetry data.',
+                () => apiService.post('/racing-session/telemetry', {
+                    session_id: sessionId,
+                    data_types: dataTypes,
+                }),
+            ),
         };
     }
     useRegisterAiToolComponentRef(name, componentRef.current);

@@ -9,13 +9,16 @@ import {
     hasEnoughCoachingLead,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
-    type ProcedurePlanRequest,
+    type ProcedurePlanAdvanceResult,
     type ProcedurePlanState,
 } from 'components/ai-engineering-tools';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
     AiToolError,
     AiToolDefinition,
+    NoLiveSessionError,
+    NoLiveTelemetryError,
+    ToolNotRegisteredError,
     type AiToolExecutionOutput,
     type ToolOutputEnvelope,
     executeAiToolDefinition,
@@ -26,6 +29,10 @@ import {
     AI_TOOL_COMPONENT_NAMES,
     type AiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
+import {
+    NonLiveContextLiveToolsUnavailableError,
+    RecordedSessionLiveToolsUnavailableError,
+} from 'contexts/AiToolComponentError';
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
 import {
     createRefBasedAiCommandFunctions,
@@ -50,22 +57,18 @@ export interface AgentSessionInfo {
 }
 
 export type AgentSessionStartResult = {
-    status: 'started' | 'already_running' | 'error';
+    status: 'started' | 'already_running';
     conversation_role: 'agent';
     agent_mode: AgentSessionMode;
     agent_session_id?: string;
     parent_client_session_id?: string | null;
-    error?: string;
-    message?: string;
 };
 
 export type AgentSessionStopResult = {
-    status: 'stopped' | 'not_running' | 'error';
+    status: 'stopped' | 'not_running';
     conversation_role: 'agent';
     agent_mode?: AgentSessionMode;
     agent_session_id?: string | null;
-    error?: string;
-    message?: string;
 };
 export interface AiCommandRegistryContext {
     componentRefs?: AiToolComponentRefDirectory;
@@ -82,14 +85,7 @@ export interface AiCommandRegistryContext {
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
-    advanceProcedurePlanStep?: (reason?: string) => {
-        status: string;
-        current_request?: number;
-        request?: ProcedurePlanRequest;
-        current_step?: number;
-        step?: string;
-        error?: string;
-    };
+    advanceProcedurePlanStep?: (reason?: string) => ProcedurePlanAdvanceResult;
     getProcedurePlan?: () => ProcedurePlanState | null;
     clearProcedurePlan?: () => void;
     setProcedurePlan?: (plan: ProcedurePlanState | null) => void;
@@ -176,10 +172,10 @@ const getLiveAnalystIntervalSeconds = (value: unknown): number => {
     );
 };
 
-const getLiveToolsUnavailableError = (context: AiCommandRegistryContext) => (
+const getLiveToolsUnavailableErrorType = (context: AiCommandRegistryContext) => (
     context.sessionMode === 'recorded'
-        ? 'recorded_session_live_tools_unavailable'
-        : 'non_live_context_live_tools_unavailable'
+        ? RecordedSessionLiveToolsUnavailableError
+        : NonLiveContextLiveToolsUnavailableError
 );
 
 const isLiveSessionContext = (context: AiCommandRegistryContext): boolean =>
@@ -214,13 +210,12 @@ const isLiveSessionContext = (context: AiCommandRegistryContext): boolean =>
 
 const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext): AiToolError | null => (
     !isLiveSessionContext(context)
-        ? new AiToolError(
-            getLiveToolsUnavailableError(context),
+        ? new (getLiveToolsUnavailableErrorType(context))(
+            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
             'Live performance analysis requires an active live recording.',
         )
         : !context.sessionIntelligence
-            ? new AiToolError(
-                'no_live_session',
+            ? new NoLiveSessionError(
                 'Live session intelligence is unavailable.',
             )
             : null
@@ -306,8 +301,9 @@ export const startAgentRuntime = async (
 ): Promise<AiToolExecutionOutput> => {
     if (agentMode === 'track_guide') {
         if (!isLiveSessionContext(context)) {
-            throw new AiToolError(
-                getLiveToolsUnavailableError(context),
+            const ErrorType = getLiveToolsUnavailableErrorType(context);
+            throw new ErrorType(
+                AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
                 'Track guidance requires an active live recording.',
             );
         }
@@ -318,15 +314,15 @@ export const startAgentRuntime = async (
 
     if (agentMode === 'overtake') {
         if (!isLiveSessionContext(context)) {
-            throw new AiToolError(
-                getLiveToolsUnavailableError(context),
+            const ErrorType = getLiveToolsUnavailableErrorType(context);
+            throw new ErrorType(
+                AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
                 'Overtake analysis requires an active live recording.',
             );
         }
         const telemetryRows = context.getOpportunityTelemetryRows();
         if (telemetryRows.length === 0) {
-            throw new AiToolError(
-                'no_live_telemetry',
+            throw new NoLiveTelemetryError(
                 'No live telemetry is available for overtake analysis.',
             );
         }
@@ -739,18 +735,17 @@ const buildToolAiOutput = (
             break;
         case 'create_goal':
         case 'retry_goal_task':
-            output.goal = uiOutput.goal ?? null;
+            output.goal = uiOutput.name ?? null;
             output.target = typeof uiOutput.target === 'number' ? uiOutput.target : null;
             output.actual = typeof uiOutput.actual === 'number' ? uiOutput.actual : null;
             output.completed_steps = Array.isArray(uiOutput.completed_steps)
                 ? uiOutput.completed_steps
                 : [];
-            output.comparison = uiOutput.comparison ?? null;
-            output.source_result = uiOutput.source_result ?? null;
+            output.determination = uiOutput.determination ?? null;
+            output.determination_result = uiOutput.determination_result ?? null;
             output.task_results = Array.isArray(uiOutput.task_results)
                 ? uiOutput.task_results
                 : [];
-            if (typeof uiOutput.failed_step === 'string') output.failed_step = uiOutput.failed_step;
             break;
         case '_get_live_section_telemetry':
             output.section = uiOutput.section
@@ -802,10 +797,8 @@ const createAiToolDefinition = (
         execute: async (args, context, output, handlerContext) => {
             const handler = createRefBasedAiCommandFunctions(context)[name];
             if (!handler) {
-                throw new AiToolError(
-                    'tool_not_registered',
+                throw new ToolNotRegisteredError(
                     `Tool ${name} is not registered.`,
-                    { details: { tool_name: name } },
                 );
             }
             return handler(args, handlerContext, output);

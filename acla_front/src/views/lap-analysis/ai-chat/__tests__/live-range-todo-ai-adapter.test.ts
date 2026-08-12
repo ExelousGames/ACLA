@@ -6,6 +6,10 @@ import type {
     LiveRangeTodoListToolResult,
     TaskStartFunction,
 } from 'components/ai-engineering-tools';
+import {
+    InvalidLiveRangeTodoListError,
+    LiveRangeTodoListUnavailableError,
+} from 'contexts/AiToolComponentError';
 
 const emptyResult: LiveRangeTodoListToolResult = {
     status: 'empty',
@@ -129,26 +133,19 @@ describe('live range to-do AI adapter', () => {
             () => adapter.update({ action: 'clear' }),
             () => adapter.get(),
         ].forEach((run) => {
-            expect(run).toThrow(expect.objectContaining({
-                code: 'live_range_todo_list_unavailable',
-                message: 'The AI chat live range to-do runtime is unavailable.',
-            }));
+            expect(run).toThrow(LiveRangeTodoListUnavailableError);
         });
     });
 
-    it('converts component error results to exceptions at the AI boundary', () => {
+    it('lets component exceptions reach the shared AI boundary unchanged', () => {
         const handle = createHandle();
-        handle.replaceEvents.mockReturnValue({
-            status: 'error',
-            todo_list: null,
-            error: 'invalid_live_range_todo_list',
-            message: 'Duplicate event id.',
-        });
+        const componentError = new InvalidLiveRangeTodoListError(
+            'live-range-todo-list',
+            'Duplicate event id.',
+        );
+        handle.replaceEvents.mockImplementation(() => { throw componentError; });
         const adapter = createLiveRangeTodoAiAdapter(handle, () => jest.fn());
 
-        expect(() => adapter.set({ events: [] })).toThrow(expect.objectContaining({
-            code: 'invalid_live_range_todo_list',
-            message: 'Duplicate event id.',
-        }));
+        expect(() => adapter.set({ events: [] })).toThrow(componentError);
     });
 });

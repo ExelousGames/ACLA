@@ -13,6 +13,12 @@ import BaselineCollection, {
     type BaselineCollectionHandle,
 } from '../BaselineCollection';
 import { LiveSessionContext } from '../LiveSessionContext';
+import {
+    AnalysisResultsVisualizationNotReadyError,
+    AnalysisResultsVisualizationUnavailableError,
+    RecordedAnalysisFailedError,
+    VisualizationRequestFailedError,
+} from 'contexts/AiToolComponentError';
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
@@ -94,8 +100,15 @@ const reserve = (name: string, value: Record<string, any>) => {
     } as any);
 };
 
-const installAnalysisComponents = ({ existingChart = false } = {}) => {
+const installAnalysisComponents = ({
+    existingChart = false,
+    waitForAnalysisResultPage = jest.fn().mockResolvedValue(undefined),
+}: {
+    existingChart?: boolean;
+    waitForAnalysisResultPage?: jest.Mock;
+} = {}) => {
     const chartName = 'visualization:analysis-results';
+    const chartHandle = { waitForAnalysisResultPage };
     const visualizations: any[] = existingChart
         ? [{ id: 'analysis-chart-1', name: chartName, type: 'analysis-results' }]
         : [];
@@ -105,7 +118,7 @@ const installAnalysisComponents = ({ existingChart = false } = {}) => {
         requestVisualization: jest.fn((options: any) => {
             const instance = { id: 'analysis-chart-1', ...options };
             visualizations.push(instance);
-            reserve(chartName, {});
+            reserve(chartName, chartHandle);
             return {
                 success: true,
                 message: 'Opened chart.',
@@ -125,10 +138,10 @@ const installAnalysisComponents = ({ existingChart = false } = {}) => {
                 'turn-2': 'Turn Two',
             }[id] || id)),
         });
-        if (existingChart) reserve(chartName, {});
+        if (existingChart) reserve(chartName, chartHandle);
         reserve(AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER, manager);
     });
-    return { manager, visualizations };
+    return { chartHandle, manager, visualizations };
 };
 
 const completeBaselineLap = (
@@ -323,7 +336,7 @@ describe('BaselineCollection visualization', () => {
     it('owns the exact cached-lap request, normalization, labels, comparison, and result payload', async () => {
         const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
         const handle = completeBaselineLap(view);
-        const { manager } = installAnalysisComponents();
+        const { chartHandle, manager } = installAnalysisComponents();
 
         let payload: Awaited<ReturnType<BaselineCollectionHandle['requestAnalysis']>> | undefined;
         await act(async () => {
@@ -345,6 +358,8 @@ describe('BaselineCollection visualization', () => {
             name: 'visualization:analysis-results',
             type: 'analysis-results',
         });
+        expect(chartHandle.waitForAnalysisResultPage)
+            .toHaveBeenCalledWith('baseline-analysis-page-1');
         expect(appendAnalysisResultPage).toHaveBeenCalledWith({
             baseline: {
                 id: record.id,
@@ -456,7 +471,7 @@ describe('BaselineCollection visualization', () => {
     it('reuses the mounted Analysis Results chart and accumulates pages on later requests', async () => {
         const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
         const handle = completeBaselineLap(view);
-        const { manager, visualizations } = installAnalysisComponents();
+        const { chartHandle, manager, visualizations } = installAnalysisComponents();
 
         await act(async () => { await handle.requestAnalysis(); });
         mockPost.mockResolvedValueOnce({
@@ -471,6 +486,14 @@ describe('BaselineCollection visualization', () => {
         expect(manager.requestVisualization).toHaveBeenCalledTimes(1);
         expect(visualizations).toHaveLength(1);
         expect(appendAnalysisResultPage).toHaveBeenCalledTimes(2);
+        expect(chartHandle.waitForAnalysisResultPage).toHaveBeenNthCalledWith(
+            1,
+            'baseline-analysis-page-1',
+        );
+        expect(chartHandle.waitForAnalysisResultPage).toHaveBeenNthCalledWith(
+            2,
+            'baseline-analysis-page-2',
+        );
         expect(appendAnalysisResultPage).toHaveBeenLastCalledWith({
             baseline: expect.objectContaining({ id: handle.getLapRecord()!.id }),
             elements: [expect.objectContaining({ id: 'segment-later' })],
@@ -483,14 +506,80 @@ describe('BaselineCollection visualization', () => {
         });
     });
 
+    it.each([
+        ['newly opened', false],
+        ['reused', true],
+    ])('does not finish for a %s Analysis Results panel until its page is committed', async (
+        _panelState,
+        existingChart,
+    ) => {
+        let resolvePageCommit!: () => void;
+        const pageCommit = new Promise<void>((resolve) => { resolvePageCommit = resolve; });
+        const waitForAnalysisResultPage = jest.fn(() => pageCommit);
+        const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
+        const handle = completeBaselineLap(view);
+        const { manager } = installAnalysisComponents({
+            existingChart,
+            waitForAnalysisResultPage,
+        });
+
+        let completed = false;
+        let request!: ReturnType<BaselineCollectionHandle['requestAnalysis']>;
+        act(() => {
+            request = handle.requestAnalysis();
+            void request.then(() => { completed = true; });
+        });
+
+        await waitFor(() => expect(waitForAnalysisResultPage)
+            .toHaveBeenCalledWith('baseline-analysis-page-1'));
+        expect(completed).toBe(false);
+        expect(screen.getByRole('button', { name: /Analyzing Baseline/ })).toBeDisabled();
+        expect(manager.requestVisualization).toHaveBeenCalledTimes(existingChart ? 0 : 1);
+
+        await act(async () => {
+            resolvePageCommit();
+            await request;
+        });
+        expect(completed).toBe(true);
+        expect(screen.getByRole('button', { name: 'Analysis Complete' })).toBeDisabled();
+    });
+
+    it('preserves the stable visualization-readiness failure from the chart', async () => {
+        const readinessFailure = new AnalysisResultsVisualizationNotReadyError(
+            'visualization:analysis-results',
+            "Analysis Results unmounted before page 'baseline-analysis-page-1' was committed.",
+        );
+        const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
+        const handle = completeBaselineLap(view);
+        installAnalysisComponents({
+            waitForAnalysisResultPage: jest.fn().mockRejectedValue(readinessFailure),
+        });
+
+        await act(async () => {
+            await expect(handle.requestAnalysis()).rejects.toBe(readinessFailure);
+        });
+        expect(screen.getByRole('button', { name: 'Retry Analysis' })).toBeEnabled();
+    });
+
     it('shows errors, allows retry, and resets the analysis state on restart', async () => {
         mockPost.mockRejectedValueOnce({ data: { message: 'classifier unavailable' } });
         const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
         const handle = completeBaselineLap(view);
         installAnalysisComponents();
 
-        act(() => {
-            screen.getByRole('button', { name: 'Request Analysis' }).click();
+        let failure: unknown;
+        await act(async () => {
+            try {
+                await handle.requestAnalysis();
+            } catch (error) {
+                failure = error;
+            }
+        });
+        expect(failure).toBeInstanceOf(RecordedAnalysisFailedError);
+        expect(failure).toMatchObject({
+            name: 'RecordedAnalysisFailedError',
+            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            message: 'classifier unavailable',
         });
         await waitFor(() => expect(
             screen.getByRole('button', { name: 'Retry Analysis' }),
@@ -520,22 +609,28 @@ describe('BaselineCollection visualization', () => {
         const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
         const handle = completeBaselineLap(view);
         const { manager } = installAnalysisComponents();
-        manager.requestVisualization.mockImplementationOnce(() => ({
-            success: false,
-            message: 'Analysis Results is unavailable.',
-            componentName: 'visualization:analysis-results',
-            chartId: null,
-            chartType: 'analysis-results',
-            reused: false,
-        }));
+        manager.requestVisualization.mockImplementationOnce(() => {
+            throw new VisualizationRequestFailedError(
+                AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
+                'Analysis Results is unavailable.',
+            );
+        });
 
         let failure: any;
-        await act(async () => { failure = await handle.requestAnalysis(); });
+        await act(async () => {
+            try {
+                await handle.requestAnalysis();
+            } catch (error) {
+                failure = error;
+            }
+        });
 
-        expect(failure).toEqual({
-            status: 'error',
-            error: 'analysis_results_visualization_unavailable',
+        expect(failure).toBeInstanceOf(AnalysisResultsVisualizationUnavailableError);
+        expect(failure).toMatchObject({
+            name: 'AnalysisResultsVisualizationUnavailableError',
+            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
             message: 'Analysis Results is unavailable.',
+            cause: expect.any(VisualizationRequestFailedError),
         });
         expect(appendAnalysisResultPage).not.toHaveBeenCalled();
         expect(screen.getByRole('button', { name: 'Retry Analysis' })).toBeEnabled();
@@ -552,10 +647,12 @@ describe('BaselineCollection visualization', () => {
     it('returns the existing incomplete-baseline failure from requestAnalysis', async () => {
         render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
 
-        await expect(getHandle().requestAnalysis()).resolves.toEqual({
-            status: 'error',
-            error: 'baseline_lap_record_required',
-            message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
+        await act(async () => {
+            await expect(getHandle().requestAnalysis()).rejects.toMatchObject({
+                name: 'BaselineLapRecordRequiredError',
+                componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
+            });
         });
         expect(mockPost).not.toHaveBeenCalled();
     });

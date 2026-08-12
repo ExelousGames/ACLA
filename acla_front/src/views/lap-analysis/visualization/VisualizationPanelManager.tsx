@@ -2,6 +2,13 @@ import React from 'react';
 import { Box, Button, DropdownMenu, Flex, IconButton, Text } from '@radix-ui/themes';
 import { Cross2Icon, DragHandleDots2Icon, PlusIcon } from '@radix-ui/react-icons';
 import type { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
+import {
+    AiToolComponentErrorConstructor,
+    VisualizationCloseFailedError,
+    VisualizationComponentError,
+    VisualizationRequestFailedError,
+    VisualizationUpdateFailedError,
+} from 'contexts/AiToolComponentError';
 import './DynamicVisualizationManager.css';
 
 export interface ManagedVisualizationInstance {
@@ -13,7 +20,7 @@ export interface ManagedVisualizationInstance {
 }
 
 export interface VisualizationManagerResult {
-    success: boolean;
+    success: true;
     message: string;
     componentName?: string;
     chartId?: string;
@@ -75,6 +82,28 @@ abstract class VisualizationPanelManager<
 
     private currentVisualizations: TInstance[] = [];
     private resizeState: ResizeState | null = null;
+
+    private runManagerOperation<T>(
+        ErrorType: AiToolComponentErrorConstructor<VisualizationComponentError>,
+        fallbackMessage: string,
+        operation: () => T,
+    ): T {
+        try {
+            return operation();
+        } catch (error) {
+            if (
+                error instanceof ErrorType
+                && error.componentName === this.props.name
+            ) {
+                throw error;
+            }
+            throw new ErrorType(
+                this.props.name,
+                error instanceof Error && error.message ? error.message : fallbackMessage,
+                { cause: error },
+            );
+        }
+    }
 
     protected abstract getManagerTitle(): React.ReactNode;
     protected abstract getStaticMapTitle(): React.ReactNode;
@@ -169,126 +198,135 @@ abstract class VisualizationPanelManager<
         type: string;
         data?: any;
         config?: any;
-    }): VisualizationManagerResult => {
-        const exact = this.currentVisualizations.find((instance) => instance.name === name);
-        if (exact) {
-            this.applyVisualizations(this.currentVisualizations.map((instance) => (
-                instance.name === name
-                    ? { ...instance, data: data ?? instance.data, config: config === undefined ? instance.config : { ...instance.config, ...config } }
-                    : instance
-            )));
-            return {
-                success: true,
-                message: `Reused chart '${name}'.`,
-                componentName: name,
-                chartId: exact.id,
-                chartType: exact.type,
-                reused: true,
-            };
-        }
-
-        if (type !== 'telemetry-overview') {
-            const singleton = this.currentVisualizations.find((instance) => instance.type === type);
-            if (singleton) {
+    }): VisualizationManagerResult => this.runManagerOperation(
+        VisualizationRequestFailedError,
+        `Unable to open chart '${type}'.`,
+        () => {
+            const exact = this.currentVisualizations.find((instance) => instance.name === name);
+            if (exact) {
                 this.applyVisualizations(this.currentVisualizations.map((instance) => (
-                    instance.name === singleton.name
+                    instance.name === name
                         ? { ...instance, data: data ?? instance.data, config: config === undefined ? instance.config : { ...instance.config, ...config } }
                         : instance
                 )));
                 return {
                     success: true,
-                    message: `Reused chart '${singleton.name}'.`,
-                    componentName: singleton.name,
-                    chartId: singleton.id,
-                    chartType: singleton.type,
+                    message: `Reused chart '${name}'.`,
+                    componentName: name,
+                    chartId: exact.id,
+                    chartType: exact.type,
                     reused: true,
                 };
             }
-        }
 
-        const instance = this.createPanelInstance(type, name, data, config);
-        if (!instance) {
+            if (type !== 'telemetry-overview') {
+                const singleton = this.currentVisualizations.find((instance) => instance.type === type);
+                if (singleton) {
+                    this.applyVisualizations(this.currentVisualizations.map((instance) => (
+                        instance.name === singleton.name
+                            ? { ...instance, data: data ?? instance.data, config: config === undefined ? instance.config : { ...instance.config, ...config } }
+                            : instance
+                    )));
+                    return {
+                        success: true,
+                        message: `Reused chart '${singleton.name}'.`,
+                        componentName: singleton.name,
+                        chartId: singleton.id,
+                        chartType: singleton.type,
+                        reused: true,
+                    };
+                }
+            }
+
+            const instance = this.createPanelInstance(type, name, data, config);
+            if (!instance) {
+                throw new VisualizationRequestFailedError(
+                    this.props.name,
+                    `Unable to open chart '${type}'.`,
+                );
+            }
+            this.applyVisualizations([...this.currentVisualizations, instance]);
             return {
-                success: false,
-                message: `Unable to open chart '${type}'.`,
+                success: true,
+                message: `Opened chart '${type}'.`,
                 componentName: name,
+                chartId: instance.id,
                 chartType: type,
+                reused: false,
             };
-        }
-        this.applyVisualizations([...this.currentVisualizations, instance]);
-        return {
-            success: true,
-            message: `Opened chart '${type}'.`,
-            componentName: name,
-            chartId: instance.id,
-            chartType: type,
-            reused: false,
-        };
-    };
+        },
+    );
 
     public updateVisualization = (
         name: string,
         data?: any,
         config?: any,
-    ): VisualizationManagerResult => {
-        const existing = this.currentVisualizations.find((instance) => instance.name === name);
-        if (!existing) {
-            return { success: false, message: `Chart '${name}' is not open.`, componentName: name };
-        }
-        this.applyVisualizations(this.currentVisualizations.map((instance) => (
-            instance.name === name
-                ? {
-                    ...instance,
-                    data: data === undefined ? instance.data : data,
-                    config: config === undefined ? instance.config : { ...instance.config, ...config },
-                }
-                : instance
-        )));
-        return {
-            success: true,
-            message: `Updated chart '${name}'.`,
-            componentName: name,
-            chartId: existing.id,
-            chartType: existing.type,
-        };
-    };
+    ): VisualizationManagerResult => this.runManagerOperation(
+        VisualizationUpdateFailedError,
+        `Could not update chart '${name}'.`,
+        () => {
+            const existing = this.currentVisualizations.find((instance) => instance.name === name);
+            if (!existing) {
+                throw new VisualizationUpdateFailedError(
+                    this.props.name,
+                    `Chart '${name}' is not open.`,
+                );
+            }
+            this.applyVisualizations(this.currentVisualizations.map((instance) => (
+                instance.name === name
+                    ? {
+                        ...instance,
+                        data: data === undefined ? instance.data : data,
+                        config: config === undefined ? instance.config : { ...instance.config, ...config },
+                    }
+                    : instance
+            )));
+            return {
+                success: true,
+                message: `Updated chart '${name}'.`,
+                componentName: name,
+                chartId: existing.id,
+                chartType: existing.type,
+            };
+        },
+    );
 
     public closeVisualization = (options: {
         name?: string;
         id?: string;
         type?: string;
         all?: boolean;
-    }): VisualizationManagerResult => {
-        const matches = this.currentVisualizations.filter((instance) => (
-            options.name ? instance.name === options.name
-                : options.id ? instance.id === options.id
-                    : options.type ? instance.type === options.type
-                        : false
-        ));
-        const closing = options.all ? matches : matches.slice(0, 1);
-        if (closing.length === 0) {
+    }): VisualizationManagerResult => this.runManagerOperation(
+        VisualizationCloseFailedError,
+        'No matching open chart was found.',
+        () => {
+            const matches = this.currentVisualizations.filter((instance) => (
+                options.name ? instance.name === options.name
+                    : options.id ? instance.id === options.id
+                        : options.type ? instance.type === options.type
+                            : false
+            ));
+            const closing = options.all ? matches : matches.slice(0, 1);
+            if (closing.length === 0) {
+                throw new VisualizationCloseFailedError(
+                    this.props.name,
+                    options.name
+                        ? `Chart '${options.name}' is not open.`
+                        : 'No matching open chart was found.',
+                );
+            }
+            const names = new Set(closing.map((instance) => instance.name));
+            this.applyVisualizations(this.currentVisualizations.filter((instance) => !names.has(instance.name)));
             return {
-                success: false,
-                message: options.name
-                    ? `Chart '${options.name}' is not open.`
-                    : `No matching open chart was found.`,
-                componentName: options.name,
-                chartId: options.id,
-                chartType: options.type,
-                data: { removedCount: 0 },
+                success: true,
+                message: `Closed ${closing.length} chart(s).`,
+                componentName: closing[0].name,
+                chartId: closing[0].id,
+                chartType: closing[0].type,
+                data: { removedCount: closing.length },
             };
-        }
-        const names = new Set(closing.map((instance) => instance.name));
-        this.applyVisualizations(this.currentVisualizations.filter((instance) => !names.has(instance.name)));
-        return {
-            success: true,
-            message: `Closed ${closing.length} chart(s).`,
-            componentName: closing[0].name,
-            chartId: closing[0].id,
-            chartType: closing[0].type,
-            data: { removedCount: closing.length },
-        };
-    };
+        },
+    );
 
     private removeVisualization = (id: string) => {
         this.applyVisualizations(this.currentVisualizations.filter((visualization) => visualization.id !== id));

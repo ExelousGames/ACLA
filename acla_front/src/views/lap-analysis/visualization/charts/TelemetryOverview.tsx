@@ -3,10 +3,12 @@ import { Card, Text, Box, Grid, TextField, Button } from '@radix-ui/themes';
 import { MagnifyingGlassIcon } from '@radix-ui/react-icons';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
 
 export interface TelemetryOverviewHandle extends NamedAiToolComponentHandle {
-    updateTelemetry(data: any, config?: any): boolean;
-    disableTelemetry(): boolean;
+    updateTelemetry(data: any, config?: any): true;
+    disableTelemetry(): true;
 }
 
 const TelemetryOverview = forwardRef<TelemetryOverviewHandle, VisualizationProps>(({
@@ -23,8 +25,18 @@ const TelemetryOverview = forwardRef<TelemetryOverviewHandle, VisualizationProps
 
     const handle = useMemo<TelemetryOverviewHandle>(() => ({
         getComponentName: () => name,
-        updateTelemetry: (nextData, nextConfig) => onUpdate?.(nextData, nextConfig) ?? false,
-        disableTelemetry: () => onDisable?.() ?? false,
+        updateTelemetry: (nextData, nextConfig) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(nextData, nextConfig) : undefined,
+        ),
+        disableTelemetry: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);

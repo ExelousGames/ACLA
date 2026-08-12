@@ -53,9 +53,8 @@ export interface LiveRangeTodoListSnapshot {
 }
 
 export interface LiveRangeTodoListToolResult {
-    status: 'ready' | 'empty' | 'error';
+    status: 'ready' | 'empty';
     todo_list: LiveRangeTodoListSnapshot | null;
-    error?: string;
     message?: string;
 }
 

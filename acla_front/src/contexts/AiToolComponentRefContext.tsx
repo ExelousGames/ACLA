@@ -7,6 +7,24 @@ import React, {
     useRef,
     useState,
 } from 'react';
+import {
+    AiToolComponentRefError,
+    ComponentMountTimeoutError,
+    ComponentNameMismatchError,
+    ComponentRefUnavailableError,
+    DuplicateAiToolComponentError,
+    DuplicateComponentNameError,
+} from './AiToolComponentError';
+import { AiToolComponentBase } from 'components/ai-engineering-tools/AiToolComponentBase';
+
+export {
+    AiToolComponentRefError,
+    ComponentMountTimeoutError,
+    ComponentNameMismatchError,
+    ComponentRefUnavailableError,
+    DuplicateAiToolComponentError,
+    DuplicateComponentNameError,
+} from './AiToolComponentError';
 
 export const AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS = 5000;
 
@@ -19,26 +37,9 @@ export const AI_TOOL_COMPONENT_NAMES = Object.freeze({
     RECORDED_VISUALIZATION_MANAGER: 'recorded-visualization-manager',
     LIVE_RANGE_TODO_LIST: 'live-range-todo-list',
     GOAL: 'goal',
+    PROCEDURE_PLAN: 'procedure-plan',
     BASELINE_COLLECTION: 'baseline-collection',
 });
-
-export type AiToolComponentRefErrorCode =
-    | 'component_ref_unavailable'
-    | 'component_name_mismatch'
-    | 'duplicate_component_name'
-    | 'component_mount_timeout';
-
-export class AiToolComponentRefError extends Error {
-    readonly code: AiToolComponentRefErrorCode;
-    readonly componentName: string;
-
-    constructor(code: AiToolComponentRefErrorCode, componentName: string, message: string) {
-        super(message);
-        this.name = 'AiToolComponentRefError';
-        this.code = code;
-        this.componentName = componentName;
-    }
-}
 
 export interface NamedAiToolComponentHandle {
     getComponentName(): string;
@@ -61,6 +62,7 @@ export interface AiToolComponentRefDirectory {
     findComponentRef<THandle extends NamedAiToolComponentHandle>(
         name: string,
     ): MutableRefObject<THandle | null> | null;
+    findBaseComponentRef(): MutableRefObject<AiToolComponentBase<unknown> | null> | null;
     reserveComponentRef<THandle extends NamedAiToolComponentHandle>(
         name: string,
         owner: AiToolComponentRefOwner,
@@ -89,6 +91,15 @@ export const createAiToolComponentRefDirectory = (
         (entries.get(name)?.ref as MutableRefObject<THandle | null> | undefined) ?? null
     );
 
+    const findBaseComponentRef = (): MutableRefObject<AiToolComponentBase<unknown> | null> | null => {
+        for (const entry of Array.from(entries.values())) {
+            if (entry.ref.current instanceof AiToolComponentBase) {
+                return entry.ref as MutableRefObject<AiToolComponentBase<unknown> | null>;
+            }
+        }
+        return null;
+    };
+
     const reserveComponentRef = <THandle extends NamedAiToolComponentHandle>(
         name: string,
         owner: AiToolComponentRefOwner,
@@ -96,17 +107,33 @@ export const createAiToolComponentRefDirectory = (
     ): MutableRefObject<THandle | null> => {
         const reportedName = handle.getComponentName();
         if (reportedName !== name) {
-            throw new AiToolComponentRefError(
-                'component_name_mismatch',
+            throw new ComponentNameMismatchError(
                 name,
                 `Component '${reportedName}' cannot register as '${name}'.`,
             );
         }
 
+        if (handle instanceof AiToolComponentBase) {
+            const existingBase = findBaseComponentRef()?.current;
+            if (existingBase) {
+                const existing = {
+                    name: existingBase.getComponentName(),
+                    type: existingBase.constructor.name,
+                };
+                const requested = {
+                    name: handle.getComponentName(),
+                    type: handle.constructor.name,
+                };
+                throw new DuplicateAiToolComponentError(
+                    name,
+                    `AI workflow component '${existing.name}' is already active; '${requested.name}' cannot be added.`,
+                );
+            }
+        }
+
         const existing = entries.get(name);
         if (existing && existing.owner !== owner) {
-            throw new AiToolComponentRefError(
-                'duplicate_component_name',
+            throw new DuplicateComponentNameError(
                 name,
                 `A mounted component already owns '${name}'.`,
             );
@@ -147,8 +174,7 @@ export const createAiToolComponentRefDirectory = (
                     const current = waiters.get(name);
                     current?.delete(waiter);
                     if (current?.size === 0) waiters.delete(name);
-                    reject(new AiToolComponentRefError(
-                        'component_mount_timeout',
+                    reject(new ComponentMountTimeoutError(
                         name,
                         `Component '${name}' did not mount within ${timeoutMs}ms.`,
                     ));
@@ -171,6 +197,7 @@ export const createAiToolComponentRefDirectory = (
 
     return {
         findComponentRef,
+        findBaseComponentRef,
         reserveComponentRef,
         createComponentRef: reserveComponentRef,
         awaitComponentRef,
@@ -234,8 +261,7 @@ export const useRegisterAiToolComponentRef = <THandle extends NamedAiToolCompone
     handleRef.current = handle;
 
     if (mountedNameRef.current !== name) {
-        throw new AiToolComponentRefError(
-            'component_name_mismatch',
+        throw new ComponentNameMismatchError(
             mountedNameRef.current,
             `Mounted component '${mountedNameRef.current}' cannot be renamed to '${name}'. Remount it with key={name}.`,
         );
@@ -262,15 +288,13 @@ export const resolveNamedComponentHandle = <THandle extends NamedAiToolComponent
 ): THandle => {
     const handle = directory.findComponentRef<THandle>(name)?.current;
     if (!handle) {
-        throw new AiToolComponentRefError(
-            'component_ref_unavailable',
+        throw new ComponentRefUnavailableError(
             name,
             `Component '${name}' is not mounted in the active dashboard.`,
         );
     }
     if (handle.getComponentName() !== name) {
-        throw new AiToolComponentRefError(
-            'component_name_mismatch',
+        throw new ComponentNameMismatchError(
             name,
             `Component '${name}' reported the name '${handle.getComponentName()}'.`,
         );
@@ -286,15 +310,13 @@ export const awaitNamedComponentHandle = async <THandle extends NamedAiToolCompo
     await directory.awaitComponentRef<THandle>(name, timeoutMs);
     const handle = directory.findComponentRef<THandle>(name)?.current;
     if (!handle) {
-        throw new AiToolComponentRefError(
-            'component_ref_unavailable',
+        throw new ComponentRefUnavailableError(
             name,
             `Component '${name}' unmounted before it could receive the command.`,
         );
     }
     if (handle.getComponentName() !== name) {
-        throw new AiToolComponentRefError(
-            'component_name_mismatch',
+        throw new ComponentNameMismatchError(
             name,
             `Component '${name}' reported the name '${handle.getComponentName()}'.`,
         );

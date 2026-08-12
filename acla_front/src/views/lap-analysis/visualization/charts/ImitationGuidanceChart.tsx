@@ -6,6 +6,13 @@ import { VisualizationProps } from '../VisualizationRegistry';
 import apiService from 'services/api.service';
 import styles from './ImitationGuidanceChart.module.css';
 import { NamedAiToolComponentHandle, useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import {
+    ComponentDisableFailedError,
+    VisualizationComponentError,
+    VisualizationControlFailedError,
+    VisualizationUpdateFailedError,
+} from 'contexts/AiToolComponentError';
+import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
 
 const getNormalizedCarPos = (telemetry: Record<string, any> | null): number | undefined => {
     if (!telemetry) return undefined;
@@ -32,9 +39,9 @@ const extractGuidanceText = (raw: any, guidanceResult: any): string | null => {
 };
 
 export interface ImitationGuidanceChartHandle extends NamedAiToolComponentHandle {
-    updateGuidanceData(data: any, config?: any): boolean;
-    refreshGuidanceOnce(): Promise<{ success: boolean; message: string }>;
-    disableGuidance(): boolean;
+    updateGuidanceData(data: any, config?: any): true;
+    refreshGuidanceOnce(): Promise<{ success: true; message: string }>;
+    disableGuidance(): true;
 }
 
 const ImitationGuidanceChart = forwardRef<ImitationGuidanceChartHandle, VisualizationProps>((props, forwardedRef) => {
@@ -71,11 +78,19 @@ const ImitationGuidanceChart = forwardRef<ImitationGuidanceChartHandle, Visualiz
     const fetchGuidance = useCallback(async () => {
         const currentLiveData = liveDataRef.current;
         if (!currentLiveData || Object.keys(currentLiveData).length === 0) {
-            return;
+            const message = 'Guidance refresh requires telemetry data.';
+            setError(message);
+            throw new VisualizationControlFailedError(
+                name,
+                message,
+            );
         }
 
         if (requestInFlightRef.current) {
-            return;
+            throw new VisualizationControlFailedError(
+                name,
+                'A guidance refresh is already running.',
+            );
         }
 
         requestInFlightRef.current = true;
@@ -93,29 +108,54 @@ const ImitationGuidanceChart = forwardRef<ImitationGuidanceChartHandle, Visualiz
             const result = raw?.guidance_result;
             if (result?.status === 'success') {
                 const guidanceText = extractGuidanceText(raw, result);
-                if (guidanceText && analysisContext.sendGuidanceToChat) {
-                    analysisContext.sendGuidanceToChat(guidanceText);
+                if (!guidanceText) {
+                    throw new Error('Guidance response did not include guidance text.');
                 }
+                analysisContext.sendGuidanceToChat?.(guidanceText);
             } else {
-                setError('Failed to get guidance: API returned error status');
+                throw new Error(
+                    result?.message
+                    || raw?.message
+                    || 'Failed to get guidance: API returned error status',
+                );
             }
         } catch (err: any) {
             console.error('Imitation learning guidance error:', err);
-            setError('API call failed: ' + (err.response?.data?.message || err.message));
+            const message = err?.response?.data?.message
+                || err?.data?.message
+                || err?.message
+                || 'Failed to refresh guidance.';
+            setError(message);
+            if (err instanceof VisualizationComponentError) throw err;
+            throw new VisualizationControlFailedError(
+                name,
+                message,
+                { cause: err },
+            );
         } finally {
             setLoading(false);
             requestInFlightRef.current = false;
         }
-    }, [analysisContext]);
+    }, [analysisContext, name]);
 
     const handle = useMemo<ImitationGuidanceChartHandle>(() => ({
         getComponentName: () => name,
-        updateGuidanceData: (nextData, nextConfig) => onUpdate?.(nextData, nextConfig) ?? false,
+        updateGuidanceData: (nextData, nextConfig) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(nextData, nextConfig) : undefined,
+        ),
         refreshGuidanceOnce: async () => {
             await fetchGuidance();
-            return { success: true, message: `Refreshed guidance chart '${name}'.` };
+            return { success: true as const, message: `Refreshed guidance chart '${name}'.` };
         },
-        disableGuidance: () => onDisable?.() ?? false,
+        disableGuidance: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
     }), [fetchGuidance, name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);
@@ -138,7 +178,7 @@ const ImitationGuidanceChart = forwardRef<ImitationGuidanceChartHandle, Visualiz
             }
 
             if (crossed) {
-                fetchGuidance();
+                void fetchGuidance().catch(() => undefined);
             }
         }
 

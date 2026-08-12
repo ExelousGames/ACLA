@@ -243,7 +243,7 @@ const registry: { [K in OverlayDisplayType]: OverlayDisplayDefinition<OverlaySna
         cardinality: 'singleton',
         validateSnapshot: (snapshot): snapshot is OverlaySnapshotByType['goal'] => (
             isRecord(snapshot)
-            && isNonEmptyString(snapshot.goal)
+            && isNonEmptyString(snapshot.name)
             && ['running', 'achieved', 'missed', 'error'].includes(String(snapshot.status))
             && Array.isArray(snapshot.steps)
             && typeof snapshot.target === 'number'
@@ -257,7 +257,7 @@ const registry: { [K in OverlayDisplayType]: OverlayDisplayDefinition<OverlaySna
         manualDismiss: true,
         dimensions: { expanded: { width: 420, height: 230 }, folded: { width: 340, height: 58 } },
         renderExpanded: ({ snapshot }) => <GoalDisplay snapshot={snapshot} surface="pill" />,
-        renderSummary: (snapshot) => `${snapshot.status}: ${snapshot.goal}`,
+        renderSummary: (snapshot) => `${snapshot.status}: ${snapshot.name}`,
     },
     procedure_plan: {
         type: 'procedure_plan',

@@ -4,8 +4,38 @@ import {
     AiToolComponentRefDirectory,
     createAiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
+import {
+    BaselineCollectionVisualizationRequiredError,
+    BaselineLapRecordRequiredError,
+    ComponentMountTimeoutError,
+    ComponentNameMismatchError,
+    ComponentRefUnavailableError,
+    DuplicateAiToolComponentError,
+    GoalStepFailedError,
+    InvalidGoalNameError,
+    InvalidLiveRangeTodoListError,
+    LiveAnalysisResultUnavailableError,
+    NonLiveContextLiveToolsUnavailableError,
+    RecordedAnalysisFailedError,
+    SessionAnalysisFailedError,
+} from 'contexts/AiToolComponentError';
 import { RecordingState } from 'views/lap-analysis/recording-state';
-import { getToolEnvelopeUiOutput, ToolOutputEnvelope } from '../ai-tool-base';
+import {
+    GoalRunner,
+    LiveRangeTodoListRunner,
+    ProcedurePlanRunner,
+} from 'components/ai-engineering-tools';
+import {
+    AmbiguousComponentTargetError,
+    CreateGoalToolUnavailableError,
+    getToolEnvelopeUiOutput,
+    LivePerformanceAnalystToolUnavailableError,
+    LiveSectionClassificationFailedError,
+    RetryGoalTaskToolUnavailableError,
+    TelemetryAnalysisFailedError,
+    ToolExecutionError,
+    ToolOutputEnvelope,
+} from '../ai-tool-base';
 import {
     AiCommandRegistryContext,
     createAiCommandRegistry,
@@ -101,33 +131,33 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
     };
     const goal = {
         createGoal: jest.fn(async () => ({
-            goal: 'No mistakes',
+            name: 'No mistakes',
             status: 'achieved',
-            comparison: { step_id: 'count', result_path: 'mistake_count', operator: 'eq', target: 0, metric_label: 'Mistakes' },
+            determination: {
+                tool: { name: 'get_live_analysis_mistake_count' },
+                result_path: 'mistake_count',
+                operator: 'eq',
+                target: 0,
+            },
             target: 0,
             actual: 0,
-            completed_steps: ['collect', 'analyze', 'count'],
-            source_result: { step_id: 'count', tool_name: 'get_live_analysis_mistake_count', run_id: 'nested-3', status: 'complete', final: true },
-            task_results: [{
-                step_id: 'count', tool_name: 'get_live_analysis_mistake_count', attempt: 1,
-                status: 'completed', value: { mistake_count: 0 },
-            }],
-        })),
-        retryFailedTask: jest.fn(async () => ({
-            goal: 'No mistakes',
-            status: 'error',
-            comparison: { step_id: 'count', result_path: 'mistake_count', operator: 'eq', target: 0, metric_label: 'Mistakes' },
-            target: 0,
-            actual: null,
             completed_steps: ['collect'],
-            source_result: null,
-            failed_step: 'analyze',
-            error: 'analysis_offline',
             task_results: [{
-                step_id: 'analyze', tool_name: 'analyze_live_recorded_analysis', attempt: 2,
-                status: 'error', value: null, error: 'analysis_offline',
+                step_id: 'collect', tool_name: 'collect_live_baseline', attempt: 1,
+                status: 'completed', value: { status: 'ready' },
             }],
+            determination_result: {
+                tool_name: 'get_live_analysis_mistake_count', attempt: 1,
+                status: 'completed', value: 0,
+                source_result: { tool_name: 'get_live_analysis_mistake_count', run_id: 'nested-2', status: 'complete', final: true },
+            },
         })),
+        retryFailedTask: jest.fn(async () => {
+            throw new GoalStepFailedError(
+                AI_TOOL_COMPONENT_NAMES.GOAL,
+                'The failed goal task could not be retried.',
+            );
+        }),
         acceptToolOutput: jest.fn(),
         getSnapshot: jest.fn(() => null),
         clear: jest.fn(),
@@ -191,8 +221,6 @@ const createHarness = (mode: 'live' | 'recorded' | 'user_summary' = 'live') => {
     reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION, live);
     reserve(directory, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS, recorded);
     reserve(directory, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY, summary);
-    reserve(directory, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, todo);
-    reserve(directory, AI_TOOL_COMPONENT_NAMES.GOAL, goal);
     mountChild(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION, 'baseline-collection');
     reserve(directory, mode === 'live' ? AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER : AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER, manager);
 
@@ -225,35 +253,47 @@ describe('named component-ref AI command registry', () => {
             .toMatchObject({ schema: { properties: {}, required: [] }, required: [] });
     });
 
-    it('routes create_goal only through the Live Performance Analyst goal component', async () => {
+    it('creates and removes a goal runner only for the Live Performance Analyst', async () => {
         const h = createHarness('live');
         const args = {
-            goal: 'No mistakes',
-            steps: [{ id: 'count', title: 'Count', name: 'get_live_analysis_mistake_count' }],
-            comparison: { step_id: 'count', result_path: 'mistake_count', operator: 'eq', target: 0, metric_label: 'Mistakes' },
+            name: 'No mistakes',
+            steps: [{ id: 'collect', title: 'Collect', name: 'collect_live_baseline' }],
+            determination: {
+                tool: { name: 'get_live_analysis_mistake_count' },
+                result_path: 'mistake_count',
+                operator: 'eq',
+                target: 0,
+            },
         };
         const analyst = createAiCommandRegistry({
             ...h.context,
             conversationRole: 'agent',
             agentMode: 'live_performance_analyst',
         });
+        (h.chat.selectGoalTaskStartFunction as jest.Mock).mockImplementation((task: any) => jest.fn(() => (
+            task.name === 'get_live_analysis_mistake_count'
+                ? { mistake_count: 0 }
+                : { status: 'ready' }
+        )));
         const result = await analyst.create_goal(args, handlerContext);
 
-        expect(h.goal.createGoal).toHaveBeenCalledWith({
-            ...args,
-            steps: [expect.objectContaining({
-                ...args.steps[0],
-                taskStart: expect.any(Function),
-            })],
+        expect(h.directory.findBaseComponentRef()).toBeNull();
+        expect(h.chat.selectGoalTaskStartFunction).toHaveBeenLastCalledWith({
+            title: 'No mistakes',
+            name: 'get_live_analysis_mistake_count',
         });
         expect(uiOutput(result)).toMatchObject({ status: 'achieved', target: 0, actual: 0 });
         expect(result.output).toMatchObject({
             status: 'achieved',
             target: 0,
             actual: 0,
-            completed_steps: ['collect', 'analyze', 'count'],
-            source_result: { tool_name: 'get_live_analysis_mistake_count' },
-            task_results: [expect.objectContaining({ step_id: 'count', value: { mistake_count: 0 } })],
+            completed_steps: ['collect'],
+            determination: args.determination,
+            determination_result: expect.objectContaining({
+                tool_name: 'get_live_analysis_mistake_count',
+                value: 0,
+            }),
+            task_results: [expect.objectContaining({ step_id: 'collect' })],
         });
 
         const unavailable = createAiCommandRegistry({
@@ -261,27 +301,63 @@ describe('named component-ref AI command registry', () => {
             conversationRole: 'agent',
             agentMode: 'track_guide',
         }).create_goal(args, handlerContext);
-        await expect(unavailable).rejects.toMatchObject({
-            code: 'create_goal_tool_unavailable',
-        });
-        expect(h.goal.createGoal).toHaveBeenCalledTimes(1);
+        await expect(unavailable).rejects.toBeInstanceOf(CreateGoalToolUnavailableError);
     });
 
-    it('routes retry_goal_task only through the Live Performance Analyst and excludes it from goal steps', async () => {
+    it('rejects the legacy create_goal shape before invoking the goal component', async () => {
+        const h = createHarness('live');
+        const result = createAiCommandRegistry({
+            ...h.context,
+            conversationRole: 'agent',
+            agentMode: 'live_performance_analyst',
+        }).create_goal({
+            goal: 'Legacy goal',
+            steps: [{ id: 'count', title: 'Count', name: 'get_live_analysis_mistake_count' }],
+            comparison: {
+                step_id: 'count',
+                result_path: 'mistake_count',
+                operator: 'eq',
+                target: 0,
+                metric_label: 'Mistakes',
+            },
+        }, handlerContext);
+
+        await expect(result).rejects.toBeInstanceOf(InvalidGoalNameError);
+        expect(h.directory.findBaseComponentRef()).toBeNull();
+    });
+
+    it('retains an errored goal for retry and removes it after retry completion', async () => {
         const h = createHarness('live');
         const analystContext = {
             ...h.context,
             conversationRole: 'agent' as const,
             agentMode: 'live_performance_analyst' as const,
         };
-        const result = createAiCommandRegistry(analystContext)
-            .retry_goal_task({}, handlerContext);
+        let preparationAttempts = 0;
+        (h.chat.selectGoalTaskStartFunction as jest.Mock).mockImplementation((task: any) => jest.fn(() => {
+            if (task.name === 'get_live_analysis_mistake_count') return { mistake_count: 0 };
+            preparationAttempts += 1;
+            if (preparationAttempts === 1) throw new Error('analysis offline');
+            return { status: 'ready' };
+        }));
+        const registry = createAiCommandRegistry(analystContext);
+        const args = {
+            name: 'Recoverable goal',
+            steps: [{ id: 'analyze', title: 'Analyze', name: 'analyze_live_recorded_analysis' }],
+            determination: {
+                tool: { name: 'get_live_analysis_mistake_count' },
+                result_path: 'mistake_count',
+                operator: 'eq',
+                target: 0,
+            },
+        };
 
-        await expect(result).rejects.toMatchObject({
-            code: 'analysis_offline',
-            message: 'The failed goal task could not be retried.',
-        });
-        expect(h.goal.retryFailedTask).toHaveBeenCalledTimes(1);
+        await expect(registry.create_goal(args, handlerContext))
+            .rejects.toBeInstanceOf(GoalStepFailedError);
+        expect(h.directory.findBaseComponentRef()?.current).toBeInstanceOf(GoalRunner);
+        expect(uiOutput(await registry.retry_goal_task({}, handlerContext)))
+            .toMatchObject({ status: 'achieved' });
+        expect(h.directory.findBaseComponentRef()).toBeNull();
         expect(isGoalStepAvailableForContext(analystContext, 'retry_goal_task')).toBe(false);
         expect(isGoalStepAvailableForContext(analystContext, 'create_goal')).toBe(false);
 
@@ -290,10 +366,7 @@ describe('named component-ref AI command registry', () => {
             conversationRole: 'agent',
             agentMode: 'track_guide',
         }).retry_goal_task({}, handlerContext);
-        await expect(unavailable).rejects.toMatchObject({
-            code: 'retry_goal_task_tool_unavailable',
-        });
-        expect(h.goal.retryFailedTask).toHaveBeenCalledTimes(1);
+        await expect(unavailable).rejects.toBeInstanceOf(RetryGoalTaskToolUnavailableError);
     });
 
     it('routes mistake counting through the newest stored page and preserves counts for AI output', async () => {
@@ -363,7 +436,7 @@ describe('named component-ref AI command registry', () => {
             .toMatchObject({ status: 'ready', mistake_count: 0 });
         h.live.getLatestAnalysisResultPage.mockReturnValue(null);
         await expect(registry.get_live_analysis_mistake_count({}, handlerContext))
-            .rejects.toMatchObject({ code: 'live_analysis_result_unavailable' });
+            .rejects.toBeInstanceOf(LiveAnalysisResultUnavailableError);
     });
 
     it('rejects mistake counting outside the Live Performance Analyst agent', async () => {
@@ -376,23 +449,35 @@ describe('named component-ref AI command registry', () => {
         });
 
         await expect(main.get_live_analysis_mistake_count({}, handlerContext))
-            .rejects.toMatchObject({ code: 'live_performance_analyst_tool_unavailable' });
+            .rejects.toBeInstanceOf(LivePerformanceAnalystToolUnavailableError);
         await expect(trackGuide.get_live_analysis_mistake_count({}, handlerContext))
-            .rejects.toMatchObject({ code: 'live_performance_analyst_tool_unavailable' });
+            .rejects.toBeInstanceOf(LivePerformanceAnalystToolUnavailableError);
         expect(h.live.getLatestAnalysisResultPage).not.toHaveBeenCalled();
     });
 
-    it('opens and drives the baseline visualization while keeping assistant-owned operations on AiChat', async () => {
+    it('opens baseline visualization and drives a registered procedure-plan runner', async () => {
         const h = createHarness('live');
         const awaitComponentRef = jest.spyOn(h.directory, 'awaitComponentRef');
         const registry = createAiCommandRegistry(h.context);
+        h.chat.selectTaskStartFunction.mockImplementation(() => (
+            jest.fn(() => new Promise<void>(() => undefined))
+        ));
         await registry.start_agent_session({ agent_mode: 'track_guide' }, handlerContext);
         await registry.stop_agent_session({ agent_session_id: 'agent-1' }, handlerContext);
         await registry.collect_live_baseline({}, handlerContext);
         await registry.restart_live_baseline({}, handlerContext);
-        await registry.set_procedure_plan({ goal: 'Improve', requests: [{ type: 'tool', title: 'Brake later' }] }, handlerContext);
-        await registry.advance_plan_step({ reason: 'done' }, handlerContext);
+        await registry.set_procedure_plan({
+            goal: 'Improve',
+            requests: [
+                { type: 'tool', title: 'Brake later' },
+                { type: 'tool', title: 'Accelerate sooner' },
+            ],
+        }, handlerContext);
+        expect(h.directory.findBaseComponentRef()?.current).toBeInstanceOf(ProcedurePlanRunner);
+        expect(uiOutput(await registry.advance_plan_step({ reason: 'done' }, handlerContext)))
+            .toMatchObject({ status: 'advanced', current_request: 0 });
         await registry.clear_procedure_plan({}, handlerContext);
+        expect(h.directory.findBaseComponentRef()).toBeNull();
         await registry.show_map({ map_id: 'monza' }, handlerContext);
 
         expect(h.chat.startAgentSession).toHaveBeenCalled();
@@ -406,10 +491,73 @@ describe('named component-ref AI command registry', () => {
             .toHaveBeenCalledWith('run-1');
         expect(h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION).restartCollection).toHaveBeenCalled();
         expect(awaitComponentRef).toHaveBeenCalledWith(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION, 5000);
-        expect(h.chat.setProcedurePlan).toHaveBeenCalled();
-        expect(h.chat.advanceProcedurePlanStep).toHaveBeenCalledWith('done');
-        expect(h.chat.clearProcedurePlan).toHaveBeenCalled();
+        expect(h.chat.setProcedurePlan).not.toHaveBeenCalled();
+        expect(h.chat.advanceProcedurePlanStep).not.toHaveBeenCalled();
+        expect(h.chat.clearProcedurePlan).not.toHaveBeenCalled();
         expect(h.chat.displayMap).toHaveBeenCalledWith(expect.objectContaining({ status: 'ready' }));
+    });
+
+    it('keeps already-running and not-running agent states successful', async () => {
+        const h = createHarness('live');
+        h.chat.startAgentSession.mockReturnValueOnce({
+            status: 'already_running',
+            conversation_role: 'agent',
+            agent_mode: 'track_guide',
+            agent_session_id: 'agent-1',
+            parent_client_session_id: 'main-1',
+        } as any);
+        h.chat.stopAgentSession.mockReturnValueOnce({
+            status: 'not_running',
+            conversation_role: 'agent',
+            agent_mode: 'track_guide',
+            agent_session_id: 'agent-1',
+        } as any);
+        const registry = createAiCommandRegistry(h.context);
+
+        expect(uiOutput(await registry.start_agent_session(
+            { agent_mode: 'track_guide' },
+            handlerContext,
+        ))).toMatchObject({ status: 'already_running', agent_session_id: 'agent-1' });
+        expect(uiOutput(await registry.stop_agent_session(
+            { agent_session_id: 'agent-1' },
+            handlerContext,
+        ))).toMatchObject({ status: 'not_running', agent_session_id: 'agent-1' });
+    });
+
+    it('keeps an unavailable circuit map as a successful domain result', async () => {
+        const h = createHarness('recorded');
+        h.chat.getCircuitMapByTrack.mockResolvedValueOnce(null as any);
+
+        const result = await createAiCommandRegistry(h.context).show_map(
+            { track: 'Unknown Circuit' },
+            handlerContext,
+        );
+
+        expect(uiOutput(result)).toMatchObject({
+            status: 'unavailable',
+            requested_map: 'Monza',
+        });
+        expect(h.chat.displayMap).toHaveBeenCalledWith(expect.objectContaining({
+            status: 'unavailable',
+            requestedMap: 'Monza',
+        }));
+    });
+
+    it('preserves component-state failures at the shared boundary', async () => {
+        const h = createHarness('live');
+        const startFailure = new NonLiveContextLiveToolsUnavailableError(
+            AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+            'Agent sessions are only available in live session mode.',
+        );
+        h.chat.startAgentSession.mockImplementationOnce(() => { throw startFailure; });
+        const registry = createAiCommandRegistry(h.context);
+
+        await expect(registry.start_agent_session(
+            { agent_mode: 'track_guide' },
+            handlerContext,
+        )).rejects.toBe(startFailure);
+        await expect(registry.advance_plan_step({}, handlerContext))
+            .rejects.toBeInstanceOf(ComponentRefUnavailableError);
     });
 
     it('requires the mounted baseline visualization for baseline-dependent commands', async () => {
@@ -427,15 +575,9 @@ describe('named component-ref AI command registry', () => {
             registry._record_live_section_classification({ section_id: 'turn-1' }, handlerContext),
             registry.classify_live_section({ section_id: 'turn-1' }, handlerContext),
         ])) {
-            expect(result).toMatchObject({
-                status: 'rejected',
-                reason: {
-                    code: 'baseline_collection_visualization_required',
-                    details: {
-                        component_name: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
-                    },
-                },
-            });
+            expect(result).toMatchObject({ status: 'rejected' });
+            expect((result as PromiseRejectedResult).reason)
+                .toBeInstanceOf(BaselineCollectionVisualizationRequiredError);
             expect((result as PromiseRejectedResult).reason).toMatchObject({
                 message: expect.stringContaining('Baseline collection visualization required'),
             });
@@ -468,29 +610,23 @@ describe('named component-ref AI command registry', () => {
         const result = createAiCommandRegistry(h.context)
             .analyze_live_recorded_analysis({}, handlerContext);
 
-        await expect(result).rejects.toMatchObject({
-            code: 'component_ref_unavailable',
-            details: { component_name: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION },
-        });
+        await expect(result).rejects.toBeInstanceOf(ComponentRefUnavailableError);
         expect(baseline.requestAnalysis).not.toHaveBeenCalled();
     });
 
     it('preserves the Baseline Collection incomplete-lap failure', async () => {
         const h = createHarness('live');
         const baseline = h.childHandles.get(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION);
-        baseline.requestAnalysis.mockResolvedValueOnce({
-            status: 'error',
-            error: 'baseline_lap_record_required',
-            message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
-        });
+        const componentFailure = new BaselineLapRecordRequiredError(
+            AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            'Live recorded analysis requires a recorded baseline lap before it can run.',
+        );
+        baseline.requestAnalysis.mockRejectedValueOnce(componentFailure);
 
         const result = createAiCommandRegistry(h.context)
             .analyze_live_recorded_analysis({}, handlerContext);
 
-        await expect(result).rejects.toMatchObject({
-            code: 'baseline_lap_record_required',
-            message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
-        });
+        await expect(result).rejects.toBe(componentFailure);
     });
 
     it('routes live telemetry, events, focus/history, and classifications through LiveSessionView', async () => {
@@ -543,43 +679,69 @@ describe('named component-ref AI command registry', () => {
     it('converts recorded API and analysis failures to stable exceptions', async () => {
         const h = createHarness('recorded');
         const registry = createAiCommandRegistry(h.context);
-        h.recorded.requestSessionAnalysis.mockRejectedValueOnce({
-            response: { data: { message: 'Session API unavailable.' } },
-        });
-        h.recorded.runRecordedAiAnalysis.mockResolvedValueOnce({
-            sessionId: 'session-1',
-            status: 'error',
-            message: 'Classifier unavailable.',
-            result: null,
-        } as any);
+        const requestFailure = new SessionAnalysisFailedError(
+            AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            'Session API unavailable.',
+        );
+        const analysisFailure = new RecordedAnalysisFailedError(
+            AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+            'Classifier unavailable.',
+        );
+        h.recorded.requestSessionAnalysis.mockRejectedValueOnce(requestFailure);
+        h.recorded.runRecordedAiAnalysis.mockRejectedValueOnce(analysisFailure);
 
-        await expect(registry.get_session_analysis({}, handlerContext))
-            .rejects.toMatchObject({
-                code: 'session_analysis_failed',
-                message: 'Session API unavailable.',
-            });
-        await expect(registry.run_recorded_ai_analysis({}, handlerContext))
-            .rejects.toMatchObject({
-                code: 'recorded_analysis_failed',
-                message: 'Classifier unavailable.',
-            });
+        await expect(registry.get_session_analysis({}, handlerContext)).rejects.toBe(requestFailure);
+        await expect(registry.run_recorded_ai_analysis({}, handlerContext)).rejects.toBe(analysisFailure);
     });
 
-    it('requires the AI chat-owned todo runtime and routes set/update/read to its exact ref', async () => {
+    it('passes existing tool errors and unexpected errors through the component boundary unchanged', async () => {
+        const h = createHarness('recorded');
+        const registry = createAiCommandRegistry(h.context);
+        const toolFailure = new ToolExecutionError('Tool validation failed.');
+        const unexpectedFailure = new Error('Unexpected component bug.');
+        h.summary.getAvailableUserSummaryMaps.mockImplementationOnce(() => { throw toolFailure; });
+        h.summary.getUserSummaryMapLevel.mockImplementationOnce(() => { throw unexpectedFailure; });
+
+        await expect(registry.get_available_user_summary_maps({}, handlerContext)).rejects.toBe(toolFailure);
+        await expect(registry.get_user_summary_map_level({}, handlerContext)).rejects.toBe(unexpectedFailure);
+    });
+
+    it('creates a todo runner, reuses it for update/read, and deletes it on clear', async () => {
         const h = createHarness('live');
         const registry = createAiCommandRegistry(h.context);
-        await registry.set_live_range_todo_list({ events: [] }, handlerContext);
-        await registry.update_live_range_todo_list({ action: 'update_events', events: [] }, handlerContext);
-        await registry.get_live_range_todo_list({}, handlerContext);
-        expect(h.todo.replaceEvents).toHaveBeenCalled();
-        expect(h.todo.updateEvents).toHaveBeenCalled();
-        expect(h.todo.get).toHaveBeenCalled();
+        await registry.set_live_range_todo_list({
+            events: [{
+                id: 'brake',
+                normalized_position: 0.5,
+                content: { title: 'Brake' },
+                data: {},
+            }],
+        }, handlerContext);
+        expect(h.directory.findBaseComponentRef()?.current).toBeInstanceOf(LiveRangeTodoListRunner);
+        await expect(registry.set_live_range_todo_list({ events: [] }, handlerContext))
+            .rejects.toBeInstanceOf(DuplicateAiToolComponentError);
+        expect(uiOutput(await registry.update_live_range_todo_list({
+            action: 'update_events',
+            events: [{ id: 'brake', content: { title: 'Brake now' } }],
+        }, handlerContext))).toMatchObject({ status: 'ready' });
+        expect(uiOutput(await registry.get_live_range_todo_list({}, handlerContext)))
+            .toMatchObject({ status: 'ready' });
+        await registry.update_live_range_todo_list({ action: 'clear' }, handlerContext);
+        expect(h.directory.findBaseComponentRef()).toBeNull();
 
-        h.directory.releaseComponentRef(AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST, Symbol('wrong-owner'));
         const missingDirectory = createAiToolComponentRefDirectory();
         const missing = createAiCommandRegistry({ ...h.context, componentRefs: missingDirectory });
         await expect(missing.get_live_range_todo_list({}, handlerContext))
-            .rejects.toMatchObject({ code: 'component_ref_unavailable' });
+            .rejects.toBeInstanceOf(ComponentRefUnavailableError);
+    });
+
+    it('removes a newly registered todo runner when initialization fails', async () => {
+        const h = createHarness('live');
+        const registry = createAiCommandRegistry(h.context);
+
+        await expect(registry.set_live_range_todo_list({}, handlerContext))
+            .rejects.toBeInstanceOf(InvalidLiveRangeTodoListError);
+        expect(h.directory.findBaseComponentRef()).toBeNull();
     });
 
     it('creates, awaits, updates, controls, disables, and closes exact named visualization children', async () => {
@@ -631,10 +793,7 @@ describe('named component-ref AI command registry', () => {
         );
         const result = createAiCommandRegistry(h.context)
             .close_visualization_chart({}, handlerContext);
-        await expect(result).rejects.toMatchObject({
-            code: 'ambiguous_component_target',
-            details: { semantic_candidates: ['telemetry:brake', 'telemetry:speed'] },
-        });
+        await expect(result).rejects.toBeInstanceOf(AmbiguousComponentTargetError);
     });
 
     it('keeps live composite raw rows API-only and records compact classification results', async () => {
@@ -662,14 +821,10 @@ describe('named component-ref AI command registry', () => {
         const telemetry = registry.analyze_telemetry({ scope: 'lap' }, handlerContext);
         const section = registry.classify_live_section({ section_id: 'turn-1' }, handlerContext);
 
-        await expect(telemetry).rejects.toMatchObject({
-            code: 'telemetry_analysis_failed',
-            message: 'classifier unavailable',
-        });
-        await expect(section).rejects.toMatchObject({
-            code: 'live_section_classification_failed',
-            message: 'classifier unavailable',
-        });
+        await expect(telemetry).rejects.toBeInstanceOf(TelemetryAnalysisFailedError);
+        await expect(telemetry).rejects.toMatchObject({ message: 'classifier unavailable' });
+        await expect(section).rejects.toBeInstanceOf(LiveSectionClassificationFailedError);
+        await expect(section).rejects.toMatchObject({ message: 'classifier unavailable' });
     });
 
     it('routes recorded telemetry analysis through manager and delegates live baseline analysis', async () => {
@@ -775,13 +930,13 @@ describe('named component-ref AI command registry', () => {
         const noDirectory = createHarness('live');
         const missing = createAiCommandRegistry({ ...noDirectory.context, componentRefs: undefined })
             .get_event_log({}, handlerContext);
-        await expect(missing).rejects.toMatchObject({ code: 'component_ref_unavailable' });
+        await expect(missing).rejects.toBeInstanceOf(ComponentRefUnavailableError);
 
         const stale = createHarness('live');
         const liveRef = stale.directory.findComponentRef<any>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!;
         liveRef.current.getComponentName = () => 'wrong-live-session';
         await expect(createAiCommandRegistry(stale.context).get_event_log({}, handlerContext))
-            .rejects.toMatchObject({ code: 'component_name_mismatch' });
+            .rejects.toBeInstanceOf(ComponentNameMismatchError);
 
         jest.useFakeTimers();
         const timeoutHarness = createHarness('live');
@@ -795,7 +950,7 @@ describe('named component-ref AI command registry', () => {
         }));
         const pending = createAiCommandRegistry(timeoutHarness.context).open_visualization_chart({ type: 'event-log' }, handlerContext);
         jest.advanceTimersByTime(5000);
-        await expect(pending).rejects.toMatchObject({ code: 'component_mount_timeout' });
+        await expect(pending).rejects.toBeInstanceOf(ComponentMountTimeoutError);
         jest.useRealTimers();
     });
 });

@@ -1,5 +1,5 @@
 import {
-    AiToolError,
+    ToolExecutionError,
     type AiToolDefinition,
     createToolOutputController,
     executeAiToolDefinition,
@@ -40,10 +40,8 @@ describe('AI tool output execution', () => {
     });
 
     it('propagates typed failures without generating an error envelope', async () => {
-        const failure = new AiToolError(
-            'invalid_tool_input',
+        const failure = new ToolExecutionError(
             'The input is invalid.',
-            { details: { field: 'query' } },
         );
 
         await expect(executeAiToolDefinition(

@@ -10,6 +10,7 @@ import {
 } from 'contexts/AiToolComponentRefContext';
 import LiveTelemetryWorkspace from '../LiveTelemetryWorkspace';
 import { LiveSessionContext, LiveSessionProvider } from '../LiveSessionContext';
+import { VisualizationRequestFailedError } from 'contexts/AiToolComponentError';
 
 jest.mock('@radix-ui/themes', () => {
     const React = require('react');
@@ -95,10 +96,13 @@ describe('LiveTelemetryWorkspace named manager', () => {
         expect(ref.current!.getVisualizationCapabilities().availableCharts).not.toContainEqual(
             expect.objectContaining({ type: 'live-range-todo-list' }),
         );
-        expect(ref.current!.requestVisualization({
+        expect(() => ref.current!.requestVisualization({
             name: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
             type: 'live-range-todo-list',
-        })).toMatchObject({ success: false });
+        })).toThrow(expect.objectContaining({
+            name: 'VisualizationRequestFailedError',
+            componentName: 'live-visualization-manager',
+        }));
         expect(ref.current!.getCurrentVisualizations()).toEqual([]);
     });
 
@@ -166,10 +170,17 @@ describe('LiveTelemetryWorkspace named manager', () => {
     it('rejects chart types the live workspace does not implement', () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(<LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />);
-        act(() => {
-            expect(ref.current!.requestVisualization({ name: 'visualization:imitation-guidance-chart', type: 'imitation-guidance-chart' }))
-                .toMatchObject({ success: false });
-        });
+        expect(() => ref.current!.requestVisualization({
+            name: 'visualization:imitation-guidance-chart',
+            type: 'imitation-guidance-chart',
+        })).toThrow(VisualizationRequestFailedError);
+        expect(() => ref.current!.requestVisualization({
+            name: 'visualization:imitation-guidance-chart',
+            type: 'imitation-guidance-chart',
+        })).toThrow(expect.objectContaining({
+            name: 'VisualizationRequestFailedError',
+            componentName: 'live-visualization-manager',
+        }));
         expect(ref.current!.getCurrentVisualizations()).toEqual([]);
     });
 

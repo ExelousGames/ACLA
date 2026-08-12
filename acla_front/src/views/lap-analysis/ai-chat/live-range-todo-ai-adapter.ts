@@ -6,7 +6,11 @@ import type {
     LiveRangeTodoListToolResult,
     TaskStartFunction,
 } from 'components/ai-engineering-tools';
-import { AiToolError } from './ai-tool-base';
+import { AI_TOOL_COMPONENT_NAMES } from 'contexts/AiToolComponentRefContext';
+import {
+    InvalidLiveRangeTodoListError,
+    LiveRangeTodoListUnavailableError,
+} from 'contexts/AiToolComponentError';
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -17,8 +21,8 @@ const hasOwn = (value: Record<string, unknown>, key: string) => (
 );
 
 const missingLiveRangeTodoList = (): never => {
-    throw new AiToolError(
-        'live_range_todo_list_unavailable',
+    throw new LiveRangeTodoListUnavailableError(
+        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
         'The AI chat live range to-do runtime is unavailable.',
     );
 };
@@ -26,19 +30,10 @@ const missingLiveRangeTodoList = (): never => {
 const invalidLiveRangeTodoList = (
     message: string,
 ): never => {
-    throw new AiToolError('invalid_live_range_todo_list', message);
-};
-
-const returnOrThrowResult = (
-    result: LiveRangeTodoListToolResult,
-): LiveRangeTodoListToolResult => {
-    if (result.status === 'error') {
-        throw new AiToolError(
-            result.error || 'invalid_live_range_todo_list',
-            result.message || 'The live range to-do list request is invalid.',
-        );
-    }
-    return result;
+    throw new InvalidLiveRangeTodoListError(
+        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        message,
+    );
 };
 
 export type LiveRangeTodoTaskDescriptor = Omit<LiveRangeTodoEventInput, 'taskStart'>;
@@ -96,9 +91,9 @@ export const createLiveRangeTodoAiAdapter = (
         if (!Array.isArray(args.events)) {
             return invalidLiveRangeTodoList('Provide an events array.');
         }
-        return returnOrThrowResult(handle.replaceEvents(args.events.map((event) => (
+        return handle.replaceEvents(args.events.map((event) => (
             attachTaskStartFunction(event, createTaskStartFunction)
-        ))));
+        )));
     },
 
     update(args) {
@@ -110,27 +105,27 @@ export const createLiveRangeTodoAiAdapter = (
             }
             let result = handle.get();
             for (const event of args.events) {
-                result = returnOrThrowResult(handle.addEvent(
+                result = handle.addEvent(
                     attachTaskStartFunction(event, createTaskStartFunction),
-                ));
+                );
             }
-            return returnOrThrowResult(result);
+            return result;
         }
         if (action === 'update_events') {
             if (!Array.isArray(args.events)) {
                 return invalidLiveRangeTodoList('Provide an events array.');
             }
-            return returnOrThrowResult(handle.updateEvents(args.events.map(serializableUpdate)));
+            return handle.updateEvents(args.events.map(serializableUpdate));
         }
         if (action === 'remove_events') {
-            return returnOrThrowResult(handle.removeEvents(args.ids as readonly string[]));
+            return handle.removeEvents(args.ids as readonly string[]);
         }
         if (action === 'reset_events') {
-            return returnOrThrowResult(args.ids === undefined
+            return args.ids === undefined
                 ? handle.resetEvents()
-                : handle.resetEvents(args.ids as readonly string[]));
+                : handle.resetEvents(args.ids as readonly string[]);
         }
-        if (action === 'clear') return returnOrThrowResult(handle.clear());
+        if (action === 'clear') return handle.clear();
         return invalidLiveRangeTodoList(
             `Unsupported live range to-do list action: ${action || '(missing)'}.`,
         );
@@ -138,6 +133,6 @@ export const createLiveRangeTodoAiAdapter = (
 
     get() {
         if (!handle) return missingLiveRangeTodoList();
-        return returnOrThrowResult(handle.get());
+        return handle.get();
     },
 });

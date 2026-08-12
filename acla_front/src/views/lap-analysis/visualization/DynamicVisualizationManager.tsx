@@ -1,10 +1,10 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react';
 import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import { VisualizationManagerUnavailableError } from 'contexts/AiToolComponentError';
 import { visualizationRegistry, VisualizationInstance } from './VisualizationRegistry';
 import MapVisualization from './charts/MapVisualization';
 import VisualizationPanelManager, {
     VisualizationManagerHandle,
-    VisualizationManagerResult,
 } from './VisualizationPanelManager';
 import type { MapVisualizationHandle } from './charts/MapVisualization';
 import { getVisualizationComponentName } from './visualization-component-names';
@@ -121,10 +121,12 @@ class DynamicVisualizationManagerImpl extends VisualizationPanelManager<
     }
 }
 
-const unavailable = (name: string): VisualizationManagerResult => ({
-    success: false,
-    message: `Visualization manager '${name}' is not mounted.`,
-});
+const unavailable = (name: string): never => {
+    throw new VisualizationManagerUnavailableError(
+        name,
+        `Visualization manager '${name}' is not mounted.`,
+    );
+};
 
 const DynamicVisualizationManager = forwardRef<VisualizationManagerHandle, DynamicVisualizationManagerProps>((
     { name, ...props },
@@ -135,11 +137,8 @@ const DynamicVisualizationManager = forwardRef<VisualizationManagerHandle, Dynam
     const staticMapName = getVisualizationComponentName(STATIC_MAP_TYPE);
     const handle = useMemo<VisualizationManagerHandle>(() => ({
         getComponentName: () => name,
-        getVisualizationCapabilities: () => managerRef.current?.getVisualizationCapabilities() ?? {
-            availableCharts: [],
-            openInstances: [],
-        },
-        getCurrentVisualizations: () => managerRef.current?.getCurrentVisualizations() ?? [],
+        getVisualizationCapabilities: () => managerRef.current?.getVisualizationCapabilities() ?? unavailable(name),
+        getCurrentVisualizations: () => managerRef.current?.getCurrentVisualizations() ?? unavailable(name),
         requestVisualization: (options) => managerRef.current?.requestVisualization(options) ?? unavailable(name),
         updateVisualization: (componentName, data, config) => (
             managerRef.current?.updateVisualization(componentName, data, config) ?? unavailable(name)
@@ -148,8 +147,8 @@ const DynamicVisualizationManager = forwardRef<VisualizationManagerHandle, Dynam
     }), [name]);
     const staticMapHandle = useMemo<MapVisualizationHandle>(() => ({
         getComponentName: () => staticMapName,
-        updateMap: (data, config) => staticMapRef.current?.updateMap(data, config) ?? false,
-        disableMap: () => staticMapRef.current?.disableMap() ?? false,
+        updateMap: (data, config) => staticMapRef.current?.updateMap(data, config) ?? unavailable(staticMapName),
+        disableMap: () => staticMapRef.current?.disableMap() ?? unavailable(staticMapName),
     }), [staticMapName]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);

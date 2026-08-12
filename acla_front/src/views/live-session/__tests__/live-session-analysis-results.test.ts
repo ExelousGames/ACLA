@@ -3,6 +3,8 @@ import {
     getLiveAnalysisMistakeCount,
     type LiveSessionAnalysisResultPage,
 } from '../live-session-analysis-results';
+import { LiveAnalysisResultUnavailableError } from 'contexts/AiToolComponentError';
+import { AI_TOOL_COMPONENT_NAMES } from 'contexts/AiToolComponentRefContext';
 
 const createPage = (elements: LiveSessionAnalysisResultPage['elements']): LiveSessionAnalysisResultPage => ({
     id: 'page-latest',
@@ -73,10 +75,12 @@ describe('live session analysis result pages', () => {
         });
     });
 
-    it('returns the explicit unavailable error when no analysis page exists', () => {
-        expect(getLiveAnalysisMistakeCount(null)).toEqual({
-            status: 'error',
-            error: 'live_analysis_result_unavailable',
-        });
+    it('throws the explicit unavailable component error when no analysis page exists', () => {
+        expect(() => getLiveAnalysisMistakeCount(null)).toThrow(LiveAnalysisResultUnavailableError);
+        expect(() => getLiveAnalysisMistakeCount(null)).toThrow(expect.objectContaining({
+            name: 'LiveAnalysisResultUnavailableError',
+            componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            message: 'No completed live analysis result is available.',
+        }));
     });
 });

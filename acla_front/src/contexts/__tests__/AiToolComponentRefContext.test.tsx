@@ -1,15 +1,29 @@
 import React, { StrictMode, useMemo } from 'react';
 import { act, render } from '@testing-library/react';
 import {
-    AiToolComponentRefError,
+    ComponentMountTimeoutError,
+    ComponentNameMismatchError,
+    DuplicateAiToolComponentError,
+    DuplicateComponentNameError,
     AiToolComponentRefProvider,
     awaitNamedComponentHandle,
     createAiToolComponentRefDirectory,
     useAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
 } from '../AiToolComponentRefContext';
+import { AiToolComponentBase } from 'components/ai-engineering-tools/AiToolComponentBase';
 
 const handle = (name: string) => ({ getComponentName: () => name });
+
+class TestAiToolRunner extends AiToolComponentBase<number> {
+    constructor(name: string) {
+        super(name, 0);
+    }
+
+    publish(value: number) {
+        this.publishSnapshot(value);
+    }
+}
 
 describe('AiToolComponentRefDirectory', () => {
     it('registers, finds, updates for the same owner, and releases only that owner', () => {
@@ -39,9 +53,9 @@ describe('AiToolComponentRefDirectory', () => {
         directory.reserveComponentRef('component', Symbol('first'), handle('component'));
 
         expect(() => directory.reserveComponentRef('component', Symbol('second'), handle('component')))
-            .toThrow(expect.objectContaining({ code: 'duplicate_component_name' }));
+            .toThrow(DuplicateComponentNameError);
         expect(() => directory.reserveComponentRef('claimed', Symbol('owner'), handle('reported')))
-            .toThrow(expect.objectContaining({ code: 'component_name_mismatch' }));
+            .toThrow(ComponentNameMismatchError);
     });
 
     it('awaits registration without polling and times out with the named error', async () => {
@@ -54,10 +68,8 @@ describe('AiToolComponentRefDirectory', () => {
 
         const timeout = directory.awaitComponentRef('missing');
         act(() => jest.advanceTimersByTime(5000));
-        await expect(timeout).rejects.toEqual(expect.objectContaining({
-            code: 'component_mount_timeout',
-            componentName: 'missing',
-        }));
+        await expect(timeout).rejects.toBeInstanceOf(ComponentMountTimeoutError);
+        await expect(timeout).rejects.toMatchObject({ componentName: 'missing' });
         jest.useRealTimers();
     });
 });
@@ -107,6 +119,25 @@ describe('AiToolComponentRefProvider', () => {
         expect((currentHandle as any).getValue()).toBe(7);
     });
 
+    it('allows exactly one base runner while ordinary named refs coexist', () => {
+        const directory = createAiToolComponentRefDirectory();
+        const first = new TestAiToolRunner('goal');
+        const second = new TestAiToolRunner('procedure-plan');
+        directory.reserveComponentRef('ordinary', Symbol('ordinary'), handle('ordinary'));
+
+        first.addComponentRef(directory);
+        expect(directory.findBaseComponentRef()?.current).toBe(first);
+        expect(directory.findComponentRef('ordinary')?.current).toBeTruthy();
+
+        expect(() => first.addComponentRef(directory)).toThrow(DuplicateAiToolComponentError);
+        expect(() => second.addComponentRef(directory)).toThrow(DuplicateAiToolComponentError);
+        expect(directory.findBaseComponentRef()?.current).toBe(first);
+
+        expect(first.deleteComponentRef()).toBe(true);
+        second.addComponentRef(directory);
+        expect(directory.findBaseComponentRef()?.current).toBe(second);
+    });
+
     it('does not enter an update loop when a component refreshes its handle on render', () => {
         expect(() => render(
             <AiToolComponentRefProvider>
@@ -148,6 +179,6 @@ describe('AiToolComponentRefProvider', () => {
             <AiToolComponentRefProvider>
                 <Registered name="second" value={1} />
             </AiToolComponentRefProvider>,
-        )).toThrow(AiToolComponentRefError);
+        )).toThrow(ComponentNameMismatchError);
     });
 });

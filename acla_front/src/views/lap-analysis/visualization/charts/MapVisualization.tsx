@@ -8,6 +8,8 @@ import { useCircuitMaps } from 'contexts/CircuitMapsContext';
 import { CircuitMapDto } from 'views/circuit-maps/circuit-map-types';
 import { VisualizationProps } from '../VisualizationRegistry';
 import { NamedAiToolComponentHandle } from 'contexts/AiToolComponentRefContext';
+import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
+import { ComponentDisableFailedError, VisualizationUpdateFailedError } from 'contexts/AiToolComponentError';
 import {
     buildCircuitTrackLayout,
     buildSessionPointsTrackLayout,
@@ -154,8 +156,8 @@ const getBounds = (frames: TelemetryFrame[], trackLayout: CircuitTrackLayout) =>
 };
 
 export interface MapVisualizationHandle extends NamedAiToolComponentHandle {
-    updateMap(data: any, config?: any): boolean;
-    disableMap(): boolean;
+    updateMap(data: any, config?: any): true;
+    disableMap(): true;
 }
 
 const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(({
@@ -191,8 +193,18 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
     const [circuitMap, setCircuitMap] = useState<CircuitMapDto | null>(null);
     const handle = useMemo<MapVisualizationHandle>(() => ({
         getComponentName: () => name,
-        updateMap: (data, config) => onUpdate?.(data, config) ?? false,
-        disableMap: () => onDisable?.() ?? false,
+        updateMap: (data, config) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(data, config) : undefined,
+        ),
+        disableMap: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
     }), [name, onDisable, onUpdate]);
     useImperativeHandle(forwardedRef, () => handle, [handle]);
 
@@ -455,7 +467,11 @@ const MapVisualization = forwardRef<MapVisualizationHandle, VisualizationProps>(
             return;
         }
 
-        await runRecordedAiAnalysis();
+        try {
+            await runRecordedAiAnalysis();
+        } catch {
+            // The session-analysis owner has already published its rendered error state.
+        }
     }, [runRecordedAiAnalysis, selectedSessionId, segmentLoadState.status]);
 
     useEffect(() => {

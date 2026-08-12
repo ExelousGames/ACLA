@@ -3,6 +3,7 @@ import { Badge, Box, Card, Flex, HoverCard, ScrollArea, Text } from '@radix-ui/t
 import type { VisualizationProps } from '../VisualizationRegistry';
 import {
     AnalysisResultElement,
+    AnalysisResultMutationResult,
     appendAnalysisResultElement,
     normalizeAnalysisResultsData,
     removeAnalysisResultElement,
@@ -17,9 +18,18 @@ import {
 import type { DesktopGame } from 'contexts/DesktopGameContext';
 import styles from './AnalysisResultsChart.module.css';
 import {
+    AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS,
     NamedAiToolComponentHandle,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
+import {
+    AnalysisResultsVisualizationNotReadyError,
+    ComponentDisableFailedError,
+    VisualizationComponentError,
+    VisualizationControlFailedError,
+    VisualizationUpdateFailedError,
+} from 'contexts/AiToolComponentError';
+import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
 
@@ -75,12 +85,34 @@ export interface AnalysisResultsPagination {
 }
 
 export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
-    replaceAnalysisResults(data: unknown): boolean;
-    appendAnalysisResult(element: unknown): ReturnType<typeof appendAnalysisResultElement>['result'];
-    updateAnalysisResult(id: unknown, changes: unknown): ReturnType<typeof updateAnalysisResultElement>['result'];
-    removeAnalysisResult(id: unknown): ReturnType<typeof removeAnalysisResultElement>['result'];
-    disableAnalysisResults(): boolean;
+    waitForAnalysisResultPage(pageId: string): Promise<void>;
+    replaceAnalysisResults(data: unknown): true;
+    appendAnalysisResult(element: unknown): AnalysisResultControlResult;
+    updateAnalysisResult(id: unknown, changes: unknown): AnalysisResultControlResult;
+    removeAnalysisResult(id: unknown): AnalysisResultControlResult;
+    disableAnalysisResults(): true;
 }
+
+export type AnalysisResultControlResult = Omit<AnalysisResultMutationResult, 'success'> & {
+    success: true;
+};
+
+type AnalysisResultPageWaiter = {
+    resolve: () => void;
+    reject: (error: VisualizationComponentError) => void;
+    timeoutId: ReturnType<typeof setTimeout>;
+};
+
+const createAnalysisResultsReadinessError = (
+    componentName: string,
+    pageId: string,
+    reason: 'timeout' | 'unmounted',
+): AnalysisResultsVisualizationNotReadyError => new AnalysisResultsVisualizationNotReadyError(
+    componentName,
+    reason === 'timeout'
+        ? `Analysis Results page '${pageId}' was not committed within ${AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS}ms.`
+        : `Analysis Results unmounted before page '${pageId}' was committed.`,
+);
 
 interface IndexedAnalysisResult {
     element: AnalysisResultElement;
@@ -783,6 +815,9 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const [mainLabelFilter, setMainLabelFilter] = React.useState<AnalysisResultsMainLabelFilter>('MSP');
     const [showOverallTrend, setShowOverallTrend] = React.useState(true);
     const [selectedTrendSubLabelId, setSelectedTrendSubLabelId] = React.useState<string | null>(null);
+    const committedPageIdsRef = React.useRef<Set<string>>(new Set());
+    const pendingPageWaitersRef = React.useRef<Map<string, Set<AnalysisResultPageWaiter>>>(new Map());
+    const mountedRef = React.useRef(false);
     const { getCategoryLabels, getLabelName } = useAiLabels();
     const chronologicalPages = React.useMemo(() => {
         if (!pagination) return [];
@@ -803,26 +838,124 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const isOverallTrend = Boolean(pagination) && (showOverallTrend || !activePage);
     const activeData = activePage ?? data;
     const { elements } = React.useMemo(() => normalizeAnalysisResultsData(activeData), [activeData]);
+    const waitForAnalysisResultPage = React.useCallback((pageId: string): Promise<void> => {
+        if (committedPageIdsRef.current.has(pageId)) return Promise.resolve();
+        if (!mountedRef.current) {
+            return Promise.reject(createAnalysisResultsReadinessError(name, pageId, 'unmounted'));
+        }
+
+        return new Promise((resolve, reject) => {
+            const waiter: AnalysisResultPageWaiter = {
+                resolve,
+                reject,
+                timeoutId: setTimeout(() => {
+                    const pendingForPage = pendingPageWaitersRef.current.get(pageId);
+                    pendingForPage?.delete(waiter);
+                    if (pendingForPage?.size === 0) pendingPageWaitersRef.current.delete(pageId);
+                    reject(createAnalysisResultsReadinessError(name, pageId, 'timeout'));
+                }, AI_TOOL_COMPONENT_MOUNT_TIMEOUT_MS),
+            };
+            const pendingForPage = pendingPageWaitersRef.current.get(pageId)
+                ?? new Set<AnalysisResultPageWaiter>();
+            pendingForPage.add(waiter);
+            pendingPageWaitersRef.current.set(pageId, pendingForPage);
+        });
+    }, [name]);
+
+    React.useLayoutEffect(() => {
+        const pendingPageWaiters = pendingPageWaitersRef.current;
+        mountedRef.current = true;
+        return () => {
+            mountedRef.current = false;
+            pendingPageWaiters.forEach((waiters, pageId) => {
+                waiters.forEach((waiter) => {
+                    clearTimeout(waiter.timeoutId);
+                    waiter.reject(createAnalysisResultsReadinessError(name, pageId, 'unmounted'));
+                });
+            });
+            pendingPageWaiters.clear();
+            committedPageIdsRef.current.clear();
+        };
+    }, [name]);
+
+    React.useLayoutEffect(() => {
+        const committedPageIds = new Set(pagination?.pages.map((page) => page.id) ?? []);
+        committedPageIdsRef.current = committedPageIds;
+        committedPageIds.forEach((pageId) => {
+            const waiters = pendingPageWaitersRef.current.get(pageId);
+            if (!waiters) return;
+            waiters.forEach((waiter) => {
+                clearTimeout(waiter.timeoutId);
+                waiter.resolve();
+            });
+            pendingPageWaitersRef.current.delete(pageId);
+        });
+    }, [pagination?.pages]);
+
     const handle = React.useMemo<AnalysisResultsChartHandle>(() => ({
         getComponentName: () => name,
-        replaceAnalysisResults: (nextData) => onUpdate?.(nextData) ?? false,
+        waitForAnalysisResultPage,
+        replaceAnalysisResults: (nextData) => runVisualizationBooleanCallback(
+            name,
+            VisualizationUpdateFailedError,
+            `Failed to update chart '${name}'.`,
+            onUpdate ? () => onUpdate(nextData) : undefined,
+        ),
         appendAnalysisResult: (element) => {
             const mutation = appendAnalysisResultElement(activeData, element);
-            if (mutation.result.success) onUpdate?.(mutation.data);
-            return mutation.result;
+            if (!mutation.result.success) {
+                throw new VisualizationControlFailedError(
+                    name,
+                    mutation.result.message,
+                );
+            }
+            runVisualizationBooleanCallback(
+                name,
+                VisualizationControlFailedError,
+                mutation.result.message,
+                onUpdate ? () => onUpdate(mutation.data) : undefined,
+            );
+            return { ...mutation.result, success: true as const };
         },
         updateAnalysisResult: (elementId, changes) => {
             const mutation = updateAnalysisResultElement(activeData, elementId, changes);
-            if (mutation.result.success) onUpdate?.(mutation.data);
-            return mutation.result;
+            if (!mutation.result.success) {
+                throw new VisualizationControlFailedError(
+                    name,
+                    mutation.result.message,
+                );
+            }
+            runVisualizationBooleanCallback(
+                name,
+                VisualizationControlFailedError,
+                mutation.result.message,
+                onUpdate ? () => onUpdate(mutation.data) : undefined,
+            );
+            return { ...mutation.result, success: true as const };
         },
         removeAnalysisResult: (elementId) => {
             const mutation = removeAnalysisResultElement(activeData, elementId);
-            if (mutation.result.success) onUpdate?.(mutation.data);
-            return mutation.result;
+            if (!mutation.result.success) {
+                throw new VisualizationControlFailedError(
+                    name,
+                    mutation.result.message,
+                );
+            }
+            runVisualizationBooleanCallback(
+                name,
+                VisualizationControlFailedError,
+                mutation.result.message,
+                onUpdate ? () => onUpdate(mutation.data) : undefined,
+            );
+            return { ...mutation.result, success: true as const };
         },
-        disableAnalysisResults: () => onDisable?.() ?? false,
-    }), [activeData, name, onDisable, onUpdate]);
+        disableAnalysisResults: () => runVisualizationBooleanCallback(
+            name,
+            ComponentDisableFailedError,
+            `Component '${name}' could not be disabled.`,
+            onDisable,
+        ),
+    }), [activeData, name, onDisable, onUpdate, waitForAnalysisResultPage]);
     React.useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);
     const selectedFilter = MAIN_LABEL_FILTER_OPTIONS.find(({ value }) => value === mainLabelFilter)!;
