@@ -1,6 +1,10 @@
-import React from 'react';
-import type { TaskStartFunction } from './task-start-function';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AiToolComponentBase } from './AiToolComponentBase';
+import type {
+    NamedAiToolComponentHandle,
+} from 'contexts/AiToolComponentRefContext';
+import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
+import type { AiToolDispatcher } from './Goal';
 
 export const PROCEDURE_PLAN_STEP_STATUSES = [
     'pending',
@@ -24,9 +28,7 @@ export type ProcedurePlanRequestSnapshot = {
     payload?: unknown;
 };
 
-export type ProcedurePlanRequest = ProcedurePlanRequestSnapshot & {
-    taskStart: TaskStartFunction;
-};
+export type ProcedurePlanRequest = ProcedurePlanRequestSnapshot;
 
 export type ProcedurePlanSnapshot = {
     goal: string;
@@ -42,10 +44,6 @@ export type ProcedurePlanState = {
     sourceEvent?: string;
 };
 
-export type ProcedurePlanTaskStartFunctionSelector = (
-    request: ProcedurePlanRequestSnapshot,
-) => TaskStartFunction | null | undefined;
-
 export type ProcedurePlanTaskErrorHandler = (
     request: ProcedurePlanRequestSnapshot,
     error: unknown,
@@ -53,128 +51,209 @@ export type ProcedurePlanTaskErrorHandler = (
 
 type ProcedurePlanChangeHandler = (plan: ProcedurePlanState | null) => void;
 
+export type ProcedurePlanTaskResult = {
+    title: string;
+    tool_name: string;
+    status: 'completed' | 'failed';
+    run_id: string;
+    output?: unknown;
+    error?: string;
+};
+
+export type ProcedurePlanRunResult = {
+    status: 'complete' | 'failed' | 'advanced' | 'cleared';
+    goal: string;
+    current_request: number;
+    request?: ProcedurePlanRequestSnapshot;
+    run_id?: string;
+    task_results: ProcedurePlanTaskResult[];
+    request_count: number;
+    reason?: string;
+};
+
+export interface ProcedurePlanHandle extends NamedAiToolComponentHandle {
+    createProcedurePlan(plan: ProcedurePlanState): Promise<ProcedurePlanRunResult>;
+    advancePlanStep(reason?: string): Promise<ProcedurePlanRunResult>;
+    clearProcedurePlan(reason?: string): ProcedurePlanRunResult;
+    getProcedurePlan(): ProcedurePlanState | null;
+}
+
 const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request, error) => {
     console.error(`Procedure plan task '${request.title}' failed.`, error);
 };
 
 export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapshot | null> {
     private plan: ProcedurePlanState | null = null;
-    private activeRun: {
-        controller: AbortController;
-        token: symbol;
-        taskStart: TaskStartFunction;
-    } | null = null;
+    private active = false;
+    private taskResults: ProcedurePlanTaskResult[] = [];
+    private lastRunId: string | undefined;
     private readonly onChange: ProcedurePlanChangeHandler;
     private readonly onError: ProcedurePlanTaskErrorHandler;
 
-    constructor(componentName: string, onChange?: ProcedurePlanChangeHandler, onError?: ProcedurePlanTaskErrorHandler);
-    constructor(onChange: ProcedurePlanChangeHandler, onError?: ProcedurePlanTaskErrorHandler);
     constructor(
-        componentNameOrOnChange: string | ProcedurePlanChangeHandler,
-        onChangeOrError?: ProcedurePlanChangeHandler | ProcedurePlanTaskErrorHandler,
+        componentName: string,
+        private readonly dispatchTool: AiToolDispatcher,
+        onChange?: ProcedurePlanChangeHandler,
         onError: ProcedurePlanTaskErrorHandler = defaultProcedurePlanErrorHandler,
     ) {
-        const legacySignature = typeof componentNameOrOnChange === 'function';
-        super(legacySignature ? 'procedure-plan' : componentNameOrOnChange, null);
-        this.onChange = legacySignature
-            ? componentNameOrOnChange
-            : (onChangeOrError as ProcedurePlanChangeHandler | undefined) ?? (() => undefined);
-        this.onError = legacySignature
-            ? (onChangeOrError as ProcedurePlanTaskErrorHandler | undefined) ?? defaultProcedurePlanErrorHandler
-            : onError;
+        super(componentName, null);
+        this.onChange = onChange ?? (() => undefined);
+        this.onError = onError;
     }
 
     get(): ProcedurePlanState | null {
-        return this.plan;
+        return this.plan ? cloneProcedurePlanState(this.plan) : null;
     }
 
-    replace(plan: ProcedurePlanState | null): void {
-        this.abort();
-        this.publish(plan?.requests.length ? plan : null);
-        this.runNext();
+    async replace(plan: ProcedurePlanState | null): Promise<ProcedurePlanRunResult> {
+        if (this.active) throw new Error('Cannot replace a running procedure plan.');
+        this.taskResults = [];
+        this.lastRunId = undefined;
+        this.publish(plan?.requests.length ? cloneProcedurePlanState(plan) : null);
+        if (!this.plan) return this.result('cleared');
+        return this.runNext();
     }
 
-    clear(): void {
-        this.replace(null);
+    clear(reason?: string): ProcedurePlanRunResult {
+        this.active = false;
+        const cleared = this.result('cleared');
+        this.publish(null);
+        return { ...cleared, ...(reason ? { reason } : {}) };
     }
 
-    advance(reason?: string): ProcedurePlanAdvanceResult {
+    async advance(reason?: string): Promise<ProcedurePlanRunResult> {
         if (!this.plan) throw new Error('Cannot advance an empty procedure plan.');
+        if (this.active) throw new Error('Cannot advance while a procedure plan step is running.');
         const result = advanceProcedurePlan(this.plan, reason);
-        this.replace(result.status === 'complete' ? null : result.plan);
-        return result;
+        if (result.status === 'complete') {
+            const completed = this.result('complete');
+            this.finish();
+            return completed;
+        }
+        this.publish(result.plan);
+        return this.runNext();
     }
 
-    abort(): void {
-        const activeRun = this.activeRun;
-        this.activeRun = null;
-        activeRun?.controller.abort();
+    async retryFailedStep(): Promise<ProcedurePlanRunResult> {
+        if (!this.plan || this.active) throw new Error('No failed procedure plan step is available to retry.');
+        const request = this.plan.requests[this.plan.currentStep];
+        if (!request || request.status !== 'failed') {
+            throw new Error('No failed procedure plan step is available to retry.');
+        }
+        this.publish({
+            ...this.plan,
+            requests: this.plan.requests.map((item, index) => (
+                index === this.plan!.currentStep ? { ...item, status: 'pending' } : item
+            )),
+        });
+        return this.runNext();
     }
 
     protected onDispose(): void {
-        this.abort();
+        this.active = false;
         this.plan = null;
     }
 
     private publish(plan: ProcedurePlanState | null): void {
         this.plan = plan;
         this.publishSnapshot(plan ? serializeProcedurePlan(plan) : null);
-        this.onChange(plan);
+        this.onChange(plan ? cloneProcedurePlanState(plan) : null);
         if (!plan) this.deleteComponentRef();
     }
 
-    private settle(token: symbol, error?: unknown): void {
-        const activeRun = this.activeRun;
-        if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
-        this.activeRun = null;
-
-        const current = this.plan;
-        if (!current) return;
-        const requestIndex = current.currentStep;
-        const request = current.requests[requestIndex];
-        if (!request || request.taskStart !== activeRun.taskStart) return;
-        if (error !== undefined) {
-            try {
-                this.onError(serializeProcedurePlanRequest(request), error);
-            } catch (handlerError) {
-                console.error('Procedure plan task error handler failed.', handlerError);
+    private async runNext(): Promise<ProcedurePlanRunResult> {
+        while (this.plan) {
+            const request = this.plan.requests[this.plan.currentStep];
+            if (!request) {
+                const completed = this.result('complete');
+                this.finish();
+                return completed;
             }
+            if (request.status === 'failed') return this.result('failed', request);
+            if (request.status !== 'pending') {
+                this.publish({ ...this.plan, currentStep: this.plan.currentStep + 1 });
+                continue;
+            }
+            this.active = true;
+            this.publish({
+                ...this.plan,
+                requests: this.plan.requests.map((item, index) => (
+                    index === this.plan!.currentStep ? { ...item, status: 'running' } : item
+                )),
+            });
+            const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+            let output: Record<string, unknown> | null = null;
+            let executionError: unknown;
+            try {
+                output = await this.dispatchTool(
+                    request.name || '',
+                    getProcedurePlanToolArguments(request),
+                );
+            } catch (error) {
+                executionError = error;
+            }
+            this.active = false;
+            if (!this.plan) return this.result('cleared');
+            const taskResult = this.toTaskResult(request, runId, output, executionError);
+            this.lastRunId = runId;
+            this.taskResults.push(taskResult);
+            if (executionError !== undefined) {
+                this.onError(serializeProcedurePlanRequest(request), executionError);
+                this.publish({
+                    ...this.plan!,
+                    requests: this.plan!.requests.map((item, index) => (
+                        index === this.plan!.currentStep ? { ...item, status: 'failed' } : item
+                    )),
+                });
+                return this.result('failed', this.plan.requests[this.plan.currentStep], runId);
+            }
+            const nextIndex = this.plan.currentStep + 1;
+            this.publish({
+                ...this.plan,
+                currentStep: nextIndex,
+                requests: this.plan.requests.map((item, index) => (
+                    index === this.plan!.currentStep ? { ...item, status: 'complete' } : item
+                )),
+            });
         }
-
-        const requests = current.requests.filter((_item, index) => index !== requestIndex);
-        this.publish(requests.length > 0 ? {
-            ...current,
-            requests,
-            currentStep: Math.min(requestIndex, requests.length - 1),
-        } : null);
-        this.runNext();
+        return this.result('complete');
     }
 
-    private runNext(): void {
-        if (!this.plan || this.activeRun) return;
-        const request = this.plan.requests[this.plan.currentStep];
-        if (!request || request.status !== 'pending') return;
+    private toTaskResult(
+        request: ProcedurePlanRequestSnapshot,
+        runId: string,
+        output: Record<string, unknown> | null,
+        error: unknown,
+    ): ProcedurePlanTaskResult {
+        return {
+            title: request.title,
+            tool_name: request.name || '',
+            status: error === undefined ? 'completed' : 'failed',
+            run_id: runId,
+            ...(error === undefined
+                ? { output }
+                : { error: error instanceof Error ? error.message : String(error) }),
+        };
+    }
 
-        const controller = new AbortController();
-        const token = Symbol(request.title);
-        this.activeRun = { controller, token, taskStart: request.taskStart };
-        this.publish({
-            ...this.plan,
-            requests: this.plan.requests.map((item, index) => (
-                index === this.plan!.currentStep
-                    ? { ...item, status: 'running' as const }
-                    : item
-            )),
-        });
+    private result(
+        status: ProcedurePlanRunResult['status'],
+        request?: ProcedurePlanRequestSnapshot,
+        runId?: string,
+    ): ProcedurePlanRunResult {
+        return {
+            status,
+            goal: this.plan?.goal ?? '',
+            current_request: this.plan?.currentStep ?? 0,
+            ...(request ? { request: serializeProcedurePlanRequest(request) } : {}),
+            ...(runId || this.lastRunId ? { run_id: runId || this.lastRunId } : {}),
+            task_results: this.taskResults.map((result) => ({ ...result })),
+            request_count: this.plan?.requests.length ?? this.taskResults.length,
+        };
+    }
 
-        try {
-            Promise.resolve(request.taskStart(controller.signal)).then(
-                () => this.settle(token),
-                (error) => this.settle(token, error),
-            );
-        } catch (error) {
-            this.settle(token, error);
-        }
+    private finish(): void {
+        // The completed plan stays mounted until AI Chat replaces it.
     }
 }
 
@@ -201,6 +280,11 @@ const serializeProcedurePlanRequest = (
     ...(request.method !== undefined ? { method: request.method } : {}),
     ...(request.url !== undefined ? { url: request.url } : {}),
     ...(request.payload !== undefined ? { payload: toStablePlanValue(request.payload) } : {}),
+});
+
+const cloneProcedurePlanState = (plan: ProcedurePlanState): ProcedurePlanState => ({
+    ...plan,
+    requests: plan.requests.map((request) => serializeProcedurePlanRequest(request)),
 });
 
 export const serializeProcedurePlan = (
@@ -373,7 +457,6 @@ export const isProcedurePlanClearEvent = (sourceEvent?: string): boolean => (
 
 export const buildProcedurePlan = (
     data: Record<string, unknown>,
-    selectTaskStartFunction: ProcedurePlanTaskStartFunctionSelector,
 ): ProcedurePlanState | null => {
     const sourceEvent = toNonEmptyString(data.event);
     const snapshots = toProcedurePlanRequestSnapshots(data.requests);
@@ -387,17 +470,14 @@ export const buildProcedurePlan = (
         .slice(currentStep)
         .filter((request) => !isProcedurePlanRequestDone(request));
     if (runnableSnapshots.length === 0) return null;
-    const requests = runnableSnapshots.map((request) => {
-        const taskStart = selectTaskStartFunction(request);
-        return typeof taskStart === 'function'
-            ? { ...request, status: 'pending' as const, taskStart }
-            : null;
-    });
-    if (requests.some((request) => request === null)) return null;
+    const requests = runnableSnapshots.map((request) => ({
+        ...request,
+        status: 'pending' as const,
+    }));
 
     return {
         goal: toNonEmptyString(data.goal) || snapshots[0].title,
-        requests: requests as ProcedurePlanRequest[],
+        requests,
         currentStep: 0,
         sourceEvent: sourceEvent || undefined,
     };
@@ -407,6 +487,13 @@ export type ProcedurePlanProps = {
     plan: ProcedurePlanSnapshot;
     surface?: 'chat' | 'pill';
     onClear?: () => void;
+};
+
+export type ProcedurePlanWorkflowProps = {
+    name: string;
+    dispatchTool: AiToolDispatcher;
+    onSnapshotChange?: (plan: ProcedurePlanState | null) => void;
+    surface?: 'chat' | 'pill';
 };
 
 const getProcedurePlanRequestMeta = (request: ProcedurePlanSnapshot['requests'][number]): string => {
@@ -476,6 +563,43 @@ const ProcedurePlan: React.FC<ProcedurePlanProps> = ({
             </ul>
         </div>
     );
+};
+
+export const ProcedurePlanWorkflow: React.FC<ProcedurePlanWorkflowProps> = ({
+    name,
+    dispatchTool,
+    onSnapshotChange,
+    surface = 'chat',
+}) => {
+    const [plan, setPlan] = useState<ProcedurePlanState | null>(null);
+    const onSnapshotChangeRef = useRef(onSnapshotChange);
+    onSnapshotChangeRef.current = onSnapshotChange;
+    const runnerRef = useRef<ProcedurePlanRunner | null>(null);
+    if (!runnerRef.current) {
+        runnerRef.current = new ProcedurePlanRunner(name, dispatchTool, (next) => {
+            setPlan(next);
+            onSnapshotChangeRef.current?.(next);
+        });
+    }
+
+    const handle = useMemo<ProcedurePlanHandle>(() => ({
+        getComponentName: () => name,
+        createProcedurePlan: (next) => runnerRef.current!.replace(next),
+        advancePlanStep: (reason) => runnerRef.current!.advance(reason),
+        clearProcedurePlan: (reason) => runnerRef.current!.clear(reason),
+        getProcedurePlan: () => runnerRef.current!.get(),
+    }), [name]);
+    useRegisterAiToolComponentRef(name, handle);
+
+    useEffect(() => () => runnerRef.current?.dispose(), []);
+
+    return plan ? (
+        <ProcedurePlan
+            plan={serializeProcedurePlan(plan)}
+            surface={surface}
+            onClear={() => runnerRef.current?.clear()}
+        />
+    ) : null;
 };
 
 export default ProcedurePlan;

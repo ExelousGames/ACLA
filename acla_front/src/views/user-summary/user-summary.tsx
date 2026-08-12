@@ -36,6 +36,42 @@ export interface UserSummaryHandle extends NamedAiToolComponentHandle {
     searchUserSummaryMapLevel(args: Record<string, any>): any;
 }
 
+const compactMapLevelForAi = (result: Record<string, any>) => ({
+    status: result.status,
+    ...(result.message ? { message: result.message } : {}),
+    map_count: result.map_count ?? 0,
+    maps: Array.isArray(result.maps)
+        ? result.maps.map((map: Record<string, any>) => ({
+            id: map.id,
+            name: map.name,
+            section_count: map.section_count,
+            mistake_percent: map.mistake_percent,
+            expert_adherence_percent: map.expert_adherence_percent,
+        }))
+        : [],
+});
+
+const compactAvailableMapsForAi = (result: Record<string, any>) => ({
+    status: result.status,
+    ...(result.message ? { message: result.message } : {}),
+    map_count: result.map_count ?? 0,
+    map_options: Array.isArray(result.map_options) ? result.map_options : [],
+});
+
+const compactMapSearchForAi = (result: Record<string, any>) => ({
+    status: result.status,
+    ...(result.message ? { message: result.message } : {}),
+    query: result.query ?? null,
+    match_count: result.match_count ?? 0,
+    maps: Array.isArray(result.maps)
+        ? result.maps.map((map: Record<string, any>) => ({
+            id: map.id,
+            name: map.name,
+            matched_fields: map.matched_fields,
+        }))
+        : [],
+});
+
 type SegmentGroupProps = {
     title: string;
     emptyText: string;
@@ -133,27 +169,27 @@ const UserSummary = ({ name }: { name: string }) => {
     if (componentRef.current === null) {
         componentRef.current = {
             getComponentName: () => name,
-            getUserSummaryMapLevel: (args) => getUserSummaryMapLevel({
+            getUserSummaryMapLevel: (args) => compactMapLevelForAi(getUserSummaryMapLevel({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            }, args),
-            getAvailableUserSummaryMaps: () => getAvailableUserSummaryMaps({
+            }, args)),
+            getAvailableUserSummaryMaps: () => compactAvailableMapsForAi(getAvailableUserSummaryMaps({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            }),
-            searchUserSummaryMapLevel: (args) => searchUserSummaryMapLevel({
+            })),
+            searchUserSummaryMapLevel: (args) => compactMapSearchForAi(searchUserSummaryMapLevel({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            }, args),
+            }, args)),
         };
     }
     useRegisterAiToolComponentRef(name, componentRef.current);

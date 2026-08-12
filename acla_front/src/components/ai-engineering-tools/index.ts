@@ -1,14 +1,10 @@
 export { AiToolComponentBase } from './AiToolComponentBase';
 export type { AiToolComponentSnapshotListener } from './AiToolComponentBase';
-export { default as AiWorkflowRunnerHost } from './AiWorkflowRunnerHost';
-export type {
-    AiWorkflowRunnerHostProps,
-    AiWorkflowRunnerSnapshot,
-} from './AiWorkflowRunnerHost';
 export {
     default as ProcedurePlan,
     PROCEDURE_PLAN_STEP_STATUSES,
     ProcedurePlanRunner,
+    ProcedurePlanWorkflow,
     advanceProcedurePlan,
     buildProcedurePlan,
     getProcedurePlanToolArguments,
@@ -23,14 +19,17 @@ export {
 } from './ProcedurePlan';
 export type {
     ProcedurePlanAdvanceResult,
+    ProcedurePlanHandle,
     ProcedurePlanProps,
     ProcedurePlanRequest,
     ProcedurePlanRequestSnapshot,
+    ProcedurePlanRunResult,
     ProcedurePlanSnapshot,
     ProcedurePlanState,
     ProcedurePlanStepStatus,
-    ProcedurePlanTaskStartFunctionSelector,
     ProcedurePlanTaskErrorHandler,
+    ProcedurePlanTaskResult,
+    ProcedurePlanWorkflowProps,
 } from './ProcedurePlan';
 export {
     default as LiveRangeTodoList,
@@ -46,10 +45,13 @@ export type {
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
+    LiveRangeTodoListAiResult,
     LiveRangeTodoListSnapshot,
     LiveRangeTodoListToolResult,
     LiveRangeTodoSnapshotEvent,
     LiveRangeTodoStatus,
+    LiveRangeTodoTaskDescriptor,
+    LiveRangeTodoTaskStartFunctionFactory,
 } from './live-range-todo-list-types';
 export {
     default as Goal,
@@ -64,13 +66,13 @@ export {
 } from './Goal';
 export type {
     GoalComparisonOperator,
+    AiToolDispatcher,
+    GoalAiResult,
     GoalDetermination,
     GoalDeterminationResult,
     GoalDeterminationStatus,
     GoalDeterminationTool,
     GoalDisplayProps,
-    GoalExecutableDetermination,
-    GoalExecutableRequest,
     GoalHandle,
     GoalProps,
     GoalRunResult,
@@ -78,13 +80,10 @@ export type {
     GoalSnapshot,
     GoalSourceResultMetadata,
     GoalStatus,
-    GoalStep,
     GoalStepDescriptor,
     GoalStepSnapshot,
     GoalStepSourceResultMetadata,
     GoalStepStatus,
     GoalTaskDescriptor,
     GoalTaskResult,
-    GoalTaskStartFunctionSelector,
-    GoalToolOutputEnvelope,
 } from './Goal';

@@ -1,49 +1,49 @@
-import { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
-import { ToolHandlerContext } from 'views/lap-analysis/ai-chat/use-voice-conversation';
-import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
-import { AiMapDisplayPayload } from './AiMapToolDisplay';
+import type { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
+import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import {
     DEFAULT_ANALYST_COOLDOWN_MS,
     DEFAULT_ANALYST_MIN_DISTANCE,
     DEFAULT_ANALYST_MIN_LEAD_SECONDS,
     hasEnoughCoachingLead,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
-import {
-    type ProcedurePlanAdvanceResult,
-    type ProcedurePlanState,
-} from 'components/ai-engineering-tools';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
-    AiToolError,
-    AiToolDefinition,
+    CreateGoalToolUnavailableError,
+    LivePerformanceAnalystToolUnavailableError,
     NoLiveSessionError,
     NoLiveTelemetryError,
+    RetryGoalTaskToolUnavailableError,
     ToolNotRegisteredError,
+    normalizeAiToolError,
     type AiToolExecutionOutput,
-    type ToolOutputEnvelope,
-    executeAiToolDefinition,
 } from './ai-tool-base';
-import type { LiveRangeTodoListToolResult } from 'components/ai-engineering-tools';
-import { isLiveSessionAiAvailable, RecordingState } from 'views/lap-analysis/recording-state';
 import {
     AI_TOOL_COMPONENT_NAMES,
+    ComponentRefUnavailableError,
+    resolveNamedComponentHandle,
     type AiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
 import {
     NonLiveContextLiveToolsUnavailableError,
     RecordedSessionLiveToolsUnavailableError,
 } from 'contexts/AiToolComponentError';
+import { isLiveSessionAiAvailable, type RecordingState } from 'views/lap-analysis/recording-state';
+import type {
+    AiToolDispatcher,
+    GoalHandle,
+    LiveRangeTodoListHandle,
+    ProcedurePlanHandle,
+    ProcedurePlanRunResult,
+    ProcedurePlanState,
+} from 'components/ai-engineering-tools';
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
-import {
-    createRefBasedAiCommandFunctions,
-    type RefAiCommandContext,
-} from './ai-command-ref-functions';
+import type { AiChatHandle } from './ai-chat';
+import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
+import type { SessionAnalysisHandle } from 'views/lap-analysis/session-analysis';
+import type { UserSummaryHandle } from 'views/user-summary/user-summary';
+import type { ToolHandlerContext } from './use-voice-conversation';
+import type { AiMapDisplayPayload } from './AiMapToolDisplay';
 
-type AiCommandHandler = (
-    args: Record<string, any>,
-    ctx: ToolHandlerContext,
-) => Promise<ToolOutputEnvelope>;
-export type AiCommandToolDefinition = AiToolDefinition<RefAiCommandContext, ToolHandlerContext>;
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
 export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
 export type AgentSessionRole = 'main' | 'agent';
@@ -70,22 +70,43 @@ export type AgentSessionStopResult = {
     agent_mode?: AgentSessionMode;
     agent_session_id?: string | null;
 };
-export interface AiCommandRegistryContext {
+
+export interface FrontendAiCommandContext {
     componentRefs?: AiToolComponentRefDirectory;
     sessionId?: string;
     sessionMode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
-    recordingState?: RecordingState | null;
     conversationRole?: AgentSessionRole;
+    agentMode?: AgentSessionMode;
+}
+
+export interface OpportunityAgentState {
+    intervalId: ReturnType<typeof setInterval> | null;
+    inFlight: boolean;
+    lastAlertKey: string | null;
+    lastAlertAt: number;
+}
+
+export interface LivePerformanceAnalystState {
+    intervalId: ReturnType<typeof setInterval> | null;
+    inFlight: boolean;
+    enabled: boolean;
+    lastToolStatusKey: string | null;
+    lastToolStatusAt: number;
+    lastSpokenAt: number;
+    analysisSessionId?: string | null;
+}
+
+export interface AiCommandRegistryContext extends FrontendAiCommandContext {
+    recordingState?: RecordingState | null;
     activeAgentSession?: AgentSessionInfo | null;
     analysisContext?: any;
-    // Populated during live recording. Null in post-session analysis view.
     sessionIntelligence?: SessionIntelligence | null;
     opportunityAgentState: OpportunityAgentState;
     livePerformanceAnalystState?: LivePerformanceAnalystState;
     startTrackGuide: () => void;
     setTrackGuideEnabled: (enabled: boolean) => void;
     setLivePerformanceAnalystEnabled?: (enabled: boolean) => void;
-    advanceProcedurePlanStep?: (reason?: string) => ProcedurePlanAdvanceResult;
+    advanceProcedurePlanStep?: (reason?: string) => Promise<ProcedurePlanRunResult>;
     getProcedurePlan?: () => ProcedurePlanState | null;
     clearProcedurePlan?: () => void;
     setProcedurePlan?: (plan: ProcedurePlanState | null) => void;
@@ -108,190 +129,72 @@ export interface AiCommandRegistryContext {
         game: CircuitMapGame,
         sourceTrackKey: string | null | undefined,
     ) => Promise<CircuitMapDto | null>;
-    setLiveRangeTodoList?: (args: Record<string, unknown>) => LiveRangeTodoListToolResult;
-    updateLiveRangeTodoList?: (args: Record<string, unknown>) => LiveRangeTodoListToolResult;
-    getLiveRangeTodoList?: () => LiveRangeTodoListToolResult;
     displayMap?: (display: AiMapDisplayPayload) => void;
 }
 
-export interface OpportunityAgentState {
-    intervalId: ReturnType<typeof setInterval> | null;
-    inFlight: boolean;
-    lastAlertKey: string | null;
-    lastAlertAt: number;
-}
-
-export interface LivePerformanceAnalystState {
-    intervalId: ReturnType<typeof setInterval> | null;
-    inFlight: boolean;
-    enabled: boolean;
-    lastToolStatusKey: string | null;
-    lastToolStatusAt: number;
-    lastSpokenAt: number;
-    analysisSessionId?: string | null;
-}
-
-// Frontend-implemented tool capabilities. This file owns executable browser
-// handlers only; LLM-facing tool metadata is injected by the backend voice
-// gateway from its frontend application tool registry.
 const DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS = 5;
-const OVERTAKE_AGENT_MIN_INTERVAL_SECONDS = 2;
-const OVERTAKE_AGENT_MAX_INTERVAL_SECONDS = 15;
-const OVERTAKE_AGENT_REPEAT_ALERT_MS = 20000;
 const DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS = 4;
-const LIVE_ANALYST_MIN_INTERVAL_SECONDS = 2;
-const LIVE_ANALYST_MAX_INTERVAL_SECONDS = 12;
-const toPositiveNumber = (value: unknown): number | undefined => {
+const OVERTAKE_AGENT_REPEAT_ALERT_MS = 20000;
+
+const clampInterval = (value: unknown, fallback: number, min: number, max: number) => {
     const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+    const seconds = Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    return Math.min(max, Math.max(min, seconds));
 };
-
-const getAgentIntervalSeconds = (value: unknown): number => {
-    const parsed = toPositiveNumber(value) ?? DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS;
-    return Math.min(
-        OVERTAKE_AGENT_MAX_INTERVAL_SECONDS,
-        Math.max(OVERTAKE_AGENT_MIN_INTERVAL_SECONDS, parsed),
-    );
-};
-
-const getTacticalAlertKey = (result: any): string => {
-    const section = result.projected_section || result.next_corner?.name || 'unknown-section';
-    const opponent = result.opponent_id ?? result.opponent_slot ?? 'unknown-opponent';
-    return `${result.event}:${opponent}:${section}`;
-};
-
-
-
-
-
-const getLiveAnalystIntervalSeconds = (value: unknown): number => {
-    const parsed = toPositiveNumber(value) ?? DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS;
-    return Math.min(
-        LIVE_ANALYST_MAX_INTERVAL_SECONDS,
-        Math.max(LIVE_ANALYST_MIN_INTERVAL_SECONDS, parsed),
-    );
-};
-
-const getLiveToolsUnavailableErrorType = (context: AiCommandRegistryContext) => (
-    context.sessionMode === 'recorded'
-        ? RecordedSessionLiveToolsUnavailableError
-        : NonLiveContextLiveToolsUnavailableError
-);
 
 const isLiveSessionContext = (context: AiCommandRegistryContext): boolean =>
     (!context.sessionMode || context.sessionMode === 'live')
     && isLiveSessionAiAvailable(context.recordingState);
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-const buildLiveAnalystUnavailable = (context: AiCommandRegistryContext): AiToolError | null => (
-    !isLiveSessionContext(context)
-        ? new (getLiveToolsUnavailableErrorType(context))(
-            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-            'Live performance analysis requires an active live recording.',
-        )
-        : !context.sessionIntelligence
-            ? new NoLiveSessionError(
-                'Live session intelligence is unavailable.',
-            )
-            : null
+const getLiveUnavailableError = (context: AiCommandRegistryContext) => (
+    context.sessionMode === 'recorded'
+        ? RecordedSessionLiveToolsUnavailableError
+        : NonLiveContextLiveToolsUnavailableError
 );
 
-const getLiveAnalystState = (context: AiCommandRegistryContext): LivePerformanceAnalystState => {
-    if (context.livePerformanceAnalystState) return context.livePerformanceAnalystState;
-    return {
-        intervalId: null,
-        inFlight: false,
-        enabled: false,
-        lastToolStatusKey: null,
-        lastToolStatusAt: 0,
-        lastSpokenAt: 0,
-    };
-};
-
-const getBaselineRecorderReadiness = (context: AiCommandRegistryContext) => {
-    const baseline = context.componentRefs
-        ?.findComponentRef<BaselineCollectionHandle>(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)
-        ?.current;
+const getBaselineReadiness = (context: AiCommandRegistryContext) => {
+    const baseline = context.componentRefs?.findComponentRef<BaselineCollectionHandle>(
+        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+    )?.current;
     const record = baseline?.getLapRecord() ?? null;
     const tag = baseline?.getTag() ?? null;
-    const ready = Boolean(record?.records?.length);
-
-    return { ready, record, tag };
+    return { record, tag, ready: Boolean(record?.records?.length) };
 };
 
-const buildLiveAnalystSnapshot = (context: AiCommandRegistryContext): Record<string, any> => {
-    const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot?.() as Record<string, any> | undefined;
-    const { record, tag, ready } = getBaselineRecorderReadiness(context);
-
+const buildLiveAnalystSnapshot = (context: AiCommandRegistryContext) => {
+    const snapshot = context.sessionIntelligence?.getLiveSessionSnapshot() as Record<string, any> | undefined;
+    const { record, tag, ready } = getBaselineReadiness(context);
     return {
         ...(snapshot ?? {}),
         baseline_ready: ready,
         baseline_collection_started: ready || tag?.status === 'collecting',
-        baseline_progress_percent: ready ? 100 : tag?.progress_percent ?? snapshot?.baseline_progress_percent ?? 0,
-        baseline_lap: record?.lap ?? tag?.baseline_lap ?? snapshot?.baseline_lap ?? null,
+        baseline_progress_percent: ready ? 100 : tag?.progress_percent ?? 0,
+        baseline_lap: record?.lap ?? tag?.baseline_lap ?? null,
         baseline_record_sample_count: record?.sample_count ?? 0,
     };
 };
 
-const buildLiveFocusPayload = (context: AiCommandRegistryContext) => {
-    const si = context.sessionIntelligence;
-    if (!si) return null;
-
-    if (!getBaselineRecorderReadiness(context).ready) return null;
-
-    const focus = si.getFocusSection();
+const buildLiveFocus = (context: AiCommandRegistryContext) => {
+    const intelligence = context.sessionIntelligence;
+    if (!intelligence || !getBaselineReadiness(context).ready) return null;
+    const focus = intelligence.getFocusSection();
     if (!focus) return null;
-
-    const timing = si.getSectionTiming(focus.section);
     return {
         section: focus.section,
         baseline: focus.baseline,
         selected_at: focus.selectedAt,
         reason: focus.reason,
         score: focus.score,
-        timing,
+        timing: intelligence.getSectionTiming(focus.section),
         show_map_arguments: {
-            source_track_key: si.getLiveSessionSnapshot().track,
+            source_track_key: intelligence.getLiveSessionSnapshot().track,
             section_start: focus.section.from,
             section_end: focus.section.to,
             section_label: focus.section.name,
             title: 'Live analyst focus',
-            note: focus.reason === 'repeated_mistake'
-                ? 'Repeated mistake section'
-                : 'Highest priority mistake section',
         },
     };
 };
-
-
-
-
-
 
 export const startAgentRuntime = async (
     agentMode: AgentSessionMode,
@@ -299,200 +202,125 @@ export const startAgentRuntime = async (
     args: Record<string, unknown>,
     ctx: ToolHandlerContext,
 ): Promise<AiToolExecutionOutput> => {
+    if (!isLiveSessionContext(context)) {
+        const ErrorType = getLiveUnavailableError(context);
+        throw new ErrorType(
+            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+            'Agent runtime requires an active live recording.',
+        );
+    }
     if (agentMode === 'track_guide') {
-        if (!isLiveSessionContext(context)) {
-            const ErrorType = getLiveToolsUnavailableErrorType(context);
-            throw new ErrorType(
-                AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-                'Track guidance requires an active live recording.',
-            );
-        }
         context.startTrackGuide();
         context.setAgentTagActive?.('Track Guide', true);
-        return { status: 'started', agent_mode: 'track_guide', enabled: true };
+        return { status: 'started', agent_mode: agentMode, enabled: true };
     }
-
     if (agentMode === 'overtake') {
-        if (!isLiveSessionContext(context)) {
-            const ErrorType = getLiveToolsUnavailableErrorType(context);
-            throw new ErrorType(
-                AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-                'Overtake analysis requires an active live recording.',
-            );
+        const rows = context.getOpportunityTelemetryRows();
+        if (rows.length === 0) {
+            throw new NoLiveTelemetryError('No live telemetry is available for overtake analysis.');
         }
-        const telemetryRows = context.getOpportunityTelemetryRows();
-        if (telemetryRows.length === 0) {
-            throw new NoLiveTelemetryError(
-                'No live telemetry is available for overtake analysis.',
-            );
-        }
-
-        const agent = context.opportunityAgentState;
-        if (agent.intervalId) {
-            context.setAgentTagActive?.('Overtake', true);
-            return { status: 'already_running', agent_mode: 'overtake' };
-        }
-
-        const intervalSeconds = getAgentIntervalSeconds(args.interval_seconds);
-
-        const runTacticalCycle = async (notify: boolean): Promise<any> => {
-            if (agent.inFlight) {
-                return { status: 'skipped_in_flight' };
-            }
-
-            const rows = context.getOpportunityTelemetryRows();
-            if (rows.length === 0) {
-                return { status: 'no_live_telemetry' };
-            }
-
-            agent.inFlight = true;
+        const state = context.opportunityAgentState;
+        if (state.intervalId) return { status: 'already_running', agent_mode: agentMode };
+        const intervalSeconds = clampInterval(
+            args.interval_seconds,
+            DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS,
+            2,
+            15,
+        );
+        const runCycle = (notify: boolean) => {
+            if (state.inFlight) return { status: 'skipped_in_flight' };
+            state.inFlight = true;
             try {
-                const result = detectOvertakeTacticalState(rows);
-
-                if (notify && result.status === 'actionable') {
-                    const alertKey = getTacticalAlertKey(result);
+                const telemetry = context.getOpportunityTelemetryRows();
+                const tactical = detectOvertakeTacticalState(telemetry);
+                if (notify && tactical.status === 'actionable') {
+                    const key = `${tactical.event}:${tactical.opponent_id ?? tactical.opponent_slot}:${tactical.projected_section ?? tactical.next_corner?.name}`;
                     const now = Date.now();
-                    if (agent.lastAlertKey !== alertKey || now - agent.lastAlertAt > OVERTAKE_AGENT_REPEAT_ALERT_MS) {
-                        agent.lastAlertKey = alertKey;
-                        agent.lastAlertAt = now;
-                        ctx.sendToolStatus({
-                            ...result,
-                            source: 'overtake_agent',
-                            agent_mode: 'overtake',
-                            telemetry_rows: rows.length,
-                        });
+                    if (state.lastAlertKey !== key || now - state.lastAlertAt > OVERTAKE_AGENT_REPEAT_ALERT_MS) {
+                        state.lastAlertKey = key;
+                        state.lastAlertAt = now;
+                        ctx.sendToolStatus({ ...tactical, source: 'overtake_agent', agent_mode: agentMode });
                     }
                 }
-
-                return {
-                    status: 'checked',
-                    tactical_state: result,
-                    telemetry_rows: rows.length,
-                };
+                return { status: 'checked', tactical_state: tactical, telemetry_rows: telemetry.length };
             } finally {
-                agent.inFlight = false;
+                state.inFlight = false;
             }
         };
-
-        const initial = await runTacticalCycle(false);
-
-        agent.intervalId = setInterval(() => {
-            void runTacticalCycle(true);
-        }, intervalSeconds * 1000);
+        const initial = runCycle(false);
+        state.intervalId = setInterval(() => runCycle(true), intervalSeconds * 1000);
         context.setAgentTagActive?.('Overtake', true);
-
-        return {
-            status: 'started',
-            agent_mode: 'overtake',
-            interval_seconds: intervalSeconds,
-            initial,
-        };
+        return { status: 'started', agent_mode: agentMode, interval_seconds: intervalSeconds, initial };
     }
 
-    const unavailable = buildLiveAnalystUnavailable(context);
-    if (unavailable) throw unavailable;
-
-    const si = context.sessionIntelligence!;
-    const agent = getLiveAnalystState(context);
-    if (agent.intervalId) {
-        agent.enabled = true;
-        context.setLivePerformanceAnalystEnabled?.(true);
-        context.setAgentTagActive?.('Live Analyst', true);
-        const snapshot = buildLiveAnalystSnapshot(context);
+    const intelligence = context.sessionIntelligence;
+    if (!intelligence) throw new NoLiveSessionError('Live session intelligence is unavailable.');
+    const state = context.livePerformanceAnalystState ?? {
+        intervalId: null,
+        inFlight: false,
+        enabled: false,
+        lastToolStatusKey: null,
+        lastToolStatusAt: 0,
+        lastSpokenAt: 0,
+    };
+    if (state.intervalId) {
         return {
             status: 'already_running',
-            agent_mode: 'live_performance_analyst',
-            snapshot,
-            focus: getBaselineRecorderReadiness(context).ready ? buildLiveFocusPayload(context) : null,
+            agent_mode: agentMode,
+            snapshot: buildLiveAnalystSnapshot(context),
+            focus: buildLiveFocus(context),
         };
     }
-
-    const intervalSeconds = getLiveAnalystIntervalSeconds(args.interval_seconds);
-    agent.enabled = true;
+    const intervalSeconds = clampInterval(
+        args.interval_seconds,
+        DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS,
+        2,
+        12,
+    );
+    state.enabled = true;
     context.setLivePerformanceAnalystEnabled?.(true);
     context.setAgentTagActive?.('Live Analyst', true);
-    si.emitLiveAnalysisPlanStarted();
-
-    const runAnalystCycle = async (notify: boolean): Promise<any> => {
-        if (agent.inFlight) {
-            return { status: 'skipped_in_flight' };
-        }
-
-        agent.inFlight = true;
+    intelligence.emitLiveAnalysisPlanStarted();
+    const runCycle = (notify: boolean) => {
+        if (state.inFlight) return { status: 'skipped_in_flight' };
+        state.inFlight = true;
         try {
             const snapshot = buildLiveAnalystSnapshot(context);
-            const sections = si.getKnownTrackSections();
-            const baselineReady = getBaselineRecorderReadiness(context).ready;
-            const focus = baselineReady ? buildLiveFocusPayload(context) : null;
-
-            if (notify) {
+            const focus = buildLiveFocus(context);
+            if (notify && focus) {
                 const now = Date.now();
-                if (!baselineReady) {
-                    agent.lastToolStatusKey = `warmup:${snapshot.completed_laps}:${snapshot.sample_count}`;
-                } else if (focus) {
-                    const timing = focus.timing;
-                    const key = `focus:${focus.section.id}:${focus.baseline.lap}:${focus.baseline.observedAt}`;
-                    const canSpeak = hasEnoughCoachingLead(
-                        timing.distanceAhead,
-                        timing.secondsAhead,
-                        DEFAULT_ANALYST_MIN_DISTANCE,
-                        DEFAULT_ANALYST_MIN_LEAD_SECONDS,
-                    ) && now - agent.lastSpokenAt >= DEFAULT_ANALYST_COOLDOWN_MS;
-
-                    if (canSpeak && agent.lastToolStatusKey !== key) {
-                        agent.lastToolStatusKey = key;
-                        agent.lastToolStatusAt = now;
-                        agent.lastSpokenAt = now;
-                        si.emitLiveAnalysisWindow(snapshot, focus);
-                    }
+                const key = `focus:${focus.section.id}:${focus.baseline.lap}:${focus.baseline.observedAt}`;
+                const canSpeak = hasEnoughCoachingLead(
+                    focus.timing.distanceAhead,
+                    focus.timing.secondsAhead,
+                    DEFAULT_ANALYST_MIN_DISTANCE,
+                    DEFAULT_ANALYST_MIN_LEAD_SECONDS,
+                ) && now - state.lastSpokenAt >= DEFAULT_ANALYST_COOLDOWN_MS;
+                if (canSpeak && state.lastToolStatusKey !== key) {
+                    state.lastToolStatusKey = key;
+                    state.lastSpokenAt = now;
+                    intelligence.emitLiveAnalysisWindow(snapshot, focus);
                 }
             }
-
             return {
                 status: 'checked',
                 snapshot,
-                section_count: sections.length,
+                section_count: intelligence.getKnownTrackSections().length,
                 focus,
-                history_count: si.getSectionHistory(80).length,
+                history_count: intelligence.getSectionHistory(80).length,
             };
         } finally {
-            agent.inFlight = false;
+            state.inFlight = false;
         }
     };
-
-    const initial = await runAnalystCycle(true);
-
-    agent.intervalId = setInterval(() => {
-        void runAnalystCycle(true);
-    }, intervalSeconds * 1000);
-
-    return {
-        status: 'started',
-        agent_mode: 'live_performance_analyst',
-        interval_seconds: intervalSeconds,
-        initial,
-    };
+    const initial = runCycle(true);
+    state.intervalId = setInterval(() => runCycle(true), intervalSeconds * 1000);
+    return { status: 'started', agent_mode: agentMode, interval_seconds: intervalSeconds, initial };
 };
 
-
-const ALL_AI_TOOL_NAMES = [
+export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'start_agent_session',
     'stop_agent_session',
-    'get_session_analysis',
-    'run_recorded_ai_analysis',
-    'get_recorded_session_analysis',
-    'get_recorded_session_context',
-    'get_performance_insights',
-    'compare_lap_times',
-    'query_telemetry_metric',
-    '_get_telemetry_for_scope',
-    'get_event_log',
-    'get_user_summary_map_level',
-    'get_available_user_summary_maps',
-    'search_user_summary_map_level',
-    'get_next_corner',
-    'get_live_focus_section',
-    'get_live_section_history',
     'set_live_range_todo_list',
     'update_live_range_todo_list',
     'get_live_range_todo_list',
@@ -502,327 +330,342 @@ const ALL_AI_TOOL_NAMES = [
     'get_live_analysis_mistake_count',
     'create_goal',
     'retry_goal_task',
-    'set_procedure_plan',
     'advance_plan_step',
     'clear_procedure_plan',
-    '_get_live_section_telemetry',
-    '_record_live_section_classification',
-    'analyze_telemetry',
-    'classify_live_section',
-    'follow_expert_line',
-    'get_telemetry_data',
-    'get_visualization_capabilities',
-    'show_map',
-    'open_visualization_chart',
-    'close_visualization_chart',
-    'invoke_visualization_control',
-    'update_guidance_once',
-    'add_imitation_guidance_chart',
-    'remove_imitation_guidance_chart',
-    'disable_ui_component',
-] as const;
-
-export const isAiCommandName = (name: string): boolean => (
-    (ALL_AI_TOOL_NAMES as readonly string[]).includes(name)
-);
-
-const COMMON_SESSION_TOOL_NAMES = [
-    'show_map',
     'set_procedure_plan',
-    'advance_plan_step',
-    'clear_procedure_plan',
-    'stop_agent_session',
-] as const;
-
-const LIVE_AGENT_SESSION_TOOL_NAMES = [
-    'analyze_telemetry',
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
+    'get_user_summary_map_level',
+    'get_available_user_summary_maps',
+    'search_user_summary_map_level',
+    'show_map',
+    'run_recorded_ai_analysis',
+    'get_recorded_session_analysis',
+    'get_recorded_session_context',
+    'analyze_telemetry',
+    'classify_live_section',
+] as const);
+
+export type FrontendAiToolName = typeof FRONTEND_AI_TOOL_NAMES[number];
+type WorkflowOwner = 'chat' | 'goal' | 'procedure_plan';
+type AiCommandHandler = (
+    args: Record<string, any>,
+    ctx: ToolHandlerContext,
+) => Promise<AiToolExecutionOutput>;
+
+type FrontendAiToolDefinition = {
+    readonly name: FrontendAiToolName;
+    readonly componentName: string;
+    readonly execute: (
+        context: FrontendAiCommandContext,
+        args: Record<string, any>,
+        ctx: ToolHandlerContext,
+        dispatchNested: AiToolDispatcher,
+    ) => Promise<Record<string, unknown>> | Record<string, unknown>;
+};
+
+const getDirectory = (context: FrontendAiCommandContext): AiToolComponentRefDirectory => {
+    if (context.componentRefs) return context.componentRefs;
+    throw new ComponentRefUnavailableError(
+        'dashboard',
+        'The active dashboard component-ref directory is unavailable.',
+    );
+};
+
+const getComponent = <T,>(context: FrontendAiCommandContext, name: string): T => (
+    resolveNamedComponentHandle(getDirectory(context), name) as T
+);
+
+const WORKFLOW_CONTROL_TOOLS = new Set<FrontendAiToolName>([
+    'create_goal',
+    'retry_goal_task',
+    'set_procedure_plan',
+    'advance_plan_step',
+    'clear_procedure_plan',
+]);
+
+const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
+    'stop_agent_session',
     'set_live_range_todo_list',
     'update_live_range_todo_list',
     'get_live_range_todo_list',
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
-    'classify_live_section',
-] as const;
-
-const USER_SUMMARY_SESSION_TOOL_NAMES = [
+    'get_live_analysis_mistake_count',
+    'advance_plan_step',
+    'clear_procedure_plan',
+    'set_procedure_plan',
+    'get_next_corner',
+    'query_telemetry_metric',
+    'get_event_log',
     'get_user_summary_map_level',
     'get_available_user_summary_maps',
     'search_user_summary_map_level',
-] as const;
+    'show_map',
+    'analyze_telemetry',
+    'classify_live_section',
+]);
 
 export const isGoalStepAvailableForContext = (
-    context: Pick<RefAiCommandContext, 'sessionMode' | 'conversationRole' | 'agentMode'>,
+    context: Pick<FrontendAiCommandContext, 'sessionMode' | 'conversationRole' | 'agentMode'>,
     name: string,
-): boolean => {
-    if (
+): boolean => (
+    context.sessionMode === 'live'
+    && context.conversationRole === 'agent'
+    && context.agentMode === 'live_performance_analyst'
+    && GOAL_STEP_TOOLS.has(name as FrontendAiToolName)
+);
+
+const assertAvailable = (
+    context: FrontendAiCommandContext,
+    name: FrontendAiToolName,
+    owner: WorkflowOwner,
+) => {
+    if (owner === 'goal' && !isGoalStepAvailableForContext(context, name)) {
+        throw new ToolNotRegisteredError(`Tool '${name}' is unavailable inside a goal.`);
+    }
+    if (owner === 'procedure_plan' && WORKFLOW_CONTROL_TOOLS.has(name)) {
+        throw new ToolNotRegisteredError(`Tool '${name}' is unavailable inside a procedure plan.`);
+    }
+    if (name === 'create_goal' && (
         context.sessionMode !== 'live'
         || context.conversationRole !== 'agent'
         || context.agentMode !== 'live_performance_analyst'
-        || name === 'create_goal'
-        || name === 'retry_goal_task'
-    ) {
-        return false;
+    )) {
+        throw new CreateGoalToolUnavailableError(
+            'Goal creation is available only to the live performance analyst.',
+        );
     }
-    return new Set<string>([
-        ...COMMON_SESSION_TOOL_NAMES,
-        ...LIVE_AGENT_SESSION_TOOL_NAMES,
-        ...USER_SUMMARY_SESSION_TOOL_NAMES,
-        'get_live_analysis_mistake_count',
-    ]).has(name);
-};
-
-const getToolUiRecord = (uiOutput: unknown): Record<string, any> => (
-    uiOutput && typeof uiOutput === 'object' && !Array.isArray(uiOutput)
-        ? uiOutput as Record<string, any>
-        : {}
-);
-
-const getToolAiStatus = (uiOutput: Record<string, any>): string => (
-    typeof uiOutput.status === 'string'
-        ? uiOutput.status
-        : 'complete'
-);
-
-const getToolAiMessage = (uiOutput: Record<string, any>, fallback: string): string => (
-    typeof uiOutput.message === 'string' && uiOutput.message.trim()
-        ? uiOutput.message
-        : fallback
-);
-
-const omitOkForAi = (value: Record<string, any>): Record<string, unknown> => {
-    const { ok: _ok, ...rest } = value;
-    return rest;
-};
-
-const summarizeMapForAi = (uiOutput: Record<string, any>) => ({
-    map_id: uiOutput.map_id ?? null,
-    circuit_name: uiOutput.circuit_name ?? null,
-    requested_map: uiOutput.requested_map ?? null,
-    resolved_by: uiOutput.resolved_by ?? null,
-    reason: uiOutput.reason ?? null,
-    section: uiOutput.section ?? null,
-});
-
-const summarizeLiveRangeTodoListForAi = (uiOutput: Record<string, any>) => {
-    const events = Array.isArray(uiOutput.todo_list?.events) ? uiOutput.todo_list.events : [];
-    return {
-        event_count: events.length,
-        pending_count: events.filter((event: Record<string, any>) => event.status === 'pending').length,
-        running_count: events.filter((event: Record<string, any>) => event.status === 'running').length,
-    };
-};
-
-const summarizeProcedureRequestForAi = (request: unknown) => {
-    const record = getToolUiRecord(request);
-    return {
-        title: record.title ?? null,
-        tool: record.name ?? record.tool ?? null,
-        status: record.status ?? null,
-    };
-};
-
-const buildToolAiOutput = (
-    name: typeof ALL_AI_TOOL_NAMES[number],
-    uiOutputValue: unknown,
-): Record<string, unknown> => {
-    const uiOutput = getToolUiRecord(uiOutputValue);
-    const status = getToolAiStatus(uiOutput);
-    const output: Record<string, unknown> = {
-        name,
-        status,
-        message: getToolAiMessage(
-            uiOutput,
-            `${name} ${status}.`,
-        ),
-    };
-
-    switch (name) {
-        case 'query_telemetry_metric':
-            output.values = omitOkForAi(uiOutput);
-            break;
-        case 'get_next_corner':
-            output.corner = {
-                name: uiOutput.name ?? uiOutput.corner_name ?? null,
-                from: uiOutput.from ?? null,
-                to: uiOutput.to ?? null,
-            };
-            break;
-        case 'show_map':
-            Object.assign(output, summarizeMapForAi(uiOutput));
-            break;
-        case 'set_live_range_todo_list':
-        case 'update_live_range_todo_list':
-        case 'get_live_range_todo_list':
-            Object.assign(output, summarizeLiveRangeTodoListForAi(uiOutput));
-            break;
-        case 'set_procedure_plan':
-            output.goal = uiOutput.goal ?? null;
-            output.request_count = uiOutput.request_count ?? 0;
-            output.current_request = uiOutput.current_request ?? null;
-            output.request = summarizeProcedureRequestForAi(uiOutput.request);
-            break;
-        case 'advance_plan_step':
-            output.current_request = uiOutput.current_request ?? null;
-            output.request = summarizeProcedureRequestForAi(uiOutput.request);
-            break;
-        case 'clear_procedure_plan':
-            output.reason = uiOutput.reason ?? null;
-            break;
-        case 'get_available_user_summary_maps':
-            output.map_count = uiOutput.map_count ?? 0;
-            output.map_options = Array.isArray(uiOutput.map_options) ? uiOutput.map_options : [];
-            break;
-        case 'search_user_summary_map_level':
-            output.query = uiOutput.query ?? null;
-            output.match_count = uiOutput.match_count ?? 0;
-            output.maps = Array.isArray(uiOutput.maps)
-                ? uiOutput.maps.map((map: Record<string, any>) => ({
-                    id: map.id,
-                    name: map.name,
-                    matched_fields: map.matched_fields ?? undefined,
-                }))
-                : [];
-            break;
-        case 'get_user_summary_map_level':
-            output.map_count = uiOutput.map_count ?? 0;
-            output.maps = Array.isArray(uiOutput.maps)
-                ? uiOutput.maps.map((map: Record<string, any>) => ({
-                    id: map.id,
-                    name: map.name,
-                    section_count: map.section_count,
-                    mistake_percent: map.mistake_percent,
-                    expert_adherence_percent: map.expert_adherence_percent,
-                }))
-                : [];
-            break;
-        case 'run_recorded_ai_analysis':
-        case 'get_recorded_session_analysis':
-            output.session_id = uiOutput.session_id ?? uiOutput.analysis?.session_id ?? null;
-            output.samples_analyzed = uiOutput.samples_analyzed ?? uiOutput.analysis?.samples_analyzed ?? 0;
-            break;
-        case 'get_recorded_session_context':
-            output.session_id = uiOutput.session_id ?? null;
-            output.track = uiOutput.track ?? null;
-            output.car = uiOutput.car ?? null;
-            break;
-        case 'get_live_focus_section':
-            output.focus_section = uiOutput.focus?.section?.name ?? null;
-            output.show_map_arguments = uiOutput.focus?.show_map_arguments ?? null;
-            break;
-        case 'get_live_section_history':
-            output.history_count = Array.isArray(uiOutput.history) ? uiOutput.history.length : 0;
-            break;
-        case 'get_live_analysis_mistake_count':
-            if (typeof uiOutput.mistake_count === 'number') {
-                output.mistake_count = uiOutput.mistake_count;
-            }
-            if (typeof uiOutput.practice_mistake_count === 'number') {
-                output.practice_mistake_count = uiOutput.practice_mistake_count;
-            }
-            if (typeof uiOutput.racing_mistake_count === 'number') {
-                output.racing_mistake_count = uiOutput.racing_mistake_count;
-            }
-            if (typeof uiOutput.baseline_lap === 'number') {
-                output.baseline_lap = uiOutput.baseline_lap;
-            }
-            if (typeof uiOutput.page_id === 'string') output.page_id = uiOutput.page_id;
-            if (typeof uiOutput.track === 'string') output.track = uiOutput.track;
-            if (typeof uiOutput.car === 'string') output.car = uiOutput.car;
-            break;
-        case 'create_goal':
-        case 'retry_goal_task':
-            output.goal = uiOutput.name ?? null;
-            output.target = typeof uiOutput.target === 'number' ? uiOutput.target : null;
-            output.actual = typeof uiOutput.actual === 'number' ? uiOutput.actual : null;
-            output.completed_steps = Array.isArray(uiOutput.completed_steps)
-                ? uiOutput.completed_steps
-                : [];
-            output.determination = uiOutput.determination ?? null;
-            output.determination_result = uiOutput.determination_result ?? null;
-            output.task_results = Array.isArray(uiOutput.task_results)
-                ? uiOutput.task_results
-                : [];
-            break;
-        case '_get_live_section_telemetry':
-            output.section = uiOutput.section
-                ? {
-                    id: uiOutput.section.id ?? null,
-                    name: uiOutput.section.name ?? null,
-                }
-                : null;
-            output.row_count = Array.isArray(uiOutput.rows) ? uiOutput.rows.length : 0;
-            break;
-        case '_record_live_section_classification':
-            output.classification = uiOutput.classification
-                ? {
-                    section_id: uiOutput.classification.sectionId ?? uiOutput.classification.section_id ?? null,
-                    section_name: uiOutput.classification.sectionName ?? uiOutput.classification.section_name ?? null,
-                    severity: uiOutput.classification.severity ?? null,
-                }
-                : null;
-            break;
-        case 'analyze_telemetry':
-            output.analysis = uiOutput.analysis ?? null;
-            output.telemetry_stats = uiOutput.telemetry_stats ?? null;
-            output.chartId = uiOutput.chartId ?? null;
-            output.component_name = uiOutput.component_name ?? null;
-            break;
-        case 'classify_live_section':
-            output.classification = uiOutput.classification ?? null;
-            output.focus = uiOutput.focus ?? null;
-            output.comparison = uiOutput.comparison ?? null;
-            output.analysis = uiOutput.analysis ?? null;
-            output.telemetry_stats = uiOutput.telemetry_stats ?? null;
-            output.chartId = uiOutput.chartId ?? null;
-            output.component_name = uiOutput.component_name ?? null;
-            break;
-        default:
-            break;
+    if (name === 'retry_goal_task' && (
+        context.sessionMode !== 'live'
+        || context.conversationRole !== 'agent'
+        || context.agentMode !== 'live_performance_analyst'
+    )) {
+        throw new RetryGoalTaskToolUnavailableError(
+            'Goal task retry is available only to the live performance analyst.',
+        );
     }
-
-    return output;
+    if (name === 'get_live_analysis_mistake_count' && (
+        context.conversationRole !== 'agent'
+        || context.agentMode !== 'live_performance_analyst'
+    )) {
+        throw new LivePerformanceAnalystToolUnavailableError(
+            'This tool is available only to the live performance analyst.',
+        );
+    }
 };
 
-const createAiToolDefinition = (
-    name: typeof ALL_AI_TOOL_NAMES[number],
-): AiCommandToolDefinition => {
-    return {
-        name,
-        schema: { properties: {}, required: [] },
-        required: [],
-        execute: async (args, context, output, handlerContext) => {
-            const handler = createRefBasedAiCommandFunctions(context)[name];
-            if (!handler) {
-                throw new ToolNotRegisteredError(
-                    `Tool ${name} is not registered.`,
-                );
-            }
-            return handler(args, handlerContext, output);
+const definitions: readonly FrontendAiToolDefinition[] = Object.freeze([
+    {
+        name: 'start_agent_session',
+        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            .startAgentSession(args.agent_mode ?? args.agentMode, args),
+    },
+    {
+        name: 'stop_agent_session',
+        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            .stopAgentSession(args.agent_session_id ?? args.agentSessionId),
+    },
+    {
+        name: 'set_live_range_todo_list',
+        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args, ctx) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            .createLiveRangeTodoList(args, ctx.sendToolStatus),
+    },
+    {
+        name: 'update_live_range_todo_list',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        execute: (context, args) => getComponent<LiveRangeTodoListHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
+            .updateForAi(args),
+    },
+    {
+        name: 'get_live_range_todo_list',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        execute: (context) => getComponent<LiveRangeTodoListHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
+            .getForAi(),
+    },
+    {
+        name: 'collect_live_baseline',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args, ctx) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .collectLiveBaselineForAi(args, ctx.toolRunId),
+    },
+    {
+        name: 'restart_live_baseline',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .restartLiveBaselineForAi(),
+    },
+    {
+        name: 'analyze_live_recorded_analysis',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .analyzeLiveRecordedAnalysisForAi(args),
+    },
+    {
+        name: 'get_live_analysis_mistake_count',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .getLiveAnalysisMistakeCountForAi(),
+    },
+    {
+        name: 'create_goal',
+        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args, _ctx, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            .createGoal(args, dispatchNested),
+    },
+    {
+        name: 'retry_goal_task',
+        componentName: AI_TOOL_COMPONENT_NAMES.GOAL,
+        execute: (context) => getComponent<GoalHandle>(context, AI_TOOL_COMPONENT_NAMES.GOAL)
+            .retryFailedTask(),
+    },
+    {
+        name: 'advance_plan_step',
+        componentName: AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
+        execute: (context, args) => getComponent<ProcedurePlanHandle>(context, AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
+            .advancePlanStep(typeof args.reason === 'string' ? args.reason : undefined),
+    },
+    {
+        name: 'clear_procedure_plan',
+        componentName: AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
+        execute: (context, args) => getComponent<ProcedurePlanHandle>(context, AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN)
+            .clearProcedurePlan(typeof args.reason === 'string' ? args.reason : undefined),
+    },
+    {
+        name: 'set_procedure_plan',
+        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args, _ctx, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            .createProcedurePlan(args, dispatchNested),
+    },
+    {
+        name: 'get_next_corner',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .getNextCornerForAi(),
+    },
+    {
+        name: 'query_telemetry_metric',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .queryTelemetryMetricForAi(args),
+    },
+    {
+        name: 'get_event_log',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .getEventLogForAi(args),
+    },
+    {
+        name: 'get_user_summary_map_level',
+        componentName: AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
+        execute: (context, args) => getComponent<UserSummaryHandle>(context, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY)
+            .getUserSummaryMapLevel(args),
+    },
+    {
+        name: 'get_available_user_summary_maps',
+        componentName: AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
+        execute: (context) => getComponent<UserSummaryHandle>(context, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY)
+            .getAvailableUserSummaryMaps(),
+    },
+    {
+        name: 'search_user_summary_map_level',
+        componentName: AI_TOOL_COMPONENT_NAMES.USER_SUMMARY,
+        execute: (context, args) => getComponent<UserSummaryHandle>(context, AI_TOOL_COMPONENT_NAMES.USER_SUMMARY)
+            .searchUserSummaryMapLevel(args),
+    },
+    {
+        name: 'show_map',
+        componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        execute: (context, args) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            .showMap(args),
+    },
+    {
+        name: 'run_recorded_ai_analysis',
+        componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)
+            .runRecordedAnalysisForAi(args),
+    },
+    {
+        name: 'get_recorded_session_analysis',
+        componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)
+            .getRecordedAnalysisForAi(args),
+    },
+    {
+        name: 'get_recorded_session_context',
+        componentName: AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS,
+        execute: (context, args) => getComponent<SessionAnalysisHandle>(context, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)
+            .getRecordedSessionContextForAi(args),
+    },
+    {
+        name: 'analyze_telemetry',
+        componentName: 'session-mode-analysis',
+        execute: (context, args) => context.sessionMode === 'recorded'
+            ? getComponent<SessionAnalysisHandle>(context, AI_TOOL_COMPONENT_NAMES.SESSION_ANALYSIS)
+                .analyzeTelemetryForAi(args)
+            : getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+                .analyzeTelemetryForAi(args),
+    },
+    {
+        name: 'classify_live_section',
+        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .classifyLiveSectionForAi(args),
+    },
+]);
+
+export const frontendAiToolRegistry = definitions;
+
+const definitionByName = new Map(definitions.map((definition) => [definition.name, definition]));
+
+const dispatchAiTool = async (
+    context: FrontendAiCommandContext,
+    name: string,
+    args: Record<string, unknown>,
+    ctx: ToolHandlerContext,
+    owner: WorkflowOwner,
+): Promise<Record<string, unknown>> => {
+    const definition = definitionByName.get(name as FrontendAiToolName);
+    if (!definition) throw new ToolNotRegisteredError(`Tool '${name}' is not registered.`);
+    assertAvailable(context, definition.name, owner);
+    const dispatchNested: AiToolDispatcher = (nestedName, nestedArgs = {}) => dispatchAiTool(
+        context,
+        nestedName,
+        nestedArgs,
+        {
+            ...ctx,
+            toolRunId: `nested-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+            toolName: nestedName,
         },
-        formatAiOutput: (uiOutput) => buildToolAiOutput(name, uiOutput),
-    };
+        definition.name === 'create_goal' ? 'goal' : 'procedure_plan',
+    );
+    try {
+        return await definition.execute(context, args, ctx, dispatchNested);
+    } catch (error) {
+        throw normalizeAiToolError(error);
+    }
 };
-
-export const frontendToolDefinitions: AiCommandToolDefinition[] = ALL_AI_TOOL_NAMES
-    .map(createAiToolDefinition);
 
 export const createAiCommandRegistry = (
-    context: RefAiCommandContext,
-): Record<string, AiCommandHandler> => {
-    const registry: Record<string, AiCommandHandler> = {};
-
-    frontendToolDefinitions.forEach((definition) => {
-        registry[definition.name] = (args, ctx) => executeAiToolDefinition(
-            definition,
-            args,
+    context: FrontendAiCommandContext,
+): Record<FrontendAiToolName, AiCommandHandler> => Object.fromEntries(
+    definitions.map((definition) => [
+        definition.name,
+        (args: Record<string, any>, ctx: ToolHandlerContext) => dispatchAiTool(
             context,
+            definition.name,
+            args,
             ctx,
-        );
-    });
+            'chat',
+        ),
+    ]),
+) as Record<FrontendAiToolName, AiCommandHandler>;
 
-    return registry;
-};
+export const isAiCommandName = (name: string): name is FrontendAiToolName => (
+    definitionByName.has(name as FrontendAiToolName)
+);

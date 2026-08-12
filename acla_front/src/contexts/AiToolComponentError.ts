@@ -36,10 +36,6 @@ export class DuplicateComponentNameError extends AiToolComponentRefError {
     override name = 'DuplicateComponentNameError';
 }
 
-export class DuplicateAiToolComponentError extends AiToolComponentRefError {
-    override name = 'DuplicateAiToolComponentError';
-}
-
 export class ComponentMountTimeoutError extends AiToolComponentRefError {
     override name = 'ComponentMountTimeoutError';
 }

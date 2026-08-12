@@ -31,12 +31,6 @@ import {
     getTelemetryTrack,
 } from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import {
-    createToolOutputController,
-    type ToolOutputController,
-    type ToolOutputEmitter,
-    type ToolOutputEnvelope,
-} from 'views/lap-analysis/ai-chat/ai-tool-base';
-import {
     normalizeSegmentClassificationResult,
     type SegmentClassificationResult,
 } from 'views/lap-analysis/recorded-session-analysis';
@@ -96,14 +90,25 @@ export type BaselineAnalysisPayload = {
     pageCount: number;
 };
 
+export type BaselineCollectionToolOutput = {
+    toolName: 'collect_live_baseline';
+    runId: string;
+    output: BaselineCollectionPayload;
+    final: true;
+};
+
+export type BaselineCollectionToolOutputListener = (
+    output: BaselineCollectionToolOutput,
+) => void;
+
 export interface BaselineCollectionHandle extends NamedAiToolComponentHandle {
     startCollection(runId?: string): BaselineCollectionPayload;
     restartCollection(): BaselineCollectionPayload;
     requestAnalysis(options?: { limit?: number }): Promise<BaselineAnalysisPayload>;
     getTag(): BaselineCollectionTag | null;
     getLapRecord(): BaselineLapRecord | null;
-    getToolOutput(): ToolOutputEnvelope | null;
-    subscribeToolOutput(listener: ToolOutputEmitter): () => void;
+    getToolOutput(): BaselineCollectionToolOutput | null;
+    subscribeToolOutput(listener: BaselineCollectionToolOutputListener): () => void;
 }
 
 type BaselineRecorderState = {
@@ -383,9 +388,6 @@ export const buildBaselineCollectionToolPayload = (
     };
 };
 
-const createBaselineToolRunId = (): string =>
-    `collect_live_baseline-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-
 const BaselineCollection = ({ name }: { name: string }) => {
     const { currentTelemetry, appendAnalysisResultPage } = useContext(LiveSessionContext);
     const componentRefs = useAiToolComponentRefDirectory();
@@ -399,9 +401,9 @@ const BaselineCollection = ({ name }: { name: string }) => {
     const tagRef = useRef<BaselineCollectionTag | null>(null);
     const lapRecordRef = useRef<BaselineLapRecord | null>(null);
     const recorderRef = useRef<BaselineRecorderState>(createEmptyRecorderState());
-    const toolOutputRef = useRef<ToolOutputEnvelope | null>(null);
-    const toolOutputControllerRef = useRef<ToolOutputController | null>(null);
-    const toolOutputListenersRef = useRef<Set<ToolOutputEmitter>>(new Set());
+    const toolOutputRef = useRef<BaselineCollectionToolOutput | null>(null);
+    const activeToolRunIdRef = useRef<string | null>(null);
+    const toolOutputListenersRef = useRef<Set<BaselineCollectionToolOutputListener>>(new Set());
     const completionEmittedRef = useRef(false);
     const analysisRequestRef = useRef<Promise<BaselineAnalysisPayload> | null>(null);
     const collectionGenerationRef = useRef(0);
@@ -418,7 +420,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         enabledRef.current = true;
         lapRecordRef.current = null;
         toolOutputRef.current = null;
-        toolOutputControllerRef.current = null;
+        activeToolRunIdRef.current = null;
         completionEmittedRef.current = false;
         analysisRequestRef.current = null;
         setAnalysisState('idle');
@@ -430,39 +432,36 @@ const BaselineCollection = ({ name }: { name: string }) => {
 
     const restartCollection = useCallback(() => beginFreshCollection(), [beginFreshCollection]);
 
-    const subscribeToolOutput = useCallback((listener: ToolOutputEmitter) => {
+    const subscribeToolOutput = useCallback((listener: BaselineCollectionToolOutputListener) => {
         toolOutputListenersRef.current.add(listener);
         return () => {
             toolOutputListenersRef.current.delete(listener);
         };
     }, []);
 
-    const prepareToolOutput = useCallback((runId: string) => {
-        toolOutputControllerRef.current = createToolOutputController(
-            'collect_live_baseline',
-            runId,
-            (envelope, options) => {
-                toolOutputRef.current = envelope;
-                toolOutputListenersRef.current.forEach((listener) => listener(envelope, options));
-            },
-        );
-    }, []);
-
     const startCollection = useCallback((runId?: string) => {
         const payload = enabledRef.current
             ? buildBaselineCollectionToolPayload(tagRef.current, lapRecordRef.current)
             : beginFreshCollection();
-        if (payload.status !== 'complete' && runId) prepareToolOutput(runId);
+        if (payload.status !== 'complete' && runId) activeToolRunIdRef.current = runId;
         return payload;
-    }, [beginFreshCollection, prepareToolOutput]);
+    }, [beginFreshCollection]);
 
     const emitCompletion = useCallback((record: BaselineLapRecord) => {
         if (completionEmittedRef.current) return;
         completionEmittedRef.current = true;
         const payload = buildBaselineCollectionToolPayload(null, record);
-        if (!toolOutputControllerRef.current) prepareToolOutput(createBaselineToolRunId());
-        toolOutputControllerRef.current!.final(payload, { message: payload.message });
-    }, [prepareToolOutput]);
+        const runId = activeToolRunIdRef.current;
+        if (!runId) return;
+        const event: BaselineCollectionToolOutput = {
+            toolName: 'collect_live_baseline',
+            runId,
+            output: payload,
+            final: true,
+        };
+        toolOutputRef.current = event;
+        toolOutputListenersRef.current.forEach((listener) => listener(event));
+    }, []);
 
     const requestAnalysis = useCallback((
         options: { limit?: number } = {},
@@ -688,7 +687,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         tagRef.current = null;
         lapRecordRef.current = null;
         toolOutputRef.current = null;
-        toolOutputControllerRef.current = null;
+        activeToolRunIdRef.current = null;
         toolOutputListenersRef.current.clear();
         completionEmittedRef.current = false;
         analysisRequestRef.current = null;

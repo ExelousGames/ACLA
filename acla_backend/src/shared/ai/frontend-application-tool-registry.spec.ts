@@ -44,7 +44,7 @@ describe('frontend application live range to-do tools', () => {
         });
     });
 
-    it('advertises the tools only to child live-agent sessions with panel guidance', () => {
+    it('advertises the tools only to child live-agent sessions with AI Chat ownership guidance', () => {
         const liveMainNames = getFrontendApplicationToolsForSessionContext({
             session_mode: 'live',
         }).map((tool) => tool.name);
@@ -65,8 +65,8 @@ describe('frontend application live range to-do tools', () => {
             conversation_role: 'agent',
         });
         expect(metadata.set_live_range_todo_list.title).toBe('Setting live range to-do list');
-        expect(metadata.set_live_range_todo_list.description).toContain('panel must already be open');
-        expect(metadata.set_live_range_todo_list.description).toContain('AI adapter attaches its notification callback');
+        expect(metadata.set_live_range_todo_list.description).toContain('AI Chat mounts the list');
+        expect(metadata.set_live_range_todo_list.description).toContain('attaches its notification callback');
     });
 });
 

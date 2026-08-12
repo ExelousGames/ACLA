@@ -4,17 +4,11 @@ import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContex
 import {
     AiToolComponentErrorConstructor,
     DuplicateGoalStepIdError,
-    GoalClearedError,
     GoalComponentError,
     GoalDeterminationFailedError,
-    GoalDeterminationOutputToolMismatchError,
-    GoalDeterminationTaskUnavailableError,
     GoalDeterminationValueNotNumericError,
-    GoalDisposedError,
     GoalReplacedError,
     GoalStepFailedError,
-    GoalStepOutputToolMismatchError,
-    GoalStepTaskUnavailableError,
     GoalTaskRetryUnavailableError,
     InvalidGoalDeterminationError,
     InvalidGoalNameError,
@@ -23,7 +17,11 @@ import {
     RecursiveGoalStepError,
 } from 'contexts/AiToolComponentError';
 import { AiToolComponentBase } from './AiToolComponentBase';
-import type { TaskStartFunction } from './task-start-function';
+
+export type AiToolDispatcher = (
+    name: string,
+    args?: Record<string, unknown>,
+) => Promise<Record<string, unknown>>;
 
 export const GOAL_COMPARISON_OPERATORS = [
     'eq',
@@ -68,19 +66,6 @@ export type GoalTaskDescriptor = {
     title: string;
     name: string;
     arguments?: Record<string, unknown>;
-};
-
-export type GoalStep = GoalStepDescriptor & {
-    taskStart: TaskStartFunction;
-};
-
-export type GoalExecutableDetermination = GoalDetermination & {
-    taskStart: TaskStartFunction;
-};
-
-export type GoalExecutableRequest = Omit<GoalRequest, 'steps' | 'determination'> & {
-    steps: GoalStep[];
-    determination: GoalExecutableDetermination;
 };
 
 export type GoalStepSnapshot = GoalStepDescriptor & {
@@ -133,15 +118,6 @@ export type GoalSnapshot = {
     error?: string;
 };
 
-export type GoalToolOutputEnvelope = {
-    tool_name: string;
-    run_id: string;
-    status: string;
-    output: unknown;
-    final: boolean;
-    message?: string;
-};
-
 export type GoalRunResult = Pick<
     GoalSnapshot,
     | 'name'
@@ -151,14 +127,17 @@ export type GoalRunResult = Pick<
     | 'determination'
     | 'determination_result'
 > & {
-    status: 'achieved' | 'missed';
+    status: 'achieved' | 'missed' | 'failed';
     task_results: GoalTaskResult[];
+    failed_step?: string;
+    error?: string;
 };
 
+export type GoalAiResult = Omit<GoalRunResult, 'name'> & { goal: string };
+
 export interface GoalHandle extends NamedAiToolComponentHandle {
-    createGoal(input: GoalExecutableRequest): Promise<GoalRunResult>;
-    retryFailedTask(): Promise<GoalRunResult>;
-    acceptToolOutput(envelope: GoalToolOutputEnvelope): void;
+    createGoal(input: GoalRequest): Promise<GoalAiResult>;
+    retryFailedTask(): Promise<GoalAiResult>;
     getSnapshot(): GoalSnapshot | null;
     clear(): void;
 }
@@ -170,19 +149,9 @@ export type GoalDisplayProps = {
 
 export type GoalProps = {
     name: string;
+    dispatchTool: AiToolDispatcher;
     onSnapshotChange?: (snapshot: GoalSnapshot | null) => void;
     surface?: 'chat' | 'pill';
-};
-
-export type GoalTaskStartFunctionSelector = (
-    task: GoalTaskDescriptor,
-) => TaskStartFunction | null | undefined;
-
-type FinalWaiter = {
-    toolName: string;
-    runId: string | null;
-    resolve: (envelope: GoalToolOutputEnvelope) => void;
-    reject: (error: Error) => void;
 };
 
 const RETRY_DELAY_MS = 1000;
@@ -198,38 +167,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
 const hasOnlyKeys = (value: Record<string, unknown>, allowedKeys: readonly string[]): boolean => {
     const allowed = new Set(allowedKeys);
     return Object.keys(value).every((key) => allowed.has(key));
-};
-
-const isGoalToolOutputEnvelope = (value: unknown): value is GoalToolOutputEnvelope => (
-    isRecord(value)
-    && typeof value.tool_name === 'string'
-    && typeof value.run_id === 'string'
-    && typeof value.status === 'string'
-    && typeof value.final === 'boolean'
-    && Object.prototype.hasOwnProperty.call(value, 'output')
-);
-
-const normalizeTaskValue = (value: unknown): unknown => (
-    value === undefined ? null : value
-);
-
-const normalizeTaskError = (value: unknown, fallback = 'The goal step failed.'): string => {
-    if (value instanceof Error && value.message.trim()) return value.message.trim();
-    if (typeof value === 'string' && value.trim()) return value.trim();
-    if (isRecord(value)) {
-        if (typeof value.error === 'string' && value.error.trim()) return value.error.trim();
-        if (typeof value.message === 'string' && value.message.trim()) return value.message.trim();
-    }
-    if (value !== null && value !== undefined) {
-        if (typeof value !== 'object') return String(value);
-        try {
-            const serialized = JSON.stringify(value);
-            if (serialized && serialized !== '{}') return serialized;
-        } catch {
-            // Fall through to the stable generic error.
-        }
-    }
-    return fallback;
 };
 
 const toNonEmptyString = (value: unknown): string | null => {
@@ -366,140 +303,10 @@ export const validateGoalRequest = (
 
 export const buildGoalRequest = (
     value: unknown,
-    selectTaskStartFunction: GoalTaskStartFunctionSelector,
     componentName = 'goal',
-): { request: GoalExecutableRequest } | { error: GoalComponentError; name?: string } => {
-    const validation = validateGoalRequest(value, componentName);
-    if ('error' in validation) return validation;
-    const { request } = validation;
-    const steps: GoalStep[] = [];
-    for (const step of request.steps) {
-        const taskStart = selectTaskStartFunction(step);
-        if (typeof taskStart !== 'function') {
-            return {
-                error: new GoalStepTaskUnavailableError(
-                    componentName,
-                    `Goal step tool '${step.name}' is unavailable.`,
-                ),
-                name: request.name,
-            };
-        }
-        steps.push({ ...step, taskStart });
-    }
-    const determinationTaskStart = selectTaskStartFunction({
-        title: request.name,
-        name: request.determination.tool.name,
-        ...(request.determination.tool.arguments
-            ? { arguments: { ...request.determination.tool.arguments } }
-            : {}),
-    });
-    if (typeof determinationTaskStart !== 'function') {
-        return {
-            error: new GoalDeterminationTaskUnavailableError(
-                componentName,
-                `Goal determination tool '${request.determination.tool.name}' is unavailable.`,
-            ),
-            name: request.name,
-        };
-    }
-    return {
-        request: {
-            name: request.name,
-            steps,
-            determination: {
-                ...cloneDetermination(request.determination),
-                taskStart: determinationTaskStart,
-            },
-        },
-    };
-};
-
-const validateExecutableGoalRequest = (
-    value: unknown,
-    componentName: string,
-): { request: GoalExecutableRequest } | { error: GoalComponentError; name?: string } => {
-    const input = isRecord(value) ? value : null;
-    const name = toNonEmptyString(input?.name);
-    if (!input || !name || !hasOnlyKeys(input, ['name', 'steps', 'determination'])) {
-        return {
-            error: new InvalidGoalNameError(componentName, 'Provide a valid goal name.'),
-            ...(name ? { name } : {}),
-        };
-    }
-    if (!Array.isArray(input.steps) || input.steps.length === 0) {
-        return {
-            error: new InvalidGoalStepsError(componentName, 'Provide at least one valid goal step.'),
-            name,
-        };
-    }
-    const publicSteps: GoalStepDescriptor[] = [];
-    const taskStarts: TaskStartFunction[] = [];
-    for (const rawStep of input.steps) {
-        if (
-            !isRecord(rawStep)
-            || !hasOnlyKeys(rawStep, ['id', 'title', 'name', 'arguments', 'taskStart'])
-            || typeof rawStep.taskStart !== 'function'
-        ) {
-            return {
-                error: new InvalidGoalStepsError(componentName, 'Every executable goal step must include a task start function.'),
-                name,
-            };
-        }
-        const descriptor = parseGoalStepDescriptor({
-            id: rawStep.id,
-            title: rawStep.title,
-            name: rawStep.name,
-            ...(rawStep.arguments !== undefined ? { arguments: rawStep.arguments } : {}),
-        });
-        if (!descriptor) {
-            return {
-                error: new InvalidGoalStepsError(componentName, 'Every goal step must have a valid id, title, name, and arguments object.'),
-                name,
-            };
-        }
-        publicSteps.push(descriptor);
-        taskStarts.push(rawStep.taskStart as TaskStartFunction);
-    }
-    const rawDetermination = isRecord(input.determination) ? input.determination : null;
-    if (
-        !rawDetermination
-        || !hasOnlyKeys(
-            rawDetermination,
-            ['tool', 'result_path', 'operator', 'target', 'taskStart'],
-        )
-        || typeof rawDetermination.taskStart !== 'function'
-    ) {
-        return {
-            error: new InvalidGoalDeterminationError(componentName, 'Provide a valid executable goal determination.'),
-            name,
-        };
-    }
-    const publicRequest = {
-        name,
-        steps: publicSteps,
-        determination: {
-            tool: rawDetermination.tool,
-            result_path: rawDetermination.result_path,
-            operator: rawDetermination.operator,
-            target: rawDetermination.target,
-        },
-    };
-    const validation = validateGoalRequest(publicRequest, componentName);
-    if ('error' in validation) return validation;
-    return {
-        request: {
-            name: validation.request.name,
-            steps: validation.request.steps.map((step, index) => ({
-                ...step,
-                taskStart: taskStarts[index],
-            })),
-            determination: {
-                ...cloneDetermination(validation.request.determination),
-                taskStart: rawDetermination.taskStart as TaskStartFunction,
-            },
-        },
-    };
-};
+): { request: GoalRequest } | { error: GoalComponentError; name?: string } => (
+    validateGoalRequest(value, componentName)
+);
 
 export const extractGoalResultPath = (value: unknown, path: string): unknown => {
     if (!isSafeGoalResultPath(path)) return undefined;
@@ -588,65 +395,49 @@ const toRunResult = (
     task_results: cloneTaskResults(taskResults),
 });
 
-type TaskExecutionResult = {
+type RuntimeTaskExecutionResult = {
     value: unknown;
     error?: GoalComponentError;
     source_result?: GoalSourceResultMetadata;
 };
 
+const getOutputStatus = (output: Record<string, unknown>): string => {
+    const status = output.status;
+    return typeof status === 'string' && status ? status : 'complete';
+};
+
+const toGoalAiResult = (result: GoalRunResult): GoalAiResult => {
+    const { name, ...safeResult } = result;
+    return { ...safeResult, goal: name };
+};
+
 export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
     private currentSnapshot: GoalSnapshot | null = null;
-    private controller: AbortController | null = null;
-    private generation = 0;
-    private finalWaiter: FinalWaiter | null = null;
-    private request: GoalExecutableRequest | null = null;
+    private request: GoalRequest | null = null;
     private failedStepIndex: number | null = null;
     private determinationFailed = false;
     private stepAttempts: number[] = [];
     private determinationAttempts = 0;
     private taskResults: GoalTaskResult[] = [];
     private goalAttempt = 1;
-    private readonly cancellationErrors = new WeakMap<AbortController, GoalComponentError>();
-    private readonly onChange?: (snapshot: GoalSnapshot | null) => void;
+    private generation = 0;
 
     constructor(
         componentName: string,
-        onChange?: (snapshot: GoalSnapshot | null) => void,
+        private readonly dispatchTool: AiToolDispatcher,
+        private readonly onChange?: (snapshot: GoalSnapshot | null) => void,
     ) {
         super(componentName, null);
-        this.onChange = onChange;
     }
 
     getSnapshot(): GoalSnapshot | null {
         return this.currentSnapshot ? cloneSnapshot(this.currentSnapshot) : null;
     }
 
-    acceptToolOutput(envelope: GoalToolOutputEnvelope): void {
-        const waiter = this.finalWaiter;
-        if (!waiter || waiter.toolName !== envelope.tool_name) return;
-        if (waiter.runId && waiter.runId !== envelope.run_id) return;
-        if (!waiter.runId) waiter.runId = envelope.run_id;
-        if (!envelope.final) return;
-        this.finalWaiter = null;
-        waiter.resolve(envelope);
-    }
-
-    async create(input: GoalExecutableRequest): Promise<GoalRunResult> {
-        this.cancelActive(
-            GoalReplacedError,
-            'The goal was replaced by a newer goal.',
-        );
-        const generation = ++this.generation;
-        this.request = null;
-        this.failedStepIndex = null;
-        this.determinationFailed = false;
-        this.stepAttempts = [];
-        this.determinationAttempts = 0;
-        this.taskResults = [];
-        this.goalAttempt = 1;
-        const validation = validateExecutableGoalRequest(input, this.getComponentName());
+    async create(input: GoalRequest): Promise<GoalRunResult> {
+        const validation = validateGoalRequest(input, this.getComponentName());
         if ('error' in validation) {
-            const invalidSnapshot: GoalSnapshot = {
+            const snapshot: GoalSnapshot = {
                 name: validation.name || 'Goal',
                 status: 'error',
                 steps: [],
@@ -657,111 +448,81 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 completed_steps: [],
                 error: validation.error.message,
             };
-            this.publish(invalidSnapshot);
+            this.publish(snapshot);
             throw validation.error;
         }
 
-        const request = validation.request;
-        this.request = request;
-        this.stepAttempts = request.steps.map(() => 0);
-        const controller = new AbortController();
-        this.controller = controller;
-        this.publish(this.createRunningSnapshot(request));
-        return this.runPreparation(
-            request,
-            generation,
-            controller,
-            0,
-            'The goal could not be completed.',
-        );
+        this.generation += 1;
+        this.request = validation.request;
+        this.failedStepIndex = null;
+        this.determinationFailed = false;
+        this.stepAttempts = validation.request.steps.map(() => 0);
+        this.determinationAttempts = 0;
+        this.taskResults = [];
+        this.goalAttempt = 1;
+        this.publish(this.createRunningSnapshot(validation.request));
+        return this.runPreparation(validation.request, this.generation, 0);
     }
 
     async retryFailedTask(): Promise<GoalRunResult> {
         const request = this.request;
         if (!request || !this.currentSnapshot || this.currentSnapshot.status !== 'error') {
-            return this.retryUnavailableError();
-        }
-
-        const generation = ++this.generation;
-        const controller = new AbortController();
-        this.controller = controller;
-        const failureMessage = 'The failed goal task could not be retried.';
-        if (
-            this.failedStepIndex !== null
-            && this.currentSnapshot.failed_step === request.steps[this.failedStepIndex]?.id
-        ) {
-            const startIndex = this.failedStepIndex;
-            this.failedStepIndex = null;
-            const { failed_step: _failedStep, error: _error, ...retrySnapshot } = this.currentSnapshot;
-            this.publish({
-                ...retrySnapshot,
-                status: 'running',
-                actual: null,
-            });
-            return this.runPreparation(
-                request,
-                generation,
-                controller,
-                startIndex,
-                failureMessage,
+            throw new GoalTaskRetryUnavailableError(
+                this.getComponentName(),
+                'The failed goal task could not be retried.',
             );
+        }
+        const generation = ++this.generation;
+        if (this.failedStepIndex !== null) {
+            const index = this.failedStepIndex;
+            this.failedStepIndex = null;
+            const { failed_step: _failedStep, error: _error, ...snapshot } = this.currentSnapshot;
+            this.publish({ ...snapshot, status: 'running', actual: null });
+            return this.runPreparation(request, generation, index);
         }
         if (this.determinationFailed) {
             this.determinationFailed = false;
-            const { failed_step: _failedStep, error: _error, ...retrySnapshot } = this.currentSnapshot;
+            const { failed_step: _failedStep, error: _error, ...snapshot } = this.currentSnapshot;
             this.publish({
-                ...retrySnapshot,
+                ...snapshot,
                 status: 'running',
                 actual: null,
                 determination_result: this.pendingDeterminationResult(request),
             });
-            return this.runDetermination(
-                request,
-                generation,
-                controller,
-                failureMessage,
-            );
+            return this.runDetermination(request, generation);
         }
-        this.controller = null;
-        return this.retryUnavailableError();
+        throw new GoalTaskRetryUnavailableError(
+            this.getComponentName(),
+            'The failed goal task could not be retried.',
+        );
     }
 
     clear(): void {
-        this.cancelActive(GoalClearedError, 'The goal was cleared.');
         this.generation += 1;
         this.currentSnapshot = null;
         this.request = null;
         this.failedStepIndex = null;
         this.determinationFailed = false;
-        this.stepAttempts = [];
-        this.determinationAttempts = 0;
-        this.taskResults = [];
         this.onChange?.(null);
         this.publishSnapshot(null);
-        this.deleteComponentRef();
     }
 
     protected onDispose(): void {
-        this.cancelActive(GoalDisposedError, 'The goal runner was disposed.');
+        this.generation += 1;
         this.currentSnapshot = null;
         this.request = null;
-        this.failedStepIndex = null;
-        this.determinationFailed = false;
     }
 
     private async runPreparation(
-        request: GoalExecutableRequest,
+        request: GoalRequest,
         generation: number,
-        controller: AbortController,
         startIndex: number,
-        failureMessage: string,
     ): Promise<GoalRunResult> {
         for (let index = startIndex; index < request.steps.length; index += 1) {
-            const step = request.steps[index];
-            if (!this.isCurrent(generation, controller)) {
-                return this.cancelledError(controller, failureMessage);
+            if (generation !== this.generation) {
+                throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
             }
-
+            const step = request.steps[index];
             const attempt = (this.stepAttempts[index] ?? 0) + 1;
             this.stepAttempts[index] = attempt;
             this.updateStep(index, {
@@ -770,25 +531,19 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 run_id: undefined,
                 error: undefined,
             });
-
             const execution = await this.executeTask(
                 step.name,
-                step.taskStart,
-                controller.signal,
+                step.arguments,
                 GoalStepFailedError,
-                GoalStepOutputToolMismatchError,
                 'The goal step failed.',
-                `Goal step '${step.id}' returned output for a different tool.`,
             );
-            if (!this.isCurrent(generation, controller)) {
-                return this.cancelledError(controller, failureMessage);
+            if (generation !== this.generation) {
+                throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
             }
-
-            const sourceResult = execution.source_result ? {
-                ...execution.source_result,
-                step_id: step.id,
-            } : undefined;
-            const taskResult: GoalTaskResult = {
+            const sourceResult = execution.source_result
+                ? { ...execution.source_result, step_id: step.id }
+                : undefined;
+            this.taskResults.push({
                 step_id: step.id,
                 tool_name: step.name,
                 attempt,
@@ -796,59 +551,45 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 value: execution.value,
                 ...(execution.error ? { error: execution.error.message } : {}),
                 ...(sourceResult ? { source_result: sourceResult } : {}),
-            };
-            this.taskResults.push(taskResult);
-
+            });
             if (execution.error) {
+                this.failedStepIndex = index;
+                this.determinationFailed = false;
                 this.updateStep(index, {
                     status: 'error',
                     run_id: sourceResult?.run_id,
                     error: execution.error.message,
                 });
-                this.failedStepIndex = index;
-                this.determinationFailed = false;
-                const errorSnapshot: GoalSnapshot = {
+                const snapshot: GoalSnapshot = {
                     ...this.currentSnapshot!,
                     status: 'error',
                     actual: null,
                     failed_step: step.id,
                     error: execution.error.message,
                 };
-                this.publish(errorSnapshot);
-                this.controller = null;
-                throw execution.error;
+                this.publish(snapshot);
+                return this.failedRunResult(snapshot);
             }
-
             this.updateStep(index, {
                 status: 'completed',
                 run_id: sourceResult?.run_id,
                 error: undefined,
             });
-            const completed = this.currentSnapshot!.steps
-                .filter((item) => item.status === 'completed')
-                .map((item) => item.id);
-            this.publish({ ...this.currentSnapshot!, completed_steps: completed });
+            this.publish({
+                ...this.currentSnapshot!,
+                completed_steps: this.currentSnapshot!.steps
+                    .filter((item) => item.status === 'completed')
+                    .map((item) => item.id),
+            });
         }
-
-        return this.runDetermination(
-            request,
-            generation,
-            controller,
-            failureMessage,
-        );
+        return this.runDetermination(request, generation);
     }
 
     private async runDetermination(
-        request: GoalExecutableRequest,
+        request: GoalRequest,
         generation: number,
-        controller: AbortController,
-        failureMessage: string,
     ): Promise<GoalRunResult> {
-        if (!this.isCurrent(generation, controller)) {
-            return this.cancelledError(controller, failureMessage);
-        }
-        const attempt = this.determinationAttempts + 1;
-        this.determinationAttempts = attempt;
+        const attempt = ++this.determinationAttempts;
         this.publish({
             ...this.currentSnapshot!,
             determination_result: {
@@ -858,20 +599,15 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 value: null,
             },
         });
-
         const execution = await this.executeTask(
             request.determination.tool.name,
-            request.determination.taskStart,
-            controller.signal,
+            request.determination.tool.arguments,
             GoalDeterminationFailedError,
-            GoalDeterminationOutputToolMismatchError,
             'The goal determination failed.',
-            'The goal determination returned output for a different tool.',
         );
-        if (!this.isCurrent(generation, controller)) {
-            return this.cancelledError(controller, failureMessage);
+        if (generation !== this.generation) {
+            throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
         }
-
         let error = execution.error;
         let actual: number | null = null;
         if (!error) {
@@ -884,18 +620,16 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                     this.getComponentName(),
                     `Goal determination path '${request.determination.result_path}' did not resolve to a finite number.`,
                 );
-            } else {
-                actual = value;
-            }
+            } else actual = value;
         }
         if (error) {
             this.failedStepIndex = null;
             this.determinationFailed = true;
-            const { failed_step: _failedStep, error: _error, ...currentSnapshot } = this.currentSnapshot!;
-            this.publish({
-                ...currentSnapshot,
+            const snapshot: GoalSnapshot = {
+                ...this.currentSnapshot!,
                 status: 'error',
                 actual: null,
+                error: error.message,
                 determination_result: {
                     tool_name: request.determination.tool.name,
                     attempt,
@@ -906,9 +640,9 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                         ? { source_result: { ...execution.source_result } }
                         : {}),
                 },
-            });
-            this.controller = null;
-            throw error;
+            };
+            this.publish(snapshot);
+            return this.failedRunResult(snapshot);
         }
 
         this.failedStepIndex = null;
@@ -918,9 +652,8 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
             request.determination.operator,
             request.determination.target,
         );
-        const { failed_step: _failedStep, error: _error, ...currentSnapshot } = this.currentSnapshot!;
-        const finalSnapshot: GoalSnapshot & { status: 'achieved' | 'missed' } = {
-            ...currentSnapshot,
+        const snapshot: GoalSnapshot & { status: 'achieved' | 'missed' } = {
+            ...this.currentSnapshot!,
             status: achieved ? 'achieved' : 'missed',
             actual,
             determination_result: {
@@ -933,40 +666,62 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                     : {}),
             },
         };
-        this.publish(finalSnapshot);
-        if (achieved || this.goalAttempt === MAX_GOAL_ATTEMPTS) {
-            this.controller = null;
-            this.deleteComponentRef();
-            return toRunResult(finalSnapshot, this.taskResults);
+        this.publish(snapshot);
+        if (!achieved && this.goalAttempt < MAX_GOAL_ATTEMPTS) {
+            await this.retryDelay();
+            if (generation !== this.generation) {
+                throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
+            }
+            this.goalAttempt += 1;
+            this.publish(this.createRunningSnapshot(request));
+            return this.runPreparation(request, generation, 0);
         }
-
-        try {
-            await this.retryDelay(controller.signal);
-        } catch {
-            return this.cancelledError(controller, failureMessage);
-        }
-        if (!this.isCurrent(generation, controller)) {
-            return this.cancelledError(controller, failureMessage);
-        }
-        this.goalAttempt += 1;
-        this.publish(this.createRunningSnapshot(request));
-        return this.runPreparation(
-            request,
-            generation,
-            controller,
-            0,
-            failureMessage,
-        );
+        this.finish();
+        return toRunResult(snapshot, this.taskResults);
     }
 
-    private createRunningSnapshot(request: GoalExecutableRequest): GoalSnapshot {
+    private async executeTask(
+        toolName: string,
+        argumentsValue: Record<string, unknown> | undefined,
+        FailureError: AiToolComponentErrorConstructor<GoalComponentError>,
+        fallbackMessage: string,
+    ): Promise<RuntimeTaskExecutionResult> {
+        const runId = `goal-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        try {
+            const output = await this.dispatchTool(toolName, argumentsValue);
+            return {
+                value: output,
+                source_result: {
+                    tool_name: toolName,
+                    run_id: runId,
+                    status: getOutputStatus(output),
+                    final: true,
+                },
+            };
+        } catch (error) {
+            return {
+                value: null,
+                source_result: {
+                    tool_name: toolName,
+                    run_id: runId,
+                    status: 'failed',
+                    final: true,
+                },
+                error: new FailureError(
+                    this.getComponentName(),
+                    error instanceof Error && error.message ? error.message : fallbackMessage,
+                    { cause: error },
+                ),
+            };
+        }
+    }
+
+    private createRunningSnapshot(request: GoalRequest): GoalSnapshot {
         return {
             name: request.name,
             status: 'running',
             steps: request.steps.map((step, index) => ({
-                id: step.id,
-                title: step.title,
-                name: step.name,
+                ...step,
                 ...(step.arguments ? { arguments: { ...step.arguments } } : {}),
                 status: 'pending',
                 attempts: this.stepAttempts[index] ?? 0,
@@ -979,14 +734,29 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         };
     }
 
-    private pendingDeterminationResult(
-        request: GoalExecutableRequest,
-    ): GoalDeterminationResult {
+    private pendingDeterminationResult(request: GoalRequest): GoalDeterminationResult {
         return {
             tool_name: request.determination.tool.name,
             attempt: this.determinationAttempts,
             status: 'pending',
             value: null,
+        };
+    }
+
+    private failedRunResult(snapshot: GoalSnapshot): GoalRunResult {
+        return {
+            name: snapshot.name,
+            status: 'failed',
+            determination: snapshot.determination
+                ? cloneDetermination(snapshot.determination)
+                : null,
+            determination_result: cloneDeterminationResult(snapshot.determination_result),
+            target: snapshot.target,
+            actual: snapshot.actual,
+            completed_steps: [...snapshot.completed_steps],
+            task_results: cloneTaskResults(this.taskResults),
+            ...(snapshot.failed_step ? { failed_step: snapshot.failed_step } : {}),
+            ...(snapshot.error ? { error: snapshot.error } : {}),
         };
     }
 
@@ -1006,132 +776,12 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         });
     }
 
-    private isCurrent(generation: number, controller: AbortController): boolean {
-        return (
-            generation === this.generation
-            && this.controller === controller
-            && !controller.signal.aborted
-        );
+    private finish(): void {
+        // The completed goal stays mounted until AI Chat replaces it.
     }
 
-    private cancelActive(
-        ErrorType: AiToolComponentErrorConstructor<GoalComponentError>,
-        message: string,
-    ): void {
-        if (!this.controller) return;
-        const controller = this.controller;
-        const error = new ErrorType(this.getComponentName(), message);
-        this.cancellationErrors.set(controller, error);
-        controller.abort();
-        this.controller = null;
-        this.finalWaiter?.reject(error);
-        this.finalWaiter = null;
-    }
-
-    private cancelledError(controller: AbortController, message: string): never {
-        throw this.cancellationErrors.get(controller)
-            || new GoalReplacedError(this.getComponentName(), message);
-    }
-
-    private retryUnavailableError(): never {
-        throw new GoalTaskRetryUnavailableError(
-            this.getComponentName(),
-            'The failed goal task could not be retried.',
-        );
-    }
-
-    private async executeTask(
-        toolName: string,
-        taskStart: TaskStartFunction,
-        signal: AbortSignal,
-        FailureError: AiToolComponentErrorConstructor<GoalComponentError>,
-        MismatchError: AiToolComponentErrorConstructor<GoalComponentError>,
-        fallbackMessage: string,
-        mismatchMessage: string,
-    ): Promise<TaskExecutionResult> {
-        let deliveredEnvelope: GoalToolOutputEnvelope | null = null;
-        let waiter!: FinalWaiter;
-        const finalPromise = new Promise<GoalToolOutputEnvelope>((resolve, reject) => {
-            waiter = {
-                toolName,
-                runId: null,
-                resolve: (envelope) => {
-                    deliveredEnvelope = envelope;
-                    resolve(envelope);
-                },
-                reject,
-            };
-            this.finalWaiter = waiter;
-        });
-        void finalPromise.catch(() => undefined);
-        const abortFinalWait = () => {
-            if (this.finalWaiter !== waiter) return;
-            this.finalWaiter = null;
-            waiter.reject(new Error('goal_cancelled'));
-        };
-        signal.addEventListener('abort', abortFinalWait, { once: true });
-
-        try {
-            const returned = await taskStart(signal);
-            if (deliveredEnvelope) {
-                return this.executionFromEnvelope(deliveredEnvelope);
-            }
-            if (isGoalToolOutputEnvelope(returned)) {
-                if (returned.tool_name !== toolName) {
-                    return {
-                        value: normalizeTaskValue(returned.output),
-                        error: new MismatchError(this.getComponentName(), mismatchMessage),
-                    };
-                }
-                if (returned.final) return this.executionFromEnvelope(returned);
-                waiter.runId = returned.run_id;
-                return this.executionFromEnvelope(await finalPromise);
-            }
-            if (returned === undefined && waiter.runId) {
-                return this.executionFromEnvelope(await finalPromise);
-            }
-
-            return { value: normalizeTaskValue(returned) };
-        } catch (error) {
-            return {
-                value: null,
-                error: error instanceof GoalComponentError
-                    ? error
-                    : new FailureError(
-                        this.getComponentName(),
-                        normalizeTaskError(error, fallbackMessage),
-                        { cause: error },
-                    ),
-            };
-        } finally {
-            signal.removeEventListener('abort', abortFinalWait);
-            if (this.finalWaiter === waiter) this.finalWaiter = null;
-        }
-    }
-
-    private executionFromEnvelope(
-        envelope: GoalToolOutputEnvelope,
-    ): TaskExecutionResult {
-        const sourceResult: GoalSourceResultMetadata = {
-            tool_name: envelope.tool_name,
-            run_id: envelope.run_id,
-            status: envelope.status,
-            final: true,
-        };
-        return {
-            value: normalizeTaskValue(envelope.output),
-            source_result: sourceResult,
-        };
-    }
-
-    private retryDelay(signal: AbortSignal): Promise<void> {
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(resolve, RETRY_DELAY_MS);
-            signal.addEventListener('abort', () => {
-                clearTimeout(timer);
-                reject(new Error('goal_cancelled'));
-            }, { once: true });
-        });
+    private retryDelay(): Promise<void> {
+        return new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
     }
 }
 
@@ -1167,7 +817,6 @@ export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'c
                             <span className="ai-chat__goal-step-copy">
                                 <span>{step.title}</span>
                                 <span>{step.status}{step.attempts > 1 ? ` · attempt ${step.attempts}` : ''}</span>
-                                {step.error && <span className="ai-chat__goal-error">{step.error}</span>}
                             </span>
                         </li>
                     ))}
@@ -1188,9 +837,6 @@ export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'c
                                 : ''}
                         </span>
                         <span className="ai-chat__goal-metric">{getComparisonText(snapshot)}</span>
-                        {determinationResult.error && (
-                            <span className="ai-chat__goal-error">{determinationResult.error}</span>
-                        )}
                     </span>
                 </div>
             )}
@@ -1203,6 +849,7 @@ export const GoalDisplay: React.FC<GoalDisplayProps> = ({ snapshot, surface = 'c
 
 const Goal: React.FC<GoalProps> = ({
     name,
+    dispatchTool,
     onSnapshotChange,
     surface = 'chat',
 }) => {
@@ -1211,7 +858,7 @@ const Goal: React.FC<GoalProps> = ({
     onSnapshotChangeRef.current = onSnapshotChange;
     const runnerRef = useRef<GoalRunner | null>(null);
     if (!runnerRef.current) {
-        runnerRef.current = new GoalRunner(name, (next) => {
+        runnerRef.current = new GoalRunner(name, dispatchTool, (next) => {
             setSnapshot(next);
             onSnapshotChangeRef.current?.(next);
         });
@@ -1219,11 +866,10 @@ const Goal: React.FC<GoalProps> = ({
 
     const handle = useMemo<GoalHandle>(() => ({
         getComponentName: () => name,
-        createGoal: (input) => runnerRef.current!.create(input),
-        retryFailedTask: () => runnerRef.current!.retryFailedTask(),
-        acceptToolOutput: (envelope) => runnerRef.current!.acceptToolOutput(envelope),
-        getSnapshot: () => runnerRef.current!.getSnapshot(),
-        clear: () => runnerRef.current!.clear(),
+        createGoal: async (input) => toGoalAiResult(await runnerRef.current!.create(input)),
+        retryFailedTask: async () => toGoalAiResult(await runnerRef.current!.retryFailedTask()),
+        getSnapshot: () => runnerRef.current?.getSnapshot() ?? null,
+        clear: () => runnerRef.current?.clear(),
     }), [name]);
     useRegisterAiToolComponentRef(name, handle);
 

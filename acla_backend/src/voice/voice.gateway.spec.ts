@@ -202,9 +202,9 @@ describe('VoiceGateway', () => {
         ]));
         expect(toolNames).not.toContain('start_agent_session');
         expect(payload.tool_metadata.set_live_range_todo_list.description)
-            .toContain('panel must already be open');
+            .toContain('AI Chat mounts the list');
         expect(payload.tool_metadata.set_live_range_todo_list.description)
-            .toContain('AI adapter attaches its notification callback');
+            .toContain('attaches its notification callback');
         expect(payload.tool_metadata.get_live_analysis_mistake_count.title)
             .toBe('Counting live analysis mistakes');
         expect(payload.tool_metadata.create_goal.title).toBe('Creating goal');

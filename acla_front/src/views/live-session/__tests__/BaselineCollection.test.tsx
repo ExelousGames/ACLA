@@ -7,7 +7,6 @@ import {
     useAiToolComponentRefDirectory,
     type AiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
-import { getToolEnvelopeUiOutput } from 'views/lap-analysis/ai-chat/ai-tool-base';
 import BaselineCollection, {
     getCompletedBaselineLapTimeMs,
     type BaselineCollectionHandle,
@@ -249,11 +248,11 @@ describe('BaselineCollection visualization', () => {
         expect(screen.getByRole('button', { name: 'Request Analysis' })).toBeEnabled();
         expect(outputs).toHaveLength(1);
         expect(outputs[0]).toMatchObject({
-            tool_name: 'collect_live_baseline',
-            run_id: 'goal-baseline-run',
+            toolName: 'collect_live_baseline',
+            runId: 'goal-baseline-run',
             final: true,
         });
-        expect(getToolEnvelopeUiOutput(outputs[0])).toEqual({
+        expect(outputs[0].output).toEqual({
             progress_percent: 100,
             status: 'complete',
             car: 'Ferrari 296',

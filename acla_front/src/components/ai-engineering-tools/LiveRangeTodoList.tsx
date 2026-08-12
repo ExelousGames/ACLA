@@ -9,9 +9,12 @@ import type {
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
+    LiveRangeTodoListAiResult,
     LiveRangeTodoListSnapshot,
     LiveRangeTodoListToolResult,
     LiveRangeTodoSnapshotEvent,
+    LiveRangeTodoTaskDescriptor,
+    LiveRangeTodoTaskStartFunctionFactory,
 } from './live-range-todo-list-types';
 import type { TaskStartFunction } from './task-start-function';
 
@@ -296,13 +299,52 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
 
 export interface LiveRangeTodoListProps {
     name: string;
+    createTaskStartFunction?: LiveRangeTodoTaskStartFunctionFactory;
     onSnapshotChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
     surface?: 'panel' | 'chat' | 'pill';
 }
 
+const toAiResult = (result: LiveRangeTodoListToolResult): LiveRangeTodoListAiResult => {
+    const events = result.todo_list?.events ?? [];
+    return {
+        status: result.status,
+        event_count: events.length,
+        pending_count: events.filter((event) => event.status === 'pending').length,
+        running_count: events.filter((event) => event.status === 'running').length,
+        ...(result.message ? { message: result.message } : {}),
+    };
+};
+
+const attachTaskStartFunction = (
+    value: unknown,
+    createTaskStartFunction: LiveRangeTodoTaskStartFunctionFactory,
+): LiveRangeTodoEventInput => {
+    if (!isRecord(value)) return value as LiveRangeTodoEventInput;
+    const event: LiveRangeTodoTaskDescriptor = {
+        id: value.id,
+        normalized_position: value.normalized_position,
+        ...(hasOwn(value, 'lead_time_seconds')
+            ? { lead_time_seconds: value.lead_time_seconds }
+            : {}),
+        content: value.content,
+        data: value.data === undefined ? {} : value.data,
+    };
+    return { ...event, taskStart: createTaskStartFunction(event) } as LiveRangeTodoEventInput;
+};
+
+const toSerializableUpdate = (value: unknown): LiveRangeTodoEventUpdate => {
+    if (!isRecord(value)) return value as LiveRangeTodoEventUpdate;
+    return {
+        id: value.id,
+        ...(hasOwn(value, 'normalized_position') ? { normalized_position: value.normalized_position } : {}),
+        ...(hasOwn(value, 'lead_time_seconds') ? { lead_time_seconds: value.lead_time_seconds } : {}),
+        ...(hasOwn(value, 'content') ? { content: value.content } : {}),
+        ...(hasOwn(value, 'data') ? { data: value.data } : {}),
+    } as LiveRangeTodoEventUpdate;
+};
+
 export class LiveRangeTodoListRunner
-extends AiToolComponentBase<LiveRangeTodoListSnapshot | null>
-implements LiveRangeTodoListHandle {
+extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
     private runtime: RuntimeSnapshot;
     private samples: LiveRangeTelemetrySample[] = [];
     private previousSample: LiveRangeTelemetrySample | null = null;
@@ -700,6 +742,7 @@ implements LiveRangeTodoListHandle {
 
 const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
     name,
+    createTaskStartFunction = () => async () => undefined,
     onSnapshotChange,
     surface = 'chat',
 }) => {
@@ -725,7 +768,49 @@ const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
         resetEvents: (ids) => runnerRef.current!.resetEvents(ids),
         clear: () => runnerRef.current!.clear(),
         get: () => runnerRef.current!.get(),
-    }), [name]);
+        setForAi: (args) => {
+            if (!Array.isArray(args.events)) {
+                throw new InvalidLiveRangeTodoListError(name, 'Provide an events array.');
+            }
+            return toAiResult(runnerRef.current!.replaceEvents(args.events.map((event) => (
+                attachTaskStartFunction(event, createTaskStartFunction)
+            ))));
+        },
+        updateForAi: (args) => {
+            const action = typeof args.action === 'string' ? args.action : '';
+            let result: LiveRangeTodoListToolResult;
+            if (action === 'add_events') {
+                if (!Array.isArray(args.events) || args.events.length === 0) {
+                    throw new InvalidLiveRangeTodoListError(name, 'Provide at least one event to add.');
+                }
+                result = runnerRef.current!.get();
+                args.events.forEach((event) => {
+                    result = runnerRef.current!.addEvent(
+                        attachTaskStartFunction(event, createTaskStartFunction),
+                    );
+                });
+            } else if (action === 'update_events') {
+                result = runnerRef.current!.updateEvents(
+                    Array.isArray(args.events) ? args.events.map(toSerializableUpdate) : [],
+                );
+            } else if (action === 'remove_events') {
+                result = runnerRef.current!.removeEvents(args.ids as readonly string[]);
+            } else if (action === 'reset_events') {
+                result = args.ids === undefined
+                    ? runnerRef.current!.resetEvents()
+                    : runnerRef.current!.resetEvents(args.ids as readonly string[]);
+            } else if (action === 'clear') {
+                result = runnerRef.current!.clear();
+            } else {
+                throw new InvalidLiveRangeTodoListError(
+                    name,
+                    `Unsupported live range to-do list action: ${action || '(missing)'}.`,
+                );
+            }
+            return toAiResult(result);
+        },
+        getForAi: () => toAiResult(runnerRef.current!.get()),
+    }), [createTaskStartFunction, name]);
     useRegisterAiToolComponentRef(name, handle);
 
     useEffect(() => () => {

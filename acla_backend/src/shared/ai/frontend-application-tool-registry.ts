@@ -295,7 +295,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'set_live_range_todo_list',
-        description: 'Replace the panel-owned Live Range To-do List with AI notification events. The Live Range To-do List panel must already be open; this tool never opens it. The frontend AI adapter attaches its notification callback only to events supplied to this tool.',
+        description: 'Create or replace the visible Live Range To-do List with AI notification events. AI Chat mounts the list when needed and attaches its notification callback only to events supplied to this tool.',
         properties: {
             events: {
                 type: 'array',
@@ -328,7 +328,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'update_live_range_todo_list',
-        description: 'Mutate the panel-owned Live Range To-do List. The panel must already be open. AI updates can change serializable event fields but preserve each event callback; newly added AI events receive the frontend AI notification callback.',
+        description: 'Mutate the active visible Live Range To-do List. AI updates can change serializable event fields but preserve each event callback; newly added AI events receive the frontend AI notification callback.',
         properties: {
             action: {
                 type: 'string',
@@ -369,7 +369,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'get_live_range_todo_list',
-        description: 'Read the serializable Live Range To-do List snapshot, including event data, content, targets, ETA, lead time, lifecycle status, and timestamps. The panel must be open.',
+        description: 'Read the active Live Range To-do List summary, including event and lifecycle counts. Create the list first with set_live_range_todo_list.',
         properties: {},
         required: [],
     },

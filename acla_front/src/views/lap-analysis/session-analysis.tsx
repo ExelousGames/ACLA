@@ -7,6 +7,7 @@ import apiService from 'services/api.service';
 import {
     AI_TOOL_COMPONENT_NAMES,
     NamedAiToolComponentHandle,
+    useOptionalAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
 import {
@@ -32,6 +33,11 @@ import {
     getRecordedAnalysisStateForResult,
     normalizeSegmentClassificationResult,
 } from './recorded-session-analysis';
+import { getSegmentLabelIds } from './visualization/charts/segmentClassificationDisplay';
+import {
+    openAnalysisResultsVisualization,
+    resolveAnalysisLabel,
+} from './visualization/open-analysis-results-visualization';
 
 const RECORDED_AI_ANALYSIS_TIMEOUT_MS = 120000;
 
@@ -72,7 +78,60 @@ export interface SessionAnalysisHandle extends NamedAiToolComponentHandle {
     requestLapComparison(sessionIds: string[], metrics?: string[]): Promise<any>;
     requestExpertLineGuidance(sessionId: string | undefined, dataTypes?: string[]): Promise<any>;
     requestTelemetryData(sessionId: string | undefined, dataTypes?: string[]): Promise<any>;
+    runRecordedAnalysisForAi(args: Record<string, any>): Promise<Record<string, unknown>>;
+    getRecordedAnalysisForAi(args: Record<string, any>): Record<string, unknown>;
+    getRecordedSessionContextForAi(args: Record<string, any>): Record<string, unknown>;
+    analyzeTelemetryForAi(args: Record<string, any>): Promise<Record<string, unknown>>;
 }
+
+const getAiAnalysisLimit = (value: unknown): number => {
+    const parsed = Math.floor(Number(value));
+    return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 50) : 20;
+};
+
+const compactRecordedAnalysisForAi = (
+    componentName: string,
+    selected: RacingSessionDetailedInfoDto | null,
+    mapSelected: string | null,
+    state: RecordedAiAnalysisState,
+    limit: number,
+    getLabelName: (labelId: string) => string | undefined,
+): Record<string, unknown> => {
+    if (!selected?.SessionId) {
+        throw new NoRecordedSessionError(componentName, 'No recorded session is selected.');
+    }
+    if (state.status === 'error') {
+        throw new RecordedAnalysisFailedError(
+            componentName,
+            state.message || 'Recorded-session analysis failed.',
+        );
+    }
+    const result = state.result;
+    return {
+        status: state.status,
+        ...(state.message ? { message: state.message } : {}),
+        session_id: selected.SessionId,
+        session_name: selected.session_name || null,
+        map: selected.map || mapSelected,
+        car: selected.car || null,
+        analysis: result ? {
+            status: result.status,
+            session_id: result.session_id,
+            samples_analyzed: result.samples_analyzed,
+            segments: result.segments.slice(0, limit).map((segment) => ({
+                id: segment.id ?? null,
+                start_index: segment.start_index,
+                end_index: segment.end_index,
+                track_section: segment.track_section
+                    ? getLabelName(segment.track_section) || segment.track_section
+                    : null,
+                labels: getSegmentLabelIds(segment)
+                    .map((labelId) => getLabelName(labelId) || labelId),
+                ...(segment.time_gap ? { time_gap: segment.time_gap } : {}),
+            })),
+        } : null,
+    };
+};
 
 export const SessionAnalysisProvider = ({ children }: { children: React.ReactNode }) => {
     const [mapSelected, setMap] = useState<string | null>(null);
@@ -199,6 +258,7 @@ export const SessionAnalysisProvider = ({ children }: { children: React.ReactNod
 
 const SessionAnalysis = ({ name }: { name: string }) => {
     const analysisContext = useContext(AnalysisContext);
+    const componentRefs = useOptionalAiToolComponentRefDirectory();
     const analysisContextRef = useRef(analysisContext);
     analysisContextRef.current = analysisContext;
     const componentRef = useRef<SessionAnalysisHandle | null>(null);
@@ -253,6 +313,75 @@ const SessionAnalysis = ({ name }: { name: string }) => {
                     data_types: dataTypes,
                 }),
             ),
+            runRecordedAnalysisForAi: async (args) => {
+                const state = await analysisContextRef.current.runRecordedAiAnalysis({
+                    force: args.force === true,
+                });
+                if (componentRefs && state.result) {
+                    await openAnalysisResultsVisualization({
+                        directory: componentRefs,
+                        managerName: AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+                        result: state.result,
+                        records: analysisContextRef.current.sessionSelected?.data ?? [],
+                    });
+                }
+                return compactRecordedAnalysisForAi(
+                    name,
+                    analysisContextRef.current.sessionSelected,
+                    analysisContextRef.current.mapSelected,
+                    state,
+                    getAiAnalysisLimit(args.limit),
+                    (labelId) => resolveAnalysisLabel(componentRefs, labelId),
+                );
+            },
+            getRecordedAnalysisForAi: (args) => compactRecordedAnalysisForAi(
+                name,
+                analysisContextRef.current.sessionSelected,
+                analysisContextRef.current.mapSelected,
+                analysisContextRef.current.recordedAiAnalysis,
+                getAiAnalysisLimit(args.limit),
+                (labelId) => resolveAnalysisLabel(componentRefs, labelId),
+            ),
+            getRecordedSessionContextForAi: (args) => {
+                const selected = analysisContextRef.current.sessionSelected;
+                if (!selected?.SessionId) {
+                    throw new NoRecordedSessionError(name, 'No recorded session is selected.');
+                }
+                return {
+                    status: 'ready',
+                    session_id: selected.SessionId,
+                    track: selected.map || analysisContextRef.current.mapSelected,
+                    car: selected.car || null,
+                };
+            },
+            analyzeTelemetryForAi: async (args) => {
+                const state = await analysisContextRef.current.runRecordedAiAnalysis({
+                    force: args.force === true,
+                });
+                const compact = compactRecordedAnalysisForAi(
+                    name,
+                    analysisContextRef.current.sessionSelected,
+                    analysisContextRef.current.mapSelected,
+                    state,
+                    getAiAnalysisLimit(args.limit),
+                    (labelId) => resolveAnalysisLabel(componentRefs, labelId),
+                );
+                const chart = componentRefs && state.result
+                    ? await openAnalysisResultsVisualization({
+                        directory: componentRefs,
+                        managerName: AI_TOOL_COMPONENT_NAMES.RECORDED_VISUALIZATION_MANAGER,
+                        result: state.result,
+                        records: analysisContextRef.current.sessionSelected?.data ?? [],
+                    })
+                    : { chart_id: null, component_name: null };
+                return {
+                    status: compact.status,
+                    ...(compact.message ? { message: compact.message } : {}),
+                    analysis: compact.analysis ?? null,
+                    telemetry_stats: null,
+                    ...chart,
+                };
+            },
         };
     }
     useRegisterAiToolComponentRef(name, componentRef.current);

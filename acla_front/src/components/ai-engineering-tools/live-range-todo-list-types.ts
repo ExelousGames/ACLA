@@ -58,6 +58,20 @@ export interface LiveRangeTodoListToolResult {
     message?: string;
 }
 
+export type LiveRangeTodoTaskDescriptor = Omit<LiveRangeTodoEventInput, 'taskStart'>;
+
+export type LiveRangeTodoTaskStartFunctionFactory = (
+    event: LiveRangeTodoTaskDescriptor,
+) => TaskStartFunction;
+
+export type LiveRangeTodoListAiResult = {
+    status: 'ready' | 'empty';
+    event_count: number;
+    pending_count: number;
+    running_count: number;
+    message?: string;
+};
+
 export interface LiveRangeTodoListHandle {
     getComponentName(): string;
     addEvent: (event: LiveRangeTodoEventInput) => LiveRangeTodoListToolResult;
@@ -67,4 +81,7 @@ export interface LiveRangeTodoListHandle {
     resetEvents: (ids?: readonly string[]) => LiveRangeTodoListToolResult;
     clear: () => LiveRangeTodoListToolResult;
     get: () => LiveRangeTodoListToolResult;
+    setForAi: (args: Record<string, unknown>) => LiveRangeTodoListAiResult;
+    updateForAi: (args: Record<string, unknown>) => LiveRangeTodoListAiResult;
+    getForAi: () => LiveRangeTodoListAiResult;
 }

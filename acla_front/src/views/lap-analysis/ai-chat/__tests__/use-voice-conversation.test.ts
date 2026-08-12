@@ -3,7 +3,7 @@ import {
     executeSubscribedFrontendTool,
     extractInlineFunctionCalls,
 } from '../use-voice-conversation';
-import { createToolOutputController, ToolExecutionError } from '../ai-tool-base';
+import { ToolExecutionError, type ToolOutputEnvelope } from '../ai-tool-base';
 import { BaselineLapRecordRequiredError } from 'contexts/AiToolComponentError';
 
 describe('buildVoiceSessionMetadata', () => {
@@ -32,7 +32,6 @@ describe('buildVoiceSessionMetadata', () => {
         });
     });
 });
-
 describe('extractInlineFunctionCalls', () => {
     it('strips inline function tags and parses JSON arguments', () => {
         const result = extractInlineFunctionCalls(
@@ -326,7 +325,6 @@ describe('executeSubscribedFrontendTool', () => {
         const frames: object[] = [];
         const events: object[] = [];
         const aiOutput = {
-            name: 'collect_live_baseline',
             status: 'complete',
             message: 'Baseline complete.',
         };
@@ -335,10 +333,14 @@ describe('executeSubscribedFrontendTool', () => {
             message: 'Baseline complete.',
             snapshot: { baseline_ready: true },
         };
-        const envelope = createToolOutputController(
-            'collect_live_baseline',
-            'tool-4',
-        ).final(uiOutput, { aiOutput });
+        const envelope: ToolOutputEnvelope = {
+            tool_name: 'collect_live_baseline',
+            run_id: 'tool-4',
+            status: 'complete',
+            output: aiOutput,
+            final: true,
+            uiOutput,
+        };
 
         await executeSubscribedFrontendTool({
             call: { id: 'tool-4', name: 'collect_live_baseline' },
@@ -372,59 +374,6 @@ describe('executeSubscribedFrontendTool', () => {
             runId: 'tool-4',
             name: 'collect_live_baseline',
             status: 'started',
-        }));
-    });
-
-    it('does not mark a non-final envelope completed', async () => {
-        const frames: object[] = [];
-        const events: object[] = [];
-        const uiOutput = {
-            status: 'started',
-            message: 'Baseline collection started.',
-        };
-        const envelope = createToolOutputController(
-            'collect_live_baseline',
-            'tool-5',
-        ).progress(uiOutput, {
-            aiOutput: {
-                name: 'collect_live_baseline',
-                status: 'started',
-                message: 'Baseline collection started.',
-            },
-        });
-
-        await executeSubscribedFrontendTool({
-            call: { id: 'tool-5', name: 'collect_live_baseline' },
-            handlers: {
-                collect_live_baseline: async () => envelope,
-            },
-            baseContext: {
-                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-            emitEvent: (event) => events.push(event),
-        });
-
-        expect(frames).toEqual([
-            expect.objectContaining({
-                type: 'tool_result',
-                id: 'tool-5',
-                name: 'collect_live_baseline',
-                result: envelope.output,
-            }),
-        ]);
-        expect((frames[0] as any).messages).toBeUndefined();
-        expect(events).toContainEqual(expect.objectContaining({
-            kind: 'tool_call',
-            runId: 'tool-5',
-            name: 'collect_live_baseline',
-            status: 'started',
-            result: uiOutput,
-        }));
-        expect(events).not.toContainEqual(expect.objectContaining({
-            kind: 'tool_call',
-            runId: 'tool-5',
-            status: 'completed',
         }));
     });
 

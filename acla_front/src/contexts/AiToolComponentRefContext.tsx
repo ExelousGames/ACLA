@@ -12,17 +12,14 @@ import {
     ComponentMountTimeoutError,
     ComponentNameMismatchError,
     ComponentRefUnavailableError,
-    DuplicateAiToolComponentError,
     DuplicateComponentNameError,
 } from './AiToolComponentError';
-import { AiToolComponentBase } from 'components/ai-engineering-tools/AiToolComponentBase';
 
 export {
     AiToolComponentRefError,
     ComponentMountTimeoutError,
     ComponentNameMismatchError,
     ComponentRefUnavailableError,
-    DuplicateAiToolComponentError,
     DuplicateComponentNameError,
 } from './AiToolComponentError';
 
@@ -62,7 +59,6 @@ export interface AiToolComponentRefDirectory {
     findComponentRef<THandle extends NamedAiToolComponentHandle>(
         name: string,
     ): MutableRefObject<THandle | null> | null;
-    findBaseComponentRef(): MutableRefObject<AiToolComponentBase<unknown> | null> | null;
     reserveComponentRef<THandle extends NamedAiToolComponentHandle>(
         name: string,
         owner: AiToolComponentRefOwner,
@@ -91,15 +87,6 @@ export const createAiToolComponentRefDirectory = (
         (entries.get(name)?.ref as MutableRefObject<THandle | null> | undefined) ?? null
     );
 
-    const findBaseComponentRef = (): MutableRefObject<AiToolComponentBase<unknown> | null> | null => {
-        for (const entry of Array.from(entries.values())) {
-            if (entry.ref.current instanceof AiToolComponentBase) {
-                return entry.ref as MutableRefObject<AiToolComponentBase<unknown> | null>;
-            }
-        }
-        return null;
-    };
-
     const reserveComponentRef = <THandle extends NamedAiToolComponentHandle>(
         name: string,
         owner: AiToolComponentRefOwner,
@@ -111,24 +98,6 @@ export const createAiToolComponentRefDirectory = (
                 name,
                 `Component '${reportedName}' cannot register as '${name}'.`,
             );
-        }
-
-        if (handle instanceof AiToolComponentBase) {
-            const existingBase = findBaseComponentRef()?.current;
-            if (existingBase) {
-                const existing = {
-                    name: existingBase.getComponentName(),
-                    type: existingBase.constructor.name,
-                };
-                const requested = {
-                    name: handle.getComponentName(),
-                    type: handle.constructor.name,
-                };
-                throw new DuplicateAiToolComponentError(
-                    name,
-                    `AI workflow component '${existing.name}' is already active; '${requested.name}' cannot be added.`,
-                );
-            }
         }
 
         const existing = entries.get(name);
@@ -197,7 +166,6 @@ export const createAiToolComponentRefDirectory = (
 
     return {
         findComponentRef,
-        findBaseComponentRef,
         reserveComponentRef,
         createComponentRef: reserveComponentRef,
         awaitComponentRef,

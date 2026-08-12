@@ -3,7 +3,6 @@ import { act, render } from '@testing-library/react';
 import {
     ComponentMountTimeoutError,
     ComponentNameMismatchError,
-    DuplicateAiToolComponentError,
     DuplicateComponentNameError,
     AiToolComponentRefProvider,
     awaitNamedComponentHandle,
@@ -11,19 +10,8 @@ import {
     useAiToolComponentRefDirectory,
     useRegisterAiToolComponentRef,
 } from '../AiToolComponentRefContext';
-import { AiToolComponentBase } from 'components/ai-engineering-tools/AiToolComponentBase';
 
 const handle = (name: string) => ({ getComponentName: () => name });
-
-class TestAiToolRunner extends AiToolComponentBase<number> {
-    constructor(name: string) {
-        super(name, 0);
-    }
-
-    publish(value: number) {
-        this.publishSnapshot(value);
-    }
-}
 
 describe('AiToolComponentRefDirectory', () => {
     it('registers, finds, updates for the same owner, and releases only that owner', () => {
@@ -119,25 +107,6 @@ describe('AiToolComponentRefProvider', () => {
         expect((currentHandle as any).getValue()).toBe(7);
     });
 
-    it('allows exactly one base runner while ordinary named refs coexist', () => {
-        const directory = createAiToolComponentRefDirectory();
-        const first = new TestAiToolRunner('goal');
-        const second = new TestAiToolRunner('procedure-plan');
-        directory.reserveComponentRef('ordinary', Symbol('ordinary'), handle('ordinary'));
-
-        first.addComponentRef(directory);
-        expect(directory.findBaseComponentRef()?.current).toBe(first);
-        expect(directory.findComponentRef('ordinary')?.current).toBeTruthy();
-
-        expect(() => first.addComponentRef(directory)).toThrow(DuplicateAiToolComponentError);
-        expect(() => second.addComponentRef(directory)).toThrow(DuplicateAiToolComponentError);
-        expect(directory.findBaseComponentRef()?.current).toBe(first);
-
-        expect(first.deleteComponentRef()).toBe(true);
-        second.addComponentRef(directory);
-        expect(directory.findBaseComponentRef()?.current).toBe(second);
-    });
-
     it('does not enter an update loop when a component refreshes its handle on render', () => {
         expect(() => render(
             <AiToolComponentRefProvider>
@@ -167,6 +136,27 @@ describe('AiToolComponentRefProvider', () => {
             </StrictMode>,
         );
         expect((directory!.findComponentRef('stable')!.current as any).getValue()).toBe(7);
+    });
+
+    it('unregisters the previous workflow when a keyed child is replaced', () => {
+        let directory: ReturnType<typeof useAiToolComponentRefDirectory> | null = null;
+        const view = render(
+            <AiToolComponentRefProvider>
+                <Registered key="goal" name="goal" value={1} />
+                <Observer onDirectory={(value) => { directory = value; }} />
+            </AiToolComponentRefProvider>,
+        );
+        expect(directory!.getComponentNames()).toContain('goal');
+
+        view.rerender(
+            <AiToolComponentRefProvider>
+                <Registered key="procedure-plan" name="procedure-plan" value={2} />
+                <Observer onDirectory={(value) => { directory = value; }} />
+            </AiToolComponentRefProvider>,
+        );
+
+        expect(directory!.findComponentRef('goal')).toBeNull();
+        expect(directory!.getComponentNames()).toContain('procedure-plan');
     });
 
     it('requires a keyed remount when a mounted name changes', () => {
