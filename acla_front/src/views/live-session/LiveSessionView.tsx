@@ -72,12 +72,7 @@ export type LiveBaselineRestartAiResult = {
     message: string;
 };
 export type LiveBaselineAnalysisAiResult = {
-    status: unknown;
-    message?: unknown;
-    analysis: unknown;
-    baseline: unknown;
-    chart_id: unknown;
-    component_name: unknown;
+    status: 'ready' | 'empty';
 };
 export type LiveTelemetryAnalysisAiResult = {
     status: 'ready' | 'empty';
@@ -188,23 +183,6 @@ const getBaselineHandle = async (
         AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
     );
 };
-
-const compactBaselineAnalysis = (result: any): LiveBaselineAnalysisAiResult => ({
-    status: result.status,
-    ...(result.message ? { message: result.message } : {}),
-    analysis: result.analysis ?? null,
-    baseline: result.baseline ? {
-        id: result.baseline.id,
-        lap: result.baseline.lap,
-        lap_time_ms: result.baseline.lap_time_ms,
-        captured_at: result.baseline.captured_at,
-        track: result.baseline.track,
-        car: result.baseline.car,
-        sample_count: result.baseline.sample_count,
-    } : null,
-    chart_id: result.chartId ?? result.chart_id ?? null,
-    component_name: result.component_name ?? null,
-});
 
 type LiveSessionSnapshot = ReturnType<SessionIntelligence['getLiveSessionSnapshot']>;
 
@@ -375,7 +353,7 @@ const LiveSessionView = ({ name }: { name: string }) => {
                 const handle = await getBaselineHandle(componentRefs);
                 const analysis = await handle.requestAnalysis(args).result;
                 if (analysis instanceof Error) return analysis;
-                return compactBaselineAnalysis(analysis);
+                return { status: analysis.status };
             }),
             getLiveAnalysisMistakeCountForAi: () => createAiToolOperationFrom(() => getLiveAnalysisMistakeCount(
                 liveSessionRef.current.analysisResultPages.at(-1) ?? null,

@@ -217,6 +217,59 @@ describe('LiveSessionView', () => {
         await expect(operation.result).rejects.toBe(failure);
     });
 
+    it('returns only the analysis status to AI', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const requestAnalysis = jest.fn(() => createAiToolOperationFrom(() => ({
+            status: 'ready' as const,
+            message: 'Telemetry analysis is ready.',
+            analysis: {
+                status: 'success',
+                session_id: 'baseline-analysis-1',
+                samples_analyzed: 3,
+                segments: [{ id: 'segment-1' }],
+            },
+            source: 'baseline_lap_record' as const,
+            baseline: {
+                id: 'baseline-1',
+                lap: 2,
+                lap_time_ms: 98_765,
+                captured_at: 1,
+                track: 'brands_hatch',
+                car: 'Ferrari 296',
+                sample_count: 3,
+            },
+            chartId: 'analysis-chart-1',
+            component_name: 'visualization:analysis-results',
+            pageId: 'baseline-analysis-page-1',
+            pageCount: 1,
+        })));
+
+        render(
+            <AiToolComponentRefProvider>
+                <LiveSessionContext.Provider value={createRuntime('acc') as any}>
+                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                </LiveSessionContext.Provider>
+                <RegistrationObserver />
+            </AiToolComponentRefProvider>,
+        );
+        act(() => {
+            componentDirectory!.reserveComponentRef(
+                AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                Symbol('baseline-analysis-test'),
+                {
+                    getComponentName: () => AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                    requestAnalysis,
+                } as any,
+            );
+        });
+        const handle = componentDirectory!
+            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+
+        await expect(handle.analyzeLiveRecordedAnalysisForAi({ limit: 1 }).result)
+            .resolves.toEqual({ status: 'ready' });
+        expect(requestAnalysis).toHaveBeenCalledWith({ limit: 1 });
+    });
+
     it('reads the most recently appended analysis page regardless of the displayed page', () => {
         mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
         const runtime: any = createRuntime('acc');
