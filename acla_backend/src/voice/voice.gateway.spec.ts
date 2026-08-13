@@ -210,12 +210,34 @@ describe('VoiceGateway', () => {
         expect(payload.tool_metadata.create_goal.title).toBe('Creating goal');
         expect(payload.tool_metadata.retry_goal_task.title).toBe('Retrying failed goal task');
         const createGoal = payload.tools.find((tool: { name: string }) => tool.name === 'create_goal');
+        expect(createGoal.required).toEqual(['name', 'steps', 'determination']);
+        expect(createGoal.properties).not.toHaveProperty('goal');
+        expect(createGoal.properties).not.toHaveProperty('comparison');
         expect(createGoal.properties.steps.items.properties.name.enum).toEqual(
             toolNames.filter((name: string) => (
                 name !== 'create_goal' && name !== 'retry_goal_task'
             )),
         );
+        expect(createGoal.properties.determination).toMatchObject({
+            required: ['tool', 'result_path', 'operator', 'target'],
+            properties: {
+                tool: { required: ['name'] },
+                result_path: { type: 'string' },
+                operator: { enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
+                target: { type: 'number' },
+            },
+        });
+        expect(createGoal.properties.determination.properties.tool.properties.name.enum).toEqual(
+            createGoal.properties.steps.items.properties.name.enum,
+        );
+        expect(createGoal.properties.determination.properties).not.toHaveProperty('step_id');
+        expect(createGoal.properties.determination.properties).not.toHaveProperty('metric_label');
+        expect(createGoal.properties.determination.properties).not.toHaveProperty('unit');
         expect(createGoal.properties.steps.items.properties.name.enum)
+            .not.toContain('retry_goal_task');
+        expect(createGoal.properties.determination.properties.tool.properties.name.enum)
+            .not.toContain('create_goal');
+        expect(createGoal.properties.determination.properties.tool.properties.name.enum)
             .not.toContain('retry_goal_task');
     });
 

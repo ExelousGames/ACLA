@@ -411,9 +411,9 @@ export const FRONTEND_APPLICATION_TOOLS = [
         name: 'create_goal',
         description: 'Create one visible goal and execute its ordered frontend tool calls sequentially. Wait for the final achieved, missed, or error result before giving follow-up coaching.',
         properties: {
-            goal: {
+            name: {
                 type: 'string',
-                description: 'Short title displayed on the goal card.',
+                description: 'Short name displayed on the goal card.',
             },
             steps: {
                 type: 'array',
@@ -430,21 +430,27 @@ export const FRONTEND_APPLICATION_TOOLS = [
                     required: ['id', 'title', 'name'],
                 },
             },
-            comparison: {
+            determination: {
                 type: 'object',
-                description: 'Numeric comparison evaluated from the final step AI-facing output.',
+                description: 'Frontend tool call and numeric determination evaluated after the ordered preparation steps.',
                 properties: {
-                    step_id: { type: 'string', description: 'Id of the final ordered step.' },
-                    result_path: { type: 'string', description: 'Safe dot-separated path in the final step AI-facing output.' },
+                    tool: {
+                        type: 'object',
+                        description: 'Frontend tool call used to determine whether the goal was achieved.',
+                        properties: {
+                            name: { type: 'string', description: 'Available frontend tool to execute.' },
+                            arguments: { type: 'object', description: 'Arguments passed unchanged to the determination tool.' },
+                        },
+                        required: ['name'],
+                    },
+                    result_path: { type: 'string', description: 'Safe dot-separated path in the determination tool AI-facing output.' },
                     operator: { type: 'string', enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
                     target: { type: 'number' },
-                    metric_label: { type: 'string' },
-                    unit: { type: 'string' },
                 },
-                required: ['step_id', 'result_path', 'operator', 'target', 'metric_label'],
+                required: ['tool', 'result_path', 'operator', 'target'],
             },
         },
-        required: ['goal', 'steps', 'comparison'],
+        required: ['name', 'steps', 'determination'],
     },
     {
         name: 'retry_goal_task',
@@ -860,6 +866,8 @@ export const getFrontendApplicationToolsForSessionContext = (
     return tools.map((tool) => {
         if (tool.name !== 'create_goal') return tool;
         const steps = tool.properties.steps;
+        const determination = tool.properties.determination;
+        const determinationTool = determination.properties.tool;
         return {
             ...tool,
             properties: {
@@ -873,6 +881,22 @@ export const getFrontendApplicationToolsForSessionContext = (
                             name: {
                                 ...steps.items.properties.name,
                                 enum: nestedToolNames,
+                            },
+                        },
+                    },
+                },
+                determination: {
+                    ...determination,
+                    properties: {
+                        ...determination.properties,
+                        tool: {
+                            ...determinationTool,
+                            properties: {
+                                ...determinationTool.properties,
+                                name: {
+                                    ...determinationTool.properties.name,
+                                    enum: nestedToolNames,
+                                },
                             },
                         },
                     },

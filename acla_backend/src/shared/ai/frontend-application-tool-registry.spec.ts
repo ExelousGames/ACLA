@@ -120,7 +120,7 @@ describe('live analysis mistake count tool', () => {
 });
 
 describe('create_goal tool', () => {
-    it('defines the ordered workflow and numeric comparison schema', () => {
+    it('defines the canonical preparation workflow and numeric determination schema', () => {
         const tools = getFrontendApplicationToolsForSessionContext({
             session_mode: 'live',
             conversation_role: 'agent',
@@ -128,21 +128,35 @@ describe('create_goal tool', () => {
         });
         const tool = tools.find(({ name }) => name === 'create_goal') as any;
         expect(tool).toMatchObject({
-            required: ['goal', 'steps', 'comparison'],
+            required: ['name', 'steps', 'determination'],
             properties: {
+                name: { type: 'string' },
                 steps: {
                     minItems: 1,
                     items: { required: ['id', 'title', 'name'] },
                 },
-                comparison: {
-                    required: ['step_id', 'result_path', 'operator', 'target', 'metric_label'],
+                determination: {
+                    required: ['tool', 'result_path', 'operator', 'target'],
                     properties: {
+                        tool: {
+                            required: ['name'],
+                            properties: {
+                                name: { type: 'string' },
+                                arguments: { type: 'object' },
+                            },
+                        },
+                        result_path: { type: 'string' },
                         operator: { enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
                         target: { type: 'number' },
                     },
                 },
             },
         });
+        expect(tool.properties).not.toHaveProperty('goal');
+        expect(tool.properties).not.toHaveProperty('comparison');
+        expect(tool.properties.determination.properties).not.toHaveProperty('step_id');
+        expect(tool.properties.determination.properties).not.toHaveProperty('metric_label');
+        expect(tool.properties.determination.properties).not.toHaveProperty('unit');
     });
 
     it('exposes create_goal only to the Live Performance Analyst and constrains nested tools by session', () => {
@@ -163,6 +177,8 @@ describe('create_goal tool', () => {
         });
         const createGoal = analystTools.find(({ name }) => name === 'create_goal') as any;
         const nestedNames = createGoal.properties.steps.items.properties.name.enum;
+        const determinationNames = createGoal
+            .properties.determination.properties.tool.properties.name.enum;
         expect(nestedNames).toEqual(analystTools
             .map(({ name }) => name)
             .filter((name) => name !== 'create_goal' && name !== 'retry_goal_task'));
@@ -173,6 +189,9 @@ describe('create_goal tool', () => {
         ]));
         expect(nestedNames).not.toContain('create_goal');
         expect(nestedNames).not.toContain('retry_goal_task');
+        expect(determinationNames).toEqual(nestedNames);
+        expect(determinationNames).not.toContain('create_goal');
+        expect(determinationNames).not.toContain('retry_goal_task');
 
         const metadata = getAiToolMetadataForSessionContext({
             session_mode: 'live',
