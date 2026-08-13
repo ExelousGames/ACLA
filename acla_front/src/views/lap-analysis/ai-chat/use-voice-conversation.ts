@@ -79,7 +79,6 @@ export interface VoiceConversationOptions {
     chatLlmModel?: string | null;
     clientSessionId?: string;
     parentClientSessionId?: string | null;
-    agentMode?: string | null;
     /** Map of frontend tool name → handler. The LLM picks which tools to
      *  call from its system prompt; the backend routes the call to this
      *  hook over the WS via a `tool_call` text frame; we dispatch by
@@ -95,12 +94,11 @@ export interface VoiceConversationOptions {
 
 export const buildVoiceSessionMetadata = (options: Pick<
     VoiceConversationOptions,
-    'agentMode' | 'clientSessionId' | 'conversationRole' | 'parentClientSessionId'
+    'clientSessionId' | 'conversationRole' | 'parentClientSessionId'
 >) => ({
     conversation_role: options.conversationRole || 'main',
     client_session_id: options.clientSessionId,
     parent_client_session_id: options.parentClientSessionId ?? null,
-    agent_mode: options.agentMode ?? null,
 });
 
 export interface VoiceConversation {
@@ -415,28 +413,21 @@ export function useVoiceConversation(
         chatSessionAction: 'create' | 'resume',
         chatSessionId: string | null,
     ): WebSocket => {
-        const sessionMode = typeof sessionContextRef.current?.session_mode === 'string'
-            ? sessionContextRef.current.session_mode
-            : undefined;
         const metadata = buildVoiceSessionMetadata({
-            agentMode: options.agentMode,
             clientSessionId: options.clientSessionId,
             conversationRole: options.conversationRole,
             parentClientSessionId: options.parentClientSessionId,
         });
         return apiService.openWebSocket('/voice/stream', {
             session_id: options.sessionId,
-            session_mode: sessionMode,
             conversation_role: metadata.conversation_role,
             client_session_id: metadata.client_session_id,
             parent_client_session_id: metadata.parent_client_session_id || undefined,
-            agent_mode: metadata.agent_mode || undefined,
             chat_llm_model: options.chatLlmModel?.trim() || undefined,
             chat_session_action: chatSessionAction,
             chat_session_id: chatSessionId || undefined,
         });
     }, [
-        options.agentMode,
         options.chatLlmModel,
         options.clientSessionId,
         options.conversationRole,
@@ -721,7 +712,6 @@ export function useVoiceConversation(
                 // the AI service.
                 try {
                     const metadata = buildVoiceSessionMetadata({
-                        agentMode: options.agentMode,
                         clientSessionId: options.clientSessionId,
                         conversationRole: options.conversationRole,
                         parentClientSessionId: options.parentClientSessionId,
@@ -915,7 +905,6 @@ export function useVoiceConversation(
         clearConnectTimeout,
         openWs,
         releaseSessionResources,
-        options.agentMode,
         options.clientSessionId,
         options.conversationRole,
         options.parentClientSessionId,

@@ -17,6 +17,8 @@ import logging
 import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional
 
+from app.voice.session_modes import normalize_chatbot_session_mode
+
 LOGGER = logging.getLogger(__name__)
 MAX_AI_VISIBLE_TOOL_PAYLOAD_CHARS = 64 * 1024
 
@@ -24,6 +26,31 @@ SendText = Callable[[str], Awaitable[None]]
 UserTextSink = Callable[[str], Any]
 ToolResultSink = Callable[[str], Any]
 SessionContextSink = Callable[[Dict[str, Any]], Any]
+
+
+def normalize_voice_session_context(value: Any) -> Dict[str, Any]:
+    """Return context with only the canonical direct mode representation."""
+    if not isinstance(value, dict):
+        return {}
+
+    context = dict(value)
+    context.pop("context_kind", None)
+    context.pop("active_agent_session", None)
+    context.pop("agent_session", None)
+    context.pop("agent_modes", None)
+
+    active_screen = context.get("active_screen")
+    if isinstance(active_screen, dict):
+        sanitized_active_screen = dict(active_screen)
+        sanitized_active_screen.pop("assistant_mode", None)
+        context["active_screen"] = sanitized_active_screen
+
+    raw_session_mode = context.get("session_mode")
+    if raw_session_mode is not None:
+        normalized_session_mode = normalize_chatbot_session_mode(raw_session_mode)
+        if normalized_session_mode is not None:
+            context["session_mode"] = normalized_session_mode
+    return context
 
 
 class _ConnectionState:
@@ -128,6 +155,22 @@ class ToolRelay:
 
         frame_type = payload.get("type")
 
+        def forward_session_context() -> None:
+            if "session_context" not in payload:
+                return
+            if state.session_context_sink is None:
+                LOGGER.warning("tool_relay: session_context received but no sink bound")
+                return
+            raw_session_context = payload.get("session_context")
+            if raw_session_context is None:
+                raw_session_context = {}
+            if not isinstance(raw_session_context, dict):
+                LOGGER.warning("tool_relay: dropped non-object session_context")
+                return
+            state.session_context_sink(
+                normalize_voice_session_context(raw_session_context),
+            )
+
         if frame_type == "tool_result":
             try:
                 state.tool_result_sink(self._serialize_ai_visible_tool_payload(payload))
@@ -136,6 +179,10 @@ class ToolRelay:
             return
 
         if frame_type == "user_text":
+            try:
+                forward_session_context()
+            except Exception:
+                LOGGER.exception("tool_relay: session_context_sink raised")
             text = str(payload.get("text") or "").strip()
             if not text:
                 return
@@ -146,15 +193,8 @@ class ToolRelay:
             return
 
         if frame_type == "session_context":
-            if state.session_context_sink is None:
-                LOGGER.warning("tool_relay: session_context frame received but no sink bound")
-                return
-            session_context = payload.get("session_context") or {}
-            if not isinstance(session_context, dict):
-                LOGGER.warning("tool_relay: dropped non-object session_context frame")
-                return
             try:
-                state.session_context_sink(session_context)
+                forward_session_context()
             except Exception:
                 LOGGER.exception("tool_relay: session_context_sink raised")
             return

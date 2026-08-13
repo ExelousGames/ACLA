@@ -105,6 +105,29 @@ export class VoiceGateway implements OnGatewayConnection {
         return `${this.aiServiceWsBase()}/voice/stream?${params.toString()}`;
     }
 
+    private sanitizeSessionContext(value: unknown): Record<string, unknown> {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) {
+            return {};
+        }
+
+        const {
+            context_kind: _contextKind,
+            active_agent_session: _activeAgentSession,
+            agent_session: _agentSession,
+            agent_modes: _agentModes,
+            ...sessionContext
+        } = value as Record<string, unknown>;
+        const activeScreen = sessionContext.active_screen;
+        if (activeScreen && typeof activeScreen === 'object' && !Array.isArray(activeScreen)) {
+            const {
+                assistant_mode: _assistantMode,
+                ...sanitizedActiveScreen
+            } = activeScreen as Record<string, unknown>;
+            sessionContext.active_screen = sanitizedActiveScreen;
+        }
+        return sessionContext;
+    }
+
     private withBackendToolRegistry(data: RawData, isBinary: boolean): { data: RawData | string; isBinary: boolean } {
         if (isBinary) {
             return { data, isBinary };
@@ -118,14 +141,42 @@ export class VoiceGateway implements OnGatewayConnection {
             return { data, isBinary };
         }
 
-        if (!payload || payload.type !== 'frontend_info') {
+        if (!payload || typeof payload !== 'object') {
             return { data, isBinary };
         }
 
-        const sessionContext = payload.session_context && typeof payload.session_context === 'object'
-            ? payload.session_context
-            : {};
-        const frontendInfo = { ...payload };
+        const isContextFrame = (
+            payload.type === 'frontend_info'
+            || payload.type === 'session_context'
+            || payload.type === 'user_text'
+        );
+        if (!isContextFrame) {
+            return { data, isBinary };
+        }
+
+        const {
+            session_mode: _sessionMode,
+            agent_mode: _agentMode,
+            context_kind: _contextKind,
+            active_agent_session: _activeAgentSession,
+            agent_session: _agentSession,
+            agent_modes: _agentModes,
+            ...contextFrame
+        } = payload;
+        const sanitizedPayload = {
+            ...contextFrame,
+            session_context: this.sanitizeSessionContext(payload.session_context),
+        };
+
+        if (payload.type !== 'frontend_info') {
+            return {
+                data: JSON.stringify(sanitizedPayload),
+                isBinary: false,
+            };
+        }
+
+        const sessionContext = sanitizedPayload.session_context;
+        const frontendInfo = { ...sanitizedPayload };
         delete frontendInfo.tool_result_handling;
 
         return {

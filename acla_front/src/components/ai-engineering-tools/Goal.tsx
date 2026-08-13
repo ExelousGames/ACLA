@@ -178,7 +178,6 @@ export type GoalProps = {
 };
 
 const RETRY_DELAY_MS = 1000;
-const MAX_GOAL_ATTEMPTS = 2;
 const RECURSIVE_GOAL_TOOL_NAMES = new Set(['create_goal', 'retry_goal_task']);
 const UNSAFE_RESULT_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 const RESULT_PATH_SEGMENT_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*|0|[1-9][0-9]*)$/;
@@ -448,7 +447,6 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
     private stepAttempts: number[] = [];
     private determinationAttempts = 0;
     private taskResults: GoalTaskResult[] = [];
-    private goalAttempt = 1;
     private generation = 0;
     private activeOperation: ActiveGoalOperation | null = null;
 
@@ -497,7 +495,6 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         this.stepAttempts = validation.request.steps.map(() => 0);
         this.determinationAttempts = 0;
         this.taskResults = [];
-        this.goalAttempt = 1;
         this.publish(this.createRunningSnapshot(validation.request));
         return this.runPreparation(validation.request, this.generation, 0);
     }
@@ -819,12 +816,11 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
             nested_statuses: execution.nested_statuses,
         });
         this.publish(snapshot);
-        if (!achieved && this.goalAttempt < MAX_GOAL_ATTEMPTS) {
+        if (!achieved) {
             await this.retryDelay();
             if (generation !== this.generation) {
                 throw new GoalReplacedError(this.getComponentName(), 'The goal run was cancelled.');
             }
-            this.goalAttempt += 1;
             this.publish(this.createRunningSnapshot(request));
             return this.runPreparation(request, generation, 0);
         }

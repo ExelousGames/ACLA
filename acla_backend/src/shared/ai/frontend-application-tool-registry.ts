@@ -801,12 +801,17 @@ const isFrontendApplicationSessionMode = (
     value === 'front_desk' || value === 'live' || value === 'recorded' || value === 'user_summary'
 );
 
+const isFrontendApplicationAgentMode = (
+    value: unknown,
+): value is 'track_guide' | 'overtake' | 'live_performance_analyst' => (
+    value === 'track_guide' || value === 'overtake' || value === 'live_performance_analyst'
+);
+
 const getAllowedToolNames = (
     sessionMode: FrontendApplicationSessionMode,
-    conversationRole?: unknown,
     agentMode?: unknown,
 ) => {
-    if (conversationRole === 'agent') {
+    if (isFrontendApplicationAgentMode(agentMode)) {
         return new Set<FrontendApplicationToolName>([
             ...COMMON_TOOL_NAMES,
             ...LIVE_AGENT_SESSION_TOOL_NAMES,
@@ -854,7 +859,6 @@ export const getFrontendApplicationToolsForSessionContext = (
         : 'live';
     const allowedToolNames = getAllowedToolNames(
         sessionMode,
-        sessionContext?.conversation_role,
         sessionContext?.agent_mode,
     );
 

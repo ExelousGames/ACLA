@@ -190,12 +190,28 @@ describe('useVoiceConversation chat session lifecycle', () => {
             chat_session_action: 'create',
             chat_session_id: undefined,
         }));
+        const query = mockOpenWebSocket.mock.calls[0][1] as Record<string, unknown>;
+        expect(query).not.toHaveProperty('session_mode');
+        expect(query).not.toHaveProperty('agent_mode');
         expect(result.current.state).toBe('connecting');
-        expect(JSON.parse(socket.send.mock.calls[0][0])).toMatchObject({
+        const frontendInfo = JSON.parse(socket.send.mock.calls[0][0]);
+        expect(frontendInfo).toMatchObject({
             type: 'frontend_info',
             client_session_id: 'client-1',
             session_context: { session_mode: 'recorded', version: 1 },
         });
+        expect(frontendInfo).not.toHaveProperty('session_mode');
+        expect(frontendInfo).not.toHaveProperty('agent_mode');
+        for (const alias of [
+            'context_kind',
+            'active_agent_session',
+            'agent_session',
+            'agent_modes',
+        ]) {
+            expect(frontendInfo.session_context).not.toHaveProperty(alias);
+        }
+        expect(frontendInfo.session_context)
+            .not.toHaveProperty('active_screen.assistant_mode');
 
         expect(result.current.sendUserText('hello')).toBe(false);
         expect(result.current.sendToolStatus({ status: 'working' })).toBe(false);

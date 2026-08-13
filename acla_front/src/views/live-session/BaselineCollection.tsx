@@ -125,13 +125,14 @@ type PendingBaselineOperation = {
 type BaselineRecorderState = {
     status: BaselineCollectionTag['status'];
     rows: Record<string, any>[];
+    sampleKeys: Set<string>;
     startLap: number | null;
     startPosition: number;
     currentLap: number;
     currentPosition: number;
     lastPosition: number | null;
-    lastSampleKey: string | null;
     canStartAtBoundary: boolean;
+    lapCounterAdvancePending: boolean;
     track: string;
     car: string;
     completedRecord: BaselineLapRecord | null;
@@ -162,6 +163,56 @@ const isTelemetrySample = (value: unknown): value is Record<string, any> => (
     && Object.keys(value as Record<string, any>).length > 0
 );
 
+const getUniqueTelemetryRows = (
+    rows: readonly Record<string, any>[],
+): { rows: Record<string, any>[]; sampleKeys: Set<string> } => {
+    const sampleKeys = new Set<string>();
+    const uniqueRows = rows.filter((row) => {
+        if (!isTelemetrySample(row)) return false;
+        const position = getTelemetryPosition(row);
+        if (position === undefined) return false;
+        const key = getSampleKey(row, getTelemetryLap(row), position);
+        if (sampleKeys.has(key)) return false;
+        sampleKeys.add(key);
+        return true;
+    });
+
+    return { rows: uniqueRows.map(cloneSample), sampleKeys };
+};
+
+const getContinuationRows = (
+    rows: readonly Record<string, any>[],
+    currentLap: number,
+    completedLap: number,
+): { rows: Record<string, any>[]; sampleKeys: Set<string> } => {
+    const currentLapRows = rows.filter((row) => (
+        isTelemetrySample(row)
+        && getTelemetryLap(row) === currentLap
+        && getTelemetryPosition(row) !== undefined
+    ));
+    let continuationRows = currentLapRows;
+
+    if (currentLap === completedLap) {
+        let mostRecentWrapIndex = -1;
+        for (let index = 1; index < currentLapRows.length; index += 1) {
+            const previousPosition = getTelemetryPosition(currentLapRows[index - 1]);
+            const position = getTelemetryPosition(currentLapRows[index]);
+            if (
+                previousPosition !== undefined
+                && position !== undefined
+                && previousPosition - position > BASELINE_WRAP_THRESHOLD
+            ) {
+                mostRecentWrapIndex = index;
+            }
+        }
+        continuationRows = mostRecentWrapIndex >= 0
+            ? currentLapRows.slice(mostRecentWrapIndex)
+            : [];
+    }
+
+    return getUniqueTelemetryRows(continuationRows);
+};
+
 const createEmptyRecorderState = (
     currentTelemetry?: Record<string, any> | null,
 ): BaselineRecorderState => {
@@ -172,13 +223,14 @@ const createEmptyRecorderState = (
     return {
         status: 'waiting_for_start',
         rows: [],
+        sampleKeys: new Set(sample ? [getSampleKey(sample, lap, position)] : []),
         startLap: null,
         startPosition: 0,
         currentLap: lap,
         currentPosition: position,
         lastPosition: sample ? position : null,
-        lastSampleKey: sample ? getSampleKey(sample, lap, position) : null,
         canStartAtBoundary: !sample || position > BASELINE_START_POSITION_EPSILON,
+        lapCounterAdvancePending: false,
         track: sample ? getTelemetryTrack(sample) : '',
         car: sample ? getTelemetryCar(sample) : '',
         completedRecord: null,
@@ -400,7 +452,11 @@ export const buildBaselineCollectionToolPayload = (
 };
 
 const BaselineCollection = ({ name }: { name: string }) => {
-    const { currentTelemetry, appendAnalysisResultPage } = useContext(LiveSessionContext);
+    const {
+        currentTelemetry,
+        sessionIntelligence,
+        appendAnalysisResultPage,
+    } = useContext(LiveSessionContext);
     const componentRefs = useAiToolComponentRefDirectory();
     const currentTelemetryRef = useRef(currentTelemetry);
     currentTelemetryRef.current = currentTelemetry;
@@ -476,9 +532,8 @@ const BaselineCollection = ({ name }: { name: string }) => {
         });
     }, []);
 
-    const beginFreshCollection = useCallback(() => {
+    const beginCollection = useCallback((nextRecorder: BaselineRecorderState) => {
         collectionGenerationRef.current += 1;
-        const nextRecorder = createEmptyRecorderState(currentTelemetryRef.current);
         recorderRef.current = nextRecorder;
         enabledRef.current = true;
         lapRecordRef.current = null;
@@ -491,6 +546,44 @@ const BaselineCollection = ({ name }: { name: string }) => {
         return buildBaselineCollectionToolPayload(nextTag, null);
     }, [publishTag, settleCollectionStatus]);
 
+    const beginFreshCollection = useCallback(() => beginCollection(
+        createEmptyRecorderState(currentTelemetryRef.current),
+    ), [beginCollection]);
+
+    const beginContinuedCollection = useCallback((
+        completedRecord: BaselineLapRecord,
+    ): BaselineCollectionPayload | null => {
+        const sample = currentTelemetryRef.current;
+        if (!isTelemetrySample(sample)) return null;
+
+        const currentLap = getTelemetryLap(sample);
+        const currentPosition = getTelemetryPosition(sample);
+        if (currentPosition === undefined) return null;
+
+        const seeded = getContinuationRows(
+            sessionIntelligence.getRowsForLap(currentLap),
+            currentLap,
+            completedRecord.lap,
+        );
+        if (seeded.rows.length === 0) return null;
+
+        return beginCollection({
+            status: 'collecting',
+            rows: seeded.rows,
+            sampleKeys: seeded.sampleKeys,
+            startLap: currentLap,
+            startPosition: 0,
+            currentLap,
+            currentPosition,
+            lastPosition: currentPosition,
+            canStartAtBoundary: true,
+            lapCounterAdvancePending: currentLap === completedRecord.lap,
+            track: getTelemetryTrack(sample) || completedRecord.track,
+            car: getTelemetryCar(sample) || completedRecord.car,
+            completedRecord: null,
+        });
+    }, [beginCollection, sessionIntelligence]);
+
     const subscribe = useCallback((listener: (tag: BaselineCollectionTag | null) => void) => {
         tagListenersRef.current.add(listener);
         return () => {
@@ -499,17 +592,20 @@ const BaselineCollection = ({ name }: { name: string }) => {
     }, []);
 
     const startCollection = useCallback((options: BaselineCollectionOptions = {}) => {
-        if (enabledRef.current) {
-            const status = tagRef.current?.status ?? recorderRef.current.status;
-            const message = status === 'complete'
-                ? 'Baseline collection is already complete.'
-                : 'Baseline collection is already in progress.';
+        const status = tagRef.current?.status ?? recorderRef.current.status;
+        if (enabledRef.current && status !== 'complete') {
             return createAiToolOperationFrom<BaselineCollectionPayload>(() => {
-                throw new BaselineCollectionAlreadyStartedError(name, message);
+                throw new BaselineCollectionAlreadyStartedError(
+                    name,
+                    'Baseline collection is already in progress.',
+                );
             });
         }
 
-        beginFreshCollection();
+        const completedRecord = status === 'complete' ? lapRecordRef.current : null;
+        if (!completedRecord || !beginContinuedCollection(completedRecord)) {
+            beginFreshCollection();
+        }
         const result = createAiToolDeferred<BaselineCollectionPayload>();
         const statuses = [0, 1, 25, 50, 75, 100].map((milestone) => ({
             milestone,
@@ -542,7 +638,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         pendingCollectionOperationsRef.current.add(pending);
         if (tagRef.current) settleCollectionStatus(tagRef.current);
         return createAiToolOperation(result.promise, statuses.map((status) => status.deferred.promise));
-    }, [beginFreshCollection, name, settleCollectionStatus]);
+    }, [beginContinuedCollection, beginFreshCollection, name, settleCollectionStatus]);
 
     const restartCollection = useCallback(() => {
         try {
@@ -716,7 +812,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         const lap = getTelemetryLap(currentTelemetry);
         const position = getTelemetryPosition(currentTelemetry) ?? state.currentPosition;
         const sampleKey = getSampleKey(currentTelemetry, lap, position);
-        if (state.lastSampleKey === sampleKey) return;
+        if (state.sampleKeys.has(sampleKey)) return;
 
         state.track = getTelemetryTrack(currentTelemetry) || state.track;
         state.car = getTelemetryCar(currentTelemetry) || state.car;
@@ -734,6 +830,18 @@ const BaselineCollection = ({ name }: { name: string }) => {
                 state.rows = [cloneSample(currentTelemetry)];
             }
         } else if (state.status === 'collecting') {
+            const positionWrapped = state.lastPosition !== null
+                && state.lastPosition - position > BASELINE_WRAP_THRESHOLD;
+            if (
+                state.lapCounterAdvancePending
+                && state.startLap !== null
+                && lap > state.startLap
+                && !positionWrapped
+            ) {
+                state.startLap = lap;
+                state.lapCounterAdvancePending = false;
+            }
+
             if (hasCompletedRecordingLap(state, lap, position)) {
                 const snapshot = buildRecorderSnapshot({
                     ...state,
@@ -767,7 +875,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
         }
 
         state.lastPosition = position;
-        state.lastSampleKey = sampleKey;
+        state.sampleKeys.add(sampleKey);
         const snapshot = state.completedRecord?.snapshot ?? buildRecorderSnapshot(state);
         const nextTag = buildBaselineCollectionTag(snapshot);
         publishTag(nextTag);

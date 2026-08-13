@@ -11,6 +11,7 @@ const mockOverlayCreate = jest.fn();
 const mockOverlayDestroy = jest.fn<Promise<void>, [string]>(() => Promise.resolve());
 const mockOverlaySetEnabled = jest.fn<Promise<void>, [boolean]>(() => Promise.resolve());
 const mockFindComponentRef = jest.fn(() => null);
+let mockRegisteredAiChatHandle: any;
 
 jest.mock('../use-voice-conversation', () => ({
     useVoiceConversation: (options: Record<string, unknown>) => mockUseVoiceConversation(options),
@@ -53,7 +54,17 @@ jest.mock('contexts/AiToolComponentRefContext', () => {
             directory: { findComponentRef: mockFindComponentRef },
             revision: 0,
         }),
-        useRegisterAiToolComponentRef: jest.fn(),
+        useRegisterAiToolComponentRef: (_name: string, handle: unknown) => {
+            mockRegisteredAiChatHandle = handle;
+        },
+    };
+});
+
+jest.mock('views/lap-analysis/recording-state', () => {
+    const actual = jest.requireActual('views/lap-analysis/recording-state');
+    return {
+        ...actual,
+        isLiveSessionAiAvailable: () => true,
     };
 });
 
@@ -66,10 +77,10 @@ jest.mock('components/ai-engineering-tools', () => ({
     isProcedurePlanOptOutRequest: jest.fn(() => false),
     isProcedurePlanStartEvent: jest.fn(() => false),
     serializeProcedurePlan: jest.fn((value) => value),
-    createAiToolOperationFrom: jest.fn((callback) => ({
+    createAiToolOperationFrom: (callback: () => unknown) => ({
         result: Promise.resolve().then(callback),
         statuses: [],
-    })),
+    }),
     mapAiToolOperation: jest.fn((operation) => operation),
 }));
 
@@ -112,6 +123,14 @@ const getLatestMainVoiceOptions = () => {
     return call[0] as Record<string, any>;
 };
 
+const getLatestAgentVoiceOptions = () => {
+    const call = [...mockUseVoiceConversation.mock.calls]
+        .reverse()
+        .find(([options]) => options.conversationRole === 'agent');
+    if (!call) throw new Error('Agent voice conversation was not rendered.');
+    return call[0] as Record<string, any>;
+};
+
 describe('AiChat conversation lifecycle', () => {
     beforeEach(() => {
         localStorage.clear();
@@ -141,7 +160,43 @@ describe('AiChat conversation lifecycle', () => {
         mockOverlayDestroy.mockResolvedValue(undefined);
         mockOverlaySetEnabled.mockClear();
         mockFindComponentRef.mockClear();
+        mockRegisteredAiChatHandle = undefined;
         delete (window as any).electronAPI;
+    });
+
+    it('serializes only the canonical mode fields for main and agent contexts', async () => {
+        const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
+        const mainContext = getLatestMainVoiceOptions().sessionContext;
+
+        expect(mainContext.session_mode).toBe('front_desk');
+        expect(mainContext).not.toHaveProperty('agent_mode');
+        expect(mainContext).not.toHaveProperty('context_kind');
+        expect(mainContext).not.toHaveProperty('active_agent_session');
+        expect(mainContext).not.toHaveProperty('agent_session');
+        expect(mainContext).not.toHaveProperty('agent_modes');
+        expect(mainContext).not.toHaveProperty('active_screen.assistant_mode');
+
+        view.rerender(
+            <AiChat
+                name="dashboard-assistant"
+                activeScreen={{ assistantMode: 'live', label: 'Live Session' }}
+            />,
+        );
+        await act(async () => {
+            await mockRegisteredAiChatHandle.startAgentSession('track_guide').result;
+        });
+
+        await waitFor(() => {
+            expect(getLatestAgentVoiceOptions().sessionContext.agent_mode).toBe('track_guide');
+        });
+        const agentContext = getLatestAgentVoiceOptions().sessionContext;
+        expect(agentContext.session_mode).toBe('live');
+        expect(agentContext).not.toHaveProperty('context_kind');
+        expect(agentContext).not.toHaveProperty('active_agent_session');
+        expect(agentContext).not.toHaveProperty('agent_session');
+        expect(agentContext).not.toHaveProperty('agent_modes');
+        expect(agentContext).not.toHaveProperty('active_screen.assistant_mode');
+        expect(getLatestAgentVoiceOptions()).not.toHaveProperty('agentMode');
     });
 
     it('uses assistant mode and recorded session identity as the remount boundary', () => {

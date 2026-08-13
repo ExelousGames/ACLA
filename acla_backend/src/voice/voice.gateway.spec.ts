@@ -67,16 +67,33 @@ describe('VoiceGateway', () => {
     it('replaces frontend_info tool metadata with the backend frontend application registry', () => {
         const frame = gateway.withBackendToolRegistry(Buffer.from(JSON.stringify({
             type: 'frontend_info',
+            session_mode: 'live',
+            agent_mode: 'live_performance_analyst',
             tools: [{ name: 'client_filtered_tool' }],
             query_scope_schema: { type: 'client_schema' },
             tool_result_handling: 'client handling',
-            session_context: { session_mode: 'recorded' },
+            session_context: {
+                session_mode: 'recorded',
+                context_kind: 'live',
+                active_agent_session: { agent_mode: 'live_performance_analyst' },
+                agent_session: { agent_mode: 'live_performance_analyst' },
+                agent_modes: { active: ['live_performance_analyst'] },
+                active_screen: {
+                    screen_id: 'session-analysis',
+                    assistant_mode: 'live',
+                },
+            },
         })), false);
 
         const payload = JSON.parse(frame.data.toString());
 
         expect(frame.isBinary).toBe(false);
-        expect(payload.session_context).toEqual({ session_mode: 'recorded' });
+        expect(payload).not.toHaveProperty('session_mode');
+        expect(payload).not.toHaveProperty('agent_mode');
+        expect(payload.session_context).toEqual({
+            session_mode: 'recorded',
+            active_screen: { screen_id: 'session-analysis' },
+        });
         expect(payload.tools).toEqual(getFrontendApplicationToolsForSessionContext({
             session_mode: 'recorded',
         }));
@@ -173,8 +190,8 @@ describe('VoiceGateway', () => {
             type: 'frontend_info',
             session_context: {
                 session_mode: 'live',
-                conversation_role: 'agent',
                 agent_mode: 'live_performance_analyst',
+                agent_session: { agent_mode: 'track_guide' },
             },
         })), false);
 
@@ -247,7 +264,6 @@ describe('VoiceGateway', () => {
                 type: 'frontend_info',
                 session_context: {
                     session_mode: 'live',
-                    conversation_role: 'agent',
                     agent_mode: agentMode,
                 },
             })), false);
@@ -307,8 +323,35 @@ describe('VoiceGateway', () => {
         expect(payload.tool_metadata.analyze_telemetry.title).toBe('Analyzing telemetry');
     });
 
-    it('passes non-handshake text frames through unchanged', () => {
-        const raw = Buffer.from(JSON.stringify({ type: 'session_context', session_context: {} }));
+    it('sanitizes context updates while preserving direct canonical modes', () => {
+        const raw = Buffer.from(JSON.stringify({
+            type: 'session_context',
+            agent_mode: 'overtake',
+            session_context: {
+                session_mode: 'live',
+                agent_mode: 'track_guide',
+                context_kind: 'recorded',
+                active_screen: { assistant_mode: 'recorded', label: 'Live' },
+                agent_session: { agent_mode: 'live_performance_analyst' },
+            },
+        }));
+        const frame = gateway.withBackendToolRegistry(raw, false);
+
+        expect(JSON.parse(frame.data.toString())).toEqual({
+            type: 'session_context',
+            session_context: {
+                session_mode: 'live',
+                agent_mode: 'track_guide',
+                active_screen: { label: 'Live' },
+            },
+        });
+    });
+
+    it('does not strip operational agent_mode fields from tool results', () => {
+        const raw = Buffer.from(JSON.stringify({
+            type: 'tool_result',
+            result: { agent_mode: 'live_performance_analyst' },
+        }));
         const frame = gateway.withBackendToolRegistry(raw, false);
 
         expect(frame).toEqual({ data: raw, isBinary: false });

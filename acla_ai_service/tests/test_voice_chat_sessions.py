@@ -51,6 +51,67 @@ def _frontend_info(session_context=None):
     }
 
 
+@pytest.mark.asyncio
+async def test_handshake_sanitizes_legacy_mode_aliases():
+    websocket = _FakeWebSocket([_frontend_info({
+        "session_mode": "live",
+        "agent_mode": "track_guide",
+        "context_kind": "recorded",
+        "active_agent_session": {"agent_mode": "overtake"},
+        "agent_session": {"agent_mode": "live_performance_analyst"},
+        "agent_modes": {"active": ["overtake"]},
+        "active_screen": {
+            "assistant_mode": "recorded",
+            "label": "Live Session",
+        },
+    })])
+
+    *_, session_context = await voice._await_frontend_info(
+        websocket,
+        timeout=1.0,
+    )
+
+    assert session_context == {
+        "session_mode": "live",
+        "agent_mode": "track_guide",
+        "active_screen": {"label": "Live Session"},
+    }
+
+
+def test_startup_routing_ignores_conflicting_legacy_modes():
+    assert pipecat_pipeline._startup_agent_behavior_name({}) == "front_desk"
+    assert pipecat_pipeline._startup_agent_behavior_name({
+        "session_mode": "live",
+        "agent_mode": "track_guide",
+        "context_kind": "recorded",
+        "agent_session": {"agent_mode": "live_performance_analyst"},
+    }) == "track_guide"
+    assert pipecat_pipeline._startup_agent_behavior_name({
+        "session_mode": "live",
+        "active_agent_session": {"agent_mode": "overtake"},
+        "active_screen": {"assistant_mode": "recorded"},
+    }) == "live"
+
+
+def test_prompt_context_excludes_legacy_mode_aliases():
+    prompt = pipecat_pipeline._format_session_context_for_prompt({
+        "session_mode": "recorded",
+        "context_kind": "live",
+        "active_agent_session": {"agent_mode": "overtake"},
+        "agent_session": {"agent_mode": "track_guide"},
+        "agent_modes": {"active": ["overtake"]},
+        "active_screen": {"assistant_mode": "live", "label": "Analysis"},
+    })
+
+    assert '"session_mode": "recorded"' in prompt
+    assert '"label": "Analysis"' in prompt
+    assert "context_kind" not in prompt
+    assert "active_agent_session" not in prompt
+    assert "agent_session" not in prompt
+    assert "agent_modes" not in prompt
+    assert "assistant_mode" not in prompt
+
+
 @pytest.fixture
 def registry(monkeypatch):
     value = ChatSessionRegistry()
@@ -347,6 +408,51 @@ async def test_tool_relay_routes_by_chat_session_after_rebinding():
     assert [frame["name"] for frame in old_sent] == ["old_tool"]
     assert [frame["name"] for frame in new_sent] == ["new_tool"]
     assert json.loads(new_tool_results[0])["id"] == "call-1"
+
+
+def test_tool_relay_sanitizes_context_updates_and_typed_message_context():
+    relay = ToolRelay()
+    contexts = []
+    user_text = []
+
+    async def send_text(payload):
+        return None
+
+    relay.bind(
+        "chat-1",
+        send_text,
+        user_text.append,
+        session_context_sink=contexts.append,
+    )
+    relay.handle_text_frame("chat-1", {
+        "type": "session_context",
+        "session_context": {
+            "session_mode": "live",
+            "context_kind": "recorded",
+            "active_screen": {"assistant_mode": "recorded", "label": "Live"},
+        },
+    })
+    relay.handle_text_frame("chat-1", {
+        "type": "user_text",
+        "text": "How was that lap?",
+        "session_context": {
+            "session_mode": "live",
+            "agent_mode": "live_performance_analyst",
+            "agent_session": {"agent_mode": "track_guide"},
+        },
+    })
+
+    assert contexts == [
+        {
+            "session_mode": "live",
+            "active_screen": {"label": "Live"},
+        },
+        {
+            "session_mode": "live",
+            "agent_mode": "live_performance_analyst",
+        },
+    ]
+    assert user_text == ["How was that lap?"]
 
 
 @pytest.mark.asyncio

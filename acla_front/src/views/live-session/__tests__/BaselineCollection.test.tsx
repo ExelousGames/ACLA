@@ -20,6 +20,7 @@ import {
     RecordedAnalysisFailedError,
     VisualizationRequestFailedError,
 } from 'contexts/AiToolComponentError';
+import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 
 jest.mock('services/api.service', () => ({
     __esModule: true,
@@ -68,6 +69,7 @@ const makeSample = (lap: number, position: number, currentTime: number, lastTime
 
 let directory: AiToolComponentRefDirectory | null = null;
 let appendedPages: any[] = [];
+let sessionIntelligence: SessionIntelligence;
 const appendAnalysisResultPage = jest.fn();
 
 const DirectoryObserver = () => {
@@ -84,7 +86,11 @@ const Harness = ({
 }) => (
     <AiToolComponentRefProvider>
         <DirectoryObserver />
-        <LiveSessionContext.Provider value={{ currentTelemetry: telemetry, appendAnalysisResultPage } as any}>
+        <LiveSessionContext.Provider value={{
+            currentTelemetry: telemetry,
+            sessionIntelligence,
+            appendAnalysisResultPage,
+        } as any}>
             {show && <BaselineCollection name={AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION} />}
         </LiveSessionContext.Provider>
     </AiToolComponentRefProvider>
@@ -165,6 +171,7 @@ describe('BaselineCollection visualization', () => {
     beforeEach(() => {
         directory = null;
         appendedPages = [];
+        sessionIntelligence = new SessionIntelligence();
         appendAnalysisResultPage.mockReset().mockImplementation((input: any) => {
             const result = {
                 pageId: `baseline-analysis-page-${appendedPages.length + 1}`,
@@ -271,25 +278,108 @@ describe('BaselineCollection visualization', () => {
             .toEqual([0.001, 0.4, 0.98]);
     });
 
-    it('rejects Start after completion without replacing the cached baseline', async () => {
+    it('continues immediately from cached current-lap telemetry after completion', async () => {
+        const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
+        const handle = completeBaselineLap(view);
+        const cachedBaseline = handle.getLapRecord();
+        const cachedCurrentLap = [
+            makeSample(6, 0.001, 5),
+            makeSample(6, 0.2, 20_000),
+            makeSample(6, 0.45, 45_000),
+        ];
+        cachedCurrentLap.forEach((sample) => sessionIntelligence.tick(sample));
+        view.rerender(<Harness telemetry={cachedCurrentLap[2]} />);
+        const getRowsForLap = jest.spyOn(sessionIntelligence, 'getRowsForLap');
+
+        let continued!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        act(() => {
+            continued = handle.startCollection();
+        });
+
+        expect(getRowsForLap).toHaveBeenCalledWith(6);
+        expect(handle.getLapRecord()).toBeNull();
+        expect(handle.getTag()).toMatchObject({
+            status: 'collecting',
+            progress_percent: 45,
+            baseline_lap: 6,
+        });
+
+        view.rerender(<Harness telemetry={makeSample(6, 0.45, 45_000)} />);
+        view.rerender(<Harness telemetry={makeSample(6, 0.7, 70_000)} />);
+        view.rerender(<Harness telemetry={makeSample(6, 0.98, 98_000)} />);
+        view.rerender(<Harness telemetry={makeSample(7, 0.001, 5, 98_765)} />);
+
+        await expect(continued.result).resolves.toMatchObject({ status: 'complete' });
+        expect(handle.getLapRecord()).not.toBe(cachedBaseline);
+        expect(handle.getLapRecord()).toMatchObject({ lap: 6, sample_count: 5 });
+        expect(handle.getLapRecord()?.records.map((row) => row.Graphics_normalized_car_position))
+            .toEqual([0.001, 0.2, 0.45, 0.7, 0.98]);
+    });
+
+    it('seeds only post-wrap telemetry while the lap counter catches up', async () => {
+        const view = render(<Harness telemetry={{}} />);
+        const handle = getHandle();
+        act(() => { handle.startCollection(); });
+
+        const sendCachedSample = (sample: Record<string, any>) => {
+            sessionIntelligence.tick(sample);
+            view.rerender(<Harness telemetry={sample} />);
+        };
+        sendCachedSample(makeSample(3, 0.001, 10));
+        sendCachedSample(makeSample(3, 0.5, 50_000));
+        sendCachedSample(makeSample(3, 0.99, 99_000));
+        sendCachedSample(makeSample(3, 0.002, 20));
+        expect(handle.getLapRecord()).toMatchObject({ lap: 3, sample_count: 3 });
+
+        sendCachedSample(makeSample(3, 0.2, 20_000));
+        sendCachedSample(makeSample(3, 0.4, 40_000));
+
+        let continued!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        act(() => { continued = handle.startCollection(); });
+        expect(handle.getTag()).toMatchObject({
+            status: 'collecting',
+            progress_percent: 40,
+            baseline_lap: 3,
+        });
+
+        view.rerender(<Harness telemetry={makeSample(3, 0.4, 40_000)} />);
+        view.rerender(<Harness telemetry={makeSample(4, 0.41, 41_000)} />);
+        expect(handle.getLapRecord()).toBeNull();
+        expect(handle.getTag()).toMatchObject({ status: 'collecting', baseline_lap: 4 });
+
+        view.rerender(<Harness telemetry={makeSample(4, 0.8, 80_000)} />);
+        view.rerender(<Harness telemetry={makeSample(4, 0.99, 99_000)} />);
+        view.rerender(<Harness telemetry={makeSample(5, 0.002, 20, 99_500)} />);
+
+        await expect(continued.result).resolves.toMatchObject({ status: 'complete' });
+        expect(handle.getLapRecord()).toMatchObject({ lap: 4, sample_count: 6 });
+        expect(handle.getLapRecord()?.records.map((row) => row.Graphics_normalized_car_position))
+            .toEqual([0.002, 0.2, 0.4, 0.41, 0.8, 0.99]);
+    });
+
+    it('falls back to the next lap boundary when current-lap telemetry is unavailable', async () => {
         const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
         const handle = completeBaselineLap(view);
         const cachedBaseline = handle.getLapRecord();
 
-        const duplicate = handle.startCollection();
-
-        expect(duplicate.statuses).toHaveLength(0);
-        await expect(duplicate.result).rejects.toMatchObject({
-            name: 'BaselineCollectionAlreadyStartedError',
-            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
-            message: 'Baseline collection is already complete.',
+        let restarted!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        act(() => {
+            restarted = handle.startCollection();
         });
-        expect(handle.getTag()).toMatchObject({ status: 'complete', progress_percent: 100 });
-        expect(handle.getLapRecord()).toBe(cachedBaseline);
 
-        act(() => { handle.restartCollection(); });
+        expect(restarted.statuses).toHaveLength(6);
         expect(handle.getLapRecord()).toBeNull();
-        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap: null });
+        expect(handle.getTag()).toMatchObject({
+            status: 'waiting_for_start',
+            progress_percent: 0,
+            baseline_lap: null,
+        });
+
+        completeBaselineLap(view, 7, false);
+
+        await expect(restarted.result).resolves.toMatchObject({ status: 'complete' });
+        expect(handle.getLapRecord()).not.toBe(cachedBaseline);
+        expect(handle.getLapRecord()).toMatchObject({ lap: 7, sample_count: 3 });
     });
 
     it('waits for the next boundary, records one lap, reports progress, and resolves the operation', async () => {

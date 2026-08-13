@@ -84,6 +84,23 @@ describe('GoalRunner central dispatch callback', () => {
         expect(order).toEqual(['collect', 'analyze:4', 'determine']);
     });
 
+    it('keeps rerunning a missed goal until it is achieved', async () => {
+        let determinations = 0;
+        const dispatch = jest.fn((name: string) => resolvedAiToolOperation(
+            name === 'determine'
+                ? { mistake_count: ++determinations < 3 ? 1 : 0 }
+                : { status: 'complete' },
+        ));
+        const runner = new GoalRunner('goal', dispatch);
+        const operation = runner.create(request());
+        const result = await operation.result;
+        if (result instanceof Error) throw result;
+
+        expect(result.status).toBe('achieved');
+        expect(determinations).toBe(3);
+        expect(result.task_results).toHaveLength(6);
+    });
+
     it('retains a failed step and retries it through the same dispatcher', async () => {
         let attempts = 0;
         const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {

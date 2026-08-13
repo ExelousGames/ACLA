@@ -1307,24 +1307,10 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         const liveRecordingActive = activeScreenContext.recording_state === RecordingState.RECORDING;
         const latestTelemetryPresent = Boolean(activeScreenContext.latest_telemetry_present);
         const latestTelemetryKeyCount = Number(activeScreenContext.latest_telemetry_key_count) || 0;
-        const activeAgentModes = [
-            ...(TrackGuideEnabled ? ['track_guide'] : []),
-            ...(opportunityAgentStateRef.current.intervalId ? ['overtake'] : []),
-            ...(livePerformanceAnalystEnabled ? ['live_performance_analyst'] : []),
-        ];
-
         const context = {
             assistant_surface: 'lap_analysis_ai_chat',
             conversation_role: 'main',
             client_session_id: mainClientSessionIdRef.current,
-            active_agent_session: activeAgentSession
-                ? {
-                    client_session_id: activeAgentSession.clientSessionId,
-                    agent_mode: activeAgentSession.agentMode,
-                    status: activeAgentSession.status,
-                }
-                : null,
-            context_kind: effectiveMode,
             context_description: getContextDescription(effectiveMode),
             session_mode: effectiveMode,
             session_id: resolvedSessionId || null,
@@ -1335,12 +1321,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
             active_screen: {
                 screen_id: activeScreen.componentName || 'front-desk',
                 label: activeScreen.label,
-                assistant_mode: effectiveMode,
                 recorded_session_id: resolvedSessionId || null,
                 context: activeScreenContext,
-            },
-            agent_modes: {
-                active: activeAgentModes,
             },
             procedure_plan: procedurePlan
                 ? {
@@ -1416,12 +1398,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         activeScreen.componentName,
         activeScreen.label,
         activeScreenContext,
-        activeAgentSession,
-        livePerformanceAnalystEnabled,
         procedurePlan,
         resolvedSessionId,
         sessionMode,
-        TrackGuideEnabled,
     ]);
 
     const inactiveAgentToolHandlers = useMemo(() => ({}), []);
@@ -1771,12 +1750,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 client_session_id: activeAgentSession.clientSessionId,
                 parent_client_session_id: activeAgentSession.parentClientSessionId,
                 agent_mode: activeAgentSession.agentMode,
-                agent_session: {
-                    client_session_id: activeAgentSession.clientSessionId,
-                    parent_client_session_id: activeAgentSession.parentClientSessionId,
-                    agent_mode: activeAgentSession.agentMode,
-                    status: activeAgentSession.status,
-                },
             }
             : null
     ), [activeAgentSession, aiSessionContext]);
@@ -1802,7 +1775,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         conversationRole: 'agent',
         clientSessionId: activeAgentSession?.clientSessionId,
         parentClientSessionId: activeAgentSession?.parentClientSessionId,
-        agentMode: activeAgentSession?.agentMode,
         chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: agentSessionContext || undefined,
         onEvent: handleAgentVoiceEvent,

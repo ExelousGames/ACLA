@@ -45,6 +45,7 @@ from app.voice.session_modes import (
     SESSION_MODE_AGENT_BEHAVIORS,
     normalize_chatbot_session_mode,
 )
+from app.voice.tool_relay import normalize_voice_session_context
 
 LOGGER = logging.getLogger(__name__)
 
@@ -93,10 +94,11 @@ _TOOL_RESULT_HANDLING_PROMPT = """Tool result handling:
 
 
 def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]) -> str:
-    if not session_context:
+    normalized_context = normalize_voice_session_context(session_context)
+    if not normalized_context:
         return ""
     try:
-        encoded = json.dumps(session_context, ensure_ascii=True, sort_keys=True, default=str)
+        encoded = json.dumps(normalized_context, ensure_ascii=True, sort_keys=True, default=str)
     except Exception:
         LOGGER.exception("Failed to serialize voice session context")
         return ""
@@ -118,7 +120,7 @@ def _format_tool_result_handling_for_prompt(
 
 
 def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> str:
-    context = session_context if isinstance(session_context, dict) else {}
+    context = normalize_voice_session_context(session_context)
     raw_mode = context.get("agent_mode")
     raw_session_mode = context.get("session_mode")
 
@@ -1111,6 +1113,9 @@ def _build_initial_context_messages(
     tool_result_handling: Optional[str],
 ) -> tuple[List[Dict[str, Any]], int]:
     """Build a fresh connection root followed by stored conversation history."""
+    session_config.session_context = normalize_voice_session_context(
+        session_config.session_context,
+    )
     system_prompt = _build_system_prompt(
         session_config.session_context,
         tool_result_handling,
@@ -1390,8 +1395,9 @@ async def build_voice_pipeline_task(
             LOGGER.exception("%s: could not trigger LLM run", source)
 
     def _remember_session_context(session_context: Dict[str, Any]) -> None:
-        session_config.session_context = session_context
-        plan = _extract_procedure_plan({}, session_context)
+        normalized_context = normalize_voice_session_context(session_context)
+        session_config.session_context = normalized_context
+        plan = _extract_procedure_plan({}, normalized_context)
         fingerprint = _compact_json(plan, max_chars=4000) if plan else ""
         if fingerprint == latest_plan_fingerprint["value"]:
             return
