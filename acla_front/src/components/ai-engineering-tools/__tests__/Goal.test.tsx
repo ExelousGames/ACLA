@@ -46,12 +46,41 @@ describe('GoalRunner central dispatch callback', () => {
         const runner = new GoalRunner('goal', dispatch);
         const operation = runner.create(request());
 
-        await expect(operation.result).resolves.toMatchObject({
+        const result = await operation.result;
+        if (result instanceof Error) throw result;
+
+        expect(result).toMatchObject({
             name: 'Drive a clean lap',
             status: 'achieved',
             actual: 0,
             completed_steps: ['collect', 'analyze'],
         });
+        expect(result.task_results).toEqual([
+            {
+                step_id: 'collect',
+                tool_name: 'collect',
+                attempt: 1,
+                status: 'completed',
+                source_result: {
+                    step_id: 'collect',
+                    tool_name: 'collect',
+                    run_id: expect.any(String),
+                    status: 'complete',
+                },
+            },
+            {
+                step_id: 'analyze',
+                tool_name: 'analyze',
+                attempt: 1,
+                status: 'completed',
+                source_result: {
+                    step_id: 'analyze',
+                    tool_name: 'analyze',
+                    run_id: expect.any(String),
+                    status: 'complete',
+                },
+            },
+        ]);
         expect(order).toEqual(['collect', 'analyze:4', 'determine']);
     });
 
@@ -65,11 +94,52 @@ describe('GoalRunner central dispatch callback', () => {
         }));
         const runner = new GoalRunner('goal', dispatch);
 
-        await expect(runner.create(request()).result).resolves.toMatchObject({
+        const failedOperation = runner.create(request());
+        const failedResult = await failedOperation.result;
+        if (failedResult instanceof Error) throw failedResult;
+        const failedProgress = await Promise.all(failedOperation.statuses);
+
+        expect(failedResult).toMatchObject({
             status: 'failed',
             failed_step: 'collect',
+            error: 'not ready',
         });
-        await expect(runner.retryFailedTask().result).resolves.toMatchObject({ status: 'achieved' });
+        expect(failedResult.task_results).toEqual([
+            {
+                step_id: 'collect',
+                tool_name: 'collect',
+                attempt: 1,
+                status: 'error',
+                source_result: {
+                    step_id: 'collect',
+                    tool_name: 'collect',
+                    run_id: expect.any(String),
+                    status: 'failed',
+                },
+            },
+        ]);
+        expect(failedProgress[0]).toMatchObject({
+            id: 'collect',
+            status: 'failed',
+            error: 'not ready',
+        });
+        const failedSnapshot = runner.getSnapshot();
+        expect(failedSnapshot).toMatchObject({
+            failed_step: 'collect',
+            error: 'not ready',
+        });
+        expect(failedSnapshot?.steps[0]).toMatchObject({ id: 'collect', error: 'not ready' });
+
+        const retryResult = await runner.retryFailedTask().result;
+        if (retryResult instanceof Error) throw retryResult;
+
+        expect(retryResult.status).toBe('achieved');
+        expect(retryResult.task_results.map(({ source_result: _sourceResult, ...result }) => result))
+            .toEqual([
+                { step_id: 'collect', tool_name: 'collect', attempt: 1, status: 'error' },
+                { step_id: 'collect', tool_name: 'collect', attempt: 2, status: 'completed' },
+                { step_id: 'analyze', tool_name: 'analyze', attempt: 1, status: 'completed' },
+            ]);
         expect(attempts).toBe(2);
     });
 });

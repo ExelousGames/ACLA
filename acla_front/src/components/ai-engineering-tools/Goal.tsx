@@ -105,8 +105,6 @@ export type GoalTaskResult = {
     tool_name: string;
     attempt: number;
     status: 'completed' | 'error';
-    value: unknown;
-    error?: string;
     source_result?: GoalStepSourceResultMetadata;
 };
 
@@ -668,8 +666,6 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 tool_name: step.name,
                 attempt,
                 status: execution.error ? 'error' : 'completed',
-                value: execution.value,
-                ...(execution.error ? { error: execution.error.message } : {}),
                 ...(sourceResult ? { source_result: sourceResult } : {}),
             });
             if (execution.error) {
