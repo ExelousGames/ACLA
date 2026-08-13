@@ -198,6 +198,18 @@ interface AiChatProps {
     activeScreen: AssistantActiveScreen;
 }
 
+interface AiChatConversationProps extends AiChatProps {
+    selectedChatLlmModel: string;
+    setSelectedChatLlmModel: React.Dispatch<React.SetStateAction<string>>;
+    debugMode: boolean;
+    setDebugMode: React.Dispatch<React.SetStateAction<boolean>>;
+    emotionGifs: Partial<Record<Emotion, string>>;
+    setEmotionGifs: React.Dispatch<React.SetStateAction<Partial<Record<Emotion, string>>>>;
+    floatingChatOpen: boolean;
+    toggleFloatingChat: () => Promise<void>;
+    overlayClosedGeneration: number;
+}
+
 export interface AiChatHandle extends NamedAiToolComponentHandle {
     getSessionMode(): AiChatSessionMode;
     getRecordingState(): RecordingState | null;
@@ -334,9 +346,18 @@ const extractCornerKnowledgeMessage = (raw: any): string | null => {
     return null;
 };
 
-const AiChat: React.FC<AiChatProps> = ({
+const AiChatConversation: React.FC<AiChatConversationProps> = ({
     name,
     activeScreen,
+    selectedChatLlmModel,
+    setSelectedChatLlmModel,
+    debugMode,
+    setDebugMode,
+    emotionGifs,
+    setEmotionGifs,
+    floatingChatOpen,
+    toggleFloatingChat,
+    overlayClosedGeneration,
 }) => {
     const {
         sessionId,
@@ -352,7 +373,6 @@ const AiChat: React.FC<AiChatProps> = ({
 
     // Loading and mode states
     const [isLoading] = useState(false);
-    const [debugMode, setDebugMode] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
     const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
     const [baselineCollectionTag, setBaselineCollectionTag] = useState<BaselineCollectionTag | null>(null);
@@ -363,18 +383,10 @@ const AiChat: React.FC<AiChatProps> = ({
     const workflowKeyRef = useRef(0);
 
     const [environment, setEnvironment] = useState<'electron' | 'web'>('web');
-    const [floatingChatOpen, setFloatingChatOpen] = useState(false);
     const [overlayPresentationId, setOverlayPresentationId] = useState<string | null>(null);
     const [overlayAgentTags, setOverlayAgentTags] = useState<string[]>([]);
-    const [selectedChatLlmModel, setSelectedChatLlmModel] = useState(
-        DEFAULT_CHAT_LLM_MODEL_OPTION.value,
-    );
 
     // Emotion GIF settings — keyed by Emotion, values are data URLs.
-    const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
-        try { return JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}'); }
-        catch { return {}; }
-    });
     const [showEmoteSettings, setShowEmoteSettings] = useState(false);
 
     // Live clock for the transcript header (matches landing page vibe).
@@ -450,6 +462,8 @@ const AiChat: React.FC<AiChatProps> = ({
     const agentAutoStartSessionIdRef = useRef<string | null>(null);
     const endedAiShutdownAppliedRef = useRef(false);
     const overlayPresentationRef = useRef<OverlayPresentationSession | null>(null);
+    const ownedOverlayPresentationIdsRef = useRef<Set<string>>(new Set());
+    const overlayInvalidationTokenRef = useRef(0);
     const overlayPresentationsByAiSessionRef = useRef<Map<string, string>>(new Map());
     const overlayAiSessionByVoiceSessionRef = useRef<Map<string, string>>(new Map());
     const overlayStartByVoiceSessionRef = useRef<Map<string, Promise<OverlayPresentationSession | null>>>(new Map());
@@ -457,6 +471,31 @@ const AiChat: React.FC<AiChatProps> = ({
     const procedurePlanRef = useRef<ProcedurePlanState | null>(null);
     const procedurePlanOptedOutRef = useRef(false);
     const activeToolHandlersRef = useRef<Record<string, FrontendToolHandler>>({});
+    const conversationDisposedRef = useRef(false);
+    const pendingTimersRef = useRef<Set<number>>(new Set());
+
+    const scheduleConversationTimeout = useCallback((callback: () => void, delay = 0) => {
+        const timeoutId = window.setTimeout(() => {
+            pendingTimersRef.current.delete(timeoutId);
+            if (!conversationDisposedRef.current) callback();
+        }, delay);
+        pendingTimersRef.current.add(timeoutId);
+        return timeoutId;
+    }, []);
+
+    useEffect(() => {
+        const pendingTimers = pendingTimersRef.current;
+        conversationDisposedRef.current = false;
+        return () => {
+            conversationDisposedRef.current = true;
+            trackGuideRunTokenRef.current += 1;
+            overlayInvalidationTokenRef.current += 1;
+            activeAgentSessionRef.current = null;
+            activeToolHandlersRef.current = {};
+            pendingTimers.forEach((timeoutId) => window.clearTimeout(timeoutId));
+            pendingTimers.clear();
+        };
+    }, []);
 
     const mountWorkflow = useCallback((workflow: PendingWorkflow) => {
         const next = { ...workflow, key: ++workflowKeyRef.current } as ActiveWorkflow;
@@ -525,7 +564,7 @@ const AiChat: React.FC<AiChatProps> = ({
         options: Omit<OverlayUpsertOptions, 'metadata'> = {},
         presentationId = overlayPresentationRef.current?.presentationId,
     ) => {
-        if (!presentationId) return;
+        if (conversationDisposedRef.current || !presentationId) return;
         void overlayDisplayClient.forPresentation(presentationId).upsert(type, snapshot, {
             ...options,
             metadata: {
@@ -566,6 +605,7 @@ const AiChat: React.FC<AiChatProps> = ({
     }, [upsertOverlayDisplay]);
 
     const displayMapInChat = useCallback((display: AiMapDisplayPayload) => {
+        if (conversationDisposedRef.current) return;
         const fallbackText = display.status === 'unavailable'
             ? 'Map is not available'
             : display.note || display.title || display.map?.circuit_name || 'Map';
@@ -711,6 +751,7 @@ const AiChat: React.FC<AiChatProps> = ({
         agentMode?: AgentSessionMode,
     ): Promise<OverlayPresentationSession | null> => {
         if (!overlaySessionClient.available()) return null;
+        const overlayInvalidationToken = overlayInvalidationTokenRef.current;
         const mode = target === 'agent' ? 'agent' : sessionMode;
         const modeTag = mode === 'front_desk'
             ? 'Front Desk'
@@ -731,6 +772,14 @@ const AiChat: React.FC<AiChatProps> = ({
                 ])),
             },
         });
+        if (
+            conversationDisposedRef.current
+            || overlayInvalidationToken !== overlayInvalidationTokenRef.current
+        ) {
+            void overlaySessionClient.destroy(presentation.presentationId).catch(() => undefined);
+            return null;
+        }
+        ownedOverlayPresentationIdsRef.current.add(presentation.presentationId);
         overlayPresentationsByAiSessionRef.current.set(aiSessionId, presentation.presentationId);
         if (overlaySessionClient.current()?.presentationId === presentation.presentationId) {
             overlayPresentationRef.current = presentation;
@@ -744,8 +793,10 @@ const AiChat: React.FC<AiChatProps> = ({
             ? overlayPresentationsByAiSessionRef.current.get(aiSessionId)
             : overlayPresentationRef.current?.presentationId;
         if (!presentationId) return;
-        await overlaySessionClient.destroy(presentationId);
+        ownedOverlayPresentationIdsRef.current.delete(presentationId);
         if (aiSessionId) overlayPresentationsByAiSessionRef.current.delete(aiSessionId);
+        await overlaySessionClient.destroy(presentationId);
+        if (conversationDisposedRef.current) return;
         if (overlayPresentationRef.current?.presentationId === presentationId) {
             overlayPresentationRef.current = null;
             setOverlayPresentationId(null);
@@ -753,10 +804,27 @@ const AiChat: React.FC<AiChatProps> = ({
     }, []);
 
     useEffect(() => () => {
-        const presentationId = overlayPresentationRef.current?.presentationId;
         overlayPresentationRef.current = null;
-        if (presentationId) void overlaySessionClient.destroy(presentationId).catch(() => undefined);
+        const presentationIds = Array.from(ownedOverlayPresentationIdsRef.current);
+        ownedOverlayPresentationIdsRef.current.clear();
+        overlayPresentationsByAiSessionRef.current.clear();
+        overlayAiSessionByVoiceSessionRef.current.clear();
+        overlayStartByVoiceSessionRef.current.clear();
+        presentationIds.forEach((presentationId) => {
+            void overlaySessionClient.destroy(presentationId).catch(() => undefined);
+        });
     }, []);
+
+    useEffect(() => {
+        if (overlayClosedGeneration === 0) return;
+        overlayInvalidationTokenRef.current += 1;
+        overlayPresentationRef.current = null;
+        ownedOverlayPresentationIdsRef.current.clear();
+        overlayPresentationsByAiSessionRef.current.clear();
+        overlayAiSessionByVoiceSessionRef.current.clear();
+        overlayStartByVoiceSessionRef.current.clear();
+        setOverlayPresentationId(null);
+    }, [overlayClosedGeneration]);
 
     const setTrackGuideAgentEnabled = useCallback((enabled: boolean) => {
         if (!enabled) {
@@ -803,6 +871,7 @@ const AiChat: React.FC<AiChatProps> = ({
             componentRefs,
             AI_TOOL_COMPONENT_NAMES.PROCEDURE_PLAN,
         ).then((handle) => {
+            if (conversationDisposedRef.current) return;
             publishBackgroundWorkflowStatuses(handle.createProcedurePlan(plan));
         });
     }, [componentRefs, dispatchActiveVoiceTool, mountWorkflow, publishBackgroundWorkflowStatuses]);
@@ -884,6 +953,7 @@ const AiChat: React.FC<AiChatProps> = ({
     // the same WS — frontend tools listed below are reachable from the
     // backend LLM via JSON text frames.
     const handleSessionVoiceEvent = useCallback((event: VoiceEvent, target: 'main' | 'agent') => {
+        if (conversationDisposedRef.current) return;
         const setTargetMessages = target === 'agent' ? setAgentMessages : setMainMessages;
         const eventAiSessionId = event.clientSessionId ?? (
             target === 'agent'
@@ -1604,7 +1674,7 @@ const AiChat: React.FC<AiChatProps> = ({
 
         setActiveAgentSession({ ...current, status: 'stopping' });
         const stopAgentVoice = agentVoiceStopRef.current;
-        window.setTimeout(() => stopAgentVoice?.(), 0);
+        scheduleConversationTimeout(() => stopAgentVoice?.());
         resetAgentRuntimes();
         setActiveAgentSession(null);
         activeAgentSessionRef.current = null;
@@ -1621,7 +1691,7 @@ const AiChat: React.FC<AiChatProps> = ({
             agent_mode: current.agentMode,
             agent_session_id: current.clientSessionId,
         };
-    }, [endOverlaySession, resetAgentRuntimes, setAgentTag]);
+    }, [endOverlaySession, resetAgentRuntimes, scheduleConversationTimeout, setAgentTag]);
 
     const aiChatHandle = useMemo<AiChatHandle>(() => ({
         getComponentName: () => name,
@@ -1793,11 +1863,13 @@ const AiChat: React.FC<AiChatProps> = ({
         const overlayStart = overlayStartByVoiceSessionRef.current.get(activeAgentSessionId)
             ?? Promise.resolve(null);
         overlayStart.catch(() => null).then(() => {
+            if (conversationDisposedRef.current) return;
             if (activeAgentSessionRef.current?.clientSessionId !== activeAgentSessionId) return;
             return startAgentVoiceConversation(
                 overlayAiSessionByVoiceSessionRef.current.get(activeAgentSessionId),
             );
         }).catch((err) => {
+            if (conversationDisposedRef.current) return;
             console.error('Agent voice conversation failed to start:', err);
             setActiveAgentSession((current) => current
                 ? { ...current, status: 'error' }
@@ -1825,7 +1897,7 @@ const AiChat: React.FC<AiChatProps> = ({
         );
         if (!shouldStartRuntime) return;
 
-        window.setTimeout(() => {
+        scheduleConversationTimeout(() => {
             const current = activeAgentSessionRef.current;
             if (!current || current.clientSessionId !== activeAgentSession.clientSessionId) return;
             if (
@@ -1869,6 +1941,7 @@ const AiChat: React.FC<AiChatProps> = ({
                 sendAgentVoiceToolStatus(status);
             }).catch((error) => {
                 console.error(`Failed to start ${current.agentMode} runtime.`, error);
+                if (conversationDisposedRef.current) return;
                 if (activeAgentSessionRef.current?.clientSessionId !== current.clientSessionId) return;
                 setActiveAgentSession((session) => session
                     ? { ...session, status: 'error' }
@@ -1893,6 +1966,7 @@ const AiChat: React.FC<AiChatProps> = ({
         getOpportunityTelemetryRows,
         getProcedurePlan,
         resolvedSessionId,
+        scheduleConversationTimeout,
         sessionMode,
         setAgentTag,
         setLivePerformanceAnalystAgentEnabled,
@@ -1962,68 +2036,8 @@ const AiChat: React.FC<AiChatProps> = ({
 
     const canOpenFloatingChat = overlaySessionClient.available();
 
-    useEffect(() => {
-        if (sessionMode === 'live') {
-            return;
-        }
-
-        if (activeAgentSessionRef.current) {
-            stopAgentSession(activeAgentSessionRef.current.clientSessionId);
-        }
-        setTrackGuideAgentEnabled(false);
-        const opportunityAgent = opportunityAgentStateRef.current;
-        if (opportunityAgent.intervalId) {
-            clearInterval(opportunityAgent.intervalId);
-            opportunityAgent.intervalId = null;
-        }
-        opportunityAgent.inFlight = false;
-        opportunityAgent.lastAlertKey = null;
-        opportunityAgent.lastAlertAt = 0;
-        const analystAgent = livePerformanceAnalystStateRef.current;
-        if (analystAgent.intervalId) {
-            clearInterval(analystAgent.intervalId);
-            analystAgent.intervalId = null;
-        }
-        analystAgent.inFlight = false;
-        analystAgent.enabled = false;
-        analystAgent.lastToolStatusKey = null;
-        analystAgent.lastToolStatusAt = 0;
-        analystAgent.lastSpokenAt = 0;
-        setLivePerformanceAnalystAgentEnabled(false);
-        procedurePlanOptedOutRef.current = false;
-        clearProcedurePlan();
-        setAgentTag('Track Guide', false);
-        setAgentTag('Overtake', false);
-        setAgentTag('Live Analyst', false);
-    }, [clearProcedurePlan, sessionMode, setAgentTag, setLivePerformanceAnalystAgentEnabled, setTrackGuideAgentEnabled, stopAgentSession]);
-
-    const toggleFloatingChat = useCallback(async () => {
-        try {
-            const enabled = !floatingChatOpen;
-            await overlaySessionClient.setEnabled(enabled);
-            setFloatingChatOpen(enabled);
-        } catch (err) {
-            console.warn('Failed to toggle floating chat:', err);
-        }
-    }, [floatingChatOpen]);
-
-    useEffect(() => {
-        const api = (window as any).electronAPI;
-        if (!api?.onFloatingChatClosed) return;
-        const unsubscribe = api.onFloatingChatClosed(() => {
-            overlayPresentationRef.current = null;
-            setOverlayPresentationId(null);
-            setFloatingChatOpen(false);
-        });
-        if (api.isOverlayEnabled) {
-            api.isOverlayEnabled()
-                .then((open: boolean) => setFloatingChatOpen(Boolean(open)))
-                .catch(() => undefined);
-        }
-        return () => { try { unsubscribe?.(); } catch { /* ignore */ } };
-    }, []);
-
     const addGuidanceMessage = useCallback((content: string) => {
+        if (conversationDisposedRef.current) return;
         const message: Message = {
             id: generateUniqueId('guidance'),
             content,
@@ -2049,6 +2063,7 @@ const AiChat: React.FC<AiChatProps> = ({
         if (!file) return;
         const reader = new FileReader();
         reader.onload = () => {
+            if (conversationDisposedRef.current) return;
             const dataUrl = reader.result as string;
             const next = { ...emotionGifs, [emotion]: dataUrl };
             setEmotionGifs(next);
@@ -2203,6 +2218,10 @@ const AiChat: React.FC<AiChatProps> = ({
                 clearInterval(analystAgent.intervalId);
                 analystAgent.intervalId = null;
             }
+            opportunityAgent.inFlight = false;
+            analystAgent.inFlight = false;
+            analystAgent.enabled = false;
+            analysisContext?.sessionIntelligence?.clearFocusSection?.();
 
             [
                 AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
@@ -2216,7 +2235,7 @@ const AiChat: React.FC<AiChatProps> = ({
                 });
             });
         };
-    }, [componentRefs]);
+    }, [analysisContext?.sessionIntelligence, componentRefs]);
 
     useEffect(() => {
         setEnvironment(detectEnvironment());
@@ -2323,13 +2342,18 @@ const AiChat: React.FC<AiChatProps> = ({
             overlayStartByVoiceSessionRef.current.set(voiceSessionId, overlayStart);
             void overlayStart
                 .catch((overlayError) => {
+                    if (conversationDisposedRef.current) return;
                     console.warn(
                         'AI overlay failed to initialize; continuing voice conversation without it:',
                         overlayError,
                     );
                 })
-                .then(() => activeVoiceConversation.start(overlayAiSessionId))
+                .then(() => {
+                    if (conversationDisposedRef.current) return;
+                    return activeVoiceConversation.start(overlayAiSessionId);
+                })
                 .catch((err) => {
+                    if (conversationDisposedRef.current) return;
                     console.error('Voice conversation failed to start:', err);
                     void endOverlaySession(overlayAiSessionId).catch(() => undefined);
                 });
@@ -2669,6 +2693,68 @@ const AiChat: React.FC<AiChatProps> = ({
                 </button>
             </div>
         </div>
+    );
+};
+
+const AiChat: React.FC<AiChatProps> = ({ name, activeScreen }) => {
+    const { conversationKey } = resolveRegisteredAssistantIdentity(activeScreen);
+    const [selectedChatLlmModel, setSelectedChatLlmModel] = useState(
+        DEFAULT_CHAT_LLM_MODEL_OPTION.value,
+    );
+    const [debugMode, setDebugMode] = useState(false);
+    const [emotionGifs, setEmotionGifs] = useState<Partial<Record<Emotion, string>>>(() => {
+        try { return JSON.parse(localStorage.getItem(EMOTION_GIFS_KEY) || '{}'); }
+        catch { return {}; }
+    });
+    const [floatingChatOpen, setFloatingChatOpen] = useState(false);
+    const [overlayClosedGeneration, setOverlayClosedGeneration] = useState(0);
+
+    const toggleFloatingChat = useCallback(async () => {
+        try {
+            const enabled = !floatingChatOpen;
+            await overlaySessionClient.setEnabled(enabled);
+            setFloatingChatOpen(enabled);
+        } catch (err) {
+            console.warn('Failed to toggle floating chat:', err);
+        }
+    }, [floatingChatOpen]);
+
+    useEffect(() => {
+        const api = (window as any).electronAPI;
+        if (!api) return;
+        let disposed = false;
+        const unsubscribe = api.onFloatingChatClosed?.(() => {
+            setFloatingChatOpen(false);
+            setOverlayClosedGeneration((generation) => generation + 1);
+        });
+        if (api.isOverlayEnabled) {
+            api.isOverlayEnabled()
+                .then((open: boolean) => {
+                    if (!disposed) setFloatingChatOpen(Boolean(open));
+                })
+                .catch(() => undefined);
+        }
+        return () => {
+            disposed = true;
+            try { unsubscribe?.(); } catch { /* ignore */ }
+        };
+    }, []);
+
+    return (
+        <AiChatConversation
+            key={conversationKey}
+            name={name}
+            activeScreen={activeScreen}
+            selectedChatLlmModel={selectedChatLlmModel}
+            setSelectedChatLlmModel={setSelectedChatLlmModel}
+            debugMode={debugMode}
+            setDebugMode={setDebugMode}
+            emotionGifs={emotionGifs}
+            setEmotionGifs={setEmotionGifs}
+            floatingChatOpen={floatingChatOpen}
+            toggleFloatingChat={toggleFloatingChat}
+            overlayClosedGeneration={overlayClosedGeneration}
+        />
     );
 };
 
