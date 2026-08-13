@@ -178,7 +178,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
                 clientSessionId: 'client-1',
                 sessionContext,
             }),
-            { initialProps: { sessionContext: { session_mode: 'recorded', version: 1 } } },
+            { initialProps: { sessionContext: { session_mode: 'recorded' as const, version: 1 } } },
         );
 
         const socket = await startAndOpen(result);
@@ -198,20 +198,11 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(frontendInfo).toMatchObject({
             type: 'frontend_info',
             client_session_id: 'client-1',
-            session_context: { session_mode: 'recorded', version: 1 },
+            session_context: { session_mode: 'recorded' },
         });
         expect(frontendInfo).not.toHaveProperty('session_mode');
         expect(frontendInfo).not.toHaveProperty('agent_mode');
-        for (const alias of [
-            'context_kind',
-            'active_agent_session',
-            'agent_session',
-            'agent_modes',
-        ]) {
-            expect(frontendInfo.session_context).not.toHaveProperty(alias);
-        }
-        expect(frontendInfo.session_context)
-            .not.toHaveProperty('active_screen.assistant_mode');
+        expect(Object.keys(frontendInfo.session_context)).toEqual(['session_mode']);
 
         expect(result.current.sendUserText('hello')).toBe(false);
         expect(result.current.sendToolStatus({ status: 'working' })).toBe(false);
@@ -229,7 +220,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(JSON.parse(socket.send.mock.calls[1][0])).toMatchObject({
             type: 'user_text',
             text: 'hello',
-            session_context: { session_mode: 'recorded', version: 2 },
+            session_context: { session_mode: 'recorded' },
         });
 
         act(() => mockWorkletNodes[0].port.onmessage?.({
@@ -240,7 +231,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
         rerender({ sessionContext: { session_mode: 'recorded', version: 3 } });
         expect(JSON.parse(socket.send.mock.calls[3][0])).toEqual({
             type: 'session_context',
-            session_context: { session_mode: 'recorded', version: 3 },
+            session_context: { session_mode: 'recorded' },
         });
     });
 

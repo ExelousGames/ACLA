@@ -168,13 +168,7 @@ describe('AiChat conversation lifecycle', () => {
         const view = render(<AiChat name="dashboard-assistant" activeScreen={frontDeskScreen()} />);
         const mainContext = getLatestMainVoiceOptions().sessionContext;
 
-        expect(mainContext.session_mode).toBe('front_desk');
-        expect(mainContext).not.toHaveProperty('agent_mode');
-        expect(mainContext).not.toHaveProperty('context_kind');
-        expect(mainContext).not.toHaveProperty('active_agent_session');
-        expect(mainContext).not.toHaveProperty('agent_session');
-        expect(mainContext).not.toHaveProperty('agent_modes');
-        expect(mainContext).not.toHaveProperty('active_screen.assistant_mode');
+        expect(mainContext).toEqual({ session_mode: 'front_desk' });
 
         view.rerender(
             <AiChat
@@ -190,12 +184,10 @@ describe('AiChat conversation lifecycle', () => {
             expect(getLatestAgentVoiceOptions().sessionContext.agent_mode).toBe('track_guide');
         });
         const agentContext = getLatestAgentVoiceOptions().sessionContext;
-        expect(agentContext.session_mode).toBe('live');
-        expect(agentContext).not.toHaveProperty('context_kind');
-        expect(agentContext).not.toHaveProperty('active_agent_session');
-        expect(agentContext).not.toHaveProperty('agent_session');
-        expect(agentContext).not.toHaveProperty('agent_modes');
-        expect(agentContext).not.toHaveProperty('active_screen.assistant_mode');
+        expect(agentContext).toEqual({
+            session_mode: 'live',
+            agent_mode: 'track_guide',
+        });
         expect(getLatestAgentVoiceOptions()).not.toHaveProperty('agentMode');
     });
 

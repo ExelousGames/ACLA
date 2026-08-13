@@ -43,8 +43,22 @@ export type FrontendToolHandler = (
     args: Record<string, unknown>,
 ) => AiToolOperation<AiToolNormalOutput, AiToolStatusPayload>;
 
-export type AiSessionContext = Record<string, unknown>;
+export interface AiSessionContext {
+    session_mode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
+    agent_mode?: 'track_guide' | 'overtake' | 'live_performance_analyst';
+}
 export type ConversationRole = 'main' | 'agent';
+
+const canonicalizeSessionContext = (
+    value: AiSessionContext | null | undefined,
+): AiSessionContext => ({
+    ...(typeof value?.session_mode === 'string'
+        ? { session_mode: value.session_mode }
+        : {}),
+    ...(typeof value?.agent_mode === 'string'
+        ? { agent_mode: value.agent_mode }
+        : {}),
+});
 
 /** One event surfaced to the chat UI off the voice WS. The hook fires
  *  these via `onEvent` so the caller can append them to a message list. */
@@ -401,7 +415,7 @@ export function useVoiceConversation(
     const pendingMicLevelRef = useRef<number | null>(null);
     const micLevelFrameRef = useRef<number | null>(null);
     const sessionContextRef = useRef<AiSessionContext | null>(
-        options.sessionContext ?? null,
+        canonicalizeSessionContext(options.sessionContext),
     );
 
     /**
@@ -461,7 +475,7 @@ export function useVoiceConversation(
     }, [options.clientSessionId]);
 
     useEffect(() => {
-        sessionContextRef.current = options.sessionContext ?? null;
+        sessionContextRef.current = canonicalizeSessionContext(options.sessionContext);
         const ws = wsRef.current;
         if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
 

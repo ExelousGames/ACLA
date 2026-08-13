@@ -90,10 +90,7 @@ describe('VoiceGateway', () => {
         expect(frame.isBinary).toBe(false);
         expect(payload).not.toHaveProperty('session_mode');
         expect(payload).not.toHaveProperty('agent_mode');
-        expect(payload.session_context).toEqual({
-            session_mode: 'recorded',
-            active_screen: { screen_id: 'session-analysis' },
-        });
+        expect(payload.session_context).toEqual({ session_mode: 'recorded' });
         expect(payload.tools).toEqual(getFrontendApplicationToolsForSessionContext({
             session_mode: 'recorded',
         }));
@@ -342,7 +339,6 @@ describe('VoiceGateway', () => {
             session_context: {
                 session_mode: 'live',
                 agent_mode: 'track_guide',
-                active_screen: { label: 'Live' },
             },
         });
     });

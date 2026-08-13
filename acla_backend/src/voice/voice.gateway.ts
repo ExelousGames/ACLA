@@ -110,22 +110,15 @@ export class VoiceGateway implements OnGatewayConnection {
             return {};
         }
 
-        const {
-            context_kind: _contextKind,
-            active_agent_session: _activeAgentSession,
-            agent_session: _agentSession,
-            agent_modes: _agentModes,
-            ...sessionContext
-        } = value as Record<string, unknown>;
-        const activeScreen = sessionContext.active_screen;
-        if (activeScreen && typeof activeScreen === 'object' && !Array.isArray(activeScreen)) {
-            const {
-                assistant_mode: _assistantMode,
-                ...sanitizedActiveScreen
-            } = activeScreen as Record<string, unknown>;
-            sessionContext.active_screen = sanitizedActiveScreen;
-        }
-        return sessionContext;
+        const sessionContext = value as Record<string, unknown>;
+        return {
+            ...(typeof sessionContext.session_mode === 'string'
+                ? { session_mode: sessionContext.session_mode }
+                : {}),
+            ...(typeof sessionContext.agent_mode === 'string'
+                ? { agent_mode: sessionContext.agent_mode }
+                : {}),
+        };
     }
 
     private withBackendToolRegistry(data: RawData, isBinary: boolean): { data: RawData | string; isBinary: boolean } {

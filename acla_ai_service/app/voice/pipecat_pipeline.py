@@ -198,21 +198,6 @@ def _build_system_prompt(
     return system_prompt
 
 
-_PLAN_REQUEST_FIELDS = (
-    "type",
-    "title",
-    "subscriber",
-    "name",
-    "status",
-    "detail",
-    "result_visibility",
-    "output",
-    "method",
-    "url",
-    "payload",
-)
-
-
 def _compact_json(value: Any, *, max_chars: int = 3000) -> str:
     try:
         encoded = json.dumps(value, ensure_ascii=True, sort_keys=True, default=str)
@@ -304,74 +289,6 @@ def _native_message_batch_is_valid(messages: List[Dict[str, Any]]) -> bool:
             return False
         pending_tool_call_ids.remove(tool_call_id)
     return not pending_tool_call_ids
-
-
-def _as_dict(value: Any) -> Dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _compact_plan_request(request: Any) -> Dict[str, Any]:
-    if not isinstance(request, dict):
-        return {}
-    return {
-        field: request[field]
-        for field in _PLAN_REQUEST_FIELDS
-        if request.get(field) is not None
-    }
-
-
-def _coerce_plan_index(value: Any, request_count: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        parsed = 0
-    if request_count <= 0:
-        return 0
-    return max(0, min(request_count - 1, parsed))
-
-
-def _extract_procedure_plan(
-    data: Dict[str, Any],
-    session_context: Optional[Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
-    plan = _as_dict(data.get("procedure_plan"))
-    if not plan and isinstance(data.get("requests"), list):
-        plan = {
-            "goal": data.get("goal"),
-            "requests": data.get("requests"),
-            "current_request": data.get("current_request", data.get("current_step", 0)),
-            "source_event": data.get("event"),
-        }
-    if not plan:
-        plan = _as_dict(_as_dict(session_context).get("procedure_plan"))
-    requests = plan.get("requests")
-    if not isinstance(requests, list) or not requests:
-        return None
-
-    compact_requests = [_compact_plan_request(request) for request in requests]
-    current_request = _coerce_plan_index(
-        plan.get("current_request", plan.get("currentStep", 0)),
-        len(compact_requests),
-    )
-    return {
-        "goal": plan.get("goal") or "",
-        "current_request": current_request,
-        "active_request": compact_requests[current_request],
-        "requests": compact_requests,
-        "source_event": plan.get("source_event") or data.get("event"),
-    }
-
-
-def _format_procedure_plan_for_prompt(plan: Dict[str, Any]) -> str:
-    return (
-        "Procedure plan mode is active. "
-        f"Current plan: {_compact_json(plan)}\n"
-        "Plan-mode rule: the application owns visible plan state and executable "
-        "subscribed requests. Tool calls are fire-and-forget; use later tool "
-        "results or user messages "
-        "for the response and next decision. Do not clear, skip, or abandon "
-        "the plan unless the driver explicitly asks to opt out."
-    )
 
 
 def _build_openai_llm_service(
@@ -1330,7 +1247,6 @@ async def build_voice_pipeline_task(
     emotion_tag_stripper = EmotionTagStripper()
     context_logger = ContextLogger(context)
     task_ref: Dict[str, Any] = {"task": None}
-    latest_plan_fingerprint: Dict[str, str] = {"value": ""}
     function_tag_recovery = FunctionTagRecovery(
         send_frontend_tool,
         dispatch_server_tool,
@@ -1395,19 +1311,7 @@ async def build_voice_pipeline_task(
             LOGGER.exception("%s: could not trigger LLM run", source)
 
     def _remember_session_context(session_context: Dict[str, Any]) -> None:
-        normalized_context = normalize_voice_session_context(session_context)
-        session_config.session_context = normalized_context
-        plan = _extract_procedure_plan({}, normalized_context)
-        fingerprint = _compact_json(plan, max_chars=4000) if plan else ""
-        if fingerprint == latest_plan_fingerprint["value"]:
-            return
-        latest_plan_fingerprint["value"] = fingerprint
-        if plan:
-            context.add_message({
-                "role": "system",
-                "content": _format_procedure_plan_for_prompt(plan),
-            })
-            _trigger_llm_run("session_context_sink")
+        session_config.session_context = normalize_voice_session_context(session_context)
 
     def user_text_sink(text: str) -> None:
         """Inject typed chat text."""

@@ -74,7 +74,6 @@ async def test_handshake_sanitizes_legacy_mode_aliases():
     assert session_context == {
         "session_mode": "live",
         "agent_mode": "track_guide",
-        "active_screen": {"label": "Live Session"},
     }
 
 
@@ -104,7 +103,8 @@ def test_prompt_context_excludes_legacy_mode_aliases():
     })
 
     assert '"session_mode": "recorded"' in prompt
-    assert '"label": "Analysis"' in prompt
+    assert '"agent_mode"' not in prompt
+    assert "Analysis" not in prompt
     assert "context_kind" not in prompt
     assert "active_agent_session" not in prompt
     assert "agent_session" not in prompt
@@ -268,7 +268,7 @@ async def test_resume_uses_same_session_and_passes_stored_history(
     assert captured[0].committed_history == history
     assert captured[0].session_id == "telemetry-2"
     assert captured[0].chat_session_id == created.chat_session_id
-    assert captured[0].session_context["connection"] == "latest"
+    assert captured[0].session_context == {}
 
 
 @pytest.mark.asyncio
@@ -318,7 +318,7 @@ def test_resumed_context_has_fresh_root_before_stored_history(monkeypatch):
     monkeypatch.setattr(
         pipecat_pipeline,
         "_build_system_prompt",
-        lambda session_context, handling: f"fresh:{session_context['connection']}",
+        lambda session_context, handling: f"fresh:{session_context['session_mode']}",
     )
     history = [
         {"role": "user", "content": "Prior question"},
@@ -327,7 +327,7 @@ def test_resumed_context_has_fresh_root_before_stored_history(monkeypatch):
     config = pipecat_pipeline.VoiceSessionConfig(
         chat_session_id="chat-1",
         committed_history=history,
-        session_context={"connection": "new"},
+        session_context={"session_mode": "recorded", "connection": "new"},
         user_id="user-1",
     )
 
@@ -337,7 +337,7 @@ def test_resumed_context_has_fresh_root_before_stored_history(monkeypatch):
     )
 
     assert messages == [
-        {"role": "system", "content": "fresh:new"},
+        {"role": "system", "content": "fresh:recorded"},
         *history,
     ]
     assert history_length == len(history)
@@ -352,21 +352,6 @@ def test_startup_prompt_keeps_neutral_procedure_plan_guidance():
         in prompt
     )
     assert "Tool calls are fire-and-forget." in prompt
-    assert "advance_plan_step" not in prompt
-
-
-def test_active_plan_prompt_does_not_direct_result_triggered_advancement():
-    prompt = pipecat_pipeline._format_procedure_plan_for_prompt({
-        "goal": "Review braking",
-        "current_request": 0,
-        "active_request": {"type": "tool_call", "name": "analyze_braking"},
-        "requests": [{"type": "tool_call", "name": "analyze_braking"}],
-    })
-
-    assert "Procedure plan mode is active." in prompt
-    assert '"goal": "Review braking"' in prompt
-    assert "the application owns visible plan state" in prompt
-    assert "Tool calls are fire-and-forget" in prompt
     assert "advance_plan_step" not in prompt
 
 
@@ -445,7 +430,6 @@ def test_tool_relay_sanitizes_context_updates_and_typed_message_context():
     assert contexts == [
         {
             "session_mode": "live",
-            "active_screen": {"label": "Live"},
         },
         {
             "session_mode": "live",

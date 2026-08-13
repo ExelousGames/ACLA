@@ -29,27 +29,19 @@ SessionContextSink = Callable[[Dict[str, Any]], Any]
 
 
 def normalize_voice_session_context(value: Any) -> Dict[str, Any]:
-    """Return context with only the canonical direct mode representation."""
+    """Return only the two canonical direct voice-mode fields."""
     if not isinstance(value, dict):
         return {}
 
-    context = dict(value)
-    context.pop("context_kind", None)
-    context.pop("active_agent_session", None)
-    context.pop("agent_session", None)
-    context.pop("agent_modes", None)
-
-    active_screen = context.get("active_screen")
-    if isinstance(active_screen, dict):
-        sanitized_active_screen = dict(active_screen)
-        sanitized_active_screen.pop("assistant_mode", None)
-        context["active_screen"] = sanitized_active_screen
-
-    raw_session_mode = context.get("session_mode")
+    context: Dict[str, Any] = {}
+    raw_session_mode = value.get("session_mode")
     if raw_session_mode is not None:
         normalized_session_mode = normalize_chatbot_session_mode(raw_session_mode)
         if normalized_session_mode is not None:
             context["session_mode"] = normalized_session_mode
+    raw_agent_mode = value.get("agent_mode")
+    if isinstance(raw_agent_mode, str):
+        context["agent_mode"] = raw_agent_mode
     return context
 
 

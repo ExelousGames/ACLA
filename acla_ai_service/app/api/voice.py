@@ -489,7 +489,6 @@ async def _await_frontend_info(
             session_context = {}
         if not isinstance(session_context, dict):
             raise _HandshakeError("frontend_info: 'session_context' must be an object or null")
-        session_context = normalize_voice_session_context(session_context)
         context_session_mode = session_context.get("session_mode")
         normalized_session_mode = normalize_chatbot_session_mode(context_session_mode)
         if context_session_mode is not None and normalized_session_mode is None:
@@ -497,6 +496,7 @@ async def _await_frontend_info(
                 "frontend_info: 'session_context.session_mode' must be "
                 f"{', '.join(sorted(VALID_CHATBOT_SESSION_MODES))}, or omitted"
             )
+        session_context = normalize_voice_session_context(session_context)
         return tools, tool_metadata, query_scope_schema, tool_result_handling, session_context
 
 
