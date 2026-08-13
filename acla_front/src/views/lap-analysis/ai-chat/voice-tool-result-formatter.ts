@@ -1,5 +1,3 @@
-import { getAiToolResult } from './ai-tool-result-boundary';
-
 const asRecord = (value: unknown): Record<string, unknown> => (
     value && typeof value === 'object' && !Array.isArray(value)
         ? value as Record<string, unknown>
@@ -214,20 +212,24 @@ const omitLiveAnalystAnalysis = (value: Record<string, unknown>): Record<string,
     return rest;
 };
 
-export const buildFormattedToolResultFrame = (data: Record<string, unknown>) => {
-    const rawAiData = asRecord(getAiToolResult(data));
+export const buildFormattedToolResultFrame = (
+    data: Record<string, unknown>,
+    fallbackId = `workflow-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+) => {
+    const rawAiData = asRecord(data);
     const aiData = omitLiveAnalystAnalysis(omitRawTelemetryRows(rawAiData));
     const sourceStatus = typeof aiData.status === 'string' ? aiData.status : undefined;
     const id = typeof aiData.tool_run_id === 'string'
         ? aiData.tool_run_id
         : typeof data.run_id === 'string'
             ? data.run_id
-            : undefined;
+            : fallbackId;
     const name = getToolResultName(aiData);
     const payload = {
         type: 'tool_result' as const,
         id,
         name,
+        final: false,
         result: {
             ...aiData,
             ...(sourceStatus ? { source_status: sourceStatus } : {}),

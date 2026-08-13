@@ -5,6 +5,14 @@ import type {
 } from 'contexts/AiToolComponentRefContext';
 import { useRegisterAiToolComponentRef } from 'contexts/AiToolComponentRefContext';
 import type { AiToolDispatcher } from './Goal';
+import {
+    createAiToolDeferred,
+    createAiToolOperation,
+    createAiToolOperationFrom,
+    type AiToolDeferred,
+    type AiToolOperation,
+} from './ai-tool-operation';
+import { ProcedurePlanReplacedError } from 'contexts/AiToolComponentError';
 
 export const PROCEDURE_PLAN_STEP_STATUSES = [
     'pending',
@@ -71,12 +79,28 @@ export type ProcedurePlanRunResult = {
     reason?: string;
 };
 
+export type ProcedurePlanProgressStatus = {
+    workflow: 'procedure_plan';
+    request_index: number;
+    title: string;
+    tool_name: string;
+    status: 'completed' | 'failed' | 'skipped';
+    output?: unknown;
+    error?: string;
+    nested_statuses?: readonly object[];
+};
+
 export interface ProcedurePlanHandle extends NamedAiToolComponentHandle {
-    createProcedurePlan(plan: ProcedurePlanState): Promise<ProcedurePlanRunResult>;
-    advancePlanStep(reason?: string): Promise<ProcedurePlanRunResult>;
-    clearProcedurePlan(reason?: string): ProcedurePlanRunResult;
+    createProcedurePlan(plan: ProcedurePlanState): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus>;
+    advancePlanStep(reason?: string): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus>;
+    clearProcedurePlan(reason?: string): AiToolOperation<ProcedurePlanRunResult>;
     getProcedurePlan(): ProcedurePlanState | null;
 }
+
+type ActiveProcedurePlanOperation = {
+    result: AiToolDeferred<ProcedurePlanRunResult>;
+    statuses: Map<number, AiToolDeferred<ProcedurePlanProgressStatus>>;
+};
 
 const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request, error) => {
     console.error(`Procedure plan task '${request.title}' failed.`, error);
@@ -87,6 +111,8 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
     private active = false;
     private taskResults: ProcedurePlanTaskResult[] = [];
     private lastRunId: string | undefined;
+    private generation = 0;
+    private activeOperation: ActiveProcedurePlanOperation | null = null;
     private readonly onChange: ProcedurePlanChangeHandler;
     private readonly onError: ProcedurePlanTaskErrorHandler;
 
@@ -105,25 +131,46 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
         return this.plan ? cloneProcedurePlanState(this.plan) : null;
     }
 
-    async replace(plan: ProcedurePlanState | null): Promise<ProcedurePlanRunResult> {
-        if (this.active) throw new Error('Cannot replace a running procedure plan.');
+    replace(plan: ProcedurePlanState | null): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus> {
+        const requests = plan?.requests ?? [];
+        return this.startOperation(requests, () => this.runReplace(plan));
+    }
+
+    private async runReplace(plan: ProcedurePlanState | null): Promise<ProcedurePlanRunResult> {
+        const generation = ++this.generation;
+        this.active = false;
         this.taskResults = [];
         this.lastRunId = undefined;
         this.publish(plan?.requests.length ? cloneProcedurePlanState(plan) : null);
         if (!this.plan) return this.result('cleared');
-        return this.runNext();
+        return this.runNext(generation);
     }
 
-    clear(reason?: string): ProcedurePlanRunResult {
+    clear(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
+        return createAiToolOperationFrom(() => this.runClear(reason));
+    }
+
+    private runClear(reason?: string): ProcedurePlanRunResult {
+        this.generation += 1;
         this.active = false;
+        this.cancelActiveOperation(new ProcedurePlanReplacedError(
+            this.getComponentName(),
+            'The procedure plan was cleared.',
+        ));
         const cleared = this.result('cleared');
         this.publish(null);
         return { ...cleared, ...(reason ? { reason } : {}) };
     }
 
-    async advance(reason?: string): Promise<ProcedurePlanRunResult> {
+    advance(reason?: string): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus> {
+        const requests = this.plan?.requests ?? [];
+        return this.startOperation(requests, () => this.runAdvance(reason));
+    }
+
+    private async runAdvance(reason?: string): Promise<ProcedurePlanRunResult> {
         if (!this.plan) throw new Error('Cannot advance an empty procedure plan.');
         if (this.active) throw new Error('Cannot advance while a procedure plan step is running.');
+        const generation = ++this.generation;
         const result = advanceProcedurePlan(this.plan, reason);
         if (result.status === 'complete') {
             const completed = this.result('complete');
@@ -131,7 +178,7 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
             return completed;
         }
         this.publish(result.plan);
-        return this.runNext();
+        return this.runNext(generation);
     }
 
     async retryFailedStep(): Promise<ProcedurePlanRunResult> {
@@ -146,12 +193,77 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
                 index === this.plan!.currentStep ? { ...item, status: 'pending' } : item
             )),
         });
-        return this.runNext();
+        return this.runNext(++this.generation);
     }
 
     protected onDispose(): void {
+        this.generation += 1;
         this.active = false;
+        this.cancelActiveOperation(new ProcedurePlanReplacedError(
+            this.getComponentName(),
+            'The procedure plan was disposed.',
+        ));
         this.plan = null;
+    }
+
+    private startOperation(
+        requests: readonly ProcedurePlanRequestSnapshot[],
+        run: () => Promise<ProcedurePlanRunResult>,
+    ): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus> {
+        this.cancelActiveOperation(new ProcedurePlanReplacedError(
+            this.getComponentName(),
+            'The procedure plan operation was replaced.',
+        ));
+        const operation: ActiveProcedurePlanOperation = {
+            result: createAiToolDeferred<ProcedurePlanRunResult>(),
+            statuses: new Map(requests.map((_request, index) => [
+                index,
+                createAiToolDeferred<ProcedurePlanProgressStatus>(),
+            ])),
+        };
+        this.activeOperation = operation;
+        void run().then(
+            (result) => operation.result.resolve(result),
+            (error) => operation.result.reject(error),
+        ).finally(() => {
+            operation.statuses.forEach((status, index) => {
+                if (status.settled) return;
+                const request = requests[index];
+                status.resolve({
+                    workflow: 'procedure_plan',
+                    request_index: index,
+                    title: request?.title ?? '',
+                    tool_name: request?.name ?? '',
+                    status: 'skipped',
+                });
+            });
+            if (this.activeOperation === operation) this.activeOperation = null;
+        });
+        return createAiToolOperation(
+            operation.result.promise,
+            Array.from(operation.statuses.values()).map((status) => status.promise),
+        );
+    }
+
+    private cancelActiveOperation(error: Error): void {
+        const operation = this.activeOperation;
+        if (!operation) return;
+        this.activeOperation = null;
+        operation.statuses.forEach((status, index) => {
+            if (!status.settled) status.resolve({
+                workflow: 'procedure_plan',
+                request_index: index,
+                title: '',
+                tool_name: '',
+                status: 'skipped',
+                error: error.message,
+            });
+        });
+        operation.result.reject(error);
+    }
+
+    private resolveProgress(index: number, status: ProcedurePlanProgressStatus): void {
+        this.activeOperation?.statuses.get(index)?.resolve(status);
     }
 
     private publish(plan: ProcedurePlanState | null): void {
@@ -161,8 +273,14 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
         if (!plan) this.deleteComponentRef();
     }
 
-    private async runNext(): Promise<ProcedurePlanRunResult> {
+    private async runNext(generation: number): Promise<ProcedurePlanRunResult> {
         while (this.plan) {
+            if (generation !== this.generation) {
+                throw new ProcedurePlanReplacedError(
+                    this.getComponentName(),
+                    'The procedure plan operation was replaced.',
+                );
+            }
             const request = this.plan.requests[this.plan.currentStep];
             if (!request) {
                 const completed = this.result('complete');
@@ -182,22 +300,49 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
                 )),
             });
             const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-            let output: Record<string, unknown> | null = null;
+            let output: import('./Goal').NestedAiToolResult | null = null;
+            let nestedStatuses: object[] = [];
             let executionError: unknown;
             try {
-                output = await this.dispatchTool(
+                const operation = this.dispatchTool(
                     request.name || '',
                     getProcedurePlanToolArguments(request),
                 );
+                nestedStatuses = (await Promise.allSettled(operation.statuses)).map((status) => {
+                    if (status.status === 'fulfilled') return status.value;
+                    const message = status.reason instanceof Error
+                        ? status.reason.message
+                        : String(status.reason);
+                    console.error(`Nested procedure-plan tool '${request.name || ''}' status failed.`, status.reason);
+                    return { status: 'status_failed', error: message };
+                });
+                const value = await operation.result;
+                if (value instanceof Error) throw value;
+                output = value;
             } catch (error) {
                 executionError = error;
             }
             this.active = false;
+            if (generation !== this.generation) {
+                throw new ProcedurePlanReplacedError(
+                    this.getComponentName(),
+                    'The procedure plan operation was replaced.',
+                );
+            }
             if (!this.plan) return this.result('cleared');
             const taskResult = this.toTaskResult(request, runId, output, executionError);
             this.lastRunId = runId;
             this.taskResults.push(taskResult);
             if (executionError !== undefined) {
+                this.resolveProgress(this.plan.currentStep, {
+                    workflow: 'procedure_plan',
+                    request_index: this.plan.currentStep,
+                    title: request.title,
+                    tool_name: request.name || '',
+                    status: 'failed',
+                    error: executionError instanceof Error ? executionError.message : String(executionError),
+                    nested_statuses: nestedStatuses,
+                });
                 this.onError(serializeProcedurePlanRequest(request), executionError);
                 this.publish({
                     ...this.plan!,
@@ -208,6 +353,15 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
                 return this.result('failed', this.plan.requests[this.plan.currentStep], runId);
             }
             const nextIndex = this.plan.currentStep + 1;
+            this.resolveProgress(this.plan.currentStep, {
+                workflow: 'procedure_plan',
+                request_index: this.plan.currentStep,
+                title: request.title,
+                tool_name: request.name || '',
+                status: 'completed',
+                output,
+                nested_statuses: nestedStatuses,
+            });
             this.publish({
                 ...this.plan,
                 currentStep: nextIndex,
@@ -222,7 +376,7 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
     private toTaskResult(
         request: ProcedurePlanRequestSnapshot,
         runId: string,
-        output: Record<string, unknown> | null,
+        output: import('./Goal').NestedAiToolResult | null,
         error: unknown,
     ): ProcedurePlanTaskResult {
         return {

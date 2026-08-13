@@ -1,6 +1,19 @@
 export { AiToolComponentBase } from './AiToolComponentBase';
 export type { AiToolComponentSnapshotListener } from './AiToolComponentBase';
 export {
+    createAiToolDeferred,
+    createAiToolOperation,
+    createAiToolOperationFrom,
+    mapAiToolOperation,
+    resolvedAiToolOperation,
+} from './ai-tool-operation';
+export type {
+    AiToolDeferred,
+    AiToolOperation,
+    AiToolOperationResult,
+    AiToolOperationStatus,
+} from './ai-tool-operation';
+export {
     default as ProcedurePlan,
     PROCEDURE_PLAN_STEP_STATUSES,
     ProcedurePlanRunner,
@@ -21,6 +34,7 @@ export type {
     ProcedurePlanAdvanceResult,
     ProcedurePlanHandle,
     ProcedurePlanProps,
+    ProcedurePlanProgressStatus,
     ProcedurePlanRequest,
     ProcedurePlanRequestSnapshot,
     ProcedurePlanRunResult,
@@ -37,11 +51,11 @@ export {
     LiveRangeTodoListRunner,
 } from './LiveRangeTodoList';
 export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from './LiveRangeTodoList';
-export type { TaskStartFunction } from './task-start-function';
 export type {
     JsonPrimitive,
     JsonValue,
     LiveRangeTodoContent,
+    LiveRangeTodoDueStatus,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
@@ -50,8 +64,6 @@ export type {
     LiveRangeTodoListToolResult,
     LiveRangeTodoSnapshotEvent,
     LiveRangeTodoStatus,
-    LiveRangeTodoTaskDescriptor,
-    LiveRangeTodoTaskStartFunctionFactory,
 } from './live-range-todo-list-types';
 export {
     default as Goal,
@@ -75,6 +87,7 @@ export type {
     GoalDisplayProps,
     GoalHandle,
     GoalProps,
+    GoalProgressStatus,
     GoalRunResult,
     GoalRequest,
     GoalSnapshot,
@@ -86,4 +99,5 @@ export type {
     GoalStepStatus,
     GoalTaskDescriptor,
     GoalTaskResult,
+    NestedAiToolResult,
 } from './Goal';

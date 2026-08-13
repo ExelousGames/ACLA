@@ -101,10 +101,11 @@ describe('formatToolResultForLlm', () => {
             event: 'custom_alert',
             section: 'T1',
             telemetry_rows: [{}, {}],
-        })).toEqual({
+        }, 'workflow-test')).toEqual({
             type: 'tool_result',
-            id: undefined,
+            id: 'workflow-test',
             name: 'custom_alert',
+            final: false,
             result: {
                 event: 'custom_alert',
                 section: 'T1',
@@ -140,10 +141,11 @@ describe('formatToolResultForLlm', () => {
                     segments: [{ id: 'segment-1', labels: ['late brake'] }],
                 },
             },
-        })).toEqual({
+        }, 'workflow-test')).toEqual({
             type: 'tool_result',
-            id: undefined,
+            id: 'workflow-test',
             name: 'live_performance_analyst',
+            final: false,
             result: {
                 source: 'live_performance_analyst',
                 agent_mode: 'live_performance_analyst',

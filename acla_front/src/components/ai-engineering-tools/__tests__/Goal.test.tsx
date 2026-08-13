@@ -6,6 +6,7 @@ import {
     validateGoalRequest,
     type GoalRequest,
 } from '../Goal';
+import { createAiToolOperationFrom, resolvedAiToolOperation } from '../ai-tool-operation';
 
 const request = (): GoalRequest => ({
     name: 'Drive a clean lap',
@@ -36,15 +37,16 @@ describe('Goal descriptors', () => {
 describe('GoalRunner central dispatch callback', () => {
     it('executes ordered steps and determination through the injected dispatcher', async () => {
         const order: string[] = [];
-        const dispatch = jest.fn(async (name: string, args?: Record<string, unknown>) => {
+        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => {
             order.push(args?.limit ? `${name}:${args.limit}` : name);
-            return name === 'determine'
+            return resolvedAiToolOperation(name === 'determine'
                 ? { status: 'ready', mistake_count: 0 }
-                : { status: 'complete' };
+                : { status: 'complete' });
         });
         const runner = new GoalRunner('goal', dispatch);
+        const operation = runner.create(request());
 
-        await expect(runner.create(request())).resolves.toMatchObject({
+        await expect(operation.result).resolves.toMatchObject({
             name: 'Drive a clean lap',
             status: 'achieved',
             actual: 0,
@@ -55,19 +57,19 @@ describe('GoalRunner central dispatch callback', () => {
 
     it('retains a failed step and retries it through the same dispatcher', async () => {
         let attempts = 0;
-        const dispatch = jest.fn(async (name: string) => {
+        const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
             if (name === 'collect' && ++attempts === 1) throw new Error('not ready');
             return name === 'determine'
                 ? { status: 'ready', mistake_count: 0 }
                 : { status: 'complete' };
-        });
+        }));
         const runner = new GoalRunner('goal', dispatch);
 
-        await expect(runner.create(request())).resolves.toMatchObject({
+        await expect(runner.create(request()).result).resolves.toMatchObject({
             status: 'failed',
             failed_step: 'collect',
         });
-        await expect(runner.retryFailedTask()).resolves.toMatchObject({ status: 'achieved' });
+        await expect(runner.retryFailedTask().result).resolves.toMatchObject({ status: 'achieved' });
         expect(attempts).toBe(2);
     });
 });

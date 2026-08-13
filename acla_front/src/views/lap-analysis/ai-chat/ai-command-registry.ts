@@ -14,8 +14,11 @@ import {
     NoLiveTelemetryError,
     RetryGoalTaskToolUnavailableError,
     ToolNotRegisteredError,
-    normalizeAiToolError,
+    createAiToolOperationFrom,
+    mapAiToolOperation,
+    type AiToolOperation,
     type AiToolExecutionOutput,
+    type AiToolStatusPayload,
 } from './ai-tool-base';
 import {
     AI_TOOL_COMPONENT_NAMES,
@@ -35,13 +38,13 @@ import type {
     ProcedurePlanHandle,
     ProcedurePlanRunResult,
     ProcedurePlanState,
+    LiveRangeTodoDueStatus,
 } from 'components/ai-engineering-tools';
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
 import type { AiChatHandle } from './ai-chat';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
 import type { SessionAnalysisHandle } from 'views/lap-analysis/session-analysis';
 import type { UserSummaryHandle } from 'views/user-summary/user-summary';
-import type { ToolHandlerContext } from './use-voice-conversation';
 import type { AiMapDisplayPayload } from './AiMapToolDisplay';
 
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
@@ -77,6 +80,9 @@ export interface FrontendAiCommandContext {
     sessionMode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
     conversationRole?: AgentSessionRole;
     agentMode?: AgentSessionMode;
+    enrichLiveRangeTodoStatus?: (
+        status: LiveRangeTodoDueStatus,
+    ) => AiToolStatusPayload | PromiseLike<AiToolStatusPayload>;
 }
 
 export interface OpportunityAgentState {
@@ -200,7 +206,7 @@ export const startAgentRuntime = async (
     agentMode: AgentSessionMode,
     context: AiCommandRegistryContext,
     args: Record<string, unknown>,
-    ctx: ToolHandlerContext,
+    publishStatus: (data: Record<string, unknown>) => void = () => undefined,
 ): Promise<AiToolExecutionOutput> => {
     if (!isLiveSessionContext(context)) {
         const ErrorType = getLiveUnavailableError(context);
@@ -239,7 +245,7 @@ export const startAgentRuntime = async (
                     if (state.lastAlertKey !== key || now - state.lastAlertAt > OVERTAKE_AGENT_REPEAT_ALERT_MS) {
                         state.lastAlertKey = key;
                         state.lastAlertAt = now;
-                        ctx.sendToolStatus({ ...tactical, source: 'overtake_agent', agent_mode: agentMode });
+                        publishStatus({ ...tactical, source: 'overtake_agent', agent_mode: agentMode });
                     }
                 }
                 return { status: 'checked', tactical_state: tactical, telemetry_rows: telemetry.length };
@@ -349,10 +355,6 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
 
 export type FrontendAiToolName = typeof FRONTEND_AI_TOOL_NAMES[number];
 type WorkflowOwner = 'chat' | 'goal' | 'procedure_plan';
-type AiCommandHandler = (
-    args: Record<string, any>,
-    ctx: ToolHandlerContext,
-) => Promise<AiToolExecutionOutput>;
 
 type FrontendAiToolDefinition = {
     readonly name: FrontendAiToolName;
@@ -360,9 +362,8 @@ type FrontendAiToolDefinition = {
     readonly execute: (
         context: FrontendAiCommandContext,
         args: Record<string, any>,
-        ctx: ToolHandlerContext,
         dispatchNested: AiToolDispatcher,
-    ) => Promise<Record<string, unknown>> | Record<string, unknown>;
+    ) => AiToolOperation<AiToolExecutionOutput, AiToolStatusPayload>;
 };
 
 const getDirectory = (context: FrontendAiCommandContext): AiToolComponentRefDirectory => {
@@ -457,7 +458,7 @@ const assertAvailable = (
     }
 };
 
-const definitions: readonly FrontendAiToolDefinition[] = Object.freeze([
+const definitionList = Object.freeze([
     {
         name: 'start_agent_session',
         componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
@@ -473,14 +474,19 @@ const definitions: readonly FrontendAiToolDefinition[] = Object.freeze([
     {
         name: 'set_live_range_todo_list',
         componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args, ctx) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
-            .createLiveRangeTodoList(args, ctx.sendToolStatus),
+        execute: (context, args) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+            .createLiveRangeTodoList(args),
     },
     {
         name: 'update_live_range_todo_list',
         componentName: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-        execute: (context, args) => getComponent<LiveRangeTodoListHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
-            .updateForAi(args),
+        execute: (context, args) => {
+            const operation = getComponent<LiveRangeTodoListHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
+                .updateForAi(args);
+            return context.enrichLiveRangeTodoStatus
+                ? mapAiToolOperation(operation, (result) => result, context.enrichLiveRangeTodoStatus)
+                : operation;
+        },
     },
     {
         name: 'get_live_range_todo_list',
@@ -491,8 +497,8 @@ const definitions: readonly FrontendAiToolDefinition[] = Object.freeze([
     {
         name: 'collect_live_baseline',
         componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context, args, ctx) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
-            .collectLiveBaselineForAi(args, ctx.toolRunId),
+        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
+            .collectLiveBaselineForAi(args),
     },
     {
         name: 'restart_live_baseline',
@@ -515,7 +521,7 @@ const definitions: readonly FrontendAiToolDefinition[] = Object.freeze([
     {
         name: 'create_goal',
         componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args, _ctx, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
             .createGoal(args, dispatchNested),
     },
     {
@@ -539,7 +545,7 @@ const definitions: readonly FrontendAiToolDefinition[] = Object.freeze([
     {
         name: 'set_procedure_plan',
         componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args, _ctx, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        execute: (context, args, dispatchNested) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
             .createProcedurePlan(args, dispatchNested),
     },
     {
@@ -617,55 +623,64 @@ const definitions: readonly FrontendAiToolDefinition[] = Object.freeze([
         execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
             .classifyLiveSectionForAi(args),
     },
-]);
+] as const satisfies readonly FrontendAiToolDefinition[]);
+
+type FrontendAiToolDefinitionMap = {
+    [TDefinition in typeof definitionList[number] as TDefinition['name']]: TDefinition;
+};
+
+export type FrontendAiToolOperation<TName extends FrontendAiToolName> = ReturnType<
+    FrontendAiToolDefinitionMap[TName]['execute']
+>;
+
+export type AiCommandRegistry = {
+    [TName in FrontendAiToolName]: (
+        args: Record<string, unknown>,
+    ) => FrontendAiToolOperation<TName>;
+};
+
+const definitions = Object.fromEntries(
+    definitionList.map((definition) => [definition.name, definition]),
+) as FrontendAiToolDefinitionMap;
 
 export const frontendAiToolRegistry = definitions;
 
-const definitionByName = new Map(definitions.map((definition) => [definition.name, definition]));
-
-const dispatchAiTool = async (
+const dispatchAiTool = (
     context: FrontendAiCommandContext,
     name: string,
     args: Record<string, unknown>,
-    ctx: ToolHandlerContext,
     owner: WorkflowOwner,
-): Promise<Record<string, unknown>> => {
-    const definition = definitionByName.get(name as FrontendAiToolName);
-    if (!definition) throw new ToolNotRegisteredError(`Tool '${name}' is not registered.`);
-    assertAvailable(context, definition.name, owner);
-    const dispatchNested: AiToolDispatcher = (nestedName, nestedArgs = {}) => dispatchAiTool(
-        context,
-        nestedName,
-        nestedArgs,
-        {
-            ...ctx,
-            toolRunId: `nested-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-            toolName: nestedName,
-        },
-        definition.name === 'create_goal' ? 'goal' : 'procedure_plan',
-    );
+): AiToolOperation<AiToolExecutionOutput, AiToolStatusPayload> => {
     try {
-        return await definition.execute(context, args, ctx, dispatchNested);
+        const definition = definitions[name as FrontendAiToolName];
+        if (!definition) throw new ToolNotRegisteredError(`Tool '${name}' is not registered.`);
+        assertAvailable(context, definition.name, owner);
+        const dispatchNested: AiToolDispatcher = (nestedName, nestedArgs = {}) => dispatchAiTool(
+            context,
+            nestedName,
+            nestedArgs,
+            definition.name === 'create_goal' ? 'goal' : 'procedure_plan',
+        ) as ReturnType<AiToolDispatcher>;
+        return definition.execute(context, args, dispatchNested);
     } catch (error) {
-        throw normalizeAiToolError(error);
+        return createAiToolOperationFrom(() => { throw error; });
     }
 };
 
 export const createAiCommandRegistry = (
     context: FrontendAiCommandContext,
-): Record<FrontendAiToolName, AiCommandHandler> => Object.fromEntries(
-    definitions.map((definition) => [
+): AiCommandRegistry => Object.fromEntries(
+    definitionList.map((definition) => [
         definition.name,
-        (args: Record<string, any>, ctx: ToolHandlerContext) => dispatchAiTool(
+        (args: Record<string, any>) => dispatchAiTool(
             context,
             definition.name,
             args,
-            ctx,
             'chat',
         ),
     ]),
-) as Record<FrontendAiToolName, AiCommandHandler>;
+) as AiCommandRegistry;
 
 export const isAiCommandName = (name: string): name is FrontendAiToolName => (
-    definitionByName.has(name as FrontendAiToolName)
+    name in definitions
 );

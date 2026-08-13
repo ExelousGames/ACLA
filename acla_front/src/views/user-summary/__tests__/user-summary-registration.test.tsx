@@ -43,14 +43,16 @@ describe('UserSummary named component handle', () => {
         mockUseAiLabels.mockReturnValue({ getLabelName: (id: string) => id, getCategoryLabels: () => [], loading: false, error: '' });
     });
 
-    it('exposes exact identity and fresh summary operations', () => {
+    it('exposes exact identity and fresh summary operations', async () => {
         const view = render(<Harness />);
         const ref = directory!.findComponentRef<UserSummaryHandle>(AI_TOOL_COMPONENT_NAMES.USER_SUMMARY)!;
         expect(ref.current!.getComponentName()).toBe(AI_TOOL_COMPONENT_NAMES.USER_SUMMARY);
-        expect(ref.current!.getAvailableUserSummaryMaps()).toMatchObject({ status: 'ready', map_count: 1 });
+        await expect(ref.current!.getAvailableUserSummaryMaps().result)
+            .resolves.toMatchObject({ status: 'ready', map_count: 1 });
 
         mockUseUserSummary.mockReturnValue({ userSummary: summary, userSummaryLoading: true, userSummaryError: '', loadUserSummary: jest.fn() });
         view.rerender(<Harness />);
-        expect(ref.current!.getAvailableUserSummaryMaps()).toMatchObject({ status: 'loading' });
+        await expect(ref.current!.getAvailableUserSummaryMaps().result)
+            .resolves.toMatchObject({ status: 'loading' });
     });
 });

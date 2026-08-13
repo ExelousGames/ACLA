@@ -199,7 +199,7 @@ describe('useVoiceConversation chat session lifecycle', () => {
 
         expect(result.current.sendUserText('hello')).toBe(false);
         expect(result.current.sendToolStatus({ status: 'working' })).toBe(false);
-        expect(result.current.sendToolResult({ id: 'tool-1', name: 'test', result: {} })).toBe(false);
+        expect(result.current.sendToolResult({ id: 'tool-1', name: 'test', final: true, result: {} })).toBe(false);
         await expect(result.current.executeToolCall({ name: 'test' })).resolves.toBeNull();
         act(() => mockWorkletNodes[0].port.onmessage?.({
             data: { type: 'pcm', buffer: new ArrayBuffer(4) },

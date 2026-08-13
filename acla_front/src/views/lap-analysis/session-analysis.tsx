@@ -38,6 +38,36 @@ import {
     openAnalysisResultsVisualization,
     resolveAnalysisLabel,
 } from './visualization/open-analysis-results-visualization';
+import {
+    createAiToolOperationFrom,
+    type AiToolOperation,
+} from 'components/ai-engineering-tools';
+
+export type RecordedAnalysisAiResult = {
+    status: unknown;
+    message?: unknown;
+    session_id: unknown;
+    session_name: unknown;
+    map: unknown;
+    car: unknown;
+    analysis: unknown;
+};
+
+export type RecordedSessionContextAiResult = {
+    status: 'ready';
+    session_id: string;
+    track: unknown;
+    car: unknown;
+};
+
+export type RecordedTelemetryAnalysisAiResult = {
+    status: unknown;
+    message?: unknown;
+    analysis: unknown;
+    telemetry_stats: null;
+    chart_id: string | null;
+    component_name: string | null;
+};
 
 const RECORDED_AI_ANALYSIS_TIMEOUT_MS = 120000;
 
@@ -78,10 +108,10 @@ export interface SessionAnalysisHandle extends NamedAiToolComponentHandle {
     requestLapComparison(sessionIds: string[], metrics?: string[]): Promise<any>;
     requestExpertLineGuidance(sessionId: string | undefined, dataTypes?: string[]): Promise<any>;
     requestTelemetryData(sessionId: string | undefined, dataTypes?: string[]): Promise<any>;
-    runRecordedAnalysisForAi(args: Record<string, any>): Promise<Record<string, unknown>>;
-    getRecordedAnalysisForAi(args: Record<string, any>): Record<string, unknown>;
-    getRecordedSessionContextForAi(args: Record<string, any>): Record<string, unknown>;
-    analyzeTelemetryForAi(args: Record<string, any>): Promise<Record<string, unknown>>;
+    runRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<RecordedAnalysisAiResult>;
+    getRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<RecordedAnalysisAiResult>;
+    getRecordedSessionContextForAi(args: Record<string, any>): AiToolOperation<RecordedSessionContextAiResult>;
+    analyzeTelemetryForAi(args: Record<string, any>): AiToolOperation<RecordedTelemetryAnalysisAiResult>;
 }
 
 const getAiAnalysisLimit = (value: unknown): number => {
@@ -96,7 +126,7 @@ const compactRecordedAnalysisForAi = (
     state: RecordedAiAnalysisState,
     limit: number,
     getLabelName: (labelId: string) => string | undefined,
-): Record<string, unknown> => {
+): RecordedAnalysisAiResult => {
     if (!selected?.SessionId) {
         throw new NoRecordedSessionError(componentName, 'No recorded session is selected.');
     }
@@ -313,7 +343,7 @@ const SessionAnalysis = ({ name }: { name: string }) => {
                     data_types: dataTypes,
                 }),
             ),
-            runRecordedAnalysisForAi: async (args) => {
+            runRecordedAnalysisForAi: (args) => createAiToolOperationFrom(async () => {
                 const state = await analysisContextRef.current.runRecordedAiAnalysis({
                     force: args.force === true,
                 });
@@ -333,16 +363,16 @@ const SessionAnalysis = ({ name }: { name: string }) => {
                     getAiAnalysisLimit(args.limit),
                     (labelId) => resolveAnalysisLabel(componentRefs, labelId),
                 );
-            },
-            getRecordedAnalysisForAi: (args) => compactRecordedAnalysisForAi(
+            }),
+            getRecordedAnalysisForAi: (args) => createAiToolOperationFrom(() => compactRecordedAnalysisForAi(
                 name,
                 analysisContextRef.current.sessionSelected,
                 analysisContextRef.current.mapSelected,
                 analysisContextRef.current.recordedAiAnalysis,
                 getAiAnalysisLimit(args.limit),
                 (labelId) => resolveAnalysisLabel(componentRefs, labelId),
-            ),
-            getRecordedSessionContextForAi: (args) => {
+            )),
+            getRecordedSessionContextForAi: (_args) => createAiToolOperationFrom(() => {
                 const selected = analysisContextRef.current.sessionSelected;
                 if (!selected?.SessionId) {
                     throw new NoRecordedSessionError(name, 'No recorded session is selected.');
@@ -353,8 +383,8 @@ const SessionAnalysis = ({ name }: { name: string }) => {
                     track: selected.map || analysisContextRef.current.mapSelected,
                     car: selected.car || null,
                 };
-            },
-            analyzeTelemetryForAi: async (args) => {
+            }),
+            analyzeTelemetryForAi: (args) => createAiToolOperationFrom(async () => {
                 const state = await analysisContextRef.current.runRecordedAiAnalysis({
                     force: args.force === true,
                 });
@@ -381,7 +411,7 @@ const SessionAnalysis = ({ name }: { name: string }) => {
                     telemetry_stats: null,
                     ...chart,
                 };
-            },
+            }),
         };
     }
     useRegisterAiToolComponentRef(name, componentRef.current);

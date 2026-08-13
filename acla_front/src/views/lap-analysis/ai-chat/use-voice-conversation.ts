@@ -8,9 +8,8 @@
  * - **Text frames** — JSON tool-relay messages. The backend emits
  *   `{type:"tool_call",id,name,title,arguments}` frames; this hook dispatches
  *   them through a caller-supplied handler registry and replies with
- *   `{type:"tool_result",...}`. Long-running
- *   handlers (e.g. per-turn coaching) can also push AI-visible status as
- *   `{type:"tool_result",result:{text,...}}` frames via `ctx.sendToolStatus`.
+ *   `{type:"tool_result",...}`. Workflow owners consume promise-native tool
+ *   operations and translate their status promises into non-terminal frames.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -20,14 +19,14 @@ import {
     AiToolError,
     InvalidToolCallError,
     ToolNotRegisteredError,
+    type AiToolOperation,
     type AiToolExecutionOutput,
+    type AiToolNormalOutput,
+    type AiToolStatusPayload,
     type SerializedErrorCause,
-    getToolEnvelopeUiOutput,
-    isToolOutputEnvelope,
     normalizeAiToolError,
     serializeErrorCause,
 } from './ai-tool-base';
-import { getAiToolResult } from './ai-tool-result-boundary';
 
 const VOICE_WS_CONNECT_TIMEOUT_MS = 15000;
 const INLINE_FUNCTION_CALL_RE = /<function=([a-zA-Z0-9_.:-]+)\s*>?([\s\S]*?)<\/function>/g;
@@ -39,20 +38,10 @@ export type VoiceConversationState =
     | 'speaking'       // server is sending us audio
     | 'error';
 
-/** Context passed to every frontend tool handler. */
-export interface ToolHandlerContext {
-    toolRunId?: string;
-    toolName?: string;
-    /** Push a background status update as a `tool_result` frame on the open
-     *  WS. Safe to call from a monitoring agent at any time. */
-    sendToolStatus: (data: Record<string, unknown>) => void;
-}
-
-/** One frontend tool handler. Return value becomes the `tool_result`. */
+/** One frontend tool handler. Components expose operations, never transports. */
 export type FrontendToolHandler = (
     args: Record<string, unknown>,
-    ctx: ToolHandlerContext,
-) => Promise<AiToolExecutionOutput> | AiToolExecutionOutput;
+) => AiToolOperation<AiToolNormalOutput, AiToolStatusPayload>;
 
 export type AiSessionContext = Record<string, unknown>;
 export type ConversationRole = 'main' | 'agent';
@@ -74,6 +63,7 @@ type VoiceEventPayload =
         ok?: boolean;
         errorName?: string | null;
         message?: string | null;
+        final: boolean;
     };
 
 export type VoiceEvent = VoiceEventPayload & { clientSessionId?: string };
@@ -140,8 +130,9 @@ export interface VoiceConversation {
 }
 
 export interface ToolResultFrame {
-    id?: string;
-    name?: string;
+    id: string;
+    name: string;
+    final: boolean;
     result: unknown;
     arguments?: Record<string, unknown>;
 }
@@ -174,7 +165,6 @@ type ToolEventEmitter = (event: VoiceEvent) => void;
 interface ExecuteSubscribedToolOptions {
     call: SubscribedToolCall;
     handlers: Record<string, FrontendToolHandler>;
-    baseContext: Pick<ToolHandlerContext, 'sendToolStatus'>;
     sendText: ToolFrameSender;
     emitEvent?: ToolEventEmitter;
     makeRunId?: () => string;
@@ -219,28 +209,23 @@ export const extractInlineFunctionCalls = (
     return { cleanText, calls };
 };
 
-const getToolResultForAi = (result: unknown): unknown => {
-    const aiResult = getAiToolResult(result);
-    return aiResult && typeof aiResult === 'object' && !Array.isArray(aiResult)
-        ? aiResult
-        : { value: aiResult };
-};
-
-const getToolResultForUi = (result: unknown): unknown => (
-    isToolOutputEnvelope(result)
-        ? getToolEnvelopeUiOutput(result)
-        : result
+const getToolResultForAi = (result: unknown): unknown => (
+    result && typeof result === 'object' && !Array.isArray(result)
+        ? result
+        : { value: result }
 );
 
 const buildToolResultFrame = (
     id: string,
     name: string,
+    final: boolean,
     result: unknown,
 ) => {
     return {
         type: 'tool_result',
         id,
         name,
+        final,
         result,
     };
 };
@@ -285,7 +270,6 @@ const defaultToolRunId = () =>
 export const executeSubscribedFrontendTool = async ({
     call,
     handlers,
-    baseContext,
     sendText,
     emitEvent,
     makeRunId = defaultToolRunId,
@@ -297,12 +281,14 @@ export const executeSubscribedFrontendTool = async ({
         ? call.arguments
         : {};
 
+    sendText(buildToolResultFrame(id, name, false, { status: 'started' }));
+
     if (!name) {
         const error = new InvalidToolCallError(
             'Tool call is missing a name.',
         );
         const failure = buildFailedToolResult(error);
-        sendText(buildToolResultFrame(id, name, failure));
+        sendText(buildToolResultFrame(id, name, true, failure));
         return buildFailedToolSubscriptionResult(id, name, error);
     }
 
@@ -313,14 +299,10 @@ export const executeSubscribedFrontendTool = async ({
         title,
         status: 'started',
         arguments: args,
+        final: false,
     });
 
     const handler = handlers[name];
-    const scopedContext: ToolHandlerContext = {
-        toolRunId: id,
-        toolName: name,
-        sendToolStatus: baseContext.sendToolStatus,
-    };
 
     try {
         if (!handler) {
@@ -329,24 +311,57 @@ export const executeSubscribedFrontendTool = async ({
             );
         }
 
-        const result = await handler(args, scopedContext);
+        const operation = handler(args);
+        operation.statuses.forEach((statusPromise) => {
+            void statusPromise.then((status) => {
+                sendText(buildToolResultFrame(id, name, false, getToolResultForAi(status)));
+                emitEvent?.({
+                    kind: 'tool_call',
+                    runId: id,
+                    name,
+                    title,
+                    status: 'started',
+                    result: status,
+                    ok: true,
+                    final: false,
+                });
+            }, (statusError) => {
+                const error = normalizeAiToolError(statusError);
+                const failure = { ...buildFailedToolResult(error), status: 'status_failed' };
+                console.error(`[ai-tool] '${name}' status failed.`, error);
+                sendText(buildToolResultFrame(id, name, false, failure));
+                emitEvent?.({
+                    kind: 'tool_call',
+                    runId: id,
+                    name,
+                    title,
+                    status: 'started',
+                    result: failure,
+                    ok: false,
+                    errorName: error.name,
+                    message: error.message,
+                    final: false,
+                });
+            });
+        });
+        const result = await operation.result;
         if (result instanceof Error) throw result;
-        sendText(buildToolResultFrame(id, name, getToolResultForAi(result)));
-        const envelopeComplete = isToolOutputEnvelope(result) ? result.final : true;
+        sendText(buildToolResultFrame(id, name, true, getToolResultForAi(result)));
         emitEvent?.({
             kind: 'tool_call',
             runId: id,
             name,
             title,
-            status: envelopeComplete ? 'completed' : 'started',
-            result: getToolResultForUi(result),
+            status: 'completed',
+            result,
             ok: true,
+            final: true,
         });
         return { id, name, ok: true, result };
     } catch (err) {
         const error = normalizeAiToolError(err);
         const failure = buildFailedToolResult(error);
-        sendText(buildToolResultFrame(id, name, failure));
+        sendText(buildToolResultFrame(id, name, true, failure));
         emitEvent?.({
             kind: 'tool_call',
             runId: id,
@@ -356,6 +371,7 @@ export const executeSubscribedFrontendTool = async ({
             ok: false,
             errorName: error.name,
             message: error.message,
+            final: true,
         });
         return buildFailedToolSubscriptionResult(id, name, error);
     }
@@ -733,13 +749,6 @@ export function useVoiceConversation(
                 }
                 catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
             };
-            const toolCtx: Pick<ToolHandlerContext, 'sendToolStatus'> = {
-                sendToolStatus: (data) => {
-                    emitConnectionEvent({ kind: 'tool_status', data });
-                    sendText(buildFormattedToolResultFrame(data));
-                },
-            };
-
             const handleToolCall = async (msg: {
                 id?: string; name?: string; title?: string; arguments?: Record<string, unknown>;
             }) => {
@@ -752,7 +761,6 @@ export function useVoiceConversation(
                 await executeSubscribedFrontendTool({
                     call: { id, name, title: msg.title, arguments: msg.arguments },
                     handlers: toolHandlersRef.current,
-                    baseContext: toolCtx,
                     sendText,
                     emitEvent: emitConnectionEvent,
                 });
@@ -766,7 +774,6 @@ export function useVoiceConversation(
                 await executeSubscribedFrontendTool({
                     call: { id, name: call.name, arguments: call.arguments },
                     handlers: toolHandlersRef.current,
-                    baseContext: toolCtx,
                     sendText,
                     emitEvent: emitConnectionEvent,
                 });
@@ -988,7 +995,7 @@ export function useVoiceConversation(
         if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
         emitVoiceEvent({ kind: 'tool_status', data });
         try {
-            const frame = buildFormattedToolResultFrame(data);
+            const frame = buildFormattedToolResultFrame(data, defaultToolRunId());
             const json = JSON.stringify(frame);
             logAiToolSend(frame, json);
             ws.send(json);
@@ -1004,8 +1011,9 @@ export function useVoiceConversation(
         if (!ws || readyWsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
             const payload = buildToolResultFrame(
-                String(frame.id || ''),
-                String(frame.name || ''),
+                frame.id,
+                frame.name,
+                frame.final,
                 getToolResultForAi(frame.result),
             );
             const json = JSON.stringify(payload);
@@ -1038,12 +1046,6 @@ export function useVoiceConversation(
         return executeSubscribedFrontendTool({
             call,
             handlers: toolHandlersRef.current,
-            baseContext: {
-                sendToolStatus: (data) => {
-                    emitVoiceEvent({ kind: 'tool_status', data });
-                    sendText(buildFormattedToolResultFrame(data));
-                },
-            },
             sendText,
             emitEvent: emitVoiceEvent,
         });

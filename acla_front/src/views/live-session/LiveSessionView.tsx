@@ -24,7 +24,11 @@ import {
     TelemetryFieldsRequiredError,
 } from 'views/lap-analysis/ai-chat/ai-tool-base';
 import apiService from 'services/api.service';
-import type { BaselineCollectionHandle } from './BaselineCollection';
+import type {
+    BaselineCollectionHandle,
+    BaselineCollectionPayload,
+    BaselineCollectionStatus,
+} from './BaselineCollection';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
 import {
     normalizeSegmentClassificationResult,
@@ -38,10 +42,61 @@ import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGa
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
-import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
+import type {
+    LiveAnalysisMistakeCountResult,
+    LiveSessionAnalysisResultPage,
+} from './live-session-analysis-results';
+import {
+    createAiToolDeferred,
+    createAiToolOperation,
+    createAiToolOperationFrom,
+    type AiToolOperation,
+} from 'components/ai-engineering-tools';
 import './live-session.css';
 
 export const LIVE_SESSION_RECORDER_HOST_ID = 'live-session-recorder-host';
+
+export type LiveTelemetryMetricAiResult = {
+    status: string;
+    message?: string;
+    [key: string]: unknown;
+};
+export type LiveEventLogAiResult = { status: 'complete'; events: unknown[] };
+export type LiveNextCornerAiResult = {
+    status: 'complete';
+    corner: { name: string; track_position: number; distance_ahead: number };
+};
+export type LiveBaselineRestartAiResult = {
+    status: 'complete';
+    progress_percent: 0;
+    message: string;
+};
+export type LiveBaselineAnalysisAiResult = {
+    status: unknown;
+    message?: unknown;
+    analysis: unknown;
+    baseline: unknown;
+    chart_id: unknown;
+    component_name: unknown;
+};
+export type LiveTelemetryAnalysisAiResult = {
+    status: 'ready' | 'empty';
+    message: string;
+    analysis: unknown;
+    telemetry_stats: { row_count: number; field_count: number };
+    chart_id: string | null;
+    component_name: string | null;
+};
+export type LiveSectionClassificationAiResult = {
+    status: 'recorded';
+    classification: unknown;
+    focus: unknown;
+    comparison: unknown;
+    analysis: unknown;
+    telemetry_stats: { row_count: number; field_count: number };
+    chart_id: string | null;
+    component_name: string | null;
+};
 
 export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     getRecordingState(): RecordingState;
@@ -56,15 +111,15 @@ export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     getLiveSectionTelemetry(args: Record<string, any>): any;
     recordLiveSectionClassification(args: Record<string, any>): any;
     getLatestAnalysisResultPage(): LiveSessionAnalysisResultPage | null;
-    queryTelemetryMetricForAi(args: Record<string, any>): Record<string, unknown>;
-    getEventLogForAi(args: Record<string, any>): Record<string, unknown>;
-    getNextCornerForAi(): Record<string, unknown>;
-    collectLiveBaselineForAi(args: Record<string, any>, runId?: string): Promise<Record<string, unknown>>;
-    restartLiveBaselineForAi(): Promise<Record<string, unknown>>;
-    analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): Promise<Record<string, unknown>>;
-    getLiveAnalysisMistakeCountForAi(): Record<string, unknown>;
-    analyzeTelemetryForAi(args: Record<string, any>): Promise<Record<string, unknown>>;
-    classifyLiveSectionForAi(args: Record<string, any>): Promise<Record<string, unknown>>;
+    queryTelemetryMetricForAi(args: Record<string, any>): AiToolOperation<LiveTelemetryMetricAiResult>;
+    getEventLogForAi(args: Record<string, any>): AiToolOperation<LiveEventLogAiResult>;
+    getNextCornerForAi(): AiToolOperation<LiveNextCornerAiResult>;
+    collectLiveBaselineForAi(args: Record<string, any>): AiToolOperation<BaselineCollectionPayload, BaselineCollectionStatus>;
+    restartLiveBaselineForAi(): AiToolOperation<LiveBaselineRestartAiResult>;
+    analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<LiveBaselineAnalysisAiResult>;
+    getLiveAnalysisMistakeCountForAi(): AiToolOperation<LiveAnalysisMistakeCountResult>;
+    analyzeTelemetryForAi(args: Record<string, any>): AiToolOperation<LiveTelemetryAnalysisAiResult>;
+    classifyLiveSectionForAi(args: Record<string, any>): AiToolOperation<LiveSectionClassificationAiResult>;
 }
 
 const normalizeTelemetryFields = (value: unknown): string[] => {
@@ -134,7 +189,7 @@ const getBaselineHandle = async (
     );
 };
 
-const compactBaselineAnalysis = (result: any): Record<string, unknown> => ({
+const compactBaselineAnalysis = (result: any): LiveBaselineAnalysisAiResult => ({
     status: result.status,
     ...(result.message ? { message: result.message } : {}),
     analysis: result.analysis ?? null,
@@ -223,7 +278,7 @@ const LiveSessionView = ({ name }: { name: string }) => {
                 const pages = liveSessionRef.current.analysisResultPages;
                 return pages[pages.length - 1] ?? null;
             },
-            queryTelemetryMetricForAi: (args) => {
+            queryTelemetryMetricForAi: (args) => createAiToolOperationFrom(() => {
                 const fields = normalizeTelemetryFields(args.fields);
                 if (fields.length === 0) {
                     throw new TelemetryFieldsRequiredError('Provide at least one telemetry field.');
@@ -242,12 +297,12 @@ const LiveSessionView = ({ name }: { name: string }) => {
                     ...(typeof message === 'string' ? { message } : {}),
                     ...values,
                 };
-            },
-            getEventLogForAi: (args) => ({
+            }),
+            getEventLogForAi: (args) => createAiToolOperationFrom(() => ({
                 status: 'complete',
                 events: liveSessionRef.current.sessionIntelligence.findEvents(args as any),
-            }),
-            getNextCornerForAi: () => {
+            })),
+            getNextCornerForAi: () => createAiToolOperationFrom(() => {
                 const corner = liveSessionRef.current.sessionIntelligence.getNextCorner();
                 if (!corner) throw new NoCornerDataError('No upcoming corner data is available.');
                 return {
@@ -258,52 +313,74 @@ const LiveSessionView = ({ name }: { name: string }) => {
                         distance_ahead: corner.distanceAhead,
                     },
                 };
-            },
-            collectLiveBaselineForAi: async (args, requestedRunId) => {
-                const handle = await getBaselineHandle(componentRefs);
-                const runId = requestedRunId
-                    || `collect-live-baseline-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-                const payload = handle.startCollection(runId);
-                if (payload.status === 'complete') {
-                    return { status: payload.status, message: payload.message };
-                }
-                return new Promise<Record<string, unknown>>((resolve, reject) => {
-                    const timeoutSeconds = Number(args.timeout_seconds);
-                    const timeoutMs = Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
+            }),
+            collectLiveBaselineForAi: (args) => {
+                const timeoutSeconds = Number(args.timeout_seconds);
+                const options = {
+                    timeoutMs: Number.isFinite(timeoutSeconds) && timeoutSeconds > 0
                         ? timeoutSeconds * 1000
-                        : 600000;
-                    const timeoutId = window.setTimeout(() => {
-                        unsubscribe();
-                        reject(new BaselineCollectionIncompleteError(
-                            AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
-                            'Baseline collection did not complete before the timeout.',
-                        ));
-                    }, timeoutMs);
-                    const unsubscribe = handle.subscribeToolOutput((event) => {
-                        if (event.runId !== runId || !event.final) return;
-                        window.clearTimeout(timeoutId);
-                        unsubscribe();
-                        resolve({ status: event.output.status, message: event.output.message });
-                    });
-                });
+                        : 600000,
+                };
+                const mountedHandle = componentRefs?.findComponentRef<BaselineCollectionHandle>(
+                    AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                )?.current;
+                if (mountedHandle) return mountedHandle.startCollection(options);
+
+                const statusDeferred = [0, 1, 25, 50, 75, 100]
+                    .map(() => createAiToolDeferred<BaselineCollectionStatus>());
+                const result = (async () => {
+                    try {
+                        const handle = await getBaselineHandle(componentRefs);
+                        const operation = handle.startCollection(options);
+                        operation.statuses.forEach((status, index) => {
+                            void status.then(
+                                (value) => statusDeferred[index]?.resolve(value),
+                                (error) => statusDeferred[index]?.reject(error),
+                            );
+                        });
+                        operation.statuses.slice(statusDeferred.length).forEach((status) => {
+                            void status.catch(() => undefined);
+                        });
+                        const value = await operation.result;
+                        statusDeferred.forEach((deferred, index) => {
+                            if (!deferred.settled) deferred.resolve({
+                                ...(value instanceof Error
+                                    ? { status: 'waiting_for_start' as const, progress_percent: 0, car: null, track: null, message: value.message }
+                                    : value),
+                                event: index <= 1 ? 'baseline_collecting' : 'baseline_progress',
+                                milestone: [0, 1, 25, 50, 75, 100][index],
+                                skipped: true,
+                            });
+                        });
+                        return value;
+                    } catch (error) {
+                        statusDeferred.forEach((deferred) => deferred.reject(error));
+                        throw error;
+                    }
+                })();
+                return createAiToolOperation(result, statusDeferred.map((status) => status.promise));
             },
-            restartLiveBaselineForAi: async () => {
+            restartLiveBaselineForAi: () => createAiToolOperationFrom(async () => {
                 const handle = await getBaselineHandle(componentRefs);
-                handle.restartCollection();
+                const restart = handle.restartCollection();
+                const restarted = await restart.result;
+                if (restarted instanceof Error) return restarted;
                 return {
                     status: 'complete',
                     progress_percent: 0,
                     message: 'Baseline collection restart completed.',
                 };
-            },
-            analyzeLiveRecordedAnalysisForAi: async (args) => {
+            }),
+            analyzeLiveRecordedAnalysisForAi: (args) => createAiToolOperationFrom(async () => {
                 const handle = await getBaselineHandle(componentRefs);
-                return compactBaselineAnalysis(await handle.requestAnalysis(args));
-            },
-            getLiveAnalysisMistakeCountForAi: () => getLiveAnalysisMistakeCount(
+                const analysis = await handle.requestAnalysis(args).result;
+                if (analysis instanceof Error) return analysis;
+                return compactBaselineAnalysis(analysis);
+            }),
+            getLiveAnalysisMistakeCountForAi: () => createAiToolOperationFrom(() => getLiveAnalysisMistakeCount(
                 liveSessionRef.current.analysisResultPages.at(-1) ?? null,
-            ),
-            analyzeTelemetryForAi: async (args) => {
+            )),
+            analyzeTelemetryForAi: (args) => createAiToolOperationFrom(async () => {
                 const rows = liveSessionRef.current.sessionIntelligence.getRowsForScope(args.scope);
                 if (rows.length === 0) {
                     throw new NoTelemetryForScopeError('No telemetry rows matched the requested scope.');
@@ -346,8 +423,8 @@ const LiveSessionView = ({ name }: { name: string }) => {
                         { cause: error },
                     );
                 }
-            },
-            classifyLiveSectionForAi: async (args) => {
+            }),
+            classifyLiveSectionForAi: (args) => createAiToolOperationFrom(async () => {
                 const baseline = await getBaselineHandle(componentRefs);
                 if (!baseline.getLapRecord()?.records?.length) {
                     throw new BaselineCollectionIncompleteError(
@@ -433,10 +510,10 @@ const LiveSessionView = ({ name }: { name: string }) => {
                         { cause: error },
                     );
                 }
-            },
+            }),
         };
     }
-    useRegisterAiToolComponentRef(name, componentRef.current);
+    useRegisterAiToolComponentRef(name, componentRef.current!);
 
 
     const { restorationError, sessionGame } = liveSession;

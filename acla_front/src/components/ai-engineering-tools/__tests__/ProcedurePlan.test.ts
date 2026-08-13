@@ -6,6 +6,7 @@ import {
     isProcedurePlanOptOutRequest,
     type ProcedurePlanState,
 } from '../ProcedurePlan';
+import { createAiToolOperationFrom, resolvedAiToolOperation } from '../ai-tool-operation';
 
 const plan = (): ProcedurePlanState => ({
     goal: 'Review the lap',
@@ -44,14 +45,16 @@ describe('ProcedurePlan descriptors', () => {
 
 describe('ProcedurePlanRunner central dispatch callback', () => {
     it('executes requests in order and returns dispatcher outputs unchanged', async () => {
-        const dispatch = jest.fn(async (name: string, args?: Record<string, unknown>) => ({
+        const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => resolvedAiToolOperation({
             status: 'complete',
             name,
             lap: args?.lap,
         }));
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
 
-        const result = await runner.replace(plan());
+        const result = await runner.replace(plan()).result;
+        expect(result).not.toBeInstanceOf(Error);
+        if (result instanceof Error) throw result;
 
         expect(dispatch).toHaveBeenNthCalledWith(1, 'read', { lap: 2 });
         expect(dispatch).toHaveBeenNthCalledWith(2, 'compare', {});
@@ -65,13 +68,13 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
 
     it('keeps a failed step available for retry', async () => {
         let attempts = 0;
-        const dispatch = jest.fn(async (name: string) => {
+        const dispatch = jest.fn((name: string) => createAiToolOperationFrom(() => {
             if (name === 'read' && ++attempts === 1) throw new Error('offline');
             return { status: 'complete' };
-        });
+        }));
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
 
-        await expect(runner.replace(plan())).resolves.toMatchObject({ status: 'failed' });
+        await expect(runner.replace(plan()).result).resolves.toMatchObject({ status: 'failed' });
         await expect(runner.retryFailedStep()).resolves.toMatchObject({ status: 'complete' });
         expect(attempts).toBe(2);
     });

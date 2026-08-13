@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { DesktopGame, DesktopGameContextValue } from 'contexts/DesktopGameContext';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import { LiveSessionContext } from '../LiveSessionContext';
@@ -10,6 +10,8 @@ import {
     useAiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
 import type { LiveSessionHandle } from '../LiveSessionView';
+import { BaselineCollectionAlreadyStartedError } from 'contexts/AiToolComponentError';
+import { createAiToolOperationFrom } from 'components/ai-engineering-tools';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: jest.fn(),
@@ -177,6 +179,42 @@ describe('LiveSessionView', () => {
         });
         expect(handle.getRecordingState()).toBe(RecordingState.RECORDING);
         expect(handle.getCurrentTelemetry()).toEqual({ Physics_speed_kmh: 210 });
+    });
+
+    it('propagates a mounted collector duplicate-start failure without progress statuses', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const failure = new BaselineCollectionAlreadyStartedError(
+            AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            'Baseline collection is already in progress.',
+        );
+        const startCollection = jest.fn(() => createAiToolOperationFrom(() => { throw failure; }));
+
+        render(
+            <AiToolComponentRefProvider>
+                <LiveSessionContext.Provider value={createRuntime('acc') as any}>
+                    <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+                </LiveSessionContext.Provider>
+                <RegistrationObserver />
+            </AiToolComponentRefProvider>,
+        );
+        act(() => {
+            componentDirectory!.reserveComponentRef(
+                AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                Symbol('baseline-collection-test'),
+                {
+                    getComponentName: () => AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+                    startCollection,
+                } as any,
+            );
+        });
+        const handle = componentDirectory!
+            .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+
+        const operation = handle.collectLiveBaselineForAi({ timeout_seconds: 12 });
+
+        expect(startCollection).toHaveBeenCalledWith({ timeoutMs: 12_000 });
+        expect(operation.statuses).toHaveLength(0);
+        await expect(operation.result).rejects.toBe(failure);
     });
 
     it('reads the most recently appended analysis page regardless of the displayed page', () => {

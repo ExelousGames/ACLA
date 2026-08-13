@@ -6,6 +6,7 @@ import { AiToolComponentBase } from './AiToolComponentBase';
 import type {
     JsonValue,
     LiveRangeTodoContent,
+    LiveRangeTodoDueStatus,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
@@ -13,10 +14,14 @@ import type {
     LiveRangeTodoListSnapshot,
     LiveRangeTodoListToolResult,
     LiveRangeTodoSnapshotEvent,
-    LiveRangeTodoTaskDescriptor,
-    LiveRangeTodoTaskStartFunctionFactory,
 } from './live-range-todo-list-types';
-import type { TaskStartFunction } from './task-start-function';
+import {
+    createAiToolDeferred,
+    createAiToolOperation,
+    createAiToolOperationFrom,
+    type AiToolDeferred,
+    type AiToolOperation,
+} from './ai-tool-operation';
 
 const DEFAULT_LEAD_TIME_SECONDS = 2;
 const SAMPLE_WINDOW_MS = 2000;
@@ -30,15 +35,16 @@ export interface LiveRangeTelemetrySample {
 }
 
 interface RuntimeEvent extends LiveRangeTodoSnapshotEvent {
-    taskStart: TaskStartFunction;
     due?: boolean;
 }
 
 type RuntimeSnapshot = Omit<LiveRangeTodoListSnapshot, 'events'> & { events: RuntimeEvent[] };
 
-interface ActiveRun {
-    controller: AbortController;
-    token: symbol;
+interface OwnedInvocation {
+    id: symbol;
+    eventIds: Set<string>;
+    statuses: Map<string, AiToolDeferred<LiveRangeTodoDueStatus>>;
+    result: AiToolDeferred<LiveRangeTodoListAiResult>;
 }
 
 const isRecord = (value: unknown): value is Record<string, any> => (
@@ -176,7 +182,7 @@ export const crossedLiveRangeTodoPosition = (
 };
 
 const serializeEvent = (event: RuntimeEvent): LiveRangeTodoSnapshotEvent => {
-    const { taskStart: _taskStart, due: _due, ...snapshotEvent } = event;
+    const { due: _due, ...snapshotEvent } = event;
     return {
         ...snapshotEvent,
         content: {
@@ -299,7 +305,6 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
 
 export interface LiveRangeTodoListProps {
     name: string;
-    createTaskStartFunction?: LiveRangeTodoTaskStartFunctionFactory;
     onSnapshotChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
     surface?: 'panel' | 'chat' | 'pill';
 }
@@ -315,12 +320,9 @@ const toAiResult = (result: LiveRangeTodoListToolResult): LiveRangeTodoListAiRes
     };
 };
 
-const attachTaskStartFunction = (
-    value: unknown,
-    createTaskStartFunction: LiveRangeTodoTaskStartFunctionFactory,
-): LiveRangeTodoEventInput => {
+const toEventInput = (value: unknown): LiveRangeTodoEventInput => {
     if (!isRecord(value)) return value as LiveRangeTodoEventInput;
-    const event: LiveRangeTodoTaskDescriptor = {
+    return {
         id: value.id,
         normalized_position: value.normalized_position,
         ...(hasOwn(value, 'lead_time_seconds')
@@ -329,7 +331,6 @@ const attachTaskStartFunction = (
         content: value.content,
         data: value.data === undefined ? {} : value.data,
     };
-    return { ...event, taskStart: createTaskStartFunction(event) } as LiveRangeTodoEventInput;
 };
 
 const toSerializableUpdate = (value: unknown): LiveRangeTodoEventUpdate => {
@@ -348,7 +349,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
     private runtime: RuntimeSnapshot;
     private samples: LiveRangeTelemetrySample[] = [];
     private previousSample: LiveRangeTelemetrySample | null = null;
-    private readonly activeRuns = new Map<string, ActiveRun>();
+    private readonly ownedInvocations = new Map<symbol, OwnedInvocation>();
     private readonly onChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
 
     constructor(
@@ -475,10 +476,6 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
                 if (!isJsonSafe(raw.data)) return this.invalidList(`Event '${id}' data must be JSON-safe.`);
                 next.data = cloneJson(raw.data);
             }
-            if (hasOwn(raw, 'taskStart')) {
-                if (typeof raw.taskStart !== 'function') return this.invalidList(`Event '${id}' taskStart must be a function.`);
-                next.taskStart = raw.taskStart as TaskStartFunction;
-            }
             next = {
                 ...next,
                 eta_seconds: this.runtime.current_position === null
@@ -566,6 +563,27 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
             todo_list: current,
             ...(current.events.length === 0 ? { message: 'The live range to-do list is empty.' } : {}),
         };
+    }
+
+    createOwnedOperation(
+        result: LiveRangeTodoListToolResult,
+        eventIds: readonly string[],
+    ): AiToolOperation<LiveRangeTodoListAiResult, LiveRangeTodoDueStatus> {
+        const aiResult = toAiResult(result);
+        const existingIds = eventIds.filter((id) => this.runtime.events.some((event) => event.id === id));
+        if (existingIds.length === 0) return createAiToolOperation(aiResult);
+        const invocation: OwnedInvocation = {
+            id: Symbol('live-range-operation'),
+            eventIds: new Set(existingIds),
+            statuses: new Map(existingIds.map((id) => [id, createAiToolDeferred<LiveRangeTodoDueStatus>()])),
+            result: createAiToolDeferred<LiveRangeTodoListAiResult>(),
+        };
+        this.ownedInvocations.set(invocation.id, invocation);
+        this.runNextDueEvent();
+        return createAiToolOperation(
+            invocation.result.promise,
+            Array.from(invocation.statuses.values()).map((status) => status.promise),
+        );
     }
 
     acceptTelemetry(telemetry: Record<string, any> | null | undefined): void {
@@ -660,8 +678,6 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         const parsedContent = parseContent(value.content);
         if (!parsedContent.content) return { error: `Event '${id}': ${parsedContent.error}` };
         if (!isJsonSafe(value.data)) return { error: `Event '${id}' requires JSON-safe data.` };
-        if (typeof value.taskStart !== 'function') return { error: `Event '${id}' requires a task-start function.` };
-
         return {
             event: {
                 id,
@@ -669,7 +685,6 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
                 lead_time_seconds: leadTime,
                 content: parsedContent.content as LiveRangeTodoContent,
                 data: cloneJson(value.data),
-                taskStart: value.taskStart as TaskStartFunction,
                 status: 'pending',
                 eta_seconds: null,
                 created_at: now,
@@ -679,62 +694,54 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
     }
 
     private abortEvents(ids?: Set<string>): void {
-        Array.from(this.activeRuns.entries()).forEach(([id, run]) => {
-            if (!ids || ids.has(id)) {
-                this.activeRuns.delete(id);
-                run.controller.abort();
-            }
+        Array.from(this.ownedInvocations.values()).forEach((invocation) => {
+            const displaced = !ids || Array.from(invocation.eventIds).some((id) => ids.has(id));
+            if (!displaced) return;
+            this.ownedInvocations.delete(invocation.id);
+            const error = new InvalidLiveRangeTodoListError(
+                this.getComponentName(),
+                'The live range to-do operation was replaced or cleared.',
+            );
+            invocation.statuses.forEach((status) => status.reject(error));
+            invocation.result.reject(error);
         });
     }
 
     private runNextDueEvent(): void {
-        if (this.isDisposed() || this.activeRuns.size > 0) return;
+        if (this.isDisposed()) return;
         const event = this.runtime.events.find((candidate) => (
             candidate.status === 'pending' && candidate.due
         ));
         if (!event) return;
-
-        const controller = new AbortController();
-        const token = Symbol(event.id);
-        const now = Date.now();
-        const runningEvent: RuntimeEvent = {
-            ...event,
-            status: 'running',
-            due: undefined,
-            lap: this.runtime.lap,
-            started_at: now,
-            updated_at: now,
+        const eventData = isRecord(event.data)
+            ? event.data as { [key: string]: JsonValue }
+            : null;
+        const status: LiveRangeTodoDueStatus = {
+            source: 'live_range_todo_list',
+            event: typeof eventData?.event === 'string' && eventData.event.trim()
+                ? eventData.event.trim()
+                : 'live_range_todo_event_due',
+            event_id: event.id,
+            content: event.content,
+            normalized_position: event.normalized_position,
+            lead_time_seconds: event.lead_time_seconds,
+            data: event.data,
+            ...(this.runtime.lap !== undefined ? { lap: this.runtime.lap } : {}),
         };
-        this.activeRuns.set(event.id, { controller, token });
         this.commit({
             ...this.runtime,
-            events: this.runtime.events.map((candidate) => (
-                candidate.id === event.id ? runningEvent : candidate
-            )),
-            updated_at: now,
-        });
-
-        try {
-            Promise.resolve(runningEvent.taskStart(controller.signal)).then(
-                () => this.finishEvent(event.id, token),
-                (error) => this.finishEvent(event.id, token, error),
-            );
-        } catch (error) {
-            this.finishEvent(event.id, token, error);
-        }
-    }
-
-    private finishEvent(id: string, token: symbol, error?: unknown): void {
-        if (this.isDisposed()) return;
-        const activeRun = this.activeRuns.get(id);
-        if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
-        this.activeRuns.delete(id);
-        if (error !== undefined) console.error(`Live range to-do event '${id}' task failed.`, error);
-        if (!this.runtime.events.some((event) => event.id === id)) return;
-        this.commit({
-            ...this.runtime,
-            events: this.runtime.events.filter((event) => event.id !== id),
+            events: this.runtime.events.filter((candidate) => candidate.id !== event.id),
             updated_at: Date.now(),
+        });
+        this.ownedInvocations.forEach((invocation) => {
+            const deferred = invocation.statuses.get(event.id);
+            if (!deferred) return;
+            deferred.resolve(status);
+            invocation.eventIds.delete(event.id);
+            if (invocation.eventIds.size === 0) {
+                this.ownedInvocations.delete(invocation.id);
+                invocation.result.resolve(toAiResult(this.get()));
+            }
         });
         this.runNextDueEvent();
     }
@@ -742,7 +749,6 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
 
 const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
     name,
-    createTaskStartFunction = () => async () => undefined,
     onSnapshotChange,
     surface = 'chat',
 }) => {
@@ -769,48 +775,62 @@ const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
         clear: () => runnerRef.current!.clear(),
         get: () => runnerRef.current!.get(),
         setForAi: (args) => {
-            if (!Array.isArray(args.events)) {
-                throw new InvalidLiveRangeTodoListError(name, 'Provide an events array.');
+            try {
+                if (!Array.isArray(args.events)) {
+                    throw new InvalidLiveRangeTodoListError(name, 'Provide an events array.');
+                }
+                const events = args.events.map(toEventInput);
+                const result = runnerRef.current!.replaceEvents(events);
+                return runnerRef.current!.createOwnedOperation(
+                    result,
+                    events.map((event) => event.id),
+                );
+            } catch (error) {
+                return createAiToolOperationFrom(() => { throw error; });
             }
-            return toAiResult(runnerRef.current!.replaceEvents(args.events.map((event) => (
-                attachTaskStartFunction(event, createTaskStartFunction)
-            ))));
         },
         updateForAi: (args) => {
-            const action = typeof args.action === 'string' ? args.action : '';
-            let result: LiveRangeTodoListToolResult;
-            if (action === 'add_events') {
-                if (!Array.isArray(args.events) || args.events.length === 0) {
-                    throw new InvalidLiveRangeTodoListError(name, 'Provide at least one event to add.');
-                }
-                result = runnerRef.current!.get();
-                args.events.forEach((event) => {
-                    result = runnerRef.current!.addEvent(
-                        attachTaskStartFunction(event, createTaskStartFunction),
+            try {
+                const action = typeof args.action === 'string' ? args.action : '';
+                let result: LiveRangeTodoListToolResult;
+                let ownedIds: string[] = [];
+                if (action === 'add_events') {
+                    if (!Array.isArray(args.events) || args.events.length === 0) {
+                        throw new InvalidLiveRangeTodoListError(name, 'Provide at least one event to add.');
+                    }
+                    const events = args.events.map(toEventInput);
+                    result = runnerRef.current!.get();
+                    events.forEach((event) => {
+                        result = runnerRef.current!.addEvent(event);
+                    });
+                    ownedIds = events.map((event) => event.id);
+                } else if (action === 'update_events') {
+                    const updates = Array.isArray(args.events) ? args.events.map(toSerializableUpdate) : [];
+                    result = runnerRef.current!.updateEvents(updates);
+                    ownedIds = updates.map((event) => event.id);
+                } else if (action === 'remove_events') {
+                    result = runnerRef.current!.removeEvents(args.ids as readonly string[]);
+                } else if (action === 'reset_events') {
+                    const ids = args.ids === undefined
+                        ? runnerRef.current!.get().todo_list?.events.map((event) => event.id) ?? []
+                        : args.ids as string[];
+                    result = runnerRef.current!.resetEvents(ids);
+                    ownedIds = ids;
+                } else if (action === 'clear') {
+                    result = runnerRef.current!.clear();
+                } else {
+                    throw new InvalidLiveRangeTodoListError(
+                        name,
+                        `Unsupported live range to-do list action: ${action || '(missing)'}.`,
                     );
-                });
-            } else if (action === 'update_events') {
-                result = runnerRef.current!.updateEvents(
-                    Array.isArray(args.events) ? args.events.map(toSerializableUpdate) : [],
-                );
-            } else if (action === 'remove_events') {
-                result = runnerRef.current!.removeEvents(args.ids as readonly string[]);
-            } else if (action === 'reset_events') {
-                result = args.ids === undefined
-                    ? runnerRef.current!.resetEvents()
-                    : runnerRef.current!.resetEvents(args.ids as readonly string[]);
-            } else if (action === 'clear') {
-                result = runnerRef.current!.clear();
-            } else {
-                throw new InvalidLiveRangeTodoListError(
-                    name,
-                    `Unsupported live range to-do list action: ${action || '(missing)'}.`,
-                );
+                }
+                return runnerRef.current!.createOwnedOperation(result, ownedIds);
+            } catch (error) {
+                return createAiToolOperationFrom(() => { throw error; });
             }
-            return toAiResult(result);
         },
-        getForAi: () => toAiResult(runnerRef.current!.get()),
-    }), [createTaskStartFunction, name]);
+        getForAi: () => createAiToolOperation(toAiResult(runnerRef.current!.get())),
+    }), [name]);
     useRegisterAiToolComponentRef(name, handle);
 
     useEffect(() => () => {

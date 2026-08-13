@@ -1,407 +1,75 @@
 import {
-    buildVoiceSessionMetadata,
     executeSubscribedFrontendTool,
     extractInlineFunctionCalls,
+    type FrontendToolHandler,
 } from '../use-voice-conversation';
-import { ToolExecutionError, type ToolOutputEnvelope } from '../ai-tool-base';
-import { BaselineLapRecordRequiredError } from 'contexts/AiToolComponentError';
+import {
+    createAiToolOperation,
+    createAiToolOperationFrom,
+} from '../ai-tool-base';
 
-describe('buildVoiceSessionMetadata', () => {
-    it('defaults to a main conversation session', () => {
-        expect(buildVoiceSessionMetadata({
-            clientSessionId: 'main-1',
-        })).toEqual({
-            conversation_role: 'main',
-            client_session_id: 'main-1',
-            parent_client_session_id: null,
-            agent_mode: null,
-        });
+const execute = async (handler: FrontendToolHandler) => {
+    const frames: any[] = [];
+    const events: any[] = [];
+    const result = await executeSubscribedFrontendTool({
+        call: { id: 'call-1', name: 'test_tool', title: 'Test tool' },
+        handlers: { test_tool: handler },
+        sendText: (frame) => frames.push(frame),
+        emitEvent: (event) => events.push(event),
     });
-
-    it('includes child agent session identity', () => {
-        expect(buildVoiceSessionMetadata({
-            conversationRole: 'agent',
-            clientSessionId: 'agent-1',
-            parentClientSessionId: 'main-1',
-            agentMode: 'live_performance_analyst',
-        })).toEqual({
-            conversation_role: 'agent',
-            client_session_id: 'agent-1',
-            parent_client_session_id: 'main-1',
-            agent_mode: 'live_performance_analyst',
-        });
-    });
-});
-describe('extractInlineFunctionCalls', () => {
-    it('strips inline function tags and parses JSON arguments', () => {
-        const result = extractInlineFunctionCalls(
-            'Let me start a live performance analyst session for you.\n<function=start_agent_session>{"agent_mode":"live_performance_analyst"}</function>',
-        );
-
-        expect(result.cleanText).toBe('Let me start a live performance analyst session for you.');
-        expect(result.calls).toEqual([
-            {
-                name: 'start_agent_session',
-                arguments: { agent_mode: 'live_performance_analyst' },
-            },
-        ]);
-    });
-
-    it('handles inline function tags that are missing the closing name bracket', () => {
-        const result = extractInlineFunctionCalls(
-            '<function=start_agent_session{"agent_mode":"live_performance_analyst"}</function>',
-        );
-
-        expect(result.cleanText).toBe('');
-        expect(result.calls).toEqual([
-            {
-                name: 'start_agent_session',
-                arguments: { agent_mode: 'live_performance_analyst' },
-            },
-        ]);
-    });
-
-    it('keeps malformed arguments available for diagnostics', () => {
-        const result = extractInlineFunctionCalls(
-            '<function=start_agent_session>agent_mode=track_guide</function>',
-        );
-
-        expect(result.cleanText).toBe('');
-        expect(result.calls).toEqual([
-            {
-                name: 'start_agent_session',
-                arguments: { raw: 'agent_mode=track_guide' },
-            },
-        ]);
-    });
-});
+    return { events, frames, result };
+};
 
 describe('executeSubscribedFrontendTool', () => {
-    it('emits lifecycle events and a single final tool_result for direct tool calls', async () => {
-        const frames: object[] = [];
-        const events: object[] = [];
+    it('emits started, non-final statuses, then exactly one successful final frame', async () => {
+        const { frames, events, result } = await execute(() => createAiToolOperation(
+            Promise.resolve({ status: 'complete', value: 7 }),
+            [Promise.resolve({ status: 'working', progress: 50 })],
+        ));
 
-        const result = await executeSubscribedFrontendTool({
-            call: {
-                id: 'tool-1',
-                name: 'read_context',
-                title: 'Read context',
-                arguments: { session_id: 's1' },
-            },
-            handlers: {
-                read_context: async (args) => ({ status: 'ready', args }),
-            },
-            baseContext: {
-                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-            emitEvent: (event) => events.push(event),
-        });
-
-        expect(result).toMatchObject({ id: 'tool-1', name: 'read_context', ok: true });
-        expect(events).toMatchObject([
-            { kind: 'tool_call', runId: 'tool-1', name: 'read_context', title: 'Read context', status: 'started' },
-            {
-                kind: 'tool_call',
-                runId: 'tool-1',
-                name: 'read_context',
-                title: 'Read context',
-                status: 'completed',
-                ok: true,
-                result: {
-                    status: 'ready',
-                    args: { session_id: 's1' },
-                },
-            },
-        ]);
         expect(frames).toEqual([
-            expect.objectContaining({
-                type: 'tool_result',
-                id: 'tool-1',
-                name: 'read_context',
-                result: {
-                    status: 'ready',
-                    args: { session_id: 's1' },
-                },
-            }),
+            expect.objectContaining({ type: 'tool_result', id: 'call-1', name: 'test_tool', final: false, result: { status: 'started' } }),
+            expect.objectContaining({ final: false, result: { status: 'working', progress: 50 } }),
+            expect.objectContaining({ final: true, result: { status: 'complete', value: 7 } }),
         ]);
-        expect((frames[0] as any).messages).toBeUndefined();
+        expect(frames.filter((frame) => frame.final)).toHaveLength(1);
+        expect(events.at(-1)).toMatchObject({ status: 'completed', final: true, ok: true });
+        expect(result).toMatchObject({ ok: true });
     });
 
-    it('emits lifecycle events and a failed tool_result when the handler fails', async () => {
-        const frames: object[] = [];
-        const events: object[] = [];
+    it('turns rejected statuses into non-terminal errors without changing final success', async () => {
+        const { frames, result } = await execute(() => createAiToolOperation(
+            Promise.resolve({ status: 'complete' }),
+            [Promise.reject(new Error('progress unavailable'))],
+        ));
 
-        const result = await executeSubscribedFrontendTool({
-            call: { id: 'tool-2', name: 'explode' },
-            handlers: {
-                explode: async () => {
-                    throw new Error('boom');
-                },
-            },
-            baseContext: {
-                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-            emitEvent: (event) => events.push(event),
+        expect(frames[1]).toMatchObject({
+            final: false,
+            result: { ok: false, status: 'status_failed', message: 'progress unavailable' },
         });
-
-        expect(result).toEqual({
-            id: 'tool-2',
-            name: 'explode',
-            ok: false,
-            errorName: 'ToolExecutionError',
-            message: 'boom',
-            cause: { name: 'Error', message: 'boom' },
-        });
-        expect(events).toMatchObject([
-            { kind: 'tool_call', runId: 'tool-2', name: 'explode', status: 'started' },
-            {
-                kind: 'tool_call', runId: 'tool-2', name: 'explode',
-                status: 'completed', ok: false, errorName: 'ToolExecutionError', message: 'boom',
-            },
-        ]);
-        expect(frames).toContainEqual(expect.objectContaining({
-            type: 'tool_result',
-            id: 'tool-2',
-            name: 'explode',
-            result: {
-                ok: false,
-                name: 'ToolExecutionError',
-                message: 'boom',
-                cause: { name: 'Error', message: 'boom' },
-            },
-        }));
-        expect(frames).toHaveLength(1);
-        expect((frames[0] as any).messages).toBeUndefined();
+        expect(frames.at(-1)).toMatchObject({ final: true, result: { status: 'complete' } });
+        expect(result).toMatchObject({ ok: true });
     });
 
-    it('preserves a concrete failure name and recursive cause in one failed tool_result', async () => {
-        const frames: object[] = [];
-        const cause = new Error('baseline source failed');
+    it.each([
+        ['resolved Error', () => createAiToolOperation(new Error('broken'))],
+        ['rejected promise', () => createAiToolOperationFrom(() => { throw new Error('broken'); })],
+    ])('normalizes a %s into the same failed final frame', async (_label, handler) => {
+        const { frames, result } = await execute(handler as any);
 
-        const result = await executeSubscribedFrontendTool({
-            call: { id: 'tool-known', name: 'known_failure' },
-            handlers: {
-                known_failure: async () => {
-                    throw new BaselineLapRecordRequiredError(
-                        'baseline-collection',
-                        'Complete a baseline lap first.',
-                        { cause },
-                    );
-                },
-            },
-            baseContext: { sendToolStatus: jest.fn() },
-            sendText: (payload) => frames.push(payload),
-        });
-
-        expect(result).toEqual({
-            id: 'tool-known',
-            name: 'known_failure',
-            ok: false,
-            errorName: 'BaselineLapRecordRequiredError',
-            message: 'Complete a baseline lap first.',
-            cause: { name: 'Error', message: 'baseline source failed' },
-        });
-        expect(frames).toEqual([expect.objectContaining({
-            type: 'tool_result',
-            id: 'tool-known',
-            name: 'known_failure',
-            result: {
-                ok: false,
-                name: 'BaselineLapRecordRequiredError',
-                message: 'Complete a baseline lap first.',
-                cause: { name: 'Error', message: 'baseline source failed' },
-            },
-        })]);
-    });
-
-    it('reports a missing handler with a stable exception name in one failed tool_result', async () => {
-        const frames: object[] = [];
-
-        const result = await executeSubscribedFrontendTool({
-            call: { id: 'tool-missing', name: 'missing_tool' },
-            handlers: {},
-            baseContext: { sendToolStatus: jest.fn() },
-            sendText: (payload) => frames.push(payload),
-        });
-
-        expect(result).toMatchObject({
-            ok: false,
-            errorName: 'ToolNotRegisteredError',
-            message: "No handler is registered for 'missing_tool'.",
-        });
-        expect(frames).toHaveLength(1);
-        expect(frames[0]).toMatchObject({
-            type: 'tool_result',
-            result: expect.objectContaining({
-                ok: false,
-                name: 'ToolNotRegisteredError',
-            }),
-        });
-    });
-
-    it('serializes nested, primitive, circular, and truncated causes safely', async () => {
-        const execute = async (id: string, cause: unknown) => {
-            const frames: object[] = [];
-            await executeSubscribedFrontendTool({
-                call: { id, name: 'fail' },
-                handlers: {
-                    fail: () => { throw new ToolExecutionError('failed', { cause }); },
-                },
-                baseContext: { sendToolStatus: jest.fn() },
-                sendText: (payload) => frames.push(payload),
-            });
-            return (frames[0] as any).result;
-        };
-
-        const leaf = new Error('leaf');
-        const middle = new Error('middle', { cause: leaf });
-        await expect(execute('nested', middle)).resolves.toEqual({
-            ok: false,
-            name: 'ToolExecutionError',
-            message: 'failed',
-            cause: {
-                name: 'Error',
-                message: 'middle',
-                cause: { name: 'Error', message: 'leaf' },
-            },
-        });
-        await expect(execute('primitive', 42)).resolves.toMatchObject({ cause: 42 });
-        await expect(execute('object', { reason: 'offline' })).resolves.toMatchObject({
-            cause: '[object Object]',
-        });
-
-        const circular = new Error('circular') as Error & { cause?: unknown };
-        circular.cause = circular;
-        await expect(execute('circular', circular)).resolves.toMatchObject({
-            cause: {
-                name: 'Error',
-                message: 'circular',
-                cause: '[Circular cause]',
-            },
-        });
-
-        let deep: Error = new Error('level-6');
-        for (let level = 5; level >= 1; level -= 1) {
-            deep = new Error(`level-${level}`, { cause: deep });
-        }
-        const truncated = await execute('truncated', deep);
-        expect(JSON.stringify(truncated)).toContain('[Cause chain truncated]');
-        expect(JSON.stringify(truncated)).not.toContain('level-6');
-    });
-
-    it('does not expose a secondary tool output callback', async () => {
-        const frames: object[] = [];
-        const contextKeys: string[][] = [];
-
-        await executeSubscribedFrontendTool({
-            call: { id: 'tool-3', name: 'single_output' },
-            handlers: {
-                single_output: async (_args, ctx) => {
-                    contextKeys.push(Object.keys(ctx).sort());
-                    return { status: 'done' };
-                },
-            },
-            baseContext: {
-                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-        });
-
-        expect(contextKeys).toEqual([['sendToolStatus', 'toolName', 'toolRunId']]);
-        expect(frames).toEqual([
-            expect.objectContaining({
-                type: 'tool_result',
-                id: 'tool-3',
-                name: 'single_output',
-                result: { status: 'done' },
-            }),
-        ]);
-        expect((frames[0] as any).messages).toBeUndefined();
-    });
-
-    it('sends only envelope ai_output to the AI tool_result frame', async () => {
-        const frames: object[] = [];
-        const events: object[] = [];
-        const aiOutput = {
-            status: 'complete',
-            message: 'Baseline complete.',
-        };
-        const uiOutput = {
-            status: 'complete',
-            message: 'Baseline complete.',
-            snapshot: { baseline_ready: true },
-        };
-        const envelope: ToolOutputEnvelope = {
-            tool_name: 'collect_live_baseline',
-            run_id: 'tool-4',
-            status: 'complete',
-            output: aiOutput,
+        expect(frames.at(-1)).toMatchObject({
             final: true,
-            uiOutput,
-        };
-
-        await executeSubscribedFrontendTool({
-            call: { id: 'tool-4', name: 'collect_live_baseline' },
-            handlers: {
-                collect_live_baseline: async () => envelope,
-            },
-            baseContext: {
-                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-            emitEvent: (event) => events.push(event),
+            result: { ok: false, name: 'ToolExecutionError', message: 'broken' },
         });
-
-        expect(frames).toEqual([
-            expect.objectContaining({
-                type: 'tool_result',
-                id: 'tool-4',
-                name: 'collect_live_baseline',
-                result: aiOutput,
-            }),
-        ]);
-        expect((frames[0] as any).messages).toBeUndefined();
-        expect((frames[0] as any).result).not.toHaveProperty('snapshot');
-        expect(events).toContainEqual(expect.objectContaining({
-            kind: 'tool_call',
-            runId: 'tool-4',
-            result: uiOutput,
-        }));
-        expect(events).toContainEqual(expect.objectContaining({
-            kind: 'tool_call',
-            runId: 'tool-4',
-            name: 'collect_live_baseline',
-            status: 'started',
-        }));
+        expect(result).toMatchObject({ ok: false, message: 'broken' });
     });
+});
 
-    it('supports plan-triggered calls with generated run ids', async () => {
-        const frames: object[] = [];
-
-        await executeSubscribedFrontendTool({
-            call: {
-                name: 'show_map',
-                title: 'Show the current map',
-                arguments: { map_id: 'spa' },
-            },
-            handlers: {
-                show_map: async () => ({ status: 'displayed' }),
-            },
-            baseContext: {
-                sendToolStatus: (data) => frames.push({ type: 'tool_status', data }),
-            },
-            sendText: (payload) => frames.push(payload),
-            makeRunId: () => 'plan-1',
+describe('extractInlineFunctionCalls', () => {
+    it('extracts a structured inline call without leaking the marker into chat', () => {
+        expect(extractInlineFunctionCalls('Before <function=show_map>{"id":"spa"}</function> after')).toEqual({
+            cleanText: 'Before  after',
+            calls: [{ name: 'show_map', arguments: { id: 'spa' } }],
         });
-
-        expect(frames).toContainEqual(expect.objectContaining({
-            type: 'tool_result',
-            id: 'plan-1',
-            name: 'show_map',
-            result: { status: 'displayed' },
-        }));
-        expect((frames[0] as any).messages).toBeUndefined();
     });
 });

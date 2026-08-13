@@ -29,11 +29,43 @@ import {
     getUserSummaryMapLevel,
     searchUserSummaryMapLevel,
 } from './user-summary-ai-tools';
+import {
+    createAiToolOperationFrom,
+    type AiToolOperation,
+} from 'components/ai-engineering-tools';
+
+export type UserSummaryMapLevelResult = {
+    status: unknown;
+    message?: unknown;
+    map_count: unknown;
+    maps: Array<{
+        id: unknown;
+        name: unknown;
+        section_count: unknown;
+        mistake_percent: unknown;
+        expert_adherence_percent: unknown;
+    }>;
+};
+
+export type AvailableUserSummaryMapsResult = {
+    status: unknown;
+    message?: unknown;
+    map_count: unknown;
+    map_options: unknown[];
+};
+
+export type UserSummaryMapSearchResult = {
+    status: unknown;
+    message?: unknown;
+    query: unknown;
+    match_count: unknown;
+    maps: Array<{ id: unknown; name: unknown; matched_fields: unknown }>;
+};
 
 export interface UserSummaryHandle extends NamedAiToolComponentHandle {
-    getUserSummaryMapLevel(args: Record<string, any>): any;
-    getAvailableUserSummaryMaps(): any;
-    searchUserSummaryMapLevel(args: Record<string, any>): any;
+    getUserSummaryMapLevel(args: Record<string, any>): AiToolOperation<UserSummaryMapLevelResult>;
+    getAvailableUserSummaryMaps(): AiToolOperation<AvailableUserSummaryMapsResult>;
+    searchUserSummaryMapLevel(args: Record<string, any>): AiToolOperation<UserSummaryMapSearchResult>;
 }
 
 const compactMapLevelForAi = (result: Record<string, any>) => ({
@@ -169,27 +201,27 @@ const UserSummary = ({ name }: { name: string }) => {
     if (componentRef.current === null) {
         componentRef.current = {
             getComponentName: () => name,
-            getUserSummaryMapLevel: (args) => compactMapLevelForAi(getUserSummaryMapLevel({
+            getUserSummaryMapLevel: (args) => createAiToolOperationFrom(() => compactMapLevelForAi(getUserSummaryMapLevel({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            }, args)),
-            getAvailableUserSummaryMaps: () => compactAvailableMapsForAi(getAvailableUserSummaryMaps({
+            }, args))),
+            getAvailableUserSummaryMaps: () => createAiToolOperationFrom(() => compactAvailableMapsForAi(getAvailableUserSummaryMaps({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            })),
-            searchUserSummaryMapLevel: (args) => compactMapSearchForAi(searchUserSummaryMapLevel({
+            }))),
+            searchUserSummaryMapLevel: (args) => createAiToolOperationFrom(() => compactMapSearchForAi(searchUserSummaryMapLevel({
                 userSummary: screenStateRef.current.userSummary || undefined,
                 loading: screenStateRef.current.userSummaryLoading || screenStateRef.current.labelsLoading,
                 error: screenStateRef.current.userSummaryError || screenStateRef.current.labelsError || undefined,
                 getLabelName: screenStateRef.current.getLabelName,
                 getCategoryLabels: screenStateRef.current.getCategoryLabels,
-            }, args)),
+            }, args))),
         };
     }
     useRegisterAiToolComponentRef(name, componentRef.current);

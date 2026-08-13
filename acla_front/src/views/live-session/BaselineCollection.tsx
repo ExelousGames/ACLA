@@ -18,6 +18,8 @@ import {
 import {
     AnalysisResultsVisualizationUnavailableError,
     BaselineAnalysisCancelledError,
+    BaselineCollectionAlreadyStartedError,
+    BaselineCollectionIncompleteError,
     BaselineLapRecordRequiredError,
     RecordedAnalysisFailedError,
 } from 'contexts/AiToolComponentError';
@@ -42,6 +44,13 @@ import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segm
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import BaselineProgressDisplay from './BaselineProgressDisplay';
 import { LiveSessionContext } from './LiveSessionContext';
+import {
+    createAiToolDeferred,
+    createAiToolOperation,
+    createAiToolOperationFrom,
+    type AiToolDeferred,
+    type AiToolOperation,
+} from 'components/ai-engineering-tools';
 
 export type BaselineCollectionTag = {
     status: 'waiting_for_start' | 'collecting' | 'complete';
@@ -90,26 +99,28 @@ export type BaselineAnalysisPayload = {
     pageCount: number;
 };
 
-export type BaselineCollectionToolOutput = {
-    toolName: 'collect_live_baseline';
-    runId: string;
-    output: BaselineCollectionPayload;
-    final: true;
+export type BaselineCollectionStatus = BaselineCollectionPayload & {
+    event: 'baseline_waiting' | 'baseline_collecting' | 'baseline_progress';
+    milestone: number;
+    skipped?: boolean;
 };
 
-export type BaselineCollectionToolOutputListener = (
-    output: BaselineCollectionToolOutput,
-) => void;
+export type BaselineCollectionOptions = { timeoutMs?: number };
 
 export interface BaselineCollectionHandle extends NamedAiToolComponentHandle {
-    startCollection(runId?: string): BaselineCollectionPayload;
-    restartCollection(): BaselineCollectionPayload;
-    requestAnalysis(options?: { limit?: number }): Promise<BaselineAnalysisPayload>;
+    startCollection(options?: BaselineCollectionOptions): AiToolOperation<BaselineCollectionPayload, BaselineCollectionStatus>;
+    restartCollection(): AiToolOperation<BaselineCollectionPayload>;
+    requestAnalysis(options?: { limit?: number }): AiToolOperation<BaselineAnalysisPayload>;
     getTag(): BaselineCollectionTag | null;
     getLapRecord(): BaselineLapRecord | null;
-    getToolOutput(): BaselineCollectionToolOutput | null;
-    subscribeToolOutput(listener: BaselineCollectionToolOutputListener): () => void;
+    subscribe(listener: (tag: BaselineCollectionTag | null) => void): () => void;
 }
+
+type PendingBaselineOperation = {
+    result: AiToolDeferred<BaselineCollectionPayload>;
+    statuses: Array<{ milestone: number; deferred: AiToolDeferred<BaselineCollectionStatus> }>;
+    timeoutId: ReturnType<typeof setTimeout> | null;
+};
 
 type BaselineRecorderState = {
     status: BaselineCollectionTag['status'];
@@ -401,16 +412,68 @@ const BaselineCollection = ({ name }: { name: string }) => {
     const tagRef = useRef<BaselineCollectionTag | null>(null);
     const lapRecordRef = useRef<BaselineLapRecord | null>(null);
     const recorderRef = useRef<BaselineRecorderState>(createEmptyRecorderState());
-    const toolOutputRef = useRef<BaselineCollectionToolOutput | null>(null);
-    const activeToolRunIdRef = useRef<string | null>(null);
-    const toolOutputListenersRef = useRef<Set<BaselineCollectionToolOutputListener>>(new Set());
-    const completionEmittedRef = useRef(false);
+    const tagListenersRef = useRef<Set<(tag: BaselineCollectionTag | null) => void>>(new Set());
+    const pendingCollectionOperationsRef = useRef<Set<PendingBaselineOperation>>(new Set());
     const analysisRequestRef = useRef<Promise<BaselineAnalysisPayload> | null>(null);
     const collectionGenerationRef = useRef(0);
 
     const publishTag = useCallback((nextTag: BaselineCollectionTag | null) => {
         tagRef.current = nextTag;
         setTag(nextTag);
+        tagListenersRef.current.forEach((listener) => listener(nextTag));
+    }, []);
+
+    const settleCollectionStatus = useCallback((nextTag: BaselineCollectionTag) => {
+        const payload = buildBaselineCollectionToolPayload(nextTag, lapRecordRef.current);
+        pendingCollectionOperationsRef.current.forEach((operation) => {
+            operation.statuses.forEach(({ milestone, deferred }) => {
+                if (deferred.settled) return;
+                const reached = milestone === 0
+                    ? nextTag.status === 'waiting_for_start'
+                    : milestone === 1
+                        ? nextTag.status === 'collecting' || nextTag.status === 'complete'
+                        : nextTag.progress_percent >= milestone;
+                if (!reached) return;
+                deferred.resolve({
+                    ...payload,
+                    event: milestone === 0
+                        ? 'baseline_waiting'
+                        : milestone === 1
+                            ? 'baseline_collecting'
+                            : 'baseline_progress',
+                    milestone,
+                });
+            });
+        });
+    }, []);
+
+    const settlePendingCollectionOperations = useCallback((
+        outcome: BaselineCollectionPayload | Error,
+    ) => {
+        const operations = Array.from(pendingCollectionOperationsRef.current);
+        pendingCollectionOperationsRef.current.clear();
+        operations.forEach((operation) => {
+            if (operation.timeoutId) clearTimeout(operation.timeoutId);
+            const payload = outcome instanceof Error
+                ? buildBaselineCollectionToolPayload(tagRef.current, lapRecordRef.current)
+                : outcome;
+            operation.statuses.forEach(({ milestone, deferred }) => {
+                if (!deferred.settled) {
+                    deferred.resolve({
+                        ...payload,
+                        event: milestone === 0
+                            ? 'baseline_waiting'
+                            : milestone === 1
+                                ? 'baseline_collecting'
+                                : 'baseline_progress',
+                        milestone,
+                        skipped: true,
+                    });
+                }
+            });
+            if (outcome instanceof Error) operation.result.reject(outcome);
+            else operation.result.resolve(outcome);
+        });
     }, []);
 
     const beginFreshCollection = useCallback(() => {
@@ -419,49 +482,79 @@ const BaselineCollection = ({ name }: { name: string }) => {
         recorderRef.current = nextRecorder;
         enabledRef.current = true;
         lapRecordRef.current = null;
-        toolOutputRef.current = null;
-        activeToolRunIdRef.current = null;
-        completionEmittedRef.current = false;
         analysisRequestRef.current = null;
         setAnalysisState('idle');
         const nextTag = buildBaselineCollectionTag(buildRecorderSnapshot(nextRecorder));
         publishTag(nextTag);
+        settleCollectionStatus(nextTag);
         setEnabled(true);
         return buildBaselineCollectionToolPayload(nextTag, null);
-    }, [publishTag]);
+    }, [publishTag, settleCollectionStatus]);
 
-    const restartCollection = useCallback(() => beginFreshCollection(), [beginFreshCollection]);
-
-    const subscribeToolOutput = useCallback((listener: BaselineCollectionToolOutputListener) => {
-        toolOutputListenersRef.current.add(listener);
+    const subscribe = useCallback((listener: (tag: BaselineCollectionTag | null) => void) => {
+        tagListenersRef.current.add(listener);
         return () => {
-            toolOutputListenersRef.current.delete(listener);
+            tagListenersRef.current.delete(listener);
         };
     }, []);
 
-    const startCollection = useCallback((runId?: string) => {
-        const payload = enabledRef.current
-            ? buildBaselineCollectionToolPayload(tagRef.current, lapRecordRef.current)
-            : beginFreshCollection();
-        if (payload.status !== 'complete' && runId) activeToolRunIdRef.current = runId;
-        return payload;
-    }, [beginFreshCollection]);
+    const startCollection = useCallback((options: BaselineCollectionOptions = {}) => {
+        if (enabledRef.current) {
+            const status = tagRef.current?.status ?? recorderRef.current.status;
+            const message = status === 'complete'
+                ? 'Baseline collection is already complete.'
+                : 'Baseline collection is already in progress.';
+            return createAiToolOperationFrom<BaselineCollectionPayload>(() => {
+                throw new BaselineCollectionAlreadyStartedError(name, message);
+            });
+        }
 
-    const emitCompletion = useCallback((record: BaselineLapRecord) => {
-        if (completionEmittedRef.current) return;
-        completionEmittedRef.current = true;
-        const payload = buildBaselineCollectionToolPayload(null, record);
-        const runId = activeToolRunIdRef.current;
-        if (!runId) return;
-        const event: BaselineCollectionToolOutput = {
-            toolName: 'collect_live_baseline',
-            runId,
-            output: payload,
-            final: true,
+        beginFreshCollection();
+        const result = createAiToolDeferred<BaselineCollectionPayload>();
+        const statuses = [0, 1, 25, 50, 75, 100].map((milestone) => ({
+            milestone,
+            deferred: createAiToolDeferred<BaselineCollectionStatus>(),
+        }));
+        const timeoutMs = Number.isFinite(options.timeoutMs) && Number(options.timeoutMs) > 0
+            ? Number(options.timeoutMs)
+            : 600000;
+        const pending: PendingBaselineOperation = {
+            result,
+            statuses,
+            timeoutId: setTimeout(() => {
+                pendingCollectionOperationsRef.current.delete(pending);
+                const error = new BaselineCollectionIncompleteError(
+                    name,
+                    'Baseline collection did not complete before the timeout.',
+                );
+                const current = buildBaselineCollectionToolPayload(tagRef.current, lapRecordRef.current);
+                statuses.forEach(({ milestone, deferred }) => {
+                    if (!deferred.settled) deferred.resolve({
+                        ...current,
+                        event: milestone <= 1 ? 'baseline_collecting' : 'baseline_progress',
+                        milestone,
+                        skipped: true,
+                    });
+                });
+                result.reject(error);
+            }, timeoutMs),
         };
-        toolOutputRef.current = event;
-        toolOutputListenersRef.current.forEach((listener) => listener(event));
-    }, []);
+        pendingCollectionOperationsRef.current.add(pending);
+        if (tagRef.current) settleCollectionStatus(tagRef.current);
+        return createAiToolOperation(result.promise, statuses.map((status) => status.deferred.promise));
+    }, [beginFreshCollection, name, settleCollectionStatus]);
+
+    const restartCollection = useCallback(() => {
+        try {
+            settlePendingCollectionOperations(new BaselineAnalysisCancelledError(
+                name,
+                'Baseline collection was cancelled because collection restarted.',
+            ));
+            return createAiToolOperation(beginFreshCollection());
+        } catch (error) {
+            return createAiToolOperationFrom(() => { throw error; });
+        }
+    }, [beginFreshCollection, name, settlePendingCollectionOperations]);
 
     const requestAnalysis = useCallback((
         options: { limit?: number } = {},
@@ -605,12 +698,11 @@ const BaselineCollection = ({ name }: { name: string }) => {
         getComponentName: () => name,
         startCollection,
         restartCollection,
-        requestAnalysis,
+        requestAnalysis: (options) => createAiToolOperation(requestAnalysis(options)),
         getTag: () => tagRef.current,
         getLapRecord: () => lapRecordRef.current,
-        getToolOutput: () => toolOutputRef.current,
-        subscribeToolOutput,
-    }), [name, requestAnalysis, restartCollection, startCollection, subscribeToolOutput]);
+        subscribe,
+    }), [name, requestAnalysis, restartCollection, startCollection, subscribe]);
     useRegisterAiToolComponentRef(name, handle);
 
     useEffect(() => {
@@ -677,22 +769,27 @@ const BaselineCollection = ({ name }: { name: string }) => {
         state.lastPosition = position;
         state.lastSampleKey = sampleKey;
         const snapshot = state.completedRecord?.snapshot ?? buildRecorderSnapshot(state);
-        publishTag(buildBaselineCollectionTag(snapshot));
-        if (completedRecordToEmit) emitCompletion(completedRecordToEmit);
-    }, [currentTelemetry, emitCompletion, enabled, publishTag]);
+        const nextTag = buildBaselineCollectionTag(snapshot);
+        publishTag(nextTag);
+        settleCollectionStatus(nextTag);
+        if (completedRecordToEmit) {
+            settlePendingCollectionOperations(buildBaselineCollectionToolPayload(null, completedRecordToEmit));
+        }
+    }, [currentTelemetry, enabled, publishTag, settleCollectionStatus, settlePendingCollectionOperations]);
 
     useEffect(() => () => {
         enabledRef.current = false;
         recorderRef.current = createEmptyRecorderState();
         tagRef.current = null;
         lapRecordRef.current = null;
-        toolOutputRef.current = null;
-        activeToolRunIdRef.current = null;
-        toolOutputListenersRef.current.clear();
-        completionEmittedRef.current = false;
+        settlePendingCollectionOperations(new BaselineAnalysisCancelledError(
+            name,
+            'Baseline collection was cancelled because the component unmounted.',
+        ));
+        tagListenersRef.current.clear();
         analysisRequestRef.current = null;
         collectionGenerationRef.current += 1;
-    }, []);
+    }, [name, settlePendingCollectionOperations]);
 
     const analysisButtonLabel = analysisState === 'analyzing'
         ? 'Analyzing Baseline…'
@@ -726,7 +823,7 @@ const BaselineCollection = ({ name }: { name: string }) => {
                     <button
                         type="button"
                         className="baseline-collection__start"
-                        onClick={() => startCollection()}
+                            onClick={() => { void startCollection().result.catch(() => undefined); }}
                     >
                         Start Baseline Collection
                     </button>

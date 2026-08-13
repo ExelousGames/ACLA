@@ -112,6 +112,14 @@ export class GoalTaskRetryUnavailableError extends GoalComponentError {
     override name = 'GoalTaskRetryUnavailableError';
 }
 
+export abstract class ProcedurePlanComponentError extends AiToolComponentError {
+    override name = 'ProcedurePlanComponentError';
+}
+
+export class ProcedurePlanReplacedError extends ProcedurePlanComponentError {
+    override name = 'ProcedurePlanReplacedError';
+}
+
 export abstract class LiveRangeTodoListComponentError extends AiToolComponentError {
     override name = 'LiveRangeTodoListComponentError';
 }
@@ -126,6 +134,10 @@ export class LiveRangeTodoListUnavailableError extends LiveRangeTodoListComponen
 
 export abstract class BaselineCollectionComponentError extends AiToolComponentError {
     override name = 'BaselineCollectionComponentError';
+}
+
+export class BaselineCollectionAlreadyStartedError extends BaselineCollectionComponentError {
+    override name = 'BaselineCollectionAlreadyStartedError';
 }
 
 export class BaselineCollectionVisualizationRequiredError extends BaselineCollectionComponentError {

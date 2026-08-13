@@ -9,12 +9,14 @@ import {
 } from 'contexts/AiToolComponentRefContext';
 import BaselineCollection, {
     getCompletedBaselineLapTimeMs,
+    type BaselineAnalysisPayload,
     type BaselineCollectionHandle,
 } from '../BaselineCollection';
 import { LiveSessionContext } from '../LiveSessionContext';
 import {
     AnalysisResultsVisualizationNotReadyError,
     AnalysisResultsVisualizationUnavailableError,
+    BaselineCollectionAlreadyStartedError,
     RecordedAnalysisFailedError,
     VisualizationRequestFailedError,
 } from 'contexts/AiToolComponentError';
@@ -210,14 +212,94 @@ describe('BaselineCollection visualization', () => {
             .not.toBeInTheDocument();
     });
 
-    it('waits for the next boundary, records one lap, reports progress, and emits completion once', () => {
-        const outputs: any[] = [];
-        const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
+    it('rejects duplicate starts while waiting and allows restart to clear the operation', async () => {
+        render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
         const handle = getHandle();
-        handle.subscribeToolOutput((output) => outputs.push(output));
+        let original!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        let duplicate!: ReturnType<BaselineCollectionHandle['startCollection']>;
 
         act(() => {
-            expect(handle.startCollection('goal-baseline-run')).toMatchObject({
+            original = handle.startCollection();
+            duplicate = handle.startCollection();
+        });
+
+        expect(duplicate.statuses).toHaveLength(0);
+        await expect(duplicate.result).rejects.toMatchObject({
+            name: 'BaselineCollectionAlreadyStartedError',
+            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            message: 'Baseline collection is already in progress.',
+        });
+        await expect(duplicate.result).rejects.toBeInstanceOf(BaselineCollectionAlreadyStartedError);
+        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', progress_percent: 0 });
+        expect(handle.getLapRecord()).toBeNull();
+
+        let restart!: ReturnType<BaselineCollectionHandle['restartCollection']>;
+        act(() => { restart = handle.restartCollection(); });
+        await expect(original.result).rejects.toMatchObject({ name: 'BaselineAnalysisCancelledError' });
+        await expect(restart.result).resolves.toMatchObject({ status: 'waiting_for_start' });
+        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap: null });
+    });
+
+    it('rejects duplicate starts during collection without disrupting the original operation', async () => {
+        const view = render(<Harness telemetry={{}} />);
+        const handle = getHandle();
+        let original!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        act(() => { original = handle.startCollection(); });
+        view.rerender(<Harness telemetry={makeSample(0, 0.001, 5)} />);
+        view.rerender(<Harness telemetry={makeSample(0, 0.4, 40_000)} />);
+        const tagBeforeDuplicate = handle.getTag();
+
+        const duplicate = handle.startCollection();
+        expect(duplicate.statuses).toHaveLength(0);
+        await expect(duplicate.result).rejects.toMatchObject({
+            name: 'BaselineCollectionAlreadyStartedError',
+            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            message: 'Baseline collection is already in progress.',
+        });
+        expect(handle.getTag()).toEqual(tagBeforeDuplicate);
+        expect(handle.getLapRecord()).toBeNull();
+
+        view.rerender(<Harness telemetry={makeSample(0, 0.98, 98_000)} />);
+        view.rerender(<Harness telemetry={makeSample(1, 0.001, 5)} />);
+
+        await expect(original.result).resolves.toMatchObject({ status: 'complete' });
+        expect(handle.getLapRecord()).toMatchObject({
+            lap: 0,
+            sample_count: 3,
+        });
+        expect(handle.getLapRecord()?.records.map((row) => row.Graphics_normalized_car_position))
+            .toEqual([0.001, 0.4, 0.98]);
+    });
+
+    it('rejects Start after completion without replacing the cached baseline', async () => {
+        const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
+        const handle = completeBaselineLap(view);
+        const cachedBaseline = handle.getLapRecord();
+
+        const duplicate = handle.startCollection();
+
+        expect(duplicate.statuses).toHaveLength(0);
+        await expect(duplicate.result).rejects.toMatchObject({
+            name: 'BaselineCollectionAlreadyStartedError',
+            componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
+            message: 'Baseline collection is already complete.',
+        });
+        expect(handle.getTag()).toMatchObject({ status: 'complete', progress_percent: 100 });
+        expect(handle.getLapRecord()).toBe(cachedBaseline);
+
+        act(() => { handle.restartCollection(); });
+        expect(handle.getLapRecord()).toBeNull();
+        expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap: null });
+    });
+
+    it('waits for the next boundary, records one lap, reports progress, and resolves the operation', async () => {
+        const view = render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
+        const handle = getHandle();
+
+        let operation!: ReturnType<BaselineCollectionHandle['startCollection']>;
+        act(() => {
+            operation = handle.startCollection();
+            expect(handle.getTag()).toMatchObject({
                 status: 'waiting_for_start',
                 progress_percent: 0,
             });
@@ -246,20 +328,16 @@ describe('BaselineCollection visualization', () => {
             .toEqual([0.001, 0.4, 0.98]);
         expect(handle.getTag()).toMatchObject({ status: 'complete', progress_percent: 100 });
         expect(screen.getByRole('button', { name: 'Request Analysis' })).toBeEnabled();
-        expect(outputs).toHaveLength(1);
-        expect(outputs[0]).toMatchObject({
-            toolName: 'collect_live_baseline',
-            runId: 'goal-baseline-run',
-            final: true,
-        });
-        expect(outputs[0].output).toEqual({
+        await expect(operation.result).resolves.toEqual({
             progress_percent: 100,
             status: 'complete',
             car: 'Ferrari 296',
             track: 'brands_hatch',
             message: 'Baseline complete. Cached lap record is ready.',
         });
-        expect(handle.getToolOutput()).toBe(outputs[0]);
+        await expect(Promise.all(operation.statuses)).resolves.toEqual(expect.arrayContaining([
+            expect.objectContaining({ event: 'baseline_progress', milestone: 100 }),
+        ]));
     });
 
     it('completes when position wraps before the lap counter advances', () => {
@@ -287,7 +365,6 @@ describe('BaselineCollection visualization', () => {
 
         act(() => { handle.restartCollection(); });
         expect(handle.getLapRecord()).toBeNull();
-        expect(handle.getToolOutput()).toBeNull();
         expect(handle.getTag()).toMatchObject({ status: 'waiting_for_start', baseline_lap: null });
         expect(screen.queryByRole('button', { name: /Analysis/ })).not.toBeInTheDocument();
 
@@ -310,7 +387,6 @@ describe('BaselineCollection visualization', () => {
         expect(directory!.findComponentRef(AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION)).toBeNull();
         expect(firstHandle.getTag()).toBeNull();
         expect(firstHandle.getLapRecord()).toBeNull();
-        expect(firstHandle.getToolOutput()).toBeNull();
 
         view.rerender(<Harness telemetry={makeSample(0, 0.5, 50_000)} />);
         const secondHandle = getHandle();
@@ -329,7 +405,6 @@ describe('BaselineCollection visualization', () => {
         view.rerender(<Harness telemetry={makeSample(2, 0.001, 5)} show={false} />);
         expect(secondHandle.getTag()).toBeNull();
         expect(secondHandle.getLapRecord()).toBeNull();
-        expect(secondHandle.getToolOutput()).toBeNull();
     });
 
     it('owns the exact cached-lap request, normalization, labels, comparison, and result payload', async () => {
@@ -337,9 +412,9 @@ describe('BaselineCollection visualization', () => {
         const handle = completeBaselineLap(view);
         const { chartHandle, manager } = installAnalysisComponents();
 
-        let payload: Awaited<ReturnType<BaselineCollectionHandle['requestAnalysis']>> | undefined;
+        let payload: BaselineAnalysisPayload | Error | undefined;
         await act(async () => {
-            payload = await handle.requestAnalysis({ limit: 1 });
+            payload = await handle.requestAnalysis({ limit: 1 }).result;
         });
 
         const record = handle.getLapRecord()!;
@@ -437,13 +512,13 @@ describe('BaselineCollection visualization', () => {
             duplicate = handle.requestAnalysis();
         });
 
-        expect(first).toBe(duplicate);
+        expect(first).not.toBe(duplicate);
         expect(mockPost).toHaveBeenCalledTimes(1);
         expect(screen.getByRole('button', { name: 'Analyzing Baseline…' })).toBeDisabled();
 
         await act(async () => {
             resolveRequest({ data: analysisResult });
-            await first;
+            await first.result;
         });
         expect(screen.getByRole('button', { name: 'Analysis Complete' })).toBeDisabled();
     });
@@ -457,7 +532,7 @@ describe('BaselineCollection visualization', () => {
         installAnalysisComponents();
 
         let payload: any;
-        await act(async () => { payload = await handle.requestAnalysis(); });
+        await act(async () => { payload = await handle.requestAnalysis().result; });
 
         expect(appendAnalysisResultPage).toHaveBeenCalledWith(expect.objectContaining({ elements: [] }));
         expect(payload).toMatchObject({
@@ -472,7 +547,7 @@ describe('BaselineCollection visualization', () => {
         const handle = completeBaselineLap(view);
         const { chartHandle, manager, visualizations } = installAnalysisComponents();
 
-        await act(async () => { await handle.requestAnalysis(); });
+        await act(async () => { await handle.requestAnalysis().result; });
         mockPost.mockResolvedValueOnce({
             data: {
                 ...analysisResult,
@@ -480,7 +555,7 @@ describe('BaselineCollection visualization', () => {
             },
         });
         let payload: any;
-        await act(async () => { payload = await handle.requestAnalysis(); });
+        await act(async () => { payload = await handle.requestAnalysis().result; });
 
         expect(manager.requestVisualization).toHaveBeenCalledTimes(1);
         expect(visualizations).toHaveLength(1);
@@ -526,7 +601,7 @@ describe('BaselineCollection visualization', () => {
         let request!: ReturnType<BaselineCollectionHandle['requestAnalysis']>;
         act(() => {
             request = handle.requestAnalysis();
-            void request.then(() => { completed = true; });
+            void request.result.then(() => { completed = true; });
         });
 
         await waitFor(() => expect(waitForAnalysisResultPage)
@@ -537,7 +612,7 @@ describe('BaselineCollection visualization', () => {
 
         await act(async () => {
             resolvePageCommit();
-            await request;
+            await request.result;
         });
         expect(completed).toBe(true);
         expect(screen.getByRole('button', { name: 'Analysis Complete' })).toBeDisabled();
@@ -555,7 +630,7 @@ describe('BaselineCollection visualization', () => {
         });
 
         await act(async () => {
-            await expect(handle.requestAnalysis()).rejects.toBe(readinessFailure);
+            await expect(handle.requestAnalysis().result).rejects.toBe(readinessFailure);
         });
         expect(screen.getByRole('button', { name: 'Retry Analysis' })).toBeEnabled();
     });
@@ -569,7 +644,7 @@ describe('BaselineCollection visualization', () => {
         let failure: unknown;
         await act(async () => {
             try {
-                await handle.requestAnalysis();
+                await handle.requestAnalysis().result;
             } catch (error) {
                 failure = error;
             }
@@ -618,7 +693,7 @@ describe('BaselineCollection visualization', () => {
         let failure: any;
         await act(async () => {
             try {
-                await handle.requestAnalysis();
+                await handle.requestAnalysis().result;
             } catch (error) {
                 failure = error;
             }
@@ -647,7 +722,7 @@ describe('BaselineCollection visualization', () => {
         render(<Harness telemetry={makeSample(4, 0.45, 45_000)} />);
 
         await act(async () => {
-            await expect(getHandle().requestAnalysis()).rejects.toMatchObject({
+            await expect(getHandle().requestAnalysis().result).rejects.toMatchObject({
                 name: 'BaselineLapRecordRequiredError',
                 componentName: AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
                 message: 'Live recorded analysis requires a recorded baseline lap before it can run.',
