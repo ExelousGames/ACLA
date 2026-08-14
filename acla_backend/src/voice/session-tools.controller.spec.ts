@@ -1,6 +1,5 @@
 import {
     BadRequestException,
-    ForbiddenException,
     RequestMethod,
 } from '@nestjs/common';
 import {
@@ -12,23 +11,6 @@ import { SessionToolsController } from './session-tools.controller';
 
 describe('SessionToolsController', () => {
     const controller = new SessionToolsController();
-    const originalUsername = process.env.AI_SERVICE_USERNAME;
-
-    beforeEach(() => {
-        process.env.AI_SERVICE_USERNAME = 'ai-service@example.com';
-    });
-
-    afterAll(() => {
-        if (originalUsername === undefined) {
-            delete process.env.AI_SERVICE_USERNAME;
-        } else {
-            process.env.AI_SERVICE_USERNAME = originalUsername;
-        }
-    });
-
-    const request = (username = 'ai-service@example.com') => ({
-        user: { username },
-    });
 
     it('requires the JWT auth guard', () => {
         const guards = Reflect.getMetadata(
@@ -49,17 +31,10 @@ describe('SessionToolsController', () => {
         )).toBe(RequestMethod.POST);
     });
 
-    it('restricts the authenticated endpoint to the configured AI service account', () => {
-        expect(() => controller.getSessionTools(
-            request('driver@example.com'),
-            { session_context: { session_mode: 'live' } },
-        )).toThrow(ForbiddenException);
-
-        delete process.env.AI_SERVICE_USERNAME;
-        expect(() => controller.getSessionTools(
-            request(),
-            { session_context: { session_mode: 'live' } },
-        )).toThrow(ForbiddenException);
+    it('relies on the JWT guard without a controller-level identity check', () => {
+        expect(controller.getSessionTools({
+            session_context: { session_mode: 'live' },
+        }).length).toBeGreaterThan(0);
     });
 
     it.each([
@@ -69,12 +44,12 @@ describe('SessionToolsController', () => {
         { session_context: { session_mode: 'unknown' } },
         { session_context: { session_mode: 'live', agent_mode: 'unknown' } },
     ])('rejects invalid session context: %p', (body) => {
-        expect(() => controller.getSessionTools(request(), body))
+        expect(() => controller.getSessionTools(body))
             .toThrow(BadRequestException);
     });
 
     it('preserves the recorded-session allowlist', () => {
-        const tools = controller.getSessionTools(request(), {
+        const tools = controller.getSessionTools({
             session_context: { session_mode: 'recorded' },
         });
         const names = tools.map(({ name }) => name);
@@ -92,7 +67,7 @@ describe('SessionToolsController', () => {
     });
 
     it('preserves the live analyst allowlist and exact response shape', () => {
-        const tools = controller.getSessionTools(request(), {
+        const tools = controller.getSessionTools({
             session_context: {
                 session_mode: 'live',
                 agent_mode: 'live_performance_analyst',
@@ -120,7 +95,7 @@ describe('SessionToolsController', () => {
     it.each(['front_desk', 'live', 'recorded', 'user_summary'])(
         'accepts session mode %s',
         (sessionMode) => {
-            expect(controller.getSessionTools(request(), {
+            expect(controller.getSessionTools({
                 session_context: { session_mode: sessionMode },
             }).length).toBeGreaterThan(0);
         },

@@ -2,9 +2,7 @@ import {
     BadRequestException,
     Body,
     Controller,
-    ForbiddenException,
     Post,
-    Request,
     UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
@@ -26,12 +24,7 @@ const AGENT_MODES = new Set([
 export class SessionToolsController {
     @UseGuards(AuthGuard('jwt'))
     @Post('session-tools')
-    getSessionTools(@Request() req: any, @Body() body: unknown) {
-        const aiServiceUsername = process.env.AI_SERVICE_USERNAME;
-        if (!aiServiceUsername || req.user?.username !== aiServiceUsername) {
-            throw new ForbiddenException('Session tools are restricted to the AI service');
-        }
-
+    getSessionTools(@Body() body: unknown) {
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
             throw new BadRequestException('session_context is required');
         }
