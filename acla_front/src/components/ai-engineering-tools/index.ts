@@ -12,6 +12,7 @@ export type {
     AiToolOperation,
     AiToolOperationResult,
     AiToolOperationStatus,
+    AiToolQueryResult,
 } from './ai-tool-operation';
 export {
     default as ProcedurePlan,
@@ -72,8 +73,6 @@ export {
     GoalRunner,
     buildGoalRequest,
     compareGoalValues,
-    extractGoalResultPath,
-    isSafeGoalResultPath,
     validateGoalRequest,
 } from './Goal';
 export type {

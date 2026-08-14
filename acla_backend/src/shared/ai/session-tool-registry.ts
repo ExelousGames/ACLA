@@ -403,19 +403,13 @@ export const SESSION_TOOLS = [
         required: [],
     },
     {
-        name: 'get_live_analysis_mistake_count',
-        description: 'Count practice and racing mistake result elements in the newest stored live-analysis page without rerunning telemetry analysis.',
-        properties: {},
-        required: [],
-    },
-    {
         name: 'query_analysis_result',
-        description: 'Query the currently mounted Analysis Results tab without rerunning analysis. Use result_count to return the total normalized result count, independently of the Practice/Racing filter.',
+        description: 'Query the active Analysis Results page without rerunning analysis. result_count returns all normalized results and mistake_count returns recognized mistakes; both are active-page counts that ignore the current Practice/Racing UI filter.',
         properties: {
             query: {
                 type: 'string',
-                enum: ['result_count'],
-                description: 'Analysis Results query to run. result_count counts the active analysis page without rerunning analysis.',
+                enum: ['result_count', 'mistake_count'],
+                description: 'Analysis Results query to run. Both values count the active page without rerunning analysis and ignore the current Practice/Racing UI filter.',
             },
         },
         required: ['query'],
@@ -445,22 +439,21 @@ export const SESSION_TOOLS = [
             },
             determination: {
                 type: 'object',
-                description: 'Frontend tool call and numeric determination evaluated after the ordered preparation steps.',
+                description: 'Frontend query tool call that must return a ready numeric query envelope, plus the comparison evaluated after the ordered preparation steps.',
                 properties: {
                     tool: {
                         type: 'object',
-                        description: 'Frontend tool call used to determine whether the goal was achieved.',
+                        description: 'Frontend query tool call that must return a ready numeric query envelope to determine whether the goal was achieved.',
                         properties: {
                             name: { type: 'string', description: 'Available session tool to execute.' },
                             arguments: { type: 'object', description: 'Arguments passed unchanged to the determination tool.' },
                         },
                         required: ['name'],
                     },
-                    result_path: { type: 'string', description: 'Safe dot-separated path in the determination tool AI-facing output.' },
                     operator: { type: 'string', enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
                     target: { type: 'number' },
                 },
-                required: ['tool', 'result_path', 'operator', 'target'],
+                required: ['tool', 'operator', 'target'],
             },
         },
         required: ['name', 'steps', 'determination'],
@@ -752,7 +745,6 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: SessionToolName[] = [
 ];
 
 const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: SessionToolName[] = [
-    'get_live_analysis_mistake_count',
     'create_goal',
     'retry_goal_task',
 ];

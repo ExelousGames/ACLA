@@ -46,6 +46,38 @@ export interface AnalysisResultMutationResult {
     };
 }
 
+export type AnalysisResultLabelResolver = (labelId: string) => string | undefined;
+
+const MISTAKE_PARENT_LABEL_NAMES = {
+    MSP: 'Mistake (Practice)',
+    MSR: 'Mistake (Racing)',
+} as const;
+
+export type MistakeParentLabelId = keyof typeof MISTAKE_PARENT_LABEL_NAMES;
+
+export const getAnalysisResultMistakeParentLabels = (
+    id: MistakeParentLabelId,
+    resolveLabel?: AnalysisResultLabelResolver,
+): ReadonlySet<string> => new Set([
+    id,
+    MISTAKE_PARENT_LABEL_NAMES[id],
+    resolveLabel?.(id),
+].filter((label): label is string => Boolean(label)));
+
+export const countAnalysisResultMistakes = (
+    elements: readonly AnalysisResultElement[],
+    resolveLabel?: AnalysisResultLabelResolver,
+): number => {
+    const recognizedLabels = new Set(
+        Array.from(getAnalysisResultMistakeParentLabels('MSP', resolveLabel)).concat(
+            Array.from(getAnalysisResultMistakeParentLabels('MSR', resolveLabel)),
+        ),
+    );
+    return elements.filter((element) => (
+        element.labels.some((label) => recognizedLabels.has(label))
+    )).length;
+};
+
 let generatedIdSequence = 0;
 
 export const createAnalysisResultElementId = (): string => (

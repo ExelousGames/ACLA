@@ -2,8 +2,6 @@ import {
     AnalysisResultElement,
     normalizeAnalysisResultsData,
 } from 'views/lap-analysis/visualization/charts/analysisResultsModel';
-import { LiveAnalysisResultUnavailableError } from 'contexts/AiToolComponentError';
-import { AI_TOOL_COMPONENT_NAMES } from 'contexts/AiToolComponentRefContext';
 
 export interface LiveSessionBaselineMetadata {
     id: string;
@@ -31,66 +29,6 @@ export interface AppendLiveSessionAnalysisResultPageResult {
     pageId: string;
     pageCount: number;
 }
-
-export type LiveAnalysisMistakeCountResult = {
-    status: 'ready';
-    mistake_count: number;
-    practice_mistake_count: number;
-    racing_mistake_count: number;
-    page_id: string;
-    baseline_lap: number;
-    track: string;
-    car: string;
-};
-
-export type LiveAnalysisLabelResolver = (labelId: string) => string | undefined;
-
-const getParentLabelNames = (
-    id: 'MSP' | 'MSR',
-    canonicalName: string,
-    resolveLabel?: LiveAnalysisLabelResolver,
-): Set<string> => new Set([
-    id,
-    canonicalName,
-    resolveLabel?.(id),
-].filter((label): label is string => Boolean(label)));
-
-export const getLiveAnalysisMistakeCount = (
-    page: LiveSessionAnalysisResultPage | null,
-    resolveLabel?: LiveAnalysisLabelResolver,
-): LiveAnalysisMistakeCountResult => {
-    if (!page) {
-        throw new LiveAnalysisResultUnavailableError(
-            AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-            'No completed live analysis result is available.',
-        );
-    }
-
-    const practiceLabels = getParentLabelNames('MSP', 'Mistake (Practice)', resolveLabel);
-    const racingLabels = getParentLabelNames('MSR', 'Mistake (Racing)', resolveLabel);
-    let mistakeCount = 0;
-    let practiceMistakeCount = 0;
-    let racingMistakeCount = 0;
-
-    page.elements.forEach((element) => {
-        const practice = element.labels.some((label) => practiceLabels.has(label));
-        const racing = element.labels.some((label) => racingLabels.has(label));
-        if (practice) practiceMistakeCount += 1;
-        if (racing) racingMistakeCount += 1;
-        if (practice || racing) mistakeCount += 1;
-    });
-
-    return {
-        status: 'ready',
-        mistake_count: mistakeCount,
-        practice_mistake_count: practiceMistakeCount,
-        racing_mistake_count: racingMistakeCount,
-        page_id: page.id,
-        baseline_lap: page.baseline.lap,
-        track: page.baseline.track,
-        car: page.baseline.car,
-    };
-};
 
 let generatedPageSequence = 0;
 

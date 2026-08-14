@@ -5,6 +5,8 @@ import {
     AnalysisResultElement,
     AnalysisResultMutationResult,
     appendAnalysisResultElement,
+    countAnalysisResultMistakes,
+    getAnalysisResultMistakeParentLabels,
     normalizeAnalysisResultsData,
     removeAnalysisResultElement,
     updateAnalysisResultElement,
@@ -34,6 +36,11 @@ import {
     resolvedAiToolOperation,
     type AiToolOperation,
 } from 'components/ai-engineering-tools';
+import type {
+    AnalysisResultQueryData,
+    QueryAnalysisResultArguments,
+    QueryAnalysisResultResult,
+} from 'views/lap-analysis/ai-chat/ai-command-registry';
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
 
@@ -45,7 +52,6 @@ type AnalysisResultsMainLabelFilter = 'MSP' | 'MSR';
 interface MainLabelFilterOption {
     value: AnalysisResultsMainLabelFilter;
     label: string;
-    resolvedLabel: string;
     sortDisplayName: string;
 }
 
@@ -53,13 +59,11 @@ const MAIN_LABEL_FILTER_OPTIONS: readonly MainLabelFilterOption[] = [
     {
         value: 'MSP',
         label: 'Training Mistake',
-        resolvedLabel: 'Mistake (Practice)',
         sortDisplayName: 'Most common training mistake',
     },
     {
         value: 'MSR',
         label: 'Racing Mistake',
-        resolvedLabel: 'Mistake (Racing)',
         sortDisplayName: 'Most common racing mistake',
     },
 ];
@@ -90,18 +94,15 @@ export interface AnalysisResultsPagination {
 
 export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
     waitForAnalysisResultPage(pageId: string): Promise<void>;
-    getAnalysisResultCount(): AiToolOperation<AnalysisResultCountResult>;
+    queryAnalysisResult<TQuery extends keyof AnalysisResultQueryData>(
+        args: QueryAnalysisResultArguments<TQuery>,
+    ): AiToolOperation<QueryAnalysisResultResult<TQuery>>;
     replaceAnalysisResults(data: unknown): true;
     appendAnalysisResult(element: unknown): AnalysisResultControlResult;
     updateAnalysisResult(id: unknown, changes: unknown): AnalysisResultControlResult;
     removeAnalysisResult(id: unknown): AnalysisResultControlResult;
     disableAnalysisResults(): true;
 }
-
-export type AnalysisResultCountResult = {
-    status: 'ready';
-    analysis_result_count: number;
-};
 
 export type AnalysisResultControlResult = Omit<AnalysisResultMutationResult, 'success'> & {
     success: true;
@@ -848,6 +849,10 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const isOverallTrend = Boolean(pagination) && (showOverallTrend || !activePage);
     const activeData = activePage ?? data;
     const { elements } = React.useMemo(() => normalizeAnalysisResultsData(activeData), [activeData]);
+    const analysisResultQueryData = React.useMemo<AnalysisResultQueryData>(() => ({
+        result_count: elements.length,
+        mistake_count: countAnalysisResultMistakes(elements, getLabelName),
+    }), [elements, getLabelName]);
     const waitForAnalysisResultPage = React.useCallback((pageId: string): Promise<void> => {
         if (committedPageIdsRef.current.has(pageId)) return Promise.resolve();
         if (!mountedRef.current) {
@@ -905,9 +910,9 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const handle = React.useMemo<AnalysisResultsChartHandle>(() => ({
         getComponentName: () => name,
         waitForAnalysisResultPage,
-        getAnalysisResultCount: () => resolvedAiToolOperation({
+        queryAnalysisResult: ({ query }) => resolvedAiToolOperation({
             status: 'ready',
-            analysis_result_count: elements.length,
+            data: analysisResultQueryData[query],
         }),
         replaceAnalysisResults: (nextData) => runVisualizationBooleanCallback(
             name,
@@ -969,15 +974,13 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             `Component '${name}' could not be disabled.`,
             onDisable,
         ),
-    }), [activeData, elements.length, name, onDisable, onUpdate, waitForAnalysisResultPage]);
+    }), [activeData, analysisResultQueryData, name, onDisable, onUpdate, waitForAnalysisResultPage]);
     React.useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);
     const selectedFilter = MAIN_LABEL_FILTER_OPTIONS.find(({ value }) => value === mainLabelFilter)!;
-    const recognizedParentLabels = React.useMemo(() => new Set([
-        selectedFilter.value,
-        selectedFilter.resolvedLabel,
-        getLabelName(selectedFilter.value),
-    ].filter((label): label is string => Boolean(label))), [getLabelName, selectedFilter]);
+    const recognizedParentLabels = React.useMemo(() => (
+        getAnalysisResultMistakeParentLabels(selectedFilter.value, getLabelName)
+    ), [getLabelName, selectedFilter]);
     const filteredElements = React.useMemo(
         () => elements.filter((element) => (
             element.labels.some((label) => recognizedParentLabels.has(label))

@@ -12,6 +12,7 @@ import {
 import type { LiveSessionHandle } from '../LiveSessionView';
 import { BaselineCollectionAlreadyStartedError } from 'contexts/AiToolComponentError';
 import { createAiToolOperationFrom } from 'components/ai-engineering-tools';
+import { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: jest.fn(),
@@ -124,6 +125,53 @@ const RegistrationObserver = () => {
     return null;
 };
 
+const renderRegisteredView = (runtime: ReturnType<typeof createRuntime>) => {
+    render(
+        <AiToolComponentRefProvider>
+            <LiveSessionContext.Provider value={runtime as any}>
+                <LiveSessionView name={AI_TOOL_COMPONENT_NAMES.LIVE_SESSION} />
+            </LiveSessionContext.Provider>
+            <RegistrationObserver />
+        </AiToolComponentRefProvider>,
+    );
+    return componentDirectory!
+        .findComponentRef<LiveSessionHandle>(AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)!.current!;
+};
+
+const createTelemetryRuntime = () => {
+    const sessionIntelligence = new SessionIntelligence();
+    sessionIntelligence.tick({
+        Static_track: 'brands_hatch',
+        Graphics_completed_laps: 1,
+        Graphics_normalized_car_position: 0.1,
+        Physics_timestamp: 0,
+        Physics_speed_kmh: 100,
+        Physics_wheel_pressure_front_left: 27,
+        Physics_wheel_pressure_front_right: 28,
+        Physics_wheel_pressure_rear_left: 29,
+        Physics_wheel_pressure_rear_right: 30,
+        status: 5,
+        message: 6,
+    });
+    sessionIntelligence.tick({
+        Static_track: 'brands_hatch',
+        Graphics_completed_laps: 1,
+        Graphics_normalized_car_position: 0.2,
+        Physics_timestamp: 100,
+        Physics_speed_kmh: 120,
+        Physics_wheel_pressure_front_left: 28,
+        Physics_wheel_pressure_front_right: 29,
+        Physics_wheel_pressure_rear_left: 30,
+        Physics_wheel_pressure_rear_right: 31,
+        status: 7,
+        message: 8,
+    });
+    return {
+        ...createRuntime('acc'),
+        sessionIntelligence,
+    };
+};
+
 describe('LiveSessionView', () => {
     beforeEach(() => {
         mockedUseDesktopGame.mockReset();
@@ -179,6 +227,88 @@ describe('LiveSessionView', () => {
         });
         expect(handle.getRecordingState()).toBe(RecordingState.RECORDING);
         expect(handle.getCurrentTelemetry()).toEqual({ Physics_speed_kmh: 210 });
+    });
+
+    it.each([
+        ['avg', 110],
+        ['min', 100],
+        ['max', 120],
+        ['stats', { avg: 110, min: 100, max: 120, stddev: 10 }],
+    ] as const)('returns a ready telemetry envelope for %s reduction', async (reduce, expected) => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const handle = renderRegisteredView(createTelemetryRuntime());
+
+        const operation = handle.queryTelemetryMetricForAi({
+            fields: ['speed'],
+            scope: { type: 'last_seconds', seconds: 1 },
+            reduce,
+        });
+
+        await expect(operation.result).resolves.toEqual({
+            status: 'ready',
+            data: { Physics_speed_kmh: expected },
+        });
+    });
+
+    it('keeps telemetry status and message fields nested inside data', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const handle = renderRegisteredView(createTelemetryRuntime());
+
+        await expect(handle.queryTelemetryMetricForAi({
+            fields: ['status', 'message'],
+            scope: { type: 'now' },
+            reduce: 'avg',
+        }).result).resolves.toEqual({
+            status: 'ready',
+            data: { status: 7, message: 8 },
+        });
+    });
+
+    it('wraps alias and group expansion under raw telemetry field keys', async () => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const handle = renderRegisteredView(createTelemetryRuntime());
+
+        await expect(handle.queryTelemetryMetricForAi({
+            fields: ['tyre_pressure', 'tire_pressure', 'Physics_wheel_pressure_front_left'],
+            scope: { type: 'now' },
+            reduce: 'avg',
+        }).result).resolves.toEqual({
+            status: 'ready',
+            data: {
+                Physics_wheel_pressure_front_left: 28,
+                Physics_wheel_pressure_front_right: 29,
+                Physics_wheel_pressure_rear_left: 30,
+                Physics_wheel_pressure_rear_right: 31,
+            },
+        });
+    });
+
+    it.each([
+        ['JSON-string fields', { fields: '["speed"]', scope: { type: 'now' }, reduce: 'avg' }],
+        ['comma-delimited fields', { fields: 'speed,brake', scope: { type: 'now' }, reduce: 'avg' }],
+        ['alternate field name', { field: ['speed'], scope: { type: 'now' }, reduce: 'avg' }],
+        ['missing fields', { scope: { type: 'now' }, reduce: 'avg' }],
+        ['empty fields', { fields: [], scope: { type: 'now' }, reduce: 'avg' }],
+        ['blank field entry', { fields: [''], scope: { type: 'now' }, reduce: 'avg' }],
+        ['trimmed field repair', { fields: [' speed '], scope: { type: 'now' }, reduce: 'avg' }],
+        ['JSON-string scope', { fields: ['speed'], scope: '{"type":"now"}', reduce: 'avg' }],
+        ['missing scope data', { fields: ['speed'], scope: { type: 'last_seconds' }, reduce: 'avg' }],
+        ['alternate scope property', { fields: ['speed'], scope: { type: 'event', event_type: 'CORNER', which: 'last' }, reduce: 'avg' }],
+        ['malformed lap scope', { fields: ['speed'], scope: { type: 'lap', lap: '1' }, reduce: 'avg' }],
+        ['malformed range scope', { fields: ['speed'], scope: { type: 'range', start: 0, end: '10' }, reduce: 'avg' }],
+        ['missing reduction', { fields: ['speed'], scope: { type: 'now' } }],
+        ['raw reduction', { fields: ['speed'], scope: { type: 'now' }, reduce: 'raw' }],
+        ['invalid reduction', { fields: ['speed'], scope: { type: 'now' }, reduce: 'average' }],
+        ['extra property', { fields: ['speed'], scope: { type: 'now' }, reduce: 'avg', reducer: 'avg' }],
+    ])('rejects malformed telemetry arguments: %s', async (_name, args) => {
+        mockedUseDesktopGame.mockReturnValue({ detectedGame: 'acc', detectionStatus: 'detected', error: null });
+        const handle = renderRegisteredView(createTelemetryRuntime());
+
+        const operation = handle.queryTelemetryMetricForAi(args as any);
+
+        await expect(operation.result).rejects.toMatchObject({
+            name: 'InvalidToolCallError',
+        });
     });
 
     it('propagates a mounted collector duplicate-start failure without progress statuses', async () => {

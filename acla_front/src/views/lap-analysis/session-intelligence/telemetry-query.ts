@@ -1,4 +1,13 @@
-import { TelemetryQuery, TelemetrySample, QueryResult, FieldStats, QueryScope, EventType } from './types';
+import {
+    TelemetryQuery,
+    TelemetrySample,
+    QueryResult,
+    FieldStats,
+    QueryScope,
+    EventType,
+    ReduceOp,
+    TelemetryValueByReduce,
+} from './types';
 import { TelemetryBuffer } from './TelemetryBuffer';
 import { EventLog } from './EventLog';
 
@@ -147,33 +156,35 @@ function computeStats(values: number[]): FieldStats {
     return { avg, min, max, stddev: Math.sqrt(variance) };
 }
 
-function reduceField(
+const REDUCERS: {
+    [TReduce in ReduceOp]: (values: number[]) => TelemetryValueByReduce[TReduce];
+} = {
+    raw: (values) => values,
+    avg: (values) => values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0,
+    min: (values) => values.length ? Math.min(...values) : 0,
+    max: (values) => values.length ? Math.max(...values) : 0,
+    stats: computeStats,
+};
+
+function reduceField<TReduce extends ReduceOp>(
     samples: TelemetrySample[],
     field: string,
-    op: TelemetryQuery['reduce'],
-): number | number[] | FieldStats {
-    const values = extractValues(samples, field);
-    switch (op) {
-        case 'raw': return values;
-        case 'avg': return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
-        case 'min': return values.length ? Math.min(...values) : 0;
-        case 'max': return values.length ? Math.max(...values) : 0;
-        case 'stats': return computeStats(values);
-        default: return values;
-    }
+    op: TReduce,
+): TelemetryValueByReduce[TReduce] {
+    return REDUCERS[op](extractValues(samples, field));
 }
 
 // ── Public executor ───────────────────────────────────────────────────────────
 
-export function executeQuery(
-    query: TelemetryQuery,
+export function executeQuery<TReduce extends ReduceOp>(
+    query: TelemetryQuery<TReduce>,
     buffer: TelemetryBuffer,
     log: EventLog,
     currentLap: number,
-): QueryResult {
+): QueryResult<TReduce> {
     const samples = resolveScope(query.scope, buffer, log, currentLap);
     const rawFields = expandFields(query.fields);
-    const result: QueryResult = {};
+    const result: QueryResult<TReduce> = {};
     for (const field of rawFields) {
         result[field] = reduceField(samples, field, query.reduce);
     }

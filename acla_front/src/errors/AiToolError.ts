@@ -115,10 +115,6 @@ export class FocusSectionNotReadyError extends AiToolError {
     override name = 'FocusSectionNotReadyError';
 }
 
-export class LivePerformanceAnalystToolUnavailableError extends AiToolError {
-    override name = 'LivePerformanceAnalystToolUnavailableError';
-}
-
 export class CreateGoalToolUnavailableError extends AiToolError {
     override name = 'CreateGoalToolUnavailableError';
 }

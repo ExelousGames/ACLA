@@ -102,7 +102,7 @@ describe('SessionToolsController', () => {
 
         expect(names).toEqual(expect.arrayContaining([
             'collect_live_baseline',
-            'get_live_analysis_mistake_count',
+            'query_analysis_result',
             'create_goal',
             'retry_goal_task',
             'classify_live_section',

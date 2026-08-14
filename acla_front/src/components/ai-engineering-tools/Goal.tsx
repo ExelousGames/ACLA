@@ -6,7 +6,7 @@ import {
     DuplicateGoalStepIdError,
     GoalComponentError,
     GoalDeterminationFailedError,
-    GoalDeterminationValueNotNumericError,
+    GoalDeterminationInputIncompatibleError,
     GoalReplacedError,
     GoalStepFailedError,
     GoalTaskRetryUnavailableError,
@@ -66,7 +66,6 @@ export type GoalDeterminationTool = {
 
 export type GoalDetermination = {
     tool: GoalDeterminationTool;
-    result_path: string;
     operator: GoalComparisonOperator;
     target: number;
 };
@@ -179,8 +178,6 @@ export type GoalProps = {
 
 const RETRY_DELAY_MS = 1000;
 const RECURSIVE_GOAL_TOOL_NAMES = new Set(['create_goal', 'retry_goal_task']);
-const UNSAFE_RESULT_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
-const RESULT_PATH_SEGMENT_RE = /^(?:[A-Za-z_][A-Za-z0-9_]*|0|[1-9][0-9]*)$/;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -201,16 +198,6 @@ const isGoalComparisonOperator = (value: unknown): value is GoalComparisonOperat
     typeof value === 'string'
     && (GOAL_COMPARISON_OPERATORS as readonly string[]).includes(value)
 );
-
-export const isSafeGoalResultPath = (path: unknown): path is string => {
-    const normalized = toNonEmptyString(path);
-    if (!normalized) return false;
-    const segments = normalized.split('.');
-    return segments.every((segment) => (
-        RESULT_PATH_SEGMENT_RE.test(segment)
-        && !UNSAFE_RESULT_PATH_SEGMENTS.has(segment)
-    ));
-};
 
 const parseGoalStepDescriptor = (value: unknown): GoalStepDescriptor | null => {
     const step = isRecord(value) ? value : null;
@@ -243,14 +230,11 @@ const parseGoalDetermination = (value: unknown): GoalDetermination | null => {
     const determination = isRecord(value) ? value : null;
     if (!determination || !hasOnlyKeys(
         determination,
-        ['tool', 'result_path', 'operator', 'target'],
+        ['tool', 'operator', 'target'],
     )) return null;
     const tool = parseGoalDeterminationTool(determination.tool);
-    const resultPath = toNonEmptyString(determination.result_path);
     if (
         !tool
-        || !resultPath
-        || !isSafeGoalResultPath(resultPath)
         || !isGoalComparisonOperator(determination.operator)
         || typeof determination.target !== 'number'
         || !Number.isFinite(determination.target)
@@ -259,7 +243,6 @@ const parseGoalDetermination = (value: unknown): GoalDetermination | null => {
     }
     return {
         tool,
-        result_path: resultPath,
         operator: determination.operator,
         target: determination.target,
     };
@@ -330,22 +313,16 @@ export const buildGoalRequest = (
     validateGoalRequest(value, componentName)
 );
 
-export const extractGoalResultPath = (value: unknown, path: string): unknown => {
-    if (!isSafeGoalResultPath(path)) return undefined;
-    let current = value;
-    for (const segment of path.split('.')) {
-        if (Array.isArray(current) && /^\d+$/.test(segment)) {
-            const index = Number(segment);
-            if (!Object.prototype.hasOwnProperty.call(current, index)) return undefined;
-            current = current[index];
-            continue;
-        }
-        if (!isRecord(current) || !Object.prototype.hasOwnProperty.call(current, segment)) {
-            return undefined;
-        }
-        current = current[segment];
+const evaluateGoalDeterminationInput = (value: unknown): number | null => {
+    if (
+        !isRecord(value)
+        || value.status !== 'ready'
+        || typeof value.data !== 'number'
+        || !Number.isFinite(value.data)
+    ) {
+        return null;
     }
-    return current;
+    return value.data;
 };
 
 export const compareGoalValues = (
@@ -429,8 +406,8 @@ type ActiveGoalOperation = {
     statuses: Map<string, AiToolDeferred<GoalProgressStatus>>;
 };
 
-const getOutputStatus = (output: Record<string, unknown>): string => {
-    const status = output.status;
+const getOutputStatus = (output: unknown): string => {
+    const status = isRecord(output) ? output.status : undefined;
     return typeof status === 'string' && status ? status : 'complete';
 };
 
@@ -742,16 +719,13 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         let error = execution.error;
         let actual: number | null = null;
         if (!error) {
-            const value = extractGoalResultPath(
-                execution.value,
-                request.determination.result_path,
-            );
-            if (typeof value !== 'number' || !Number.isFinite(value)) {
-                error = new GoalDeterminationValueNotNumericError(
+            actual = evaluateGoalDeterminationInput(execution.value);
+            if (actual === null) {
+                error = new GoalDeterminationInputIncompatibleError(
                     this.getComponentName(),
-                    `Goal determination path '${request.determination.result_path}' did not resolve to a finite number.`,
+                    'Goal determination requires a ready query result with finite numeric data.',
                 );
-            } else actual = value;
+            }
         }
         if (error) {
             this.resolveProgress('determination', {

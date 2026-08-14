@@ -10,7 +10,6 @@ import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
     CreateGoalToolUnavailableError,
     InvalidToolCallError,
-    LivePerformanceAnalystToolUnavailableError,
     NoLiveSessionError,
     NoLiveTelemetryError,
     RetryGoalTaskToolUnavailableError,
@@ -40,6 +39,7 @@ import type {
     ProcedurePlanRunResult,
     ProcedurePlanState,
     LiveRangeTodoDueStatus,
+    AiToolQueryResult,
 } from 'components/ai-engineering-tools';
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
 import type { AiChatHandle } from './ai-chat';
@@ -49,6 +49,7 @@ import type { UserSummaryHandle } from 'views/user-summary/user-summary';
 import type { AiMapDisplayPayload } from './AiMapToolDisplay';
 import type { AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
+import type { QueryResult, QueryScope } from 'views/lap-analysis/session-intelligence/types';
 
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
 export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
@@ -336,7 +337,6 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
-    'get_live_analysis_mistake_count',
     'query_analysis_result',
     'create_goal',
     'retry_goal_task',
@@ -358,6 +358,74 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
 ] as const);
 
 export type FrontendAiToolName = typeof FRONTEND_AI_TOOL_NAMES[number];
+export type FrontendAiQueryName = Extract<FrontendAiToolName, `query_${string}`>;
+
+export type AnalysisResultQueryData = {
+    result_count: number;
+    mistake_count: number;
+};
+
+export type QueryAnalysisResultArguments<
+    TQuery extends keyof AnalysisResultQueryData,
+> = { query: TQuery };
+
+export type QueryAnalysisResultResult<
+    TQuery extends keyof AnalysisResultQueryData,
+> = AiToolQueryResult<AnalysisResultQueryData[TQuery]>;
+
+export type TelemetryMetricReduce = 'avg' | 'min' | 'max' | 'stats';
+
+export type QueryTelemetryMetricArguments<
+    TReduce extends TelemetryMetricReduce,
+> = {
+    fields: string[];
+    scope: QueryScope;
+    reduce: TReduce;
+};
+
+export type QueryTelemetryMetricResult<
+    TReduce extends TelemetryMetricReduce,
+> = AiToolQueryResult<QueryResult<TReduce>>;
+
+export type FrontendAiQueryContractMap = {
+    query_analysis_result: <TQuery extends keyof AnalysisResultQueryData>(
+        args: QueryAnalysisResultArguments<TQuery>,
+    ) => AiToolOperation<QueryAnalysisResultResult<TQuery>>;
+    query_telemetry_metric: <TReduce extends TelemetryMetricReduce>(
+        args: QueryTelemetryMetricArguments<TReduce>,
+    ) => AiToolOperation<QueryTelemetryMetricResult<TReduce>>;
+};
+
+type AssertTrue<TValue extends true> = TValue;
+type QueryContractKeysAreExact = (
+    [FrontendAiQueryName] extends [keyof FrontendAiQueryContractMap]
+        ? [keyof FrontendAiQueryContractMap] extends [FrontendAiQueryName]
+            ? true
+            : false
+        : false
+);
+
+export type FrontendAiQueryContractCoverage = AssertTrue<QueryContractKeysAreExact>;
+
+const validateAnalysisResultQueryArguments = (
+    args: unknown,
+): QueryAnalysisResultArguments<keyof AnalysisResultQueryData> => {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        throw new InvalidToolCallError(
+            "query_analysis_result requires exactly one query set to 'result_count' or 'mistake_count'.",
+        );
+    }
+    const value = args as Record<string, unknown>;
+    if (Object.keys(value).length !== 1
+        || !Object.prototype.hasOwnProperty.call(value, 'query')
+        || (value.query !== 'result_count' && value.query !== 'mistake_count')) {
+        throw new InvalidToolCallError(
+            "query_analysis_result requires exactly one query set to 'result_count' or 'mistake_count'.",
+        );
+    }
+    return value as QueryAnalysisResultArguments<keyof AnalysisResultQueryData>;
+};
+
 type WorkflowOwner = 'chat' | 'goal' | 'procedure_plan';
 
 type FrontendAiToolDefinition = {
@@ -398,7 +466,6 @@ const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
-    'get_live_analysis_mistake_count',
     'query_analysis_result',
     'advance_plan_step',
     'clear_procedure_plan',
@@ -451,14 +518,6 @@ const assertAvailable = (
     )) {
         throw new RetryGoalTaskToolUnavailableError(
             'Goal task retry is available only to the live performance analyst.',
-        );
-    }
-    if (name === 'get_live_analysis_mistake_count' && (
-        context.conversationRole !== 'agent'
-        || context.agentMode !== 'live_performance_analyst'
-    )) {
-        throw new LivePerformanceAnalystToolUnavailableError(
-            'This tool is available only to the live performance analyst.',
         );
     }
 };
@@ -518,24 +577,14 @@ const definitionList = Object.freeze([
             .analyzeLiveRecordedAnalysisForAi(args),
     },
     {
-        name: 'get_live_analysis_mistake_count',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
-            .getLiveAnalysisMistakeCountForAi(),
-    },
-    {
         name: 'query_analysis_result',
         componentName: getSingletonVisualizationComponentName('analysis-results'),
         execute: (context, args) => {
-            if (args.query !== 'result_count') {
-                throw new InvalidToolCallError(
-                    "query_analysis_result requires query to be 'result_count'.",
-                );
-            }
+            const query = validateAnalysisResultQueryArguments(args);
             return getComponent<AnalysisResultsChartHandle>(
                 context,
                 getSingletonVisualizationComponentName('analysis-results'),
-            ).getAnalysisResultCount();
+            ).queryAnalysisResult(query);
         },
     },
     {
@@ -578,7 +627,9 @@ const definitionList = Object.freeze([
         name: 'query_telemetry_metric',
         componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
         execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
-            .queryTelemetryMetricForAi(args),
+            .queryTelemetryMetricForAi(
+                args as QueryTelemetryMetricArguments<TelemetryMetricReduce>,
+            ),
     },
     {
         name: 'get_event_log',
@@ -649,15 +700,19 @@ type FrontendAiToolDefinitionMap = {
     [TDefinition in typeof definitionList[number] as TDefinition['name']]: TDefinition;
 };
 
-export type FrontendAiToolOperation<TName extends FrontendAiToolName> = ReturnType<
-    FrontendAiToolDefinitionMap[TName]['execute']
->;
+export type FrontendAiToolOperation<TName extends FrontendAiToolName> = (
+    TName extends FrontendAiQueryName
+        ? ReturnType<FrontendAiQueryContractMap[TName]>
+        : ReturnType<FrontendAiToolDefinitionMap[TName]['execute']>
+);
 
-export type AiCommandRegistry = {
-    [TName in FrontendAiToolName]: (
+type NonQueryAiCommandRegistry = {
+    [TName in Exclude<FrontendAiToolName, FrontendAiQueryName>]: (
         args: Record<string, unknown>,
     ) => FrontendAiToolOperation<TName>;
 };
+
+export type AiCommandRegistry = NonQueryAiCommandRegistry & FrontendAiQueryContractMap;
 
 const definitions = Object.fromEntries(
     definitionList.map((definition) => [definition.name, definition]),
@@ -699,7 +754,7 @@ export const createAiCommandRegistry = (
             'chat',
         ),
     ]),
-) as AiCommandRegistry;
+) as unknown as AiCommandRegistry;
 
 export const isAiCommandName = (name: string): name is FrontendAiToolName => (
     name in definitions

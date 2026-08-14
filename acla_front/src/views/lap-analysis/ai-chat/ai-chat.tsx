@@ -19,6 +19,7 @@ import type {
     AgentSessionMode,
     AgentSessionStartResult,
     AgentSessionStopResult,
+    AiCommandRegistry,
     LivePerformanceAnalystState,
     OpportunityAgentState,
 } from './ai-command-registry';
@@ -94,6 +95,11 @@ import type {
     OverlayUpsertOptions,
 } from 'views/floating-chat/overlay-display-types';
 import type { VisualizationManagerHandle } from 'views/lap-analysis/visualization/VisualizationPanelManager';
+
+const asFrontendToolHandlers = (
+    registry: AiCommandRegistry,
+): Record<string, FrontendToolHandler> => registry as unknown as Record<string, FrontendToolHandler>;
+
 type AiChatSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
 const EMOTIONS = ['idle', 'sad', 'vibing', 'scared', 'waiting', 'hearing'] as const;
@@ -1446,7 +1452,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: aiSessionContext,
         onEvent: handleMainVoiceEvent,
-        toolHandlers,
+        toolHandlers: asFrontendToolHandlers(toolHandlers),
     });
     const agentSessionContext = useMemo(() => (
         activeAgentSession
@@ -1471,7 +1477,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         resolvedSessionId,
         sessionMode,
     ]);
-    activeToolHandlersRef.current = activeAgentSession ? agentToolHandlers : toolHandlers;
+    activeToolHandlersRef.current = asFrontendToolHandlers(
+        activeAgentSession ? agentToolHandlers : toolHandlers,
+    );
 
     const agentVoiceConversation = useVoiceConversation({
         sessionId: resolvedSessionId,
@@ -1481,7 +1489,9 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         chatLlmModel: selectedChatLlmModelOption.value,
         sessionContext: agentSessionContext || undefined,
         onEvent: handleAgentVoiceEvent,
-        toolHandlers: activeAgentSession ? agentToolHandlers : inactiveAgentToolHandlers,
+        toolHandlers: activeAgentSession
+            ? asFrontendToolHandlers(agentToolHandlers)
+            : inactiveAgentToolHandlers,
     });
     const sendAgentVoiceToolStatus = agentVoiceConversation.sendToolStatus;
     const stopMainVoiceConversation = voiceConversation.stop;

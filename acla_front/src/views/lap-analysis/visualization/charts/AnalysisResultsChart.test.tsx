@@ -78,10 +78,10 @@ jest.mock('contexts/AiLabelsContext', () => ({
             MSR: ['MSR1', 'MSR2'],
         }[category] ?? []),
         getLabelName: (labelId: string) => ({
-            MSP: 'Mistake (Practice)',
+            MSP: 'Training Error',
             MSP1: 'Late turn-in',
             MSP2: 'Wheel lock',
-            MSR: 'Mistake (Racing)',
+            MSR: 'Race Error',
             MSR1: 'Failed overtake attempt',
             MSR2: 'Contact',
         }[labelId]),
@@ -169,7 +169,7 @@ const comparableData = (driverGas: number, expertGas: number) => ({
 });
 
 describe('AnalysisResultsChart', () => {
-    it('reports zero and nonzero normalized analysis result counts', async () => {
+    it('queries normalized result and deduplicated mistake counts independently of UI controls', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const view = render(
             <AnalysisResultsChart
@@ -180,9 +180,13 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        await expect(chartRef.current!.getAnalysisResultCount().result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
             status: 'ready',
-            analysis_result_count: 0,
+            data: 0,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: 0,
         });
 
         view.rerender(
@@ -192,57 +196,112 @@ describe('AnalysisResultsChart', () => {
                 id="count-results"
                 data={{
                     elements: [
-                        { id: 'valid-one', labels: ['MSP'] },
+                        { id: 'practice-id', labels: ['MSP', 'MSP'] },
+                        { id: 'practice-canonical', labels: ['Mistake (Practice)'] },
+                        { id: 'practice-configured', labels: ['Training Error'] },
+                        { id: 'racing-id', labels: ['MSR'] },
+                        { id: 'racing-canonical', labels: ['Mistake (Racing)'] },
+                        { id: 'racing-configured', labels: ['Race Error'] },
+                        { id: 'combined', labels: ['MSP', 'MSR', 'MSP', 'MSR'] },
+                        { id: 'children-only', labels: ['MSP1', 'MSR1'] },
+                        { id: 'unrelated', labels: ['Expert Adherence'] },
                         null,
                         'invalid',
-                        { id: 'valid-two', labels: ['MSR'] },
                     ],
                 }}
             />,
         );
 
-        await expect(chartRef.current!.getAnalysisResultCount().result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
             status: 'ready',
-            analysis_result_count: 2,
+            data: 9,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: 7,
+        });
+
+        selectMainLabel('MSR');
+        selectSortMode('most-time-lost');
+
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: 9,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: 7,
         });
     });
 
-    it('reports the active live page total while Overall Trend is selected', async () => {
+    it('queries the non-latest active page and falls back to the first page when it is unavailable', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
-        render(
+        const onSelectPage = jest.fn();
+        const pages = [{
+            id: 'active-page',
+            createdAt: 1,
+            baseline: { lap: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'active-mistake', labels: ['MSP'] },
+                { id: 'active-unrelated', labels: ['Telemetry'] },
+            ],
+        }, {
+            id: 'latest-page',
+            createdAt: 2,
+            baseline: { lap: 2, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'latest-one', labels: ['MSP'] },
+                { id: 'latest-two', labels: ['MSR'] },
+                { id: 'latest-three', labels: ['Mistake (Practice)'] },
+            ],
+        }];
+        const view = render(
             <AnalysisResultsChart
                 ref={chartRef}
                 name="visualization:analysis-results"
                 id="active-page-count-results"
                 pagination={{
-                    pages: [{
-                        id: 'active-page',
-                        createdAt: 2,
-                        baseline: { lap: 2, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
-                        elements: [
-                            { id: 'active-one', labels: ['MSP'] },
-                            { id: 'active-two', labels: ['MSR'] },
-                        ],
-                    }, {
-                        id: 'other-page',
-                        createdAt: 1,
-                        baseline: { lap: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
-                        elements: [
-                            { id: 'other-one', labels: ['MSP'] },
-                            { id: 'other-two', labels: ['MSP'] },
-                            { id: 'other-three', labels: ['MSP'] },
-                        ],
-                    }],
+                    pages,
                     activePageId: 'active-page',
-                    onSelectPage: jest.fn(),
+                    onSelectPage,
                 }}
             />,
         );
 
         expect(screen.getByText('Overall Trends')).toBeInTheDocument();
-        await expect(chartRef.current!.getAnalysisResultCount().result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
             status: 'ready',
-            analysis_result_count: 2,
+            data: 2,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: 1,
+        });
+
+        view.rerender(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="active-page-count-results"
+                pagination={{ pages, activePageId: 'unavailable-page', onSelectPage }}
+            />,
+        );
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: 2,
+        });
+
+        view.rerender(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="active-page-count-results"
+                pagination={{ pages, activePageId: 'latest-page', onSelectPage }}
+            />,
+        );
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: 3,
         });
     });
 

@@ -6,11 +6,10 @@ import {
     BaselineLapRecordRequiredError,
     ComponentRefUnavailableError,
     GoalComponentError,
+    GoalDeterminationInputIncompatibleError,
     GoalStepFailedError,
     InvalidLiveRangeTodoListError,
-    LiveAnalysisResultUnavailableError,
     LiveRangeTodoListComponentError,
-    LiveSessionComponentError,
     NoProcedurePlanError,
     NoRecordedSessionError,
     QueryRequiredError,
@@ -24,13 +23,13 @@ describe('AI tool component errors', () => {
     const subclasses = [
         [ComponentRefUnavailableError, AiToolComponentRefError],
         [GoalStepFailedError, GoalComponentError],
+        [GoalDeterminationInputIncompatibleError, GoalComponentError],
         [InvalidLiveRangeTodoListError, LiveRangeTodoListComponentError],
         [BaselineLapRecordRequiredError, BaselineCollectionComponentError],
         [VisualizationUpdateFailedError, VisualizationComponentError],
         [QueryRequiredError, UserSummaryComponentError],
         [NoProcedurePlanError, AiChatComponentError],
         [NoRecordedSessionError, SessionAnalysisComponentError],
-        [LiveAnalysisResultUnavailableError, LiveSessionComponentError],
     ] as const;
 
     it.each(subclasses)('%s preserves only component identity and cause metadata', (ErrorType, Category) => {

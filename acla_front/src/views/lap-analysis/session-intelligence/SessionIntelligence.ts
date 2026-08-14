@@ -1,4 +1,4 @@
-import { SessionEvent, TelemetrySample, TelemetryQuery, QueryResult, QueryScope, CornerLookahead } from './types';
+import { SessionEvent, TelemetrySample, TelemetryQuery, QueryResult, QueryScope, CornerLookahead, ReduceOp } from './types';
 import { TelemetryBuffer } from './TelemetryBuffer';
 import { EventLog, EventSearchParams } from './EventLog';
 import { SensorManager } from './SensorManager';
@@ -148,7 +148,7 @@ export class SessionIntelligence {
 
     // ── Tool API (called by ai-command-registry handlers) ─────────────────────
 
-    query(q: TelemetryQuery): QueryResult {
+    query<TReduce extends ReduceOp>(q: TelemetryQuery<TReduce>): QueryResult<TReduce> {
         return executeQuery(q, this.buffer, this.log, this.currentLap);
     }
 

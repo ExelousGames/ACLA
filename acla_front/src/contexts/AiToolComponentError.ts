@@ -92,8 +92,8 @@ export class GoalDeterminationOutputToolMismatchError extends GoalComponentError
     override name = 'GoalDeterminationOutputToolMismatchError';
 }
 
-export class GoalDeterminationValueNotNumericError extends GoalComponentError {
-    override name = 'GoalDeterminationValueNotNumericError';
+export class GoalDeterminationInputIncompatibleError extends GoalComponentError {
+    override name = 'GoalDeterminationInputIncompatibleError';
 }
 
 export class GoalReplacedError extends GoalComponentError {
@@ -254,12 +254,4 @@ export class ExpertLineGuidanceFailedError extends SessionAnalysisComponentError
 
 export class TelemetryDataFailedError extends SessionAnalysisComponentError {
     override name = 'TelemetryDataFailedError';
-}
-
-export abstract class LiveSessionComponentError extends AiToolComponentError {
-    override name = 'LiveSessionComponentError';
-}
-
-export class LiveAnalysisResultUnavailableError extends LiveSessionComponentError {
-    override name = 'LiveAnalysisResultUnavailableError';
 }

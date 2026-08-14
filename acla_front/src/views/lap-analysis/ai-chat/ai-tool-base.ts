@@ -24,7 +24,6 @@ export {
     FocusSectionNotReadyError,
     InvalidProcedurePlanRequestsError,
     InvalidToolCallError,
-    LivePerformanceAnalystToolUnavailableError,
     LiveSectionClassificationFailedError,
     LiveSectionTelemetryUnavailableError,
     NoCornerDataError,

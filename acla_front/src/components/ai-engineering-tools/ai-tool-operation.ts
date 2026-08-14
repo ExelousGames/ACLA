@@ -11,6 +11,11 @@ export interface AiToolOperation<TResult, TStatus extends object = never> {
     statuses: readonly Promise<TStatus>[];
 }
 
+export type AiToolQueryResult<TData> = {
+    status: 'ready';
+    data: TData;
+};
+
 export type AiToolOperationResult<TOperation> = TOperation extends AiToolOperation<infer TResult, object>
     ? TResult
     : never;

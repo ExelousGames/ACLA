@@ -86,45 +86,7 @@ describe('session live range to-do tools', () => {
             session_mode: 'live',
             agent_mode: 'track_guide',
             agent_session: { agent_mode: 'live_performance_analyst' },
-        })).not.toContain('get_live_analysis_mistake_count');
-    });
-});
-
-describe('live analysis mistake count tool', () => {
-    it('defines the no-argument schema and description', () => {
-        const tool = SESSION_TOOLS.find(({ name }) => (
-            name === 'get_live_analysis_mistake_count'
-        ));
-        expect(tool).toMatchObject({
-            description: expect.any(String),
-            properties: {},
-            required: [],
-        });
-    });
-
-    it('exposes the tool only to a Live Performance Analyst child session', () => {
-        const namesFor = (context: Record<string, unknown>) => (
-            getSessionToolsForSessionContext(context).map(({ name }) => name)
-        );
-
-        expect(namesFor({ session_mode: 'live' }))
-            .not.toContain('get_live_analysis_mistake_count');
-        expect(namesFor({
-            session_mode: 'live',
-            agent_mode: 'track_guide',
-        })).not.toContain('get_live_analysis_mistake_count');
-        expect(namesFor({
-            session_mode: 'live',
-            agent_mode: 'overtake',
-        })).not.toContain('get_live_analysis_mistake_count');
-        expect(namesFor({
-            session_mode: 'recorded',
-            agent_mode: 'live_performance_analyst',
-        })).not.toContain('get_live_analysis_mistake_count');
-        expect(namesFor({
-            session_mode: 'live',
-            agent_mode: 'live_performance_analyst',
-        })).toContain('get_live_analysis_mistake_count');
+        })).not.toContain('create_goal');
     });
 });
 
@@ -133,22 +95,28 @@ describe('analysis result query tool', () => {
         getSessionToolsForSessionContext(context).map(({ name }) => name)
     );
 
-    it('replaces the count tool with a required result_count query schema', () => {
+    it('defines required active-page result and mistake count queries', () => {
         const tool = SESSION_TOOLS.find(({ name }) => (
             name === 'query_analysis_result'
         ));
 
-        expect(SESSION_TOOLS.map(({ name }) => name))
-            .not.toContain('get_analysis_result_count');
+        expect(SESSION_TOOLS.filter(({ name }) => name === 'query_analysis_result'))
+            .toHaveLength(1);
         expect(tool).toMatchObject({
             description: expect.any(String),
             properties: {
                 query: {
                     type: 'string',
-                    enum: ['result_count'],
+                    enum: ['result_count', 'mistake_count'],
                 },
             },
             required: ['query'],
+        });
+        expect(tool).toMatchObject({
+            description: expect.stringContaining('active Analysis Results page'),
+        });
+        expect(tool).toMatchObject({
+            description: expect.stringContaining('ignore the current Practice/Racing UI filter'),
         });
     });
 
@@ -205,7 +173,7 @@ describe('create_goal tool', () => {
                     items: { required: ['id', 'title', 'name'] },
                 },
                 determination: {
-                    required: ['tool', 'result_path', 'operator', 'target'],
+                    required: ['tool', 'operator', 'target'],
                     properties: {
                         tool: {
                             required: ['name'],
@@ -214,7 +182,6 @@ describe('create_goal tool', () => {
                                 arguments: { type: 'object' },
                             },
                         },
-                        result_path: { type: 'string' },
                         operator: { enum: ['eq', 'neq', 'lt', 'lte', 'gt', 'gte'] },
                         target: { type: 'number' },
                     },
@@ -226,6 +193,10 @@ describe('create_goal tool', () => {
         expect(tool.properties.determination.properties).not.toHaveProperty('step_id');
         expect(tool.properties.determination.properties).not.toHaveProperty('metric_label');
         expect(tool.properties.determination.properties).not.toHaveProperty('unit');
+        expect(Object.keys(tool.properties.determination.properties).sort())
+            .toEqual(['operator', 'target', 'tool']);
+        expect(tool.properties.determination.description)
+            .toContain('ready numeric query envelope');
     });
 
     it('exposes create_goal only to the Live Performance Analyst and constrains nested tools by session', () => {
@@ -252,7 +223,7 @@ describe('create_goal tool', () => {
         expect(nestedNames).toEqual(expect.arrayContaining([
             'collect_live_baseline',
             'analyze_live_recorded_analysis',
-            'get_live_analysis_mistake_count',
+            'query_analysis_result',
         ]));
         expect(nestedNames).not.toContain('create_goal');
         expect(nestedNames).not.toContain('retry_goal_task');
@@ -260,6 +231,29 @@ describe('create_goal tool', () => {
         expect(determinationNames).not.toContain('create_goal');
         expect(determinationNames).not.toContain('retry_goal_task');
 
+    });
+});
+
+describe('telemetry metric query tool', () => {
+    it('requires fields, scope, and a supported summarized reduction', () => {
+        const tool = SESSION_TOOLS.find(({ name }) => (
+            name === 'query_telemetry_metric'
+        ));
+
+        expect(tool).toMatchObject({
+            properties: {
+                fields: { type: 'array' },
+                scope: {
+                    type: 'object',
+                    required: ['type'],
+                },
+                reduce: {
+                    type: 'string',
+                    enum: ['avg', 'min', 'max', 'stats'],
+                },
+            },
+            required: ['fields', 'scope', 'reduce'],
+        });
     });
 });
 

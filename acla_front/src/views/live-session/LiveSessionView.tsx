@@ -21,7 +21,7 @@ import {
     NoTelemetryForScopeError,
     SectionNotFoundError,
     TelemetryAnalysisFailedError,
-    TelemetryFieldsRequiredError,
+    InvalidToolCallError,
 } from 'views/lap-analysis/ai-chat/ai-tool-base';
 import apiService from 'services/api.service';
 import type {
@@ -36,16 +36,23 @@ import {
 } from 'views/lap-analysis/recorded-session-analysis';
 import { getSegmentLabelIds } from 'views/lap-analysis/visualization/charts/segmentClassificationDisplay';
 import { openAnalysisResultsVisualization } from 'views/lap-analysis/visualization/open-analysis-results-visualization';
-import { getLiveAnalysisMistakeCount } from './live-session-analysis-results';
 import { LiveSessionContext } from './LiveSessionContext';
 import LiveSessionGameStatus, { LIVE_SESSION_GAME_LABELS } from './LiveSessionGameStatus';
 import LiveTelemetryWorkspace from './LiveTelemetryWorkspace';
 import { RecordingState } from 'views/lap-analysis/recording-state';
 import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
 import type {
-    LiveAnalysisMistakeCountResult,
-    LiveSessionAnalysisResultPage,
-} from './live-session-analysis-results';
+    QueryResult,
+    QueryScope,
+    ReduceOp,
+    TelemetryQuery,
+} from 'views/lap-analysis/session-intelligence/types';
+import type {
+    QueryTelemetryMetricArguments,
+    QueryTelemetryMetricResult,
+    TelemetryMetricReduce,
+} from 'views/lap-analysis/ai-chat/ai-command-registry';
+import type { LiveSessionAnalysisResultPage } from './live-session-analysis-results';
 import {
     createAiToolDeferred,
     createAiToolOperation,
@@ -56,11 +63,6 @@ import './live-session.css';
 
 export const LIVE_SESSION_RECORDER_HOST_ID = 'live-session-recorder-host';
 
-export type LiveTelemetryMetricAiResult = {
-    status: string;
-    message?: string;
-    [key: string]: unknown;
-};
 export type LiveEventLogAiResult = { status: 'complete'; events: unknown[] };
 export type LiveNextCornerAiResult = {
     status: 'complete';
@@ -97,8 +99,8 @@ export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     getRecordingState(): RecordingState;
     getSessionIntelligence(): SessionIntelligence;
     getCurrentTelemetry(): Record<string, any>;
-    queryTelemetryMetric(args: Record<string, any>): any;
-    getTelemetryForScope(scope: any): Record<string, any>[];
+    queryTelemetryMetric<TReduce extends ReduceOp>(args: TelemetryQuery<TReduce>): QueryResult<TReduce>;
+    getTelemetryForScope(scope: QueryScope): Record<string, any>[];
     getEventLog(args: Record<string, any>): any[];
     getNextCorner(): any;
     getLiveSessionSnapshot(): LiveSessionSnapshot;
@@ -106,31 +108,77 @@ export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     getLiveSectionTelemetry(args: Record<string, any>): any;
     recordLiveSectionClassification(args: Record<string, any>): any;
     getLatestAnalysisResultPage(): LiveSessionAnalysisResultPage | null;
-    queryTelemetryMetricForAi(args: Record<string, any>): AiToolOperation<LiveTelemetryMetricAiResult>;
+    queryTelemetryMetricForAi<TReduce extends TelemetryMetricReduce>(
+        args: QueryTelemetryMetricArguments<TReduce>,
+    ): AiToolOperation<QueryTelemetryMetricResult<TReduce>>;
     getEventLogForAi(args: Record<string, any>): AiToolOperation<LiveEventLogAiResult>;
     getNextCornerForAi(): AiToolOperation<LiveNextCornerAiResult>;
     collectLiveBaselineForAi(args: Record<string, any>): AiToolOperation<BaselineCollectionPayload, BaselineCollectionStatus>;
     restartLiveBaselineForAi(): AiToolOperation<LiveBaselineRestartAiResult>;
     analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<LiveBaselineAnalysisAiResult>;
-    getLiveAnalysisMistakeCountForAi(): AiToolOperation<LiveAnalysisMistakeCountResult>;
     analyzeTelemetryForAi(args: Record<string, any>): AiToolOperation<LiveTelemetryAnalysisAiResult>;
     classifyLiveSectionForAi(args: Record<string, any>): AiToolOperation<LiveSectionClassificationAiResult>;
 }
 
-const normalizeTelemetryFields = (value: unknown): string[] => {
-    if (Array.isArray(value)) return value.flatMap(normalizeTelemetryFields);
-    if (typeof value !== 'string') return [];
-    const trimmed = value.trim();
-    if (!trimmed) return [];
-    try {
-        const parsed = JSON.parse(trimmed);
-        if (Array.isArray(parsed)) return normalizeTelemetryFields(parsed);
-    } catch {
-        // Accept comma-delimited model output.
+const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => {
+    const actualKeys = Object.keys(value);
+    return actualKeys.length === keys.length && keys.every((key) => (
+        Object.prototype.hasOwnProperty.call(value, key)
+    ));
+};
+
+const isFiniteNumber = (value: unknown): value is number => (
+    typeof value === 'number' && Number.isFinite(value)
+);
+
+const isQueryScope = (value: unknown): value is QueryScope => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const scope = value as Record<string, unknown>;
+    switch (scope.type) {
+        case 'now':
+            return hasExactKeys(scope, ['type']);
+        case 'last_seconds':
+            return hasExactKeys(scope, ['type', 'seconds'])
+                && isFiniteNumber(scope.seconds);
+        case 'event':
+            return hasExactKeys(scope, ['type', 'eventType', 'which'])
+                && ['CORNER', 'STRAIGHT', 'CRASHED', 'OVERTAKE'].includes(scope.eventType as string)
+                && (scope.which === 'last' || scope.which === 'current');
+        case 'lap':
+            return hasExactKeys(scope, ['type', 'lap'])
+                && (scope.lap === 'current' || scope.lap === 'last'
+                    || (isFiniteNumber(scope.lap) && Number.isInteger(scope.lap)));
+        case 'range':
+            return hasExactKeys(scope, ['type', 'start', 'end'])
+                && isFiniteNumber(scope.start) && Number.isInteger(scope.start)
+                && isFiniteNumber(scope.end) && Number.isInteger(scope.end);
+        default:
+            return false;
     }
-    return trimmed.replace(/^\[|\]$/g, '').split(',')
-        .map((field) => field.replace(/^['"]|['"]$/g, '').trim())
-        .filter(Boolean);
+};
+
+const validateTelemetryMetricArguments = <TReduce extends TelemetryMetricReduce>(
+    args: QueryTelemetryMetricArguments<TReduce>,
+): QueryTelemetryMetricArguments<TReduce> => {
+    const value = args as unknown as Record<string, unknown>;
+    const fields = value?.fields;
+    const validFields = Array.isArray(fields)
+        && fields.length > 0
+        && fields.every((field) => (
+            typeof field === 'string'
+            && field.length > 0
+            && field.trim() === field
+        ));
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || !hasExactKeys(value, ['fields', 'scope', 'reduce'])
+        || !validFields
+        || !isQueryScope(value.scope)
+        || !['avg', 'min', 'max', 'stats'].includes(value.reduce as string)) {
+        throw new InvalidToolCallError(
+            'query_telemetry_metric requires nonempty string fields, a valid scope, and reduce set to avg, min, max, or stats.',
+        );
+    }
+    return args;
 };
 
 const getAiLimit = (value: unknown): number => {
@@ -240,7 +288,7 @@ const LiveSessionView = ({ name }: { name: string }) => {
             getRecordingState: () => liveSessionRef.current.recordingState,
             getSessionIntelligence: () => liveSessionRef.current.sessionIntelligence,
             getCurrentTelemetry: () => liveSessionRef.current.currentTelemetry,
-            queryTelemetryMetric: (args) => liveSessionRef.current.sessionIntelligence.query(args as any),
+            queryTelemetryMetric: (args) => liveSessionRef.current.sessionIntelligence.query(args),
             getTelemetryForScope: (scope) => liveSessionRef.current.sessionIntelligence.getRowsForScope(scope),
             getEventLog: (args) => liveSessionRef.current.sessionIntelligence.findEvents(args as any),
             getNextCorner: () => liveSessionRef.current.sessionIntelligence.getNextCorner(),
@@ -257,23 +305,10 @@ const LiveSessionView = ({ name }: { name: string }) => {
                 return pages[pages.length - 1] ?? null;
             },
             queryTelemetryMetricForAi: (args) => createAiToolOperationFrom(() => {
-                const fields = normalizeTelemetryFields(args.fields);
-                if (fields.length === 0) {
-                    throw new TelemetryFieldsRequiredError('Provide at least one telemetry field.');
-                }
-                const reduce = ['avg', 'min', 'max', 'stats'].includes(args.reduce)
-                    ? args.reduce
-                    : 'stats';
-                const result = liveSessionRef.current.sessionIntelligence.query({
-                    fields,
-                    scope: args.scope,
-                    reduce,
-                } as any) as Record<string, unknown>;
-                const { ok: _ok, status, message, ...values } = result;
+                const query = validateTelemetryMetricArguments(args);
                 return {
-                    status: typeof status === 'string' ? status : 'complete',
-                    ...(typeof message === 'string' ? { message } : {}),
-                    ...values,
+                    status: 'ready' as const,
+                    data: liveSessionRef.current.sessionIntelligence.query(query),
                 };
             }),
             getEventLogForAi: (args) => createAiToolOperationFrom(() => ({
@@ -355,9 +390,6 @@ const LiveSessionView = ({ name }: { name: string }) => {
                 if (analysis instanceof Error) return analysis;
                 return { status: analysis.status };
             }),
-            getLiveAnalysisMistakeCountForAi: () => createAiToolOperationFrom(() => getLiveAnalysisMistakeCount(
-                liveSessionRef.current.analysisResultPages.at(-1) ?? null,
-            )),
             analyzeTelemetryForAi: (args) => createAiToolOperationFrom(async () => {
                 const rows = liveSessionRef.current.sessionIntelligence.getRowsForScope(args.scope);
                 if (rows.length === 0) {
