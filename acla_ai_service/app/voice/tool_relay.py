@@ -2,9 +2,9 @@
 
 Backend and frontend share the same ``/voice/stream`` WebSocket. Binary
 frames carry PCM audio for Pipecat. Text frames carry JSON control messages
-for frontend tool calls/results, typed user text, and session context.
+for session tool calls/results, typed user text, and session context.
 
-Frontend tool calls are fire-and-forget from the AI service perspective. The
+Session tool calls are fire-and-forget from the AI service perspective. The
 relay sends a ``tool_call`` frame to the frontend and does not wait for a
 matching result. Later AI-visible data should come back through
 ``tool_result`` / ``user_text`` / ``session_context`` frames.
@@ -97,14 +97,13 @@ class ToolRelay:
         chat_session_id: str,
         name: str,
         arguments: Optional[Dict[str, Any]] = None,
-        title: Optional[str] = None,
     ) -> Optional[str]:
-        """Send a frontend ``tool_call`` frame without awaiting a result.
+        """Send a session ``tool_call`` frame without awaiting a result.
 
         Returns the generated call id on successful send, or ``None`` if the
         connection is unavailable or the send fails. The return value is only
         for backend diagnostics and UI metadata; it is not LLM-visible
-        frontend tool data.
+        session tool data.
         """
         state = self._by_chat_session_id.get(chat_session_id)
         if state is None:
@@ -120,7 +119,6 @@ class ToolRelay:
             "type": "tool_call",
             "id": call_id,
             "name": name,
-            "title": title or name,
             "arguments": arguments or {},
         })
 

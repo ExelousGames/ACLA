@@ -6,7 +6,7 @@
  * - **Binary frames** — raw PCM16 mic in / assistant audio out. Same protocol
  *   as before.
  * - **Text frames** — JSON tool-relay messages. The backend emits
- *   `{type:"tool_call",id,name,title,arguments}` frames; this hook dispatches
+ *   `{type:"tool_call",id,name,arguments}` frames; this hook dispatches
  *   them through a caller-supplied handler registry and replies with
  *   `{type:"tool_result",...}`. Workflow owners consume promise-native tool
  *   operations and translate their status promises into non-terminal frames.
@@ -52,9 +52,9 @@ export type ConversationRole = 'main' | 'agent';
 const canonicalizeSessionContext = (
     value: AiSessionContext | null | undefined,
 ): AiSessionContext => ({
-    ...(typeof value?.session_mode === 'string'
-        ? { session_mode: value.session_mode }
-        : {}),
+    session_mode: typeof value?.session_mode === 'string'
+        ? value.session_mode
+        : 'live',
     ...(typeof value?.agent_mode === 'string'
         ? { agent_mode: value.agent_mode }
         : {}),
@@ -721,9 +721,8 @@ export function useVoiceConversation(
             ws.onopen = () => {
                 if (wsRef.current !== ws) return;
                 // First text frame on every voice session: hand the backend
-                // compact runtime context. The backend injects the full
-                // frontend application tool registry before relaying this to
-                // the AI service.
+                // compact runtime context. The AI service uses it to retrieve
+                // the authenticated session-tool catalog.
                 try {
                     const metadata = buildVoiceSessionMetadata({
                         clientSessionId: options.clientSessionId,
@@ -731,12 +730,12 @@ export function useVoiceConversation(
                         parentClientSessionId: options.parentClientSessionId,
                     });
                     ws.send(JSON.stringify({
-                        type: 'frontend_info',
+                        type: 'session_info',
                         ...metadata,
                         session_context: sessionContextRef.current,
                     }));
                 } catch (err) {
-                    console.warn('[voice] frontend_info send failed:', err);
+                    console.warn('[voice] session_info send failed:', err);
                 }
             };
 
@@ -754,7 +753,7 @@ export function useVoiceConversation(
                 catch (err) { console.warn('[voice/tool-relay] send failed:', err); }
             };
             const handleToolCall = async (msg: {
-                id?: string; name?: string; title?: string; arguments?: Record<string, unknown>;
+                id?: string; name?: string; arguments?: Record<string, unknown>;
             }) => {
                 const id = msg.id;
                 const name = msg.name;
@@ -763,7 +762,7 @@ export function useVoiceConversation(
                     return;
                 }
                 await executeSubscribedFrontendTool({
-                    call: { id, name, title: msg.title, arguments: msg.arguments },
+                    call: { id, name, arguments: msg.arguments },
                     handlers: toolHandlersRef.current,
                     sendText,
                     emitEvent: emitConnectionEvent,

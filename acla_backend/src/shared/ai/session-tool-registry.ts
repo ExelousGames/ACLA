@@ -1,4 +1,5 @@
-export const FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA = {
+/** Backend-owned schemas exposed to authenticated AI voice sessions. */
+export const SESSION_TOOL_QUERY_SCOPE_SCHEMA = {
     type: 'object',
     properties: {
         type: {
@@ -269,7 +270,7 @@ const TELEMETRY_METRIC_FIELD_DESCRIPTION = [
     `Static fields (${TELEMETRY_METRIC_STATIC_FIELDS.length}): ${TELEMETRY_METRIC_STATIC_FIELDS.join(', ')}.`,
 ].join(' ');
 
-export const FRONTEND_APPLICATION_TOOLS = [
+export const SESSION_TOOLS = [
     {
         name: 'start_agent_session',
         description: 'Start a separate child AI agent session. The user should interact with that child session while it is active.',
@@ -288,7 +289,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
         properties: {
             agent_session_id: {
                 type: 'string',
-                description: 'Optional frontend child session id. Defaults to the active agent session.',
+                description: 'Optional browser child session id. Defaults to the active agent session.',
             },
         },
         required: [],
@@ -328,7 +329,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'update_live_range_todo_list',
-        description: 'Mutate the active visible Live Range To-do List. AI updates can change serializable event fields but preserve each event callback; newly added AI events receive the frontend AI notification callback.',
+        description: 'Mutate the active visible Live Range To-do List. AI updates can change serializable event fields but preserve each event callback; newly added AI events receive the browser AI notification callback.',
         properties: {
             action: {
                 type: 'string',
@@ -409,7 +410,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'create_goal',
-        description: 'Create one visible goal and execute its ordered frontend tool calls sequentially. Wait for the final achieved, missed, or error result before giving follow-up coaching.',
+        description: 'Create one visible goal and execute its ordered session tool calls sequentially. Wait for the final achieved, missed, or error result before giving follow-up coaching.',
         properties: {
             name: {
                 type: 'string',
@@ -418,13 +419,13 @@ export const FRONTEND_APPLICATION_TOOLS = [
             steps: {
                 type: 'array',
                 minItems: 1,
-                description: 'Ordered frontend tool calls. Every id must be unique; create_goal and retry_goal_task cannot be nested.',
+                description: 'Ordered session tool calls. Every id must be unique; create_goal and retry_goal_task cannot be nested.',
                 items: {
                     type: 'object',
                     properties: {
                         id: { type: 'string', description: 'Unique stable step id.' },
                         title: { type: 'string', description: 'Short step label displayed to the user.' },
-                        name: { type: 'string', description: 'Available frontend tool to execute.' },
+                        name: { type: 'string', description: 'Available session tool to execute.' },
                         arguments: { type: 'object', description: 'Arguments passed unchanged to the nested tool.' },
                     },
                     required: ['id', 'title', 'name'],
@@ -438,7 +439,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
                         type: 'object',
                         description: 'Frontend tool call used to determine whether the goal was achieved.',
                         properties: {
-                            name: { type: 'string', description: 'Available frontend tool to execute.' },
+                            name: { type: 'string', description: 'Available session tool to execute.' },
                             arguments: { type: 'object', description: 'Arguments passed unchanged to the determination tool.' },
                         },
                         required: ['name'],
@@ -522,6 +523,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'get_next_corner',
+        description: 'Return the name and normalized distance of the next corner ahead. Use for live questions about what corner is coming up.',
         properties: {},
         required: [],
     },
@@ -535,7 +537,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
                 items: { type: 'string' },
             },
             scope: {
-                ...FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
+                ...SESSION_TOOL_QUERY_SCOPE_SCHEMA,
                 description: 'Telemetry window to summarize. Use type="now" for current values; use last_seconds, event, lap, or range for time/windowed summaries.',
             },
             reduce: {
@@ -673,7 +675,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
         description: 'Classify driving actions over a telemetry scope and return engineer labels with definitions and optional solutions. Use only for live or recorded raw telemetry windows.',
         properties: {
             scope: {
-                ...FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
+                ...SESSION_TOOL_QUERY_SCOPE_SCHEMA,
                 description: 'Telemetry time window to classify.',
             },
         },
@@ -681,7 +683,7 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
     {
         name: 'classify_live_section',
-        description: 'Classify the active Live Performance Analyst focus section after the driver passes through it again. This frontend tool brings the telemetry window to the AI service, records a compact comparison in section history, and returns only compact labels, stats, focus, and comparison data.',
+        description: 'Classify the active Live Performance Analyst focus section after the driver passes through it again. This session tool brings the telemetry window to the AI service, records a compact comparison in section history, and returns only compact labels, stats, focus, and comparison data.',
         properties: {
             section_id: {
                 type: 'string',
@@ -703,50 +705,10 @@ export const FRONTEND_APPLICATION_TOOLS = [
     },
 ] as const;
 
-type FrontendApplicationToolName = typeof FRONTEND_APPLICATION_TOOLS[number]['name'];
-type FrontendApplicationSessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
-type ToolPropertyMap = Record<string, unknown>;
+type SessionToolName = typeof SESSION_TOOLS[number]['name'];
+type SessionMode = 'front_desk' | 'live' | 'recorded' | 'user_summary';
 
-type AiToolMetadata = {
-    title: string;
-    description: string;
-    parameters: Record<string, { description: string }>;
-};
-
-const FRONTEND_APPLICATION_TOOL_TITLES: Record<FrontendApplicationToolName, string> = {
-    start_agent_session: 'Starting agent mode',
-    stop_agent_session: 'Stopping agent mode',
-    set_live_range_todo_list: 'Setting live range to-do list',
-    update_live_range_todo_list: 'Updating live range to-do list',
-    get_live_range_todo_list: 'Reading live range to-do list',
-    collect_live_baseline: 'Collecting baseline lap',
-    restart_live_baseline: 'Restarting baseline lap',
-    analyze_live_recorded_analysis: 'Analyzing baseline lap',
-    get_live_analysis_mistake_count: 'Counting live analysis mistakes',
-    create_goal: 'Creating goal',
-    retry_goal_task: 'Retrying failed goal task',
-    advance_plan_step: 'Advancing plan',
-    clear_procedure_plan: 'Clearing procedure plan',
-    set_procedure_plan: 'Setting procedure plan',
-    get_next_corner: 'Looking up next corner',
-    query_telemetry_metric: 'Querying telemetry',
-    get_event_log: 'Searching event log',
-    get_user_summary_map_level: 'Reading user summary by map',
-    get_available_user_summary_maps: 'Listing user summary maps',
-    search_user_summary_map_level: 'Searching user summary maps',
-    show_map: 'Displaying a circuit map',
-    run_recorded_ai_analysis: 'Running recorded session AI analysis',
-    get_recorded_session_analysis: 'Reading recorded AI analysis',
-    get_recorded_session_context: 'Reading recorded session context',
-    analyze_telemetry: 'Analyzing telemetry',
-    classify_live_section: 'Classifying live section',
-};
-
-const FRONTEND_APPLICATION_TOOL_DESCRIPTION_OVERRIDES: Partial<Record<FrontendApplicationToolName, string>> = {
-    get_next_corner: 'Return the name and normalized distance of the next corner ahead. Use for live questions about what corner is coming up.',
-};
-
-const COMMON_TOOL_NAMES: FrontendApplicationToolName[] = [
+const COMMON_TOOL_NAMES: SessionToolName[] = [
     'show_map',
     'set_procedure_plan',
     'advance_plan_step',
@@ -754,7 +716,7 @@ const COMMON_TOOL_NAMES: FrontendApplicationToolName[] = [
     'stop_agent_session',
 ];
 
-const LIVE_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
+const LIVE_SESSION_TOOL_NAMES: SessionToolName[] = [
     'start_agent_session',
     'analyze_telemetry',
     'get_next_corner',
@@ -762,7 +724,7 @@ const LIVE_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
     'get_event_log',
 ];
 
-const LIVE_AGENT_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
+const LIVE_AGENT_SESSION_TOOL_NAMES: SessionToolName[] = [
     'analyze_telemetry',
     'get_next_corner',
     'query_telemetry_metric',
@@ -776,43 +738,43 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
     'classify_live_section',
 ];
 
-const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: FrontendApplicationToolName[] = [
+const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: SessionToolName[] = [
     'get_live_analysis_mistake_count',
     'create_goal',
     'retry_goal_task',
 ];
 
-const USER_SUMMARY_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
+const USER_SUMMARY_SESSION_TOOL_NAMES: SessionToolName[] = [
     'get_user_summary_map_level',
     'get_available_user_summary_maps',
     'search_user_summary_map_level',
 ];
 
-const RECORDED_SESSION_TOOL_NAMES: FrontendApplicationToolName[] = [
+const RECORDED_SESSION_TOOL_NAMES: SessionToolName[] = [
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
     'analyze_telemetry',
 ];
 
-const isFrontendApplicationSessionMode = (
+const isSessionMode = (
     value: unknown,
-): value is FrontendApplicationSessionMode => (
+): value is SessionMode => (
     value === 'front_desk' || value === 'live' || value === 'recorded' || value === 'user_summary'
 );
 
-const isFrontendApplicationAgentMode = (
+const isSessionAgentMode = (
     value: unknown,
 ): value is 'track_guide' | 'overtake' | 'live_performance_analyst' => (
     value === 'track_guide' || value === 'overtake' || value === 'live_performance_analyst'
 );
 
 const getAllowedToolNames = (
-    sessionMode: FrontendApplicationSessionMode,
+    sessionMode: SessionMode,
     agentMode?: unknown,
 ) => {
-    if (isFrontendApplicationAgentMode(agentMode)) {
-        return new Set<FrontendApplicationToolName>([
+    if (isSessionAgentMode(agentMode)) {
+        return new Set<SessionToolName>([
             ...COMMON_TOOL_NAMES,
             ...LIVE_AGENT_SESSION_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,
@@ -823,7 +785,7 @@ const getAllowedToolNames = (
     }
 
     if (sessionMode === 'recorded') {
-        return new Set<FrontendApplicationToolName>([
+        return new Set<SessionToolName>([
             ...COMMON_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,
             ...RECORDED_SESSION_TOOL_NAMES,
@@ -831,30 +793,30 @@ const getAllowedToolNames = (
     }
 
     if (sessionMode === 'user_summary') {
-        return new Set<FrontendApplicationToolName>([
+        return new Set<SessionToolName>([
             ...COMMON_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,
         ]);
     }
 
     if (sessionMode === 'front_desk') {
-        return new Set<FrontendApplicationToolName>([
+        return new Set<SessionToolName>([
             ...COMMON_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,
         ]);
     }
 
-    return new Set<FrontendApplicationToolName>([
+    return new Set<SessionToolName>([
         ...COMMON_TOOL_NAMES,
         ...LIVE_SESSION_TOOL_NAMES,
         ...USER_SUMMARY_SESSION_TOOL_NAMES,
     ]);
 };
 
-export const getFrontendApplicationToolsForSessionContext = (
+export const getSessionToolsForSessionContext = (
     sessionContext: Record<string, unknown> | null | undefined,
 ) => {
-    const sessionMode = isFrontendApplicationSessionMode(sessionContext?.session_mode)
+    const sessionMode = isSessionMode(sessionContext?.session_mode)
         ? sessionContext.session_mode
         : 'live';
     const allowedToolNames = getAllowedToolNames(
@@ -862,12 +824,12 @@ export const getFrontendApplicationToolsForSessionContext = (
         sessionContext?.agent_mode,
     );
 
-    const tools = FRONTEND_APPLICATION_TOOLS.filter((tool) => allowedToolNames.has(tool.name));
+    const tools = SESSION_TOOLS.filter((tool) => allowedToolNames.has(tool.name));
     const nestedToolNames = tools
         .map((tool) => tool.name)
         .filter((name) => name !== 'create_goal' && name !== 'retry_goal_task');
 
-    return tools.map((tool) => {
+    const expandedTools = tools.map((tool) => {
         if (tool.name !== 'create_goal') return tool;
         const steps = tool.properties.steps;
         const determination = tool.properties.determination;
@@ -908,54 +870,13 @@ export const getFrontendApplicationToolsForSessionContext = (
             },
         };
     });
-};
 
-const getDescriptionFromProperty = (property: unknown): string => {
-    if (!property || typeof property !== 'object') return '';
-    const description = (property as { description?: unknown }).description;
-    return typeof description === 'string' ? description.trim() : '';
-};
-
-const getToolParameterMetadata = (
-    properties: ToolPropertyMap | undefined,
-): AiToolMetadata['parameters'] => {
-    if (!properties) return {};
-
-    return Object.entries(properties).reduce<AiToolMetadata['parameters']>(
-        (out, [name, property]) => {
-            const description = getDescriptionFromProperty(property);
-            if (description) {
-                out[name] = { description };
-            }
-            return out;
-        },
-        {},
-    );
-};
-
-const getFrontendToolMetadata = (
-    tool: typeof FRONTEND_APPLICATION_TOOLS[number],
-): AiToolMetadata => {
-    const description = 'description' in tool && typeof tool.description === 'string'
-        ? tool.description
-        : '';
-
-    return {
-        title: FRONTEND_APPLICATION_TOOL_TITLES[tool.name],
-        description: FRONTEND_APPLICATION_TOOL_DESCRIPTION_OVERRIDES[tool.name]
-            || description,
-        parameters: getToolParameterMetadata(tool.properties),
-    };
-};
-
-export const getAiToolMetadataForSessionContext = (
-    sessionContext: Record<string, unknown> | null | undefined,
-): Record<string, AiToolMetadata> => {
-    const metadata: Record<string, AiToolMetadata> = {};
-
-    getFrontendApplicationToolsForSessionContext(sessionContext).forEach((tool) => {
-        metadata[tool.name] = getFrontendToolMetadata(tool);
-    });
-
-    return metadata;
+    return expandedTools.map((tool) => ({
+        name: tool.name,
+        description: 'description' in tool && typeof tool.description === 'string'
+            ? tool.description
+            : '',
+        properties: tool.properties,
+        required: [...tool.required],
+    }));
 };

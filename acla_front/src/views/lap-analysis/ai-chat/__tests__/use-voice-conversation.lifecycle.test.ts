@@ -194,15 +194,19 @@ describe('useVoiceConversation chat session lifecycle', () => {
         expect(query).not.toHaveProperty('session_mode');
         expect(query).not.toHaveProperty('agent_mode');
         expect(result.current.state).toBe('connecting');
-        const frontendInfo = JSON.parse(socket.send.mock.calls[0][0]);
-        expect(frontendInfo).toMatchObject({
-            type: 'frontend_info',
+        const sessionInfo = JSON.parse(socket.send.mock.calls[0][0]);
+        expect(sessionInfo).toMatchObject({
+            type: 'session_info',
             client_session_id: 'client-1',
             session_context: { session_mode: 'recorded' },
         });
-        expect(frontendInfo).not.toHaveProperty('session_mode');
-        expect(frontendInfo).not.toHaveProperty('agent_mode');
-        expect(Object.keys(frontendInfo.session_context)).toEqual(['session_mode']);
+        expect(sessionInfo).not.toHaveProperty('session_mode');
+        expect(sessionInfo).not.toHaveProperty('agent_mode');
+        expect(sessionInfo).not.toHaveProperty('tools');
+        expect(sessionInfo).not.toHaveProperty('tool_metadata');
+        expect(sessionInfo).not.toHaveProperty('query_scope_schema');
+        expect(sessionInfo).not.toHaveProperty('tool_result_handling');
+        expect(Object.keys(sessionInfo.session_context)).toEqual(['session_mode']);
 
         expect(result.current.sendUserText('hello')).toBe(false);
         expect(result.current.sendToolStatus({ status: 'working' })).toBe(false);
@@ -238,6 +242,10 @@ describe('useVoiceConversation chat session lifecycle', () => {
     it('retains the server ID after a transport error and disposes old resources before resume', async () => {
         const { result } = renderHook(() => useVoiceConversation({ clientSessionId: 'client-1' }));
         const firstSocket = await startAndOpen(result);
+        expect(JSON.parse(firstSocket.send.mock.calls[0][0])).toMatchObject({
+            type: 'session_info',
+            session_context: { session_mode: 'live' },
+        });
         markReady(firstSocket, 'server-chat-1', false);
 
         act(() => firstSocket.error());

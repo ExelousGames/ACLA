@@ -14,7 +14,7 @@ import asyncio
 from contextlib import suppress
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -27,7 +27,10 @@ from app.chat_llm import (
 from app.voice import get_kokoro_service
 from app.voice.session_modes import (
     VALID_CHATBOT_SESSION_MODES,
-    normalize_chatbot_session_mode,
+)
+from app.voice.session_ai_tool_service import (
+    SessionAIToolService,
+    SessionToolCatalogError,
 )
 from app.voice.tool_relay import normalize_voice_session_context
 
@@ -240,16 +243,10 @@ async def voice_stream(
             await websocket.close(code=1011, reason="voice dependency missing")
             return
 
-        # The first text frame on every connection declares frontend tools and
-        # current context. Audio frames before it are dropped.
+        # The first text frame on every connection declares current context.
+        # Audio frames before it are dropped.
         try:
-            (
-                frontend_tools,
-                tool_metadata,
-                query_scope_schema,
-                tool_result_handling,
-                session_context,
-            ) = await _await_frontend_info(
+            session_context = await _await_session_info(
                 websocket,
                 timeout=5.0,
             )
@@ -266,13 +263,45 @@ async def voice_stream(
             except Exception:
                 pass
             try:
-                await websocket.close(code=1002, reason="frontend_info handshake failed")
+                await websocket.close(code=1002, reason="session_info handshake failed")
+            except Exception:
+                pass
+            return
+
+        try:
+            session_tools = await SessionAIToolService().get_session_tools(
+                session_context,
+            )
+        except SessionToolCatalogError as exc:
+            LOGGER.error(
+                "Voice session-tool lookup failed (user=%s): %s",
+                owner_user_id,
+                exc,
+            )
+            try:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": str(exc),
+                    "error_type": "SessionToolCatalogError",
+                })
+            except Exception:
+                pass
+            try:
+                await websocket.close(code=1011, reason="session tool catalog error")
             except Exception:
                 pass
             return
 
         if not resumed:
-            chat_session = registry.create_attached(owner_user_id)
+            chat_session = registry.create_attached(
+                owner_user_id,
+                session_context,
+            )
+        else:
+            registry.update_session_context(
+                chat_session.chat_session_id,
+                session_context,
+            )
 
         await websocket.send_json({
             "type": "chat_session_ready",
@@ -303,21 +332,18 @@ async def voice_stream(
 
         LOGGER.info(
             "Voice WS connected (chat_session=%s telemetry_session=%s user=%s "
-            "chat_llm_model=%s frontend_tools=%d resumed=%s)",
+            "chat_llm_model=%s session_tools=%d resumed=%s)",
             chat_session.chat_session_id,
             session_id,
             owner_user_id,
             selected_chat_llm_model or "default",
-            len(frontend_tools),
+            len(session_tools),
             resumed,
         )
 
         await run_voice_session(
             filtered_ws, config, tool_executor,
-            frontend_tools=frontend_tools,
-            tool_metadata=tool_metadata,
-            query_scope_schema=query_scope_schema,
-            tool_result_handling=tool_result_handling,
+            session_tools=session_tools,
         )
     except WebSocketDisconnect:
         LOGGER.info("Voice WS client disconnected (user=%s)", owner_user_id)
@@ -391,32 +417,17 @@ async def _reject_chat_session_request(websocket: WebSocket, error: Any) -> None
 
 
 class _HandshakeError(Exception):
-    """Raised when the frontend_info handshake fails (timeout, bad frame, etc.)."""
+    """Raised when the session_info handshake fails (timeout, bad frame, etc.)."""
 
 
-async def _await_frontend_info(
+async def _await_session_info(
     websocket: WebSocket, *, timeout: float,
-) -> Tuple[
-    List[Dict[str, Any]],
-    Dict[str, Dict[str, Any]],
-    Optional[Dict[str, Any]],
-    Optional[str],
-    Dict[str, Any],
-]:
-    """Receive and parse the first text frame as ``frontend_info``.
+) -> Dict[str, Any]:
+    """Receive and parse the first text frame as ``session_info``.
 
-    Returns ``(tools, tool_metadata, query_scope_schema, tool_result_handling,
-    session_context)``.
-    ``tools`` is the (possibly empty) list of backend-injected frontend tool
-    capability schemas. ``tool_metadata`` is backend-injected LLM-facing
-    titles, descriptions, and parameter wording for both server and frontend
-    tools. ``query_scope_schema`` is the backend-injected JSON Schema for
-    QueryScope and is passed through for compatibility with frontend tool
-    descriptors; it may be ``None``. ``tool_result_handling`` is
-    backend-injected LLM-facing guidance for interpreting frontend tool result
-    payloads. ``session_context`` is compact frontend view/session state. Raises
+    Returns compact frontend view/session state. Raises
     :class:`_HandshakeError` on timeout, non-text first frame, malformed
-    JSON, wrong ``type``, or invalid ``tools`` shape.
+    JSON, a wrong ``type``, or invalid session context.
 
     Per-session — does not block the event loop or other sessions. Any
     binary frames that arrive before the handshake are dropped.
@@ -425,16 +436,16 @@ async def _await_frontend_info(
     while True:
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
-            raise _HandshakeError("Timed out waiting for frontend_info handshake")
+            raise _HandshakeError("Timed out waiting for session_info handshake")
         try:
             msg = await asyncio.wait_for(websocket.receive(), timeout=remaining)
         except asyncio.TimeoutError as exc:
             raise _HandshakeError(
-                "Timed out waiting for frontend_info handshake",
+                "Timed out waiting for session_info handshake",
             ) from exc
 
         if msg.get("type") == "websocket.disconnect":
-            raise _HandshakeError("Client disconnected before sending frontend_info")
+            raise _HandshakeError("Client disconnected before sending session_info")
 
         text = msg.get("text")
         if text is None:
@@ -444,60 +455,40 @@ async def _await_frontend_info(
         try:
             payload = json.loads(text)
         except Exception as exc:
-            raise _HandshakeError(f"frontend_info: bad JSON ({exc})") from exc
+            raise _HandshakeError(f"session_info: bad JSON ({exc})") from exc
 
-        if not isinstance(payload, dict) or payload.get("type") != "frontend_info":
+        if not isinstance(payload, dict) or payload.get("type") != "session_info":
             raise _HandshakeError(
-                f"First text frame must have type='frontend_info' "
+                f"First text frame must have type='session_info' "
                 f"(got {payload.get('type') if isinstance(payload, dict) else type(payload).__name__})"
             )
 
-        tools = payload.get("tools")
-        if tools is None:
-            tools = []
-        if not isinstance(tools, list) or not all(isinstance(t, dict) for t in tools):
-            raise _HandshakeError("frontend_info: 'tools' must be a list of objects")
-
-        raw_tool_metadata = payload.get("tool_metadata")
-        if raw_tool_metadata is None:
-            raw_tool_metadata = {}
-        if not isinstance(raw_tool_metadata, dict):
-            raise _HandshakeError("frontend_info: 'tool_metadata' must be an object or null")
-        tool_metadata: Dict[str, Dict[str, Any]] = {}
-        for name, metadata in raw_tool_metadata.items():
-            if not isinstance(name, str) or not isinstance(metadata, dict):
-                raise _HandshakeError(
-                    "frontend_info: 'tool_metadata' must map tool names to objects"
-                )
-            tool_metadata[name] = metadata
-
-        query_scope_schema = payload.get("query_scope_schema")
-        if query_scope_schema is not None and not isinstance(query_scope_schema, dict):
-            raise _HandshakeError(
-                "frontend_info: 'query_scope_schema' must be an object or null"
-            )
-        tool_result_handling = payload.get("tool_result_handling")
-        if tool_result_handling is not None and not isinstance(tool_result_handling, str):
-            raise _HandshakeError(
-                "frontend_info: 'tool_result_handling' must be a string or null"
-            )
-        if tool_result_handling is not None:
-            tool_result_handling = tool_result_handling.strip()
-
         session_context = payload.get("session_context")
-        if session_context is None:
-            session_context = {}
         if not isinstance(session_context, dict):
-            raise _HandshakeError("frontend_info: 'session_context' must be an object or null")
+            raise _HandshakeError("session_info: 'session_context' must be an object")
         context_session_mode = session_context.get("session_mode")
-        normalized_session_mode = normalize_chatbot_session_mode(context_session_mode)
-        if context_session_mode is not None and normalized_session_mode is None:
+        if (
+            not isinstance(context_session_mode, str)
+            or context_session_mode not in VALID_CHATBOT_SESSION_MODES
+        ):
             raise _HandshakeError(
-                "frontend_info: 'session_context.session_mode' must be "
-                f"{', '.join(sorted(VALID_CHATBOT_SESSION_MODES))}, or omitted"
+                "session_info: 'session_context.session_mode' must be "
+                f"{', '.join(sorted(VALID_CHATBOT_SESSION_MODES))}"
+            )
+        agent_mode = session_context.get("agent_mode")
+        if agent_mode is not None and (
+            not isinstance(agent_mode, str)
+            or agent_mode not in {
+                "track_guide",
+                "overtake",
+                "live_performance_analyst",
+            }
+        ):
+            raise _HandshakeError(
+                "session_info: 'session_context.agent_mode' is invalid"
             )
         session_context = normalize_voice_session_context(session_context)
-        return tools, tool_metadata, query_scope_schema, tool_result_handling, session_context
+        return session_context
 
 
 class _TextFilteringWebSocket:

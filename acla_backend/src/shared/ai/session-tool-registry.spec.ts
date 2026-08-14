@@ -1,12 +1,11 @@
 import {
-    FRONTEND_APPLICATION_TOOLS,
-    getAiToolMetadataForSessionContext,
-    getFrontendApplicationToolsForSessionContext,
-} from './frontend-application-tool-registry';
+    SESSION_TOOLS,
+    getSessionToolsForSessionContext,
+} from './session-tool-registry';
 
-describe('frontend application live range to-do tools', () => {
+describe('session live range to-do tools', () => {
     it('atomically exposes only the new tool definitions and schemas', () => {
-        const names = FRONTEND_APPLICATION_TOOLS.map((tool) => tool.name);
+        const names = SESSION_TOOLS.map((tool) => tool.name);
         expect(names).toEqual(expect.arrayContaining([
             'set_live_range_todo_list',
             'update_live_range_todo_list',
@@ -18,10 +17,10 @@ describe('frontend application live range to-do tools', () => {
             'get_live_range_tracker',
         ]));
 
-        const setTool = FRONTEND_APPLICATION_TOOLS.find((tool) => (
+        const setTool = SESSION_TOOLS.find((tool) => (
             tool.name === 'set_live_range_todo_list'
         ));
-        const updateTool = FRONTEND_APPLICATION_TOOLS.find((tool) => (
+        const updateTool = SESSION_TOOLS.find((tool) => (
             tool.name === 'update_live_range_todo_list'
         ));
         expect(setTool).toMatchObject({
@@ -45,13 +44,14 @@ describe('frontend application live range to-do tools', () => {
     });
 
     it('advertises the tools only to child live-agent sessions with AI Chat ownership guidance', () => {
-        const liveMainNames = getFrontendApplicationToolsForSessionContext({
+        const liveMainNames = getSessionToolsForSessionContext({
             session_mode: 'live',
         }).map((tool) => tool.name);
-        const liveAgentNames = getFrontendApplicationToolsForSessionContext({
+        const liveAgentTools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'track_guide',
-        }).map((tool) => tool.name);
+        });
+        const liveAgentNames = liveAgentTools.map((tool) => tool.name);
 
         expect(liveMainNames).not.toContain('set_live_range_todo_list');
         expect(liveAgentNames).toEqual(expect.arrayContaining([
@@ -60,18 +60,14 @@ describe('frontend application live range to-do tools', () => {
             'get_live_range_todo_list',
         ]));
 
-        const metadata = getAiToolMetadataForSessionContext({
-            session_mode: 'live',
-            agent_mode: 'track_guide',
-        });
-        expect(metadata.set_live_range_todo_list.title).toBe('Setting live range to-do list');
-        expect(metadata.set_live_range_todo_list.description).toContain('AI Chat mounts the list');
-        expect(metadata.set_live_range_todo_list.description).toContain('attaches its notification callback');
+        const setTool = liveAgentTools.find(({ name }) => name === 'set_live_range_todo_list');
+        expect(setTool?.description).toContain('AI Chat mounts the list');
+        expect(setTool?.description).toContain('attaches its notification callback');
     });
 
     it('selects tools only from direct canonical mode fields', () => {
         const namesFor = (context: Record<string, unknown>) => (
-            getFrontendApplicationToolsForSessionContext(context).map(({ name }) => name)
+            getSessionToolsForSessionContext(context).map(({ name }) => name)
         );
 
         expect(namesFor({
@@ -95,26 +91,20 @@ describe('frontend application live range to-do tools', () => {
 });
 
 describe('live analysis mistake count tool', () => {
-    it('defines the no-argument schema and requested metadata', () => {
-        const tool = FRONTEND_APPLICATION_TOOLS.find(({ name }) => (
+    it('defines the no-argument schema and description', () => {
+        const tool = SESSION_TOOLS.find(({ name }) => (
             name === 'get_live_analysis_mistake_count'
         ));
         expect(tool).toMatchObject({
+            description: expect.any(String),
             properties: {},
             required: [],
         });
-
-        const metadata = getAiToolMetadataForSessionContext({
-            session_mode: 'live',
-            agent_mode: 'live_performance_analyst',
-        });
-        expect(metadata.get_live_analysis_mistake_count.title)
-            .toBe('Counting live analysis mistakes');
     });
 
     it('exposes the tool only to a Live Performance Analyst child session', () => {
         const namesFor = (context: Record<string, unknown>) => (
-            getFrontendApplicationToolsForSessionContext(context).map(({ name }) => name)
+            getSessionToolsForSessionContext(context).map(({ name }) => name)
         );
 
         expect(namesFor({ session_mode: 'live' }))
@@ -140,7 +130,7 @@ describe('live analysis mistake count tool', () => {
 
 describe('create_goal tool', () => {
     it('defines the canonical preparation workflow and numeric determination schema', () => {
-        const tools = getFrontendApplicationToolsForSessionContext({
+        const tools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
@@ -179,7 +169,7 @@ describe('create_goal tool', () => {
 
     it('exposes create_goal only to the Live Performance Analyst and constrains nested tools by session', () => {
         const namesFor = (context: Record<string, unknown>) => (
-            getFrontendApplicationToolsForSessionContext(context).map(({ name }) => name)
+            getSessionToolsForSessionContext(context).map(({ name }) => name)
         );
         expect(namesFor({ session_mode: 'live' })).not.toContain('create_goal');
         expect(namesFor({
@@ -187,7 +177,7 @@ describe('create_goal tool', () => {
             agent_mode: 'track_guide',
         })).not.toContain('create_goal');
 
-        const analystTools = getFrontendApplicationToolsForSessionContext({
+        const analystTools = getSessionToolsForSessionContext({
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         });
@@ -209,20 +199,15 @@ describe('create_goal tool', () => {
         expect(determinationNames).not.toContain('create_goal');
         expect(determinationNames).not.toContain('retry_goal_task');
 
-        const metadata = getAiToolMetadataForSessionContext({
-            session_mode: 'live',
-            agent_mode: 'live_performance_analyst',
-        });
-        expect(metadata.create_goal.title).toBe('Creating goal');
     });
 });
 
 describe('retry_goal_task tool', () => {
     it('defines a no-argument schema and is exposed only to the Live Performance Analyst', () => {
         const namesFor = (context: Record<string, unknown>) => (
-            getFrontendApplicationToolsForSessionContext(context).map(({ name }) => name)
+            getSessionToolsForSessionContext(context).map(({ name }) => name)
         );
-        const tool = FRONTEND_APPLICATION_TOOLS.find(({ name }) => (
+        const tool = SESSION_TOOLS.find(({ name }) => (
             name === 'retry_goal_task'
         ));
         expect(tool).toMatchObject({ properties: {}, required: [] });
@@ -240,11 +225,5 @@ describe('retry_goal_task tool', () => {
             session_mode: 'live',
             agent_mode: 'live_performance_analyst',
         })).toContain('retry_goal_task');
-
-        const metadata = getAiToolMetadataForSessionContext({
-            session_mode: 'live',
-            agent_mode: 'live_performance_analyst',
-        });
-        expect(metadata.retry_goal_task.title).toBe('Retrying failed goal task');
     });
 });

@@ -17,14 +17,8 @@ Live Performance Analyst startup behavior:
   Set `determination.result_path` to `mistake_count`,
   `determination.operator` to `eq`, and `determination.target` to `0`.
   Omit `determination.tool.arguments` because the tool takes no arguments.
-  Wait for the final `create_goal` result before coaching.
-- Do not manually duplicate the two preparation tool calls or the determination
-  tool outside the goal workflow.
-- Use `restart_live_baseline` only when the driver asks to discard the current
-  baseline or when the baseline is clearly unusable.
 - Treat an `achieved` goal as confirmation that the newest stored analysis page
-  has zero mistakes. Treat `missed` as a determination result that still needs
-  your coaching, and report `error` without claiming the goal was evaluated.
+  has zero mistakes. 
 - Do not create a visible procedure plan in this mode.
 - Use `show_map` when it helps the driver understand where an identified
   section is.

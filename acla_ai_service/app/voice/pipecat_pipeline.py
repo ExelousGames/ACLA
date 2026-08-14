@@ -45,6 +45,10 @@ from app.voice.session_modes import (
     SESSION_MODE_AGENT_BEHAVIORS,
     normalize_chatbot_session_mode,
 )
+from app.voice.session_ai_tool_service import (
+    SessionAIToolService,
+    SessionToolCatalogError,
+)
 from app.voice.tool_relay import normalize_voice_session_context
 
 LOGGER = logging.getLogger(__name__)
@@ -109,16 +113,6 @@ def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]
     )
 
 
-def _format_tool_result_handling_for_prompt(
-    tool_result_handling: Optional[str],
-) -> str:
-    # Legacy handshake field kept for compatibility. The AI service owns these
-    # interpretation rules so the frontend/backend bridge does not have to
-    # supply LLM-facing prompt text.
-    _ = tool_result_handling
-    return _TOOL_RESULT_HANDLING_PROMPT
-
-
 def _startup_agent_behavior_name(session_context: Optional[Dict[str, Any]]) -> str:
     context = normalize_voice_session_context(session_context)
     raw_mode = context.get("agent_mode")
@@ -181,16 +175,15 @@ def _build_startup_knowledge_prompt(
 
 def _build_system_prompt(
     session_context: Optional[Dict[str, Any]],
-    tool_result_handling: Optional[str] = None,
 ) -> str:
     system_prompt = _VOICE_COACH_PROMPT_TEMPLATE
     session_context_prompt = _format_session_context_for_prompt(session_context)
     if session_context_prompt:
         system_prompt = f"{system_prompt.rstrip()}\n\n{session_context_prompt}"
 
-    tool_result_prompt = _format_tool_result_handling_for_prompt(tool_result_handling)
-    if tool_result_prompt:
-        system_prompt = f"{system_prompt.rstrip()}\n\n{tool_result_prompt}"
+    system_prompt = (
+        f"{system_prompt.rstrip()}\n\n{_TOOL_RESULT_HANDLING_PROMPT}"
+    )
 
     startup_knowledge = _build_startup_knowledge_prompt(session_context)
     if startup_knowledge:
@@ -329,281 +322,42 @@ class VoiceSessionConfig:
     chat_llm_model: Optional[str] = None
 
 
-# Human-readable titles shown in the chat UI for each tool. The driver
-# sees these in a "tool box" while the LLM is calling the function — they
-# should read like a brief status line, not the raw function name.
-#
-# Server-side tool docs are defined here because these tools are implemented
-# by the AI service, not by frontend-executable capabilities.
-_SERVER_TOOL_TITLES: Dict[str, str] = {
-    "explain_label": "Looking up the term",
-    "get_track_knowledge": "Pulling track notes",
-    "search_racing_knowledge": "Searching racing knowledge",
-}
-
-_SERVER_TOOL_METADATA: Dict[str, Dict[str, Any]] = {
-    "explain_label": {
-        "description": (
-            "Look up an ACLA racing label or label code and return its "
-            "plain-English definition and, when available, a coaching fix."
-        ),
-        "parameters": {
-            "label_id": (
-                "The label code or human-readable label name, for example "
-                "'MSP44' or 'Oversteering at entry'."
-            ),
-        },
-    },
-    "get_track_knowledge": {
-        "description": (
-            "Fetch keyed ACLA track notes for a known circuit, optionally "
-            "focused on a specific corner."
-        ),
-        "parameters": {
-            "track": (
-                "The lowercase track id from the ACLA track corpus, such as "
-                "'spa'."
-            ),
-            "corner": (
-                "Optional corner name or section to focus on, such as "
-                "'Eau Rouge'."
-            ),
-        },
-    },
-    "search_racing_knowledge": {
-        "description": (
-            "Search the ACLA racing knowledge corpus for free-text questions, "
-            "driving theory, setup advice, track guidance, or knowledge that "
-            "does not have an exact label or track id."
-        ),
-        "parameters": {
-            "query": "The natural-language racing question or topic to search for.",
-            "top_k": "Optional maximum number of knowledge chunks to return.",
-        },
-    },
-}
-
-
-def _prettify(name: str) -> str:
-    return name.replace("_", " ").strip().capitalize()
-
-
-def _tool_description(name: str, tool_metadata: Dict[str, Dict[str, Any]]) -> str:
-    description = tool_metadata.get(name, {}).get("description")
-    return str(description).strip() if description else ""
-
-
-def _server_tool_description(name: str) -> str:
-    description = _SERVER_TOOL_METADATA.get(name, {}).get("description")
-    return str(description).strip() if description else ""
-
-
-def _tool_title(name: str, tool_metadata: Dict[str, Dict[str, Any]]) -> str:
-    title = tool_metadata.get(name, {}).get("title")
-    return str(title).strip() if title else (_SERVER_TOOL_TITLES.get(name) or _prettify(name))
-
-
-def _with_parameter_docs(
-    tool_name: str,
-    properties: Dict[str, Any],
-    tool_metadata: Dict[str, Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Overlay parameter descriptions from frontend tool metadata."""
-    params = tool_metadata.get(tool_name, {}).get("parameters")
-    if not isinstance(params, dict):
-        return properties
-
-    return _with_docs_from_params(properties, params)
-
-
-def _with_server_parameter_docs(
-    tool_name: str,
-    properties: Dict[str, Any],
-) -> Dict[str, Any]:
-    params = _SERVER_TOOL_METADATA.get(tool_name, {}).get("parameters")
-    if not isinstance(params, dict):
-        return properties
-    return _with_docs_from_params(properties, params)
-
-
-def _with_docs_from_params(
-    properties: Dict[str, Any],
-    params: Dict[str, Any],
-) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    for name, schema in properties.items():
-        if not isinstance(schema, dict):
-            out[name] = schema
-            continue
-
-        next_schema = dict(schema)
-        param_doc = params.get(name)
-        if isinstance(param_doc, str):
-            description = param_doc.strip()
-        elif isinstance(param_doc, dict):
-            raw_description = param_doc.get("description")
-            description = str(raw_description).strip() if raw_description else ""
-        else:
-            description = ""
-
-        if description and "description" not in next_schema:
-            next_schema["description"] = description
-        out[name] = next_schema
-    return out
-
-
-def _build_server_tool_schemas(
-    query_scope_schema: Optional[Dict[str, Any]],
-    tool_metadata: Dict[str, Dict[str, Any]],
-):
-    """Pipecat FunctionSchemas for the server-implemented tools only.
-
-    Frontend executable capability shapes come in over the WS handshake
-    (see :mod:`app.api.voice`) and are built in
-    :func:`_build_frontend_tool_schemas`. These server tools are owned by the
-    AI service, so their LLM-facing text is defined locally instead of coming
-    from handshake metadata.
-
-    """
-    _ = query_scope_schema
-
-    from pipecat.adapters.schemas.function_schema import FunctionSchema
-
-    return [
-        FunctionSchema(
-            name="explain_label",
-            description=_server_tool_description("explain_label"),
-            properties=_with_server_parameter_docs(
-                "explain_label",
-                {
-                    "label_id": {
-                        "type": "string",
-                    },
-                },
-            ),
-            required=["label_id"],
-        ),
-        FunctionSchema(
-            name="get_track_knowledge",
-            description=_server_tool_description("get_track_knowledge"),
-            properties=_with_server_parameter_docs(
-                "get_track_knowledge",
-                {
-                    "track": {
-                        "type": "string",
-                    },
-                    "corner": {
-                        "type": "string",
-                    },
-                },
-            ),
-            required=["track"],
-        ),
-        FunctionSchema(
-            name="search_racing_knowledge",
-            description=_server_tool_description("search_racing_knowledge"),
-            properties=_with_server_parameter_docs(
-                "search_racing_knowledge",
-                {
-                    "query": {"type": "string"},
-                    "top_k": {"type": "integer"},
-                },
-            ),
-            required=["query"],
-        ),
-    ]
-
-
-def _build_frontend_tool_schemas(
-    frontend_tools: Iterable[Dict[str, Any]],
-    tool_metadata: Dict[str, Dict[str, Any]],
-) -> List[Any]:
-    """Convert backend-injected frontend tool descriptors into Pipecat FunctionSchemas.
-
-    Each ``frontend_tools`` entry is a plain dict with ``name``, ``properties``
-    and ``required`` (mirrors FunctionSchema's constructor). LLM-facing text is
-    loaded from backend-injected ``tool_metadata`` by tool name.
-    Entries missing ``name`` are skipped with a warning — defensive against
-    a malformed handshake, since this is an untrusted boundary.
-    """
-    from pipecat.adapters.schemas.function_schema import FunctionSchema
-
-    schemas: List[Any] = []
-    for tool in frontend_tools:
-        name = tool.get("name")
-        if not isinstance(name, str) or not name:
-            LOGGER.warning("frontend_info: tool entry missing 'name': %r", tool)
-            continue
-        schemas.append(FunctionSchema(
-            name=name,
-            description=_tool_description(name, tool_metadata),
-            properties=_with_parameter_docs(
-                name,
-                dict(tool.get("properties") or {}),
-                tool_metadata,
-            ),
-            required=list(tool.get("required") or []),
-        ))
-    return schemas
-
-
-def _build_title_map(
-    frontend_tools: Iterable[Dict[str, Any]],
-    tool_metadata: Dict[str, Dict[str, Any]],
-) -> Dict[str, str]:
-    """Build tool-event titles from backend-injected tool metadata."""
-    titles = {name: _tool_title(name, tool_metadata) for name in _SERVER_TOOL_TITLES}
-    for tool in frontend_tools:
-        name = tool.get("name")
-        if isinstance(name, str) and name:
-            titles[name] = _tool_title(name, tool_metadata)
-    return titles
-
-
 def _make_tool_handler(
     tool_executor,
     session_config: "VoiceSessionConfig",
     chat_session_id: str,
     *,
-    frontend_tool_names: frozenset[str],
-    tool_titles: Dict[str, str],
+    session_tool_names: frozenset[str],
 ):
     """Build a per-session async handler with two-bucket dispatch.
 
-    * Tool names in ``frontend_tool_names`` (derived from the WS handshake)
-      → forwarded to the frontend through the active transport bound to
+    * Tool names in ``session_tool_names`` (retrieved from the backend)
+      → forwarded to the browser through the active transport bound to
       ``chat_session_id``.
     * Everything else → forwarded to ``tool_executor`` (server-side path,
       typically ``AIService._execute_function``).
 
     Both paths pass tool returns through unchanged so the LLM sees exactly
-    what the frontend or server-side executor returned.
+    what the browser or server-side executor returned.
 
-    Frontend-owned calls carry their human-readable title on the
-    ``tool_call`` frame so the browser can render and execute from one
-    message.
+    Browser-owned calls contain only relay routing data.
     """
     from app.voice.tool_relay import get_relay
 
     relay = get_relay()
 
-    def _tool_title(name: str) -> str:
-        return tool_titles.get(name) or _prettify(name)
-
-    async def send_frontend_tool(function_name: str, arguments: Dict[str, Any]) -> Optional[str]:
-        """Send one frontend-owned tool call and return without waiting."""
-        title = _tool_title(function_name)
+    async def send_session_tool(function_name: str, arguments: Dict[str, Any]) -> Optional[str]:
+        """Send one browser-owned session tool call and return without waiting."""
         arguments = arguments or {}
 
-        LOGGER.info("[FRONTEND-TOOL-CALL] name=%s args=%r", function_name, arguments)
+        LOGGER.info("[SESSION-TOOL-CALL] name=%s args=%r", function_name, arguments)
         call_id = await relay.send_tool_call(
             chat_session_id,
             function_name,
             arguments,
-            title,
         )
         LOGGER.info(
-            "[FRONTEND-TOOL-DISPATCHED] name=%s ok=%s call_id=%r",
+            "[SESSION-TOOL-DISPATCHED] name=%s ok=%s call_id=%r",
             function_name, bool(call_id), call_id,
         )
         return call_id
@@ -611,7 +365,7 @@ def _make_tool_handler(
     async def dispatch_server_tool(function_name: str, arguments: Dict[str, Any]) -> Any:
         """Execute one tool by name and return the LLM-visible payload.
 
-        Shared by native Pipecat ``register_function`` calls. Routes frontend
+        Shared by native Pipecat ``register_function`` calls. Routes session
         vs. server tools, leaves the tool return unchanged, and logs the
         result. Never raises —
         failures come back as ``{"error": ...}`` so Pipecat can hand the
@@ -624,9 +378,9 @@ def _make_tool_handler(
         ok = True
         error_msg: Optional[str] = None
         try:
-            if function_name in frontend_tool_names:
+            if function_name in session_tool_names:
                 # dispatch() never raises — failures come back as {"error": ...}.
-                raise RuntimeError("frontend tool reached server dispatcher")
+                raise RuntimeError("session tool reached server dispatcher")
             else:
                 # Server-side path. Context carries the connect-time IDs;
                 # track/car are intentionally absent (LLM fetches via tool).
@@ -658,13 +412,13 @@ def _make_tool_handler(
         return payload
 
     async def handle_tool_call(params):
-        if params.function_name in frontend_tool_names:
-            await send_frontend_tool(params.function_name, params.arguments or {})
+        if params.function_name in session_tool_names:
+            await send_session_tool(params.function_name, params.arguments or {})
             return
         payload = await dispatch_server_tool(params.function_name, params.arguments or {})
         await params.result_callback(payload)
 
-    return handle_tool_call, send_frontend_tool, dispatch_server_tool
+    return handle_tool_call, send_session_tool, dispatch_server_tool
 
 
 def _split_function_tag_prefix(text: str) -> tuple[str, str]:
@@ -700,16 +454,16 @@ def _build_function_tag_recovery():
     class FunctionTagRecovery(FrameProcessor):
         def __init__(
             self,
-            send_frontend_tool,
+            send_session_tool,
             dispatch_server_tool,
-            frontend_tool_names: frozenset[str],
+            session_tool_names: frozenset[str],
             context: Any,
             get_task,
         ) -> None:
             super().__init__()
-            self._send_frontend_tool = send_frontend_tool
+            self._send_session_tool = send_session_tool
             self._dispatch_server_tool = dispatch_server_tool
-            self._frontend_tool_names = frontend_tool_names
+            self._session_tool_names = session_tool_names
             self._context = context
             self._get_task = get_task
             self._buf = ""
@@ -806,8 +560,8 @@ def _build_function_tag_recovery():
                 await self.push_frame(TextFrame(text=text), direction)
 
         async def _recover(self, name: str, args: Dict[str, Any]) -> None:
-            if name in self._frontend_tool_names:
-                await self._send_frontend_tool(name, args)
+            if name in self._session_tool_names:
+                await self._send_session_tool(name, args)
                 return
 
             result = await self._dispatch_server_tool(name, args)
@@ -1027,16 +781,12 @@ def _build_context_logger():
 
 def _build_initial_context_messages(
     session_config: VoiceSessionConfig,
-    tool_result_handling: Optional[str],
 ) -> tuple[List[Dict[str, Any]], int]:
     """Build a fresh connection root followed by stored conversation history."""
     session_config.session_context = normalize_voice_session_context(
         session_config.session_context,
     )
-    system_prompt = _build_system_prompt(
-        session_config.session_context,
-        tool_result_handling,
-    )
+    system_prompt = _build_system_prompt(session_config.session_context)
     history = [
         deepcopy(message)
         for message in session_config.committed_history
@@ -1078,10 +828,7 @@ async def build_voice_pipeline_task(
     session_config: VoiceSessionConfig,
     tool_executor: Any,
     *,
-    frontend_tools: Optional[List[Dict[str, Any]]] = None,
-    tool_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
-    query_scope_schema: Optional[Dict[str, Any]] = None,
-    tool_result_handling: Optional[str] = None,
+    session_tools: Optional[List[Dict[str, Any]]] = None,
 ):
     """Build a Pipecat PipelineTask bound to the given WebSocket.
 
@@ -1089,7 +836,7 @@ async def build_voice_pipeline_task(
     `PipelineRunner.run(task)`.
 
     Side effect: registers the WebSocket with :mod:`app.voice.tool_relay`
-    so frontend tool calls and tool payloads routed via text frames
+    so session tool calls and tool payloads routed via text frames
     reach this session's LLM context. The caller (api/voice.py) is
     responsible for unbinding on session end.
 
@@ -1098,6 +845,7 @@ async def build_voice_pipeline_task(
     """
     # Deferred imports — see module docstring.
     import asyncio
+    from pipecat.adapters.schemas.function_schema import FunctionSchema
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
     from pipecat.audio.vad.silero import SileroVADAnalyzer
     from pipecat.frames.frames import LLMRunFrame
@@ -1115,6 +863,7 @@ async def build_voice_pipeline_task(
         FastAPIWebsocketTransport,
     )
 
+    from app.voice.chat_sessions import get_chat_session_registry
     from app.voice.pipecat_kokoro import build_kokoro_processor
     from app.voice.raw_pcm_serializer import RawPCMSerializer
     from app.voice.tool_relay import get_relay
@@ -1183,33 +932,29 @@ async def build_voice_pipeline_task(
     )
 
     # --- Tool calling (Phase 3b) ---
-    # The LLM's tool surface is the union of:
-    #   * server-side tools, whose executable schemas live in Python next to
-    #     their executor.
-    #   * frontend-side tools, whose executable capability shapes arrive over
-    #     the WS handshake after backend gateway injection.
-    # Tool-use metadata for server tools is owned here; frontend tool metadata
-    # arrives over the WS handshake. The handler dispatches by name: frontend
-    # names go through the WS tool relay; everything else goes through
-    # ``tool_executor``.
-    fe_tools = frontend_tools or []
-    metadata = tool_metadata or {}
-    frontend_tool_names = frozenset(
-        t["name"] for t in fe_tools if isinstance(t.get("name"), str)
+    # The LLM's tool surface is the union of backend-retrieved session tools
+    # (browser relay) and AI-owned knowledge tools (server executor).
+    session_tool_descriptors = session_tools or []
+    session_tool_names = frozenset(
+        tool["name"] for tool in session_tool_descriptors
+        if isinstance(tool.get("name"), str) and tool["name"]
     )
-    tool_schemas = (
-        _build_server_tool_schemas(query_scope_schema, metadata)
-        + _build_frontend_tool_schemas(fe_tools, metadata)
-    )
-    tool_titles = _build_title_map(fe_tools, metadata)
+    ai_tool_descriptors = SessionAIToolService().get_ai_tools()
+    tool_descriptors = [*session_tool_descriptors, *ai_tool_descriptors]
+    descriptor_names = [tool.get("name") for tool in tool_descriptors]
+    if (
+        not all(isinstance(name, str) and name for name in descriptor_names)
+        or len(set(descriptor_names)) != len(descriptor_names)
+    ):
+        raise SessionToolCatalogError("Voice pipeline tool names must be unique")
+    tool_schemas = [FunctionSchema(**descriptor) for descriptor in tool_descriptors]
     tools = ToolsSchema(standard_tools=tool_schemas)
 
-    tool_handler, send_frontend_tool, dispatch_server_tool = _make_tool_handler(
+    tool_handler, send_session_tool, dispatch_server_tool = _make_tool_handler(
         tool_executor,
         session_config,
         chat_session_id=session_config.chat_session_id,
-        frontend_tool_names=frontend_tool_names,
-        tool_titles=tool_titles,
+        session_tool_names=session_tool_names,
     )
     for schema in tool_schemas:
         llm.register_function(schema.name, tool_handler)
@@ -1222,7 +967,6 @@ async def build_voice_pipeline_task(
     # shared chatbot rules plus exactly one agent-specific role document.
     initial_messages, initial_history_length = _build_initial_context_messages(
         session_config,
-        tool_result_handling,
     )
 
     context = LLMContext(
@@ -1248,9 +992,9 @@ async def build_voice_pipeline_task(
     context_logger = ContextLogger(context)
     task_ref: Dict[str, Any] = {"task": None}
     function_tag_recovery = FunctionTagRecovery(
-        send_frontend_tool,
+        send_session_tool,
         dispatch_server_tool,
-        frontend_tool_names,
+        session_tool_names,
         context,
         lambda: task_ref["task"],
     )
@@ -1301,7 +1045,7 @@ async def build_voice_pipeline_task(
     task_ref["task"] = task
     # --- Text control sinks -------------------------------------------------
     # Tool results/errors are serialized by the relay and sent through a
-    # dedicated sink so typed chat and frontend tool payloads stay separate.
+    # dedicated sink so typed chat and session tool payloads stay separate.
     loop = asyncio.get_running_loop()
 
     def _trigger_llm_run(source: str) -> None:
@@ -1311,7 +1055,12 @@ async def build_voice_pipeline_task(
             LOGGER.exception("%s: could not trigger LLM run", source)
 
     def _remember_session_context(session_context: Dict[str, Any]) -> None:
-        session_config.session_context = normalize_voice_session_context(session_context)
+        normalized_context = normalize_voice_session_context(session_context)
+        session_config.session_context = normalized_context
+        get_chat_session_registry().update_session_context(
+            session_config.chat_session_id,
+            normalized_context,
+        )
 
     def user_text_sink(text: str) -> None:
         """Inject typed chat text."""
@@ -1322,9 +1071,9 @@ async def build_voice_pipeline_task(
         _trigger_llm_run("user_text_sink")
 
     def tool_result_sink(text: str) -> None:
-        """Inject a frontend tool response.
+        """Inject a session tool response.
 
-        Tool-result frames can include frontend-supplied native messages for
+        Tool-result frames can include browser-supplied native messages for
         the LLM context.
         """
         import time as _time
@@ -1352,17 +1101,14 @@ async def run_voice_session(
     session_config: VoiceSessionConfig,
     tool_executor: Any,
     *,
-    frontend_tools: Optional[List[Dict[str, Any]]] = None,
-    tool_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
-    query_scope_schema: Optional[Dict[str, Any]] = None,
-    tool_result_handling: Optional[str] = None,
+    session_tools: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """Bind a Pipecat pipeline to `websocket` and run it to completion.
 
     Returns when the WS closes or the pipeline exits. Caller is responsible
     for any auth/lifecycle concerns around `websocket`, supplying a
     ``tool_executor`` (typically AIService._execute_function), and passing
-    ``frontend_tools`` from the WS handshake (see :mod:`app.api.voice`).
+    backend-retrieved ``session_tools`` (see :mod:`app.api.voice`).
 
     On exit, committed context is copied back to the chat session registry,
     the active transport is unbound, and the session becomes resumable.
@@ -1376,10 +1122,7 @@ async def run_voice_session(
     try:
         task = await build_voice_pipeline_task(
             websocket, session_config, tool_executor,
-            frontend_tools=frontend_tools,
-            tool_metadata=tool_metadata,
-            query_scope_schema=query_scope_schema,
-            tool_result_handling=tool_result_handling,
+            session_tools=session_tools,
         )
         runner = PipelineRunner()
         await runner.run(task)
@@ -1412,6 +1155,7 @@ async def run_voice_session(
         get_chat_session_registry().detach(
             session_config.chat_session_id,
             committed_history,
+            session_config.session_context,
         )
         LOGGER.info(
             "Voice session ended (chat_session=%s user=%s)",

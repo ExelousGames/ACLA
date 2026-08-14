@@ -7,11 +7,6 @@ import {
 import { IncomingMessage } from 'http';
 import { URL } from 'url';
 import { WebSocket as WsClient, RawData } from 'ws';
-import {
-    FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
-    getAiToolMetadataForSessionContext,
-    getFrontendApplicationToolsForSessionContext,
-} from '../shared/ai/frontend-application-tool-registry';
 
 /**
  * Voice WS gateway — backend edge for /voice/stream.
@@ -23,9 +18,8 @@ import {
  * AI service stays auth-free on its private port.
  *
  * The gateway does NOT use `@SubscribeMessage` — this is a frame-level
- * proxy (binary PCM audio + JSON tool relay frames). It enriches the
- * initial frontend_info frame with the backend-owned frontend application
- * tool registry, then pipes subsequent frames through in both directions.
+ * proxy (binary PCM audio + JSON tool relay frames). It sanitizes compact
+ * session context on control frames, then pipes frames in both directions.
  */
 @WebSocketGateway({ path: '/voice/stream' })
 export class VoiceGateway implements OnGatewayConnection {
@@ -121,7 +115,7 @@ export class VoiceGateway implements OnGatewayConnection {
         };
     }
 
-    private withBackendToolRegistry(data: RawData, isBinary: boolean): { data: RawData | string; isBinary: boolean } {
+    private sanitizeContextFrame(data: RawData, isBinary: boolean): { data: RawData | string; isBinary: boolean } {
         if (isBinary) {
             return { data, isBinary };
         }
@@ -139,7 +133,7 @@ export class VoiceGateway implements OnGatewayConnection {
         }
 
         const isContextFrame = (
-            payload.type === 'frontend_info'
+            payload.type === 'session_info'
             || payload.type === 'session_context'
             || payload.type === 'user_text'
         );
@@ -154,6 +148,10 @@ export class VoiceGateway implements OnGatewayConnection {
             active_agent_session: _activeAgentSession,
             agent_session: _agentSession,
             agent_modes: _agentModes,
+            tools: _tools,
+            tool_metadata: _toolMetadata,
+            query_scope_schema: _queryScopeSchema,
+            tool_result_handling: _toolResultHandling,
             ...contextFrame
         } = payload;
         const sanitizedPayload = {
@@ -161,24 +159,8 @@ export class VoiceGateway implements OnGatewayConnection {
             session_context: this.sanitizeSessionContext(payload.session_context),
         };
 
-        if (payload.type !== 'frontend_info') {
-            return {
-                data: JSON.stringify(sanitizedPayload),
-                isBinary: false,
-            };
-        }
-
-        const sessionContext = sanitizedPayload.session_context;
-        const frontendInfo = { ...sanitizedPayload };
-        delete frontendInfo.tool_result_handling;
-
         return {
-            data: JSON.stringify({
-                ...frontendInfo,
-                tools: getFrontendApplicationToolsForSessionContext(sessionContext),
-                tool_metadata: getAiToolMetadataForSessionContext(sessionContext),
-                query_scope_schema: FRONTEND_APPLICATION_QUERY_SCOPE_SCHEMA,
-            }),
+            data: JSON.stringify(sanitizedPayload),
             isBinary: false,
         };
     }
@@ -234,7 +216,7 @@ export class VoiceGateway implements OnGatewayConnection {
         });
 
         client.on('message', (data, isBinary) => {
-            const next = this.withBackendToolRegistry(data, isBinary);
+            const next = this.sanitizeContextFrame(data, isBinary);
             if (!upstreamOpen) {
                 queue.push(next);
                 return;

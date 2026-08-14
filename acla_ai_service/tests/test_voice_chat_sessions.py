@@ -40,20 +40,21 @@ class _FakeWebSocket:
         self.closed = (code, reason)
 
 
-def _frontend_info(session_context=None):
+def _session_info(session_context=None):
+    if session_context is None:
+        session_context = {"session_mode": "live"}
     return {
         "type": "websocket.receive",
         "text": json.dumps({
-            "type": "frontend_info",
-            "tools": [],
-            "session_context": session_context or {},
+            "type": "session_info",
+            "session_context": session_context,
         }),
     }
 
 
 @pytest.mark.asyncio
 async def test_handshake_sanitizes_legacy_mode_aliases():
-    websocket = _FakeWebSocket([_frontend_info({
+    websocket = _FakeWebSocket([_session_info({
         "session_mode": "live",
         "agent_mode": "track_guide",
         "context_kind": "recorded",
@@ -66,7 +67,7 @@ async def test_handshake_sanitizes_legacy_mode_aliases():
         },
     })])
 
-    *_, session_context = await voice._await_frontend_info(
+    session_context = await voice._await_session_info(
         websocket,
         timeout=1.0,
     )
@@ -117,6 +118,41 @@ def registry(monkeypatch):
     value = ChatSessionRegistry()
     monkeypatch.setattr(chat_sessions, "_CHAT_SESSION_REGISTRY", value)
     return value
+
+
+def test_registry_saves_an_independent_session_context_copy():
+    registry = ChatSessionRegistry()
+    source_context = {
+        "session_mode": "live",
+        "future_reference": {"screen": "telemetry"},
+    }
+
+    created = registry.create_attached("user-1", source_context)
+    source_context["future_reference"]["screen"] = "garage"
+
+    assert created.session_context == {
+        "session_mode": "live",
+        "future_reference": {"screen": "telemetry"},
+    }
+    created.session_context["future_reference"]["screen"] = "setup"
+    assert registry.get(created.chat_session_id).session_context == {
+        "session_mode": "live",
+        "future_reference": {"screen": "telemetry"},
+    }
+
+
+@pytest.fixture(autouse=True)
+def session_tool_catalog(monkeypatch):
+    class Catalog:
+        async def get_session_tools(self, session_context):
+            return [{
+                "name": "show_map",
+                "description": "Display a circuit map.",
+                "properties": {},
+                "required": [],
+            }]
+
+    monkeypatch.setattr(voice, "SessionAIToolService", Catalog)
 
 
 def _install_fake_ai_service(monkeypatch):
@@ -177,7 +213,7 @@ async def test_create_does_not_allocate_id_before_successful_handshake(
     monkeypatch.setattr(chat_sessions.uuid, "uuid4", lambda: generated_id)
     websocket = _FakeWebSocket([{
         "type": "websocket.receive",
-        "text": json.dumps({"type": "not_frontend_info"}),
+        "text": json.dumps({"type": "not_session_info"}),
     }])
 
     await voice.voice_stream(
@@ -195,21 +231,64 @@ async def test_create_does_not_allocate_id_before_successful_handshake(
 
 
 @pytest.mark.asyncio
+async def test_session_tool_failure_closes_before_readiness_and_pipeline_start(
+    monkeypatch,
+    registry,
+):
+    generated_id = uuid.UUID("00000000-0000-4000-8000-000000000002")
+
+    class FailingCatalog:
+        async def get_session_tools(self, session_context):
+            raise voice.SessionToolCatalogError("catalog unavailable")
+
+    pipeline_started = False
+
+    async def fake_run(*args, **kwargs):
+        nonlocal pipeline_started
+        pipeline_started = True
+
+    monkeypatch.setattr(voice, "SessionAIToolService", FailingCatalog)
+    monkeypatch.setattr(pipecat_pipeline, "run_voice_session", fake_run)
+    monkeypatch.setattr(chat_sessions.uuid, "uuid4", lambda: generated_id)
+    websocket = _FakeWebSocket([_session_info({"session_mode": "recorded"})])
+
+    await voice.voice_stream(
+        websocket,
+        session_id="telemetry-1",
+        user_id="user-1",
+        chat_llm_model=None,
+        chat_session_action="create",
+        chat_session_id=None,
+    )
+
+    assert websocket.sent_json == [{
+        "type": "error",
+        "message": "catalog unavailable",
+        "error_type": "SessionToolCatalogError",
+    }]
+    assert websocket.closed == (1011, "session tool catalog error")
+    assert pipeline_started is False
+    assert registry.get(str(generated_id)) is None
+
+
+@pytest.mark.asyncio
 async def test_create_returns_server_uuid_and_is_active_while_pipeline_runs(
     monkeypatch,
     registry,
 ):
     _install_fake_ai_service(monkeypatch)
     active_states = []
+    catalogs = []
 
     async def fake_run(websocket, config, tool_executor, **kwargs):
         active_states.append(registry.get(config.chat_session_id).active)
+        catalogs.append(kwargs["session_tools"])
 
     monkeypatch.setattr(pipecat_pipeline, "run_voice_session", fake_run)
 
     identifiers = []
     for _ in range(2):
-        websocket = _FakeWebSocket([_frontend_info()])
+        websocket = _FakeWebSocket([_session_info()])
         await voice.voice_stream(
             websocket,
             session_id="telemetry-1",
@@ -227,6 +306,14 @@ async def test_create_returns_server_uuid_and_is_active_while_pipeline_runs(
 
     assert identifiers[0] != identifiers[1]
     assert active_states == [True, True]
+    assert [[tool["name"] for tool in catalog] for catalog in catalogs] == [
+        ["show_map"],
+        ["show_map"],
+    ]
+    assert all(
+        registry.get(chat_session_id).session_context == {"session_mode": "live"}
+        for chat_session_id in identifiers
+    )
 
 
 @pytest.mark.asyncio
@@ -248,7 +335,11 @@ async def test_resume_uses_same_session_and_passes_stored_history(
 
     monkeypatch.setattr(pipecat_pipeline, "run_voice_session", fake_run)
     websocket = _FakeWebSocket([
-        _frontend_info({"track_name": "spa", "connection": "latest"}),
+        _session_info({
+            "session_mode": "live",
+            "track_name": "spa",
+            "connection": "latest",
+        }),
     ])
 
     await voice.voice_stream(
@@ -268,7 +359,10 @@ async def test_resume_uses_same_session_and_passes_stored_history(
     assert captured[0].committed_history == history
     assert captured[0].session_id == "telemetry-2"
     assert captured[0].chat_session_id == created.chat_session_id
-    assert captured[0].session_context == {}
+    assert captured[0].session_context == {"session_mode": "live"}
+    assert registry.get(created.chat_session_id).session_context == {
+        "session_mode": "live",
+    }
 
 
 @pytest.mark.asyncio
@@ -318,7 +412,7 @@ def test_resumed_context_has_fresh_root_before_stored_history(monkeypatch):
     monkeypatch.setattr(
         pipecat_pipeline,
         "_build_system_prompt",
-        lambda session_context, handling: f"fresh:{session_context['session_mode']}",
+        lambda session_context: f"fresh:{session_context['session_mode']}",
     )
     history = [
         {"role": "user", "content": "Prior question"},
@@ -333,7 +427,6 @@ def test_resumed_context_has_fresh_root_before_stored_history(monkeypatch):
 
     messages, history_length = pipecat_pipeline._build_initial_context_messages(
         config,
-        None,
     )
 
     assert messages == [
@@ -393,6 +486,68 @@ async def test_tool_relay_routes_by_chat_session_after_rebinding():
     assert [frame["name"] for frame in old_sent] == ["old_tool"]
     assert [frame["name"] for frame in new_sent] == ["new_tool"]
     assert json.loads(new_tool_results[0])["id"] == "call-1"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_tool_handler_preserves_session_and_server_dispatch(monkeypatch):
+    relay = ToolRelay()
+    monkeypatch.setattr(tool_relay, "_RELAY", relay)
+    session_tool_frames = []
+    server_calls = []
+    server_results = []
+
+    async def send_text(payload):
+        session_tool_frames.append(json.loads(payload))
+
+    async def execute_server_tool(function_name, arguments, context):
+        server_calls.append((function_name, arguments, context))
+        return {"definition": "trail braking"}
+
+    async def receive_server_result(payload):
+        server_results.append(payload)
+
+    relay.bind("chat-1", send_text, lambda text: None)
+    config = pipecat_pipeline.VoiceSessionConfig(
+        chat_session_id="chat-1",
+        session_id="telemetry-1",
+        session_context={"session_mode": "recorded"},
+        user_id="user-1",
+    )
+    handler, _, _ = pipecat_pipeline._make_tool_handler(
+        execute_server_tool,
+        config,
+        "chat-1",
+        session_tool_names=frozenset({"show_map"}),
+    )
+
+    await handler(SimpleNamespace(
+        function_name="show_map",
+        arguments={"map_id": "spa"},
+        result_callback=receive_server_result,
+    ))
+    await handler(SimpleNamespace(
+        function_name="explain_label",
+        arguments={"label_id": "MSP44"},
+        result_callback=receive_server_result,
+    ))
+
+    assert session_tool_frames[0] | {"id": "ignored"} == {
+        "type": "tool_call",
+        "id": "ignored",
+        "name": "show_map",
+        "arguments": {"map_id": "spa"},
+    }
+    assert server_calls == [(
+        "explain_label",
+        {"label_id": "MSP44"},
+        {
+            "session_id": "telemetry-1",
+            "session_context": {"session_mode": "recorded"},
+            "user_id": "user-1",
+            "_chat_session_id": "chat-1",
+        },
+    )]
+    assert server_results == [{"definition": "trail braking"}]
 
 
 def test_tool_relay_sanitizes_context_updates_and_typed_message_context():
@@ -526,6 +681,7 @@ async def test_pipeline_failure_persists_complete_turn_and_detaches(
     config = pipecat_pipeline.VoiceSessionConfig(
         chat_session_id=created.chat_session_id,
         committed_history=initial_history,
+        session_context={"session_mode": "recorded"},
         user_id="user-1",
     )
 
@@ -543,5 +699,6 @@ async def test_pipeline_failure_persists_complete_turn_and_detaches(
         {"role": "user", "content": "Completed question"},
         {"role": "assistant", "content": "Completed answer"},
     ]
+    assert stored.session_context == {"session_mode": "recorded"}
     assert transport.stopped is True
     assert await relay.send_tool_call(created.chat_session_id, "after_failure") is None
