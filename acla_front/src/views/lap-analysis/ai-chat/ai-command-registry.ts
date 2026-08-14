@@ -9,6 +9,7 @@ import {
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
     CreateGoalToolUnavailableError,
+    InvalidToolCallError,
     LivePerformanceAnalystToolUnavailableError,
     NoLiveSessionError,
     NoLiveTelemetryError,
@@ -46,6 +47,8 @@ import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
 import type { SessionAnalysisHandle } from 'views/lap-analysis/session-analysis';
 import type { UserSummaryHandle } from 'views/user-summary/user-summary';
 import type { AiMapDisplayPayload } from './AiMapToolDisplay';
+import type { AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
+import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
 export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
@@ -334,6 +337,7 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
     'get_live_analysis_mistake_count',
+    'query_analysis_result',
     'create_goal',
     'retry_goal_task',
     'advance_plan_step',
@@ -395,6 +399,7 @@ const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
     'get_live_analysis_mistake_count',
+    'query_analysis_result',
     'advance_plan_step',
     'clear_procedure_plan',
     'set_procedure_plan',
@@ -517,6 +522,21 @@ const definitionList = Object.freeze([
         componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
         execute: (context) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
             .getLiveAnalysisMistakeCountForAi(),
+    },
+    {
+        name: 'query_analysis_result',
+        componentName: getSingletonVisualizationComponentName('analysis-results'),
+        execute: (context, args) => {
+            if (args.query !== 'result_count') {
+                throw new InvalidToolCallError(
+                    "query_analysis_result requires query to be 'result_count'.",
+                );
+            }
+            return getComponent<AnalysisResultsChartHandle>(
+                context,
+                getSingletonVisualizationComponentName('analysis-results'),
+            ).getAnalysisResultCount();
+        },
     },
     {
         name: 'create_goal',

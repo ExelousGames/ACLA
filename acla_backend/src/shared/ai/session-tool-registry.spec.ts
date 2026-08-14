@@ -128,6 +128,67 @@ describe('live analysis mistake count tool', () => {
     });
 });
 
+describe('analysis result query tool', () => {
+    const namesFor = (context: Record<string, unknown>) => (
+        getSessionToolsForSessionContext(context).map(({ name }) => name)
+    );
+
+    it('replaces the count tool with a required result_count query schema', () => {
+        const tool = SESSION_TOOLS.find(({ name }) => (
+            name === 'query_analysis_result'
+        ));
+
+        expect(SESSION_TOOLS.map(({ name }) => name))
+            .not.toContain('get_analysis_result_count');
+        expect(tool).toMatchObject({
+            description: expect.any(String),
+            properties: {
+                query: {
+                    type: 'string',
+                    enum: ['result_count'],
+                },
+            },
+            required: ['query'],
+        });
+    });
+
+    it('is advertised in live, live-agent, and recorded contexts only', () => {
+        expect(namesFor({ session_mode: 'live' }))
+            .toContain('query_analysis_result');
+        expect(namesFor({ session_mode: 'recorded' }))
+            .toContain('query_analysis_result');
+        expect(namesFor({ session_mode: 'live', agent_mode: 'track_guide' }))
+            .toContain('query_analysis_result');
+        expect(namesFor({ session_mode: 'live', agent_mode: 'overtake' }))
+            .toContain('query_analysis_result');
+        expect(namesFor({
+            session_mode: 'live',
+            agent_mode: 'live_performance_analyst',
+        })).toContain('query_analysis_result');
+        expect(namesFor({ session_mode: 'front_desk' }))
+            .not.toContain('query_analysis_result');
+        expect(namesFor({ session_mode: 'user_summary' }))
+            .not.toContain('query_analysis_result');
+        expect(namesFor({ session_mode: 'front_desk', agent_mode: 'track_guide' }))
+            .not.toContain('query_analysis_result');
+        expect(namesFor({ session_mode: 'user_summary', agent_mode: 'track_guide' }))
+            .not.toContain('query_analysis_result');
+    });
+
+    it('is available to compatible live analyst goal steps and determinations', () => {
+        const tools = getSessionToolsForSessionContext({
+            session_mode: 'live',
+            agent_mode: 'live_performance_analyst',
+        });
+        const createGoal = tools.find(({ name }) => name === 'create_goal') as any;
+
+        expect(createGoal.properties.steps.items.properties.name.enum)
+            .toContain('query_analysis_result');
+        expect(createGoal.properties.determination.properties.tool.properties.name.enum)
+            .toContain('query_analysis_result');
+    });
+});
+
 describe('create_goal tool', () => {
     it('defines the canonical preparation workflow and numeric determination schema', () => {
         const tools = getSessionToolsForSessionContext({

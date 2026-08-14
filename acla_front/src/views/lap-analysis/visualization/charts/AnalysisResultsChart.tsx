@@ -30,6 +30,10 @@ import {
     VisualizationUpdateFailedError,
 } from 'contexts/AiToolComponentError';
 import { runVisualizationBooleanCallback } from '../visualization-component-callbacks';
+import {
+    resolvedAiToolOperation,
+    type AiToolOperation,
+} from 'components/ai-engineering-tools';
 
 const formatPosition = (value: number): string => `${(value * 100).toFixed(1)}%`;
 
@@ -86,12 +90,18 @@ export interface AnalysisResultsPagination {
 
 export interface AnalysisResultsChartHandle extends NamedAiToolComponentHandle {
     waitForAnalysisResultPage(pageId: string): Promise<void>;
+    getAnalysisResultCount(): AiToolOperation<AnalysisResultCountResult>;
     replaceAnalysisResults(data: unknown): true;
     appendAnalysisResult(element: unknown): AnalysisResultControlResult;
     updateAnalysisResult(id: unknown, changes: unknown): AnalysisResultControlResult;
     removeAnalysisResult(id: unknown): AnalysisResultControlResult;
     disableAnalysisResults(): true;
 }
+
+export type AnalysisResultCountResult = {
+    status: 'ready';
+    analysis_result_count: number;
+};
 
 export type AnalysisResultControlResult = Omit<AnalysisResultMutationResult, 'success'> & {
     success: true;
@@ -895,6 +905,10 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
     const handle = React.useMemo<AnalysisResultsChartHandle>(() => ({
         getComponentName: () => name,
         waitForAnalysisResultPage,
+        getAnalysisResultCount: () => resolvedAiToolOperation({
+            status: 'ready',
+            analysis_result_count: elements.length,
+        }),
         replaceAnalysisResults: (nextData) => runVisualizationBooleanCallback(
             name,
             VisualizationUpdateFailedError,
@@ -955,7 +969,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             `Component '${name}' could not be disabled.`,
             onDisable,
         ),
-    }), [activeData, name, onDisable, onUpdate, waitForAnalysisResultPage]);
+    }), [activeData, elements.length, name, onDisable, onUpdate, waitForAnalysisResultPage]);
     React.useImperativeHandle(forwardedRef, () => handle, [handle]);
     useRegisterAiToolComponentRef(name, handle);
     const selectedFilter = MAIN_LABEL_FILTER_OPTIONS.find(({ value }) => value === mainLabelFilter)!;

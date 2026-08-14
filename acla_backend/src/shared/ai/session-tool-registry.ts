@@ -409,6 +409,18 @@ export const SESSION_TOOLS = [
         required: [],
     },
     {
+        name: 'query_analysis_result',
+        description: 'Query the currently mounted Analysis Results tab without rerunning analysis. Use result_count to return the total normalized result count, independently of the Practice/Racing filter.',
+        properties: {
+            query: {
+                type: 'string',
+                enum: ['result_count'],
+                description: 'Analysis Results query to run. result_count counts the active analysis page without rerunning analysis.',
+            },
+        },
+        required: ['query'],
+    },
+    {
         name: 'create_goal',
         description: 'Create one visible goal and execute its ordered session tool calls sequentially. Wait for the final achieved, missed, or error result before giving follow-up coaching.',
         properties: {
@@ -718,6 +730,7 @@ const COMMON_TOOL_NAMES: SessionToolName[] = [
 
 const LIVE_SESSION_TOOL_NAMES: SessionToolName[] = [
     'start_agent_session',
+    'query_analysis_result',
     'analyze_telemetry',
     'get_next_corner',
     'query_telemetry_metric',
@@ -754,6 +767,7 @@ const RECORDED_SESSION_TOOL_NAMES: SessionToolName[] = [
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
+    'query_analysis_result',
     'analyze_telemetry',
 ];
 
@@ -778,6 +792,7 @@ const getAllowedToolNames = (
             ...COMMON_TOOL_NAMES,
             ...LIVE_AGENT_SESSION_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,
+            ...(sessionMode === 'live' ? ['query_analysis_result'] as const : []),
             ...(sessionMode === 'live' && agentMode === 'live_performance_analyst'
                 ? LIVE_PERFORMANCE_ANALYST_TOOL_NAMES
                 : []),

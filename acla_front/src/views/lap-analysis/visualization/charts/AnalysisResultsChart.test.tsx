@@ -169,6 +169,83 @@ const comparableData = (driverGas: number, expertGas: number) => ({
 });
 
 describe('AnalysisResultsChart', () => {
+    it('reports zero and nonzero normalized analysis result counts', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const view = render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="count-results"
+                data={{ elements: [] }}
+            />,
+        );
+
+        await expect(chartRef.current!.getAnalysisResultCount().result).resolves.toEqual({
+            status: 'ready',
+            analysis_result_count: 0,
+        });
+
+        view.rerender(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="count-results"
+                data={{
+                    elements: [
+                        { id: 'valid-one', labels: ['MSP'] },
+                        null,
+                        'invalid',
+                        { id: 'valid-two', labels: ['MSR'] },
+                    ],
+                }}
+            />,
+        );
+
+        await expect(chartRef.current!.getAnalysisResultCount().result).resolves.toEqual({
+            status: 'ready',
+            analysis_result_count: 2,
+        });
+    });
+
+    it('reports the active live page total while Overall Trend is selected', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="active-page-count-results"
+                pagination={{
+                    pages: [{
+                        id: 'active-page',
+                        createdAt: 2,
+                        baseline: { lap: 2, lap_time_ms: 98_000, track: 'Spa', car: 'GT3' },
+                        elements: [
+                            { id: 'active-one', labels: ['MSP'] },
+                            { id: 'active-two', labels: ['MSR'] },
+                        ],
+                    }, {
+                        id: 'other-page',
+                        createdAt: 1,
+                        baseline: { lap: 1, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
+                        elements: [
+                            { id: 'other-one', labels: ['MSP'] },
+                            { id: 'other-two', labels: ['MSP'] },
+                            { id: 'other-three', labels: ['MSP'] },
+                        ],
+                    }],
+                    activePageId: 'active-page',
+                    onSelectPage: jest.fn(),
+                }}
+            />,
+        );
+
+        expect(screen.getByText('Overall Trends')).toBeInTheDocument();
+        await expect(chartRef.current!.getAnalysisResultCount().result).resolves.toEqual({
+            status: 'ready',
+            analysis_result_count: 2,
+        });
+    });
+
     it('keeps page readiness pending until the requested page is committed', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const emptyPagination = {
