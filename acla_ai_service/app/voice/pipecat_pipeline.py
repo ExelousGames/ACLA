@@ -22,8 +22,8 @@ HTTP endpoints continue to work.
 
 Phase 3b additions:
     - Tool calling wired through Pipecat's `register_function` API,
-      delegating to AIService._execute_function so voice and text share
-      the same tool implementations.
+      using an isolated application-tool selector before the existing browser
+      and AIService._execute_function dispatch paths.
 
 Known limitations (deferred):
     - Chat history is process-local and does not survive service restarts.
@@ -45,6 +45,10 @@ from app.voice.session_modes import (
     SESSION_MODE_AGENT_BEHAVIORS,
     normalize_chatbot_session_mode,
 )
+from app.voice.application_tool_search_side_chat import (
+    APPLICATION_TOOL_SEARCH_NAME,
+    ApplicationToolSearchSideChat,
+)
 from app.voice.session_ai_tool_service import (
     SessionAIToolService,
     SessionToolCatalogError,
@@ -64,6 +68,7 @@ _FUNCTION_TAG_RE = re.compile(
 )
 _FRONTEND_TOOL_RESULT_TYPE = "tool_result"
 _FRONTEND_TOOL_STATUS_PREFIX = "Tool status update: "
+_SESSION_TOOL_DISPATCHED = object()
 _SHARED_STARTUP_BEHAVIORS = (
     "tool_use",
     "procedure_plan",
@@ -95,6 +100,20 @@ _TOOL_RESULT_HANDLING_PROMPT = """Tool result handling:
 - Treat failed, blocked, or skipped as unavailable and explain the issue or choose another available tool.
 - If no status is present, treat an error field as failed; otherwise treat the payload as a completed result.
 """
+
+_APPLICATION_TOOL_SEARCH_PROMPT = (
+    "Application tool use:\n"
+    "- Your only application-tool entry point is search_application_tool.\n"
+    "- Call it explicitly when application data or an application action is "
+    "needed.\n"
+    "- Its prompt must be self-contained: include the goal, known values, "
+    "constraints, and desired outcome because the isolated selector cannot "
+    "read this conversation.\n"
+    "- Individual tool names in earlier coaching guidance describe "
+    "capabilities, not parent-callable tools. Translate those instructions "
+    "into a self-contained search_application_tool prompt; do not call or "
+    "guess hidden tools directly.\n"
+)
 
 
 def _format_session_context_for_prompt(session_context: Optional[Dict[str, Any]]) -> str:
@@ -188,7 +207,10 @@ def _build_system_prompt(
     startup_knowledge = _build_startup_knowledge_prompt(session_context)
     if startup_knowledge:
         system_prompt = f"{system_prompt.rstrip()}\n\n{startup_knowledge}"
-    return system_prompt
+    return (
+        f"{system_prompt.rstrip()}\n\n"
+        f"{_APPLICATION_TOOL_SEARCH_PROMPT}"
+    )
 
 
 def _compact_json(value: Any, *, max_chars: int = 3000) -> str:
@@ -300,6 +322,39 @@ def _build_openai_llm_service(
     )
 
 
+def _build_voice_tool_surfaces(
+    session_tools: Optional[List[Dict[str, Any]]],
+) -> tuple[
+    List[Dict[str, Any]],
+    List[Dict[str, Any]],
+    frozenset[str],
+]:
+    """Build parent-visible and selector-visible tool catalogs."""
+    tool_service = SessionAIToolService()
+    session_tool_descriptors = deepcopy(session_tools or [])
+    session_tool_names = frozenset(
+        tool["name"] for tool in session_tool_descriptors
+        if isinstance(tool.get("name"), str) and tool["name"]
+    )
+    application_tool_descriptors = [
+        *session_tool_descriptors,
+        *tool_service.get_ai_tools(),
+    ]
+    descriptor_names = [
+        tool.get("name") for tool in application_tool_descriptors
+    ]
+    if (
+        not all(isinstance(name, str) and name for name in descriptor_names)
+        or len(set(descriptor_names)) != len(descriptor_names)
+    ):
+        raise SessionToolCatalogError("Voice pipeline tool names must be unique")
+    return (
+        tool_service.get_side_chat_tools(),
+        application_tool_descriptors,
+        session_tool_names,
+    )
+
+
 # ----------------------------------------------------------------------
 # Public API
 # ----------------------------------------------------------------------
@@ -328,13 +383,17 @@ def _make_tool_handler(
     chat_session_id: str,
     *,
     session_tool_names: frozenset[str],
+    allowed_tools: Optional[List[Dict[str, Any]]] = None,
+    application_tool_search: Optional[ApplicationToolSearchSideChat] = None,
 ):
-    """Build a per-session async handler with two-bucket dispatch.
+    """Build a per-session selector handler with two-bucket dispatch.
 
-    * Tool names in ``session_tool_names`` (retrieved from the backend)
+    The parent-visible selector resolves one allowed call, then:
+
+    * Names in ``session_tool_names`` (retrieved from the backend)
       → forwarded to the browser through the active transport bound to
       ``chat_session_id``.
-    * Everything else → forwarded to ``tool_executor`` (server-side path,
+    * AI-owned names → forwarded to ``tool_executor`` (server-side path,
       typically ``AIService._execute_function``).
 
     Both paths pass tool returns through unchanged so the LLM sees exactly
@@ -345,6 +404,14 @@ def _make_tool_handler(
     from app.voice.tool_relay import get_relay
 
     relay = get_relay()
+    application_tools = deepcopy(allowed_tools or [])
+    application_tool_names = frozenset(
+        descriptor.get("name")
+        for descriptor in application_tools
+        if isinstance(descriptor, dict)
+        and isinstance(descriptor.get("name"), str)
+        and descriptor["name"]
+    )
 
     async def send_session_tool(function_name: str, arguments: Dict[str, Any]) -> Optional[str]:
         """Send one browser-owned session tool call and return without waiting."""
@@ -378,6 +445,38 @@ def _make_tool_handler(
         ok = True
         error_msg: Optional[str] = None
         try:
+            if function_name == APPLICATION_TOOL_SEARCH_NAME:
+                if application_tool_search is None:
+                    raise RuntimeError("Application tool search is unavailable")
+                prompt = arguments.get("prompt")
+                if not isinstance(prompt, str) or not prompt.strip():
+                    raise ValueError("prompt must be a non-empty string")
+
+                selected = await application_tool_search.run({
+                    "prompt": prompt.strip(),
+                    "session_context": deepcopy(normalize_voice_session_context(
+                        session_config.session_context,
+                    )),
+                    "allowed_tools": deepcopy(application_tools),
+                })
+                selected_name = selected.get("name")
+                selected_arguments = selected.get("arguments")
+                if selected_name not in application_tool_names:
+                    raise RuntimeError(
+                        f"Application tool selector returned unknown tool: {selected_name}",
+                    )
+                if not isinstance(selected_arguments, dict):
+                    raise RuntimeError(
+                        "Application tool selector arguments must be a JSON object",
+                    )
+                if selected_name in session_tool_names:
+                    await send_session_tool(selected_name, selected_arguments)
+                    return _SESSION_TOOL_DISPATCHED
+                return await dispatch_server_tool(
+                    selected_name,
+                    selected_arguments,
+                )
+
             if function_name in session_tool_names:
                 # dispatch() never raises — failures come back as {"error": ...}.
                 raise RuntimeError("session tool reached server dispatcher")
@@ -416,6 +515,8 @@ def _make_tool_handler(
             await send_session_tool(params.function_name, params.arguments or {})
             return
         payload = await dispatch_server_tool(params.function_name, params.arguments or {})
+        if payload is _SESSION_TOOL_DISPATCHED:
+            return
         await params.result_callback(payload)
 
     return handle_tool_call, send_session_tool, dispatch_server_tool
@@ -457,6 +558,7 @@ def _build_function_tag_recovery():
             send_session_tool,
             dispatch_server_tool,
             session_tool_names: frozenset[str],
+            parent_tool_names: frozenset[str],
             context: Any,
             get_task,
         ) -> None:
@@ -464,6 +566,7 @@ def _build_function_tag_recovery():
             self._send_session_tool = send_session_tool
             self._dispatch_server_tool = dispatch_server_tool
             self._session_tool_names = session_tool_names
+            self._parent_tool_names = parent_tool_names
             self._context = context
             self._get_task = get_task
             self._buf = ""
@@ -560,11 +663,19 @@ def _build_function_tag_recovery():
                 await self.push_frame(TextFrame(text=text), direction)
 
         async def _recover(self, name: str, args: Dict[str, Any]) -> None:
+            if name not in self._parent_tool_names:
+                LOGGER.warning(
+                    "FunctionTagRecovery: ignored unavailable parent tool %s",
+                    name,
+                )
+                return
             if name in self._session_tool_names:
                 await self._send_session_tool(name, args)
                 return
 
             result = await self._dispatch_server_tool(name, args)
+            if result is _SESSION_TOOL_DISPATCHED:
+                return
             try:
                 call_id = f"recovered_{_uuid.uuid4().hex}"
                 self._context.add_message({
@@ -932,29 +1043,30 @@ async def build_voice_pipeline_task(
     )
 
     # --- Tool calling (Phase 3b) ---
-    # The LLM's tool surface is the union of backend-retrieved session tools
-    # (browser relay) and AI-owned knowledge tools (server executor).
-    session_tool_descriptors = session_tools or []
-    session_tool_names = frozenset(
-        tool["name"] for tool in session_tool_descriptors
-        if isinstance(tool.get("name"), str) and tool["name"]
-    )
-    ai_tool_descriptors = SessionAIToolService().get_ai_tools()
-    tool_descriptors = [*session_tool_descriptors, *ai_tool_descriptors]
-    descriptor_names = [tool.get("name") for tool in tool_descriptors]
-    if (
-        not all(isinstance(name, str) and name for name in descriptor_names)
-        or len(set(descriptor_names)) != len(descriptor_names)
-    ):
-        raise SessionToolCatalogError("Voice pipeline tool names must be unique")
-    tool_schemas = [FunctionSchema(**descriptor) for descriptor in tool_descriptors]
+    # The parent LLM sees only the application-tool selector. Its isolated
+    # side chat receives the union of backend-retrieved session tools (browser
+    # relay) and AI-owned knowledge tools (server executor).
+    (
+        parent_tool_descriptors,
+        application_tool_descriptors,
+        session_tool_names,
+    ) = _build_voice_tool_surfaces(session_tools)
+    tool_schemas = [
+        FunctionSchema(**descriptor) for descriptor in parent_tool_descriptors
+    ]
     tools = ToolsSchema(standard_tools=tool_schemas)
+
+    application_tool_search = ApplicationToolSearchSideChat.from_chat_llm_model(
+        session_config.chat_llm_model,
+    )
 
     tool_handler, send_session_tool, dispatch_server_tool = _make_tool_handler(
         tool_executor,
         session_config,
         chat_session_id=session_config.chat_session_id,
         session_tool_names=session_tool_names,
+        allowed_tools=application_tool_descriptors,
+        application_tool_search=application_tool_search,
     )
     for schema in tool_schemas:
         llm.register_function(schema.name, tool_handler)
@@ -995,6 +1107,7 @@ async def build_voice_pipeline_task(
         send_session_tool,
         dispatch_server_tool,
         session_tool_names,
+        frozenset(schema.name for schema in tool_schemas),
         context,
         lambda: task_ref["task"],
     )

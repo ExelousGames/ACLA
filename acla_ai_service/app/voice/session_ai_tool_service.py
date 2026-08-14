@@ -44,6 +44,29 @@ _AGENT_MODES = frozenset({"track_guide", "overtake", "live_performance_analyst"}
 _DESCRIPTOR_FIELDS = frozenset({"name", "description", "properties", "required"})
 _BACKEND_TIMEOUT_SECONDS = 5.0
 
+_SIDE_CHAT_TOOLS: tuple[SessionAIToolDescriptor, ...] = (
+    {
+        "name": "search_application_tool",
+        "description": (
+            "Find and run one application tool. Supply a self-contained prompt "
+            "with the relevant goal, known values, constraints, and desired "
+            "outcome. The isolated tool-search side chat cannot read this parent "
+            "conversation or its history."
+        ),
+        "properties": {
+            "prompt": {
+                "type": "string",
+                "minLength": 1,
+                "description": (
+                    "A non-empty, self-contained description of the application "
+                    "capability, data, or action needed."
+                ),
+            },
+        },
+        "required": ["prompt"],
+    },
+)
+
 _AI_SERVICE_TOOLS: tuple[SessionAIToolDescriptor, ...] = (
     {
         "name": "explain_label",
@@ -119,6 +142,10 @@ class SessionAIToolService:
     def get_ai_tools(self) -> List[SessionAIToolDescriptor]:
         """Return independent copies of the three AI-owned knowledge tools."""
         return [deepcopy(tool) for tool in _AI_SERVICE_TOOLS]
+
+    def get_side_chat_tools(self) -> List[SessionAIToolDescriptor]:
+        """Return the parent-visible application-tool search group."""
+        return [deepcopy(tool) for tool in _SIDE_CHAT_TOOLS]
 
     async def get_session_tools(
         self,
@@ -231,7 +258,10 @@ class SessionAIToolService:
         if not isinstance(response, list):
             raise SessionToolCatalogError("Backend session-tool response must be an array")
 
-        names = {tool["name"] for tool in _AI_SERVICE_TOOLS}
+        names = {
+            tool["name"]
+            for tool in (*_AI_SERVICE_TOOLS, *_SIDE_CHAT_TOOLS)
+        }
         tools: List[SessionAIToolDescriptor] = []
         for index, raw_tool in enumerate(response):
             if not isinstance(raw_tool, dict) or set(raw_tool) != _DESCRIPTOR_FIELDS:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections import deque
+from copy import deepcopy
 import json
 import sys
 from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock
 import uuid
 
 import pytest
@@ -446,6 +448,33 @@ def test_startup_prompt_keeps_neutral_procedure_plan_guidance():
     )
     assert "Tool calls are fire-and-forget." in prompt
     assert "advance_plan_step" not in prompt
+    assert prompt.rfind("Your only application-tool entry point") > prompt.find(
+        "Tool calls are fire-and-forget.",
+    )
+
+
+def test_parent_startup_surface_contains_only_application_tool_search():
+    session_tool = {
+        "name": "show_map",
+        "description": "Display a circuit map.",
+        "properties": {"map_id": {"type": "string"}},
+        "required": ["map_id"],
+    }
+
+    parent_tools, allowed_tools, session_tool_names = (
+        pipecat_pipeline._build_voice_tool_surfaces([session_tool])
+    )
+
+    assert [tool["name"] for tool in parent_tools] == [
+        "search_application_tool",
+    ]
+    assert {tool["name"] for tool in allowed_tools} == {
+        "show_map",
+        "explain_label",
+        "get_track_knowledge",
+        "search_racing_knowledge",
+    }
+    assert session_tool_names == frozenset({"show_map"})
 
 
 @pytest.mark.asyncio
@@ -548,6 +577,226 @@ async def test_pipeline_tool_handler_preserves_session_and_server_dispatch(monke
         },
     )]
     assert server_results == [{"definition": "trail braking"}]
+
+
+@pytest.mark.asyncio
+async def test_application_tool_search_uses_latest_authoritative_context_and_ai_dispatch(
+    monkeypatch,
+):
+    relay = ToolRelay()
+    monkeypatch.setattr(tool_relay, "_RELAY", relay)
+    selector_requests = []
+    server_calls = []
+    parent_results = []
+
+    async def receive_parent_result(payload):
+        parent_results.append(payload)
+
+    class Selector:
+        async def run(self, request):
+            selector_requests.append(deepcopy(request))
+            request["session_context"]["session_mode"] = "front_desk"
+            request["allowed_tools"].clear()
+            return {
+                "name": "explain_label",
+                "arguments": {"label_id": "MSP44"},
+            }
+
+    async def execute_server_tool(function_name, arguments, context):
+        server_calls.append((function_name, arguments, deepcopy(context)))
+        return {"definition": "trail braking"}
+
+    session_tool = {
+        "name": "show_map",
+        "description": "Display a circuit map.",
+        "properties": {"map_id": {"type": "string"}},
+        "required": ["map_id"],
+    }
+    ai_tool = {
+        "name": "explain_label",
+        "description": "Explain one label.",
+        "properties": {"label_id": {"type": "string"}},
+        "required": ["label_id"],
+    }
+    config = pipecat_pipeline.VoiceSessionConfig(
+        chat_session_id="private-chat-id",
+        committed_history=[
+            {"role": "user", "content": "private-parent-message"},
+        ],
+        session_id="private-routing-id",
+        session_context={"session_mode": "live"},
+        user_id="private-user-id",
+    )
+    handler, _, _ = pipecat_pipeline._make_tool_handler(
+        execute_server_tool,
+        config,
+        "private-chat-id",
+        session_tool_names=frozenset({"show_map"}),
+        allowed_tools=[session_tool, ai_tool],
+        application_tool_search=Selector(),
+    )
+    assert selector_requests == []
+
+    config.session_context = {
+        "session_mode": "recorded",
+        "agent_mode": "track_guide",
+        "private_route": "must-not-leak",
+    }
+    await handler(SimpleNamespace(
+        function_name="search_application_tool",
+        arguments={
+            "prompt": "Explain the MSP44 label.",
+            "session_context": {"session_mode": "front_desk"},
+            "allowed_tools": [],
+            "_chat_session_id": "parent-override",
+        },
+        result_callback=receive_parent_result,
+    ))
+
+    assert selector_requests == [{
+        "prompt": "Explain the MSP44 label.",
+        "session_context": {
+            "session_mode": "recorded",
+            "agent_mode": "track_guide",
+        },
+        "allowed_tools": [session_tool, ai_tool],
+    }]
+    assert "private-routing-id" not in json.dumps(selector_requests)
+    assert "private-chat-id" not in json.dumps(selector_requests)
+    assert "private-user-id" not in json.dumps(selector_requests)
+    assert "private-parent-message" not in json.dumps(selector_requests)
+    assert config.session_context["session_mode"] == "recorded"
+    assert server_calls == [(
+        "explain_label",
+        {"label_id": "MSP44"},
+        {
+            "session_id": "private-routing-id",
+            "session_context": config.session_context,
+            "user_id": "private-user-id",
+            "_chat_session_id": "private-chat-id",
+        },
+    )]
+    assert parent_results == [{"definition": "trail braking"}]
+
+
+@pytest.mark.asyncio
+async def test_application_tool_search_preserves_browser_session_dispatch(monkeypatch):
+    relay = ToolRelay()
+    monkeypatch.setattr(tool_relay, "_RELAY", relay)
+    session_tool_frames = []
+    parent_results = []
+
+    async def receive_parent_result(payload):
+        parent_results.append(payload)
+
+    async def send_text(payload):
+        session_tool_frames.append(json.loads(payload))
+
+    class Selector:
+        async def run(self, request):
+            return {
+                "name": "show_map",
+                "arguments": {"map_id": "spa"},
+            }
+
+    relay.bind("chat-1", send_text, lambda text: None)
+    config = pipecat_pipeline.VoiceSessionConfig(
+        chat_session_id="chat-1",
+        session_context={"session_mode": "recorded"},
+    )
+    session_tool = {
+        "name": "show_map",
+        "description": "Display a circuit map.",
+        "properties": {"map_id": {"type": "string"}},
+        "required": ["map_id"],
+    }
+    handler, _, _ = pipecat_pipeline._make_tool_handler(
+        None,
+        config,
+        "chat-1",
+        session_tool_names=frozenset({"show_map"}),
+        allowed_tools=[session_tool],
+        application_tool_search=Selector(),
+    )
+
+    await handler(SimpleNamespace(
+        function_name="search_application_tool",
+        arguments={"prompt": "Show Spa on the circuit map."},
+        result_callback=receive_parent_result,
+    ))
+
+    assert session_tool_frames[0] | {"id": "ignored"} == {
+        "type": "tool_call",
+        "id": "ignored",
+        "name": "show_map",
+        "arguments": {"map_id": "spa"},
+    }
+    assert parent_results == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", [None, "", "   "])
+async def test_application_tool_search_rejects_empty_parent_prompt(prompt):
+    selector = AsyncMock()
+    parent_results = []
+
+    async def receive_parent_result(payload):
+        parent_results.append(payload)
+
+    config = pipecat_pipeline.VoiceSessionConfig(
+        chat_session_id="chat-1",
+        session_context={"session_mode": "live"},
+    )
+    handler, _, _ = pipecat_pipeline._make_tool_handler(
+        None,
+        config,
+        "chat-1",
+        session_tool_names=frozenset(),
+        allowed_tools=[],
+        application_tool_search=selector,
+    )
+
+    await handler(SimpleNamespace(
+        function_name="search_application_tool",
+        arguments={"prompt": prompt},
+        result_callback=receive_parent_result,
+    ))
+
+    selector.run.assert_not_awaited()
+    assert parent_results == [{"error": "prompt must be a non-empty string"}]
+
+
+@pytest.mark.asyncio
+async def test_application_tool_search_returns_selector_failure_as_tool_error():
+    parent_results = []
+
+    async def receive_parent_result(payload):
+        parent_results.append(payload)
+
+    class Selector:
+        async def run(self, request):
+            raise RuntimeError("provider offline")
+
+    config = pipecat_pipeline.VoiceSessionConfig(
+        chat_session_id="chat-1",
+        session_context={"session_mode": "live"},
+    )
+    handler, _, _ = pipecat_pipeline._make_tool_handler(
+        None,
+        config,
+        "chat-1",
+        session_tool_names=frozenset(),
+        allowed_tools=[],
+        application_tool_search=Selector(),
+    )
+
+    await handler(SimpleNamespace(
+        function_name="search_application_tool",
+        arguments={"prompt": "Find an application action."},
+        result_callback=receive_parent_result,
+    ))
+
+    assert parent_results == [{"error": "provider offline"}]
 
 
 def test_tool_relay_sanitizes_context_updates_and_typed_message_context():

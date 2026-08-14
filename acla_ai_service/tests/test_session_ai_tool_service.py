@@ -126,3 +126,25 @@ def test_get_ai_tools_returns_independent_copies_of_three_knowledge_tools():
                for tool in first)
     first[0]["properties"].clear()
     assert second[0]["properties"]
+
+
+def test_get_side_chat_tools_exposes_only_search_application_tool():
+    service = SessionAIToolService(_backend([]))
+    first = service.get_side_chat_tools()
+    second = service.get_side_chat_tools()
+
+    assert [tool["name"] for tool in first] == ["search_application_tool"]
+    assert first[0]["required"] == ["prompt"]
+    assert set(first[0]["properties"]) == {"prompt"}
+    assert first[0]["properties"]["prompt"]["minLength"] == 1
+    assert "cannot read this parent conversation" in first[0]["description"]
+    first[0]["properties"].clear()
+    assert second[0]["properties"]
+
+
+@pytest.mark.asyncio
+async def test_get_session_tools_rejects_reserved_side_chat_name():
+    with pytest.raises(SessionToolCatalogError, match="search_application_tool"):
+        await SessionAIToolService(
+            _backend([_tool("search_application_tool")]),
+        ).get_session_tools({"session_mode": "live"})
