@@ -204,7 +204,6 @@ describe('LiveSessionView', () => {
                 baseline_progress_percent: 100,
                 baseline_lap: 3,
                 completed_lap_count: 3,
-                section_count: 6,
             }),
         };
 

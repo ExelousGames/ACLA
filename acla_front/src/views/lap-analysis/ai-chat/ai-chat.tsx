@@ -337,7 +337,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
     // Loading and mode states
     const [isLoading] = useState(false);
     const [TrackGuideEnabled, setTrackGuideEnabled] = useState(false);
-    const [livePerformanceAnalystEnabled, setLivePerformanceAnalystEnabled] = useState(false);
     const [baselineCollectionTag, setBaselineCollectionTag] = useState<BaselineCollectionTag | null>(null);
     const [procedurePlan, setProcedurePlanState] = useState<ProcedurePlanState | null>(null);
     const [goalSnapshot, setGoalSnapshot] = useState<GoalSnapshot | null>(null);
@@ -400,12 +399,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         lastAlertAt: 0,
     });
     const livePerformanceAnalystStateRef = useRef<LivePerformanceAnalystState>({
-        intervalId: null,
-        inFlight: false,
         enabled: false,
-        lastToolStatusKey: null,
-        lastToolStatusAt: 0,
-        lastSpokenAt: 0,
     });
     const trackGuideLastPosRef = useRef<number | undefined>(undefined);
     const trackGuideTriggeredRef = useRef<Set<string>>(new Set());
@@ -796,7 +790,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
 
     const setLivePerformanceAnalystAgentEnabled = useCallback((enabled: boolean) => {
         livePerformanceAnalystStateRef.current.enabled = enabled;
-        setLivePerformanceAnalystEnabled(enabled);
     }, []);
 
     const publishBackgroundWorkflowStatuses = useCallback((
@@ -1236,17 +1229,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
 
     const resetLivePerformanceAnalystRuntime = useCallback(() => {
         const analystAgent = livePerformanceAnalystStateRef.current;
-        if (analystAgent.intervalId) {
-            clearInterval(analystAgent.intervalId);
-        }
-        analystAgent.intervalId = null;
-        analystAgent.inFlight = false;
         analystAgent.enabled = false;
-        analystAgent.lastToolStatusKey = null;
-        analystAgent.lastToolStatusAt = 0;
-        analystAgent.lastSpokenAt = 0;
-        analystAgent.analysisSessionId = null;
-        analysisContext?.sessionIntelligence?.clearFocusSection?.();
         setLivePerformanceAnalystAgentEnabled(false);
         procedurePlanOptedOutRef.current = false;
         setActiveWorkflow(null);
@@ -1254,7 +1237,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         setLiveRangeTodoListSnapshot(null);
         procedurePlanRef.current = null;
         setProcedurePlanState(null);
-    }, [analysisContext?.sessionIntelligence, setLivePerformanceAnalystAgentEnabled]);
+    }, [setLivePerformanceAnalystAgentEnabled]);
 
     const resetOvertakeRuntime = useCallback(() => {
         const opportunityAgent = opportunityAgentStateRef.current;
@@ -1664,27 +1647,6 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
         userSummaryLoading,
     ]);
 
-    useEffect(() => {
-        const sessionIntelligence = analysisContext?.sessionIntelligence;
-        if (
-            sessionMode !== 'live'
-            || !isLiveSessionAiAvailable(analysisContext?.recordingState)
-            || !sessionIntelligence
-            || !activeAgentSession
-        ) return;
-
-        return sessionIntelligence.onLiveAnalystToolStatus((toolStatus) => {
-            if (!livePerformanceAnalystStateRef.current.enabled) return;
-            sendAgentVoiceToolStatus(toolStatus);
-        });
-    }, [
-        activeAgentSession,
-        analysisContext?.recordingState,
-        analysisContext?.sessionIntelligence,
-        sendAgentVoiceToolStatus,
-        sessionMode,
-    ]);
-
     const activeVoiceConversation = activeAgentSession ? agentVoiceConversation : voiceConversation;
     const vState = activeVoiceConversation.state;
     const voiceActive = vState === 'listening' || vState === 'speaking';
@@ -1899,14 +1861,8 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 clearInterval(opportunityAgent.intervalId);
                 opportunityAgent.intervalId = null;
             }
-            if (analystAgent.intervalId) {
-                clearInterval(analystAgent.intervalId);
-                analystAgent.intervalId = null;
-            }
             opportunityAgent.inFlight = false;
-            analystAgent.inFlight = false;
             analystAgent.enabled = false;
-            analysisContext?.sessionIntelligence?.clearFocusSection?.();
 
             [
                 AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
@@ -1920,7 +1876,7 @@ const AiChatConversation: React.FC<AiChatConversationProps> = ({
                 });
             });
         };
-    }, [analysisContext?.sessionIntelligence, componentRefs]);
+    }, [componentRefs]);
 
     useEffect(() => {
         setEnvironment(detectEnvironment());

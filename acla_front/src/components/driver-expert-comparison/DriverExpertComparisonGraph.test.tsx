@@ -489,6 +489,51 @@ describe('DriverExpertComparisonGraph', () => {
         })).toBeDefined();
     });
 
+    it('accepts lap-timer resets that occur at a finish-line crossing', () => {
+        const data = {
+            samples: [
+                {
+                    driverTimeMs: 99_800,
+                    expertTimeMs: 49_800,
+                    driverTrackPosition: 0.98,
+                    expertTrackPosition: 0.98,
+                    driverTrajectory: { x: 0, y: 0 },
+                    expertTrajectory: { x: 0, y: 1 },
+                    driverGas: 0.4,
+                    expertGas: 0.5,
+                },
+                {
+                    driverTimeMs: 50,
+                    expertTimeMs: 50_000,
+                    driverTrackPosition: 0.01,
+                    expertTrackPosition: 0.01,
+                    driverTrajectory: { x: 1, y: 1 },
+                    expertTrajectory: { x: 1, y: 2 },
+                    driverGas: 0.6,
+                    expertGas: 0.7,
+                },
+                {
+                    driverTimeMs: 150,
+                    expertTimeMs: 50_100,
+                    driverTrackPosition: 0.04,
+                    expertTrackPosition: 0.04,
+                    driverTrajectory: { x: 2, y: 2 },
+                    expertTrajectory: { x: 2, y: 3 },
+                    driverGas: 0.8,
+                    expertGas: 0.9,
+                },
+            ],
+        };
+
+        expect(normalizeDriverExpertComparisonData(data)).toBeDefined();
+        expect(getDriverExpertReplayDurationMs(data)).toBeCloseTo(300);
+
+        render(<DriverExpertComparisonGraph data={data} />);
+        expect(screen.queryByText(/^Expert comparison unavailable$/)).not.toBeInTheDocument();
+        expect(screen.getByTestId('driver-throttle-gauge')).toBeInTheDocument();
+        expect(screen.getByTestId('expert-throttle-gauge')).toBeInTheDocument();
+    });
+
     it.each([
         ['legacy singular position', [
             { driverTimeMs: 0, expertTimeMs: 0, trackPosition: 0.2 },

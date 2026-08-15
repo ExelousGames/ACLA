@@ -3,6 +3,7 @@ import {
     createAiCommandRegistry,
     frontendAiToolRegistry,
     isGoalStepAvailableForContext,
+    startAgentRuntime,
 } from '../ai-command-registry';
 import type {
     AiCommandRegistry,
@@ -21,6 +22,7 @@ import type { AiToolOperation, AiToolQueryResult } from 'components/ai-engineeri
 import type { AiChatHandle } from '../ai-chat';
 import type { AnalysisResultsChartHandle } from '../../visualization/charts/AnalysisResultsChart';
 import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
+import { RecordingState } from 'views/lap-analysis/recording-state';
 
 // @ts-expect-error AiToolQueryResult requires an explicit data type.
 type MissingAiToolQueryResultGeneric = AiToolQueryResult;
@@ -98,6 +100,44 @@ const register = (name: string, handle: object) => {
 };
 
 describe('frontend AI tool registry', () => {
+    it('publishes live analyst runtime statuses without routing them through session intelligence', async () => {
+        const publishStatus = jest.fn();
+        const livePerformanceAnalystState = {
+            enabled: false,
+        };
+
+        await expect(startAgentRuntime('live_performance_analyst', {
+            sessionMode: 'live',
+            recordingState: RecordingState.RECORDING,
+            sessionIntelligence: {
+                getLiveSessionSnapshot: () => ({
+                    status: 'ready',
+                    track: 'brands_hatch',
+                }),
+            } as any,
+            opportunityAgentState: {
+                intervalId: null,
+                inFlight: false,
+                lastAlertKey: null,
+                lastAlertAt: 0,
+            },
+            livePerformanceAnalystState,
+            startTrackGuide: jest.fn(),
+            setTrackGuideEnabled: jest.fn(),
+            getOpportunityTelemetryRows: () => [],
+        }, {}, publishStatus)).resolves.toMatchObject({
+            status: 'started',
+            agent_mode: 'live_performance_analyst',
+        });
+
+        expect(publishStatus).toHaveBeenCalledWith(expect.objectContaining({
+            source: 'live_performance_analyst',
+            agent_mode: 'live_performance_analyst',
+            event: 'live_analysis_started',
+            snapshot: expect.objectContaining({ track: 'brands_hatch' }),
+        }));
+    });
+
     it('is a name-keyed definition object covering every advertised tool', () => {
         expect(Object.keys(frontendAiToolRegistry).sort()).toEqual(
             [...FRONTEND_AI_TOOL_NAMES].sort(),

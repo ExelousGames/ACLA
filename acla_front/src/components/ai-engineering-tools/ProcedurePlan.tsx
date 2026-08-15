@@ -512,10 +512,10 @@ const buildProcedurePlanRequestSnapshot = (value: unknown): ProcedurePlanRequest
     const request = toRecord(value);
     if (!request) return null;
 
-    const type = toNonEmptyString(request.type);
     const title = toNonEmptyString(request.title);
     const name = toNonEmptyString(request.name);
-    if (!type || !title) return null;
+    if (!title) return null;
+    const type = toNonEmptyString(request.type) || (name ? 'tool_call' : 'request');
 
     return {
         type,

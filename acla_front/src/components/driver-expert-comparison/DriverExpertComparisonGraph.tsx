@@ -1,6 +1,7 @@
 import React from 'react';
 import { useDesktopGame } from 'contexts/DesktopGameContext';
 import type { DesktopGame } from 'contexts/DesktopGameContext';
+import { unwrapLapTelemetrySequence } from './lapTelemetrySequence';
 import styles from './DriverExpertComparisonGraph.module.css';
 
 export const DRIVER_COMPARISON_COLOR = '#00e676';
@@ -151,7 +152,6 @@ const clamp = (value: number, minimum: number, maximum: number): number => (
 );
 
 const POSITION_EPSILON = 1e-9;
-const FINISH_LINE_BACKWARD_JUMP = 0.5;
 
 const normalizeSourceTrajectory = (value: unknown): DriverExpertTrajectoryPoint | undefined => {
     if (!isRecord(value)) return undefined;
@@ -213,8 +213,6 @@ export const normalizeDriverExpertComparisonData = (
     if (!isRecord(value) || !Array.isArray(value.samples)) return undefined;
 
     const samples: DriverExpertComparisonSample[] = [];
-    let previousDriverTimeMs: number | undefined;
-    let previousExpertTimeMs: number | undefined;
     for (const sample of value.samples) {
         if (!isRecord(sample)) return undefined;
         const driverTimeMs = finiteNumber(sample.driverTimeMs);
@@ -222,8 +220,6 @@ export const normalizeDriverExpertComparisonData = (
         if (
             driverTimeMs === undefined
             || expertTimeMs === undefined
-            || (previousDriverTimeMs !== undefined && driverTimeMs <= previousDriverTimeMs)
-            || (previousExpertTimeMs !== undefined && expertTimeMs <= previousExpertTimeMs)
         ) {
             return undefined;
         }
@@ -266,8 +262,6 @@ export const normalizeDriverExpertComparisonData = (
             if (scalar !== undefined) normalized[key] = scalar;
         });
         samples.push(normalized);
-        previousDriverTimeMs = driverTimeMs;
-        previousExpertTimeMs = expertTimeMs;
     }
 
     const data = { samples };
@@ -278,14 +272,10 @@ const buildUnwrappedReplayStream = (
     samples: readonly DriverExpertComparisonSample[],
     identity: 'driver' | 'expert',
 ): ReplayStreamPoint[] | undefined => {
-    const points: ReplayStreamPoint[] = [];
-    let lapOffset = 0;
-    let previousNormalizedPosition: number | undefined;
-    let previousUnwrappedPosition: number | undefined;
-    let previousTimeMs: number | undefined;
-
+    const rawTimesMs: number[] = [];
+    const normalizedPositions: number[] = [];
     for (const sample of samples) {
-        const timeMs = finiteNumber(
+        const rawTimeMs = finiteNumber(
             identity === 'driver' ? sample.driverTimeMs : sample.expertTimeMs,
         );
         const normalizedPosition = finiteNumber(
@@ -294,52 +284,34 @@ const buildUnwrappedReplayStream = (
                 : sample.expertTrackPosition,
         );
         if (
-            timeMs === undefined
+            rawTimeMs === undefined
             || normalizedPosition === undefined
-            || normalizedPosition < 0
-            || normalizedPosition > 1
-            || (previousTimeMs !== undefined && timeMs <= previousTimeMs)
         ) {
             return undefined;
         }
+        rawTimesMs.push(rawTimeMs);
+        normalizedPositions.push(normalizedPosition);
+    }
 
-        if (
-            previousNormalizedPosition !== undefined
-            && normalizedPosition < previousNormalizedPosition
-        ) {
-            const backwardJump = previousNormalizedPosition - normalizedPosition;
-            if (backwardJump <= FINISH_LINE_BACKWARD_JUMP) return undefined;
-            lapOffset += 1;
-        }
+    const sequence = unwrapLapTelemetrySequence(rawTimesMs, normalizedPositions);
+    if (!sequence) return undefined;
 
-        const trackPosition = normalizedPosition + lapOffset;
-        if (
-            previousUnwrappedPosition !== undefined
-            && trackPosition + POSITION_EPSILON < previousUnwrappedPosition
-        ) {
-            return undefined;
-        }
-
+    return samples.map((sample, index) => {
         const trajectory = normalizeSourceTrajectory(
             identity === 'driver' ? sample.driverTrajectory : sample.expertTrajectory,
         );
         const gas = finiteNumber(identity === 'driver' ? sample.driverGas : sample.expertGas);
         const brake = finiteNumber(identity === 'driver' ? sample.driverBrake : sample.expertBrake);
         const gear = finiteNumber(identity === 'driver' ? sample.driverGear : sample.expertGear);
-        points.push({
-            timeMs,
-            trackPosition,
+        return {
+            timeMs: sequence.timesMs[index],
+            trackPosition: sequence.positions[index],
             ...(trajectory ? { trajectory } : {}),
             ...(gas !== undefined ? { gas } : {}),
             ...(brake !== undefined ? { brake } : {}),
             ...(gear !== undefined ? { gear } : {}),
-        });
-        previousTimeMs = timeMs;
-        previousNormalizedPosition = normalizedPosition;
-        previousUnwrappedPosition = trackPosition;
-    }
-
-    return points.length ? points : undefined;
+        };
+    });
 };
 
 const getReplayStreamDurationMs = (stream: readonly ReplayStreamPoint[]): number => (
