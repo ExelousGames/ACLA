@@ -92,13 +92,21 @@ This is a breaking replacement. Do not translate old query names, accept a legac
 
 ## 1. Shared Evaluator and Contracts
 
-Add exact frontend dependencies consistent with the repository's pinned dependency style:
+Before implementing the query feature, add the exact frontend dependency entries to the `dependencies` list in `package.json`, consistent with the repository's pinned dependency style:
 
 - [`jsonata@2.2.2`](https://www.npmjs.com/package/jsonata), which exposes the `timeout`, `stack`, and `sequence` evaluator options;
 - `@uiw/react-codemirror@4.25.11`;
 - `@codemirror/language@6.12.4`;
 - `@codemirror/autocomplete@6.20.3`; and
 - `@codemirror/lint@6.9.7`.
+
+Do not run `npm install` locally. After saving the `package.json` changes, run `start-dev.bat` from the ACLA repository root:
+
+```powershell
+.\start-dev.bat
+```
+
+Keep this order: update only the frontend package list first, then use `start-dev.bat`. The script rebuilds the Docker images; the frontend Docker build installs the dependencies from `package.json` and builds the app, after which the script restarts the frontend, backend proxy, backend, MongoDB, and Mongo Express together. Do not use a separate local package-installation step.
 
 <<<<<<< ours
 Create a pure `analysisResultsQuery` module rather than putting evaluator logic in the React chart or AI command registry. It owns:
@@ -452,25 +460,29 @@ After implementation, search production frontend/backend code for `result_count`
 ## 8. Implementation Order
 
 <<<<<<< ours
-1. Add dependencies and the pure evaluator/types/error normalizer.
-2. Add evaluator, JSON-safety, UI-result resolution, preset-generation, and no-alias unit tests.
-3. Replace frontend AI query types/validation/dispatch with the expression contract.
-4. Update backend registry schema, descriptions, goal guidance, and tests.
-5. Split trend state from active-page state.
-6. Add query presets/state and drive all active-page derivations from `matchedElements`.
-7. Add the CodeMirror editor and diagnostics.
-8. Remove orphaned legacy helpers/names/tests and run the repository-wide alias search.
+1. Add the exact dependency entries to the frontend `package.json`; do not run a local package installation.
+2. From the repository root, run `start-dev.bat` so the frontend Docker build installs the packages and builds the app, then all core services restart together.
+3. Add the pure evaluator/types/error normalizer.
+4. Add evaluator, JSON-safety, UI-result resolution, preset-generation, and no-alias unit tests.
+5. Replace frontend AI query types/validation/dispatch with the expression contract.
+6. Update backend registry schema, descriptions, goal guidance, and tests.
+7. Split trend state from active-page state.
+8. Add query presets/state and drive all active-page derivations from `matchedElements`.
+9. Add the CodeMirror editor and diagnostics.
+10. Remove orphaned legacy helpers/names/tests and run the repository-wide alias search.
 =======
-1. Add dependencies and the pure evaluator, input/output types, input normalizers, JSON-safety checks, and error normalizer.
-2. Add evaluator, UI element-result resolution, active-page template generation/ordering, and no-alias unit tests.
-3. Replace frontend AI query types/validation/dispatch with the expression contract.
-4. Update backend registry schema, descriptions, goal guidance, and tests.
-5. Add the single combined-template selector/query state and drive all active-page derivations from ordered `matchedElements`.
-6. Add the active-page CodeMirror editor and diagnostics.
-7. Add the normalized `{ pages }` root, strict trend-result validator, generated Training/Racing trend expressions, and focused tests.
-8. Split `trendParent` from active-page state and switch every Overall Trends data series to the validated JSONata result, including page/taxonomy refresh and stale-generation behavior.
-9. Run active-page and Overall Trends migration tests with the legacy implementations still available only as test oracles where useful; compare results across representative multi-page fixtures.
-10. Remove the orphaned active-page filter/sort code and imperative Overall Trends aggregation listed in the cleanup checklist, delete the temporary test oracles, then run repository-wide alias and legacy-symbol searches.
+1. Add the exact dependency entries to the frontend `package.json`; do not run a local package installation.
+2. From the repository root, run `start-dev.bat` so the frontend Docker build installs the packages and builds the app, then all core services restart together.
+3. Add the pure evaluator, input/output types, input normalizers, JSON-safety checks, and error normalizer.
+4. Add evaluator, UI element-result resolution, active-page template generation/ordering, and no-alias unit tests.
+5. Replace frontend AI query types/validation/dispatch with the expression contract.
+6. Update backend registry schema, descriptions, goal guidance, and tests.
+7. Add the single combined-template selector/query state and drive all active-page derivations from ordered `matchedElements`.
+8. Add the active-page CodeMirror editor and diagnostics.
+9. Add the normalized `{ pages }` root, strict trend-result validator, generated Training/Racing trend expressions, and focused tests.
+10. Split `trendParent` from active-page state and switch every Overall Trends data series to the validated JSONata result, including page/taxonomy refresh and stale-generation behavior.
+11. Run active-page and Overall Trends migration tests with the legacy implementations still available only as test oracles where useful; compare results across representative multi-page fixtures.
+12. Remove the orphaned active-page filter/sort code and imperative Overall Trends aggregation listed in the cleanup checklist, delete the temporary test oracles, then run repository-wide alias and legacy-symbol searches.
 >>>>>>> theirs
 
 ## 9. Test Plan
@@ -536,19 +548,20 @@ After implementation, search production frontend/backend code for `result_count`
 
 ## 10. Verification
 
-Run from `acla_front`:
+After `start-dev.bat` completes, run the frontend checks inside the rebuilt frontend container:
 
 ```powershell
-npx tsc --noEmit
-npm test -- --watchAll=false --runInBand AnalysisResultsChart analysisResultsQuery ai-command-registry Goal use-voice-conversation
-npm run build
-npm ls jsonata @codemirror/state @codemirror/view @codemirror/language @codemirror/autocomplete @codemirror/lint
+docker exec acla_front_c npx tsc --noEmit
+docker exec acla_front_c npm test -- --watchAll=false --runInBand AnalysisResultsChart analysisResultsQuery ai-command-registry Goal use-voice-conversation
+docker exec acla_front_c npm ls jsonata @codemirror/state @codemirror/view @codemirror/language @codemirror/autocomplete @codemirror/lint
 ```
+
+The Docker build/restart and dependency installation are performed by the earlier repository-root `start-dev.bat` step; do not substitute local `npm install` or `npm run build` commands for that workflow.
 
 Run the targeted backend registry/controller tests from `acla_backend`, then run the normal backend test suite if the targeted set passes.
 
 <<<<<<< ours
-Finally verify the lockfile has one compatible CodeMirror 6 dependency tree and search both projects for obsolete alias/filter production code.
+Finally verify the rebuilt frontend container has one compatible CodeMirror 6 dependency tree and search both projects for obsolete alias/filter production code.
 
 ## Assumptions
 
@@ -557,7 +570,7 @@ Finally verify the lockfile has one compatible CodeMirror 6 dependency tree and 
 - Page-label quick filters are ephemeral, active-page-only shortcuts over exact normalized label strings; they are not saved user presets or taxonomy aliases.
 - The active-page UI accepts only results resolvable to active element IDs; the AI tool remains unrestricted to any JSON-safe result.
 =======
-Finally verify the lockfile has one compatible CodeMirror 6 dependency tree and search both projects for obsolete alias/filter production code. In the frontend, production matches for `AnalysisResultsSortMode`, `sortAnalysisResults`, `IndexedAnalysisResult`, `sortedElements`, `sortMode`, `sortControl`, `sortSelect`, `mistake-frequency-graph`, and `buildMistakeTrendData` must be zero. `mainLabelFilter`, `AnalysisResultsMainLabelFilter`, `MAIN_LABEL_FILTER_OPTIONS`, and imperative Overall Trends `recognizedParentLabels`/`recognizedSubLabels` filtering should also be zero after the trend-specific JSONata migration. Classify any remaining `result_count`, `mistake_count`, or `filteredElements` match rather than deleting it blindly: the documented user-summary fields, negative regressions, and unrelated local transformations are allowed.
+Finally verify the rebuilt frontend container has one compatible CodeMirror 6 dependency tree and search both projects for obsolete alias/filter production code. In the frontend, production matches for `AnalysisResultsSortMode`, `sortAnalysisResults`, `IndexedAnalysisResult`, `sortedElements`, `sortMode`, `sortControl`, `sortSelect`, `mistake-frequency-graph`, and `buildMistakeTrendData` must be zero. `mainLabelFilter`, `AnalysisResultsMainLabelFilter`, `MAIN_LABEL_FILTER_OPTIONS`, and imperative Overall Trends `recognizedParentLabels`/`recognizedSubLabels` filtering should also be zero after the trend-specific JSONata migration. Classify any remaining `result_count`, `mistake_count`, or `filteredElements` match rather than deleting it blindly: the documented user-summary fields, negative regressions, and unrelated local transformations are allowed.
 
 ## Assumptions
 
