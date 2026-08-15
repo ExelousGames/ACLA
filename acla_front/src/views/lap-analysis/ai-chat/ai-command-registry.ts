@@ -1,11 +1,5 @@
 import type { CircuitMapDto, CircuitMapGame } from 'views/circuit-maps/circuit-map-types';
 import type { SessionIntelligence } from 'views/lap-analysis/session-intelligence/SessionIntelligence';
-import {
-    DEFAULT_ANALYST_COOLDOWN_MS,
-    DEFAULT_ANALYST_MIN_DISTANCE,
-    DEFAULT_ANALYST_MIN_LEAD_SECONDS,
-    hasEnoughCoachingLead,
-} from 'views/lap-analysis/session-intelligence/live-performance-analyst';
 import { detectOvertakeTacticalState } from './overtake-agent-detector';
 import {
     CreateGoalToolUnavailableError,
@@ -97,13 +91,7 @@ export interface OpportunityAgentState {
 }
 
 export interface LivePerformanceAnalystState {
-    intervalId: ReturnType<typeof setInterval> | null;
-    inFlight: boolean;
     enabled: boolean;
-    lastToolStatusKey: string | null;
-    lastToolStatusAt: number;
-    lastSpokenAt: number;
-    analysisSessionId?: string | null;
 }
 
 export interface AiCommandRegistryContext extends FrontendAiCommandContext {
@@ -143,7 +131,6 @@ export interface AiCommandRegistryContext extends FrontendAiCommandContext {
 }
 
 const DEFAULT_OVERTAKE_AGENT_INTERVAL_SECONDS = 5;
-const DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS = 4;
 const OVERTAKE_AGENT_REPEAT_ALERT_MS = 20000;
 
 const clampInterval = (value: unknown, fallback: number, min: number, max: number) => {
@@ -181,28 +168,6 @@ const buildLiveAnalystSnapshot = (context: AiCommandRegistryContext) => {
         baseline_progress_percent: ready ? 100 : tag?.progress_percent ?? 0,
         baseline_lap: record?.lap ?? tag?.baseline_lap ?? null,
         baseline_record_sample_count: record?.sample_count ?? 0,
-    };
-};
-
-const buildLiveFocus = (context: AiCommandRegistryContext) => {
-    const intelligence = context.sessionIntelligence;
-    if (!intelligence || !getBaselineReadiness(context).ready) return null;
-    const focus = intelligence.getFocusSection();
-    if (!focus) return null;
-    return {
-        section: focus.section,
-        baseline: focus.baseline,
-        selected_at: focus.selectedAt,
-        reason: focus.reason,
-        score: focus.score,
-        timing: intelligence.getSectionTiming(focus.section),
-        show_map_arguments: {
-            source_track_key: intelligence.getLiveSessionSnapshot().track,
-            section_start: focus.section.from,
-            section_end: focus.section.to,
-            section_label: focus.section.name,
-            title: 'Live analyst focus',
-        },
     };
 };
 
@@ -265,67 +230,28 @@ export const startAgentRuntime = async (
 
     const intelligence = context.sessionIntelligence;
     if (!intelligence) throw new NoLiveSessionError('Live session intelligence is unavailable.');
-    const state = context.livePerformanceAnalystState ?? {
-        intervalId: null,
-        inFlight: false,
-        enabled: false,
-        lastToolStatusKey: null,
-        lastToolStatusAt: 0,
-        lastSpokenAt: 0,
-    };
-    if (state.intervalId) {
+    const state = context.livePerformanceAnalystState ?? { enabled: false };
+    if (state.enabled) {
         return {
             status: 'already_running',
             agent_mode: agentMode,
             snapshot: buildLiveAnalystSnapshot(context),
-            focus: buildLiveFocus(context),
         };
     }
-    const intervalSeconds = clampInterval(
-        args.interval_seconds,
-        DEFAULT_LIVE_ANALYST_INTERVAL_SECONDS,
-        2,
-        12,
-    );
     state.enabled = true;
     context.setLivePerformanceAnalystEnabled?.(true);
     context.setAgentTagActive?.('Live Analyst', true);
-    intelligence.emitLiveAnalysisPlanStarted();
-    const runCycle = (notify: boolean) => {
-        if (state.inFlight) return { status: 'skipped_in_flight' };
-        state.inFlight = true;
-        try {
-            const snapshot = buildLiveAnalystSnapshot(context);
-            const focus = buildLiveFocus(context);
-            if (notify && focus) {
-                const now = Date.now();
-                const key = `focus:${focus.section.id}:${focus.baseline.lap}:${focus.baseline.observedAt}`;
-                const canSpeak = hasEnoughCoachingLead(
-                    focus.timing.distanceAhead,
-                    focus.timing.secondsAhead,
-                    DEFAULT_ANALYST_MIN_DISTANCE,
-                    DEFAULT_ANALYST_MIN_LEAD_SECONDS,
-                ) && now - state.lastSpokenAt >= DEFAULT_ANALYST_COOLDOWN_MS;
-                if (canSpeak && state.lastToolStatusKey !== key) {
-                    state.lastToolStatusKey = key;
-                    state.lastSpokenAt = now;
-                    intelligence.emitLiveAnalysisWindow(snapshot, focus);
-                }
-            }
-            return {
-                status: 'checked',
-                snapshot,
-                section_count: intelligence.getKnownTrackSections().length,
-                focus,
-                history_count: intelligence.getSectionHistory(80).length,
-            };
-        } finally {
-            state.inFlight = false;
-        }
+    publishStatus({
+        source: 'live_performance_analyst',
+        agent_mode: agentMode,
+        event: 'live_analysis_started',
+        snapshot: buildLiveAnalystSnapshot(context),
+    });
+    return {
+        status: 'started',
+        agent_mode: agentMode,
+        snapshot: buildLiveAnalystSnapshot(context),
     };
-    const initial = runCycle(true);
-    state.intervalId = setInterval(() => runCycle(true), intervalSeconds * 1000);
-    return { status: 'started', agent_mode: agentMode, interval_seconds: intervalSeconds, initial };
 };
 
 export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
@@ -354,7 +280,6 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'get_recorded_session_analysis',
     'get_recorded_session_context',
     'analyze_telemetry',
-    'classify_live_section',
 ] as const);
 
 export type FrontendAiToolName = typeof FRONTEND_AI_TOOL_NAMES[number];
@@ -478,7 +403,6 @@ const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
     'search_user_summary_map_level',
     'show_map',
     'analyze_telemetry',
-    'classify_live_section',
 ]);
 
 export const isGoalStepAvailableForContext = (
@@ -687,12 +611,6 @@ const definitionList = Object.freeze([
                 .analyzeTelemetryForAi(args)
             : getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
                 .analyzeTelemetryForAi(args),
-    },
-    {
-        name: 'classify_live_section',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
-        execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
-            .classifyLiveSectionForAi(args),
     },
 ] as const satisfies readonly FrontendAiToolDefinition[]);
 

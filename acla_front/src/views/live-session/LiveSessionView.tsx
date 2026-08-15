@@ -11,15 +11,9 @@ import {
     useRegisterAiToolComponentRef,
 } from 'contexts/AiToolComponentRefContext';
 import {
-    BaselineCollectionIncompleteError,
-} from 'contexts/AiToolComponentError';
-import {
     AiToolError,
-    LiveSectionClassificationFailedError,
-    LiveSectionTelemetryUnavailableError,
     NoCornerDataError,
     NoTelemetryForScopeError,
-    SectionNotFoundError,
     TelemetryAnalysisFailedError,
     InvalidToolCallError,
 } from 'views/lap-analysis/ai-chat/ai-tool-base';
@@ -84,17 +78,6 @@ export type LiveTelemetryAnalysisAiResult = {
     chart_id: string | null;
     component_name: string | null;
 };
-export type LiveSectionClassificationAiResult = {
-    status: 'recorded';
-    classification: unknown;
-    focus: unknown;
-    comparison: unknown;
-    analysis: unknown;
-    telemetry_stats: { row_count: number; field_count: number };
-    chart_id: string | null;
-    component_name: string | null;
-};
-
 export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     getRecordingState(): RecordingState;
     getSessionIntelligence(): SessionIntelligence;
@@ -104,9 +87,6 @@ export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     getEventLog(args: Record<string, any>): any[];
     getNextCorner(): any;
     getLiveSessionSnapshot(): LiveSessionSnapshot;
-    getLiveSectionHistory(limit: number): any[];
-    getLiveSectionTelemetry(args: Record<string, any>): any;
-    recordLiveSectionClassification(args: Record<string, any>): any;
     getLatestAnalysisResultPage(): LiveSessionAnalysisResultPage | null;
     queryTelemetryMetricForAi<TReduce extends TelemetryMetricReduce>(
         args: QueryTelemetryMetricArguments<TReduce>,
@@ -117,7 +97,6 @@ export interface LiveSessionHandle extends NamedAiToolComponentHandle {
     restartLiveBaselineForAi(): AiToolOperation<LiveBaselineRestartAiResult>;
     analyzeLiveRecordedAnalysisForAi(args: Record<string, any>): AiToolOperation<LiveBaselineAnalysisAiResult>;
     analyzeTelemetryForAi(args: Record<string, any>): AiToolOperation<LiveTelemetryAnalysisAiResult>;
-    classifyLiveSectionForAi(args: Record<string, any>): AiToolOperation<LiveSectionClassificationAiResult>;
 }
 
 const hasExactKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => {
@@ -248,7 +227,6 @@ const EMPTY_LIVE_SNAPSHOT: LiveSessionSnapshot = {
     baseline_progress_percent: 0,
     baseline_lap: null,
     completed_lap_count: 0,
-    section_count: 0,
 };
 
 const getLiveSnapshot = (
@@ -293,13 +271,6 @@ const LiveSessionView = ({ name }: { name: string }) => {
             getEventLog: (args) => liveSessionRef.current.sessionIntelligence.findEvents(args as any),
             getNextCorner: () => liveSessionRef.current.sessionIntelligence.getNextCorner(),
             getLiveSessionSnapshot: () => getLiveSnapshot(liveSessionRef.current.sessionIntelligence),
-            getLiveSectionHistory: (limit) => liveSessionRef.current.sessionIntelligence.getSectionHistory(limit),
-            getLiveSectionTelemetry: (args) => liveSessionRef.current.sessionIntelligence.getSectionTelemetryWindow({
-                section_id: args.section_id || args.sectionId,
-                section_name: args.section_name || args.sectionName,
-                lap: args.lap,
-            }),
-            recordLiveSectionClassification: (args) => liveSessionRef.current.sessionIntelligence.recordSectionClassification(args),
             getLatestAnalysisResultPage: () => {
                 const pages = liveSessionRef.current.analysisResultPages;
                 return pages[pages.length - 1] ?? null;
@@ -430,93 +401,6 @@ const LiveSessionView = ({ name }: { name: string }) => {
                         error instanceof Error && error.message
                             ? error.message
                             : 'Failed to analyze telemetry.',
-                        { cause: error },
-                    );
-                }
-            }),
-            classifyLiveSectionForAi: (args) => createAiToolOperationFrom(async () => {
-                const baseline = await getBaselineHandle(componentRefs);
-                if (!baseline.getLapRecord()?.records?.length) {
-                    throw new BaselineCollectionIncompleteError(
-                        AI_TOOL_COMPONENT_NAMES.BASELINE_COLLECTION,
-                        'Complete baseline collection before classifying a live section.',
-                    );
-                }
-                const intelligence = liveSessionRef.current.sessionIntelligence;
-                const window = intelligence.getSectionTelemetryWindow({
-                    section_id: args.section_id || args.sectionId,
-                    section_name: args.section_name || args.sectionName,
-                    lap: args.lap,
-                });
-                if (window.status !== 'ready' || !window.rows.length) {
-                    throw new LiveSectionTelemetryUnavailableError(
-                        'No telemetry is available for the selected live section.',
-                    );
-                }
-                try {
-                    const snapshot = getLiveSnapshot(intelligence);
-                    const response = await apiService.post('/racing-session/analyze-live-recorded-analysis', {
-                        track: snapshot.track,
-                        car: snapshot.car,
-                        baseline_lap: window.lap,
-                        records: window.rows,
-                    }, { timeout: 120000 });
-                    const result = normalizeSegmentClassificationResult(
-                        response.data as any,
-                        `live-section-${window.section?.id || 'unknown'}-${window.lap}`,
-                    );
-                    const labels = result.segments.flatMap(getSegmentLabelIds);
-                    const mistakeLabels = labels.filter((label) => label === 'MSP' || label === 'MSR');
-                    const classification = intelligence.recordSectionClassification({
-                        section_id: window.section?.id || args.section_id,
-                        section_name: window.section?.name || args.section_name,
-                        lap: window.lap,
-                        start_sample_idx: window.startSampleIdx,
-                        end_sample_idx: window.endSampleIdx,
-                        mistake_count: mistakeLabels.length,
-                        expert_adherence_count: labels.filter((label) => label.startsWith('EA')).length,
-                        severity: mistakeLabels.length,
-                        confidence: result.segments.length > 0 ? 1 : 0,
-                        parent_label: labels[0] || null,
-                        child_labels: labels.slice(1),
-                        telemetry_stats: getTelemetryStats(window.rows),
-                    });
-                    if (!classification) {
-                        throw new SectionNotFoundError('The requested live section was not found.');
-                    }
-                    const chart = componentRefs
-                        ? await openAnalysisResultsVisualization({
-                            directory: componentRefs,
-                            managerName: AI_TOOL_COMPONENT_NAMES.LIVE_VISUALIZATION_MANAGER,
-                            result,
-                            records: window.rows,
-                        })
-                        : { chart_id: null, component_name: null };
-                    const focus = intelligence.getFocusSection();
-                    return {
-                        status: 'recorded',
-                        classification,
-                        focus: focus ? {
-                            section: focus.section,
-                            baseline: focus.baseline,
-                            selected_at: focus.selectedAt,
-                            reason: focus.reason,
-                            score: focus.score,
-                            timing: intelligence.getSectionTiming(focus.section),
-                        } : null,
-                        comparison: classification
-                            ? intelligence.compareFocusedSection(classification)
-                            : null,
-                        analysis: compactClassification(result, getAiLimit(args.limit)),
-                        telemetry_stats: getTelemetryStats(window.rows),
-                        ...chart,
-                    };
-                } catch (error) {
-                    if (error instanceof AiToolError) throw error;
-                    throw new LiveSectionClassificationFailedError(
-                        error instanceof Error && error.message
-                            ? error.message
-                            : 'Failed to classify the live section.',
                         { cause: error },
                     );
                 }

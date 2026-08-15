@@ -416,7 +416,7 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'create_goal',
-        description: 'Create one visible goal and execute its ordered session tool calls sequentially. Wait for the final achieved, missed, or error result before giving follow-up coaching.',
+        description: 'Create one visible goal. the session tool calls will be executed sequentially, and these tool calls will be repeated until the goal is achieved or error. If the goal is missed, the goal will continue to be retried until the goal is achieved or the user cancels the goal. The determination tool call must return a numeric query envelope, and the operator and target are evaluated against that number to determine whether the goal is achieved.',
         properties: {
             name: {
                 type: 'string',
@@ -488,15 +488,11 @@ export const SESSION_TOOLS = [
     },
     {
         name: 'set_procedure_plan',
-        description: 'Create or replace the visible procedure plan UI with an AI-authored list of requests. Requests with type "tool_call" and a name are executed through the active AI session subscription.',
+        description: 'Create or replace the visible procedure plan to execute tools in orders. Requests with a name are executed through the active AI session subscription. each tool call is executed sequentially, and end when the last request is complete. The plan can be cleared or terminated with clear_procedure_plan.',
         properties: {
             goal: {
                 type: 'string',
                 description: 'Short goal shown above the request list.',
-            },
-            current_request: {
-                type: 'integer',
-                description: 'Zero-based index of the active request.',
             },
             requests: {
                 type: 'array',
@@ -504,23 +500,17 @@ export const SESSION_TOOLS = [
                 items: {
                     type: 'object',
                     properties: {
-                        type: { type: 'string' },
                         title: { type: 'string' },
                         name: {
                             type: 'string',
-                            description: 'Tool name for tool_call requests. The active AI session subscribes to this tool run and receives the final result.',
+                            description: 'Tool name for executable requests. The active AI session subscribes to this tool run and receives the final result.',
                         },
-                        status: {
-                            type: 'string',
-                            enum: ['pending', 'running', 'complete', 'blocked', 'failed', 'skipped'],
-                        },
-                        detail: { type: 'string' },
                         payload: {
                             type: 'object',
-                            description: 'Tool arguments for tool_call requests, optionally wrapped in arguments, args, or parameters.',
+                            description: 'Tool arguments for executable requests, optionally wrapped in arguments, args, or parameters.',
                         },
                     },
-                    required: ['type', 'title'],
+                    required: ['title', 'name', 'payload'],
                 },
             },
         },

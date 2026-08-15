@@ -4,6 +4,7 @@ import {
     DriverExpertTrajectoryPoint,
     normalizeDriverExpertComparisonData,
 } from 'components/driver-expert-comparison';
+import { unwrapLapTelemetrySequence } from 'components/driver-expert-comparison/lapTelemetrySequence';
 import { parseTelemetryFrame } from './mapTelemetry';
 
 export interface AnalysisResultsComparisonAdapterInput {
@@ -34,7 +35,6 @@ interface InterpolatedDriverPoint {
 }
 
 const POSITION_EPSILON = 1e-9;
-const FINISH_LINE_BACKWARD_JUMP = 0.5;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
     Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -116,25 +116,6 @@ const getExpertTrackPosition = (
     ?? expert.normalizedPosition,
 );
 
-const unwrapPositions = (positions: readonly number[]): number[] | undefined => {
-    const unwrapped: number[] = [];
-    let lapOffset = 0;
-    let previousNormalizedPosition: number | undefined;
-
-    for (const position of positions) {
-        if (previousNormalizedPosition !== undefined && position < previousNormalizedPosition) {
-            if (previousNormalizedPosition - position <= FINISH_LINE_BACKWARD_JUMP) {
-                return undefined;
-            }
-            lapOffset += 1;
-        }
-        unwrapped.push(position + lapOffset);
-        previousNormalizedPosition = position;
-    }
-
-    return unwrapped;
-};
-
 const buildDriverPoints = (
     baselineRecords: readonly Record<string, any>[],
 ): DriverSourcePoint[] | undefined => {
@@ -146,8 +127,6 @@ const buildDriverPoints = (
         normalizedPosition: number;
         sourceIndex: number;
     }> = [];
-    let previousTimeMs: number | undefined;
-
     for (let sourceIndex = 0; sourceIndex < baselineRecords.length; sourceIndex += 1) {
         const row = baselineRecords[sourceIndex];
         if (!isRecord(row)) return undefined;
@@ -156,26 +135,27 @@ const buildDriverPoints = (
         if (
             timeMs === undefined
             || position === undefined
-            || (previousTimeMs !== undefined && timeMs <= previousTimeMs)
         ) {
             return undefined;
         }
         rows.push({ row, timeMs, normalizedPosition: position, sourceIndex });
-        previousTimeMs = timeMs;
     }
 
-    const unwrappedPositions = unwrapPositions(rows.map((entry) => entry.normalizedPosition));
-    if (!unwrappedPositions) return undefined;
+    const sequence = unwrapLapTelemetrySequence(
+        rows.map((entry) => entry.timeMs),
+        rows.map((entry) => entry.normalizedPosition),
+    );
+    if (!sequence) return undefined;
 
-    return rows.map(({ row, timeMs, normalizedPosition: position, sourceIndex }, index) => {
+    return rows.map(({ row, normalizedPosition: position, sourceIndex }, index) => {
         const trajectory = getDriverTrajectory(row, sourceIndex);
         const gas = normalizedInput(row.Physics_gas);
         const brake = normalizedInput(row.Physics_brake);
         const gear = finiteNumber(row.Physics_gear);
         return {
-            timeMs,
+            timeMs: sequence.timesMs[index],
             normalizedPosition: position,
-            unwrappedPosition: unwrappedPositions[index],
+            unwrappedPosition: sequence.positions[index],
             ...(trajectory ? { trajectory } : {}),
             ...(gas !== undefined ? { gas } : {}),
             ...(brake !== undefined ? { brake } : {}),
@@ -194,8 +174,6 @@ const buildExpertPoints = (
         timeMs: number;
         normalizedPosition: number;
     }> = [];
-    let previousTimeMs: number | undefined;
-
     for (const value of expertReferenceData) {
         if (!isRecord(value)) return undefined;
         const timeMs = finiteNumber(value.expert_optimal_time);
@@ -203,20 +181,22 @@ const buildExpertPoints = (
         if (
             timeMs === undefined
             || position === undefined
-            || (previousTimeMs !== undefined && timeMs <= previousTimeMs)
         ) {
             return undefined;
         }
         rows.push({ row: value, timeMs, normalizedPosition: position });
-        previousTimeMs = timeMs;
     }
 
-    const unwrappedPositions = unwrapPositions(rows.map((entry) => entry.normalizedPosition));
-    if (!unwrappedPositions) return undefined;
+    const sequence = unwrapLapTelemetrySequence(
+        rows.map((entry) => entry.timeMs),
+        rows.map((entry) => entry.normalizedPosition),
+    );
+    if (!sequence) return undefined;
 
     return rows.map((entry, index) => ({
         ...entry,
-        unwrappedPosition: unwrappedPositions[index],
+        timeMs: sequence.timesMs[index],
+        unwrappedPosition: sequence.positions[index],
     }));
 };
 

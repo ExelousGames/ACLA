@@ -157,6 +157,28 @@ describe('analysis result query tool', () => {
     });
 });
 
+describe('set_procedure_plan tool', () => {
+    it('does not expose a current_request argument', () => {
+        const tool = SESSION_TOOLS.find(({ name }) => (
+            name === 'set_procedure_plan'
+        )) as any;
+
+        expect(tool.properties).not.toHaveProperty('current_request');
+        expect(Object.keys(tool.properties).sort()).toEqual(['goal', 'requests']);
+    });
+
+    it('exposes only assistant-authored request inputs', () => {
+        const tool = SESSION_TOOLS.find(({ name }) => (
+            name === 'set_procedure_plan'
+        )) as any;
+        const requestItems = tool.properties.requests.items;
+
+        expect(Object.keys(requestItems.properties).sort())
+            .toEqual(['name', 'payload', 'title']);
+        expect(requestItems.required).toEqual(['title']);
+    });
+});
+
 describe('create_goal tool', () => {
     it('defines the canonical preparation workflow and numeric determination schema', () => {
         const tools = getSessionToolsForSessionContext({

@@ -280,7 +280,6 @@ const buildRecorderSnapshot = (state: BaselineRecorderState): Record<string, any
     baseline_progress_percent: getCollectionProgress(state),
     baseline_lap: state.startLap,
     completed_lap_count: state.status === 'complete' ? 1 : 0,
-    section_count: 0,
 });
 
 const toNullableFiniteNumber = (value: unknown): number | null => {

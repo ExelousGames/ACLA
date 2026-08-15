@@ -32,8 +32,12 @@ describe('ProcedurePlan descriptors', () => {
     it('builds stable requests and advances the active request', () => {
         expect(buildProcedurePlan({
             goal: 'Review',
-            requests: [{ type: 'tool_call', title: 'Read', name: 'read' }],
-        })).toMatchObject({ goal: 'Review', currentStep: 0 });
+            requests: [{ title: 'Read', name: 'read' }],
+        })).toMatchObject({
+            goal: 'Review',
+            currentStep: 0,
+            requests: [{ type: 'tool_call', title: 'Read', name: 'read', status: 'pending' }],
+        });
         expect(getProcedurePlanToolArguments(plan().requests[0])).toEqual({ lap: 2 });
         expect(advanceProcedurePlan(plan(), 'done')).toMatchObject({
             status: 'advanced',

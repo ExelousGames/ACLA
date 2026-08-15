@@ -176,6 +176,34 @@ describe('adaptAnalysisResultsComparison', () => {
         expect(result.samples.map((sample) => sample.expertTrackPosition)).toEqual([0.98, 0, 0.04]);
     });
 
+    it('keeps Driver telemetry when the lap timer resets across the finish line', () => {
+        const result = adaptAnalysisResultsComparison({
+            baselineRecords: [
+                driverRow(0.95, 99_800, { x: 10, y: 10, z: 10 }),
+                driverRow(0.99, 99_900, { x: 20, y: 20, z: 20 }),
+                driverRow(0.01, 50, { x: 30, y: 30, z: 30 }),
+                driverRow(0.05, 150, { x: 40, y: 40, z: 40 }),
+            ],
+            expertReferenceData: [
+                expertRow(0.99, 1_000),
+                expertRow(0.01, 1_100),
+                expertRow(0.05, 1_200),
+            ],
+        });
+
+        expect(result.samples).toHaveLength(3);
+        expect(result.samples.map((sample) => sample.driverTimeMs)).toEqual([
+            99_900,
+            99_950,
+            100_050,
+        ]);
+        expect(result.samples.map((sample) => sample.driverTrackPosition)).toEqual([
+            0.99,
+            0.01,
+            0.05,
+        ]);
+    });
+
     it('chooses the earliest complete Driver lap when more than one lap covers the range', () => {
         const result = adaptAnalysisResultsComparison({
             baselineRecords: [

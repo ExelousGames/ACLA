@@ -111,10 +111,6 @@ export class NoCornerDataError extends AiToolError {
     override name = 'NoCornerDataError';
 }
 
-export class FocusSectionNotReadyError extends AiToolError {
-    override name = 'FocusSectionNotReadyError';
-}
-
 export class CreateGoalToolUnavailableError extends AiToolError {
     override name = 'CreateGoalToolUnavailableError';
 }
@@ -127,10 +123,6 @@ export class InvalidProcedurePlanRequestsError extends AiToolError {
     override name = 'InvalidProcedurePlanRequestsError';
 }
 
-export class SectionNotFoundError extends AiToolError {
-    override name = 'SectionNotFoundError';
-}
-
 export class CircuitMapLookupFailedError extends AiToolError {
     override name = 'CircuitMapLookupFailedError';
 }
@@ -141,14 +133,6 @@ export class NoTelemetryForScopeError extends AiToolError {
 
 export class TelemetryAnalysisFailedError extends AiToolError {
     override name = 'TelemetryAnalysisFailedError';
-}
-
-export class LiveSectionTelemetryUnavailableError extends AiToolError {
-    override name = 'LiveSectionTelemetryUnavailableError';
-}
-
-export class LiveSectionClassificationFailedError extends AiToolError {
-    override name = 'LiveSectionClassificationFailedError';
 }
 
 export class AmbiguousComponentTargetError extends AiToolError {
