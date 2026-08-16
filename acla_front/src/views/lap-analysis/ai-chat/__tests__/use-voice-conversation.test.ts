@@ -7,6 +7,7 @@ import {
     createAiToolOperation,
     createAiToolOperationFrom,
 } from '../ai-tool-base';
+import { AnalysisResultsQueryError } from '../../visualization/charts/analysisResultsQuery';
 
 const execute = async (handler: FrontendToolHandler) => {
     const frames: any[] = [];
@@ -62,6 +63,38 @@ describe('executeSubscribedFrontendTool', () => {
             result: { ok: false, name: 'ToolExecutionError', message: 'broken' },
         });
         expect(result).toMatchObject({ ok: false, message: 'broken' });
+    });
+
+    it('preserves normalized JSONata detail in the failed final frame', async () => {
+        const detail = {
+            code: 'S0202',
+            position: 12,
+            token: ']',
+            message: 'Expected a closing bracket.',
+        };
+        const { frames, result } = await execute(() => createAiToolOperationFrom(() => {
+            throw new AnalysisResultsQueryError(detail);
+        }));
+
+        expect(frames.at(-1)).toMatchObject({
+            final: true,
+            result: {
+                ok: false,
+                name: 'ToolExecutionError',
+                message: detail.message,
+                cause: {
+                    name: 'AnalysisResultsQueryError',
+                    message: detail.message,
+                    detail,
+                },
+            },
+        });
+        expect(result).toMatchObject({
+            ok: false,
+            message: detail.message,
+            cause: { detail },
+        });
+        expect(frames.at(-1).result.cause).not.toHaveProperty('stack');
     });
 });
 

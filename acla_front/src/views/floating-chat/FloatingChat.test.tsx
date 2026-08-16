@@ -125,8 +125,7 @@ describe('FloatingChat overlay stack', () => {
                     id: 'brake',
                     normalized_position: 0.25,
                     lead_time_seconds: 2,
-                    content: { title: 'Brake reminder' },
-                    data: { source: 'ai' },
+                    content: { title: 'Brake reminder', description: 'Brake in a straight line' },
                     status: 'running',
                     eta_seconds: 1.4,
                     created_at: 1,
@@ -145,6 +144,7 @@ describe('FloatingChat overlay stack', () => {
         expect(screen.getByText('Live Performance Analysis')).toBeInTheDocument();
         expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '64');
         expect(screen.getByText('Brake reminder')).toBeInTheDocument();
+        expect(screen.getByText('Brake in a straight line')).toBeInTheDocument();
         expect(lifecycleEvents.some((event) => event.kind === 'shown')).toBe(true);
     });
 

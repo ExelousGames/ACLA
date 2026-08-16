@@ -5,7 +5,15 @@ export type AiToolErrorOptions = {
 export type SerializedError = {
     name: string;
     message: string;
+    detail?: SerializedErrorDetail;
     cause?: SerializedErrorCause;
+};
+
+export type SerializedErrorDetail = {
+    code: string;
+    position?: number;
+    token?: string;
+    message: string;
 };
 
 export type SerializedErrorCause =
@@ -25,6 +33,35 @@ const safeString = (value: unknown): string => {
     } catch {
         return '[Unserializable cause]';
     }
+};
+
+const readDataProperty = (value: object, key: string): unknown => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+};
+
+const serializeErrorDetail = (error: Error): SerializedErrorDetail | undefined => {
+    const detail = readDataProperty(error, 'detail');
+    if (!detail || typeof detail !== 'object' || Array.isArray(detail)) return undefined;
+
+    const code = readDataProperty(detail, 'code');
+    const position = readDataProperty(detail, 'position');
+    const token = readDataProperty(detail, 'token');
+    const message = readDataProperty(detail, 'message');
+    if (typeof code !== 'string' || typeof message !== 'string') return undefined;
+    if (position !== undefined && (
+        typeof position !== 'number'
+        || !Number.isInteger(position)
+        || position < 0
+    )) return undefined;
+    if (token !== undefined && typeof token !== 'string') return undefined;
+
+    return {
+        code,
+        ...(position !== undefined ? { position } : {}),
+        ...(token !== undefined ? { token } : {}),
+        message,
+    };
 };
 
 const serializeCause = (
@@ -47,6 +84,8 @@ const serializeCause = (
             name: value.name || 'Error',
             message: value.message,
         };
+        const detail = serializeErrorDetail(value);
+        if (detail) serialized.detail = detail;
         const cause = (value as Error & { cause?: unknown }).cause;
         if (cause !== undefined) {
             serialized.cause = serializeCause(cause, depth + 1, seen);

@@ -62,15 +62,25 @@ describe('Goal descriptors', () => {
 
 describe('GoalRunner central dispatch callback', () => {
     it('executes ordered steps and achieves a goal from a numeric query envelope', async () => {
+        const input: GoalRequest = {
+            ...request(),
+            determination: {
+                ...request().determination,
+                tool: {
+                    name: 'query_analysis_result',
+                    arguments: { query: '$count(elements)' },
+                },
+            },
+        };
         const order: string[] = [];
         const dispatch = jest.fn((name: string, args?: Record<string, unknown>) => {
             order.push(args?.limit ? `${name}:${args.limit}` : name);
-            return operationWithValue(name === 'determine'
+            return operationWithValue(name === 'query_analysis_result'
                 ? { status: 'ready', data: 0 }
                 : { status: 'complete' });
         });
         const runner = new GoalRunner('goal', dispatch);
-        const operation = runner.create(request());
+        const operation = runner.create(input);
 
         const result = await operation.result;
         if (result instanceof Error) throw result;
@@ -81,13 +91,16 @@ describe('GoalRunner central dispatch callback', () => {
             actual: 0,
             completed_steps: ['collect', 'analyze'],
             determination: {
-                tool: { name: 'determine' },
+                tool: {
+                    name: 'query_analysis_result',
+                    arguments: { query: '$count(elements)' },
+                },
                 operator: 'eq',
                 target: 0,
             },
         });
-        expect(result.determination).toEqual(request().determination);
-        expect(runner.getSnapshot()?.determination).toEqual(request().determination);
+        expect(result.determination).toEqual(input.determination);
+        expect(runner.getSnapshot()?.determination).toEqual(input.determination);
         expect(result.task_results).toEqual([
             {
                 step_id: 'collect',
@@ -114,7 +127,10 @@ describe('GoalRunner central dispatch callback', () => {
                 },
             },
         ]);
-        expect(order).toEqual(['collect', 'analyze:4', 'determine']);
+        expect(order).toEqual(['collect', 'analyze:4', 'query_analysis_result']);
+        expect(dispatch).toHaveBeenLastCalledWith('query_analysis_result', {
+            query: '$count(elements)',
+        });
     });
 
     it('keeps rerunning a missed numeric-envelope goal until it is achieved', async () => {
@@ -245,8 +261,8 @@ describe('GoalRunner central dispatch callback', () => {
         const failedOperation = runner.create(request());
         const failedResult = await failedOperation.result;
         if (failedResult instanceof Error) throw failedResult;
-        const failedProgress = await Promise.all(failedOperation.statuses);
 
+        expect(failedOperation.statuses).toEqual([]);
         expect(failedResult).toMatchObject({
             status: 'failed',
             failed_step: 'collect',
@@ -266,11 +282,6 @@ describe('GoalRunner central dispatch callback', () => {
                 },
             },
         ]);
-        expect(failedProgress[0]).toMatchObject({
-            id: 'collect',
-            status: 'failed',
-            error: 'not ready',
-        });
         const failedSnapshot = runner.getSnapshot();
         expect(failedSnapshot).toMatchObject({
             failed_step: 'collect',

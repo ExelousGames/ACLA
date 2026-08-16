@@ -24,7 +24,11 @@ jest.mock('@radix-ui/themes', () => {
     };
 });
 jest.mock('@radix-ui/react-icons', () => ({ Cross2Icon: () => <span>Close</span>, DragHandleDots2Icon: () => <span>Drag</span>, PlusIcon: () => <span>Add</span> }));
-jest.mock('contexts/AiLabelsContext', () => ({ useAiLabels: () => ({ getCategoryLabels: () => [], getLabelName: () => undefined }) }));
+jest.mock('contexts/AiLabelsContext', () => {
+    const getCategoryLabels = () => [];
+    const getLabelName = () => undefined;
+    return { useAiLabels: () => ({ getCategoryLabels, getLabelName }) };
+});
 jest.mock('components/data-graphs', () => ({
     DataGraph: ({ spec }: any) => <div data-testid="data-graph">{spec.title}</div>,
 }));
@@ -46,7 +50,8 @@ describe('LiveTelemetryWorkspace named manager', () => {
         await userEvent.click(screen.getByRole('menuitem', { name: 'Analysis Results' }));
         expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
         expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent('No analyzed laps yet.');
-        expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+        expect(screen.queryByText(/^Page \d+ of \d+$/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Lap Results' })).toBeDisabled();
     });
 
     it('returns to Overall Trend after the Analysis Results panel is reopened', async () => {
@@ -74,17 +79,18 @@ describe('LiveTelemetryWorkspace named manager', () => {
             });
         });
 
-        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        expect(screen.queryByText(/^Page \d+ of \d+$/)).not.toBeInTheDocument();
         expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
         expect(screen.queryByTestId('analysis-result-retained-result')).not.toBeInTheDocument();
-        await userEvent.click(screen.getByRole('button', { name: 'Next' }));
-        expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
-        expect(screen.getByTestId('analysis-result-retained-result')).toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+        expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+        expect(await screen.findByTestId('analysis-result-retained-result')).toBeInTheDocument();
         await userEvent.click(screen.getByRole('button', { name: 'Remove Analysis Results' }));
         expect(screen.queryByTestId('analysis-result-retained-result')).not.toBeInTheDocument();
 
         await userEvent.click(screen.getByRole('menuitem', { name: 'Analysis Results' }));
-        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        expect(screen.queryByText(/^Page \d+ of \d+$/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
         expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
         expect(screen.queryByTestId('analysis-result-retained-result')).not.toBeInTheDocument();
     });
@@ -151,8 +157,8 @@ describe('LiveTelemetryWorkspace named manager', () => {
             });
         });
 
-        await userEvent.click(screen.getByRole('button', { name: 'Next' }));
-        expect(screen.getByTestId('analysis-result-acc-result')).toHaveAttribute('tabindex', '0');
+        await userEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+        expect(await screen.findByTestId('analysis-result-acc-result')).toHaveAttribute('tabindex', '0');
     });
 
     it('supports separate speed and brake telemetry displays and same-name reuse', () => {

@@ -295,82 +295,61 @@ export const SESSION_TOOLS = [
         required: [],
     },
     {
-        name: 'set_live_range_todo_list',
-        description: 'Create or replace the visible Live Range To-do List with AI notification events. AI Chat mounts the list when needed and attaches its notification callback only to events supplied to this tool.',
+        name: 'add_event_to_live_range_todo_list',
+        description: 'Atomically append executable events to the visible Live Range To-do List. AI Chat mounts the list when needed. Each nested tool runs only when telemetry makes its event due; this add call returns the updated list summary immediately after insertion.',
         properties: {
             events: {
                 type: 'array',
-                description: 'Complete replacement queue. Every event needs an id, normalized_position from 0 through 1, and content.title.',
+                minItems: 1,
+                description: 'Events to append without replacing the existing queue. Every event id must be unique in this batch and the active list.',
                 items: {
                     type: 'object',
                     properties: {
-                        id: { type: 'string', description: 'Unique event id.' },
-                        normalized_position: { type: 'number', minimum: 0, maximum: 1 },
-                        lead_time_seconds: { type: 'number', minimum: 0, description: 'How early to run the event. Defaults to 2 seconds.' },
-                        content: {
+                        event: {
                             type: 'object',
                             properties: {
-                                title: { type: 'string' },
-                                detail: { type: 'string' },
-                                metadata: { description: 'Optional JSON-safe metadata.' },
+                                id: { type: 'string', minLength: 1, pattern: '\\S', description: 'Unique event id.' },
+                                normalized_position: { type: 'number', minimum: 0, maximum: 1 },
+                                lead_time_seconds: { type: 'number', minimum: 0, description: 'How early to run the event. Defaults to 2 seconds.' },
+                                content: {
+                                    type: 'object',
+                                    properties: {
+                                        title: { type: 'string', minLength: 1, pattern: '\\S' },
+                                        description: { type: 'string' },
+                                    },
+                                    required: ['title'],
+                                    additionalProperties: false,
+                                },
                             },
-                            required: ['title'],
+                            required: ['id', 'normalized_position', 'content'],
+                            additionalProperties: false,
                         },
-                        data: {
+                        tool: {
                             type: 'object',
-                            description: 'Optional JSON-safe AI notification options, such as event or telemetry_range_summary. Stored on the event and passed to its callback.',
+                            properties: {
+                                name: { type: 'string', description: 'Available child live-session tool to execute when the event is due.' },
+                                arguments: { type: 'object', description: 'JSON-safe arguments passed unchanged to the nested tool.' },
+                            },
+                            required: ['name', 'arguments'],
+                            additionalProperties: false,
                         },
                     },
-                    required: ['id', 'normalized_position', 'content'],
+                    required: ['event', 'tool'],
+                    additionalProperties: false,
                 },
             },
         },
         required: ['events'],
     },
     {
-        name: 'update_live_range_todo_list',
-        description: 'Mutate the active visible Live Range To-do List. AI updates can change serializable event fields but preserve each event callback; newly added AI events receive the browser AI notification callback.',
-        properties: {
-            action: {
-                type: 'string',
-                enum: ['add_events', 'update_events', 'remove_events', 'reset_events', 'clear'],
-            },
-            events: {
-                type: 'array',
-                description: 'Events for add_events or partial serializable event objects with id for update_events.',
-                items: {
-                    type: 'object',
-                    properties: {
-                        id: { type: 'string' },
-                        normalized_position: { type: 'number', minimum: 0, maximum: 1 },
-                        lead_time_seconds: { type: 'number', minimum: 0 },
-                        content: {
-                            type: 'object',
-                            properties: {
-                                title: { type: 'string' },
-                                detail: { type: 'string' },
-                                metadata: { description: 'Optional JSON-safe metadata.' },
-                            },
-                        },
-                        data: {
-                            type: 'object',
-                            description: 'JSON-safe event data. For AI events, store notification options here.',
-                        },
-                    },
-                    required: ['id'],
-                },
-            },
-            ids: {
-                type: 'array',
-                description: 'Event ids for remove_events or reset_events. Omit for reset_events to reset every event.',
-                items: { type: 'string' },
-            },
-        },
-        required: ['action'],
+        name: 'get_live_range_todo_list',
+        description: 'Read the active Live Range To-do List summary, including event and lifecycle counts.',
+        properties: {},
+        required: [],
     },
     {
-        name: 'get_live_range_todo_list',
-        description: 'Read the active Live Range To-do List summary, including event and lifecycle counts. Create the list first with set_live_range_todo_list.',
+        name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        description: 'Append Driver vs Expert comparison events for the active Analysis Results page\'s last successfully applied segment filter. Events keep the displayed segment order, retain existing to-do items, and publish only when live telemetry makes each event due.',
         properties: {},
         required: [],
     },
@@ -403,20 +382,51 @@ export const SESSION_TOOLS = [
         required: [],
     },
     {
-        name: 'query_analysis_result',
-        description: 'Query the active Analysis Results page without rerunning analysis. result_count returns all normalized results and mistake_count returns recognized mistakes; both are active-page counts that ignore the current Practice/Racing UI filter.',
+        name: 'apply_analysis_result_query',
+        description: [
+            'Apply a final JSONata expression through the visible Analysis Results manual editor and return the matched element count.',
+            'The expression receives only { "elements": [{ "id": "...", "labels": ["..."], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] } for the selected page; it does not receive the current View selection or hidden page data.',
+            'The result must be null, one element ID string, one object with a string id, or a flat array of element IDs or objects with string ids. Unknown IDs and nested arrays are rejected.',
+            'Examples: elements; elements[labels[$ = "Lockup"]]; elements[labels[$ = "Mistake (Practice)"]].id.',
+            'page_number uses the displayed 1-based retained-page array order: Page 1 is array index 0 and the highest page number is the most recent analysis.',
+            'When page_number is omitted, below 1, or above the existing page count, the highest existing page is selected.',
+            'The tool switches from Overall Trends to Lap Results, waits for the selected page to render, populates the editor, and uses the same commit path as manual Apply.',
+        ].join(' '),
         properties: {
             query: {
                 type: 'string',
-                enum: ['result_count', 'mistake_count'],
-                description: 'Analysis Results query to run. Both values count the active page without rerunning analysis and ignore the current Practice/Racing UI filter.',
+                minLength: 1,
+                pattern: '\\S',
+                description: 'A non-blank final JSONata expression whose result identifies the Analysis Results elements to display.',
+            },
+            page_number: {
+                type: 'integer',
+                description: 'Optional 1-based displayed page number. Omitted or nonexistent page numbers select the highest existing page number.',
+            },
+        },
+        required: ['query'],
+    },
+    {
+        name: 'query_analysis_result',
+        description: [
+            'Evaluate a JSONata expression against the normalized active Analysis Results page without rerunning analysis.',
+            'The expression receives only { "elements": [{ "id": "...", "labels": ["..."], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] }; it does not receive the current View selection or hidden page data.',
+            'The response is { "status": "ready", "data": ... }, where data is the actual JSON-safe JSONata value (scalar, object, array, or null), not a count unless the expression returns one.',
+            'Examples: $count(elements); $count(elements[labels[$ = "Mistake (Practice)"]]); elements[labels[$ = "Lockup"]].{ "id": id, "section": section }.',
+        ].join(' '),
+        properties: {
+            query: {
+                type: 'string',
+                minLength: 1,
+                pattern: '\\S',
+                description: 'A non-blank JSONata expression evaluated against the normalized active-page { elements } root. Its actual JSON-safe value is returned in data.',
             },
         },
         required: ['query'],
     },
     {
         name: 'create_goal',
-        description: 'Create one visible goal. the session tool calls will be executed sequentially, and these tool calls will be repeated until the goal is achieved or error. If the goal is missed, the goal will continue to be retried until the goal is achieved or the user cancels the goal. The determination tool call must return a numeric query envelope, and the operator and target are evaluated against that number to determine whether the goal is achieved.',
+        description: 'Create one visible goal. the session tool calls will be executed sequentially, and these tool calls will be repeated until the goal is achieved or error. If the goal is missed, the goal will continue to be retried until the goal is achieved or the user cancels the goal. The determination tool call must return { "status": "ready", "data": finiteNumber }. When using query_analysis_result for the determination, supply a JSONata expression that returns a finite number, normally { "query": "$count(elements)" }. The operator and target are evaluated against that number to determine whether the goal is achieved.',
         properties: {
             name: {
                 type: 'string',
@@ -439,11 +449,11 @@ export const SESSION_TOOLS = [
             },
             determination: {
                 type: 'object',
-                description: 'Frontend query tool call that must return a ready numeric query envelope, plus the comparison evaluated after the ordered preparation steps.',
+                description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber }, plus the comparison evaluated after the ordered preparation steps. A query_analysis_result determination should normally use a $count(...) JSONata expression.',
                 properties: {
                     tool: {
                         type: 'object',
-                        description: 'Frontend query tool call that must return a ready numeric query envelope to determine whether the goal was achieved.',
+                        description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the goal was achieved. For query_analysis_result, pass arguments such as { "query": "$count(elements)" }.',
                         properties: {
                             name: { type: 'string', description: 'Available session tool to execute.' },
                             arguments: { type: 'object', description: 'Arguments passed unchanged to the determination tool.' },
@@ -713,6 +723,7 @@ const COMMON_TOOL_NAMES: SessionToolName[] = [
 
 const LIVE_SESSION_TOOL_NAMES: SessionToolName[] = [
     'start_agent_session',
+    'apply_analysis_result_query',
     'query_analysis_result',
     'analyze_telemetry',
     'get_next_corner',
@@ -725,8 +736,7 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: SessionToolName[] = [
     'get_next_corner',
     'query_telemetry_metric',
     'get_event_log',
-    'set_live_range_todo_list',
-    'update_live_range_todo_list',
+    'add_event_to_live_range_todo_list',
     'get_live_range_todo_list',
     'collect_live_baseline',
     'restart_live_baseline',
@@ -737,7 +747,18 @@ const LIVE_AGENT_SESSION_TOOL_NAMES: SessionToolName[] = [
 const LIVE_PERFORMANCE_ANALYST_TOOL_NAMES: SessionToolName[] = [
     'create_goal',
     'retry_goal_task',
+    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
 ];
+
+const LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS = new Set<SessionToolName>([
+    'create_goal',
+    'retry_goal_task',
+    'set_procedure_plan',
+    'advance_plan_step',
+    'clear_procedure_plan',
+    'add_event_to_live_range_todo_list',
+    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+]);
 
 const USER_SUMMARY_SESSION_TOOL_NAMES: SessionToolName[] = [
     'get_user_summary_map_level',
@@ -749,6 +770,7 @@ const RECORDED_SESSION_TOOL_NAMES: SessionToolName[] = [
     'run_recorded_ai_analysis',
     'get_recorded_session_analysis',
     'get_recorded_session_context',
+    'apply_analysis_result_query',
     'query_analysis_result',
     'analyze_telemetry',
 ];
@@ -774,7 +796,10 @@ const getAllowedToolNames = (
             ...COMMON_TOOL_NAMES,
             ...LIVE_AGENT_SESSION_TOOL_NAMES,
             ...USER_SUMMARY_SESSION_TOOL_NAMES,
-            ...(sessionMode === 'live' ? ['query_analysis_result'] as const : []),
+            ...(sessionMode === 'live' ? [
+                'apply_analysis_result_query',
+                'query_analysis_result',
+            ] as const : []),
             ...(sessionMode === 'live' && agentMode === 'live_performance_analyst'
                 ? LIVE_PERFORMANCE_ANALYST_TOOL_NAMES
                 : []),
@@ -825,8 +850,41 @@ export const getSessionToolsForSessionContext = (
     const nestedToolNames = tools
         .map((tool) => tool.name)
         .filter((name) => name !== 'create_goal' && name !== 'retry_goal_task');
+    const liveRangeTodoNestedToolNames = tools
+        .map((tool) => tool.name)
+        .filter((name) => !LIVE_RANGE_TODO_NESTED_TOOL_EXCLUSIONS.has(name));
 
     const expandedTools = tools.map((tool) => {
+        if (tool.name === 'add_event_to_live_range_todo_list') {
+            const events = tool.properties.events;
+            const item = events.items;
+            const nestedTool = item.properties.tool;
+            return {
+                ...tool,
+                properties: {
+                    ...tool.properties,
+                    events: {
+                        ...events,
+                        items: {
+                            ...item,
+                            properties: {
+                                ...item.properties,
+                                tool: {
+                                    ...nestedTool,
+                                    properties: {
+                                        ...nestedTool.properties,
+                                        name: {
+                                            ...nestedTool.properties.name,
+                                            enum: liveRangeTodoNestedToolNames,
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            };
+        }
         if (tool.name !== 'create_goal') return tool;
         const steps = tool.properties.steps;
         const determination = tool.properties.determination;

@@ -79,27 +79,15 @@ export type ProcedurePlanRunResult = {
     reason?: string;
 };
 
-export type ProcedurePlanProgressStatus = {
-    workflow: 'procedure_plan';
-    request_index: number;
-    title: string;
-    tool_name: string;
-    status: 'completed' | 'failed' | 'skipped';
-    output?: unknown;
-    error?: string;
-    nested_statuses?: readonly object[];
-};
-
 export interface ProcedurePlanHandle extends NamedAiToolComponentHandle {
-    createProcedurePlan(plan: ProcedurePlanState): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus>;
-    advancePlanStep(reason?: string): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus>;
+    createProcedurePlan(plan: ProcedurePlanState): AiToolOperation<ProcedurePlanRunResult>;
+    advancePlanStep(reason?: string): AiToolOperation<ProcedurePlanRunResult>;
     clearProcedurePlan(reason?: string): AiToolOperation<ProcedurePlanRunResult>;
     getProcedurePlan(): ProcedurePlanState | null;
 }
 
 type ActiveProcedurePlanOperation = {
     result: AiToolDeferred<ProcedurePlanRunResult>;
-    statuses: Map<number, AiToolDeferred<ProcedurePlanProgressStatus>>;
 };
 
 const defaultProcedurePlanErrorHandler: ProcedurePlanTaskErrorHandler = (request, error) => {
@@ -131,9 +119,8 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
         return this.plan ? cloneProcedurePlanState(this.plan) : null;
     }
 
-    replace(plan: ProcedurePlanState | null): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus> {
-        const requests = plan?.requests ?? [];
-        return this.startOperation(requests, () => this.runReplace(plan));
+    replace(plan: ProcedurePlanState | null): AiToolOperation<ProcedurePlanRunResult> {
+        return this.startOperation(() => this.runReplace(plan));
     }
 
     private async runReplace(plan: ProcedurePlanState | null): Promise<ProcedurePlanRunResult> {
@@ -162,9 +149,8 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
         return { ...cleared, ...(reason ? { reason } : {}) };
     }
 
-    advance(reason?: string): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus> {
-        const requests = this.plan?.requests ?? [];
-        return this.startOperation(requests, () => this.runAdvance(reason));
+    advance(reason?: string): AiToolOperation<ProcedurePlanRunResult> {
+        return this.startOperation(() => this.runAdvance(reason));
     }
 
     private async runAdvance(reason?: string): Promise<ProcedurePlanRunResult> {
@@ -207,63 +193,30 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
     }
 
     private startOperation(
-        requests: readonly ProcedurePlanRequestSnapshot[],
         run: () => Promise<ProcedurePlanRunResult>,
-    ): AiToolOperation<ProcedurePlanRunResult, ProcedurePlanProgressStatus> {
+    ): AiToolOperation<ProcedurePlanRunResult> {
         this.cancelActiveOperation(new ProcedurePlanReplacedError(
             this.getComponentName(),
             'The procedure plan operation was replaced.',
         ));
         const operation: ActiveProcedurePlanOperation = {
             result: createAiToolDeferred<ProcedurePlanRunResult>(),
-            statuses: new Map(requests.map((_request, index) => [
-                index,
-                createAiToolDeferred<ProcedurePlanProgressStatus>(),
-            ])),
         };
         this.activeOperation = operation;
         void run().then(
             (result) => operation.result.resolve(result),
             (error) => operation.result.reject(error),
         ).finally(() => {
-            operation.statuses.forEach((status, index) => {
-                if (status.settled) return;
-                const request = requests[index];
-                status.resolve({
-                    workflow: 'procedure_plan',
-                    request_index: index,
-                    title: request?.title ?? '',
-                    tool_name: request?.name ?? '',
-                    status: 'skipped',
-                });
-            });
             if (this.activeOperation === operation) this.activeOperation = null;
         });
-        return createAiToolOperation(
-            operation.result.promise,
-            Array.from(operation.statuses.values()).map((status) => status.promise),
-        );
+        return createAiToolOperation(operation.result.promise);
     }
 
     private cancelActiveOperation(error: Error): void {
         const operation = this.activeOperation;
         if (!operation) return;
         this.activeOperation = null;
-        operation.statuses.forEach((status, index) => {
-            if (!status.settled) status.resolve({
-                workflow: 'procedure_plan',
-                request_index: index,
-                title: '',
-                tool_name: '',
-                status: 'skipped',
-                error: error.message,
-            });
-        });
         operation.result.reject(error);
-    }
-
-    private resolveProgress(index: number, status: ProcedurePlanProgressStatus): void {
-        this.activeOperation?.statuses.get(index)?.resolve(status);
     }
 
     private publish(plan: ProcedurePlanState | null): void {
@@ -301,21 +254,12 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
             });
             const runId = `plan-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
             let output: import('./Goal').NestedAiToolResult | null = null;
-            let nestedStatuses: object[] = [];
             let executionError: unknown;
             try {
                 const operation = this.dispatchTool(
                     request.name || '',
                     getProcedurePlanToolArguments(request),
                 );
-                nestedStatuses = (await Promise.allSettled(operation.statuses)).map((status) => {
-                    if (status.status === 'fulfilled') return status.value;
-                    const message = status.reason instanceof Error
-                        ? status.reason.message
-                        : String(status.reason);
-                    console.error(`Nested procedure-plan tool '${request.name || ''}' status failed.`, status.reason);
-                    return { status: 'status_failed', error: message };
-                });
                 const value = await operation.result;
                 if (value instanceof Error) throw value;
                 output = value;
@@ -334,15 +278,6 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
             this.lastRunId = runId;
             this.taskResults.push(taskResult);
             if (executionError !== undefined) {
-                this.resolveProgress(this.plan.currentStep, {
-                    workflow: 'procedure_plan',
-                    request_index: this.plan.currentStep,
-                    title: request.title,
-                    tool_name: request.name || '',
-                    status: 'failed',
-                    error: executionError instanceof Error ? executionError.message : String(executionError),
-                    nested_statuses: nestedStatuses,
-                });
                 this.onError(serializeProcedurePlanRequest(request), executionError);
                 this.publish({
                     ...this.plan!,
@@ -353,15 +288,6 @@ export class ProcedurePlanRunner extends AiToolComponentBase<ProcedurePlanSnapsh
                 return this.result('failed', this.plan.requests[this.plan.currentStep], runId);
             }
             const nextIndex = this.plan.currentStep + 1;
-            this.resolveProgress(this.plan.currentStep, {
-                workflow: 'procedure_plan',
-                request_index: this.plan.currentStep,
-                title: request.title,
-                tool_name: request.name || '',
-                status: 'completed',
-                output,
-                nested_statuses: nestedStatuses,
-            });
             this.publish({
                 ...this.plan,
                 currentStep: nextIndex,

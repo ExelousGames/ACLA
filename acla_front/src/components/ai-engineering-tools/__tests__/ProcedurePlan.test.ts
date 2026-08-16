@@ -56,10 +56,12 @@ describe('ProcedurePlanRunner central dispatch callback', () => {
         }));
         const runner = new ProcedurePlanRunner('procedure-plan', dispatch);
 
-        const result = await runner.replace(plan()).result;
+        const operation = runner.replace(plan());
+        const result = await operation.result;
         expect(result).not.toBeInstanceOf(Error);
         if (result instanceof Error) throw result;
 
+        expect(operation.statuses).toEqual([]);
         expect(dispatch).toHaveBeenNthCalledWith(1, 'read', { lap: 2 });
         expect(dispatch).toHaveBeenNthCalledWith(2, 'compare', {});
         expect(result).toMatchObject({ status: 'complete', request_count: 2 });

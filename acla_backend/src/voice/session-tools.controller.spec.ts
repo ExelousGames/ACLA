@@ -57,6 +57,7 @@ describe('SessionToolsController', () => {
         expect(names).toEqual(expect.arrayContaining([
             'run_recorded_ai_analysis',
             'get_recorded_session_analysis',
+            'apply_analysis_result_query',
             'stop_agent_session',
         ]));
         expect(names).not.toEqual(expect.arrayContaining([
@@ -77,9 +78,11 @@ describe('SessionToolsController', () => {
 
         expect(names).toEqual(expect.arrayContaining([
             'collect_live_baseline',
+            'apply_analysis_result_query',
             'query_analysis_result',
             'create_goal',
             'retry_goal_task',
+            'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
             'classify_live_section',
         ]));
         expect(names).not.toContain('start_agent_session');
@@ -90,6 +93,44 @@ describe('SessionToolsController', () => {
         expect(tools.every(({ description }) => typeof description === 'string'))
             .toBe(true);
         expect(tools.some((tool) => 'title' in tool)).toBe(false);
+    });
+
+    it('returns the JSONata analysis-result query contract', () => {
+        const tools = controller.getSessionTools({
+            session_context: { session_mode: 'recorded' },
+        });
+        const tool = tools.find(({ name }) => name === 'query_analysis_result') as any;
+
+        expect(tool.required).toEqual(['query']);
+        expect(Object.keys(tool.properties)).toEqual(['query']);
+        expect(tool.properties.query).toMatchObject({
+            type: 'string',
+            minLength: 1,
+            pattern: '\\S',
+        });
+        expect(tool.properties.query).not.toHaveProperty('enum');
+        expect(tool.description).toContain('actual JSON-safe JSONata value');
+        expect(tool.description).toContain('$count(elements)');
+        expect(tool.description).not.toContain('result_count');
+        expect(tool.description).not.toContain('mistake_count');
+    });
+
+    it('returns the JSONata analysis-result apply contract', () => {
+        const tools = controller.getSessionTools({
+            session_context: { session_mode: 'recorded' },
+        });
+        const tool = tools.find(({ name }) => name === 'apply_analysis_result_query') as any;
+
+        expect(tool.required).toEqual(['query']);
+        expect(Object.keys(tool.properties)).toEqual(['query', 'page_number']);
+        expect(tool.properties.query).toMatchObject({
+            type: 'string',
+            minLength: 1,
+            pattern: '\\S',
+        });
+        expect(tool.properties.page_number).toMatchObject({ type: 'integer' });
+        expect(tool.description).toContain('retained-page array order');
+        expect(tool.description).toContain('manual Apply');
     });
 
     it.each(['front_desk', 'live', 'recorded', 'user_summary'])(

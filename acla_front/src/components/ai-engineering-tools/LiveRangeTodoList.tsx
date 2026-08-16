@@ -4,9 +4,7 @@ import { InvalidLiveRangeTodoListError } from 'contexts/AiToolComponentError';
 import { LiveSessionContext } from 'views/live-session/LiveSessionContext';
 import { AiToolComponentBase } from './AiToolComponentBase';
 import type {
-    JsonValue,
     LiveRangeTodoContent,
-    LiveRangeTodoDueStatus,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
@@ -16,11 +14,7 @@ import type {
     LiveRangeTodoSnapshotEvent,
 } from './live-range-todo-list-types';
 import {
-    createAiToolDeferred,
     createAiToolOperation,
-    createAiToolOperationFrom,
-    type AiToolDeferred,
-    type AiToolOperation,
 } from './ai-tool-operation';
 
 const DEFAULT_LEAD_TIME_SECONDS = 2;
@@ -35,16 +29,16 @@ export interface LiveRangeTelemetrySample {
 }
 
 interface RuntimeEvent extends LiveRangeTodoSnapshotEvent {
+    taskStart: LiveRangeTodoEventInput['taskStart'];
     due?: boolean;
 }
 
 type RuntimeSnapshot = Omit<LiveRangeTodoListSnapshot, 'events'> & { events: RuntimeEvent[] };
 
-interface OwnedInvocation {
-    id: symbol;
-    eventIds: Set<string>;
-    statuses: Map<string, AiToolDeferred<LiveRangeTodoDueStatus>>;
-    result: AiToolDeferred<LiveRangeTodoListAiResult>;
+interface ActiveRun {
+    controller: AbortController;
+    event: RuntimeEvent;
+    token: symbol;
 }
 
 const isRecord = (value: unknown): value is Record<string, any> => (
@@ -55,15 +49,10 @@ const hasOwn = (value: Record<string, any>, key: string) => (
     Object.prototype.hasOwnProperty.call(value, key)
 );
 
-const isJsonSafe = (value: unknown): value is JsonValue => {
-    if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
-    if (typeof value === 'number') return Number.isFinite(value);
-    if (Array.isArray(value)) return value.every(isJsonSafe);
-    if (!isRecord(value)) return false;
-    return Object.values(value).every(isJsonSafe);
-};
-
-const cloneJson = <T extends JsonValue>(value: T): T => JSON.parse(JSON.stringify(value));
+const findUnsupportedKey = (
+    value: Record<string, any>,
+    supportedKeys: readonly string[],
+): string | undefined => Object.keys(value).find((key) => !supportedKeys.includes(key));
 
 export const getLiveRangeNormalizedPosition = (
     telemetry: Record<string, any> | null | undefined,
@@ -182,15 +171,15 @@ export const crossedLiveRangeTodoPosition = (
 };
 
 const serializeEvent = (event: RuntimeEvent): LiveRangeTodoSnapshotEvent => {
-    const { due: _due, ...snapshotEvent } = event;
+    const { due: _due, taskStart: _taskStart, ...snapshotEvent } = event;
     return {
         ...snapshotEvent,
         content: {
             title: event.content.title,
-            ...(event.content.detail !== undefined ? { detail: event.content.detail } : {}),
-            ...(event.content.metadata !== undefined ? { metadata: cloneJson(event.content.metadata) } : {}),
+            ...(event.content.description !== undefined
+                ? { description: event.content.description }
+                : {}),
         },
-        data: cloneJson(event.data),
     };
 };
 
@@ -208,6 +197,10 @@ const parseContent = (
     partial = false,
 ): { content?: Partial<LiveRangeTodoContent>; error?: string } => {
     if (!isRecord(value)) return { error: 'Each event requires a structured content object.' };
+    const unsupportedKey = findUnsupportedKey(value, ['title', 'description']);
+    if (unsupportedKey) {
+        return { error: `Event content property '${unsupportedKey}' is not supported.` };
+    }
     const title = value.title;
     if (!partial && (typeof title !== 'string' || !title.trim())) {
         return { error: 'Each event content requires a non-empty title.' };
@@ -215,18 +208,14 @@ const parseContent = (
     if (title !== undefined && (typeof title !== 'string' || !title.trim())) {
         return { error: 'Event content title must be a non-empty string.' };
     }
-    if (value.detail !== undefined && typeof value.detail !== 'string') {
-        return { error: 'Event content detail must be a string.' };
-    }
-    if (value.metadata !== undefined && !isJsonSafe(value.metadata)) {
-        return { error: 'Event content metadata must be JSON-safe.' };
+    if (value.description !== undefined && typeof value.description !== 'string') {
+        return { error: 'Event content description must be a string.' };
     }
 
     return {
         content: {
             ...(title !== undefined ? { title: title.trim() } : {}),
-            ...(value.detail !== undefined ? { detail: value.detail } : {}),
-            ...(value.metadata !== undefined ? { metadata: cloneJson(value.metadata) } : {}),
+            ...(value.description !== undefined ? { description: value.description } : {}),
         },
     };
 };
@@ -287,8 +276,8 @@ export const LiveRangeTodoListDisplay: React.FC<LiveRangeTodoListDisplayProps> =
                                 <span className="ai-chat__range-todo-item-name">{event.content.title}</span>
                                 <span className="ai-chat__range-todo-item-status">{event.status}</span>
                             </div>
-                            {surface !== 'pill' && event.content.detail && (
-                                <div className="ai-chat__range-todo-detail">{event.content.detail}</div>
+                            {event.content.description && (
+                                <div className="ai-chat__range-todo-detail">{event.content.description}</div>
                             )}
                             <div className="ai-chat__range-todo-metrics">
                                 <span>Target {formatPosition(event.normalized_position)}</span>
@@ -320,36 +309,12 @@ const toAiResult = (result: LiveRangeTodoListToolResult): LiveRangeTodoListAiRes
     };
 };
 
-const toEventInput = (value: unknown): LiveRangeTodoEventInput => {
-    if (!isRecord(value)) return value as LiveRangeTodoEventInput;
-    return {
-        id: value.id,
-        normalized_position: value.normalized_position,
-        ...(hasOwn(value, 'lead_time_seconds')
-            ? { lead_time_seconds: value.lead_time_seconds }
-            : {}),
-        content: value.content,
-        data: value.data === undefined ? {} : value.data,
-    };
-};
-
-const toSerializableUpdate = (value: unknown): LiveRangeTodoEventUpdate => {
-    if (!isRecord(value)) return value as LiveRangeTodoEventUpdate;
-    return {
-        id: value.id,
-        ...(hasOwn(value, 'normalized_position') ? { normalized_position: value.normalized_position } : {}),
-        ...(hasOwn(value, 'lead_time_seconds') ? { lead_time_seconds: value.lead_time_seconds } : {}),
-        ...(hasOwn(value, 'content') ? { content: value.content } : {}),
-        ...(hasOwn(value, 'data') ? { data: value.data } : {}),
-    } as LiveRangeTodoEventUpdate;
-};
-
 export class LiveRangeTodoListRunner
 extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
     private runtime: RuntimeSnapshot;
     private samples: LiveRangeTelemetrySample[] = [];
     private previousSample: LiveRangeTelemetrySample | null = null;
-    private readonly ownedInvocations = new Map<symbol, OwnedInvocation>();
+    private readonly activeRuns = new Map<string, ActiveRun>();
     private readonly onChange?: (snapshot: LiveRangeTodoListSnapshot | null) => void;
 
     constructor(
@@ -406,7 +371,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
             ids.add(event.id);
         }
 
-        this.abortEvents();
+        this.abortRunningEvents();
         this.previousSample = null;
         const eventsWithEta = events.map((event) => ({
             ...event,
@@ -447,6 +412,16 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
                 return this.invalidList('Each event update requires a non-empty id.');
             }
             const id = raw.id.trim();
+            const unsupportedKey = findUnsupportedKey(raw, [
+                'id',
+                'normalized_position',
+                'lead_time_seconds',
+                'content',
+                'taskStart',
+            ]);
+            if (unsupportedKey) {
+                return this.invalidList(`Event '${id}' property '${unsupportedKey}' is not supported.`);
+            }
             if (updates.has(id)) return this.invalidList(`Duplicate live range to-do event id: ${id}.`);
             const existing = this.runtime.events.find((event) => event.id === id);
             if (!existing) return this.invalidList(`Live range to-do event '${id}' was not found.`);
@@ -472,9 +447,11 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
                 if (leadTime === null) return this.invalidList(`Event '${id}' lead_time_seconds must be zero or greater.`);
                 next.lead_time_seconds = leadTime;
             }
-            if (hasOwn(raw, 'data')) {
-                if (!isJsonSafe(raw.data)) return this.invalidList(`Event '${id}' data must be JSON-safe.`);
-                next.data = cloneJson(raw.data);
+            if (hasOwn(raw, 'taskStart')) {
+                if (typeof raw.taskStart !== 'function') {
+                    return this.invalidList(`Event '${id}' taskStart must be a function.`);
+                }
+                next.taskStart = raw.taskStart as LiveRangeTodoEventInput['taskStart'];
             }
             next = {
                 ...next,
@@ -492,7 +469,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         }
 
         const affectedIds = new Set(updates.keys());
-        this.abortEvents(affectedIds);
+        this.abortRunningEvents(affectedIds);
         const next = this.commit({
             ...this.runtime,
             events: this.runtime.events.map((event) => updates.get(event.id) ?? event),
@@ -506,7 +483,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         const parsed = parseIds(idsInput);
         if (!parsed.ids || parsed.ids.length === 0) return this.invalidList(parsed.error || 'Provide event ids to remove.');
         const ids = new Set(parsed.ids);
-        this.abortEvents(ids);
+        this.abortRunningEvents(ids);
         const events = this.runtime.events.filter((event) => !ids.has(event.id));
         const removedCount = this.runtime.events.length - events.length;
         const next = this.commit({ ...this.runtime, events, updated_at: Date.now() });
@@ -525,7 +502,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         if (!parsed.ids) return this.invalidList(parsed.error || 'Provide valid event ids to reset.');
         const now = Date.now();
         const ids = new Set(parsed.ids);
-        this.abortEvents(ids);
+        this.abortRunningEvents(ids);
         const events = this.runtime.events.map((event): RuntimeEvent => ids.has(event.id) ? {
             ...event,
             status: 'pending',
@@ -551,7 +528,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
     }
 
     clear(): LiveRangeTodoListToolResult {
-        this.abortEvents();
+        this.abortRunningEvents();
         const next = this.commit({ ...this.runtime, events: [], updated_at: Date.now() });
         return { status: 'empty', todo_list: next, message: 'Cleared the live range to-do list.' };
     }
@@ -563,27 +540,6 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
             todo_list: current,
             ...(current.events.length === 0 ? { message: 'The live range to-do list is empty.' } : {}),
         };
-    }
-
-    createOwnedOperation(
-        result: LiveRangeTodoListToolResult,
-        eventIds: readonly string[],
-    ): AiToolOperation<LiveRangeTodoListAiResult, LiveRangeTodoDueStatus> {
-        const aiResult = toAiResult(result);
-        const existingIds = eventIds.filter((id) => this.runtime.events.some((event) => event.id === id));
-        if (existingIds.length === 0) return createAiToolOperation(aiResult);
-        const invocation: OwnedInvocation = {
-            id: Symbol('live-range-operation'),
-            eventIds: new Set(existingIds),
-            statuses: new Map(existingIds.map((id) => [id, createAiToolDeferred<LiveRangeTodoDueStatus>()])),
-            result: createAiToolDeferred<LiveRangeTodoListAiResult>(),
-        };
-        this.ownedInvocations.set(invocation.id, invocation);
-        this.runNextDueEvent();
-        return createAiToolOperation(
-            invocation.result.promise,
-            Array.from(invocation.statuses.values()).map((status) => status.promise),
-        );
     }
 
     acceptTelemetry(telemetry: Record<string, any> | null | undefined): void {
@@ -626,7 +582,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
     }
 
     reset(): void {
-        this.abortEvents();
+        this.abortRunningEvents();
         this.samples = [];
         this.previousSample = null;
         const now = Date.now();
@@ -640,7 +596,7 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
     }
 
     protected onDispose(): void {
-        this.abortEvents();
+        this.abortRunningEvents();
         this.samples = [];
         this.previousSample = null;
     }
@@ -669,6 +625,16 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         if (!isRecord(value)) return { error: 'Each event must be an object.' };
         const id = typeof value.id === 'string' ? value.id.trim() : '';
         if (!id) return { error: 'Each event requires a non-empty id.' };
+        const unsupportedKey = findUnsupportedKey(value, [
+            'id',
+            'normalized_position',
+            'lead_time_seconds',
+            'content',
+            'taskStart',
+        ]);
+        if (unsupportedKey) {
+            return { error: `Event '${id}' property '${unsupportedKey}' is not supported.` };
+        }
         const position = parsePosition(value.normalized_position);
         if (position === null) return { error: `Event '${id}' normalized_position must be between 0 and 1.` };
         const leadTime = value.lead_time_seconds === undefined
@@ -677,14 +643,16 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         if (leadTime === null) return { error: `Event '${id}' lead_time_seconds must be zero or greater.` };
         const parsedContent = parseContent(value.content);
         if (!parsedContent.content) return { error: `Event '${id}': ${parsedContent.error}` };
-        if (!isJsonSafe(value.data)) return { error: `Event '${id}' requires JSON-safe data.` };
+        if (typeof value.taskStart !== 'function') {
+            return { error: `Event '${id}' requires a taskStart function.` };
+        }
         return {
             event: {
                 id,
                 normalized_position: position,
                 lead_time_seconds: leadTime,
                 content: parsedContent.content as LiveRangeTodoContent,
-                data: cloneJson(value.data),
+                taskStart: value.taskStart as LiveRangeTodoEventInput['taskStart'],
                 status: 'pending',
                 eta_seconds: null,
                 created_at: now,
@@ -693,55 +661,65 @@ extends AiToolComponentBase<LiveRangeTodoListSnapshot | null> {
         };
     }
 
-    private abortEvents(ids?: Set<string>): void {
-        Array.from(this.ownedInvocations.values()).forEach((invocation) => {
-            const displaced = !ids || Array.from(invocation.eventIds).some((id) => ids.has(id));
-            if (!displaced) return;
-            this.ownedInvocations.delete(invocation.id);
-            const error = new InvalidLiveRangeTodoListError(
-                this.getComponentName(),
-                'The live range to-do operation was replaced or cleared.',
-            );
-            invocation.statuses.forEach((status) => status.reject(error));
-            invocation.result.reject(error);
+    private abortRunningEvents(ids?: Set<string>): void {
+        Array.from(this.activeRuns.entries()).forEach(([id, run]) => {
+            if (ids && !ids.has(id)) return;
+            this.activeRuns.delete(id);
+            run.controller.abort();
         });
     }
 
     private runNextDueEvent(): void {
-        if (this.isDisposed()) return;
+        if (this.isDisposed() || this.activeRuns.size > 0) return;
         const event = this.runtime.events.find((candidate) => (
             candidate.status === 'pending' && candidate.due
         ));
         if (!event) return;
-        const eventData = isRecord(event.data)
-            ? event.data as { [key: string]: JsonValue }
-            : null;
-        const status: LiveRangeTodoDueStatus = {
-            source: 'live_range_todo_list',
-            event: typeof eventData?.event === 'string' && eventData.event.trim()
-                ? eventData.event.trim()
-                : 'live_range_todo_event_due',
-            event_id: event.id,
-            content: event.content,
-            normalized_position: event.normalized_position,
-            lead_time_seconds: event.lead_time_seconds,
-            data: event.data,
-            ...(this.runtime.lap !== undefined ? { lap: this.runtime.lap } : {}),
+
+        const controller = new AbortController();
+        const token = Symbol(event.id);
+        const now = Date.now();
+        const runningEvent: RuntimeEvent = {
+            ...event,
+            status: 'running',
+            due: undefined,
+            lap: this.runtime.lap,
+            started_at: now,
+            updated_at: now,
         };
+        this.activeRuns.set(event.id, { controller, event: runningEvent, token });
         this.commit({
             ...this.runtime,
-            events: this.runtime.events.filter((candidate) => candidate.id !== event.id),
-            updated_at: Date.now(),
+            events: this.runtime.events.map((candidate) => (
+                candidate.id === event.id ? runningEvent : candidate
+            )),
+            updated_at: now,
         });
-        this.ownedInvocations.forEach((invocation) => {
-            const deferred = invocation.statuses.get(event.id);
-            if (!deferred) return;
-            deferred.resolve(status);
-            invocation.eventIds.delete(event.id);
-            if (invocation.eventIds.size === 0) {
-                this.ownedInvocations.delete(invocation.id);
-                invocation.result.resolve(toAiResult(this.get()));
-            }
+
+        try {
+            Promise.resolve(runningEvent.taskStart(controller.signal)).then(
+                () => this.finishEvent(event.id, token),
+                (error) => this.finishEvent(event.id, token, error),
+            );
+        } catch (error) {
+            this.finishEvent(event.id, token, error);
+        }
+    }
+
+    private finishEvent(id: string, token: symbol, error?: unknown): void {
+        if (this.isDisposed()) return;
+        const activeRun = this.activeRuns.get(id);
+        if (!activeRun || activeRun.token !== token || activeRun.controller.signal.aborted) return;
+        this.activeRuns.delete(id);
+        if (error !== undefined) console.error(`Live range to-do event '${id}' task failed.`, error);
+        if (!this.runtime.events.some((event) => event.id === id)) {
+            this.runNextDueEvent();
+            return;
+        }
+        this.commit({
+            ...this.runtime,
+            events: this.runtime.events.filter((event) => event.id !== id),
+            updated_at: Date.now(),
         });
         this.runNextDueEvent();
     }
@@ -774,61 +752,6 @@ const LiveRangeTodoList: React.FC<LiveRangeTodoListProps> = ({
         resetEvents: (ids) => runnerRef.current!.resetEvents(ids),
         clear: () => runnerRef.current!.clear(),
         get: () => runnerRef.current!.get(),
-        setForAi: (args) => {
-            try {
-                if (!Array.isArray(args.events)) {
-                    throw new InvalidLiveRangeTodoListError(name, 'Provide an events array.');
-                }
-                const events = args.events.map(toEventInput);
-                const result = runnerRef.current!.replaceEvents(events);
-                return runnerRef.current!.createOwnedOperation(
-                    result,
-                    events.map((event) => event.id),
-                );
-            } catch (error) {
-                return createAiToolOperationFrom(() => { throw error; });
-            }
-        },
-        updateForAi: (args) => {
-            try {
-                const action = typeof args.action === 'string' ? args.action : '';
-                let result: LiveRangeTodoListToolResult;
-                let ownedIds: string[] = [];
-                if (action === 'add_events') {
-                    if (!Array.isArray(args.events) || args.events.length === 0) {
-                        throw new InvalidLiveRangeTodoListError(name, 'Provide at least one event to add.');
-                    }
-                    const events = args.events.map(toEventInput);
-                    result = runnerRef.current!.get();
-                    events.forEach((event) => {
-                        result = runnerRef.current!.addEvent(event);
-                    });
-                    ownedIds = events.map((event) => event.id);
-                } else if (action === 'update_events') {
-                    const updates = Array.isArray(args.events) ? args.events.map(toSerializableUpdate) : [];
-                    result = runnerRef.current!.updateEvents(updates);
-                    ownedIds = updates.map((event) => event.id);
-                } else if (action === 'remove_events') {
-                    result = runnerRef.current!.removeEvents(args.ids as readonly string[]);
-                } else if (action === 'reset_events') {
-                    const ids = args.ids === undefined
-                        ? runnerRef.current!.get().todo_list?.events.map((event) => event.id) ?? []
-                        : args.ids as string[];
-                    result = runnerRef.current!.resetEvents(ids);
-                    ownedIds = ids;
-                } else if (action === 'clear') {
-                    result = runnerRef.current!.clear();
-                } else {
-                    throw new InvalidLiveRangeTodoListError(
-                        name,
-                        `Unsupported live range to-do list action: ${action || '(missing)'}.`,
-                    );
-                }
-                return runnerRef.current!.createOwnedOperation(result, ownedIds);
-            } catch (error) {
-                return createAiToolOperationFrom(() => { throw error; });
-            }
-        },
         getForAi: () => createAiToolOperation(toAiResult(runnerRef.current!.get())),
     }), [name]);
     useRegisterAiToolComponentRef(name, handle);

@@ -9,7 +9,6 @@ import {
     RetryGoalTaskToolUnavailableError,
     ToolNotRegisteredError,
     createAiToolOperationFrom,
-    mapAiToolOperation,
     type AiToolOperation,
     type AiToolExecutionOutput,
     type AiToolStatusPayload,
@@ -21,6 +20,7 @@ import {
     type AiToolComponentRefDirectory,
 } from 'contexts/AiToolComponentRefContext';
 import {
+    InvalidLiveRangeTodoListError,
     NonLiveContextLiveToolsUnavailableError,
     RecordedSessionLiveToolsUnavailableError,
 } from 'contexts/AiToolComponentError';
@@ -28,11 +28,11 @@ import { isLiveSessionAiAvailable, type RecordingState } from 'views/lap-analysi
 import type {
     AiToolDispatcher,
     GoalHandle,
+    LiveRangeTodoEventInput,
     LiveRangeTodoListHandle,
     ProcedurePlanHandle,
     ProcedurePlanRunResult,
     ProcedurePlanState,
-    LiveRangeTodoDueStatus,
     AiToolQueryResult,
 } from 'components/ai-engineering-tools';
 import type { BaselineCollectionHandle } from 'views/live-session/BaselineCollection';
@@ -41,9 +41,30 @@ import type { LiveSessionHandle } from 'views/live-session/LiveSessionView';
 import type { SessionAnalysisHandle } from 'views/lap-analysis/session-analysis';
 import type { UserSummaryHandle } from 'views/user-summary/user-summary';
 import type { AiMapDisplayPayload } from './AiMapToolDisplay';
-import type { AnalysisResultsChartHandle } from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
+import type {
+    AnalysisResultsChartHandle,
+    FilteredAnalysisSegmentsSnapshot,
+} from 'views/lap-analysis/visualization/charts/AnalysisResultsChart';
+import type {
+    ApplyAnalysisResultQueryInput,
+    QueryAnalysisResultInput,
+    QueryAnalysisResultOutput,
+} from 'views/lap-analysis/visualization/charts/analysisResultsQuery';
 import { getSingletonVisualizationComponentName } from 'views/lap-analysis/visualization/visualization-component-names';
 import type { QueryResult, QueryScope } from 'views/lap-analysis/session-intelligence/types';
+import {
+    getDriverExpertReplayDurationMs,
+    hasComparableDriverExpertData,
+} from 'components/driver-expert-comparison';
+import type { DesktopGame } from 'contexts/DesktopGameContext';
+import type { DriverExpertComparisonSnapshot } from 'views/floating-chat/overlay-display-types';
+
+export type {
+    ApplyAnalysisResultQueryInput,
+    ApplyAnalysisResultQueryOutput,
+    QueryAnalysisResultInput,
+    QueryAnalysisResultOutput,
+} from 'views/lap-analysis/visualization/charts/analysisResultsQuery';
 
 export type AgentSessionMode = 'track_guide' | 'overtake' | 'live_performance_analyst';
 export type AgentSessionStatus = 'starting' | 'active' | 'stopping' | 'stopped' | 'error';
@@ -78,9 +99,7 @@ export interface FrontendAiCommandContext {
     sessionMode?: 'front_desk' | 'live' | 'recorded' | 'user_summary';
     conversationRole?: AgentSessionRole;
     agentMode?: AgentSessionMode;
-    enrichLiveRangeTodoStatus?: (
-        status: LiveRangeTodoDueStatus,
-    ) => AiToolStatusPayload | PromiseLike<AiToolStatusPayload>;
+    sessionGame?: DesktopGame | null;
 }
 
 export interface OpportunityAgentState {
@@ -92,6 +111,35 @@ export interface OpportunityAgentState {
 
 export interface LivePerformanceAnalystState {
     enabled: boolean;
+}
+
+export type FilteredComparisonSkipReason =
+    | 'already_queued'
+    | 'invalid_start_position'
+    | 'comparison_unavailable'
+    | 'invalid_replay_duration';
+
+export interface AddFilteredDriverExpertComparisonsResult {
+    [key: string]: unknown;
+    status: 'ready' | 'empty' | 'busy';
+    active_page_id: string | null;
+    applied_view: string | null;
+    committed_query: string | null;
+    matched_count: number;
+    queued_count: number;
+    skipped_count: number;
+    queued_timing: Array<{
+        segment_id: string;
+        event_id: string;
+        normalized_position: number;
+        replay_duration_ms: number;
+        lead_time_seconds: number;
+    }>;
+    skipped_segments: Array<{
+        segment_id: string;
+        event_id: string;
+        reason_code: FilteredComparisonSkipReason;
+    }>;
 }
 
 export interface AiCommandRegistryContext extends FrontendAiCommandContext {
@@ -257,12 +305,13 @@ export const startAgentRuntime = async (
 export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
     'start_agent_session',
     'stop_agent_session',
-    'set_live_range_todo_list',
-    'update_live_range_todo_list',
+    'add_event_to_live_range_todo_list',
+    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
     'get_live_range_todo_list',
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
+    'apply_analysis_result_query',
     'query_analysis_result',
     'create_goal',
     'retry_goal_task',
@@ -285,19 +334,6 @@ export const FRONTEND_AI_TOOL_NAMES = Object.freeze([
 export type FrontendAiToolName = typeof FRONTEND_AI_TOOL_NAMES[number];
 export type FrontendAiQueryName = Extract<FrontendAiToolName, `query_${string}`>;
 
-export type AnalysisResultQueryData = {
-    result_count: number;
-    mistake_count: number;
-};
-
-export type QueryAnalysisResultArguments<
-    TQuery extends keyof AnalysisResultQueryData,
-> = { query: TQuery };
-
-export type QueryAnalysisResultResult<
-    TQuery extends keyof AnalysisResultQueryData,
-> = AiToolQueryResult<AnalysisResultQueryData[TQuery]>;
-
 export type TelemetryMetricReduce = 'avg' | 'min' | 'max' | 'stats';
 
 export type QueryTelemetryMetricArguments<
@@ -313,9 +349,9 @@ export type QueryTelemetryMetricResult<
 > = AiToolQueryResult<QueryResult<TReduce>>;
 
 export type FrontendAiQueryContractMap = {
-    query_analysis_result: <TQuery extends keyof AnalysisResultQueryData>(
-        args: QueryAnalysisResultArguments<TQuery>,
-    ) => AiToolOperation<QueryAnalysisResultResult<TQuery>>;
+    query_analysis_result: (
+        args: QueryAnalysisResultInput,
+    ) => AiToolOperation<QueryAnalysisResultOutput>;
     query_telemetry_metric: <TReduce extends TelemetryMetricReduce>(
         args: QueryTelemetryMetricArguments<TReduce>,
     ) => AiToolOperation<QueryTelemetryMetricResult<TReduce>>;
@@ -334,24 +370,57 @@ export type FrontendAiQueryContractCoverage = AssertTrue<QueryContractKeysAreExa
 
 const validateAnalysisResultQueryArguments = (
     args: unknown,
-): QueryAnalysisResultArguments<keyof AnalysisResultQueryData> => {
+): QueryAnalysisResultInput => {
+    const validationMessage = 'query_analysis_result requires exactly one non-empty string property named query.';
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
-        throw new InvalidToolCallError(
-            "query_analysis_result requires exactly one query set to 'result_count' or 'mistake_count'.",
-        );
+        throw new InvalidToolCallError(validationMessage);
     }
     const value = args as Record<string, unknown>;
-    if (Object.keys(value).length !== 1
-        || !Object.prototype.hasOwnProperty.call(value, 'query')
-        || (value.query !== 'result_count' && value.query !== 'mistake_count')) {
-        throw new InvalidToolCallError(
-            "query_analysis_result requires exactly one query set to 'result_count' or 'mistake_count'.",
-        );
+    const keys = Reflect.ownKeys(value);
+    const queryProperty = Object.getOwnPropertyDescriptor(value, 'query');
+    if (keys.length !== 1
+        || keys[0] !== 'query'
+        || !queryProperty
+        || !('value' in queryProperty)
+        || typeof queryProperty.value !== 'string'
+        || !queryProperty.value.trim()) {
+        throw new InvalidToolCallError(validationMessage);
     }
-    return value as QueryAnalysisResultArguments<keyof AnalysisResultQueryData>;
+    return { query: queryProperty.value };
 };
 
-type WorkflowOwner = 'chat' | 'goal' | 'procedure_plan';
+const validateApplyAnalysisResultQueryArguments = (
+    args: unknown,
+): ApplyAnalysisResultQueryInput => {
+    const validationMessage = 'apply_analysis_result_query requires a non-empty string property named query and accepts only an optional integer property named page_number.';
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+        throw new InvalidToolCallError(validationMessage);
+    }
+    const value = args as Record<string, unknown>;
+    const keys = Reflect.ownKeys(value);
+    const queryProperty = Object.getOwnPropertyDescriptor(value, 'query');
+    const pageNumberProperty = Object.getOwnPropertyDescriptor(value, 'page_number');
+    if (
+        keys.some((key) => key !== 'query' && key !== 'page_number')
+        || !queryProperty
+        || !('value' in queryProperty)
+        || typeof queryProperty.value !== 'string'
+        || !queryProperty.value.trim()
+        || (pageNumberProperty && (
+            !('value' in pageNumberProperty)
+            || typeof pageNumberProperty.value !== 'number'
+            || !Number.isInteger(pageNumberProperty.value)
+        ))
+    ) {
+        throw new InvalidToolCallError(validationMessage);
+    }
+    return {
+        query: queryProperty.value,
+        ...(pageNumberProperty ? { page_number: pageNumberProperty.value as number } : {}),
+    };
+};
+
+type WorkflowOwner = 'chat' | 'goal' | 'procedure_plan' | 'live_range_todo';
 
 type FrontendAiToolDefinition = {
     readonly name: FrontendAiToolName;
@@ -383,14 +452,36 @@ const WORKFLOW_CONTROL_TOOLS = new Set<FrontendAiToolName>([
     'clear_procedure_plan',
 ]);
 
+const LIVE_RANGE_TODO_TOOLS = new Set<FrontendAiToolName>([
+    'add_event_to_live_range_todo_list',
+    'get_live_range_todo_list',
+]);
+
+const NON_CHILD_LIVE_SESSION_TOOLS = new Set<FrontendAiToolName>([
+    'start_agent_session',
+    'run_recorded_ai_analysis',
+    'get_recorded_session_analysis',
+    'get_recorded_session_context',
+]);
+
+const LIVE_RANGE_TODO_NESTED_TOOLS = new Set<FrontendAiToolName>(
+    FRONTEND_AI_TOOL_NAMES.filter((name) => (
+        !WORKFLOW_CONTROL_TOOLS.has(name)
+        && name !== 'add_event_to_live_range_todo_list'
+        && name !== 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
+        && !NON_CHILD_LIVE_SESSION_TOOLS.has(name)
+    )),
+);
+
 const GOAL_STEP_TOOLS = new Set<FrontendAiToolName>([
     'stop_agent_session',
-    'set_live_range_todo_list',
-    'update_live_range_todo_list',
+    'add_event_to_live_range_todo_list',
+    'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
     'get_live_range_todo_list',
     'collect_live_baseline',
     'restart_live_baseline',
     'analyze_live_recorded_analysis',
+    'apply_analysis_result_query',
     'query_analysis_result',
     'advance_plan_step',
     'clear_procedure_plan',
@@ -420,6 +511,21 @@ const assertAvailable = (
     name: FrontendAiToolName,
     owner: WorkflowOwner,
 ) => {
+    const isChildLiveSession = context.sessionMode === 'live'
+        && context.conversationRole === 'agent';
+    if (owner === 'chat' && LIVE_RANGE_TODO_TOOLS.has(name) && !isChildLiveSession) {
+        throw new ToolNotRegisteredError(
+            `Tool '${name}' is available only in child live-agent sessions.`,
+        );
+    }
+    if (owner === 'live_range_todo' && (
+        !isChildLiveSession
+        || !LIVE_RANGE_TODO_NESTED_TOOLS.has(name)
+    )) {
+        throw new ToolNotRegisteredError(
+            `Tool '${name}' cannot be scheduled by the live range to-do list.`,
+        );
+    }
     if (owner === 'goal' && !isGoalStepAvailableForContext(context, name)) {
         throw new ToolNotRegisteredError(`Tool '${name}' is unavailable inside a goal.`);
     }
@@ -444,6 +550,332 @@ const assertAvailable = (
             'Goal task retry is available only to the live performance analyst.',
         );
     }
+    if (name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list' && (
+        context.sessionMode !== 'live'
+        || context.conversationRole !== 'agent'
+        || context.agentMode !== 'live_performance_analyst'
+    )) {
+        throw new ToolNotRegisteredError(
+            `Tool '${name}' is available only to the live performance analyst.`,
+        );
+    }
+};
+
+const hasOwn = (value: Record<string, unknown>, key: string): boolean => (
+    Object.prototype.hasOwnProperty.call(value, key)
+);
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+);
+
+const validateNoArguments = (args: unknown, toolName: string): void => {
+    if (!isRecord(args) || Reflect.ownKeys(args).length > 0) {
+        throw new InvalidToolCallError(`${toolName} does not accept arguments.`);
+    }
+};
+
+const invalidLiveRangeTodoList = (message: string): never => {
+    throw new InvalidLiveRangeTodoListError(
+        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+        message,
+    );
+};
+
+const assertExactKeys = (
+    value: Record<string, unknown>,
+    allowed: readonly string[],
+    label: string,
+): void => {
+    const unsupported = Reflect.ownKeys(value).find((key) => (
+        typeof key !== 'string' || !allowed.includes(key)
+    ));
+    if (unsupported !== undefined) {
+        invalidLiveRangeTodoList(
+            `${label} property '${String(unsupported)}' is not supported.`,
+        );
+    }
+};
+
+const isJsonSafe = (value: unknown, ancestors = new Set<object>()): boolean => {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value !== 'object') return false;
+    if (ancestors.has(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) return false;
+    ancestors.add(value);
+    const valid = Array.isArray(value)
+        ? value.every((entry) => isJsonSafe(entry, ancestors))
+        : Reflect.ownKeys(value).every((key) => (
+            typeof key === 'string'
+            && isJsonSafe((value as Record<string, unknown>)[key], ancestors)
+        ));
+    ancestors.delete(value);
+    return valid;
+};
+
+type PreparedLiveRangeTodoEvent = {
+    event: Omit<LiveRangeTodoEventInput, 'taskStart'>;
+    tool: {
+        name: FrontendAiToolName;
+        arguments: Record<string, unknown>;
+    };
+};
+
+const validateLiveRangeTodoBatch = (
+    args: unknown,
+): PreparedLiveRangeTodoEvent[] => {
+    if (!isRecord(args)) invalidLiveRangeTodoList('Provide an object containing events.');
+    const request = args as Record<string, unknown>;
+    assertExactKeys(request, ['events'], 'Live range to-do request');
+    if (!Array.isArray(request.events) || request.events.length === 0) {
+        invalidLiveRangeTodoList('Provide at least one event to add.');
+    }
+    const rawEvents = request.events as unknown[];
+
+    const ids = new Set<string>();
+    return rawEvents.map((item, index) => {
+        const itemLabel = `Live range to-do item ${index + 1}`;
+        if (!isRecord(item)) invalidLiveRangeTodoList(`${itemLabel} must be an object.`);
+        const rawItem = item as Record<string, unknown>;
+        assertExactKeys(rawItem, ['event', 'tool'], itemLabel);
+        if (!hasOwn(rawItem, 'event') || !hasOwn(rawItem, 'tool')) {
+            invalidLiveRangeTodoList(`${itemLabel} requires event and tool objects.`);
+        }
+
+        const eventValue = rawItem.event;
+        if (!isRecord(eventValue)) invalidLiveRangeTodoList(`${itemLabel} event must be an object.`);
+        const rawEvent = eventValue as Record<string, unknown>;
+        assertExactKeys(
+            rawEvent,
+            ['id', 'normalized_position', 'lead_time_seconds', 'content'],
+            `${itemLabel} event`,
+        );
+        const id = typeof rawEvent.id === 'string' ? rawEvent.id.trim() : '';
+        if (!id) invalidLiveRangeTodoList(`${itemLabel} event requires a non-empty id.`);
+        if (ids.has(id)) invalidLiveRangeTodoList(`Duplicate live range to-do event id: ${id}.`);
+        ids.add(id);
+        if (
+            typeof rawEvent.normalized_position !== 'number'
+            || !Number.isFinite(rawEvent.normalized_position)
+            || rawEvent.normalized_position < 0
+            || rawEvent.normalized_position > 1
+        ) {
+            invalidLiveRangeTodoList(`Event '${id}' normalized_position must be between 0 and 1.`);
+        }
+        if (hasOwn(rawEvent, 'lead_time_seconds') && (
+            typeof rawEvent.lead_time_seconds !== 'number'
+            || !Number.isFinite(rawEvent.lead_time_seconds)
+            || rawEvent.lead_time_seconds < 0
+        )) {
+            invalidLiveRangeTodoList(`Event '${id}' lead_time_seconds must be zero or greater.`);
+        }
+        if (!isRecord(rawEvent.content)) {
+            invalidLiveRangeTodoList(`Event '${id}' requires a structured content object.`);
+        }
+        const rawContent = rawEvent.content as Record<string, unknown>;
+        assertExactKeys(rawContent, ['title', 'description'], `Event '${id}' content`);
+        const title = typeof rawContent.title === 'string'
+            ? rawContent.title.trim()
+            : '';
+        if (!title) invalidLiveRangeTodoList(`Event '${id}' content requires a non-empty title.`);
+        if (hasOwn(rawContent, 'description')
+            && typeof rawContent.description !== 'string') {
+            invalidLiveRangeTodoList(`Event '${id}' content description must be a string.`);
+        }
+
+        const toolValue = rawItem.tool;
+        if (!isRecord(toolValue)) invalidLiveRangeTodoList(`${itemLabel} tool must be an object.`);
+        const rawTool = toolValue as Record<string, unknown>;
+        assertExactKeys(rawTool, ['name', 'arguments'], `${itemLabel} tool`);
+        const toolName = typeof rawTool.name === 'string' ? rawTool.name.trim() : '';
+        if (!toolName || !LIVE_RANGE_TODO_NESTED_TOOLS.has(toolName as FrontendAiToolName)) {
+            invalidLiveRangeTodoList(
+                `Tool '${toolName || '(missing)'}' cannot be scheduled by the live range to-do list.`,
+            );
+        }
+        if (!hasOwn(rawTool, 'arguments') || !isRecord(rawTool.arguments)) {
+            invalidLiveRangeTodoList(`Scheduled tool '${toolName}' requires an arguments object.`);
+        }
+        if (!isJsonSafe(rawTool.arguments)) {
+            invalidLiveRangeTodoList(`Scheduled tool '${toolName}' arguments must be JSON-safe.`);
+        }
+        const normalizedPosition = rawEvent.normalized_position as number;
+        const leadTimeSeconds = rawEvent.lead_time_seconds as number | undefined;
+        const description = rawContent.description as string | undefined;
+        const toolArguments = rawTool.arguments as Record<string, unknown>;
+
+        return {
+            event: {
+                id,
+                normalized_position: normalizedPosition,
+                ...(leadTimeSeconds !== undefined
+                    ? { lead_time_seconds: leadTimeSeconds }
+                    : {}),
+                content: {
+                    title,
+                    ...(description !== undefined
+                        ? { description }
+                        : {}),
+                },
+            },
+            tool: {
+                name: toolName as FrontendAiToolName,
+                arguments: JSON.parse(JSON.stringify(toolArguments)),
+            },
+        };
+    });
+};
+
+const getOrMountLiveRangeTodoList = (
+    context: FrontendAiCommandContext,
+): LiveRangeTodoListHandle => {
+    const directory = getDirectory(context);
+    const mounted = directory.findComponentRef<LiveRangeTodoListHandle>(
+        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+    )?.current;
+    if (mounted) return mounted;
+    getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
+        .mountLiveRangeTodoList();
+    return resolveNamedComponentHandle<LiveRangeTodoListHandle>(
+        directory,
+        AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
+    );
+};
+
+const createScheduledTaskStart = (
+    descriptor: PreparedLiveRangeTodoEvent['tool'],
+    dispatchNested: AiToolDispatcher,
+): LiveRangeTodoEventInput['taskStart'] => async (signal) => {
+    if (signal.aborted) {
+        const error = new Error('The live range to-do task was aborted.');
+        error.name = 'AbortError';
+        throw error;
+    }
+    const operation = dispatchNested(descriptor.name, descriptor.arguments);
+    const result = await operation.result;
+    if (result instanceof Error) throw result;
+    return result;
+};
+
+type EligibleFilteredComparison = {
+    segmentId: string;
+    eventId: string;
+    normalizedPosition: number;
+    replayDurationMs: number;
+    leadTimeSeconds: number;
+    overlay: DriverExpertComparisonSnapshot;
+    section?: string;
+};
+
+const createFilteredComparisonResult = (
+    snapshot: FilteredAnalysisSegmentsSnapshot,
+): AddFilteredDriverExpertComparisonsResult => ({
+    status: snapshot.status,
+    active_page_id: snapshot.activePageId,
+    applied_view: snapshot.appliedView,
+    committed_query: snapshot.committedQuery,
+    matched_count: snapshot.segments.length,
+    queued_count: 0,
+    skipped_count: 0,
+    queued_timing: [],
+    skipped_segments: [],
+});
+
+const queueFilteredDriverExpertComparisons = (
+    context: FrontendAiCommandContext,
+    snapshot: FilteredAnalysisSegmentsSnapshot,
+): AddFilteredDriverExpertComparisonsResult => {
+    const result = createFilteredComparisonResult(snapshot);
+    if (snapshot.status !== 'ready') return result;
+
+    const eligible: EligibleFilteredComparison[] = [];
+    snapshot.segments.forEach((segment) => {
+        const eventId = `analysis-comparison:${segment.id}`;
+        const skip = (reasonCode: FilteredComparisonSkipReason) => {
+            result.skipped_segments.push({
+                segment_id: segment.id,
+                event_id: eventId,
+                reason_code: reasonCode,
+            });
+        };
+        const start = segment.normalizedPositionRange?.start;
+        if (typeof start !== 'number' || !Number.isFinite(start) || start < 0 || start > 1) {
+            skip('invalid_start_position');
+            return;
+        }
+        if (!hasComparableDriverExpertData(segment.comparison, context.sessionGame ?? null)) {
+            skip('comparison_unavailable');
+            return;
+        }
+        const replayDurationMs = getDriverExpertReplayDurationMs(segment.comparison);
+        if (!Number.isFinite(replayDurationMs) || replayDurationMs <= 0) {
+            skip('invalid_replay_duration');
+            return;
+        }
+        const title = segment.title
+            ? `${segment.title}: Driver vs Expert`
+            : 'Driver vs Expert';
+        eligible.push({
+            segmentId: segment.id,
+            eventId,
+            normalizedPosition: start,
+            replayDurationMs,
+            leadTimeSeconds: (replayDurationMs / 1000) + 2,
+            overlay: {
+                title,
+                comparison: segment.comparison!,
+                game: context.sessionGame ?? null,
+            },
+            section: segment.section,
+        });
+    });
+
+    if (eligible.length > 0) {
+        const todoList = getOrMountLiveRangeTodoList(context);
+        const aiChat = getComponent<AiChatHandle>(
+            context,
+            AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
+        );
+        const existingIds = new Set(
+            todoList.get().todo_list?.events.map((event) => event.id) ?? [],
+        );
+        eligible.forEach((comparison) => {
+            if (existingIds.has(comparison.eventId)) {
+                result.skipped_segments.push({
+                    segment_id: comparison.segmentId,
+                    event_id: comparison.eventId,
+                    reason_code: 'already_queued',
+                });
+                return;
+            }
+            existingIds.add(comparison.eventId);
+            todoList.addEvent({
+                id: comparison.eventId,
+                normalized_position: comparison.normalizedPosition,
+                lead_time_seconds: comparison.leadTimeSeconds,
+                content: {
+                    title: comparison.overlay.title,
+                    ...(comparison.section
+                        ? { description: `Section: ${comparison.section}` }
+                        : {}),
+                },
+                taskStart: () => aiChat.displayDriverExpertComparison(comparison.overlay),
+            });
+            result.queued_timing.push({
+                segment_id: comparison.segmentId,
+                event_id: comparison.eventId,
+                normalized_position: comparison.normalizedPosition,
+                replay_duration_ms: comparison.replayDurationMs,
+                lead_time_seconds: comparison.leadTimeSeconds,
+            });
+        });
+    }
+
+    result.queued_count = result.queued_timing.length;
+    result.skipped_count = result.skipped_segments.length;
+    return result;
 };
 
 const definitionList = Object.freeze([
@@ -460,21 +892,43 @@ const definitionList = Object.freeze([
             .stopAgentSession(args.agent_session_id ?? args.agentSessionId),
     },
     {
-        name: 'set_live_range_todo_list',
+        name: 'add_event_to_live_range_todo_list',
         componentName: AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT,
-        execute: (context, args) => getComponent<AiChatHandle>(context, AI_TOOL_COMPONENT_NAMES.DASHBOARD_ASSISTANT)
-            .createLiveRangeTodoList(args),
+        execute: (context, args, dispatchNested) => {
+            const prepared = validateLiveRangeTodoBatch(args);
+            const todoList = getOrMountLiveRangeTodoList(context);
+            const existingIds = new Set(
+                todoList.get().todo_list?.events.map((event) => event.id) ?? [],
+            );
+            const collision = prepared.find(({ event }) => existingIds.has(event.id));
+            if (collision) {
+                invalidLiveRangeTodoList(
+                    `Duplicate live range to-do event id: ${collision.event.id}.`,
+                );
+            }
+            prepared.forEach(({ event, tool }) => {
+                todoList.addEvent({
+                    ...event,
+                    taskStart: createScheduledTaskStart(tool, dispatchNested),
+                });
+            });
+            return todoList.getForAi();
+        },
     },
     {
-        name: 'update_live_range_todo_list',
-        componentName: AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST,
-        execute: (context, args) => {
-            const operation = getComponent<LiveRangeTodoListHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_RANGE_TODO_LIST)
-                .updateForAi(args);
-            return context.enrichLiveRangeTodoStatus
-                ? mapAiToolOperation(operation, (result) => result, context.enrichLiveRangeTodoStatus)
-                : operation;
-        },
+        name: 'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        componentName: getSingletonVisualizationComponentName('analysis-results'),
+        execute: (context, args) => createAiToolOperationFrom(() => {
+            validateNoArguments(
+                args,
+                'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+            );
+            const snapshot = getComponent<AnalysisResultsChartHandle>(
+                context,
+                getSingletonVisualizationComponentName('analysis-results'),
+            ).getFilteredSegments();
+            return queueFilteredDriverExpertComparisons(context, snapshot);
+        }),
     },
     {
         name: 'get_live_range_todo_list',
@@ -499,6 +953,17 @@ const definitionList = Object.freeze([
         componentName: AI_TOOL_COMPONENT_NAMES.LIVE_SESSION,
         execute: (context, args) => getComponent<LiveSessionHandle>(context, AI_TOOL_COMPONENT_NAMES.LIVE_SESSION)
             .analyzeLiveRecordedAnalysisForAi(args),
+    },
+    {
+        name: 'apply_analysis_result_query',
+        componentName: getSingletonVisualizationComponentName('analysis-results'),
+        execute: (context, args) => {
+            const request = validateApplyAnalysisResultQueryArguments(args);
+            return getComponent<AnalysisResultsChartHandle>(
+                context,
+                getSingletonVisualizationComponentName('analysis-results'),
+            ).applyAnalysisResultQuery(request);
+        },
     },
     {
         name: 'query_analysis_result',
@@ -648,11 +1113,16 @@ const dispatchAiTool = (
         const definition = definitions[name as FrontendAiToolName];
         if (!definition) throw new ToolNotRegisteredError(`Tool '${name}' is not registered.`);
         assertAvailable(context, definition.name, owner);
+        const nestedOwner: WorkflowOwner = definition.name === 'create_goal'
+            ? 'goal'
+            : definition.name === 'add_event_to_live_range_todo_list'
+                ? 'live_range_todo'
+                : 'procedure_plan';
         const dispatchNested: AiToolDispatcher = (nestedName, nestedArgs = {}) => dispatchAiTool(
             context,
             nestedName,
             nestedArgs,
-            definition.name === 'create_goal' ? 'goal' : 'procedure_plan',
+            nestedOwner,
         ) as ReturnType<AiToolDispatcher>;
         return definition.execute(context, args, dispatchNested);
     } catch (error) {

@@ -82,8 +82,7 @@ describe('appended AI display components', () => {
                             id: 'range-1',
                             normalized_position: 0.2,
                             lead_time_seconds: 2,
-                            content: { title: 'Turn exit' },
-                            data: {},
+                            content: { title: 'Turn exit', description: 'Use all the road' },
                             status: 'running',
                             eta_seconds: 2,
                             created_at: 1,
@@ -95,6 +94,7 @@ describe('appended AI display components', () => {
         );
 
         expect(screen.getByText('Turn exit')).toBeInTheDocument();
+        expect(screen.getByText('Use all the road')).toBeInTheDocument();
         expect(screen.getByText('running')).toBeInTheDocument();
     });
 });

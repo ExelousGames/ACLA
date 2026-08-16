@@ -1,14 +1,10 @@
 import type { AiToolOperation } from './ai-tool-operation';
 
-export type JsonPrimitive = string | number | boolean | null;
-export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
-
 export type LiveRangeTodoStatus = 'pending' | 'running';
 
 export interface LiveRangeTodoContent {
     title: string;
-    detail?: string;
-    metadata?: JsonValue;
+    description?: string;
 }
 
 export interface LiveRangeTodoEventInput {
@@ -16,7 +12,7 @@ export interface LiveRangeTodoEventInput {
     normalized_position: number;
     lead_time_seconds?: number;
     content: LiveRangeTodoContent;
-    data: JsonValue;
+    taskStart: (signal: AbortSignal) => unknown | Promise<unknown>;
 }
 
 export interface LiveRangeTodoEventUpdate {
@@ -24,7 +20,7 @@ export interface LiveRangeTodoEventUpdate {
     normalized_position?: number;
     lead_time_seconds?: number;
     content?: Partial<LiveRangeTodoContent>;
-    data?: JsonValue;
+    taskStart?: (signal: AbortSignal) => unknown | Promise<unknown>;
 }
 
 export interface LiveRangeTodoSnapshotEvent {
@@ -32,7 +28,6 @@ export interface LiveRangeTodoSnapshotEvent {
     normalized_position: number;
     lead_time_seconds: number;
     content: LiveRangeTodoContent;
-    data: JsonValue;
     status: LiveRangeTodoStatus;
     eta_seconds: number | null;
     created_at: number;
@@ -56,17 +51,6 @@ export interface LiveRangeTodoListToolResult {
     message?: string;
 }
 
-export type LiveRangeTodoDueStatus = {
-    source: 'live_range_todo_list';
-    event: string;
-    event_id: string;
-    content: LiveRangeTodoContent;
-    normalized_position: number;
-    lead_time_seconds: number;
-    data: JsonValue;
-    lap?: number;
-};
-
 export type LiveRangeTodoListAiResult = {
     status: 'ready' | 'empty';
     event_count: number;
@@ -84,7 +68,5 @@ export interface LiveRangeTodoListHandle {
     resetEvents: (ids?: readonly string[]) => LiveRangeTodoListToolResult;
     clear: () => LiveRangeTodoListToolResult;
     get: () => LiveRangeTodoListToolResult;
-    setForAi: (args: Record<string, unknown>) => AiToolOperation<LiveRangeTodoListAiResult, LiveRangeTodoDueStatus>;
-    updateForAi: (args: Record<string, unknown>) => AiToolOperation<LiveRangeTodoListAiResult, LiveRangeTodoDueStatus>;
     getForAi: () => AiToolOperation<LiveRangeTodoListAiResult>;
 }

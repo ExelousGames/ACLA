@@ -64,20 +64,6 @@ export const getAnalysisResultMistakeParentLabels = (
     resolveLabel?.(id),
 ].filter((label): label is string => Boolean(label)));
 
-export const countAnalysisResultMistakes = (
-    elements: readonly AnalysisResultElement[],
-    resolveLabel?: AnalysisResultLabelResolver,
-): number => {
-    const recognizedLabels = new Set(
-        Array.from(getAnalysisResultMistakeParentLabels('MSP', resolveLabel)).concat(
-            Array.from(getAnalysisResultMistakeParentLabels('MSR', resolveLabel)),
-        ),
-    );
-    return elements.filter((element) => (
-        element.labels.some((label) => recognizedLabels.has(label))
-    )).length;
-};
-
 let generatedIdSequence = 0;
 
 export const createAnalysisResultElementId = (): string => (

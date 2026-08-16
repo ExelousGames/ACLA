@@ -35,7 +35,6 @@ export type {
     ProcedurePlanAdvanceResult,
     ProcedurePlanHandle,
     ProcedurePlanProps,
-    ProcedurePlanProgressStatus,
     ProcedurePlanRequest,
     ProcedurePlanRequestSnapshot,
     ProcedurePlanRunResult,
@@ -53,10 +52,7 @@ export {
 } from './LiveRangeTodoList';
 export type { LiveRangeTelemetrySample, LiveRangeTodoListProps } from './LiveRangeTodoList';
 export type {
-    JsonPrimitive,
-    JsonValue,
     LiveRangeTodoContent,
-    LiveRangeTodoDueStatus,
     LiveRangeTodoEventInput,
     LiveRangeTodoEventUpdate,
     LiveRangeTodoListHandle,
@@ -86,7 +82,6 @@ export type {
     GoalDisplayProps,
     GoalHandle,
     GoalProps,
-    GoalProgressStatus,
     GoalRunResult,
     GoalRequest,
     GoalSnapshot,

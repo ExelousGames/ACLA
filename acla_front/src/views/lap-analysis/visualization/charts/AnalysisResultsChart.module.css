@@ -7,10 +7,47 @@
     color: var(--lp-white);
 }
 
-.pagination {
+.navigation {
     padding: 10px 14px;
     border-bottom: 1px solid var(--lp-border);
     flex-shrink: 0;
+}
+
+.viewNavigation {
+    min-width: 0;
+    padding: 2px;
+    border: 1px solid var(--lp-border);
+    border-radius: var(--lp-radius-pill);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.viewButton {
+    min-height: 26px;
+    padding: 3px 11px;
+    border: 0;
+    border-radius: var(--lp-radius-pill);
+    background: transparent;
+    color: var(--lp-gray);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.viewButton:hover:not(:disabled),
+.viewButton:focus-visible:not(:disabled) {
+    color: var(--lp-white);
+    outline: none;
+}
+
+.viewButtonActive {
+    background: var(--lp-green-dim);
+    color: var(--lp-green);
+    box-shadow: inset 0 0 0 1px rgba(0, 230, 118, 0.35);
+}
+
+.viewButton:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
 }
 
 .pageNavigation {
@@ -84,6 +121,15 @@
     border: 1px solid var(--lp-border);
     border-radius: var(--lp-radius);
     background: rgba(255, 255, 255, 0.025);
+}
+
+.trendError {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(255, 92, 92, 0.55);
+    border-radius: var(--lp-radius);
+    color: #ff9d9d;
+    overflow-wrap: anywhere;
 }
 
 .trendChartSection {
@@ -170,8 +216,8 @@
     justify-content: flex-end;
 }
 
-.filterControl,
-.sortControl {
+.trendParentControl,
+.viewControl {
     min-width: 0;
     display: flex;
     align-items: center;
@@ -179,8 +225,8 @@
     white-space: nowrap;
 }
 
-.filterSelect,
-.sortSelect {
+.trendParentSelect,
+.viewSelect {
     width: clamp(132px, 16vw, 166px);
     min-width: 0;
     max-width: 100%;
@@ -194,35 +240,41 @@
     cursor: pointer;
 }
 
-.filterSelect:hover,
-.filterSelect:focus-visible,
-.sortSelect:hover,
-.sortSelect:focus-visible {
+.trendParentSelect:hover,
+.trendParentSelect:focus-visible,
+.viewSelect:hover,
+.viewSelect:focus-visible {
     border-color: var(--lp-green);
     outline: none;
 }
 
-.filterSelect option,
-.sortSelect option {
+.trendParentSelect option,
+.viewSelect option {
     background: var(--lp-bg-panel);
     color: var(--lp-white);
 }
 
 @media (max-width: 640px) {
+    .viewNavigation {
+        width: 100%;
+    }
+
+    .viewButton {
+        flex: 1;
+    }
+
     .controls {
         width: 100%;
         margin-left: 0;
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .filterControl,
-    .sortControl {
+    .trendParentControl,
+    .viewControl {
         flex-wrap: wrap;
     }
 
-    .filterSelect,
-    .sortSelect {
+    .trendParentSelect,
+    .viewSelect {
         width: 100%;
     }
 
@@ -234,6 +286,76 @@
     .specificMistakeControl {
         flex-wrap: wrap;
     }
+}
+
+.queryControls {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--lp-border);
+    flex-shrink: 0;
+}
+
+.queryInput {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 76px;
+    margin-top: 6px;
+    padding: 8px 10px;
+    resize: vertical;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius);
+    background: rgba(22, 22, 40, 0.6);
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.queryInput:focus-visible {
+    border-color: var(--lp-green);
+    outline: none;
+}
+
+.queryActions {
+    margin-top: 7px;
+}
+
+.queryButton {
+    min-height: 26px;
+    padding: 3px 10px;
+    border: 1px solid var(--lp-border-strong);
+    border-radius: var(--lp-radius-pill);
+    background: rgba(255, 255, 255, 0.035);
+    color: var(--lp-white);
+    font-family: var(--lp-mono);
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.queryButton:hover:not(:disabled),
+.queryButton:focus-visible:not(:disabled) {
+    border-color: var(--lp-green);
+    color: var(--lp-green);
+    outline: none;
+}
+
+.queryButton:disabled {
+    color: var(--lp-gray);
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.queryError {
+    margin-top: 7px;
+    padding: 7px 9px;
+    border: 1px solid rgba(255, 92, 92, 0.55);
+    border-radius: var(--lp-radius);
+    color: #ff9d9d;
+    overflow-wrap: anywhere;
+}
+
+.queryError:focus-visible {
+    outline: 1px solid #ff9d9d;
+    outline-offset: 2px;
 }
 
 .list {

@@ -146,20 +146,9 @@ export type GoalRunResult = Pick<
 
 export type GoalAiResult = Omit<GoalRunResult, 'name'> & { goal: string };
 
-export type GoalProgressStatus = {
-    workflow: 'goal';
-    phase: 'step' | 'determination';
-    id: string;
-    tool_name: string;
-    status: 'completed' | 'failed' | 'skipped';
-    value?: unknown;
-    error?: string;
-    nested_statuses?: readonly object[];
-};
-
 export interface GoalHandle extends NamedAiToolComponentHandle {
-    createGoal(input: GoalRequest): AiToolOperation<GoalAiResult, GoalProgressStatus>;
-    retryFailedTask(): AiToolOperation<GoalAiResult, GoalProgressStatus>;
+    createGoal(input: GoalRequest): AiToolOperation<GoalAiResult>;
+    retryFailedTask(): AiToolOperation<GoalAiResult>;
     getSnapshot(): GoalSnapshot | null;
     clear(): void;
 }
@@ -398,12 +387,10 @@ type RuntimeTaskExecutionResult = {
     value: unknown;
     error?: GoalComponentError;
     source_result?: GoalSourceResultMetadata;
-    nested_statuses: object[];
 };
 
 type ActiveGoalOperation = {
     result: AiToolDeferred<GoalRunResult>;
-    statuses: Map<string, AiToolDeferred<GoalProgressStatus>>;
 };
 
 const getOutputStatus = (output: unknown): string => {
@@ -439,12 +426,12 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         return this.currentSnapshot ? cloneSnapshot(this.currentSnapshot) : null;
     }
 
-    create(input: GoalRequest): AiToolOperation<GoalRunResult, GoalProgressStatus> {
+    create(input: GoalRequest): AiToolOperation<GoalRunResult> {
         const validation = validateGoalRequest(input, this.getComponentName());
         if ('error' in validation) {
             return createAiToolOperationFrom(() => this.runCreate(input));
         }
-        return this.startOperation(validation.request, () => this.runCreate(input));
+        return this.startOperation(() => this.runCreate(input));
     }
 
     private async runCreate(input: GoalRequest): Promise<GoalRunResult> {
@@ -476,10 +463,10 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         return this.runPreparation(validation.request, this.generation, 0);
     }
 
-    retryFailedTask(): AiToolOperation<GoalRunResult, GoalProgressStatus> {
+    retryFailedTask(): AiToolOperation<GoalRunResult> {
         const request = this.request;
         if (!request) return createAiToolOperationFrom(() => this.runRetryFailedTask());
-        return this.startOperation(request, () => this.runRetryFailedTask());
+        return this.startOperation(() => this.runRetryFailedTask());
     }
 
     private async runRetryFailedTask(): Promise<GoalRunResult> {
@@ -540,69 +527,30 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
     }
 
     private startOperation(
-        request: GoalRequest,
         run: () => Promise<GoalRunResult>,
-    ): AiToolOperation<GoalRunResult, GoalProgressStatus> {
+    ): AiToolOperation<GoalRunResult> {
         this.cancelActiveOperation(new GoalReplacedError(
             this.getComponentName(),
             'The goal run was replaced.',
         ));
         const operation: ActiveGoalOperation = {
             result: createAiToolDeferred<GoalRunResult>(),
-            statuses: new Map([
-                ...request.steps.map((step) => [
-                    `step:${step.id}`,
-                    createAiToolDeferred<GoalProgressStatus>(),
-                ] as const),
-                ['determination', createAiToolDeferred<GoalProgressStatus>()] as const,
-            ]),
         };
         this.activeOperation = operation;
         void run().then(
             (result) => operation.result.resolve(result),
             (error) => operation.result.reject(error),
         ).finally(() => {
-            operation.statuses.forEach((status, key) => {
-                if (status.settled) return;
-                const stepId = key.startsWith('step:') ? key.slice(5) : 'determination';
-                const step = request.steps.find((candidate) => candidate.id === stepId);
-                status.resolve({
-                    workflow: 'goal',
-                    phase: key === 'determination' ? 'determination' : 'step',
-                    id: stepId,
-                    tool_name: key === 'determination'
-                        ? request.determination.tool.name
-                        : step?.name ?? '',
-                    status: 'skipped',
-                });
-            });
             if (this.activeOperation === operation) this.activeOperation = null;
         });
-        return createAiToolOperation(
-            operation.result.promise,
-            Array.from(operation.statuses.values()).map((status) => status.promise),
-        );
+        return createAiToolOperation(operation.result.promise);
     }
 
     private cancelActiveOperation(error: Error): void {
         const operation = this.activeOperation;
         if (!operation) return;
         this.activeOperation = null;
-        operation.statuses.forEach((status) => {
-            if (!status.settled) status.resolve({
-                workflow: 'goal',
-                phase: 'step',
-                id: 'cancelled',
-                tool_name: '',
-                status: 'skipped',
-                error: error.message,
-            });
-        });
         operation.result.reject(error);
-    }
-
-    private resolveProgress(key: string, status: GoalProgressStatus): void {
-        this.activeOperation?.statuses.get(key)?.resolve(status);
     }
 
     private async runPreparation(
@@ -643,15 +591,6 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 ...(sourceResult ? { source_result: sourceResult } : {}),
             });
             if (execution.error) {
-                this.resolveProgress(`step:${step.id}`, {
-                    workflow: 'goal',
-                    phase: 'step',
-                    id: step.id,
-                    tool_name: step.name,
-                    status: 'failed',
-                    error: execution.error.message,
-                    nested_statuses: execution.nested_statuses,
-                });
                 this.failedStepIndex = index;
                 this.determinationFailed = false;
                 this.updateStep(index, {
@@ -673,15 +612,6 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 status: 'completed',
                 run_id: sourceResult?.run_id,
                 error: undefined,
-            });
-            this.resolveProgress(`step:${step.id}`, {
-                workflow: 'goal',
-                phase: 'step',
-                id: step.id,
-                tool_name: step.name,
-                status: 'completed',
-                value: execution.value,
-                nested_statuses: execution.nested_statuses,
             });
             this.publish({
                 ...this.currentSnapshot!,
@@ -728,15 +658,6 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
             }
         }
         if (error) {
-            this.resolveProgress('determination', {
-                workflow: 'goal',
-                phase: 'determination',
-                id: 'determination',
-                tool_name: request.determination.tool.name,
-                status: 'failed',
-                error: error.message,
-                nested_statuses: execution.nested_statuses,
-            });
             this.failedStepIndex = null;
             this.determinationFailed = true;
             const snapshot: GoalSnapshot = {
@@ -778,17 +699,8 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
                 ...(execution.source_result
                     ? { source_result: { ...execution.source_result } }
                     : {}),
-            },
-        };
-        this.resolveProgress('determination', {
-            workflow: 'goal',
-            phase: 'determination',
-            id: 'determination',
-            tool_name: request.determination.tool.name,
-            status: 'completed',
-            value: actual,
-            nested_statuses: execution.nested_statuses,
-        });
+                },
+            };
         this.publish(snapshot);
         if (!achieved) {
             await this.retryDelay();
@@ -811,19 +723,10 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         const runId = `goal-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
         try {
             const operation = this.dispatchTool(toolName, argumentsValue);
-            const nestedStatuses = (await Promise.allSettled(operation.statuses)).map((status) => {
-                if (status.status === 'fulfilled') return status.value;
-                const message = status.reason instanceof Error
-                    ? status.reason.message
-                    : String(status.reason);
-                console.error(`Nested goal tool '${toolName}' status failed.`, status.reason);
-                return { status: 'status_failed', error: message };
-            });
             const output = await operation.result;
             if (output instanceof Error) throw output;
             return {
                 value: output,
-                nested_statuses: nestedStatuses,
                 source_result: {
                     tool_name: toolName,
                     run_id: runId,
@@ -833,7 +736,6 @@ export class GoalRunner extends AiToolComponentBase<GoalSnapshot | null> {
         } catch (error) {
             return {
                 value: null,
-                nested_statuses: [],
                 source_result: {
                     tool_name: toolName,
                     run_id: runId,

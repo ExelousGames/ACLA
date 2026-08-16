@@ -4,46 +4,51 @@ import {
 } from './session-tool-registry';
 
 describe('session live range to-do tools', () => {
-    it('atomically exposes only the new tool definitions and schemas', () => {
+    it('exposes one strict executable-event batch schema plus the read tool', () => {
         const names = SESSION_TOOLS.map((tool) => tool.name);
-        expect(names).toEqual(expect.arrayContaining([
-            'set_live_range_todo_list',
-            'update_live_range_todo_list',
+        expect(names.filter((name) => name.endsWith('_live_range_todo_list'))).toEqual([
+            'add_event_to_live_range_todo_list',
             'get_live_range_todo_list',
-        ]));
-        expect(names).not.toEqual(expect.arrayContaining([
-            'set_live_range_tracker',
-            'update_live_range_tracker',
-            'get_live_range_tracker',
-        ]));
+            'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        ]);
 
-        const setTool = SESSION_TOOLS.find((tool) => (
-            tool.name === 'set_live_range_todo_list'
-        ));
-        const updateTool = SESSION_TOOLS.find((tool) => (
-            tool.name === 'update_live_range_todo_list'
-        ));
-        expect(setTool).toMatchObject({
+        const addTool = SESSION_TOOLS.find((tool) => (
+            tool.name === 'add_event_to_live_range_todo_list'
+        )) as any;
+        expect(addTool).toMatchObject({
             required: ['events'],
             properties: {
                 events: {
+                    minItems: 1,
                     items: {
-                        required: ['id', 'normalized_position', 'content'],
+                        required: ['event', 'tool'],
+                        additionalProperties: false,
                     },
                 },
             },
         });
-        expect(updateTool).toMatchObject({
-            required: ['action'],
-            properties: {
-                action: {
-                    enum: ['add_events', 'update_events', 'remove_events', 'reset_events', 'clear'],
-                },
-            },
-        });
+        const itemSchema = addTool.properties.events.items;
+        const eventSchema = itemSchema.properties.event;
+        const contentSchema = eventSchema.properties.content;
+        const nestedToolSchema = itemSchema.properties.tool;
+        expect(Object.keys(itemSchema.properties)).toEqual(['event', 'tool']);
+        expect(Object.keys(eventSchema.properties)).toEqual([
+            'id',
+            'normalized_position',
+            'lead_time_seconds',
+            'content',
+        ]);
+        expect(eventSchema.required).toEqual(['id', 'normalized_position', 'content']);
+        expect(eventSchema.additionalProperties).toBe(false);
+        expect(Object.keys(contentSchema.properties)).toEqual(['title', 'description']);
+        expect(contentSchema.required).toEqual(['title']);
+        expect(contentSchema.additionalProperties).toBe(false);
+        expect(Object.keys(nestedToolSchema.properties)).toEqual(['name', 'arguments']);
+        expect(nestedToolSchema.required).toEqual(['name', 'arguments']);
+        expect(nestedToolSchema.additionalProperties).toBe(false);
     });
 
-    it('advertises the tools only to child live-agent sessions with AI Chat ownership guidance', () => {
+    it('advertises only add/read to child live agents and derives the nested-tool enum', () => {
         const liveMainNames = getSessionToolsForSessionContext({
             session_mode: 'live',
         }).map((tool) => tool.name);
@@ -53,16 +58,44 @@ describe('session live range to-do tools', () => {
         });
         const liveAgentNames = liveAgentTools.map((tool) => tool.name);
 
-        expect(liveMainNames).not.toContain('set_live_range_todo_list');
-        expect(liveAgentNames).toEqual(expect.arrayContaining([
-            'set_live_range_todo_list',
-            'update_live_range_todo_list',
+        expect(liveMainNames.filter((name) => name.endsWith('_live_range_todo_list')))
+            .toEqual([]);
+        expect(liveAgentNames.filter((name) => name.endsWith('_live_range_todo_list')))
+            .toEqual([
+                'add_event_to_live_range_todo_list',
+                'get_live_range_todo_list',
+            ]);
+
+        const addTool = liveAgentTools.find(({ name }) => (
+            name === 'add_event_to_live_range_todo_list'
+        )) as any;
+        const nestedNames = addTool.properties.events.items
+            .properties.tool.properties.name.enum;
+        expect(nestedNames).toEqual(expect.arrayContaining([
+            'analyze_telemetry',
+            'query_telemetry_metric',
             'get_live_range_todo_list',
         ]));
+        expect(nestedNames).not.toEqual(expect.arrayContaining([
+            'create_goal',
+            'retry_goal_task',
+            'set_procedure_plan',
+            'advance_plan_step',
+            'clear_procedure_plan',
+            'add_event_to_live_range_todo_list',
+            'add_filtered_driver_expert_comparisons_to_live_range_todo_list',
+        ]));
+        const liveAgentNameSet = new Set<string>(liveAgentNames);
+        expect(nestedNames.every((name: string) => liveAgentNameSet.has(name))).toBe(true);
+        expect(addTool.description).toContain('AI Chat mounts the list');
+        expect(addTool.description).toContain('returns the updated list summary immediately');
 
-        const setTool = liveAgentTools.find(({ name }) => name === 'set_live_range_todo_list');
-        expect(setTool?.description).toContain('AI Chat mounts the list');
-        expect(setTool?.description).toContain('attaches its notification callback');
+        const analystAddTool = getSessionToolsForSessionContext({
+            session_mode: 'live',
+            agent_mode: 'live_performance_analyst',
+        }).find(({ name }) => name === 'add_event_to_live_range_todo_list') as any;
+        expect(analystAddTool.properties.events.items.properties.tool.properties.name.enum)
+            .toEqual(nestedNames);
     });
 
     it('selects tools only from direct canonical mode fields', () => {
@@ -76,7 +109,7 @@ describe('session live range to-do tools', () => {
             active_agent_session: { agent_mode: 'live_performance_analyst' },
             agent_session: { agent_mode: 'live_performance_analyst' },
             agent_modes: { active: ['live_performance_analyst'] },
-        })).not.toContain('set_live_range_todo_list');
+        })).not.toContain('add_event_to_live_range_todo_list');
         expect(namesFor({
             session_mode: 'recorded',
             context_kind: 'live',
@@ -90,15 +123,70 @@ describe('session live range to-do tools', () => {
     });
 });
 
-describe('analysis result query tool', () => {
+describe('filtered Driver/Expert comparison queue tool', () => {
     const namesFor = (context: Record<string, unknown>) => (
         getSessionToolsForSessionContext(context).map(({ name }) => name)
     );
 
-    it('defines required active-page result and mistake count queries', () => {
+    it('defines a strict no-argument schema only for the live performance analyst', () => {
+        const tool = SESSION_TOOLS.find(({ name }) => (
+            name === 'add_filtered_driver_expert_comparisons_to_live_range_todo_list'
+        ));
+        expect(tool).toMatchObject({ properties: {}, required: [] });
+
+        expect(namesFor({ session_mode: 'live' }))
+            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+        expect(namesFor({ session_mode: 'live', agent_mode: 'track_guide' }))
+            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+        expect(namesFor({ session_mode: 'live', agent_mode: 'overtake' }))
+            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+        expect(namesFor({
+            session_mode: 'recorded',
+            agent_mode: 'live_performance_analyst',
+        })).not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+        expect(namesFor({
+            session_mode: 'live',
+            agent_mode: 'live_performance_analyst',
+        })).toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+    });
+
+    it('includes the tool in analyst goals and excludes recursive Live Range scheduling', () => {
+        const analystTools = getSessionToolsForSessionContext({
+            session_mode: 'live',
+            agent_mode: 'live_performance_analyst',
+        });
+        const createGoal = analystTools.find(({ name }) => name === 'create_goal') as any;
+        const addEvents = analystTools.find(({ name }) => (
+            name === 'add_event_to_live_range_todo_list'
+        )) as any;
+        const goalNames = createGoal.properties.steps.items.properties.name.enum;
+        const nestedLiveRangeNames = addEvents.properties.events.items
+            .properties.tool.properties.name.enum;
+
+        expect(goalNames)
+            .toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+        expect(nestedLiveRangeNames)
+            .not.toContain('add_filtered_driver_expert_comparisons_to_live_range_todo_list');
+        expect(analystTools.map(({ name }) => name)).toContain('set_procedure_plan');
+    });
+});
+
+describe('analysis result query tool', () => {
+    const namesFor = (context: Record<string, unknown>) => (
+        getSessionToolsForSessionContext(context).map(({ name }) => name)
+    );
+    const eligibleContexts = [
+        { session_mode: 'live' },
+        { session_mode: 'recorded' },
+        { session_mode: 'live', agent_mode: 'track_guide' },
+        { session_mode: 'live', agent_mode: 'overtake' },
+        { session_mode: 'live', agent_mode: 'live_performance_analyst' },
+    ];
+
+    it('requires one non-blank JSONata expression without a legacy enum', () => {
         const tool = SESSION_TOOLS.find(({ name }) => (
             name === 'query_analysis_result'
-        ));
+        )) as any;
 
         expect(SESSION_TOOLS.filter(({ name }) => name === 'query_analysis_result'))
             .toHaveLength(1);
@@ -107,17 +195,46 @@ describe('analysis result query tool', () => {
             properties: {
                 query: {
                     type: 'string',
-                    enum: ['result_count', 'mistake_count'],
+                    minLength: 1,
+                    pattern: '\\S',
                 },
             },
             required: ['query'],
         });
-        expect(tool).toMatchObject({
-            description: expect.stringContaining('active Analysis Results page'),
+        expect(Object.keys(tool.properties)).toEqual(['query']);
+        expect(tool.properties.query).not.toHaveProperty('enum');
+        expect(new RegExp(tool.properties.query.pattern).test('   ')).toBe(false);
+        expect(new RegExp(tool.properties.query.pattern).test('$count(elements)'))
+            .toBe(true);
+    });
+
+    it('describes the active-page root, actual result, and examples in every eligible context', () => {
+        eligibleContexts.forEach((context) => {
+            const tool = getSessionToolsForSessionContext(context).find(({ name }) => (
+                name === 'query_analysis_result'
+            ));
+            const description = tool?.description ?? '';
+
+            expect(description).toContain('normalized active Analysis Results page');
+            expect(description).toContain('"elements"');
+            expect(description).toContain('"normalizedPositionRange"');
+            expect(description).toContain('actual JSON-safe JSONata value');
+            expect(description).toContain('not a count unless the expression returns one');
+            expect(description).toContain('$count(elements)');
+            expect(description).toContain('$count(elements[labels[$ = "Mistake (Practice)"]])');
+            expect(description).toContain('elements[labels[$ = "Lockup"]].{ "id": id, "section": section }');
+            expect(description).not.toContain('"pages"');
         });
-        expect(tool).toMatchObject({
-            description: expect.stringContaining('ignore the current Practice/Racing UI filter'),
-        });
+    });
+
+    it('does not advertise the old identifiers as aliases', () => {
+        const tool = SESSION_TOOLS.find(({ name }) => (
+            name === 'query_analysis_result'
+        ));
+        const serializedTool = JSON.stringify(tool);
+
+        expect(serializedTool).not.toContain('result_count');
+        expect(serializedTool).not.toContain('mistake_count');
     });
 
     it('is advertised in live, live-agent, and recorded contexts only', () => {
@@ -154,6 +271,77 @@ describe('analysis result query tool', () => {
             .toContain('query_analysis_result');
         expect(createGoal.properties.determination.properties.tool.properties.name.enum)
             .toContain('query_analysis_result');
+    });
+});
+
+describe('analysis result query apply tool', () => {
+    const namesFor = (context: Record<string, unknown>) => (
+        getSessionToolsForSessionContext(context).map(({ name }) => name)
+    );
+    const eligibleContexts = [
+        { session_mode: 'live' },
+        { session_mode: 'recorded' },
+        { session_mode: 'live', agent_mode: 'track_guide' },
+        { session_mode: 'live', agent_mode: 'overtake' },
+        { session_mode: 'live', agent_mode: 'live_performance_analyst' },
+    ];
+
+    it('requires final non-blank JSONata and accepts only an optional integer page number', () => {
+        const tool = SESSION_TOOLS.find(({ name }) => (
+            name === 'apply_analysis_result_query'
+        )) as any;
+
+        expect(SESSION_TOOLS.filter(({ name }) => name === 'apply_analysis_result_query'))
+            .toHaveLength(1);
+        expect(Object.keys(tool.properties)).toEqual(['query', 'page_number']);
+        expect(tool.required).toEqual(['query']);
+        expect(tool.properties.query).toMatchObject({
+            type: 'string',
+            minLength: 1,
+            pattern: '\\S',
+        });
+        expect(tool.properties.page_number).toMatchObject({ type: 'integer' });
+        expect(tool.description).toContain('receives only { "elements"');
+        expect(tool.description).toContain('one element ID string');
+        expect(tool.description).toContain('Unknown IDs and nested arrays are rejected');
+        expect(tool.description).toContain('1-based retained-page array order');
+        expect(tool.description).toContain('highest page number is the most recent analysis');
+        expect(tool.description).toContain('same commit path as manual Apply');
+    });
+
+    it('is advertised exactly wherever the read query is available', () => {
+        eligibleContexts.forEach((context) => {
+            expect(namesFor(context)).toEqual(expect.arrayContaining([
+                'apply_analysis_result_query',
+                'query_analysis_result',
+            ]));
+        });
+        [
+            { session_mode: 'front_desk' },
+            { session_mode: 'user_summary' },
+            { session_mode: 'front_desk', agent_mode: 'track_guide' },
+            { session_mode: 'user_summary', agent_mode: 'track_guide' },
+        ].forEach((context) => {
+            expect(namesFor(context)).not.toContain('apply_analysis_result_query');
+        });
+    });
+
+    it('is available in analyst goals, determinations, and nested live-range workflows', () => {
+        const tools = getSessionToolsForSessionContext({
+            session_mode: 'live',
+            agent_mode: 'live_performance_analyst',
+        });
+        const createGoal = tools.find(({ name }) => name === 'create_goal') as any;
+        const addEvents = tools.find(({ name }) => (
+            name === 'add_event_to_live_range_todo_list'
+        )) as any;
+
+        expect(createGoal.properties.steps.items.properties.name.enum)
+            .toContain('apply_analysis_result_query');
+        expect(createGoal.properties.determination.properties.tool.properties.name.enum)
+            .toContain('apply_analysis_result_query');
+        expect(addEvents.properties.events.items.properties.tool.properties.name.enum)
+            .toContain('apply_analysis_result_query');
     });
 });
 
@@ -218,7 +406,13 @@ describe('create_goal tool', () => {
         expect(Object.keys(tool.properties.determination.properties).sort())
             .toEqual(['operator', 'target', 'tool']);
         expect(tool.properties.determination.description)
-            .toContain('ready numeric query envelope');
+            .toContain('{ "status": "ready", "data": finiteNumber }');
+        expect(tool.description).toContain('query_analysis_result');
+        expect(tool.description).toContain('{ "query": "$count(elements)" }');
+        expect(tool.properties.determination.description)
+            .toContain('$count(...) JSONata expression');
+        expect(tool.properties.determination.properties.tool.description)
+            .toContain('{ "query": "$count(elements)" }');
     });
 
     it('exposes create_goal only to the Live Performance Analyst and constrains nested tools by session', () => {

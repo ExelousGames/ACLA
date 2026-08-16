@@ -1,5 +1,6 @@
 import React from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { EditorView } from '@codemirror/view';
 
 jest.mock('contexts/DesktopGameContext', () => ({
     useDesktopGame: () => ({
@@ -71,20 +72,27 @@ jest.mock('@radix-ui/themes', () => {
     };
 });
 
+const mockCategoryLabels: Record<string, string[]> = {
+    MSP: ['MSP1', 'MSP2'],
+    MSR: ['MSR1', 'MSR2'],
+};
+const mockLabelNames: Record<string, string> = {
+    MSP: 'Training Error',
+    MSP1: 'Late turn-in',
+    MSP2: 'Wheel lock',
+    MSR: 'Race Error',
+    MSR1: 'Failed overtake attempt',
+    MSR2: 'Contact',
+};
+const mockDefaultGetCategoryLabels = (category: string) => mockCategoryLabels[category] ?? [];
+const mockDefaultGetLabelName = (labelId: string) => mockLabelNames[labelId];
+let mockGetCategoryLabels = mockDefaultGetCategoryLabels;
+let mockGetLabelName = mockDefaultGetLabelName;
+
 jest.mock('contexts/AiLabelsContext', () => ({
     useAiLabels: () => ({
-        getCategoryLabels: (category: string) => ({
-            MSP: ['MSP1', 'MSP2'],
-            MSR: ['MSR1', 'MSR2'],
-        }[category] ?? []),
-        getLabelName: (labelId: string) => ({
-            MSP: 'Training Error',
-            MSP1: 'Late turn-in',
-            MSP2: 'Wheel lock',
-            MSR: 'Race Error',
-            MSR1: 'Failed overtake attempt',
-            MSR2: 'Contact',
-        }[labelId]),
+        getCategoryLabels: mockGetCategoryLabels,
+        getLabelName: mockGetLabelName,
     }),
 }));
 
@@ -92,7 +100,7 @@ jest.mock('components/data-graphs', () => ({
     DataGraph: ({ spec }: any) => {
         const seriesKey = spec.series?.[0]?.key;
         const testId = spec.type === 'bar'
-            ? 'mistake-frequency-graph'
+            ? 'label-frequency-graph'
             : seriesKey === 'lapTimeSeconds'
                 ? 'lap-time-trend-graph'
                 : seriesKey === 'totalCount'
@@ -120,6 +128,7 @@ import AnalysisResultsChart, {
     formatRacingTime,
     getMistakeTrendDirection,
     type AnalysisResultsChartHandle,
+    type AnalysisResultsPaginationPage,
 } from './AnalysisResultsChart';
 import {
     VisualizationControlFailedError,
@@ -130,6 +139,10 @@ import {
     removeAnalysisResultElement,
     updateAnalysisResultElement,
 } from './analysisResultsModel';
+import * as analysisResultsQuery from './analysisResultsQuery';
+
+const ALL_RESULTS_COUNT_QUERY = '$count(elements)';
+const MISTAKE_COUNT_QUERY = '$count(elements[labels[$ in ["MSP", "Mistake (Practice)", "Training Error", "MSR", "Mistake (Racing)", "Race Error"]]])';
 
 const renderedResultIds = (): string[] => (
     screen.queryAllByTestId(/^analysis-result-/).map((element) => (
@@ -137,16 +150,34 @@ const renderedResultIds = (): string[] => (
     ))
 );
 
-const selectSortMode = (value: string): void => {
-    fireEvent.change(screen.getByRole('combobox', { name: 'Sort by' }), { target: { value } });
+const selectView = (value: string): void => {
+    fireEvent.change(screen.getByRole('combobox', { name: 'View' }), { target: { value } });
 };
 
-const selectMainLabel = (value: string): void => {
+const getQueryEditor = (): HTMLElement => (
+    screen.getByRole('textbox', { name: 'Query expression' })
+);
+
+const getQueryExpression = (): string => {
+    const view = EditorView.findFromDOM(getQueryEditor());
+    if (!view) throw new Error('Expected the JSONata CodeMirror editor to be mounted.');
+    return view.state.doc.toString();
+};
+
+const setQueryExpression = (value: string): void => {
+    const view = EditorView.findFromDOM(getQueryEditor());
+    if (!view) throw new Error('Expected the JSONata CodeMirror editor to be mounted.');
+    act(() => view.dispatch({
+        changes: { from: 0, to: view.state.doc.length, insert: value },
+    }));
+};
+
+const selectTrendParent = (value: string): void => {
     fireEvent.change(screen.getByRole('combobox', { name: 'Showing' }), { target: { value } });
 };
 
 const renderedFrequencyData = (): Array<{ label: string; occurrences: number }> => (
-    JSON.parse(screen.getByTestId('mistake-frequency-graph').getAttribute('data-graph-data') ?? '[]')
+    JSON.parse(screen.getByTestId('label-frequency-graph').getAttribute('data-graph-data') ?? '[]')
 );
 
 const renderedTrendData = (testId: 'overall-total-trend-graph' | 'specific-mistake-trend-graph') => (
@@ -169,7 +200,7 @@ const comparableData = (driverGas: number, expertGas: number) => ({
 });
 
 describe('AnalysisResultsChart', () => {
-    it('queries normalized result and deduplicated mistake counts independently of UI controls', async () => {
+    it('evaluates JSONata over normalized results and preserves JSON value types', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const view = render(
             <AnalysisResultsChart
@@ -180,13 +211,21 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 0,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: '{"count": $count(elements)}' }).result).resolves.toEqual({
             status: 'ready',
-            data: 0,
+            data: { count: 0 },
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: '[elements.id]' }).result).resolves.toEqual({
+            status: 'ready',
+            data: [],
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'elements[id = "missing"]' }).result).resolves.toEqual({
+            status: 'ready',
+            data: null,
         });
 
         view.rerender(
@@ -212,25 +251,32 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 9,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 7,
         });
 
-        selectMainLabel('MSR');
-        selectSortMode('most-time-lost');
+        selectView('time-lost-mistakes');
 
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 9,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 7,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: null,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+            status: 'ready',
+            data: null,
         });
     });
 
@@ -268,12 +314,12 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(screen.getByText('Overall Trends')).toBeInTheDocument();
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+        expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
+        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 2,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 1,
         });
@@ -286,7 +332,7 @@ describe('AnalysisResultsChart', () => {
                 pagination={{ pages, activePageId: 'unavailable-page', onSelectPage }}
             />,
         );
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'result_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 2,
         });
@@ -299,10 +345,297 @@ describe('AnalysisResultsChart', () => {
                 pagination={{ pages, activePageId: 'latest-page', onSelectPage }}
             />,
         );
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'mistake_count' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
             data: 3,
         });
+    });
+
+    it.each([
+        { requested: undefined, requestedResult: null, fallback: true },
+        { requested: -1, requestedResult: -1, fallback: true },
+        { requested: 0, requestedResult: 0, fallback: true },
+        { requested: 99, requestedResult: 99, fallback: true },
+    ])('applies to the highest retained-array page for fallback request $requested', async ({
+        requested,
+        requestedResult,
+        fallback,
+    }) => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const onSelectPage = jest.fn();
+        const pages: AnalysisResultsPaginationPage[] = [{
+            id: 'array-page-1',
+            createdAt: 999,
+            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'first-only', labels: ['MSP'] }],
+        }, {
+            id: 'array-page-2',
+            createdAt: -999,
+            baseline: { lap: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'latest-match', labels: ['MSP'] },
+                { id: 'latest-other', labels: ['Telemetry'] },
+            ],
+        }];
+        const Harness = () => {
+            const [activePageId, setActivePageId] = React.useState('array-page-1');
+            return (
+                <AnalysisResultsChart
+                    ref={chartRef}
+                    name="visualization:analysis-results"
+                    id="apply-fallback"
+                    pagination={{
+                        pages,
+                        activePageId,
+                        onSelectPage: (pageId) => {
+                            onSelectPage(pageId);
+                            setActivePageId(pageId);
+                        },
+                    }}
+                />
+            );
+        };
+        render(<Harness />);
+
+        const query = 'elements[id = "latest-match"]';
+        const operation = chartRef.current!.applyAnalysisResultQuery({
+            query,
+            ...(requested !== undefined ? { page_number: requested } : {}),
+        });
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Lap Results' }))
+                .toHaveAttribute('aria-pressed', 'true');
+            expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        });
+        let result: unknown;
+        await act(async () => {
+            result = await operation.result;
+        });
+
+        expect(result).toEqual({
+            status: 'ready',
+            data: 1,
+            applied_query: query,
+            applied_page_id: 'array-page-2',
+            applied_page_number: 2,
+            requested_page_number: requestedResult,
+            used_most_recent_fallback: fallback,
+        });
+        expect(onSelectPage).toHaveBeenCalledWith('array-page-2');
+        expect(screen.getByRole('button', { name: 'Lap Results' })).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        await screen.findByRole('textbox', { name: 'Query expression' });
+        expect(getQueryExpression()).toBe(query);
+        expect(renderedResultIds()).toEqual(['latest-match']);
+    });
+
+    it('applies an explicit displayed page number by retained-array position', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const pages: AnalysisResultsPaginationPage[] = [{
+            id: 'displayed-page-1',
+            createdAt: 200,
+            baseline: { lap: 4, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'page-one-match', labels: ['MSP'] }],
+        }, {
+            id: 'displayed-page-2',
+            createdAt: 100,
+            baseline: { lap: 5, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'page-two-match', labels: ['MSP'] }],
+        }];
+        const Harness = () => {
+            const [activePageId, setActivePageId] = React.useState('displayed-page-2');
+            return (
+                <AnalysisResultsChart
+                    ref={chartRef}
+                    name="visualization:analysis-results"
+                    id="apply-explicit"
+                    pagination={{ pages, activePageId, onSelectPage: setActivePageId }}
+                />
+            );
+        };
+        render(<Harness />);
+
+        const query = 'elements[id = "page-one-match"]';
+        const operation = chartRef.current!.applyAnalysisResultQuery({
+            query,
+            page_number: 1,
+        });
+        await waitFor(() => expect(screen.getByText('Page 1 of 2')).toBeInTheDocument());
+        let result: unknown;
+        await act(async () => {
+            result = await operation.result;
+        });
+
+        expect(result).toEqual(expect.objectContaining({
+            status: 'ready',
+            data: 1,
+            applied_page_id: 'displayed-page-1',
+            applied_page_number: 1,
+            requested_page_number: 1,
+            used_most_recent_fallback: false,
+        }));
+        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        expect(renderedResultIds()).toEqual(['page-one-match']);
+    });
+
+    it('treats recorded analysis as one implicit page', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="recorded-apply"
+                data={{ elements: [
+                    { id: 'recorded-match', labels: ['MSP'] },
+                    { id: 'recorded-other', labels: ['Telemetry'] },
+                ] }}
+            />,
+        );
+
+        const query = 'elements[id = "recorded-match"]';
+        let result: unknown;
+        await act(async () => {
+            result = await chartRef.current!.applyAnalysisResultQuery({
+                query,
+                page_number: 12,
+            }).result;
+        });
+
+        expect(result).toEqual({
+            status: 'ready',
+            data: 1,
+            applied_query: query,
+            applied_page_id: null,
+            applied_page_number: 1,
+            requested_page_number: 12,
+            used_most_recent_fallback: true,
+        });
+        await screen.findByRole('textbox', { name: 'Query expression' });
+        expect(getQueryExpression()).toBe(query);
+        expect(renderedResultIds()).toEqual(['recorded-match']);
+    });
+
+    it('rejects apply when a paginated live chart has no retained pages', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="empty-live-apply"
+                pagination={{ pages: [], activePageId: null, onSelectPage: jest.fn() }}
+            />,
+        );
+
+        await expect(chartRef.current!.applyAnalysisResultQuery({ query: 'elements' }).result)
+            .rejects.toMatchObject({
+                name: 'VisualizationControlFailedError',
+                message: expect.stringContaining('no retained pages'),
+            });
+    });
+
+    it('keeps successful results while showing an attempted invalid AI query diagnostic', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="invalid-ai-apply"
+                data={{ elements: [
+                    { id: 'preserved', labels: ['MSP'] },
+                    { id: 'excluded', labels: ['MSP'] },
+                ] }}
+            />,
+        );
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments().status).toBe('ready'));
+
+        await act(async () => {
+            await chartRef.current!.applyAnalysisResultQuery({
+                query: 'elements[id = "preserved"]',
+                page_number: 1,
+            }).result;
+        });
+        expect(renderedResultIds()).toEqual(['preserved']);
+
+        const invalidQuery = 'elements[';
+        let invalidOperation!: ReturnType<AnalysisResultsChartHandle['applyAnalysisResultQuery']>;
+        await act(async () => {
+            invalidOperation = chartRef.current!.applyAnalysisResultQuery({ query: invalidQuery });
+            await expect(invalidOperation.result).rejects.toMatchObject({
+                name: 'AnalysisResultsQueryError',
+            });
+        });
+
+        expect(getQueryExpression()).toBe(invalidQuery);
+        expect(screen.getByTestId('active-page-query-error')).toBeInTheDocument();
+        expect(renderedResultIds()).toEqual(['preserved']);
+        expect(chartRef.current!.getFilteredSegments()).toMatchObject({
+            committedQuery: 'elements[id = "preserved"]',
+            segments: [{ id: 'preserved' }],
+        });
+    });
+
+    it('rejects a stale page-selection operation when a newer apply replaces it', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const pages: AnalysisResultsPaginationPage[] = [{
+            id: 'stale-page-1',
+            createdAt: 2,
+            baseline: { lap: 1, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'newest-wins', labels: ['MSP'] }],
+        }, {
+            id: 'stale-page-2',
+            createdAt: 1,
+            baseline: { lap: 2, lap_time_ms: null, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'stale-result', labels: ['MSP'] }],
+        }];
+        const onSelectPage = jest.fn();
+        const Harness = () => {
+            const [activePageId, setActivePageId] = React.useState('stale-page-1');
+            return (
+                <AnalysisResultsChart
+                    ref={chartRef}
+                    name="visualization:analysis-results"
+                    id="stale-ai-apply"
+                    pagination={{
+                        pages,
+                        activePageId,
+                        onSelectPage: (pageId) => {
+                            onSelectPage(pageId);
+                            if (pageId === 'stale-page-1') setActivePageId(pageId);
+                        },
+                    }}
+                />
+            );
+        };
+        render(<Harness />);
+
+        const stale = chartRef.current!.applyAnalysisResultQuery({
+            query: 'elements[id = "stale-result"]',
+            page_number: 2,
+        });
+        const latest = chartRef.current!.applyAnalysisResultQuery({
+            query: 'elements[id = "newest-wins"]',
+            page_number: 1,
+        });
+
+        await waitFor(() => {
+            expect(screen.getByRole('button', { name: 'Lap Results' }))
+                .toHaveAttribute('aria-pressed', 'true');
+            expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        });
+        await expect(stale.result).rejects.toMatchObject({
+            name: 'VisualizationControlFailedError',
+            message: expect.stringContaining('newer'),
+        });
+        let latestResult: unknown;
+        await act(async () => { latestResult = await latest.result; });
+        expect(latestResult).toEqual(expect.objectContaining({
+            applied_page_id: 'stale-page-1',
+            applied_page_number: 1,
+            data: 1,
+        }));
+        expect(renderedResultIds()).toEqual(['newest-wins']);
+        expect(onSelectPage).toHaveBeenNthCalledWith(1, 'stale-page-2');
+        expect(onSelectPage).toHaveBeenNthCalledWith(2, 'stale-page-1');
     });
 
     it('keeps page readiness pending until the requested page is committed', async () => {
@@ -397,7 +730,7 @@ describe('AnalysisResultsChart', () => {
         jest.useRealTimers();
     });
 
-    it('opens on Overall Trend and navigates chronologically without synthetic callback IDs', () => {
+    it('keeps Overall Trends separate from retained-array result-page navigation', async () => {
         const chartRef = React.createRef<any>();
         const onUpdate = jest.fn(() => true);
         const onSelectPage = jest.fn();
@@ -432,50 +765,69 @@ describe('AnalysisResultsChart', () => {
 
         const { unmount } = render(<PagingHarness />);
 
-        expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
-        expect(screen.getByText('Overall Trends')).toBeInTheDocument();
+        expect(screen.queryByText(/^Page \d+ of \d+$/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.getByRole('button', { name: 'Lap Results' })).toHaveAttribute('aria-pressed', 'false');
         expect(screen.getByText('Lap Time Improvement')).toBeInTheDocument();
         expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
-        expect(screen.getByText(/Overall Trend.*2 analyzed laps/)).toBeInTheDocument();
-        expect(renderedTrendData('overall-total-trend-graph')).toEqual([
-            { analysis: 'Analysis 1 · Lap 4', totalCount: 1 },
-            { analysis: 'Analysis 2 · Lap 7', totalCount: 1 },
-        ]);
+        expect(screen.queryByRole('region', { name: 'Edit query' })).not.toBeInTheDocument();
+        await waitFor(() => (
+            expect(screen.getByText('2 analyzed laps')).toBeInTheDocument()
+        ));
+        await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 7', totalCount: 1 },
+                { analysis: 'Analysis 2 · Lap 4', totalCount: 1 },
+            ]));
         expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSP1');
         fireEvent.change(screen.getByRole('combobox', { name: 'Specific mistake' }), {
             target: { value: 'MSP2' },
         });
-        expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
-        expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+        expect(screen.queryByRole('button', { name: 'Previous' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Next' })).not.toBeInTheDocument();
         expect(screen.queryByTestId('analysis-result-first-page-result')).not.toBeInTheDocument();
 
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
 
-        expect(onSelectPage).toHaveBeenLastCalledWith('page-1');
-        expect(screen.getByText('Page 2 of 3')).toBeInTheDocument();
-        expect(screen.getByText(/Baseline: Spa.*GT3.*Lap 4/)).toBeInTheDocument();
-        expect(screen.getByTestId('analysis-result-first-page-result')).toHaveTextContent('First page mistake');
-        expect(screen.queryByTestId('analysis-result-second-page-result')).not.toBeInTheDocument();
-        expect(renderedFrequencyData()).toEqual([{ label: 'Late turn-in', occurrences: 1 }]);
-        expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled();
+        expect(onSelectPage).not.toHaveBeenCalled();
+        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+        expect(screen.getByText(/Baseline: Monza.*GT4.*Lap 7/)).toBeInTheDocument();
+        expect(screen.getByRole('region', { name: 'Edit query' })).toBeInTheDocument();
+        await waitFor(() => expect(screen.getByTestId('analysis-result-second-page-result'))
+            .toHaveTextContent('Second page mistake'));
+        expect(screen.queryByTestId('analysis-result-first-page-result')).not.toBeInTheDocument();
+        expect(renderedFrequencyData()).toEqual([{ label: 'Wheel lock', occurrences: 1 }]);
+        expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
         expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
 
-        fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
-        expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        expect(onSelectPage).toHaveBeenLastCalledWith('page-1');
+        expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        expect(screen.getByText(/Baseline: Spa.*GT3.*Lap 4/)).toBeInTheDocument();
+        await waitFor(() => expect(screen.getByTestId('analysis-result-first-page-result'))
+            .toHaveTextContent('First page mistake'));
+        expect(renderedFrequencyData()).toEqual([{ label: 'Late turn-in', occurrences: 1 }]);
+        expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled();
+        expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+
+        fireEvent.click(screen.getByRole('button', { name: 'Overall Trends' }));
+        expect(screen.queryByText(/^Page \d+ of \d+$/)).not.toBeInTheDocument();
         expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSP2');
         expect(onSelectPage).toHaveBeenCalledTimes(1);
 
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+        expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+        expect(onSelectPage).toHaveBeenCalledTimes(1);
+        fireEvent.click(screen.getByRole('button', { name: 'Previous' }));
 
         expect(onSelectPage).toHaveBeenLastCalledWith('page-2');
-        expect(screen.getByText('Page 3 of 3')).toBeInTheDocument();
+        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
         expect(screen.getByText(/Baseline: Monza.*GT4.*Lap 7/)).toBeInTheDocument();
-        expect(screen.getByTestId('analysis-result-second-page-result')).toHaveTextContent('Second page mistake');
+        await waitFor(() => expect(screen.getByTestId('analysis-result-second-page-result'))
+            .toHaveTextContent('Second page mistake'));
         expect(screen.queryByTestId('analysis-result-first-page-result')).not.toBeInTheDocument();
         expect(renderedFrequencyData()).toEqual([{ label: 'Wheel lock', occurrences: 1 }]);
-        expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled();
-        expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
 
         act(() => {
             chartRef.current.appendAnalysisResult({ id: 'active-only', labels: ['MSP'] });
@@ -489,8 +841,125 @@ describe('AnalysisResultsChart', () => {
 
         unmount();
         render(<PagingHarness />);
-        expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
+        expect(screen.queryByText(/^Page \d+ of \d+$/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
         expect(screen.getByText('Overall Mistake Trend')).toBeInTheDocument();
+    });
+
+    it('exposes immutable committed-filter snapshots for only the displayed concrete page', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const pages: AnalysisResultsPaginationPage[] = [{
+            id: 'filtered-first',
+            createdAt: 1,
+            baseline: { lap: 1, lap_time_ms: 100_000, track: 'Spa', car: 'GT3' },
+            elements: [{
+                id: 'early',
+                labels: ['MSP'],
+                normalizedPositionRange: { start: 0.2, end: 0.25 },
+                comparison: comparableData(0.2, 0.4),
+            }, {
+                id: 'late',
+                labels: ['Telemetry'],
+                normalizedPositionRange: { start: 0.8, end: 0.85 },
+            }],
+        }, {
+            id: 'filtered-second',
+            createdAt: 2,
+            baseline: { lap: 2, lap_time_ms: 99_000, track: 'Spa', car: 'GT3' },
+            elements: [{
+                id: 'second-page-only',
+                labels: ['MSR'],
+                normalizedPositionRange: { start: 0.5, end: 0.55 },
+            }],
+        }];
+        const Harness = () => {
+            const [activePageId, setActivePageId] = React.useState('filtered-first');
+            return (
+                <AnalysisResultsChart
+                    ref={chartRef}
+                    name="visualization:analysis-results"
+                    id="filtered-snapshot"
+                    pagination={{ pages, activePageId, onSelectPage: setActivePageId }}
+                />
+            );
+        };
+        render(<Harness />);
+
+        expect(chartRef.current!.getFilteredSegments()).toEqual({
+            status: 'empty',
+            activePageId: null,
+            appliedView: null,
+            committedQuery: null,
+            segments: [],
+        });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments().status).toBe('ready'));
+        expect(chartRef.current!.getFilteredSegments()).toMatchObject({
+            activePageId: 'filtered-first',
+            appliedView: 'mistakes',
+            segments: [{ id: 'early' }],
+        });
+
+        selectView('all-results');
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments().appliedView)
+            .toBe('all-results'));
+        const appliedPreset = chartRef.current!.getFilteredSegments();
+        setQueryExpression('elements^(>normalizedPositionRange.start)');
+        expect(chartRef.current!.getFilteredSegments()).toEqual(appliedPreset);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments().appliedView).toBe('custom'));
+        const custom = chartRef.current!.getFilteredSegments();
+        expect(custom).toMatchObject({
+            status: 'ready',
+            activePageId: 'filtered-first',
+            appliedView: 'custom',
+            committedQuery: 'elements^(>normalizedPositionRange.start)',
+        });
+        expect(custom.segments.map(({ id }) => id)).toEqual(['late', 'early']);
+        expect(Object.isFrozen(custom)).toBe(true);
+        expect(Object.isFrozen(custom.segments)).toBe(true);
+        expect(Object.isFrozen(custom.segments[1].comparison?.samples)).toBe(true);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments()).toMatchObject({
+            status: 'ready',
+            activePageId: 'filtered-second',
+            appliedView: 'custom',
+            segments: [{ id: 'second-page-only' }],
+        }));
+
+        setQueryExpression('elements[id = "missing"]');
+        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments()).toMatchObject({
+            status: 'empty',
+            activePageId: 'filtered-second',
+            appliedView: 'custom',
+            committedQuery: 'elements[id = "missing"]',
+            segments: [],
+        }));
+    });
+
+    it('reports a busy filtered snapshot while the active filter is evaluating', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="busy-filtered-snapshot"
+                data={{ elements: [{ id: 'one', labels: ['MSP'] }] }}
+            />,
+        );
+
+        expect(chartRef.current!.getFilteredSegments()).toMatchObject({
+            status: 'busy',
+            segments: [],
+        });
+        await waitFor(() => expect(chartRef.current!.getFilteredSegments()).toMatchObject({
+            status: 'ready',
+            segments: [{ id: 'one' }],
+        }));
     });
 
     it.each([
@@ -509,7 +978,7 @@ describe('AnalysisResultsChart', () => {
         }
     });
 
-    it('preserves noisy raw lap times and missing-page gaps while fitting the full chronology', () => {
+    it('preserves validated lap times and missing-row gaps while fitting the query chronology', async () => {
         const pages = [{
             id: 'latest',
             createdAt: 400,
@@ -531,7 +1000,40 @@ describe('AnalysisResultsChart', () => {
             baseline: { lap: 9, lap_time_ms: 105_000, track: 'Spa', car: 'GT3' },
             elements: [{ id: 'slower-mistake', labels: ['MSR', 'MSR1'] }],
         }];
-        const model = buildLapTimeTrendData(pages);
+        const model = buildLapTimeTrendData([
+            {
+                pageId: 'first',
+                label: 'Analysis 1 · Lap 3',
+                lap: 3,
+                lapTimeMs: 100_000,
+                totalCount: 0,
+                categoryCounts: [],
+            },
+            {
+                pageId: 'slower',
+                label: 'Analysis 2 · Lap 9',
+                lap: 9,
+                lapTimeMs: 105_000,
+                totalCount: 0,
+                categoryCounts: [],
+            },
+            {
+                pageId: 'missing',
+                label: 'Analysis 3 · Lap 14',
+                lap: 14,
+                lapTimeMs: null,
+                totalCount: 0,
+                categoryCounts: [],
+            },
+            {
+                pageId: 'latest',
+                label: 'Analysis 4 · Lap 21',
+                lap: 21,
+                lapTimeMs: 95_000,
+                totalCount: 0,
+                categoryCounts: [],
+            },
+        ]);
 
         expect(model.laps.map(({ pageId, lapTimeMs }) => ({ pageId, lapTimeMs }))).toEqual([
             { pageId: 'first', lapTimeMs: 100_000 },
@@ -551,21 +1053,22 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
+        await waitFor(() => expect(renderedLapTimeTrendData()).toHaveLength(4));
         const graphData = renderedLapTimeTrendData();
-        expect(graphData.map(({ lapTimeSeconds }: any) => lapTimeSeconds)).toEqual([100, 105, null, 95]);
+        expect(graphData.map(({ lapTimeSeconds }: any) => lapTimeSeconds)).toEqual([95, 100, null, 105]);
         expect(graphData.every(({ bestFitSeconds }: any) => Number.isFinite(bestFitSeconds))).toBe(true);
         expect(screen.getByText('Lap time by analyzed lap (lower is faster).')).toBeInTheDocument();
         expect(screen.getByTestId('lap-time-trend-status')).toHaveTextContent(
-            'Latest lap time: 1:35.000. Versus previous timed lap: 0:10.000 faster. '
-            + 'Versus first timed lap: 0:05.000 faster. Overall direction: improving.',
+            'Latest lap time: 1:45.000. Versus previous timed lap: 0:05.000 slower. '
+            + 'Versus first timed lap: 0:10.000 slower. Overall direction: regressing.',
         );
 
         const beforeFilterChange = renderedLapTimeTrendData();
-        selectMainLabel('MSR');
-        expect(renderedLapTimeTrendData()).toEqual(beforeFilterChange);
+        selectTrendParent('MSR');
+        await waitFor(() => expect(renderedLapTimeTrendData()).toEqual(beforeFilterChange));
     });
 
-    it('counts totals and deduplicated sub-label occurrences across zero-filled laps', () => {
+    it('graphs validated totals and category occurrences across zero-filled laps', async () => {
         const pages = [{
             id: 'later-page',
             createdAt: 200,
@@ -604,44 +1107,258 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(renderedTrendData('overall-total-trend-graph')).toEqual([
-            { analysis: 'Analysis 1 · Lap 8', totalCount: 3 },
-            { analysis: 'Analysis 2 · Lap 12', totalCount: 2 },
-            { analysis: 'Analysis 3 · Lap 15', totalCount: 1 },
-        ]);
+        await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 12', totalCount: 2 },
+                { analysis: 'Analysis 2 · Lap 8', totalCount: 3 },
+                { analysis: 'Analysis 3 · Lap 15', totalCount: 1 },
+            ]));
         expect(screen.getByTestId('overall-total-trend-status')).toHaveTextContent(
             'Latest: 1 recognized mistake element. Trending downward — fewer mistakes.',
         );
         expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSP2');
         expect(renderedTrendData('specific-mistake-trend-graph')).toEqual([
-            { analysis: 'Analysis 1 · Lap 8', specificCount: 1 },
-            { analysis: 'Analysis 2 · Lap 12', specificCount: 2 },
+            { analysis: 'Analysis 1 · Lap 12', specificCount: 2 },
+            { analysis: 'Analysis 2 · Lap 8', specificCount: 1 },
             { analysis: 'Analysis 3 · Lap 15', specificCount: 1 },
         ]);
-        expect(screen.getByTestId('specific-mistake-trend-status')).toHaveTextContent('Trend is stable.');
+        expect(screen.getByTestId('specific-mistake-trend-status')).toHaveTextContent(
+            'Trending downward — fewer mistakes.',
+        );
 
         fireEvent.change(screen.getByRole('combobox', { name: 'Specific mistake' }), {
             target: { value: 'MSP1' },
         });
         expect(renderedTrendData('specific-mistake-trend-graph')).toEqual([
-            { analysis: 'Analysis 1 · Lap 8', specificCount: 1 },
-            { analysis: 'Analysis 2 · Lap 12', specificCount: 0 },
+            { analysis: 'Analysis 1 · Lap 12', specificCount: 0 },
+            { analysis: 'Analysis 2 · Lap 8', specificCount: 1 },
             { analysis: 'Analysis 3 · Lap 15', specificCount: 0 },
         ]);
 
-        selectMainLabel('MSR');
-        expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSR1');
+        selectTrendParent('MSR');
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'Specific mistake' }))
+            .toHaveValue('MSR1'));
         expect(renderedTrendData('overall-total-trend-graph')).toEqual([
-            { analysis: 'Analysis 1 · Lap 8', totalCount: 0 },
-            { analysis: 'Analysis 2 · Lap 12', totalCount: 1 },
-            { analysis: 'Analysis 3 · Lap 15', totalCount: 2 },
-        ]);
+                { analysis: 'Analysis 1 · Lap 12', totalCount: 1 },
+                { analysis: 'Analysis 2 · Lap 8', totalCount: 0 },
+                { analysis: 'Analysis 3 · Lap 15', totalCount: 2 },
+            ]);
         expect(screen.getByTestId('overall-total-trend-status')).toHaveTextContent(
             'Trending upward — more mistakes.',
         );
     });
 
-    it('shows clear empty and single-page trend guidance', () => {
+    it('re-evaluates Overall Trends after successful taxonomy and retained-page refreshes', async () => {
+        const originalGetLabelName = mockGetLabelName;
+        let pages: AnalysisResultsPaginationPage[] = [{
+            id: 'taxonomy-page',
+            createdAt: 1,
+            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'fresh-labels', labels: ['Fresh Training', 'Fresh brake'] }],
+        }];
+        const renderChart = () => (
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="trend-refresh"
+                pagination={{ pages, activePageId: pages[0]?.id ?? null, onSelectPage: jest.fn() }}
+            />
+        );
+        const view = render(renderChart());
+
+        try {
+            await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 1', totalCount: 0 },
+            ]));
+
+            mockGetLabelName = (labelId) => ({
+                ...mockLabelNames,
+                MSP: 'Fresh Training',
+                MSP1: 'Fresh brake',
+            }[labelId] ?? originalGetLabelName(labelId));
+            view.rerender(renderChart());
+
+            await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 1', totalCount: 1 },
+            ]));
+            expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toHaveValue('MSP1');
+
+            pages = [...pages, {
+                id: 'retained-page',
+                createdAt: 2,
+                baseline: { lap: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
+                elements: [{ id: 'retained-mistake', labels: ['MSP', 'MSP1'] }],
+            }];
+            view.rerender(renderChart());
+
+            await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 1', totalCount: 1 },
+                { analysis: 'Analysis 2 · Lap 2', totalCount: 1 },
+            ]));
+            expect(renderedTrendData('specific-mistake-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 1', specificCount: 1 },
+                { analysis: 'Analysis 2 · Lap 2', specificCount: 1 },
+            ]);
+            expect(renderedLapTimeTrendData()).toHaveLength(2);
+        } finally {
+            view.unmount();
+            mockGetLabelName = originalGetLabelName;
+        }
+    });
+
+    it('ignores a stale trend evaluation after a newer Training selection commits', async () => {
+        const pages = [{
+            id: 'trend-generation',
+            createdAt: 1,
+            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'training', labels: ['MSP', 'MSP1'] },
+                { id: 'racing-one', labels: ['MSR', 'MSR1'] },
+                { id: 'racing-two', labels: ['MSR', 'MSR2'] },
+            ],
+        }];
+        render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="stale-trend-generation"
+                pagination={{ pages, activePageId: 'trend-generation', onSelectPage: jest.fn() }}
+            />,
+        );
+        await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+            { analysis: 'Analysis 1 · Lap 1', totalCount: 1 },
+        ]));
+
+        const realEvaluator = analysisResultsQuery.evaluateAnalysisResultsQuery;
+        const trendCompletions: Array<() => Promise<void>> = [];
+        const evaluator = jest.spyOn(analysisResultsQuery, 'evaluateAnalysisResultsQuery')
+            .mockImplementation((expression, input) => {
+                if (!input || typeof input !== 'object' || !('pages' in input)) {
+                    return realEvaluator(expression, input);
+                }
+                return new Promise((resolve, reject) => {
+                    trendCompletions.push(async () => {
+                        try {
+                            resolve(await realEvaluator(expression, input));
+                        } catch (error) {
+                            reject(error);
+                        }
+                    });
+                });
+            });
+
+        try {
+            selectTrendParent('MSR');
+            await waitFor(() => expect(trendCompletions).toHaveLength(1));
+            selectTrendParent('MSP');
+            await waitFor(() => expect(trendCompletions).toHaveLength(2));
+
+            await act(async () => trendCompletions[1]());
+            await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 1', totalCount: 1 },
+            ]));
+
+            await act(async () => trendCompletions[0]());
+            expect(screen.getByRole('combobox', { name: 'Showing' })).toHaveValue('MSP');
+            expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 1', totalCount: 1 },
+            ]);
+        } finally {
+            evaluator.mockRestore();
+        }
+    });
+
+    it('keeps the trend parent and active-page View state independent', async () => {
+        const pages = [{
+            id: 'independent-state',
+            createdAt: 1,
+            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            elements: [
+                { id: 'training', labels: ['MSP', 'MSP1'] },
+                { id: 'racing-one', labels: ['MSR', 'MSR1'] },
+                { id: 'racing-two', labels: ['MSR', 'MSR2'] },
+            ],
+        }];
+        render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="independent-query-state"
+                pagination={{ pages, activePageId: 'independent-state', onSelectPage: jest.fn() }}
+            />,
+        );
+        await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toHaveLength(1));
+
+        const realEvaluator = analysisResultsQuery.evaluateAnalysisResultsQuery;
+        const evaluator = jest.spyOn(analysisResultsQuery, 'evaluateAnalysisResultsQuery')
+            .mockImplementation(realEvaluator);
+
+        try {
+            fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+            selectView('all-results');
+            await waitFor(() => expect(renderedResultIds()).toEqual([
+                'training',
+                'racing-one',
+                'racing-two',
+            ]));
+            expect(evaluator.mock.calls.filter(([, input]) => (
+                input && typeof input === 'object' && 'pages' in input
+            ))).toHaveLength(0);
+
+            fireEvent.click(screen.getByRole('button', { name: 'Overall Trends' }));
+            selectTrendParent('MSR');
+            await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toEqual([
+                { analysis: 'Analysis 1 · Lap 1', totalCount: 2 },
+            ]));
+
+            fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+            expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('all-results');
+        } finally {
+            evaluator.mockRestore();
+        }
+    });
+
+    it('fails closed with one actionable error when a new page generation is invalid', async () => {
+        const initialPages = [{
+            id: 'old-page',
+            createdAt: 1,
+            baseline: { lap: 1, lap_time_ms: 90_000, track: 'Spa', car: 'GT3' },
+            elements: [{ id: 'old-mistake', labels: ['MSP', 'MSP1'] }],
+        }];
+        const renderChart = (pages: typeof initialPages) => (
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="invalid-trend-generation"
+                pagination={{ pages, activePageId: pages[0]?.id ?? null, onSelectPage: jest.fn() }}
+            />
+        );
+        const view = render(renderChart(initialPages));
+        await waitFor(() => expect(renderedTrendData('overall-total-trend-graph')).toHaveLength(1));
+
+        const realEvaluator = analysisResultsQuery.evaluateAnalysisResultsQuery;
+        const evaluator = jest.spyOn(analysisResultsQuery, 'evaluateAnalysisResultsQuery')
+            .mockImplementation((expression, input) => (
+                input && typeof input === 'object' && 'pages' in input
+                    ? Promise.resolve({ laps: [], categories: [] })
+                    : realEvaluator(expression, input)
+            ));
+
+        try {
+            view.rerender(renderChart([{
+                id: 'new-page',
+                createdAt: 2,
+                baseline: { lap: 2, lap_time_ms: 89_000, track: 'Spa', car: 'GT3' },
+                elements: [{ id: 'new-mistake', labels: ['MSP', 'MSP2'] }],
+            }]));
+
+            const diagnostic = await screen.findByTestId('overall-trend-query-error');
+            expect(diagnostic).toHaveTextContent('INVALID_OVERALL_TREND_QUERY_RESULT');
+            expect(screen.getAllByRole('alert')).toEqual([diagnostic]);
+            expect(renderedTrendData('overall-total-trend-graph')).toEqual([]);
+            expect(renderedTrendData('specific-mistake-trend-graph')).toEqual([]);
+            expect(renderedLapTimeTrendData()).toEqual([]);
+        } finally {
+            evaluator.mockRestore();
+        }
+    });
+
+    it('shows clear empty and single-page trend guidance', async () => {
         const { rerender } = render(
             <AnalysisResultsChart
                 name="visualization:analysis-results"
@@ -650,7 +1367,7 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+        expect(screen.queryByText(/^Page \d+ of \d+$/)).not.toBeInTheDocument();
         expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent(
             'No analyzed laps yet. Analyze at least two baseline laps to see a trend.',
         );
@@ -658,7 +1375,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.getByTestId('lap-time-trend-status')).toHaveTextContent(
             'Latest lap time unavailable',
         );
-        expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+        expect(screen.getByRole('button', { name: 'Lap Results' })).toBeDisabled();
         expect(screen.getByRole('combobox', { name: 'Specific mistake' })).toBeDisabled();
 
         rerender(
@@ -678,13 +1395,14 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
-        expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent(
+        expect(screen.queryByText(/^Page \d+ of \d+$/)).not.toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Lap Results' })).toBeEnabled();
+        await waitFor(() => expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent(
             'Not enough analyzed laps to determine a trend.',
-        );
-        expect(screen.getByTestId('overall-total-trend-status')).toHaveTextContent(
+        ));
+        await waitFor(() => expect(screen.getByTestId('overall-total-trend-status')).toHaveTextContent(
             'Latest: 1 recognized mistake element. Not enough analyzed laps to determine a trend.',
-        );
+        ));
         expect(renderedLapTimeTrendData()).toEqual([{
             analysis: expect.any(String),
             lapTimeSeconds: 98.567,
@@ -696,7 +1414,7 @@ describe('AnalysisResultsChart', () => {
         );
     });
 
-    it('renders arbitrary labels, context, and metadata safely', () => {
+    it('renders arbitrary labels, context, and metadata safely', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="results"
@@ -720,7 +1438,7 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(screen.getByText('1 of 1 total')).toBeInTheDocument();
+        await waitFor(() => expect(screen.getByText('1 of 1 total')).toBeInTheDocument());
         expect(screen.getByText('Future category')).toBeInTheDocument();
         expect(screen.getByText('Recovery')).toBeInTheDocument();
         expect(screen.getByText('Position: 20.0% – 35.0%')).toBeInTheDocument();
@@ -731,7 +1449,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.queryByText(/end_index|67890/)).not.toBeInTheDocument();
     });
 
-    it('defaults to Training Mistake, recognizes parent IDs and names, and has no All option', () => {
+    it('defaults to Mistakes and exposes four complete templates plus Custom in one View selector', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="default-filter"
@@ -748,39 +1466,58 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        const mainLabelSelect = screen.getByRole('combobox', { name: 'Showing' });
-        expect(mainLabelSelect).toHaveValue('MSP');
-        expect(within(mainLabelSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
-            'Training Mistake',
-            'Racing Mistake',
+        const viewSelect = screen.getByRole('combobox', { name: 'View' });
+        expect(viewSelect).toHaveValue('mistakes');
+        expect(within(viewSelect).getAllByRole('option').map((option) => option.textContent)).toEqual([
+            'All results',
+            'Mistakes',
+            'Most common label in mistakes',
+            'Most time lost in mistakes',
+            'Custom',
         ]);
-        expect(renderedResultIds()).toEqual(['practice-id', 'practice-name']);
-        expect(screen.getByText('2 of 6 total')).toBeInTheDocument();
+        expect(screen.queryByRole('combobox', { name: 'Sort by' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('combobox', { name: 'Showing' })).not.toBeInTheDocument();
+        await waitFor(() => {
+            const queryError = screen.queryByTestId('active-page-query-error');
+            if (queryError) throw new Error(queryError.textContent ?? 'Query evaluation failed.');
+            expect(renderedResultIds()).toEqual([
+                'practice-id',
+                'practice-name',
+                'racing-id',
+                'racing-name',
+            ]);
+        });
+        expect(screen.getByText('4 of 6 total')).toBeInTheDocument();
 
-        selectMainLabel('MSR');
+        selectView('all-results');
 
-        expect(renderedResultIds()).toEqual(['racing-id', 'racing-name']);
-        expect(screen.getByText('2 of 6 total')).toBeInTheDocument();
+        await waitFor(() => expect(renderedResultIds()).toEqual([
+            'practice-id',
+            'practice-name',
+            'racing-id',
+            'racing-name',
+            'unrelated',
+            'unlabeled',
+        ]));
+        expect(screen.getByText('6 of 6 total')).toBeInTheDocument();
     });
 
-    it('shows a category-specific empty state when the selected label has no matches', () => {
+    it('shows a query-aware empty state when the selected view has no matches', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="empty"
-                data={{ elements: [{ id: 'practice', labels: ['MSP'] }] }}
+                data={{ elements: [{ id: 'telemetry', labels: ['Telemetry'] }] }}
             />,
         );
 
-        selectMainLabel('MSR');
-
+        await waitFor(() => expect(screen.getByText('0 of 1 total')).toBeInTheDocument());
         expect(renderedResultIds()).toEqual([]);
         expect(screen.getByTestId('analysis-results-empty-state')).toHaveTextContent(
-            'No Racing Mistake results yet.',
+            'No results match the Mistakes view.',
         );
-        expect(screen.getByText('0 of 1 total')).toBeInTheDocument();
     });
 
-    it('keeps filtered source order by default and exposes all sort modes', () => {
+    it('applies each selected template as one filtering-and-ordering expression', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="source-order"
@@ -794,20 +1531,23 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(renderedResultIds()).toEqual(['third-fastest', 'least-time']);
-        expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveValue('original');
-        expect(within(screen.getByRole('combobox', { name: 'Sort by' }))
-            .getAllByRole('option').map((option) => ({
-                label: option.textContent,
-                value: (option as HTMLOptionElement).value,
-            }))).toEqual([
-            { label: 'Original order', value: 'original' },
-            { label: 'Most common training mistake', value: 'most-frequent-sub-label' },
-            { label: 'Most time lost', value: 'most-time-lost' },
-        ]);
+        await waitFor(() => expect(renderedResultIds()).toEqual([
+            'third-fastest',
+            'racing',
+            'least-time',
+        ]));
+
+        selectView('time-lost-mistakes');
+
+        await waitFor(() => expect(renderedResultIds()).toEqual([
+            'racing',
+            'third-fastest',
+            'least-time',
+        ]));
+        expect(getQueryExpression()).toContain('>deltaMs');
     });
 
-    it('uses category-specific sort wording without changing the selected sort value', () => {
+    it('keeps draft edits isolated, resets them, and applies custom queries by button or Ctrl+Enter', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="dynamic-sort-name"
@@ -820,25 +1560,54 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        const sortSelect = screen.getByRole('combobox', { name: 'Sort by' });
-        selectSortMode('most-frequent-sub-label');
+        await waitFor(() => expect(renderedResultIds()).toEqual(['practice', 'racing']));
+        const queryInput = getQueryEditor();
+        const templateExpression = getQueryExpression();
 
-        expect(sortSelect).toHaveValue('most-frequent-sub-label');
-        expect(within(sortSelect).getByRole('option', { selected: true })).toHaveTextContent(
-            'Most common training mistake',
-        );
+        setQueryExpression('elements[id = "racing"]');
+        expect(screen.getByText('Unsaved changes')).toBeInTheDocument();
+        expect(renderedResultIds()).toEqual(['practice', 'racing']);
 
-        selectMainLabel('MSR');
+        fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+        await waitFor(() => expect(getQueryExpression()).toBe(templateExpression));
+        expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument();
 
-        expect(sortSelect).toHaveValue('most-frequent-sub-label');
-        expect(within(sortSelect).getByRole('option', { selected: true })).toHaveTextContent(
-            'Most common racing mistake',
-        );
-        expect(within(sortSelect).getAllByRole('option').map((option) => option.textContent))
-            .not.toEqual(expect.arrayContaining([expect.stringMatching(/label/i)]));
+        setQueryExpression('elements[id = "racing"]');
+        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await waitFor(() => expect(renderedResultIds()).toEqual(['racing']));
+        expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom');
+
+        setQueryExpression('elements[id = "practice"]');
+        fireEvent.keyDown(queryInput, { key: 'Enter', ctrlKey: true });
+        await waitFor(() => expect(renderedResultIds()).toEqual(['practice']));
+
+        setQueryExpression('elements');
+        fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
+        await waitFor(() => expect(getQueryExpression()).toBe('elements[id = "practice"]'));
     });
 
-    it('numbers visible results in display order when IDs are hidden', () => {
+    it('preserves the last valid matches and focuses the diagnostic after a failed manual Apply', async () => {
+        render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="invalid-custom-query"
+                data={{ elements: [{ id: 'mistake', labels: ['MSP'] }] }}
+            />,
+        );
+        await waitFor(() => expect(renderedResultIds()).toEqual(['mistake']));
+
+        setQueryExpression('5');
+        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+        const diagnostic = await screen.findByTestId('active-page-query-error');
+        expect(diagnostic).toHaveTextContent('INVALID_ACTIVE_PAGE_QUERY_RESULT');
+        expect(diagnostic).toHaveFocus();
+        expect(getQueryExpression()).toBe('5');
+        expect(renderedResultIds()).toEqual(['mistake']);
+        expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('mistakes');
+    });
+
+    it('numbers visible results in exact query order when IDs are hidden', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="numbered-results"
@@ -853,22 +1622,24 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(within(screen.getByTestId('analysis-result-first'))
-            .getByLabelText('Analysis result 1')).toHaveTextContent('1');
-        expect(within(screen.getByTestId('analysis-result-third'))
+        await waitFor(() => expect(within(screen.getByTestId('analysis-result-first'))
+            .getByLabelText('Analysis result 1')).toHaveTextContent('1'));
+        expect(within(screen.getByTestId('analysis-result-racing'))
             .getByLabelText('Analysis result 2')).toHaveTextContent('2');
+        expect(within(screen.getByTestId('analysis-result-third'))
+            .getByLabelText('Analysis result 3')).toHaveTextContent('3');
         expect(screen.queryByText('first')).not.toBeInTheDocument();
 
-        selectSortMode('most-time-lost');
+        selectView('time-lost-mistakes');
 
-        expect(renderedResultIds()).toEqual(['third', 'first']);
-        expect(within(screen.getByTestId('analysis-result-third'))
+        await waitFor(() => expect(renderedResultIds()).toEqual(['racing', 'third', 'first']));
+        expect(within(screen.getByTestId('analysis-result-racing'))
             .getByLabelText('Analysis result 1')).toHaveTextContent('1');
-        expect(within(screen.getByTestId('analysis-result-first'))
+        expect(within(screen.getByTestId('analysis-result-third'))
             .getByLabelText('Analysis result 2')).toHaveTextContent('2');
     });
 
-    it('sorts only recognized training sub-labels with aliases, deduplication, and deterministic ties', () => {
+    it('orders common-label mistakes inside JSONata and aggregates combined taxonomy labels', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="frequency-order"
@@ -888,38 +1659,40 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        selectSortMode('most-frequent-sub-label');
+        selectView('common-label-mistakes');
 
-        expect(renderedResultIds()).toEqual([
+        await waitFor(() => expect(renderedResultIds()).toEqual([
             'late-id',
             'late-name',
             'multi',
             'wheel-duplicate',
             'wheel-name',
-            'unknown-first',
             'racing-sub-label-only',
-        ]);
+            'racing-id',
+            'unknown-first',
+        ]));
         expect(renderedFrequencyData()).toEqual([
             { label: 'Late turn-in', occurrences: 3 },
             { label: 'Wheel lock', occurrences: 3 },
+            { label: 'Failed overtake attempt', occurrences: 2 },
         ]);
-        expect(screen.getByText('Training mistake frequency')).toBeInTheDocument();
-        expect(screen.getByTestId('mistake-frequency-graph')).toHaveAttribute(
+        expect(screen.getByText('Label frequency — Most common label in mistakes')).toBeInTheDocument();
+        expect(screen.getByTestId('label-frequency-graph')).toHaveAttribute(
             'data-graph-orientation',
             'horizontal',
         );
-        expect(screen.getByTestId('mistake-frequency-graph')).toHaveAttribute(
+        expect(screen.getByTestId('label-frequency-graph')).toHaveAttribute(
             'data-graph-value-axis-label',
             'Occurrences',
         );
-        expect(screen.getByTestId('mistake-frequency-graph')).toHaveAttribute(
+        expect(screen.getByTestId('label-frequency-graph')).toHaveAttribute(
             'data-graph-colors',
             JSON.stringify(['#00e676']),
         );
-        expect(screen.getByText('7 of 9 total')).toBeInTheDocument();
+        expect(screen.getByText('8 of 9 total')).toBeInTheDocument();
     });
 
-    it('sorts only recognized racing sub-labels and leaves unranked results in source order', () => {
+    it('counts all exact labels for All results without taxonomy filtering', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="racing-frequency-order"
@@ -937,26 +1710,26 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        selectMainLabel('MSR');
-        selectSortMode('most-frequent-sub-label');
+        selectView('all-results');
 
-        expect(renderedResultIds()).toEqual([
-            'failed-id',
-            'failed-name',
-            'multi',
-            'contact-duplicate',
+        await waitFor(() => expect(renderedResultIds()).toEqual([
             'unknown-first',
+            'failed-id',
             'practice-sub-label-only',
+            'failed-name',
+            'contact-duplicate',
+            'multi',
             'unknown-second',
-        ]);
-        expect(renderedFrequencyData()).toEqual([
-            { label: 'Failed overtake attempt', occurrences: 3 },
-            { label: 'Contact', occurrences: 2 },
-        ]);
-        expect(screen.getByText('Racing mistake frequency')).toBeInTheDocument();
+        ]));
+        expect(renderedFrequencyData()).toEqual(expect.arrayContaining([
+            { label: 'MSR', occurrences: 5 },
+            { label: 'Unknown racing label', occurrences: 1 },
+            { label: 'Late turn-in', occurrences: 1 },
+        ]));
+        expect(screen.getByText('Label frequency — All results')).toBeInTheDocument();
     });
 
-    it('keeps aggregation independent from card sorting and sizes the graph by category count', () => {
+    it('derives graph data from matched elements while preserving query-result card order', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="independent-graph-order"
@@ -969,7 +1742,8 @@ describe('AnalysisResultsChart', () => {
                 }}
             />,
         );
-        const graph = screen.getByTestId('mistake-frequency-graph');
+        await waitFor(() => expect(renderedResultIds()).toEqual(['late', 'wheel', 'both']));
+        const graph = screen.getByTestId('label-frequency-graph');
         const initialData = renderedFrequencyData();
 
         expect(initialData).toEqual([
@@ -978,13 +1752,13 @@ describe('AnalysisResultsChart', () => {
         ]);
         expect(graph).toHaveAttribute('data-graph-height', String(160 + (2 * 36)));
 
-        selectSortMode('most-time-lost');
+        selectView('time-lost-mistakes');
 
-        expect(renderedResultIds()).toEqual(['wheel', 'both', 'late']);
+        await waitFor(() => expect(renderedResultIds()).toEqual(['wheel', 'both', 'late']));
         expect(renderedFrequencyData()).toEqual(initialData);
     });
 
-    it('shows the graph empty state when matching cards have no recognized sub-labels', () => {
+    it('shows the taxonomy-aware graph empty state for mistake templates', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="empty-frequency"
@@ -992,18 +1766,18 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(renderedResultIds()).toEqual(['unknown']);
+        await waitFor(() => expect(renderedResultIds()).toEqual(['unknown']));
         expect(renderedFrequencyData()).toEqual([]);
         expect(screen.getByRole('status')).toHaveTextContent(
-            'No recognized training mistakes to graph.',
+            'No recognized mistake labels in the current query result to graph.',
         );
-        expect(screen.getByTestId('mistake-frequency-graph')).toHaveAttribute(
+        expect(screen.getByTestId('label-frequency-graph')).toHaveAttribute(
             'data-graph-height',
             String(160 + 36),
         );
     });
 
-    it('sorts numeric time losses descending and leaves invalid values last in source order', () => {
+    it('filters and orders numeric time losses in one template evaluation', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="time-order"
@@ -1021,19 +1795,20 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        selectSortMode('most-time-lost');
+        selectView('time-lost-mistakes');
 
-        expect(renderedResultIds()).toEqual([
+        await waitFor(() => expect(renderedResultIds()).toEqual([
+            'racing-highest',
             'highest',
             'equal-first',
             'equal-second',
             'negative',
             'missing',
             'invalid',
-        ]);
+        ]));
     });
 
-    it('retains the selected filter and recalculates sorting when live data changes', () => {
+    it('re-evaluates the committed custom expression against canonical live data', async () => {
         const { rerender } = render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="live-ranking"
@@ -1046,9 +1821,10 @@ describe('AnalysisResultsChart', () => {
                 }}
             />,
         );
-        selectMainLabel('MSR');
-        selectSortMode('most-frequent-sub-label');
-        expect(renderedResultIds()).toEqual(['two', 'one']);
+        await screen.findByRole('button', { name: 'Apply' });
+        setQueryExpression('elements[labels[$ in ["MSR", "Mistake (Racing)"]]]');
+        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await waitFor(() => expect(renderedResultIds()).toEqual(['one', 'two']));
 
         rerender(
             <AnalysisResultsChart name="visualization:analysis-results"
@@ -1056,7 +1832,7 @@ describe('AnalysisResultsChart', () => {
                 data={{
                     elements: [
                         { id: 'one', labels: ['MSR', 'Unknown racing mistake'] },
-                        { id: 'two', labels: ['Mistake (Racing)', 'MSR1'] },
+                        { id: 'two', labels: ['Mistake (Racing)', 'MSR1'], title: 'Updated canonical result' },
                         { id: 'three', labels: ['MSR', 'Failed overtake attempt'] },
                         { id: 'practice', labels: ['MSP', 'MSP1'] },
                     ],
@@ -1064,13 +1840,162 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        expect(screen.getByRole('combobox', { name: 'Showing' })).toHaveValue('MSR');
-        expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveValue('most-frequent-sub-label');
-        expect(renderedResultIds()).toEqual(['two', 'three', 'one']);
+        expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom');
+        await waitFor(() => expect(renderedResultIds()).toEqual(['one', 'two', 'three']));
+        expect(screen.getByTestId('analysis-result-two')).toHaveTextContent('Updated canonical result');
         expect(screen.getByText('3 of 4 total')).toBeInTheDocument();
-        expect(renderedFrequencyData()).toEqual([
-            { label: 'Failed overtake attempt', occurrences: 2 },
-        ]);
+        expect(renderedFrequencyData()).toEqual(expect.arrayContaining([
+            { label: 'MSR', occurrences: 2 },
+            { label: 'Failed overtake attempt', occurrences: 1 },
+        ]));
+    });
+
+    it('re-evaluates the selected template after element append, update, and remove', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        const Harness = () => {
+            const [currentData, setCurrentData] = React.useState(() => normalizeAnalysisResultsData({
+                elements: [{ id: 'initial', labels: ['MSP', 'MSP1'] }],
+            }));
+            return (
+                <AnalysisResultsChart
+                    ref={chartRef}
+                    name="visualization:analysis-results"
+                    id="mutation-query-lifecycle"
+                    data={currentData}
+                    onUpdate={(nextData) => {
+                        setCurrentData(normalizeAnalysisResultsData(nextData));
+                        return true;
+                    }}
+                />
+            );
+        };
+        render(<Harness />);
+        await waitFor(() => expect(renderedResultIds()).toEqual(['initial']));
+
+        act(() => {
+            chartRef.current!.appendAnalysisResult({ id: 'appended', labels: ['MSR', 'MSR1'] });
+        });
+        await waitFor(() => expect(renderedResultIds()).toEqual(['initial', 'appended']));
+        expect(screen.getByText('2 of 2 total')).toBeInTheDocument();
+
+        act(() => {
+            chartRef.current!.updateAnalysisResult('initial', { labels: ['Telemetry'] });
+        });
+        await waitFor(() => expect(renderedResultIds()).toEqual(['appended']));
+        expect(screen.getByText('1 of 2 total')).toBeInTheDocument();
+
+        act(() => {
+            chartRef.current!.removeAnalysisResult('appended');
+        });
+        await waitFor(() => expect(renderedResultIds()).toEqual([]));
+        expect(screen.getByText('0 of 1 total')).toBeInTheDocument();
+        expect(screen.getByTestId('analysis-results-empty-state')).toBeInTheDocument();
+    });
+
+    it('fails closed when automatic evaluation is invalid for a new input generation', async () => {
+        const view = render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="automatic-query-failure"
+                data={{ elements: [{ id: 'old', labels: ['MSP'] }] }}
+            />,
+        );
+        await waitFor(() => expect(renderedResultIds()).toEqual(['old']));
+
+        setQueryExpression('$exists(elements[id = "old"]) ? elements : 5');
+        fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom'));
+
+        view.rerender(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="automatic-query-failure"
+                data={{ elements: [{ id: 'new', labels: ['MSP'] }] }}
+            />,
+        );
+
+        const diagnostic = await screen.findByTestId('active-page-query-error');
+        expect(diagnostic).toHaveTextContent('INVALID_ACTIVE_PAGE_QUERY_RESULT');
+        expect(renderedResultIds()).toEqual([]);
+        expect(screen.getByText('0 of 1 total')).toBeInTheDocument();
+    });
+
+    it('suppresses stale manual completions after a newer page generation commits', async () => {
+        const view = render(
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="stale-query"
+                data={{ elements: [{ id: 'old', labels: ['MSP'] }] }}
+            />,
+        );
+        await waitFor(() => expect(renderedResultIds()).toEqual(['old']));
+
+        let resolveManual!: (value: analysisResultsQuery.JsonValue) => void;
+        let resolvePage!: (value: analysisResultsQuery.JsonValue) => void;
+        const manualResult = new Promise<analysisResultsQuery.JsonValue>((resolve) => {
+            resolveManual = resolve;
+        });
+        const pageResult = new Promise<analysisResultsQuery.JsonValue>((resolve) => {
+            resolvePage = resolve;
+        });
+        const evaluator = jest.spyOn(analysisResultsQuery, 'evaluateAnalysisResultsQuery')
+            .mockImplementationOnce(() => manualResult)
+            .mockImplementationOnce(() => pageResult);
+
+        try {
+            setQueryExpression('elements');
+            fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+            view.rerender(
+                <AnalysisResultsChart
+                    name="visualization:analysis-results"
+                    id="stale-query"
+                    data={{ elements: [{ id: 'new', labels: ['MSP'] }] }}
+                />,
+            );
+            await act(async () => resolvePage([{ id: 'new' }]));
+            await waitFor(() => expect(renderedResultIds()).toEqual(['new']));
+
+            await act(async () => resolveManual([{ id: 'old' }]));
+            expect(renderedResultIds()).toEqual(['new']);
+            expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('mistakes');
+        } finally {
+            evaluator.mockRestore();
+        }
+    });
+
+    it('regenerates a selected taxonomy template without rewriting Custom', async () => {
+        const originalGetLabelName = mockGetLabelName;
+        const renderChart = () => (
+            <AnalysisResultsChart
+                name="visualization:analysis-results"
+                id="taxonomy-refresh"
+                data={{ elements: [{ id: 'fresh', labels: ['Fresh Training'] }] }}
+            />
+        );
+        const view = render(renderChart());
+
+        try {
+            await waitFor(() => expect(screen.getByText('0 of 1 total')).toBeInTheDocument());
+            mockGetLabelName = (labelId) => (
+                labelId === 'MSP' ? 'Fresh Training' : originalGetLabelName(labelId)
+            );
+            view.rerender(renderChart());
+            await waitFor(() => expect(renderedResultIds()).toEqual(['fresh']));
+
+            setQueryExpression('elements');
+            fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+            await waitFor(() => expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom'));
+
+            mockGetLabelName = (labelId) => (
+                labelId === 'MSP' ? 'Newest Training' : originalGetLabelName(labelId)
+            );
+            view.rerender(renderChart());
+            await waitFor(() => expect(getQueryExpression()).toBe('elements'));
+            expect(screen.getByRole('combobox', { name: 'View' })).toHaveValue('custom');
+        } finally {
+            mockGetLabelName = originalGetLabelName;
+        }
     });
 
     it('does not expose the removed most-common-mistakes queue action', () => {
@@ -1087,9 +2012,10 @@ describe('AnalysisResultsChart', () => {
         );
 
         expect(screen.queryByRole('button', { name: 'Send most common mistakes' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Queue filtered comparisons' })).not.toBeInTheDocument();
         expect(screen.queryByText(/Queued:|Skipped:|Live Range To-do List/)).not.toBeInTheDocument();
     });
-    it('mounts a collision-aware comparison only while a capable card is hovered or focused', () => {
+    it('mounts a collision-aware comparison only while a capable card is hovered or focused', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="comparison-card"
@@ -1112,7 +2038,7 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        const card = screen.getByTestId('analysis-result-comparable');
+        const card = await screen.findByTestId('analysis-result-comparable');
         expect(card).toHaveAttribute('tabindex', '0');
         expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
 
@@ -1142,7 +2068,7 @@ describe('AnalysisResultsChart', () => {
         expect(screen.queryByTestId('driver-expert-comparison')).not.toBeInTheDocument();
     });
 
-    it('shows comparison unavailability without making an empty card interactive', () => {
+    it('shows comparison unavailability without making an empty card interactive', async () => {
         render(
             <AnalysisResultsChart name="visualization:analysis-results"
                 id="unavailable-comparison-card"
@@ -1162,7 +2088,7 @@ describe('AnalysisResultsChart', () => {
             />,
         );
 
-        const card = screen.getByTestId('analysis-result-unavailable-comparison');
+        const card = await screen.findByTestId('analysis-result-unavailable-comparison');
         expect(card).not.toHaveAttribute('tabindex');
         expect(within(card).getByText('Expert comparison unavailable')).toBeInTheDocument();
         fireEvent.mouseEnter(card);

@@ -42,4 +42,5 @@ export type {
     AiToolErrorOptions,
     SerializedError,
     SerializedErrorCause,
+    SerializedErrorDetail,
 } from 'errors/AiToolError';
