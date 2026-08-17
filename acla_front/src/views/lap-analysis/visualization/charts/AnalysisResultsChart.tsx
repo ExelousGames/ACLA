@@ -37,6 +37,7 @@ import {
 import {
     buildActivePageQueryTemplates,
     buildOverallTrendQueryExpression,
+    evaluateAllAnalysisResultsQuery,
     evaluateAnalysisResultsQuery,
     normalizeOverallTrendQueryInput,
     resolveActivePageQueryResult,
@@ -540,6 +541,7 @@ const describeLatestTrendCount = (
 
 interface OverallMistakeTrendProps {
     id: string;
+    analyzedLapCount: number;
     lapTimeTrendData: LapTimeTrendData;
     trendParent: MistakeTrendParent;
     onTrendParentChange: (parent: MistakeTrendParent) => void;
@@ -554,6 +556,7 @@ interface OverallMistakeTrendProps {
 
 const OverallMistakeTrend: React.FC<OverallMistakeTrendProps> = ({
     id,
+    analyzedLapCount,
     lapTimeTrendData,
     trendParent,
     onTrendParentChange,
@@ -636,9 +639,9 @@ const OverallMistakeTrend: React.FC<OverallMistakeTrendProps> = ({
         emptyStateText: `No recognized ${trendSubject.toLowerCase()} mistake categories have been observed.`,
     }), [selectedCategory, trendData.laps, trendSubject]);
 
-    const guidance = trendData.laps.length === 0
+    const guidance = analyzedLapCount === 0
         ? 'No analyzed laps yet. Analyze at least two baseline laps to see a trend.'
-        : trendData.laps.length === 1
+        : analyzedLapCount === 1
             ? INSUFFICIENT_TREND_MESSAGE
             : null;
 
@@ -1339,7 +1342,14 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         },
         queryAnalysisResult: ({ query }) => createAiToolOperationFrom(async () => ({
             status: 'ready' as const,
-            data: await evaluateAnalysisResultsQuery(query, { elements }),
+            data: await evaluateAllAnalysisResultsQuery(query, {
+                analyses: pagination ? retainedPages : [{
+                    id,
+                    createdAt: null,
+                    baseline: null,
+                    elements,
+                }],
+            }),
         })),
         replaceAnalysisResults: (nextData) => runVisualizationBooleanCallback(
             name,
@@ -1405,6 +1415,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
         activeData,
         activePage?.id,
         elements,
+        id,
         isOverallTrend,
         name,
         onDisable,
@@ -1532,7 +1543,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
                     </Flex>
                     {isOverallTrend ? (
                         <Text className={styles.baselineContext} size="1" color="gray" as="span">
-                            {trendData.laps.length} analyzed {trendData.laps.length === 1 ? 'lap' : 'laps'}
+                            {retainedPages.length} analyzed {retainedPages.length === 1 ? 'lap' : 'laps'}
                         </Text>
                     ) : (
                         <>
@@ -1574,6 +1585,7 @@ const AnalysisResultsChart = React.forwardRef<AnalysisResultsChartHandle, Analys
             {isOverallTrend ? (
                 <OverallMistakeTrend
                     id={id}
+                    analyzedLapCount={retainedPages.length}
                     lapTimeTrendData={lapTimeTrendData}
                     trendParent={trendParent}
                     onTrendParentChange={setTrendParent}

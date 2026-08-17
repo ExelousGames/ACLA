@@ -68,6 +68,18 @@ export type OverallTrendQueryInput = {
     pages: OverallTrendQueryPage[];
 };
 
+export type AnalysisResultQueryAnalysis = {
+    id: string;
+    createdAt: number | null;
+    sourceIndex: number;
+    baseline: OverallTrendQueryPage['baseline'] | null;
+    elements: ActivePageQueryElement[];
+};
+
+export type AllAnalysisResultsQueryInput = {
+    analyses: AnalysisResultQueryAnalysis[];
+};
+
 export interface OverallTrendTaxonomyValue {
     id: string;
     fallbackName: string;
@@ -497,43 +509,63 @@ export const normalizeActivePageQueryInput = (value: unknown): ActivePageQueryIn
     };
 };
 
+const normalizeAnalysisResultBaseline = (
+    value: unknown,
+    path: string,
+): OverallTrendQueryPage['baseline'] => {
+    const baseline = assertPlainRecord(value, path);
+    const lap = requireFiniteNumber(
+        requireDataProperty(baseline, 'lap', path),
+        `${path}.lap`,
+    );
+
+    const camelLapTime = readDataProperty(baseline, 'lapTimeMs', path);
+    const snakeLapTime = readDataProperty(baseline, 'lap_time_ms', path);
+    if (camelLapTime.present && snakeLapTime.present) {
+        throw invalidInputError(
+            `${path} must not contain both 'lapTimeMs' and 'lap_time_ms'.`,
+        );
+    }
+    if (!camelLapTime.present && !snakeLapTime.present) {
+        throw invalidInputError(`${path}.lapTimeMs is required.`);
+    }
+    const rawLapTime = camelLapTime.present ? camelLapTime.value : snakeLapTime.value;
+    if (rawLapTime === undefined) {
+        throw invalidInputError(`${path}.lapTimeMs cannot be undefined.`);
+    }
+    const lapTimeMs = rawLapTime === null
+        ? null
+        : requireFiniteNumber(rawLapTime, `${path}.lapTimeMs`);
+    if (lapTimeMs !== null && lapTimeMs < 0) {
+        throw invalidInputError(`${path}.lapTimeMs cannot be negative.`);
+    }
+
+    return {
+        lap,
+        lapTimeMs,
+        track: requireString(
+            requireDataProperty(baseline, 'track', path),
+            `${path}.track`,
+        ),
+        car: requireString(
+            requireDataProperty(baseline, 'car', path),
+            `${path}.car`,
+        ),
+    };
+};
+
 const normalizeOverallTrendPage = (
     value: unknown,
     sourceIndex: number,
     path: string,
 ): OverallTrendQueryPage => {
     const input = assertPlainRecord(value, path);
-    const baseline = assertPlainRecord(
+    const baseline = normalizeAnalysisResultBaseline(
         requireDataProperty(input, 'baseline', path),
         `${path}.baseline`,
     );
-    const lap = requireFiniteNumber(
-        requireDataProperty(baseline, 'lap', `${path}.baseline`),
-        `${path}.baseline.lap`,
-    );
-    if (lap <= 0) {
+    if (baseline.lap <= 0) {
         throw invalidInputError(`${path}.baseline.lap must be positive.`);
-    }
-
-    const camelLapTime = readDataProperty(baseline, 'lapTimeMs', `${path}.baseline`);
-    const snakeLapTime = readDataProperty(baseline, 'lap_time_ms', `${path}.baseline`);
-    if (camelLapTime.present && snakeLapTime.present) {
-        throw invalidInputError(
-            `${path}.baseline must not contain both 'lapTimeMs' and 'lap_time_ms'.`,
-        );
-    }
-    if (!camelLapTime.present && !snakeLapTime.present) {
-        throw invalidInputError(`${path}.baseline.lapTimeMs is required.`);
-    }
-    const rawLapTime = camelLapTime.present ? camelLapTime.value : snakeLapTime.value;
-    if (rawLapTime === undefined) {
-        throw invalidInputError(`${path}.baseline.lapTimeMs cannot be undefined.`);
-    }
-    const lapTimeMs = rawLapTime === null
-        ? null
-        : requireFiniteNumber(rawLapTime, `${path}.baseline.lapTimeMs`);
-    if (lapTimeMs !== null && lapTimeMs < 0) {
-        throw invalidInputError(`${path}.baseline.lapTimeMs cannot be negative.`);
     }
 
     return {
@@ -543,18 +575,7 @@ const normalizeOverallTrendPage = (
             `${path}.createdAt`,
         ),
         sourceIndex,
-        baseline: {
-            lap,
-            lapTimeMs,
-            track: requireString(
-                requireDataProperty(baseline, 'track', `${path}.baseline`),
-                `${path}.baseline.track`,
-            ),
-            car: requireString(
-                requireDataProperty(baseline, 'car', `${path}.baseline`),
-                `${path}.baseline.car`,
-            ),
-        },
+        baseline,
         elements: normalizeElements(
             requireDataProperty(input, 'elements', path),
             `${path}.elements`,
@@ -599,6 +620,60 @@ export const normalizeAnalysisResultsQueryInput = (value: unknown): AnalysisResu
     return hasElements
         ? normalizeActivePageQueryInput(value)
         : normalizeOverallTrendQueryInput(value);
+};
+
+const normalizeAnalysisResultQueryAnalysis = (
+    value: unknown,
+    sourceIndex: number,
+    path: string,
+): AnalysisResultQueryAnalysis => {
+    const input = assertPlainRecord(value, path);
+    const baselineValue = requireDataProperty(input, 'baseline', path);
+    const createdAtValue = requireDataProperty(input, 'createdAt', path);
+    return {
+        id: requireNonEmptyString(requireDataProperty(input, 'id', path), `${path}.id`),
+        createdAt: createdAtValue === null
+            ? null
+            : requireFiniteNumber(createdAtValue, `${path}.createdAt`),
+        sourceIndex,
+        baseline: baselineValue === null
+            ? null
+            : normalizeAnalysisResultBaseline(baselineValue, `${path}.baseline`),
+        elements: normalizeElements(
+            requireDataProperty(input, 'elements', path),
+            `${path}.elements`,
+        ),
+    };
+};
+
+export const normalizeAllAnalysisResultsQueryInput = (
+    value: unknown,
+): AllAnalysisResultsQueryInput => {
+    const input = assertPlainRecord(value, 'all-analysis-results query input');
+    const keys = Reflect.ownKeys(input);
+    if (keys.length !== 1 || keys[0] !== 'analyses') {
+        throw invalidInputError("all-analysis-results query input must contain only 'analyses'.");
+    }
+    const rawAnalyses = requireDenseArray(
+        requireDataProperty(input, 'analyses', 'all-analysis-results query input'),
+        'all-analysis-results query input.analyses',
+    );
+    const ids = new Set<string>();
+    const analyses = rawAnalyses.map((analysis, sourceIndex) => {
+        const normalized = normalizeAnalysisResultQueryAnalysis(
+            analysis,
+            sourceIndex,
+            `all-analysis-results query input.analyses[${sourceIndex}]`,
+        );
+        if (ids.has(normalized.id)) {
+            throw invalidInputError(
+                `all-analysis-results query input.analyses contains duplicate analysis id '${normalized.id}'.`,
+            );
+        }
+        ids.add(normalized.id);
+        return normalized;
+    });
+    return { analyses };
 };
 
 const ownString = (value: object, key: string): string | undefined => {
@@ -686,6 +761,21 @@ export const evaluateAnalysisResultsQuery = async (
 ): Promise<JsonValue> => {
     const source = requireQueryString(query);
     const root = normalizeAnalysisResultsQueryInput(input);
+    try {
+        const expression = compileAnalysisResultsQuery(source);
+        const result = await expression.evaluate(root);
+        return detachJsonataResult(result);
+    } catch (error) {
+        throw toAnalysisResultsQueryError(error);
+    }
+};
+
+export const evaluateAllAnalysisResultsQuery = async (
+    query: unknown,
+    input: unknown,
+): Promise<JsonValue> => {
+    const source = requireQueryString(query);
+    const root = normalizeAllAnalysisResultsQueryInput(input);
     try {
         const expression = compileAnalysisResultsQuery(source);
         const result = await expression.evaluate(root);

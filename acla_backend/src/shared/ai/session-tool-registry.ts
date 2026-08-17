@@ -409,24 +409,24 @@ export const SESSION_TOOLS = [
     {
         name: 'query_analysis_result',
         description: [
-            'Evaluate a JSONata expression against the normalized active Analysis Results page without rerunning analysis.',
-            'The expression receives only { "elements": [{ "id": "...", "labels": ["..."], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] }; it does not receive the current View selection or hidden page data.',
+            'Evaluate a JSONata expression against all Analysis Results without rerunning analysis. The current View and active page do not change the query input.',
+            'The expression receives exactly one root structure: { "analyses": [{ "id": "...", "createdAt": 0, "sourceIndex": 0, "baseline": { "lap": 1, "lapTimeMs": 0, "track": "...", "car": "..." }, "elements": [{ "id": "...", "labels": ["..."], "title": "...", "section": "...", "normalizedPositionRange": { "start": 0, "end": 1 }, "timeGap": {}, "comparison": {}, "metadata": {} }] }] }. analyses contains every retained lap analysis in displayed order. For a non-paginated recorded result it contains one analysis with null createdAt and baseline.',
             'The response is { "status": "ready", "data": ... }, where data is the actual JSON-safe JSONata value (scalar, object, array, or null), not a count unless the expression returns one.',
-            'Examples: $count(elements); $count(elements[labels[$ = "Mistake (Practice)"]]); elements[labels[$ = "Lockup"]].{ "id": id, "section": section }.',
+            'Examples: $count(analyses) counts analyses; $count(analyses.elements) counts segments across all analyses; analyses.elements[labels[$ = "Lockup"]].{ "id": id, "section": section }.',
         ].join(' '),
         properties: {
             query: {
                 type: 'string',
                 minLength: 1,
                 pattern: '\\S',
-                description: 'A non-blank JSONata expression evaluated against the normalized active-page { elements } root. Its actual JSON-safe value is returned in data.',
+                description: 'A non-blank JSONata expression evaluated against the normalized { analyses } root. Its actual JSON-safe value is returned in data.',
             },
         },
         required: ['query'],
     },
     {
         name: 'create_goal',
-        description: 'Create one visible goal. the session tool calls will be executed sequentially, and these tool calls will be repeated until the goal is achieved or error. If the goal is missed, the goal will continue to be retried until the goal is achieved or the user cancels the goal. The determination tool call must return { "status": "ready", "data": finiteNumber }. When using query_analysis_result for the determination, supply a JSONata expression that returns a finite number, normally { "query": "$count(elements)" }. The operator and target are evaluated against that number to determine whether the goal is achieved.',
+        description: 'Create one visible goal. the session tool calls will be executed sequentially, and these tool calls will be repeated until the goal is achieved or error. If the goal is missed, the goal will continue to be retried until the goal is achieved or the user cancels the goal. The determination tool call must return { "status": "ready", "data": finiteNumber }. When using query_analysis_result for the determination, use { "query": "$count(analyses)" } to count all analysis results. The operator and target are evaluated against that number to determine whether the goal is achieved.',
         properties: {
             name: {
                 type: 'string',
@@ -453,7 +453,7 @@ export const SESSION_TOOLS = [
                 properties: {
                     tool: {
                         type: 'object',
-                        description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the goal was achieved. For query_analysis_result, pass arguments such as { "query": "$count(elements)" }.',
+                        description: 'Frontend query tool call that must return { "status": "ready", "data": finiteNumber } to determine whether the goal was achieved. For query_analysis_result, use { "query": "$count(analyses)" } to count all analysis results.',
                         properties: {
                             name: { type: 'string', description: 'Available session tool to execute.' },
                             arguments: { type: 'object', description: 'Arguments passed unchanged to the determination tool.' },

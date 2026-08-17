@@ -14,6 +14,7 @@ import LiveEventLog from './LiveEventLog';
 import BaselineCollection from './BaselineCollection';
 
 const OPTIONAL_VISUALIZATIONS = {
+    'live-trajectory-map': { name: 'Live 2D Telemetry Trajectory' },
     'telemetry-overview': { name: 'Live Telemetry Overview' },
     'event-log': { name: 'Live Event Log' },
     'analysis-results': { name: 'Analysis Results' },
@@ -81,7 +82,7 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
             name,
             id: `${type}-${Date.now()}`,
             type: type as LiveVisualizationInstance['type'],
-            height: 280,
+            height: type === 'live-trajectory-map' ? 520 : 280,
             data,
             config,
         };
@@ -100,13 +101,19 @@ class LiveTelemetryWorkspaceImpl extends VisualizationPanelManager<LiveTelemetry
         return { ...instance, height };
     }
 
+    protected isPrimaryVisualization(instance: LiveVisualizationInstance) {
+        return instance.type === 'live-trajectory-map';
+    }
+
     protected renderStaticMap() {
-        const name = getVisualizationComponentName('live-trajectory-map');
-        return <LiveTrajectoryMap key={name} name={name} />;
+        return null;
     }
 
     protected renderPanelContent(instance: LiveVisualizationInstance) {
         const events = this.context.sessionIntelligence.getAllEvents();
+        if (instance.type === 'live-trajectory-map') {
+            return <LiveTrajectoryMap key={instance.name} name={instance.name} />;
+        }
         if (instance.type === 'telemetry-overview') {
             return (
                 <LiveTelemetryOverview

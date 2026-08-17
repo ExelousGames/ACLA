@@ -141,6 +141,10 @@ abstract class VisualizationPanelManager<
         return 'medium';
     }
 
+    protected isPrimaryVisualization(_instance: TInstance): boolean {
+        return false;
+    }
+
     protected notifyLayoutChange(_instances: TInstance[]): void { }
 
     private applyVisualizations(next: TInstance[]) {
@@ -454,10 +458,11 @@ abstract class VisualizationPanelManager<
         }
 
         const { draggingId, dropTargetId, resizingId } = this.state;
+        const isPrimary = this.isPrimaryVisualization(instance);
         return (
             <Box
                 key={instance.name}
-                className={`visualization-container${draggingId === instance.id ? ' is-dragging' : ''}${dropTargetId === instance.id ? ' is-drop-target' : ''}${resizingId === instance.id ? ' is-resizing' : ''}`}
+                className={`visualization-container${isPrimary ? ' visualization-container--primary' : ''}${draggingId === instance.id ? ' is-dragging' : ''}${dropTargetId === instance.id ? ' is-drop-target' : ''}${resizingId === instance.id ? ' is-resizing' : ''}`}
                 style={{ height: `${this.getPanelHeight(instance)}px` }}
                 onDragOver={(event) => this.handleDragOver(event, instance.id)}
                 onDrop={(event) => this.handleDrop(event, instance.id)}
@@ -501,6 +506,9 @@ abstract class VisualizationPanelManager<
     render() {
         const { visualizations } = this.state;
         const availableTypes = this.getAvailableTypes();
+        const staticMap = this.renderStaticMap();
+        const primaryVisualizations = visualizations.filter((instance) => this.isPrimaryVisualization(instance));
+        const secondaryVisualizations = visualizations.filter((instance) => !this.isPrimaryVisualization(instance));
 
         return (
             <Box className={this.getManagerClassName()} data-testid={this.getManagerTestId()}>
@@ -528,19 +536,23 @@ abstract class VisualizationPanelManager<
                     </DropdownMenu.Root>
                 </Flex>
 
-                <Box className={`visualization-workspace${visualizations.length === 0 ? ' visualization-workspace--map-only' : ''}`}>
-                    <Box className="static-map-container">
-                        <Box className="static-map-header">
-                            <Text size="2" weight="medium">{this.getStaticMapTitle()}</Text>
+                <Box className={`visualization-workspace${secondaryVisualizations.length === 0 ? ' visualization-workspace--map-only' : ''}`}>
+                    {staticMap && (
+                        <Box className="static-map-container">
+                            <Box className="static-map-header">
+                                <Text size="2" weight="medium">{this.getStaticMapTitle()}</Text>
+                            </Box>
+                            <Box className="static-map-body">
+                                {staticMap}
+                            </Box>
                         </Box>
-                        <Box className="static-map-body">
-                            {this.renderStaticMap()}
-                        </Box>
-                    </Box>
+                    )}
 
-                    {visualizations.length > 0 && (
+                    {primaryVisualizations.map(this.renderVisualization)}
+
+                    {secondaryVisualizations.length > 0 && (
                         <Box className="visualizations-container">
-                            {visualizations.map(this.renderVisualization)}
+                            {secondaryVisualizations.map(this.renderVisualization)}
                         </Box>
                     )}
                 </Box>

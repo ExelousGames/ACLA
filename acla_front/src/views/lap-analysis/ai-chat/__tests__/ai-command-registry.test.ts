@@ -45,12 +45,12 @@ const queryContractCoverage: FrontendAiQueryContractCoverage = true;
 
 const assertQueryContractTypes = (registry: AiCommandRegistry) => {
     const analysisResult: AiToolOperation<QueryAnalysisResultOutput> = (
-        registry.query_analysis_result({ query: '$count(elements)' })
+        registry.query_analysis_result({ query: '$count(analyses)' })
     );
     // @ts-expect-error Analysis result queries require an expression.
     registry.query_analysis_result({});
     // @ts-expect-error Analysis result queries accept no extra arguments.
-    registry.query_analysis_result({ query: 'elements', extra: true });
+    registry.query_analysis_result({ query: 'analyses', extra: true });
     const avg: AiToolOperation<QueryTelemetryMetricResult<'avg'>> = registry.query_telemetry_metric({
         fields: ['speed'],
         scope: { type: 'now' },
@@ -208,16 +208,16 @@ describe('frontend AI tool registry', () => {
 
     it('dispatches JSONata expressions and preserves actual JSON result types', async () => {
         const operations = new Map<string, AiToolOperation<QueryAnalysisResultOutput>>([
-            ['$count(elements)', resolvedAiToolOperation({ status: 'ready' as const, data: 4 })],
-            ['{"count": $count(elements)}', resolvedAiToolOperation({
+            ['$count(analyses)', resolvedAiToolOperation({ status: 'ready' as const, data: 4 })],
+            ['{"count": $count(analyses.elements)}', resolvedAiToolOperation({
                 status: 'ready' as const,
                 data: { count: 4 },
             })],
-            ['[elements.id]', resolvedAiToolOperation({
+            ['[analyses.elements.id]', resolvedAiToolOperation({
                 status: 'ready' as const,
                 data: ['first', 'second'],
             })],
-            ['elements[id = "missing"]', resolvedAiToolOperation({
+            ['analyses.elements[id = "missing"]', resolvedAiToolOperation({
                 status: 'ready' as const,
                 data: null,
             })],
@@ -241,7 +241,7 @@ describe('frontend AI tool registry', () => {
         await Promise.all(results);
         expect(handle.queryAnalysisResult).toHaveBeenCalledTimes(operations.size);
         expect(handle.queryAnalysisResult).toHaveBeenNthCalledWith(1, {
-            query: '$count(elements)',
+            query: '$count(analyses)',
         });
     });
 
@@ -250,7 +250,7 @@ describe('frontend AI tool registry', () => {
         { query: '' },
         { query: '   ' },
         { query: 4 },
-        { query: '$count(elements)', extra: true },
+        { query: '$count(analyses)', extra: true },
     ])('rejects an invalid analysis result query: %p', async (args) => {
         const componentName = 'visualization:analysis-results';
         const handle: Partial<AnalysisResultsChartHandle> = {
@@ -326,7 +326,7 @@ describe('frontend AI tool registry', () => {
             componentRefs: createAiToolComponentRefDirectory(),
         });
 
-        const operation = registry.query_analysis_result({ query: '$count(elements)' });
+        const operation = registry.query_analysis_result({ query: '$count(analyses)' });
 
         await expect(operation.result).rejects.toMatchObject({
             name: 'ComponentRefUnavailableError',

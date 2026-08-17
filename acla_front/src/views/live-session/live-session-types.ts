@@ -54,7 +54,7 @@ export interface LocalTelemetryFileValidation {
 export interface LiveVisualizationInstance {
     name: string;
     id: string;
-    type: 'telemetry-overview' | 'event-log' | 'analysis-results' | 'baseline-collection';
+    type: 'live-trajectory-map' | 'telemetry-overview' | 'event-log' | 'analysis-results' | 'baseline-collection';
     height: number;
     data?: unknown;
     config?: Record<string, unknown>;

@@ -4,6 +4,7 @@ import {
     buildOverallTrendQueryDefinition,
     buildOverallTrendQueryExpression,
     detachJsonataResult,
+    evaluateAllAnalysisResultsQuery,
     evaluateAnalysisResultsQuery,
     normalizeActivePageQueryInput,
     normalizeOverallTrendQueryInput,
@@ -134,6 +135,95 @@ describe('analysisResultsQuery evaluator', () => {
         await expect(evaluateAnalysisResultsQuery('elements', { unexpected: [] })).rejects.toMatchObject({
             code: 'INVALID_QUERY_INPUT',
         });
+    });
+
+    it('evaluates one root containing every analysis result', async () => {
+        const input = {
+            analyses: [
+                {
+                    id: 'lap-one',
+                    createdAt: 10,
+                    baseline: {
+                        lap: 1,
+                        lap_time_ms: 61_000,
+                        track: 'Spa',
+                        car: 'GT3',
+                    },
+                    elements: activeElements,
+                },
+                {
+                    id: 'recorded-analysis',
+                    createdAt: null,
+                    baseline: null,
+                    elements: [],
+                },
+            ],
+        };
+
+        await expect(evaluateAllAnalysisResultsQuery(
+            '{"analysisCount": $count(analyses), "segmentCount": $count(analyses.elements)}',
+            input,
+        )).resolves.toEqual({ analysisCount: 2, segmentCount: 2 });
+        await expect(evaluateAllAnalysisResultsQuery(
+            'analyses.{"id": id, "lap": baseline.lap, "segmentCount": $count(elements)}',
+            input,
+        )).resolves.toEqual([
+            { id: 'lap-one', lap: 1, segmentCount: 2 },
+            { id: 'recorded-analysis', segmentCount: 0 },
+        ]);
+        await expect(evaluateAllAnalysisResultsQuery('$count(analyses)', {
+            ...input,
+            elements: [],
+        })).rejects.toMatchObject({ code: 'INVALID_QUERY_INPUT' });
+    });
+
+    it('counts a retained analysis whose raw telemetry lap is zero', async () => {
+        const analysis = {
+            id: 'zero-lap-analysis',
+            createdAt: 10,
+            baseline: {
+                lap: 0,
+                lap_time_ms: 61_000,
+                track: 'Spa',
+                car: 'GT3',
+            },
+            elements: [],
+        };
+
+        await expect(evaluateAllAnalysisResultsQuery(
+            '$count(analyses)',
+            { analyses: [analysis] },
+        )).resolves.toBe(1);
+        await expect(evaluateAllAnalysisResultsQuery(
+            'analyses[0].baseline.lap',
+            { analyses: [analysis] },
+        )).resolves.toBe(0);
+        expect(() => normalizeOverallTrendQueryInput({ pages: [analysis] })).toThrow(
+            expect.objectContaining({ code: 'INVALID_QUERY_INPUT' }),
+        );
+    });
+
+    it('rejects malformed all-analysis arrays, duplicate IDs, and unsafe element values', async () => {
+        const analysis = {
+            id: 'retained-analysis',
+            createdAt: null,
+            baseline: null,
+            elements: [],
+        };
+        const sparseAnalyses = new Array(1);
+
+        await expect(evaluateAllAnalysisResultsQuery('$count(analyses)', {
+            analyses: sparseAnalyses,
+        })).rejects.toMatchObject({ code: 'INVALID_QUERY_INPUT' });
+        await expect(evaluateAllAnalysisResultsQuery('$count(analyses)', {
+            analyses: [analysis, analysis],
+        })).rejects.toMatchObject({ code: 'INVALID_QUERY_INPUT' });
+        await expect(evaluateAllAnalysisResultsQuery('$count(analyses)', {
+            analyses: [{
+                ...analysis,
+                elements: [{ id: 'unsafe', labels: [], metadata: { value: undefined } }],
+            }],
+        })).rejects.toMatchObject({ code: 'INVALID_JSON_VALUE' });
     });
 
     it('rejects cyclic and non-JSON-safe input before evaluation', async () => {

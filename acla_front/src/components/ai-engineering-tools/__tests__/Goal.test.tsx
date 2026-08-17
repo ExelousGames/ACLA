@@ -68,7 +68,7 @@ describe('GoalRunner central dispatch callback', () => {
                 ...request().determination,
                 tool: {
                     name: 'query_analysis_result',
-                    arguments: { query: '$count(elements)' },
+                    arguments: { query: '$count(analyses)' },
                 },
             },
         };
@@ -93,7 +93,7 @@ describe('GoalRunner central dispatch callback', () => {
             determination: {
                 tool: {
                     name: 'query_analysis_result',
-                    arguments: { query: '$count(elements)' },
+                    arguments: { query: '$count(analyses)' },
                 },
                 operator: 'eq',
                 target: 0,
@@ -129,7 +129,7 @@ describe('GoalRunner central dispatch callback', () => {
         ]);
         expect(order).toEqual(['collect', 'analyze:4', 'query_analysis_result']);
         expect(dispatch).toHaveBeenLastCalledWith('query_analysis_result', {
-            query: '$count(elements)',
+            query: '$count(analyses)',
         });
     });
 

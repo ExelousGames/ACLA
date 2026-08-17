@@ -204,26 +204,27 @@ describe('analysis result query tool', () => {
         expect(Object.keys(tool.properties)).toEqual(['query']);
         expect(tool.properties.query).not.toHaveProperty('enum');
         expect(new RegExp(tool.properties.query.pattern).test('   ')).toBe(false);
-        expect(new RegExp(tool.properties.query.pattern).test('$count(elements)'))
+        expect(new RegExp(tool.properties.query.pattern).test('$count(analyses)'))
             .toBe(true);
     });
 
-    it('describes the active-page root, actual result, and examples in every eligible context', () => {
+    it('describes one all-analysis root in every eligible context', () => {
         eligibleContexts.forEach((context) => {
             const tool = getSessionToolsForSessionContext(context).find(({ name }) => (
                 name === 'query_analysis_result'
             ));
             const description = tool?.description ?? '';
 
-            expect(description).toContain('normalized active Analysis Results page');
+            expect(description).toContain('exactly one root structure');
+            expect(description).toContain('"analyses"');
             expect(description).toContain('"elements"');
             expect(description).toContain('"normalizedPositionRange"');
             expect(description).toContain('actual JSON-safe JSONata value');
             expect(description).toContain('not a count unless the expression returns one');
-            expect(description).toContain('$count(elements)');
-            expect(description).toContain('$count(elements[labels[$ = "Mistake (Practice)"]])');
-            expect(description).toContain('elements[labels[$ = "Lockup"]].{ "id": id, "section": section }');
-            expect(description).not.toContain('"pages"');
+            expect(description).toContain('$count(analyses) counts analyses');
+            expect(description).toContain('$count(analyses.elements)');
+            expect(description).toContain('analyses.elements[labels[$ = "Lockup"]].{ "id": id, "section": section }');
+            expect(description).not.toContain('active lap analysis');
         });
     });
 
@@ -408,11 +409,11 @@ describe('create_goal tool', () => {
         expect(tool.properties.determination.description)
             .toContain('{ "status": "ready", "data": finiteNumber }');
         expect(tool.description).toContain('query_analysis_result');
-        expect(tool.description).toContain('{ "query": "$count(elements)" }');
+        expect(tool.description).toContain('{ "query": "$count(analyses)" }');
         expect(tool.properties.determination.description)
             .toContain('$count(...) JSONata expression');
         expect(tool.properties.determination.properties.tool.description)
-            .toContain('{ "query": "$count(elements)" }');
+            .toContain('{ "query": "$count(analyses)" }');
     });
 
     it('exposes create_goal only to the Live Performance Analyst and constrains nested tools by session', () => {

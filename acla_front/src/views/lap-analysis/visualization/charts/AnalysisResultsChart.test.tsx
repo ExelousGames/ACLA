@@ -141,8 +141,9 @@ import {
 } from './analysisResultsModel';
 import * as analysisResultsQuery from './analysisResultsQuery';
 
-const ALL_RESULTS_COUNT_QUERY = '$count(elements)';
-const MISTAKE_COUNT_QUERY = '$count(elements[labels[$ in ["MSP", "Mistake (Practice)", "Training Error", "MSR", "Mistake (Racing)", "Race Error"]]])';
+const ALL_ANALYSES_COUNT_QUERY = '$count(analyses)';
+const ALL_RESULTS_COUNT_QUERY = '$count(analyses.elements)';
+const MISTAKE_COUNT_QUERY = '$count(analyses.elements[labels[$ in ["MSP", "Mistake (Practice)", "Training Error", "MSR", "Mistake (Racing)", "Race Error"]]])';
 
 const renderedResultIds = (): string[] => (
     screen.queryAllByTestId(/^analysis-result-/).map((element) => (
@@ -215,15 +216,19 @@ describe('AnalysisResultsChart', () => {
             status: 'ready',
             data: 0,
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: '{"count": $count(elements)}' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_ANALYSES_COUNT_QUERY }).result).resolves.toEqual({
+            status: 'ready',
+            data: 1,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: '{"count": $count(analyses.elements)}' }).result).resolves.toEqual({
             status: 'ready',
             data: { count: 0 },
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: '[elements.id]' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: '[analyses.elements.id]' }).result).resolves.toEqual({
             status: 'ready',
             data: [],
         });
-        await expect(chartRef.current!.queryAnalysisResult({ query: 'elements[id = "missing"]' }).result).resolves.toEqual({
+        await expect(chartRef.current!.queryAnalysisResult({ query: 'analyses.elements[id = "missing"]' }).result).resolves.toEqual({
             status: 'ready',
             data: null,
         });
@@ -280,7 +285,7 @@ describe('AnalysisResultsChart', () => {
         });
     });
 
-    it('queries the non-latest active page and falls back to the first page when it is unavailable', async () => {
+    it('queries every retained analysis independently of the active page', async () => {
         const chartRef = React.createRef<AnalysisResultsChartHandle>();
         const onSelectPage = jest.fn();
         const pages = [{
@@ -317,11 +322,24 @@ describe('AnalysisResultsChart', () => {
         expect(screen.getByRole('button', { name: 'Overall Trends' })).toHaveAttribute('aria-pressed', 'true');
         await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
+            data: 5,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({ query: ALL_ANALYSES_COUNT_QUERY }).result).resolves.toEqual({
+            status: 'ready',
             data: 2,
+        });
+        await expect(chartRef.current!.queryAnalysisResult({
+            query: 'analyses.{"lap": baseline.lap, "segmentCount": $count(elements)}',
+        }).result).resolves.toEqual({
+            status: 'ready',
+            data: [
+                { lap: 1, segmentCount: 2 },
+                { lap: 2, segmentCount: 3 },
+            ],
         });
         await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
-            data: 1,
+            data: 4,
         });
 
         view.rerender(
@@ -334,7 +352,7 @@ describe('AnalysisResultsChart', () => {
         );
         await expect(chartRef.current!.queryAnalysisResult({ query: ALL_RESULTS_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
-            data: 2,
+            data: 5,
         });
 
         view.rerender(
@@ -347,8 +365,50 @@ describe('AnalysisResultsChart', () => {
         );
         await expect(chartRef.current!.queryAnalysisResult({ query: MISTAKE_COUNT_QUERY }).result).resolves.toEqual({
             status: 'ready',
-            data: 3,
+            data: 4,
         });
+    });
+
+    it('treats a zero telemetry lap as retained result 1 and one analyzed lap', async () => {
+        const chartRef = React.createRef<AnalysisResultsChartHandle>();
+        render(
+            <AnalysisResultsChart
+                ref={chartRef}
+                name="visualization:analysis-results"
+                id="zero-lap-results"
+                showElementId={false}
+                pagination={{
+                    pages: [{
+                        id: 'zero-lap-page',
+                        createdAt: 1,
+                        baseline: {
+                            lap: 0,
+                            lap_time_ms: 98_000,
+                            track: 'Spa',
+                            car: 'GT3',
+                        },
+                        elements: [{ id: 'zero-lap-mistake', labels: ['MSP'], title: 'Zero lap mistake' }],
+                    }],
+                    activePageId: 'zero-lap-page',
+                    onSelectPage: jest.fn(),
+                }}
+            />,
+        );
+
+        await screen.findByTestId('overall-trend-query-error');
+        expect(screen.getByText('1 analyzed lap')).toBeInTheDocument();
+        expect(screen.getByTestId('overall-trend-guidance')).toHaveTextContent(
+            'Not enough analyzed laps to determine a trend.',
+        );
+        await expect(chartRef.current!.queryAnalysisResult({
+            query: ALL_ANALYSES_COUNT_QUERY,
+        }).result).resolves.toEqual({ status: 'ready', data: 1 });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Lap Results' }));
+        expect(screen.getByText('Page 1 of 1')).toBeInTheDocument();
+        expect(screen.getByText(/Baseline: Spa.*GT3.*Lap 0/)).toBeInTheDocument();
+        await waitFor(() => expect(within(screen.getByTestId('analysis-result-zero-lap-mistake'))
+            .getByLabelText('Analysis result 1')).toHaveTextContent('1'));
     });
 
     it.each([

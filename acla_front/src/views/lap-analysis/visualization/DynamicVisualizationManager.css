@@ -79,6 +79,11 @@
     max-height: none;
 }
 
+.live-telemetry-workspace .visualization-container--primary {
+    flex: 1 1 640px;
+    width: auto;
+}
+
 .live-telemetry-workspace .visualizations-container {
     flex: 1 1 320px;
     height: max-content;

@@ -110,7 +110,8 @@ describe('SessionToolsController', () => {
         });
         expect(tool.properties.query).not.toHaveProperty('enum');
         expect(tool.description).toContain('actual JSON-safe JSONata value');
-        expect(tool.description).toContain('$count(elements)');
+        expect(tool.description).toContain('$count(analyses)');
+        expect(tool.description).toContain('exactly one root structure');
         expect(tool.description).not.toContain('result_count');
         expect(tool.description).not.toContain('mistake_count');
     });

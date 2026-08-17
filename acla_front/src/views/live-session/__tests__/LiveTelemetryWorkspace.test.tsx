@@ -43,6 +43,35 @@ const DirectoryObserver = () => {
 };
 
 describe('LiveTelemetryWorkspace named manager', () => {
+    it('adds and removes the live 2D telemetry trajectory', async () => {
+        const ref = React.createRef<VisualizationManagerHandle>();
+        render(<LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />);
+
+        expect(screen.queryByText('Live trajectory map')).not.toBeInTheDocument();
+        expect(ref.current!.getVisualizationCapabilities().availableCharts).toContainEqual(
+            expect.objectContaining({
+                type: 'live-trajectory-map',
+                name: 'Live 2D Telemetry Trajectory',
+                openCount: 0,
+                canOpen: true,
+            }),
+        );
+
+        await userEvent.click(screen.getByRole('menuitem', { name: 'Live 2D Telemetry Trajectory' }));
+        expect(screen.getByText('Live trajectory map')).toBeInTheDocument();
+        expect(ref.current!.getCurrentVisualizations()).toEqual([
+            expect.objectContaining({
+                name: 'visualization:live-trajectory-map',
+                type: 'live-trajectory-map',
+            }),
+        ]);
+
+        await userEvent.click(screen.getByRole('button', { name: 'Remove Live 2D Telemetry Trajectory' }));
+        expect(screen.queryByText('Live trajectory map')).not.toBeInTheDocument();
+        expect(screen.getByRole('menuitem', { name: 'Live 2D Telemetry Trajectory' })).toBeInTheDocument();
+        expect(ref.current!.getCurrentVisualizations()).toEqual([]);
+    });
+
     it('offers Analysis Results manually with empty-history trend guidance', async () => {
         const ref = React.createRef<VisualizationManagerHandle>();
         render(<LiveTelemetryWorkspace ref={ref} name="live-visualization-manager" />);
